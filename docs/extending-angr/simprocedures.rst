@@ -850,13 +850,20 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
        emit a fresh symbolic BV via
        ``SyscallOutcome::ContinueSymbolic``. ``mremap`` is a parity
        stub (does not update page tables — neither does Python angr)
-   * - FD control (angr-0hif.5)
-     - ``dup``, ``dup2``, ``dup3``, ``fcntl``, ``ioctl``, ``pipe``,
-       ``pipe2``
-     - 0 / 7
-     - angr-0hif.5 (open). ``dup``/``dup2``/``pipe`` exist as
-       ``SimProcedures`` (``fileops.rs``); no syscall numbers are
-       wired
+   * - FD control (angr-0hif.5, partial)
+     - ``fcntl`` ✓, ``ioctl`` ✓, ``pipe`` ✓, ``pipe2`` ✓,
+       ``dup`` ✗, ``dup2`` ✗, ``dup3`` ✗
+     - 4 / 7
+     - ``file_descriptor.rs`` — stub-fallthrough subset only.
+       ``fcntl``/``ioctl``/``pipe``/``pipe2`` have no Python
+       ``SimProcedure`` bound in the kernel library
+       (``posix/fcntl.py`` is libc-side only), so native handlers
+       mirror ``syscall_stub`` and emit a fresh symbolic BV via
+       ``SyscallOutcome::ContinueSymbolic``. ``dup``/``dup2``/``dup3``
+       have real ``posix/dup.py`` procs that mutate
+       ``state.posix.fd``; they fall back to Python until the FD
+       table is plumbed through ``RustSimState`` (same blocker as
+       ``angr-k3ol`` — file-path with real procs)
    * - Signals + process control (angr-0hif.6)
      - ``kill``, ``tgkill``, ``rt_sigprocmask``, ``rt_sigaction``,
        ``rt_sigreturn``, ``pause``, ``alarm``
@@ -871,10 +878,22 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
        ``state.posix.sigmask`` which ``RustSimState`` does not carry,
        so it falls back to Python for parity
    * - Resource limits + concurrency (angr-0hif.7)
-     - ``getrlimit``, ``setrlimit``, ``futex``, ``eventfd``,
-       ``epoll_create``, ``epoll_ctl``, ``epoll_wait``
-     - 0 / 7
-     - angr-0hif.7 (open)
+     - ``getrlimit``, ``setrlimit``, ``prlimit64``, ``futex``,
+       ``eventfd``, ``eventfd2``, ``epoll_create``, ``epoll_create1``,
+       ``epoll_ctl``, ``epoll_wait``
+     - 10 / 10
+     - ``rlimit.rs``, ``concurrency.rs`` — ``getrlimit`` mirrors
+       ``procedures/linux_kernel/getrlimit.py`` (RLIMIT_STACK writes
+       8388608 + symbolic ``rlim_max`` and returns 0; other
+       resources return a fresh symbolic). ``futex`` mirrors
+       ``procedures/linux_kernel/futex.py`` (FUTEX_WAKE family
+       returns 0, else fresh symbolic). The remaining seven have no
+       dedicated Python ``SimProcedure`` and mirror ``syscall_stub``
+       with a fresh symbolic via ``SyscallOutcome::ContinueSymbolic``.
+       angr is single-threaded symex; blocking on ``futex(FUTEX_WAIT)``
+       or ``epoll_wait`` is never modeled. x86 / ARM also alias
+       ``ugetrlimit (191)`` to ``getrlimit`` per
+       ``procedures/linux_kernel/getrlimit.py::ugetrlimit``
 
 Per-arch coverage of the baseline handlers (X86, ARM, ARM64, MIPS32)
 is summarised in the ``register_<arch>`` blocks of

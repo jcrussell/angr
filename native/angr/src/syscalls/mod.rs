@@ -21,6 +21,7 @@ pub mod arch_prctl;
 pub mod brk;
 pub mod concurrency;
 pub mod exit;
+pub mod file_descriptor;
 pub mod file_path;
 pub mod identity;
 pub mod memory_extras;
@@ -181,6 +182,15 @@ impl NativeSyscallRegistry {
         //   state.posix.fd / state.fs and are intentionally NOT covered
         //   here — they fall back to Python until the FD/FS plumbing is
         //   ported into RustSimState.
+        // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
+        //   syscalls that fall through to syscall_stub (angr-0hif.5
+        //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
+        //   SimProcedure but linux_kernel.py does NOT bind it into the
+        //   kernel library — so the syscall path is pure stub. dup /
+        //   dup2 / dup3 (intentionally NOT registered) have real
+        //   posix/dup.py procs that touch state.posix.fd; they fall
+        //   back to Python until FD plumbing lands (same blocker as
+        //   angr-k3ol).
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -191,6 +201,8 @@ impl NativeSyscallRegistry {
             (12, brk::NativeBrkSyscall),
             (13, sigaction::NativeRtSigactionSyscall),
             (15, signals::NativeRtSigreturnSyscall),
+            (16, file_descriptor::NativeIoctlSyscall),
+            (22, file_descriptor::NativePipeSyscall),
             (25, memory_extras::NativeMremapSyscall),
             (26, memory_extras::NativeMsyncSyscall),
             (28, memory_extras::NativeMadviseSyscall),
@@ -199,6 +211,7 @@ impl NativeSyscallRegistry {
             (39, identity::NativeGetpidSyscall),
             (60, exit::NativeExitSyscall),
             (62, signals::NativeKillSyscall),
+            (72, file_descriptor::NativeFcntlSyscall),
             (89, file_path::NativeReadlinkSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
             (97, rlimit::NativeGetrlimitSyscall),
@@ -230,6 +243,7 @@ impl NativeSyscallRegistry {
             (284, concurrency::NativeEventfdSyscall),
             (290, concurrency::NativeEventfd2Syscall),
             (291, concurrency::NativeEpollCreate1Syscall),
+            (293, file_descriptor::NativePipe2Syscall),
             (302, rlimit::NativePrlimit64Syscall),
         ]);
 
@@ -269,11 +283,14 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
+            (54, file_descriptor::NativeIoctlSyscall),
+            (55, file_descriptor::NativeFcntlSyscall),
             (64, identity::NativeGetppidSyscall),
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
@@ -299,6 +316,8 @@ impl NativeSyscallRegistry {
             (213, identity::NativeSetuidSyscall),
             (214, identity::NativeSetgidSyscall),
             (219, memory_extras::NativeMadviseSyscall),
+            // 221 = fcntl64 (LFS-style 64-bit offset variant).
+            (221, file_descriptor::NativeFcntl64Syscall),
             (224, identity::NativeGettidSyscall),
             (240, concurrency::NativeFutexSyscall),
             (252, exit::NativeExitSyscall),
@@ -313,6 +332,7 @@ impl NativeSyscallRegistry {
             (323, concurrency::NativeEventfdSyscall),
             (328, concurrency::NativeEventfd2Syscall),
             (329, concurrency::NativeEpollCreate1Syscall),
+            (331, file_descriptor::NativePipe2Syscall),
             (340, rlimit::NativePrlimit64Syscall),
         ]);
 
@@ -330,11 +350,14 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
+            (54, file_descriptor::NativeIoctlSyscall),
+            (55, file_descriptor::NativeFcntlSyscall),
             (64, identity::NativeGetppidSyscall),
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
@@ -360,6 +383,8 @@ impl NativeSyscallRegistry {
             (213, identity::NativeSetuidSyscall),
             (214, identity::NativeSetgidSyscall),
             (220, memory_extras::NativeMadviseSyscall),
+            // 221 = fcntl64 (LFS-style 64-bit offset variant).
+            (221, file_descriptor::NativeFcntl64Syscall),
             (224, identity::NativeGettidSyscall),
             (240, concurrency::NativeFutexSyscall),
             (248, exit::NativeExitSyscall),
@@ -374,6 +399,7 @@ impl NativeSyscallRegistry {
             (351, concurrency::NativeEventfdSyscall),
             (356, concurrency::NativeEventfd2Syscall),
             (357, concurrency::NativeEpollCreate1Syscall),
+            (359, file_descriptor::NativePipe2Syscall),
             (369, rlimit::NativePrlimit64Syscall),
         ]);
 
@@ -394,10 +420,16 @@ impl NativeSyscallRegistry {
             (19, concurrency::NativeEventfd2Syscall),
             (20, concurrency::NativeEpollCreate1Syscall),
             (21, concurrency::NativeEpollCtlSyscall),
+            // asm-generic ABI omits legacy `pipe` (only pipe2 at 59),
+            // legacy `fcntl64` (unified fcntl at 25 since asm-generic
+            // is 64-bit-oriented), and the older epoll/eventfd variants.
+            (25, file_descriptor::NativeFcntlSyscall),
+            (29, file_descriptor::NativeIoctlSyscall),
             // asm-generic ABI dropped legacy `lstat` and `readlink` — only
             // the *at variants exist here. faccessat (48), readlinkat (78),
             // newfstatat (79).
             (48, file_path::NativeFaccessatSyscall),
+            (59, file_descriptor::NativePipe2Syscall),
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
             (78, file_path::NativeReadlinkatSyscall),
@@ -451,11 +483,14 @@ impl NativeSyscallRegistry {
             (4027, signals::NativeAlarmSyscall),
             (4029, signals::NativePauseSyscall),
             (4037, signals::NativeKillSyscall),
+            (4042, file_descriptor::NativePipeSyscall),
             (4045, brk::NativeBrkSyscall),
             (4046, identity::NativeSetgidSyscall),
             (4047, identity::NativeGetgidSyscall),
             (4049, identity::NativeGeteuidSyscall),
             (4050, identity::NativeGetegidSyscall),
+            (4054, file_descriptor::NativeIoctlSyscall),
+            (4055, file_descriptor::NativeFcntlSyscall),
             (4064, identity::NativeGetppidSyscall),
             (4075, rlimit::NativeSetrlimitSyscall),
             (4076, rlimit::NativeGetrlimitSyscall),
@@ -473,6 +508,8 @@ impl NativeSyscallRegistry {
             (4193, signals::NativeRtSigreturnSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
             (4218, memory_extras::NativeMadviseSyscall),
+            // 4220 = fcntl64 (LFS-style 64-bit offset variant).
+            (4220, file_descriptor::NativeFcntl64Syscall),
             (4222, identity::NativeGettidSyscall),
             (4238, concurrency::NativeFutexSyscall),
             (4246, exit::NativeExitSyscall),
@@ -487,6 +524,7 @@ impl NativeSyscallRegistry {
             (4319, concurrency::NativeEventfdSyscall),
             (4325, concurrency::NativeEventfd2Syscall),
             (4326, concurrency::NativeEpollCreate1Syscall),
+            (4328, file_descriptor::NativePipe2Syscall),
             (4338, rlimit::NativePrlimit64Syscall),
         ]);
 
@@ -1159,6 +1197,100 @@ mod tests {
                 assert_eq!(h.name(), "readlink");
                 assert_eq!(h.num_args(), 3);
             }
+        }
+    }
+
+    #[test]
+    fn file_descriptor_stubs_registered_on_all_arches() {
+        // angr-0hif.5 stub-fallthrough subset: fcntl / fcntl64 / ioctl /
+        // pipe / pipe2. None of these have a Python `SimProcedure` bound
+        // in the kernel library — `posix/fcntl.py` is registered on the
+        // libc side only, and ioctl/pipe/pipe2 have no proc at all. The
+        // unhandled-syscall path falls through to syscall_stub, which the
+        // native handlers mirror via SyscallOutcome::ContinueSymbolic.
+        //
+        // Per-arch availability:
+        //   * AArch64 asm-generic omits legacy `pipe` (only pipe2 at 59)
+        //     and `fcntl64` (unified fcntl at 25).
+        //   * 32-bit i386 / ARM EABI / MIPS32 O32 carry both `fcntl`
+        //     and `fcntl64`; AMD64 has only `fcntl` (no fcntl64).
+        //
+        // dup / dup2 / dup3 are intentionally NOT registered — those
+        // have `posix/dup.py` procs that mutate state.posix.fd, so
+        // they fall back to Python until the FD-table is plumbed
+        // through `RustSimState` (same blocker as angr-k3ol).
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, fcntl, fcntl64-or-None, ioctl, pipe-or-None, pipe2)
+        let table: &[(&str, u64, Option<u64>, u64, Option<u64>, u64)] = &[
+            ("AMD64", 72, None, 16, Some(22), 293),
+            ("X86", 55, Some(221), 54, Some(42), 331),
+            ("ARM", 55, Some(221), 54, Some(42), 359),
+            ("ARM64", 25, None, 29, None, 59),
+            ("MIPS32", 4055, Some(4220), 4054, Some(4042), 4328),
+        ];
+
+        for &(arch, fcntl_n, fcntl64_n, ioctl_n, pipe_n, pipe2_n) in table {
+            let f = r
+                .get(arch, fcntl_n)
+                .unwrap_or_else(|| panic!("{arch} fcntl ({fcntl_n}) missing"));
+            assert_eq!(f.name(), "fcntl");
+            assert_eq!(f.num_args(), 3);
+
+            let io = r
+                .get(arch, ioctl_n)
+                .unwrap_or_else(|| panic!("{arch} ioctl ({ioctl_n}) missing"));
+            assert_eq!(io.name(), "ioctl");
+            assert_eq!(io.num_args(), 3);
+
+            let p2 = r
+                .get(arch, pipe2_n)
+                .unwrap_or_else(|| panic!("{arch} pipe2 ({pipe2_n}) missing"));
+            assert_eq!(p2.name(), "pipe2");
+            assert_eq!(p2.num_args(), 2);
+
+            if let Some(n) = fcntl64_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} fcntl64 ({n}) missing"));
+                assert_eq!(h.name(), "fcntl64");
+                assert_eq!(h.num_args(), 3);
+            }
+            if let Some(n) = pipe_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} pipe ({n}) missing"));
+                assert_eq!(h.name(), "pipe");
+                assert_eq!(h.num_args(), 1);
+            }
+        }
+
+        // dup / dup2 / dup3 must NOT be registered natively — they need
+        // FD-table plumbing and currently fall back to Python so the
+        // posix/dup.py proc's state.posix.fd mutations apply. ARM64
+        // asm-generic only has dup (23) and dup3 (24); no legacy dup2.
+        let dup_table: &[(&str, u64, Option<u64>, u64)] = &[
+            ("AMD64", 32, Some(33), 292),
+            ("X86", 41, Some(63), 330),
+            ("ARM", 41, Some(63), 358),
+            ("ARM64", 23, None, 24),
+            ("MIPS32", 4041, Some(4063), 4327),
+        ];
+        for &(arch, dup_n, dup2_n, dup3_n) in dup_table {
+            assert!(
+                r.get(arch, dup_n).is_none(),
+                "{arch} dup ({dup_n}) must NOT be native-registered (needs FD table)",
+            );
+            if let Some(n) = dup2_n {
+                assert!(
+                    r.get(arch, n).is_none(),
+                    "{arch} dup2 ({n}) must NOT be native-registered (needs FD table)",
+                );
+            }
+            assert!(
+                r.get(arch, dup3_n).is_none(),
+                "{arch} dup3 ({dup3_n}) must NOT be native-registered (needs FD table)",
+            );
         }
     }
 

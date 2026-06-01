@@ -11731,6 +11731,57 @@ class TestNativeConcurrencySyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFileDescriptorSyscalls:
+    """angr-0hif.5 stub-fallthrough subset: ``fcntl`` / ``ioctl`` /
+    ``pipe`` / ``pipe2`` handlers. None of these have a Python
+    ``SimProcedure`` bound in ``definitions/linux_kernel.py`` —
+    ``posix/fcntl.py`` is libc-side only — so the unhandled-syscall
+    path in pure Python angr falls through to
+    ``procedures/stubs/syscall_stub.py``. The native handlers mirror
+    that with a fresh symbolic of ``arch().bits()``.
+
+    ``dup`` / ``dup2`` / ``dup3`` are intentionally NOT native — they
+    have ``posix/dup.py`` procs that mutate ``state.posix.fd``, which
+    needs the FD table plumbed into ``RustSimState`` (same blocker as
+    angr-k3ol). The dispatcher falls back to Python for those so the
+    side-effects continue to apply.
+
+    Rust unit tests in ``native/angr/src/syscalls/file_descriptor.rs``
+    pin the per-handler invariants (correct ``name()``/arity, fresh
+    symbolic on each call). This is the cross-FFI dispatch check.
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (16, "ioctl"),
+            (22, "pipe"),
+            (72, "fcntl"),
+            (293, "pipe2"),
+        ],
+    )
+    def test_fd_control_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
+            setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""
