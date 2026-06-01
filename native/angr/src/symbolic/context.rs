@@ -1499,8 +1499,8 @@ impl SymContext {
 
     /// Add a constraint from a raw Z3_ast pointer (shared context fast path).
     ///
-    /// This bypasses the RustBV → build_z3_ast() conversion, preserving the
-    /// original Z3 AST structure from Python's claripy/z3 backend.
+    /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
+    /// the original Z3 AST structure from Python's claripy/z3 backend.
     /// SAFETY: The pointer must be a valid Z3_ast Bool in the same Z3 context.
     ///
     /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the
