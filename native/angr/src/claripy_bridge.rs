@@ -13,6 +13,101 @@
 //! Identity preservation uses two mechanisms:
 //! 1. **Global registry** (`SymbolicIdentityRegistry`): Cross-thread, persistent
 //! 2. **Thread-local caches**: Fast access for repeated conversions
+//!
+//! # Cross-cache invariants
+//!
+//! Four thread-local caches sit in this module (`AST_CACHE`,
+//! `CLARIPY_AST_CACHE`, `EXPRESSION_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`),
+//! plus the shared `SymbolicIdentityRegistry`. Per-cache ownership /
+//! invalidation / coherence is documented at each `thread_local!` block
+//! (see angr-a2br.3, commit 9e4108df0). The invariants below cut ACROSS
+//! caches and pin how the caches interact as a group. Each is referenced
+//! from the per-cache docs by number so enforcement-site comments do not
+//! duplicate the rationale.
+//!
+//! - **C1. EXPRESSION_ID sentinel boundary.** `CLARIPY_AST_CACHE` keys
+//!   are real leaf-symbol ids allocated by
+//!   `SymbolicIdentityRegistry::allocate_id`; compound `RustBV::Expression`
+//!   nodes carry `id == RustBV::EXPRESSION_ID` (the `u64::MAX` sentinel) and
+//!   route through `EXPRESSION_CACHE` / `EXPRESSION_BY_OPERANDS_PTR`
+//!   instead. Crossing this boundary corrupts `RustBV::Expression { id: u64 }`
+//!   semantics — a leaf id stored in an Expression cache would collide
+//!   with another Expression's hash, and vice versa. Enforced by
+//!   `debug_assert_ne!(symbol_id, RustBV::EXPRESSION_ID)` in
+//!   `store_claripy_ast{,_with_info}`. See `value.rs` `RustBV::Expression`
+//!   contract.
+//!
+//! - **C2. CLARIPY_AST_CACHE ⊆ global_registry (forward).** Every
+//!   `CLARIPY_AST_CACHE` insertion calls `global_registry().register*`
+//!   in the same function (`store_claripy_ast{,_with_info}`). The
+//!   reverse subset DOES NOT hold: the global registry is cross-thread
+//!   and may carry symbols this thread never touched. `get_claripy_ast`
+//!   relies on this directionality — global is checked FIRST so cross-
+//!   thread callbacks see the canonical identity, and the thread-local
+//!   is a fallback for the case where this thread inserted but global
+//!   eviction (none today) or a stale state hit it first. The post-
+//!   condition `global_registry().has_original(symbol_id)` is
+//!   asserted at insert time.
+//!
+//! - **C3. Unified `clear_ast_cache` invalidation.** All four
+//!   thread-locals are cleared together in `clear_ast_cache`; a
+//!   partial clear is never correct. The reason is C2 + the fallback
+//!   logic in `get_claripy_ast`: clearing only `AST_CACHE` would leave
+//!   `CLARIPY_AST_CACHE` still pointing at Python ASTs for symbol ids
+//!   that the next conversion will re-allocate, which surfaces as a
+//!   correct hit on a stale identity. `clear_all_caches` extends to
+//!   the global registry; do NOT call `clear_global_registry()`
+//!   in isolation — that breaks C2.
+//!
+//! - **C4. Two-key Expression redundancy is by design.**
+//!   `EXPRESSION_CACHE` (by expression hash) and
+//!   `EXPRESSION_BY_OPERANDS_PTR` (by `Arc::as_ptr(operands) as usize`)
+//!   serve the same goal — return the original Python `Expression`
+//!   verbatim to preserve annotations (see angr-ykdq) — but key on
+//!   independent surfaces. Either hit is correct; LRU eviction may
+//!   diverge them and that is acceptable because the fallback path
+//!   rebuilds from `BVOp + operands` (losing annotations, never
+//!   correctness). `EXPRESSION_BY_OPERANDS_PTR` additionally pins the
+//!   operands `Arc` alive by storing a `RustBV` clone in the value
+//!   slot — without that, allocator reuse of the raw pointer would
+//!   produce a wrong-AST return.
+//!
+//! - **C5. Width check is enforced ONLY on `AST_CACHE` hits.** Other
+//!   caches do not need it. `AST_CACHE` is keyed by claripy's
+//!   content-addressed `__hash__()`, which already encodes length, so
+//!   width-mismatched hits are extremely rare — but in the case of a
+//!   recycled hash slot a wrong-width return would silently corrupt
+//!   downstream VEX ops. The check at the use site (line ~478) evicts
+//!   and reconverts on mismatch; Bool ASTs have `ast.length == None`
+//!   and are treated as width 1 (matches RustBV bool representation).
+//!   See `invariant-ast-cache-width-check`.
+//!
+//! - **C6. CLARIPY_AST_CACHE uses `std::HashMap`, not `FxHashMap`,
+//!   intentionally.** The leaf-symbol set is small (low thousands),
+//!   insertions happen at import time only, and `get_claripy_ast`
+//!   short-circuits via `global_registry` first so the thread-local
+//!   is a cold fallback. The hot per-block integer-keyed maps in
+//!   `interpreter_cb/mod.rs` use `FxHashMap`; see
+//!   `fxhash-interpreter-cb-arc-maps` (commit a37018771, angr-teo2).
+//!   Switching this cache to fxhash is on the "remaining candidates"
+//!   list but provides no measurable benefit because the cache is not
+//!   on a per-block path.
+//!
+//! ## Python-side counterparts
+//!
+//! The Python `RustExplorationManager` maintains an orthogonal set of
+//! caches (in-memory `_init_cache`, disk init cache, `_mem_cache`,
+//! `_state_cache`, `_state_metadata`). Those are NOT documented here;
+//! see `state.rs` module rustdoc invariants **I3**, **I4**, **I5**,
+//! **I6** for the cross-FFI rules and the bd memories
+//! `invariant-init-cache-options-allowlist`,
+//! `invariant-init-cache-options-mirror`,
+//! `invariant-init-cache-user-symbolic`,
+//! `invariant-init-cache-lazy-regions-order`,
+//! `invariant-memcache-only-on-entry`,
+//! `disk-cache-register-filter`,
+//! `disk-init-cache-symbolic-reg-invariant`,
+//! `invariant-state-metadata-dataclass` for the full rationale.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,18 +138,18 @@ const AST_CACHE_SIZE: usize = 10000;
 //
 // Width invariant: hashes are content-addressed and include length,
 // but a stale entry from a recycled hash slot could in principle
-// produce a width mismatch. `claripy_to_rustbv` defends against this
-// by checking `cached_bv.width() == ast.length` on hit and evicting
-// + reconverting on mismatch (~L351).
+// produce a width mismatch. Defended at the use site (~L478) — see
+// cross-cache invariant C5.
 //
 // Invalidation: cleared by `clear_ast_cache` (block boundary /
 // significant constraint changes) and `clear_all_caches` (exploration
-// restart). Capacity-bounded LRU eviction beyond that.
+// restart). Capacity-bounded LRU eviction beyond that. See cross-cache
+// invariant C3 — partial clears are never correct.
 //
 // Coherence with CLARIPY_AST_CACHE: a `Symbolic`/`Constrained` hit
 // in this cache implies the underlying `symbol_id` was previously
 // registered via `store_claripy_ast{,_with_info}`, so the inverse
-// mapping lives in `CLARIPY_AST_CACHE` and the global registry.
+// mapping lives in `CLARIPY_AST_CACHE` and the global registry (C2).
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
@@ -79,12 +174,11 @@ macro_rules! tl_cache {
 //
 // Key: `rust_id: u64`, the symbol's Rust-side identifier allocated by
 // `SymbolicIdentityRegistry::allocate_id`. MUST NOT be
-// `RustBV::EXPRESSION_ID` (`u64::MAX`) — that sentinel is reserved
-// for compound `Expression` variants which use `EXPRESSION_CACHE` /
-// `EXPRESSION_BY_OPERANDS_PTR` instead. Enforced by `debug_assert!`
-// in `store_claripy_ast{,_with_info}`.
+// `RustBV::EXPRESSION_ID` — see cross-cache invariant C1.
 //
 // Value: owned `Py<PyAny>` (`pyo3` GIL-independent reference).
+//
+// Why `std::HashMap` not `FxHashMap`: see cross-cache invariant C6.
 //
 // Why unbounded `HashMap`, not `LruCache`: symbol identities must
 // survive for the entire exploration — evicting them would break
@@ -95,16 +189,14 @@ macro_rules! tl_cache {
 //
 // Invalidation: cleared only by `clear_ast_cache` (block boundary,
 // but normally called when starting fresh) and `clear_all_caches`
-// (exploration restart).
+// (exploration restart). See cross-cache invariant C3.
 //
-// Coherence with SymbolicIdentityRegistry: every entry inserted here
-// is ALSO registered in the global registry (via `register_by_id` /
-// `register` in `store_claripy_ast*`), so `get_claripy_ast` can fall
-// back to the global registry on thread-local miss. The global
-// registry is the source of truth for cross-thread/callback access;
-// this thread-local is a fast hot path. Enforced by `debug_assert!`
-// in `store_claripy_ast{,_with_info}` that
-// `global_registry().has_original(symbol_id)` holds after insert.
+// Coherence with SymbolicIdentityRegistry: forward subset relation
+// `CLARIPY_AST_CACHE ⊆ global_registry` per cross-cache invariant
+// C2. Asserted at insert time in `store_claripy_ast{,_with_info}`.
+// `get_claripy_ast` checks global first to honor C2's directionality
+// and a coherence-violation `debug_assert` fires if the thread-local
+// holds an entry the registry does not.
 thread_local! {
     static CLARIPY_AST_CACHE: RefCell<HashMap<u64, Py<PyAny>>> =
         RefCell::new(HashMap::new());
@@ -127,16 +219,15 @@ thread_local! {
 //
 // Value: owned `Py<PyAny>` for the original Python expression.
 //
-// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`.
-// Capacity-bounded LRU eviction (10000) beyond that — eviction is
-// safe here because Expression nodes can always be reconstructed
-// from `op + operands` (just with a fresh AST identity).
+// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`
+// (C3). Capacity-bounded LRU eviction (10000) beyond that — eviction
+// is safe here because Expression nodes can always be reconstructed
+// from `op + operands` (just with a fresh AST identity), so a miss
+// degrades to losing annotations but not correctness.
 //
-// Coherence with EXPRESSION_BY_OPERANDS_PTR: both caches serve the
-// same goal (return the original Python AST for an `Expression`) but
-// key on different surfaces — this one on the hash, the other on the
-// operands `Arc` pointer. Either hit is sufficient; they may diverge
-// under LRU eviction.
+// Coherence with EXPRESSION_BY_OPERANDS_PTR: see cross-cache invariant
+// C4 — two redundant keys for the same payload; either hit is correct
+// and LRU divergence is acceptable.
 thread_local! {
     static EXPRESSION_CACHE: RefCell<LruCache<u64, Py<PyAny>>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
@@ -169,11 +260,12 @@ thread_local! {
 // surfacing as a wrong-AST return. The `Py<PyAny>` is the payload
 // returned on hit.
 //
-// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`.
-// Capacity-bounded LRU eviction (10000) beyond that. On eviction,
-// the held `RustBV` drops its refcount, allowing the operands `Arc`
-// to be freed — safe because the evicted entry is no longer
-// reachable via this cache.
+// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`
+// (C3). Capacity-bounded LRU eviction (10000) beyond that. On
+// eviction, the held `RustBV` drops its refcount, allowing the
+// operands `Arc` to be freed — safe because the evicted entry is no
+// longer reachable via this cache. The redundant `EXPRESSION_CACHE`
+// keying covers the same payload (C4).
 thread_local! {
     static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
@@ -255,8 +347,20 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
         return Some(ast);
     }
 
-    // Fall back to thread-local cache
-    tl_cache!(CLARIPY_AST_CACHE, get(&symbol_id).cloned())
+    // Fall back to thread-local cache. Per cross-cache invariant C2,
+    // every CLARIPY_AST_CACHE entry should also live in the global
+    // registry, so a hit on this branch means the registry lost the
+    // entry without `clear_ast_cache` also clearing the thread-local
+    // (i.e. someone called `clear_global_registry` in isolation, which
+    // violates C3). Surface that in debug builds.
+    let local = tl_cache!(CLARIPY_AST_CACHE, get(&symbol_id).cloned());
+    debug_assert!(
+        local.is_none(),
+        "C2 violation: CLARIPY_AST_CACHE hit for rust_id={symbol_id} but \
+         global registry missing the entry (clear_global_registry called \
+         without clear_ast_cache?)",
+    );
+    local
 }
 
 /// Look up a symbol by its Python hash.
