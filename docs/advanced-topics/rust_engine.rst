@@ -2135,3 +2135,255 @@ The ``import_z3_constraint_ptrs`` hardening landed under angr-33t9;
 the stash-name footgun landed under angr-630x. The trust-model audit
 itself was closed under angr-9l9j with no remaining production-blocking
 gaps.
+
+State snapshot / serialization
+------------------------------
+
+Spike report (``angr-x04s``, 2026-06-01). Question: what would be
+needed to serialize a ``RustSimState`` (and the surrounding
+``StashManager``) to disk and reload it for replay debugging? Today
+the only way to reproduce a problematic exploration is to re-run from
+binary entry — slow, and (for nondeterministic Z3 paths, see
+``BIMODAL_BENCHMARKS``) not always reproducible at all.
+
+What ``RustSimState`` owns
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Defined at ``native/angr/src/state.rs:689``. Roughly four buckets:
+
+* **Concrete, plain-data fields** — ``pc``, ``state_id``, ``parent_id``,
+  ``history`` (``Vec<u64>``), ``detailed_history`` (``Vec<HistoryEntry>``),
+  ``max_history``, ``heap_brk``, ``posix_brk``, ``mmap_base``,
+  ``stdin_symbols``, ``call_stack``, ``heap_metadata``,
+  ``no_ip_concretization``, ``no_symbolic_jump_resolution``,
+  ``keep_ip_symbolic``, ``vex_arch``. All trivially ``Serialize``-friendly
+  with ``serde`` and small (kilobytes).
+
+* **Concrete-with-overlay fields** — ``RegisterFile`` (``Vec<u8>``
+  concrete bytes plus ``FxHashMap<u32, RustBV>`` symbolic overlays);
+  ``SymbolicMemory`` (``OrdMap<u64, MemoryPage>`` of CoW pages, plus
+  ``FxHashMap<Address, RustBV>`` symbolic-object sidetable, plus
+  ``multi_objects`` and ``lazy_regions``). The concrete halves are
+  bytes — easy. The symbolic halves are ``RustBV`` trees, see below.
+
+* **Reference-typed fields** — ``arch: Box<dyn Arch>`` (rebuild from
+  ``arch_name``); ``hooks: Arc<HashSet<u64>>``,
+  ``environment: Arc<HashMap<Vec<u8>, Vec<u8>>>`` (collapse to owned
+  copies on snapshot, re-share on load); ``concretizer`` (plain
+  config); ``inspection`` (counts + bitmask, already exported via
+  ``ExplorationStateSnapshot``); ``fs: FileSystem`` (FD table — paths,
+  positions, flags; concrete content is bytes).
+
+* **Cross-FFI handles** — ``symbolic_pages``, ``hook_symbolic_memory``,
+  and ``addr_to_ast`` all map addresses to ``Py<PyAny>`` claripy ASTs.
+  These cannot cross a process boundary without going through Python
+  on both ends. For replay debugging, the practical answer is to
+  serialize the claripy AST via ``state.solver._claripy.dumps(ast)``
+  (pickle wrapping the AST tree) and re-load on the target side.
+  For cross-process replay where Python is not available, these
+  fields would need to be dropped or replaced with native ``RustBV``
+  trees first.
+
+The single nontrivial omission is ``solver: Rc<RefCell<SymContext>>``,
+covered below.
+
+The ``RustBV`` tree
+~~~~~~~~~~~~~~~~~~~
+
+Each symbolic register / memory / object is a ``RustBV`` enum at
+``native/angr/src/symbolic/value.rs:400``:
+
+* ``Concrete { value, width }`` — ``u128`` + ``u32``, no Z3 ref.
+* ``Symbolic { id, width, name, ast }`` — Z3 AST cached in the
+  variant; ``name`` and ``width`` are sufficient to **reconstruct**
+  the AST in a fresh Z3 context via ``BV::new_const(name, width)``.
+* ``Constrained { id, value, width }`` — pinned symbolic; same as
+  Concrete plus the symbolic id, no Z3 ref.
+* ``Expression { id, width, op, operands: Arc<[RustBV]> }`` — op
+  tree, recursively reconstructable.
+
+The tree is therefore **fully serializable without touching Z3 at
+all**: snapshot the enum, drop the cached ``ast`` field on the
+``Symbolic`` variant, and rebuild the Z3 AST lazily on first access
+after load. ``RustBV`` already supports cached ``to_z3_ast()`` for
+the lazy path. No custom Z3 traversal is required.
+
+Z3 AST and constraint store
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is the only piece that needs Z3-specific handling, and it is
+already characterized.
+
+``SymContext`` stores constraints as a ``Vec<RustBV>`` (the
+``assumed_constraints`` field, ``angr-v5a5`` lineage rework
+notwithstanding — the shared-lineage variant was rejected). Two
+viable export paths:
+
+a. **Reuse the ``RustBV`` op tree** (recommended). Serialize each
+   constraint as a ``RustBV`` (same scheme as the registers /
+   memory) and rebuild Z3 ASTs lazily on load. No SMT-LIB round-trip
+   required. This is the natural shape of the in-memory constraint
+   store.
+
+b. **SMT-LIB2 dump via ``Solver::to_string``**. Already validated
+   round-trippable both same-context and cross-context (angr-9o4n.1,
+   angr-rwzi; tests at ``native/angr/src/symbolic/context.rs::tests``).
+   Cost: ``~5 ms`` parser-warmup floor regardless of size, ``~65
+   bytes/assertion`` linear scaling, named constants re-bind by name.
+   Useful as a debugging dump or for replay into a different solver,
+   but redundant for a Rust→Rust snapshot of an in-process state.
+
+Lineage today is per-context (``SymContext::scope_path``,
+``assumed_constraints``). After the ``angr-v5a5`` shared-lineage
+rejection, every state's constraints are owned outright by its own
+``SymContext`` — there is no cross-state structural sharing to
+preserve. A snapshot of one state's constraint list is
+self-contained.
+
+What lives OUTSIDE ``RustSimState``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For a "load and continue exploration" experience (vs. "load and
+inspect a single state"), the snapshot would also need:
+
+* ``StashManager`` (``native/angr/src/stash.rs:36``) — straightforward:
+  ``HashMap<String, VecDeque<RustSimState>>`` plus a few counters and
+  the state_index ``HashMap<u64, String>`` mirror. Reuse the same
+  per-state codec.
+* ``RustExplorationManager`` Python wrapper — find/avoid callbacks,
+  inspection breakpoints, simoption mirrors. These are
+  user-supplied closures; a useful snapshot would record their
+  *intent* (find address list, avoid address list) and rely on the
+  user to re-register Python callbacks on load.
+* ``CallbackInterpreter`` / ``PendingCallback`` queue — best dropped
+  on snapshot. Snapshot only at quiescent points (between
+  ``run_until`` returns), where there are no pending callbacks.
+* ``angr.Project`` (Python) — out of scope; the snapshot user supplies
+  a matching Project on load. Snapshot records binary path + hash
+  so the loader can detect mismatch.
+
+Proposed on-disk format
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Minimum-viable shape (one file per snapshot)::
+
+  {
+    "format_version": 1,
+    "angr_engine_version": "<from cargo metadata>",
+    "binary_path": "/abs/path/to/binary",
+    "binary_sha256": "...",
+    "arch_name": "amd64",
+    "stashes": {
+      "active":     [ <state>, ... ],
+      "found":      [ ... ],
+      "deadended":  [ ... ],
+      ...
+    },
+    "manager_metadata": {
+      "find_addrs": [ ... ],
+      "avoid_addrs": [ ... ],
+      "inspection_breakpoints": [ ... ],
+      "step_counter": ...
+    }
+  }
+
+where each ``<state>`` carries::
+
+  {
+    "state_id": ...,
+    "parent_id": ...,
+    "pc": ...,
+    "registers": {
+      "concrete_bytes": "<base64>",
+      "symbolic_overlays": { "<offset>": <rust_bv>, ... }
+    },
+    "memory": {
+      "pages": [
+        { "page_num": ..., "permissions": ...,
+          "data_base64": "...",
+          "symbolic_bitmap_base64": "...",
+          "symbolic_objects": { "<addr>": <rust_bv>, ... } }
+      ],
+      "lazy_regions": [[start, end], ...],
+      "pending_writes": [ ... ]
+    },
+    "constraints": [ <rust_bv_bool>, ... ],
+    "history": [ ... ],
+    "call_stack": [ ... ],
+    "heap": { "brk": ..., "metadata": { ... } },
+    "fs": { ... },
+    "claripy_pyobjs": {
+      "symbolic_pages":      { "<addr>": "<pickle_b64>" },
+      "hook_symbolic_memory":{ "<addr>": ["<pickle_b64>", <size>] },
+      "addr_to_ast":         { "<addr>": ["<pickle_b64>", <size>] }
+    },
+    "flags": { "no_ip_concretization": ..., "keep_ip_symbolic": ... }
+  }
+
+The outer envelope is JSON for human inspection during debugging;
+the inner ``<rust_bv>`` substructure could be bincode + base64 if
+serialization speed matters (op trees with concrete-byte
+``Operands`` arrays compress well). ``format_version`` is bumped
+whenever any of the ``RustBV`` enum, ``MemoryPage`` layout, or
+``RustSimState`` field set changes — same discipline as the disk
+init cache's ``_RUST_CACHE_VERSION`` (``angr/exploration/
+rust_manager.py:160``).
+
+Cost estimates
+~~~~~~~~~~~~~~
+
+* **State count.** A mid-bench exploration carries 10–100 active
+  states; a hard bench (e.g. ``hackcon2016_angry-reverser``) can
+  push to thousands. Snapshot all states or sample a small
+  representative set — the format does not distinguish.
+* **Per-state size.** Empirically (from the existing
+  ``ExplorationStateSnapshot`` export) registers are ``~1 KB``,
+  mapped memory is ``~10–100`` pages × ``4 KB`` (concrete) plus a
+  small symbolic-object table, constraints are tens to low
+  thousands of nodes. Order-of-magnitude: ``~100 KB`` per state
+  uncompressed for typical fast-tier benches.
+* **Z3 rebuild cost.** Constraint reconstruction is one
+  ``RustBV::to_z3_ast()`` traversal per constraint; same shape as a
+  lineage materialize. Lineage-materialize fork cost for the
+  reference benches is in the single-digit milliseconds for state
+  counts < ~50 — well within "useful for debugging" budget.
+* **SMT-LIB2 floor.** If route (b) is chosen instead, expect a fixed
+  ``~5 ms`` ``Solver::from_string`` cost per state. For thousand-state
+  snapshots, this dominates over (a).
+
+Recommendation and follow-up
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **Route (a) — ``RustBV`` op-tree serialization — is the right
+  bet.** It re-uses primitives the engine already exercises (deep
+  ``RustBV`` clone, lazy ``to_z3_ast``), avoids the SMT-LIB
+  parser-warmup floor for in-process replay, and keeps the
+  serialized form readable enough to diff between two snapshots.
+
+* **Format-version discipline matters.** A single bump axis
+  (``format_version``) is sufficient at the snapshot envelope.
+  Internal RustBV / MemoryPage layout changes do not need a finer
+  axis because the on-disk format is opaque-blob-per-bv anyway —
+  any layout change forces a new ``format_version`` rev.
+
+* **Concrete next step is bounded but not small.** A working
+  prototype needs: ``serde`` derives on ``RustBV`` /
+  ``MemoryPage`` / ``RegisterFile`` / ``SymContext::constraints``,
+  a ``RustSimState::to_serialized() / from_serialized()`` pair,
+  a ``StashManager::dump()/load()`` pair, and a Python wrapper for
+  the ``.pyobj`` parts (``state.posix`` plugins, claripy AST pickles).
+  Estimate: medium-size implementation task, **not** a one-iter
+  session.
+
+* **The cost/benefit is favorable for a P3 implementation task.**
+  Replay debugging would unlock bisecting nondeterministic
+  bimodal benches (currently impossible — each rerun rolls the Z3
+  dice fresh), and would shorten the loop on path-explosion bugs
+  (currently re-run from entry, ~30s+ on hard benches). Filed as
+  follow-up bead (see below).
+
+Follow-up bead filed: ``angr-x04s.1`` (task: prototype
+``RustBV``-op-tree state snapshot for one fast-tier bench, gated
+behind an opt-in Python flag, no production code path touches it
+by default).
+
