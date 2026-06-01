@@ -80,12 +80,17 @@ impl<'a> VEXInterpreter<'a> {
                         store_start,
                     )?
                 {
+                    // SymbolicMemory::store_concrete already bumped record_mem_store.
                     self.dispatch_mem_write_inspect(
                         py, callbacks, &addr_val, &data_val, data_size, *endness,
                     );
                     return Ok(StmtResult::Continue);
                 }
 
+                // angr-obrm: callback-path stores bypass SymbolicMemory, so
+                // bump the global mem_store counter here for parity with
+                // the Rust-memory path.
+                record_mem_store(data_size as u64);
                 self.fallback_to_python_store(py, callbacks, &addr_val, data_val.clone(), data_size)?;
                 self.dispatch_mem_write_inspect(
                     py, callbacks, &addr_val, &data_val, data_size, *endness,

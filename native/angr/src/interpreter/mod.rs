@@ -21,8 +21,8 @@ use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rus
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
-    BVOp, RustBV, RustSymbolTable, SymContext, record_vex_binop, record_vex_qop, record_vex_triop,
-    record_vex_unop,
+    BVOp, RustBV, RustSymbolTable, SymContext, record_mem_load, record_mem_store,
+    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
 };
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;

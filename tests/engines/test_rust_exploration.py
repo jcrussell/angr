@@ -4607,6 +4607,52 @@ class TestExplorationIntegration:
         assert stats["python_callback_count"] == bucket_count
         assert stats["python_callback_dispatch_us"] == bucket_ns // 1000
 
+    def test_callback_interpreter_mem_counter_parity(self, fauxware_project):
+        """angr-obrm: callback-interpreter VEX load/store paths bump the
+        global `mem_load_count` / `mem_store_count` / `mem_load_bytes` /
+        `mem_store_bytes` counters at parity with the native VEX
+        interpreter (which bumps them via `SymbolicMemory::load_concrete` /
+        `store_concrete`). Before this wiring, callback-heavy binaries
+        underreported memory work because the cb-fallback paths bypassed
+        SymbolicMemory entirely.
+
+        fauxware exercises a mix of try_rust_memory_{load,store} hits and
+        callback-path fallbacks, so both wiring sites contribute. Test
+        asserts (a) counters are non-zero post-exploration and (b) bytes
+        scale with count (≥ size of a single 1-byte op).
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.reset_solver_stats()
+
+        baseline = mgr.get_solver_stats()
+        assert baseline["mem_load_count"] == 0
+        assert baseline["mem_store_count"] == 0
+        assert baseline["mem_load_bytes"] == 0
+        assert baseline["mem_store_bytes"] == 0
+
+        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+
+        stats = mgr.get_solver_stats()
+        assert stats["mem_load_count"] > 0, (
+            f"expected non-zero mem_load_count after fauxware exploration; "
+            f"got {stats['mem_load_count']}"
+        )
+        assert stats["mem_store_count"] > 0, (
+            f"expected non-zero mem_store_count after fauxware exploration; "
+            f"got {stats['mem_store_count']}"
+        )
+        # Bytes must be at least the count (every op moves ≥1 byte) and
+        # bounded by 64 * count (largest VEX load width on amd64 is 64
+        # bytes for vector loads, but fauxware is scalar so the typical
+        # value is 1-8 bytes per op).
+        assert stats["mem_load_bytes"] >= stats["mem_load_count"]
+        assert stats["mem_store_bytes"] >= stats["mem_store_count"]
+        assert stats["mem_load_bytes"] <= 64 * stats["mem_load_count"]
+        assert stats["mem_store_bytes"] <= 64 * stats["mem_store_count"]
+
     def test_explore_with_timeout_technique(self, fauxware_project):
         """Timeout technique stops exploration after time limit."""
         from angr.exploration import RustExplorationManager

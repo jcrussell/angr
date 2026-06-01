@@ -117,9 +117,17 @@ impl<'a> VEXInterpreter<'a> {
                 if let Some(value) =
                     self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
                 {
+                    // SymbolicMemory::load_concrete already bumped record_mem_load.
                     break 'load value;
                 }
             }
+
+            // angr-obrm: callback-path loads bypass SymbolicMemory, so bump
+            // the global mem_load counter here for parity with the
+            // Rust-memory path. Catches pending-store buffer hits, prefetch
+            // cache hits, concrete_memory cache hits, and Python-callback
+            // fallbacks alike.
+            record_mem_load(size as u64);
 
             if let Some(addr_concrete) = addr_val.as_u64() {
                 self.load_concrete_addr(py, callbacks, addr_concrete, size)?
