@@ -42,11 +42,13 @@ mod offsets {
     pub const ACFLAG: u32 = 192;
     pub const IDFLAG: u32 = 200;
 
-    // Segment registers
+    // Segment registers. FS_CONST is the FS base address (archinfo offset 208);
+    // GS_CONST is the GS base, which archinfo places at offset 1032 — well past
+    // the XMM/FPU bank. The 216 slot belongs to SSEROUND, not GS_CONST. See
+    // bd memory `amd64-gs-const-offset-bug` for the previous wrong layout.
     pub const FS_CONST: u32 = 208;
-    pub const GS_CONST: u32 = 216;
 
-    // SSE control (per archinfo)
+    // SSE control (per archinfo: 4B uint32_t padded to 8B in archinfo's table)
     pub const SSEROUND: u32 = 216;
 
     // XMM registers (128-bit each, 16 bytes) - offsets per archinfo
@@ -74,13 +76,16 @@ mod offsets {
     pub const FPROUND: u32 = 976;
     pub const FC3210: u32 = 984;
 
-    // Total guest state size
-    pub const GUEST_STATE_SIZE: usize = 992;
+    // Late VEX state (per archinfo): emnote, cmstart/cmlen/nraddr precede the
+    // real GS_CONST slot at offset 1032.
+    pub const GS_CONST: u32 = 1032;
+
+    // Total guest state size: archinfo's last register (ss_seg) ends at 1060.
+    pub const GUEST_STATE_SIZE: usize = 1060;
 }
 
 // Canonical registers: each entry is `(name, offset, size_bytes)`. These
-// drive `register_name(offset)` reverse lookups. SSEROUND is intentionally
-// omitted because its offset (216) collides with GS_CONST.
+// drive `register_name(offset)` reverse lookups.
 const CANONICAL: &[RegEntry] = &[
     // 64-bit GPRs
     ("rax", offsets::RAX, 8),
@@ -111,6 +116,8 @@ const CANONICAL: &[RegEntry] = &[
     // Segments
     ("fs_const", offsets::FS_CONST, 8),
     ("gs_const", offsets::GS_CONST, 8),
+    // SSE control register (8B per archinfo)
+    ("sseround", offsets::SSEROUND, 8),
     // XMM registers (128-bit)
     ("xmm0", offsets::XMM0, 16),
     ("xmm1", offsets::XMM1, 16),
@@ -196,8 +203,6 @@ const ALIASES: &[RegEntry] = &[
     // Segment aliases (the base registers, not the 16-bit selectors)
     ("fs", offsets::FS_CONST, 8),
     ("gs", offsets::GS_CONST, 8),
-    // SSE rounding (collides with GS_CONST; lookup by name returns 216)
-    ("sseround", offsets::SSEROUND, 8),
 ];
 
 const REGISTER_NAMES: &[&str] = &[
@@ -300,5 +305,34 @@ mod tests {
         assert_eq!(arch.ip_offset(), 184);
         assert_eq!(arch.sp_offset(), 48);
         assert_eq!(arch.bp_offset(), Some(56));
+    }
+
+    #[test]
+    fn test_segment_base_offsets_match_archinfo() {
+        // angr-a68t: GS_CONST belongs at offset 1032 per archinfo, not the
+        // SSEROUND slot at 216. Pin both offsets and confirm the alias map
+        // routes gs/gs_const to the real slot, not the sseround collision
+        // that arch_prctl ARCH_SET_GS used to silently corrupt.
+        let arch = AMD64;
+
+        assert_eq!(arch.register_offset("fs_const"), Some(208));
+        assert_eq!(arch.register_size("fs_const"), Some(8));
+        assert_eq!(arch.register_offset("fs"), Some(208));
+
+        assert_eq!(arch.register_offset("gs_const"), Some(1032));
+        assert_eq!(arch.register_size("gs_const"), Some(8));
+        assert_eq!(arch.register_offset("gs"), Some(1032));
+
+        assert_eq!(arch.register_offset("sseround"), Some(216));
+        assert_eq!(arch.register_size("sseround"), Some(8));
+
+        // Reverse lookup: 216 owns sseround now, 1032 owns gs_const.
+        assert_eq!(arch.register_name(216), Some("sseround"));
+        assert_eq!(arch.register_name(1032), Some("gs_const"));
+        assert_eq!(arch.register_name(208), Some("fs_const"));
+
+        // State must be wide enough to hold the gs_const slot (offset 1032
+        // + 8 bytes). Allocations narrower than this drop ARCH_SET_GS writes.
+        assert!(arch.state_size() >= 1040);
     }
 }

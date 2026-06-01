@@ -180,7 +180,7 @@ below "Supported" as experimental.
      - ~268 (fauxware)
      - 21/22
      - SystemV, MS x64
-     - Supported
+     - Supported (gs_const at archinfo offset 1032; sseround at 216)
    * - x86 (32-bit)
      - 4
      - 1 (Cdecl ret reg)

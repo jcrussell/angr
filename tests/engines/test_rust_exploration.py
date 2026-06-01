@@ -5958,6 +5958,45 @@ class TestMultiArchSupport:
         assert state.get_register("ldt") == 0x0
         assert state.get_register("gdt") == 0xAABBCCDDEEFF0011
 
+    def test_amd64_gs_const_routes_to_archinfo_offset(self):
+        """amd64 ``gs_const`` lives at archinfo offset 1032, not the
+        SSEROUND slot at 216.
+
+        Covers angr-a68t: the Rust ``ALIASES`` table used to alias
+        ``gs_const`` to offset 216, the SSEROUND slot. Every
+        ``arch_prctl(ARCH_SET_GS, addr)`` therefore silently corrupted
+        SSEROUND and left VEX's gs_const offset (1032) reading zero.
+        This test pins the offsets via the Rust register dispatch and
+        confirms a ``gs_const`` write does not touch ``sseround`` (and
+        vice versa), so a regression that re-collides them surfaces as
+        cross-talk.
+        """
+        state = RustSimState("amd64")
+
+        state.set_register("gs_const", 0x1122334455667788)
+        state.set_register("sseround", 0xDEAD_BEEF)
+
+        assert state.get_register("gs_const") == 0x1122334455667788
+        assert state.get_register("sseround") == 0xDEAD_BEEF
+
+        # Rewriting one must not touch the other (regression would
+        # surface as gs_const reading sseround's new value, or
+        # sseround flipping when gs_const is updated).
+        state.set_register("gs_const", 0xAABBCCDDEEFF0011)
+        assert state.get_register("gs_const") == 0xAABBCCDDEEFF0011
+        assert state.get_register("sseround") == 0xDEAD_BEEF
+
+        state.set_register("sseround", 0x0)
+        assert state.get_register("sseround") == 0x0
+        assert state.get_register("gs_const") == 0xAABBCCDDEEFF0011
+
+        # fs_const at archinfo offset 208 must remain independent
+        # of both gs_const (1032) and sseround (216).
+        state.set_register("fs_const", 0xFEED_FACE_CAFE_BABE)
+        assert state.get_register("fs_const") == 0xFEED_FACE_CAFE_BABE
+        assert state.get_register("gs_const") == 0xAABBCCDDEEFF0011
+        assert state.get_register("sseround") == 0x0
+
     def test_unsupported_arch_raises(self):
         """Unknown architecture raises an error."""
         with pytest.raises(Exception):
