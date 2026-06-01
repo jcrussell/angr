@@ -4,6 +4,63 @@
 //! - Symbolic variable creation and ID assignment
 //! - Constraint tracking (when Z3 is available)
 //! - Satisfiability checking (when Z3 is available)
+//!
+//! ## Lineage + solver invariants
+//!
+//! The shared-lineage Z3 solver path (angr-v5a5 / angr-3ms1 / angr-v5ht)
+//! introduces several cross-cutting invariants that future refactors must
+//! preserve when splitting this module (see angr-a2br for the planned
+//! split). Each invariant cites the bd memory key carrying the long-form
+//! rationale; recall via `bd recall <key>`.
+//!
+//! - **`lineage` mutex shape** (`invariant-v5a5-lineage-mutex-shape`):
+//!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`. The outer `Mutex` is
+//!   load-bearing — [`fork`](SymContext::fork) takes `&self`, not `&mut
+//!   self`, and must be able to install a fresh lineage. Collapsing to a
+//!   plain `Option<Arc<…>>` or to `OnceLock` would force the fork
+//!   signature to change.
+//! - **FrameId minting** (`v5a5-frame-id-design`): per-state scope-path
+//!   identity uses a globally-monotonic [`FrameId`](super::lineage::FrameId)
+//!   minted at constraint-add time, NOT `Arc::ptr_eq` on the RustBV. This
+//!   buys [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
+//!   a cheap by-id prefix comparison while staying robust across fork
+//!   boundaries where RustBV identity can split.
+//! - **Three-gate materialization** (`invariant-v5a5-slice-1c-mint-semantics`,
+//!   `invariant-bare-z3-push-depth`, `invariant-v5ht-dismantle-child-none`):
+//!   [`fork`](SymContext::fork) only mints a fresh `SharedLineageSolver`
+//!   when (a) the parent opted in via
+//!   [`set_use_shared_lineage_solver`](SymContext::set_use_shared_lineage_solver),
+//!   (b) the parent's [`bare_z3_push_depth`](SymContext::bare_z3_push_depth)
+//!   is zero, and (c) the runtime thrash detector
+//!   ([`super::lineage::is_lineage_dismantled`]) has not fired. When (c) is
+//!   true `child_lineage` is set to `None` rather than `Arc::clone`'d —
+//!   `Arc::clone` would give the child a stale base. Regression guard:
+//!   `tests/engines/test_rust_exploration.py::test_lineage_minted_only_when_opted_in`
+//!   and `test_lineage_not_minted_under_bare_push`.
+//! - **fork-freeze under push** (`fork-freeze-self-invariant`):
+//!   [`fork`](SymContext::fork) only drains local→shared in place when
+//!   `push_level == 0`. Inside a transaction, `transaction_rollback`
+//!   truncates `local` back to its pre-transaction length; draining would
+//!   leak rolled-back constraints into `shared`.
+//! - **Z3 construction canonicalization** (`invariant-z3-construction-canonicalization`):
+//!   Z3 hash-cons applies at construction time, but commutative operands
+//!   are NOT normalized (`mk_bvadd(x, y)` and `mk_bvadd(y, x)` produce
+//!   distinct AST pointers). Concrete numerals and named symbol leaves ARE
+//!   canonical. Regression guard:
+//!   `super::value::tests::z3_already_dedupes_structurally_equal_rustbv_trees`.
+//! - **No `parallel.enable`** (`avoid-z3-parallel-enable`): setting
+//!   `parallel.enable=true` on solver params is correctness-breaking on
+//!   this codebase (downstream consumers do not handle Z3 `Unknown`
+//!   results). Do NOT re-enable in [`build_solver_params`].
+//! - **No full lineage teardown** (`avoid-full-lineage-teardown`): the
+//!   angr-0dgq teardown variant (walk all stashes, drop each state's
+//!   lineage Arc, invalidate per-context solvers) is a net loss vs the
+//!   v5ht simple variant. [`super::lineage::set_lineage_dismantled`] only
+//!   suppresses future mints; in-flight lineages keep working.
+//! - **No DFS-only opt-in** (`avoid-dfs-coupling-for-shared-lineage`): do
+//!   NOT default `use_shared_lineage_solver` on for `strategy='dfs'`. Both
+//!   the canonical WIN (ais3_crackme) and LOSE (defcon2016quals_baby-re)
+//!   canaries run BFS — strategy is not the discriminator.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1242,6 +1299,14 @@ pub struct SymContext {
     /// This slice (angr-v5a5 fields-only) introduces the field but does not
     /// yet route queries through it — [`solver()`](Self::solver) still uses
     /// the lazy-materialize path. The next slice replaces that.
+    ///
+    /// **Mutex shape is load-bearing** (`bd recall invariant-v5a5-lineage-mutex-shape`):
+    /// the outer `Mutex<Option<...>>` lets [`fork`](Self::fork) install a
+    /// lineage through `&self` (fork's signature). The inner
+    /// `Mutex<SharedLineageSolver>` serializes sibling-state queries
+    /// against the shared Z3 solver. Both layers are required; do not
+    /// collapse to `OnceLock` or `Option<Arc<...>>` without first changing
+    /// the fork signature.
     #[cfg(feature = "vex-engine-z3")]
     lineage: Mutex<Option<Arc<Mutex<super::lineage::SharedLineageSolver>>>>,
 
@@ -3330,6 +3395,25 @@ impl SymContext {
     /// Arc so subsequent forks of self with empty local become O(1) Arc::clone.
     /// When self.shared is uniquely owned, this avoids cloning every Bool
     /// (each Bool::clone is a Z3_inc_ref FFI call).
+    ///
+    /// **Cross-cutting invariants enforced here** (see module-level
+    /// "Lineage + solver invariants" for the full set):
+    ///
+    /// - `fork-freeze-self-invariant`: freeze only fires when
+    ///   `push_level == 0` (`in_transaction == false`). Inside a transaction,
+    ///   draining local would leak rolled-back constraints into shared.
+    /// - `invariant-v5a5-slice-1c-mint-semantics`: the three-gate check
+    ///   (`use_shared_lineage_solver` opt-in, zero bare pushes, not
+    ///   dismantled) is load-bearing. Each gate guards a different failure
+    ///   mode — see inline comments below.
+    /// - `invariant-bare-z3-push-depth`: gate (b) reads the **parent's**
+    ///   counter, not the child's. The child inherits the parent's value
+    ///   but `fork()` resets `push_level` to 0, so any future push
+    ///   accounting on the child starts fresh.
+    /// - `invariant-v5ht-dismantle-child-none`: when dismantled, child
+    ///   gets `None` (NOT `Arc::clone(parent.lineage)`). Cloning would
+    ///   give the child a stale base — see the inline comment for the
+    ///   baby-re chr() repro this prevents.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;
@@ -3404,6 +3488,20 @@ impl SymContext {
             && self.bare_z3_push_depth.load(Ordering::Relaxed) == 0
             && !dismantled
         {
+            // angr-a2br.1.1: debug-assert the gate is consistent at the
+            // moment of mint. Tautological with the `if` condition but
+            // documents the `invariant-v5a5-slice-1c-mint-semantics`
+            // contract for readers tracing this branch.
+            debug_assert!(
+                self.bare_z3_push_depth.load(Ordering::Relaxed) == 0,
+                "minting lineage with non-zero bare_z3_push_depth violates \
+                 invariant-bare-z3-push-depth"
+            );
+            debug_assert!(
+                !super::lineage::is_lineage_dismantled(),
+                "minting lineage after dismantle violates \
+                 invariant-v5ht-dismantle-child-none"
+            );
             let lineage_solver = super::lineage::SharedLineageSolver::new(build_solver(
                 self.timeout_ms.load(Ordering::SeqCst),
             ));
@@ -3537,6 +3635,16 @@ impl SymContext {
     /// `RustExplorationManager.__init__`; the manager calls this on
     /// each seed state's solver context so descendants inherit the
     /// opt-in through `fork()`.
+    ///
+    /// **Do NOT default this on for any single exploration strategy**
+    /// (`bd recall avoid-dfs-coupling-for-shared-lineage`). The
+    /// angr-ua1i proposal — flip default-on for `strategy='dfs'` — is
+    /// the wrong direction: both the canonical WIN canary (ais3_crackme
+    /// 1.24x) and LOSE canary (defcon2016quals_baby-re 6.79x slower) run
+    /// BFS in the bench harness, so strategy is not the discriminator.
+    /// The replacement is runtime thrash detection in
+    /// [`super::lineage::sample_for_thrash`], which is strategy-agnostic
+    /// and ships in `tick_and_sample_for_thrash` from `run_loop`.
     #[cfg(feature = "vex-engine-z3")]
     pub fn set_use_shared_lineage_solver(&self, v: bool) {
         self.use_shared_lineage_solver

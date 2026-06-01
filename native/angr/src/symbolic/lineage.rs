@@ -37,6 +37,34 @@
 //!   `ScopePath`s share a prefix iff their first N frames have identical
 //!   ids — the cheap, side-effect-free prefix comparison the design hinges
 //!   on.
+//!
+//! ## Cross-cutting design memories
+//!
+//! Recall via `bd recall <key>`:
+//!
+//! - `invariant-hk7k-design-options` — why Option A (shared-lineage push/pop
+//!   tracking) was picked over solver-translate / fork-boundary push/pop /
+//!   per-state-context strategies.
+//! - `v5a5-frame-id-design` — why prefix matching uses a monotonic
+//!   [`FrameId`] minted at constraint-add time, not `Arc::ptr_eq` on the
+//!   underlying RustBV. Identity stays stable across fork boundaries.
+//! - `invariant-v5a5-lineage-mutex-shape` — why `SymContext.lineage` is
+//!   typed `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>` (the outer
+//!   Mutex makes `fork(&self)` legal).
+//! - `avoid-z3-parallel-enable` — `parallel.enable=true` is
+//!   correctness-breaking; do NOT set it in `build_solver_params`.
+//! - `avoid-full-lineage-teardown` — the angr-0dgq teardown variant is a
+//!   net loss vs the v5ht "simple" dismantle (which only suppresses
+//!   future mints). Do NOT retry without first making per-context solver
+//!   rebuild incremental.
+//! - `avoid-dfs-coupling-for-shared-lineage` — do NOT default this on for
+//!   `strategy='dfs'`. Workload shape, not strategy, predicts the win.
+//! - `v5ht-sampler-tick-bottleneck` — the sampler hook MUST be at the TOP
+//!   of `run_loop` (before any callback-path early-return) so
+//!   callback-heavy workloads still tick. See the comment at the call
+//!   site in `crate::exploration::run_loop`.
+//! - `v5ht-threshold-justification-2026-05-25` — 35% hot threshold is
+//!   calibrated on N=4 workloads; widen the dataset before changing it.
 
 #![cfg(feature = "vex-engine-z3")]
 
