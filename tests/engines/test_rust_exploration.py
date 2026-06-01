@@ -601,6 +601,103 @@ class TestRustExplorationManagerUnit:
         assert stats["symbolic_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
         assert stats["not_implemented_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
 
+    def test_python_override_bypasses_native_strlen(self):
+        """``set_python_override("strlen")`` must skip the native strlen
+        registered by default and emit a ``need_simprocedure`` event so
+        Python can handle the call instead. Locks the contract documented
+        in ``procedures/mod.rs`` (**Dispatch priority** step 2): a Python
+        override always wins over the native implementation regardless of
+        registration order. angr-o0vm regression.
+        """
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+
+        STRLEN_HOOK = 0x500500
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFF0000
+
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_callbacks(callbacks)
+        # Bind an external address to the "strlen" SimProcedure name. The
+        # default registry has a native NativeStrlen so this would normally
+        # fire on the fast path.
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        # Force the dispatcher to bypass NativeStrlen by name.
+        assert mgr.has_native_procedure("strlen"), (
+            "precondition: strlen must be registered natively (else the "
+            "override path is moot)"
+        )
+        mgr.set_python_override("strlen")
+
+        state = RustSimState("amd64")
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+        state.memory_store(STACK_BASE, (0xDEADC0DE).to_bytes(8, "little"))
+        state.set_register("rsp", STACK_BASE)
+        state.set_register("rdi", STRING_ADDR)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        event = mgr.run(5)
+
+        # Native must NOT have run (override skipped it before dispatch).
+        nstats = mgr.native_procedure_stats()
+        assert nstats["native_calls"] == 0, (
+            f"native strlen must not fire when Python override is set; "
+            f"native_procedure_stats={nstats}"
+        )
+        # And the python_fallbacks counter on native_proc_stats stays at 0
+        # because native was *bypassed*, not *attempted-and-failed*.
+        assert nstats["python_fallbacks"] == 0, (
+            f"override path bypasses native entirely (no fallback bookkeeping); "
+            f"native_procedure_stats={nstats}"
+        )
+
+        # The dispatcher must have routed to the Python SimProcedure path —
+        # that bumps the generic simprocedure_python_fallback_count, NOT
+        # native_proc_stats.python_fallbacks (those are distinct counters,
+        # per the dispatch-priority docs).
+        mgr_stats = mgr.stats()
+        assert mgr_stats["simprocedure_python_fallback_count"] >= 1, (
+            f"override should route through the Python SimProcedure path; "
+            f"got stats={mgr_stats}"
+        )
+        assert mgr_stats["simprocedure_fallback_by_name"].get("strlen", 0) >= 1, (
+            f"by-name fallback bookkeeping must record 'strlen'; got "
+            f"{mgr_stats['simprocedure_fallback_by_name']}"
+        )
+
+        # And the engine emitted a need_simprocedure event so Python knows
+        # to take over.
+        assert event.event_type == "need_callback", (
+            f"expected need_callback to hand SimProcedure to Python; "
+            f"got {event.event_type}"
+        )
+        assert event.callback_reason == "simprocedure"
+
+        # Removing the override restores the native fast path. Wire up a
+        # fresh state at the same hook and confirm native fires this time.
+        mgr.remove_python_override("strlen")
+        state2 = RustSimState("amd64")
+        state2.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state2.map_memory(STACK_BASE, 0x1000, 7)
+        state2.memory_store(STRING_ADDR, b"hi\x00")
+        state2.memory_store(STACK_BASE, (0xDEADC0DE).to_bytes(8, "little"))
+        state2.set_register("rsp", STACK_BASE)
+        state2.set_register("rdi", STRING_ADDR)
+        state2.pc = STRLEN_HOOK
+        mgr.add_state("active", state2)
+        mgr.run(5)
+
+        nstats2 = mgr.native_procedure_stats()
+        assert nstats2["native_calls"] >= 1, (
+            f"after remove_python_override, native strlen must fire; "
+            f"native_procedure_stats={nstats2}"
+        )
+
     def test_python_procedure_re_registration_overrides_prior(self):
         """Registering a procedure under an existing name must replace the
         prior callable (HashMap.insert semantics). The dispatcher should

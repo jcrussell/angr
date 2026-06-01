@@ -16,6 +16,66 @@
 //! - Eliminating Python callback overhead (~100μs per call)
 //! - Direct memory access without serialization
 //! - Keeping state entirely in Rust
+//!
+//! # Dispatch priority
+//!
+//! When PC reaches a hooked address that is registered as a SimProcedure
+//! (via `register_simprocedure(addr, name, ...)`), the run-loop and the
+//! stepping path decide between **native** and **Python** dispatch using
+//! the following ordered checks. The first rule that matches wins; the
+//! dispatcher does NOT chain native then Python in sequence except when
+//! native execution returns a fallback error.
+//!
+//! 1. **User-placed in-binary hooks always go to Python.** If the
+//!    hook PC falls inside a loaded binary region
+//!    (`environment.binary_regions`), the native registry is skipped
+//!    entirely and the Python SimProcedure fires. This matches the
+//!    `proj.hook(addr, MyProc())` workflow: the user explicitly
+//!    overrode a binary instruction, so we honor their Python
+//!    implementation regardless of name. See `run_loop.rs` ~line 226
+//!    and `stepping.rs` ~line 586 (`if !is_in_binary {`).
+//!
+//! 2. **Per-name Python override skips native.** If
+//!    [`NativeProcedureRegistry::set_python_override`] has been called
+//!    for `name`, [`NativeProcedureRegistry::get`] returns `None` and
+//!    the dispatcher falls through to the Python SimProcedure path —
+//!    even when the procedure is otherwise registered. Used internally
+//!    by [`libc_start_main::NativeLibcStartMain`] to force the entry
+//!    path through angr's Python machinery while still claiming the
+//!    name in the registry.
+//!
+//! 3. **Per-name disable skips native.** If
+//!    [`NativeProcedureRegistry::disable`] has been called for `name`,
+//!    `get()` returns `None`. Same effect as a Python override but
+//!    semantically labels the procedure as "not implemented in Rust
+//!    yet" rather than "Python wins".
+//!
+//! 4. **Global disable skips native.** If
+//!    [`NativeProcedureRegistry::disable_all`] has been called,
+//!    `get()` returns `None` for every name. Used by differential
+//!    tests that need to force the Python path end-to-end.
+//!
+//! 5. **Native runs; on error, Python takes over.** If a native
+//!    implementation is registered and none of (1)–(4) bypass it, the
+//!    dispatcher calls `native_proc.call(state, args)`. On `Ok` it
+//!    advances PC to the return address and bumps `native_calls`. On
+//!    `Err(ProcedureError::SymbolicArgument | NotImplemented | Other |
+//!    MaxIterations | Memory)` it bumps `python_fallbacks` (bucketed
+//!    by error variant in `*_fallbacks_by_name`) and emits a
+//!    `need_simprocedure` event so Python can handle it. **The
+//!    Python implementation is never invoked while a native
+//!    implementation is being attempted — only on its failure.**
+//!
+//! 6. **No native implementation → Python.** If `name` is not in the
+//!    `procedures` map, the dispatcher proceeds directly to the
+//!    Python fallback path. The fallback is recorded under
+//!    `simprocedure_python_fallback_count` and
+//!    `simprocedure_fallback_by_name` but **not** under
+//!    `native_proc_stats.python_fallbacks` (which only counts cases
+//!    where native was tried and lost).
+//!
+//! Two SimProcedures are **never** chained or merged: at most one of
+//! native-or-Python runs per dispatch, and the choice is taken once.
 
 #[macro_use]
 mod macros;
@@ -320,7 +380,22 @@ impl NativeProcedureRegistry {
         self.procedures.insert(proc.name().to_string(), proc);
     }
 
-    /// Get a procedure by name.
+    /// Get a procedure by name, honoring the dispatch-priority gate.
+    ///
+    /// Returns `Some(proc)` only when **all** of the following hold:
+    ///
+    /// 1. The registry is globally enabled (`enabled == true`).
+    /// 2. The name has not been individually disabled via [`Self::disable`].
+    /// 3. The name has no Python override set via
+    ///    [`Self::set_python_override`].
+    /// 4. A native implementation has been registered for the name.
+    ///
+    /// Returning `None` instructs the dispatcher to fall back to the
+    /// Python SimProcedure path. See the module-level **Dispatch
+    /// priority** section for the full chain (in particular the
+    /// `is_in_binary` gate, which is checked by the dispatcher *before*
+    /// calling this method, so user-placed hooks inside the binary
+    /// never reach the registry at all).
     pub fn get(&self, name: &str) -> Option<&Arc<dyn NativeSimProcedure>> {
         // Check if globally disabled
         if !self.enabled {
@@ -377,8 +452,17 @@ impl NativeProcedureRegistry {
 
     /// Set a Python override for a procedure.
     ///
-    /// When a Python override is set, the native implementation is
-    /// never called - always falls back to Python.
+    /// When a Python override is set, [`Self::get`] returns `None` for
+    /// `name` so the dispatcher falls through to the Python
+    /// SimProcedure path. The override is consulted on every dispatch
+    /// — the native implementation is never called and the Python one
+    /// always wins. Use [`Self::remove_python_override`] to restore
+    /// the native path.
+    ///
+    /// Distinct from [`Self::disable`] only in intent: an override
+    /// asserts "Python is canonical for this name", while disable
+    /// asserts "the Rust implementation is not trustworthy right now".
+    /// The runtime effect is identical (both bypass native).
     pub fn set_python_override(&mut self, name: &str) {
         self.python_overrides.insert(name.to_string());
     }

@@ -438,6 +438,54 @@ supports per-procedure ``disable()`` and ``set_python_override()`` —
 both force the dispatcher to fall back to Python — and a global
 ``disable_all()`` switch (used in differential testing).
 
+Dispatch priority (native vs Python)
+""""""""""""""""""""""""""""""""""""
+
+When PC reaches a hooked address registered as a SimProcedure, the
+dispatcher chooses between the native and Python implementations using
+this ordered chain (first rule wins; native and Python are **never**
+both invoked except when native fails):
+
+1. **In-binary hooks always run Python.** If the hook PC falls inside
+   a loaded binary region (i.e. ``proj.hook(addr, MyProc())`` placed
+   somewhere in the program text), native is skipped entirely. This
+   honors the user's intent to override a specific instruction. See
+   ``native/angr/src/exploration/run_loop.rs`` (~line 226) and
+   ``stepping.rs`` (~line 586).
+2. **Per-name Python override skips native.**
+   ``set_python_override("strlen")`` makes ``registry.get("strlen")``
+   return ``None`` so dispatch falls through to the Python
+   SimProcedure. Used internally by
+   ``NativeLibcStartMain`` and available to user code via
+   ``mgr.set_python_override(name)``.
+3. **Per-name disable skips native.** ``registry.disable("strlen")``
+   has the same runtime effect as a Python override; semantically it
+   says "the Rust implementation is not trustworthy right now"
+   rather than "Python is canonical for this name".
+4. **Global disable.** ``registry.disable_all()`` /
+   ``mgr.disable_native_procedures()`` skips native for every name.
+5. **Native runs; on error, Python takes over.** If steps 1–4 do
+   not bypass it, the dispatcher calls ``native_proc.call(...)``.
+   On ``Ok``, ``native_proc_stats.native_calls`` increments and PC
+   advances to the return address. On any ``Err``, the dispatcher
+   bumps ``native_proc_stats.python_fallbacks`` (bucketed by error
+   variant in ``symbolic_fallbacks_by_name``,
+   ``not_implemented_fallbacks_by_name``, or
+   ``other_fallbacks_by_name``) and emits a ``need_simprocedure``
+   event so the Python SimProcedure runs instead.
+6. **No native implementation.** If the registry has no entry for
+   ``name``, the dispatcher proceeds directly to the Python
+   fallback. This increments ``simprocedure_python_fallback_count``
+   and ``simprocedure_fallback_by_name`` but **not**
+   ``native_proc_stats.python_fallbacks`` (which only counts cases
+   where native was attempted and lost).
+
+Regression coverage for this contract lives at
+``tests/engines/test_rust_exploration.py`` —
+``test_python_override_bypasses_native_strlen`` (override case) and
+``test_python_procedure_symbolic_arg_falls_back_to_python``
+(native-tried-then-Python case).
+
 For a contributor: adding a new procedure means (1) writing a module
 under ``native/angr/src/procedures/``, (2) declaring it ``pub mod`` from
 ``mod.rs``, and (3) adding a single ``registry.register(...)`` line in
