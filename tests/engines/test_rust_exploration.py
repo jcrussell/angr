@@ -5786,6 +5786,51 @@ class TestMultiArchSupport:
         assert state.get_register("$26") == 0xABCD1234
         assert state.get_register("$27") == 0x5678EF90
 
+    def test_mips64_full_register_family_dispatch(self):
+        """MIPS64 FPU, HI/LO, and FPU-control registers round-trip via
+        the standard register dispatch.
+
+        Covers angr-w2gj.2: every entry in ``offsets64`` is now
+        reachable through ``set_register``/``get_register`` (full-ABI
+        MIPS64). The previous MIPS64 test set only exercised v0 — this
+        exercises the register families that the dead-code audit
+        (bd memory ``dead-code-bd-ticket-policy``) flagged as
+        unreachable.
+        """
+        state = RustSimState("mips64")
+
+        # FPU registers (64-bit each on MIPS64 VEX guest state).
+        # f0 (canonical) and $f31 (alias) bracket the F0-F31 block;
+        # f12 is the first FP argument register in the N64 ABI.
+        state.set_register("f0", 0x1122334455667788)
+        state.set_register("f12", 0xCAFEBABEDEADBEEF)
+        state.set_register("$f31", 0xFFEEDDCCBBAA9988)
+        assert state.get_register("f0") == 0x1122334455667788
+        assert state.get_register("f12") == 0xCAFEBABEDEADBEEF
+        assert state.get_register("f31") == 0xFFEEDDCCBBAA9988
+        assert state.get_register("$f0") == 0x1122334455667788
+
+        # HI/LO: 64-bit multiplication result registers.
+        state.set_register("hi", 0xDEADBEEFCAFEBABE)
+        state.set_register("lo", 0x0123456789ABCDEF)
+        assert state.get_register("hi") == 0xDEADBEEFCAFEBABE
+        assert state.get_register("lo") == 0x0123456789ABCDEF
+
+        # FPU control registers (32-bit).
+        state.set_register("fir", 0x12345678)
+        state.set_register("fcsr", 0x01020304)
+        assert state.get_register("fir") == 0x12345678
+        assert state.get_register("fcsr") == 0x01020304
+
+        # Previously-untested GPRs: k0/k1 (kernel scratch, $26/$27).
+        state.set_register("k0", 0xABCD1234DEADBEEF)
+        state.set_register("k1", 0x5678EF90CAFEBABE)
+        assert state.get_register("k0") == 0xABCD1234DEADBEEF
+        assert state.get_register("k1") == 0x5678EF90CAFEBABE
+        # And via the $N alias path.
+        assert state.get_register("$26") == 0xABCD1234DEADBEEF
+        assert state.get_register("$27") == 0x5678EF90CAFEBABE
+
     def test_arm_state_creation(self):
         """ARM32 state creation and register operations."""
         state = RustSimState("arm")

@@ -206,11 +206,11 @@ below "Supported" as experimental.
      - MipsO32
      - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
    * - MIPS64
-     - 0
+     - 1
      - 3 (LE real ELF, BE real ELF, native-proc)
      - 2 (mips64_le_branch + mips64_be_branch synthetics)
      - MipsN64
-     - Supported
+     - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
 
 Status meanings:
 
