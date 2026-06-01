@@ -87,6 +87,19 @@ class RustSolverFallback:
     None. Constraints added to the Python state after attach() (e.g.,
     flareon2015_5 hash equalities) are synced into the cached Rust context
     on the next call.
+
+    INVARIANT (``invariant-rust-solver-fallback-class``; mirrored in
+    ``callbacks.rs`` module invariant 5): this class owns the per-state
+    Rust solver fallback wiring — cached forked context, original method
+    handles, constraint sync counter. Use
+    ``RustSolverFallback(state, state_id, rust_mgr).attach()`` instead of
+    inline closures; the ``_rust_fallback_attached`` flag on state.solver
+    guards against double-patching (which would cause infinite recursion
+    since the second wrapper's "originals" would be the first wrapper's
+    bound methods). Per-callback solver attachment is the parallel path
+    in ``_install_rust_solver_on_callback_state``
+    (rust_callback_dispatch.py); both paths must stay in sync if a new
+    FFI solver entry point is added.
     """
 
     _ATTACH_FLAG = '_rust_fallback_attached'
@@ -370,6 +383,16 @@ class RustStateExportMixin:
 
         Always finishes with ``rust_fully_synced = True``, stdin content
         restore, and a posix weakref fix.
+
+        INVARIANT (``invariant-callstack-sync-export-pipeline``; mirrored
+        in ``callbacks.rs`` module invariant 4): every per-state sync
+        helper — memory, registers, callstack, mmap_base, posix_brk —
+        MUST be wired into ALL FOUR paths below. Path 1 routes through
+        ``_sync_cached_state``; paths 2 and 3 call the individual
+        ``_sync_rust_*`` helpers explicitly; path 4 calls them after the
+        snapshot. Adding a new per-state sync that only updates one path
+        produces stash-configuration-dependent divergence that is hard
+        to debug.
         """
         state = self._state_cache.get(state_id)
         if state is not None:

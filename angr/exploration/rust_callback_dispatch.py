@@ -164,6 +164,15 @@ class RustCallbackDispatchMixin:
         - state.solver.min()/max() — used by concretization strategies
         - state.solver.eval_upto() — used by concretization strategies
         - state.solver.add() — forwards constraints to both Python and Rust
+
+        Sibling helper to ``RustSolverFallback`` (rust_state_export.py): both
+        attach Rust-backed eval/satisfiable/min/max/eval_upto onto a Python
+        ``state.solver``. The fallback class handles post-exploration stash
+        states (with the ``_rust_fallback_attached`` double-patch guard);
+        this method handles per-callback states. Any new FFI solver entry
+        point should be considered for both wiring sites — see Rust
+        ``callbacks.rs`` module invariant 5
+        (``invariant-rust-solver-fallback-class``).
         """
         rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
         if rust_ctx is None:
@@ -388,6 +397,12 @@ class RustCallbackDispatchMixin:
         - After the hook, we need to execute the instruction at the hook address
         - But we must NOT re-trigger the hook (which would cause infinite loop)
         - Solution: Tell Rust to skip the hook for this address on next step
+
+        Enters Python from ``RunResult::SimProcedure`` / ``RunResult::Hook``
+        in the Rust callbacks (``call_on_hook`` in ``callbacks.rs`` —
+        ``avoid-silent-no-op-callback-fallbacks`` ensures the Rust side
+        hard-errors when the hook is unset rather than silently producing
+        a wrong PC).
         """
         _sp_total_start = time.perf_counter_ns()
         addr = event.callback_addr
@@ -1353,6 +1368,13 @@ class RustCallbackDispatchMixin:
 
         Uses cached state to preserve symbolic memory and constraints,
         then syncs changes back to Rust after syscall execution.
+
+        Entered from ``RunResult::Syscall`` via ``call_on_syscall``
+        (``callbacks.rs``). The Rust side hard-errors when the
+        ``on_syscall`` hook is ``None`` per
+        ``avoid-silent-no-op-callback-fallbacks`` (callbacks.rs module
+        invariant 1); never assume a missing hook turns syscalls into
+        no-ops.
         """
         _sc_total_start = time.perf_counter_ns()
         try:
@@ -1441,6 +1463,13 @@ class RustCallbackDispatchMixin:
 
         Args:
             event: The exploration event from Rust.
+
+        Predicate evaluation depends on ``drop_terminal_states == False``
+        (``drop-terminal-vs-predicates``; mirrored in
+        ``callbacks.rs`` module invariant 2). When predicates are active,
+        states that print then ``exit()`` must survive until predicate
+        evaluation runs — without that, callable-find examples like
+        ``sym-write`` produce zero found states.
         """
         _fp_total_start = time.perf_counter_ns()
         try:
@@ -1505,6 +1534,12 @@ class RustCallbackDispatchMixin:
 
         Args:
             event: The exploration event from Rust.
+
+        Same ``drop-terminal-vs-predicates`` invariant as
+        ``_handle_find_predicate_callback`` — callable avoid is paired
+        with callable find at the manager level; both rely on terminal
+        states remaining alive for evaluation. See ``callbacks.rs``
+        module invariant 2.
         """
         _ap_total_start = time.perf_counter_ns()
         try:
@@ -1562,6 +1597,14 @@ class RustCallbackDispatchMixin:
         1. Gets the branch condition from Rust
         2. Creates two forked states with appropriate constraints
         3. Adds both states back to Rust's active stash
+
+        Entered from ``RunResult::SymbolicBranch`` (callbacks.rs). The
+        per-state sync helpers invoked here (memory, registers,
+        callstack) MUST be mirrored across the four export paths in
+        ``rust_state_export.py::_materialize_single_state`` per
+        ``invariant-callstack-sync-export-pipeline`` — callbacks.rs
+        module invariant 4. Any new per-state sync added during forking
+        needs the matching export-path wiring.
         """
         _sb_total_start = time.perf_counter_ns()
         try:

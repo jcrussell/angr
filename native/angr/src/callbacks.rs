@@ -2,6 +2,74 @@
 //!
 //! This module provides the callback holder that allows Rust to call back into Python
 //! for operations like memory access, hook execution, and syscall handling.
+//!
+//! # Callback + sync invariants
+//!
+//! This is the Rust side of the cross-language callback contract. Several
+//! cross-cutting rules are documented in bd memories; the most load-bearing
+//! ones for any future edit in this module are mirrored here so they live
+//! next to their enforcement sites (mirroring pattern documented in bd
+//! memory `invariant-doc-mirror-pattern-2026-06-01`).
+//!
+//! 1. **`avoid-silent-no-op-callback-fallbacks`** — every `call_*` method
+//!    on [`PythonCallbacks`] MUST hard-error when the hook is `None`.
+//!    The exemplar is [`PythonCallbacks::call_on_hook`]: it `ok_or_else`'s
+//!    into `PyRuntimeError::new_err("on_hook callback not set")`. Silent
+//!    `Ok(())` fallbacks (the removed `call_memory_store_symbolic_ast`)
+//!    mask wiring bugs by making the engine appear to run while stores
+//!    are silently dropped, which produces divergent Rust↔Python memory
+//!    that is painful to debug. When adding a new `call_*`, copy the
+//!    `ok_or_else` idiom — do NOT return `Ok(())` or default values when
+//!    the hook is unset.
+//!
+//! 2. **`drop-terminal-vs-predicates`** — when callable `find` /
+//!    `avoid` predicates are active, the Python-side
+//!    `drop_terminal_states` MUST be `False`. This is enforced in
+//!    `angr.exploration.RustExplorationManager` (Python) and is invisible
+//!    to Rust, but the predicate callback paths in this module
+//!    ([`RunResult::SymbolicBranch`] forks, and find/avoid predicate
+//!    dispatch in `exploration/run_loop.rs`) assume the Python side
+//!    keeps stdout-carrying exit() states alive until predicate
+//!    evaluation runs. Examples like `sym-write` produce zero found
+//!    states without this rule.
+//!
+//! 3. **`invariant-3tek2-replay-ordering`** — the Python-side
+//!    `_create_state_for_callback` replays Rust-recorded dirty-page
+//!    mutations in a strict order around `_install_rust_memory_proxy`
+//!    and `_restore_symbolic_pages`. Rust signals the change set through
+//!    the dirty-page bookkeeping but does NOT enforce ordering;
+//!    re-ordering the Python helper without updating both ends will
+//!    clobber NativeRead/NativeWrite symbolic bytes with concrete
+//!    pointer-slot copies. Future changes to dirty-page tracking
+//!    (`pending_store.rs`, prefetch invalidation) need to consider the
+//!    Python replay sequencing.
+//!
+//! 4. **`invariant-callstack-sync-export-pipeline`** — any per-state
+//!    sync helper added to the Rust manager (memory, registers,
+//!    callstack, mmap_base, posix_brk) must be wired into all four
+//!    Python export paths in `_materialize_single_state`
+//!    (cached / parent-root / stepping / snapshot fallback). The
+//!    callstack sync added 2026-05-07 follows that pattern. If a new
+//!    FFI sync method is exposed here without updating all four paths,
+//!    some stash configurations will silently miss the sync.
+//!
+//! 5. **`invariant-rust-solver-fallback-class`** — Python's
+//!    `RustSolverFallback` (in `angr/exploration/rust_state_export.py`)
+//!    owns the per-state Rust solver fallback wiring: cached forked
+//!    context, original method handles, constraint sync counter, and a
+//!    `_rust_fallback_attached` flag that guards against double-patching
+//!    (which would cause infinite recursion since the second wrapper's
+//!    "originals" would be the first wrapper). Any new FFI solver entry
+//!    point added here should be considered for inclusion in
+//!    `RustSolverFallback.attach()`.
+//!
+//! 6. **`avoid-hasattr-lazy-init`** — `hasattr(state, plugin_name)` on
+//!    angr `SimState` triggers `__getattr__` and lazy-initializes the
+//!    plugin (`heap` plugin = ~80 ms first-touch). The Python callback
+//!    paths use `plugin_name in state.plugins` for the O(1) dict check
+//!    instead. Anything Rust does that prompts Python plugin probing
+//!    (e.g., new SimProcedure dispatch helpers) should preserve that
+//!    discipline on the Python side.
 
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
@@ -306,6 +374,19 @@ pub enum RunResult {
 ///
 /// This struct holds references to Python callback functions that the Rust
 /// engine calls during execution for memory access, hooks, syscalls, etc.
+///
+/// # Invariants enforced by every `call_*` method
+///
+/// * **No silent `Ok(())` fallback.** See module-level invariant 1
+///   (`avoid-silent-no-op-callback-fallbacks`). When a hook is `None`,
+///   the `call_*` method MUST return `Err(PyRuntimeError)` rather than
+///   no-op. The reference pattern is [`Self::call_on_hook`].
+/// * **`Clone` + shared atomics.** `PythonCallbacks` is `Clone` because the
+///   Rust exploration manager keeps a cloned copy of the original passed
+///   in via `set_callbacks`. Any mutable state shared with Python after
+///   clone (e.g. [`Self::inspect_enabled`]) MUST be wrapped in
+///   `Arc<Atomic*>` so updates from the Python side remain visible to
+///   the Rust copy.
 #[pyclass]
 #[derive(Clone)]
 pub struct PythonCallbacks {
@@ -1314,6 +1395,11 @@ impl PythonCallbacks {
     /// Call the hook execution callback.
     ///
     /// Returns the new PC after hook execution.
+    ///
+    /// Reference pattern for the `avoid-silent-no-op-callback-fallbacks`
+    /// invariant (module-level invariant 1). When [`Self::on_hook`] is
+    /// `None`, hard-error rather than no-op — see the module-level docs
+    /// for why silent fallbacks mask wiring bugs.
     pub fn call_on_hook(&self, py: Python<'_>, addr: u64) -> PyResult<u64> {
         let cb = self
             .on_hook
