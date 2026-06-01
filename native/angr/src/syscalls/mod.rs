@@ -21,6 +21,7 @@ pub mod arch_prctl;
 pub mod brk;
 pub mod exit;
 pub mod identity;
+pub mod memory_extras;
 pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
@@ -145,6 +146,9 @@ impl NativeSyscallRegistry {
         // setuid (105), setgid (106): return fresh symbolic BV (matches
         //   Python `syscall_stub.py::syscall` ReturnUnconstrained fallback —
         //   angr has no dedicated SimProcedure for these).
+        // mremap (25), msync (26), madvise (28), mlock (149), munlock (150),
+        //   mlockall (151), munlockall (152): same stub-symbolic semantics —
+        //   no Python SimProcedure, falls through to syscall_stub.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -153,6 +157,9 @@ impl NativeSyscallRegistry {
             (11, munmap::NativeMunmapSyscall),
             (12, brk::NativeBrkSyscall),
             (13, sigaction::NativeRtSigactionSyscall),
+            (25, memory_extras::NativeMremapSyscall),
+            (26, memory_extras::NativeMsyncSyscall),
+            (28, memory_extras::NativeMadviseSyscall),
             (39, identity::NativeGetpidSyscall),
             (60, exit::NativeExitSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
@@ -163,6 +170,10 @@ impl NativeSyscallRegistry {
             (107, identity::NativeGeteuidSyscall),
             (108, identity::NativeGetegidSyscall),
             (110, identity::NativeGetppidSyscall),
+            (149, memory_extras::NativeMlockSyscall),
+            (150, memory_extras::NativeMunlockSyscall),
+            (151, memory_extras::NativeMlockallSyscall),
+            (152, memory_extras::NativeMunlockallSyscall),
             (158, arch_prctl::NativeArchPrctlSyscall),
             (186, identity::NativeGettidSyscall),
             (201, sim_time::NativeTimeSyscall),
@@ -212,6 +223,12 @@ impl NativeSyscallRegistry {
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
+            (144, memory_extras::NativeMsyncSyscall),
+            (150, memory_extras::NativeMlockSyscall),
+            (151, memory_extras::NativeMunlockSyscall),
+            (152, memory_extras::NativeMlockallSyscall),
+            (153, memory_extras::NativeMunlockallSyscall),
+            (163, memory_extras::NativeMremapSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
@@ -219,6 +236,7 @@ impl NativeSyscallRegistry {
             (202, identity::NativeGetegidSyscall),
             (213, identity::NativeSetuidSyscall),
             (214, identity::NativeSetgidSyscall),
+            (219, memory_extras::NativeMadviseSyscall),
             (224, identity::NativeGettidSyscall),
             (252, exit::NativeExitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
@@ -244,6 +262,12 @@ impl NativeSyscallRegistry {
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
+            (144, memory_extras::NativeMsyncSyscall),
+            (150, memory_extras::NativeMlockSyscall),
+            (151, memory_extras::NativeMunlockSyscall),
+            (152, memory_extras::NativeMlockallSyscall),
+            (153, memory_extras::NativeMunlockallSyscall),
+            (163, memory_extras::NativeMremapSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
@@ -251,6 +275,7 @@ impl NativeSyscallRegistry {
             (202, identity::NativeGetegidSyscall),
             (213, identity::NativeSetuidSyscall),
             (214, identity::NativeSetgidSyscall),
+            (220, memory_extras::NativeMadviseSyscall),
             (224, identity::NativeGettidSyscall),
             (248, exit::NativeExitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
@@ -278,8 +303,15 @@ impl NativeSyscallRegistry {
             (178, identity::NativeGettidSyscall),
             (214, brk::NativeBrkSyscall),
             (215, munmap::NativeMunmapSyscall),
+            (216, memory_extras::NativeMremapSyscall),
             (222, mmap::NativeMmapSyscall),
             (226, mprotect::NativeMprotectSyscall),
+            (227, memory_extras::NativeMsyncSyscall),
+            (228, memory_extras::NativeMlockSyscall),
+            (229, memory_extras::NativeMunlockSyscall),
+            (230, memory_extras::NativeMlockallSyscall),
+            (231, memory_extras::NativeMunlockallSyscall),
+            (233, memory_extras::NativeMadviseSyscall),
         ]);
 
         // Linux MIPS32 O32 (asm/unistd_o32.h). Numbers start at 4000.
@@ -303,7 +335,14 @@ impl NativeSyscallRegistry {
             (4078, sim_time::NativeGettimeofdaySyscall),
             (4091, munmap::NativeMunmapSyscall),
             (4125, mprotect::NativeMprotectSyscall),
+            (4144, memory_extras::NativeMsyncSyscall),
+            (4154, memory_extras::NativeMlockSyscall),
+            (4155, memory_extras::NativeMunlockSyscall),
+            (4156, memory_extras::NativeMlockallSyscall),
+            (4157, memory_extras::NativeMunlockallSyscall),
+            (4167, memory_extras::NativeMremapSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
+            (4218, memory_extras::NativeMadviseSyscall),
             (4222, identity::NativeGettidSyscall),
             (4246, exit::NativeExitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
@@ -683,6 +722,52 @@ mod tests {
                 .get(arch, 214)
                 .unwrap_or_else(|| panic!("{arch} setgid32 (214) missing"));
             assert_eq!(g.name(), "setgid");
+        }
+    }
+
+    #[test]
+    fn memory_extras_registered_on_all_arches() {
+        // angr-0hif.4: madvise / mremap / msync / mlock / munlock /
+        // mlockall / munlockall have no Python SimProcedure, so the
+        // unhandled-syscall path falls through to `syscall_stub` which
+        // returns a fresh symbolic. The native handlers mirror that via
+        // SyscallOutcome::ContinueSymbolic; they must be registered with
+        // the right name + arity on every supported arch.
+        let r = NativeSyscallRegistry::new();
+        // arch -> (madvise, mremap, msync, mlock, munlock, mlockall, munlockall)
+        let table: &[(&str, [u64; 7])] = &[
+            ("AMD64", [28, 25, 26, 149, 150, 151, 152]),
+            ("X86", [219, 163, 144, 150, 151, 152, 153]),
+            ("ARM", [220, 163, 144, 150, 151, 152, 153]),
+            ("ARM64", [233, 216, 227, 228, 229, 230, 231]),
+            ("MIPS32", [4218, 4167, 4144, 4154, 4155, 4156, 4157]),
+        ];
+        let labels = [
+            ("madvise", 3usize),
+            ("mremap", 5),
+            ("msync", 3),
+            ("mlock", 2),
+            ("munlock", 2),
+            ("mlockall", 1),
+            ("munlockall", 0),
+        ];
+        for (arch, nums) in table {
+            for (i, (label, nargs)) in labels.iter().enumerate() {
+                let num = nums[i];
+                let h = r.get(arch, num).unwrap_or_else(|| {
+                    panic!("{arch} {label} ({num}) handler missing")
+                });
+                assert_eq!(
+                    h.name(),
+                    *label,
+                    "{arch} syscall {num} should be {label}"
+                );
+                assert_eq!(
+                    h.num_args(),
+                    *nargs,
+                    "{arch} {label} should take {nargs} args"
+                );
+            }
         }
     }
 

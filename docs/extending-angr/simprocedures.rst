@@ -842,9 +842,14 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
        via ``SyscallOutcome::ContinueSymbolic`` (no Python
        ``SimProcedure`` exists for them)
    * - Memory extras (angr-0hif.4)
-     - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``
-     - 0 / 5
-     - angr-0hif.4 (open)
+     - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``,
+       ``mlockall``, ``munlockall``
+     - 7 / 7
+     - ``memory_extras.rs`` — none have a dedicated Python
+       ``SimProcedure``; native handlers mirror ``syscall_stub`` and
+       emit a fresh symbolic BV via
+       ``SyscallOutcome::ContinueSymbolic``. ``mremap`` is a parity
+       stub (does not update page tables — neither does Python angr)
    * - FD control (angr-0hif.5)
      - ``dup``, ``dup2``, ``dup3``, ``fcntl``, ``ioctl``, ``pipe``,
        ``pipe2``
