@@ -27,6 +27,7 @@ pub mod mprotect;
 pub mod munmap;
 pub mod read;
 pub mod sigaction;
+pub mod signals;
 pub mod sim_time;
 pub mod write;
 
@@ -149,6 +150,13 @@ impl NativeSyscallRegistry {
         // mremap (25), msync (26), madvise (28), mlock (149), munlock (150),
         //   mlockall (151), munlockall (152): same stub-symbolic semantics —
         //   no Python SimProcedure, falls through to syscall_stub.
+        // rt_sigreturn (15), pause (34), alarm (37), kill (62), tgkill (234):
+        //   signals + process control (angr-0hif.6). kill/rt_sigreturn/pause/
+        //   alarm have no Python SimProcedure and mirror syscall_stub;
+        //   tgkill returns concrete 0 (matches procedures/linux_kernel/
+        //   tgkill.py exactly). rt_sigprocmask (14) is intentionally NOT
+        //   registered — its Python impl mutates state.posix.sigmask which
+        //   RustSimState does not carry; falls back to Python for parity.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -157,11 +165,15 @@ impl NativeSyscallRegistry {
             (11, munmap::NativeMunmapSyscall),
             (12, brk::NativeBrkSyscall),
             (13, sigaction::NativeRtSigactionSyscall),
+            (15, signals::NativeRtSigreturnSyscall),
             (25, memory_extras::NativeMremapSyscall),
             (26, memory_extras::NativeMsyncSyscall),
             (28, memory_extras::NativeMadviseSyscall),
+            (34, signals::NativePauseSyscall),
+            (37, signals::NativeAlarmSyscall),
             (39, identity::NativeGetpidSyscall),
             (60, exit::NativeExitSyscall),
+            (62, signals::NativeKillSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
             (102, identity::NativeGetuidSyscall),
             (104, identity::NativeGetgidSyscall),
@@ -179,6 +191,7 @@ impl NativeSyscallRegistry {
             (201, sim_time::NativeTimeSyscall),
             (228, sim_time::NativeClockGettimeSyscall),
             (231, exit::NativeExitSyscall),
+            (234, signals::NativeTgkillSyscall),
         ]);
 
         // ===== Per-arch registrations (angr-7xms) =====
@@ -214,6 +227,9 @@ impl NativeSyscallRegistry {
             (20, identity::NativeGetpidSyscall),
             (23, identity::NativeSetuidSyscall),
             (24, identity::NativeGetuidSyscall),
+            (27, signals::NativeAlarmSyscall),
+            (29, signals::NativePauseSyscall),
+            (37, signals::NativeKillSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
@@ -229,6 +245,7 @@ impl NativeSyscallRegistry {
             (152, memory_extras::NativeMlockallSyscall),
             (153, memory_extras::NativeMunlockallSyscall),
             (163, memory_extras::NativeMremapSyscall),
+            (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
@@ -240,6 +257,7 @@ impl NativeSyscallRegistry {
             (224, identity::NativeGettidSyscall),
             (252, exit::NativeExitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
+            (270, signals::NativeTgkillSyscall),
         ]);
 
         // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
@@ -253,6 +271,9 @@ impl NativeSyscallRegistry {
             (20, identity::NativeGetpidSyscall),
             (23, identity::NativeSetuidSyscall),
             (24, identity::NativeGetuidSyscall),
+            (27, signals::NativeAlarmSyscall),
+            (29, signals::NativePauseSyscall),
+            (37, signals::NativeKillSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
@@ -268,6 +289,7 @@ impl NativeSyscallRegistry {
             (152, memory_extras::NativeMlockallSyscall),
             (153, memory_extras::NativeMunlockallSyscall),
             (163, memory_extras::NativeMremapSyscall),
+            (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
@@ -279,18 +301,26 @@ impl NativeSyscallRegistry {
             (224, identity::NativeGettidSyscall),
             (248, exit::NativeExitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
+            (268, signals::NativeTgkillSyscall),
         ]);
 
         // Linux AArch64 (asm-generic/unistd.h). Uses the asm-generic ABI:
         // mmap takes the modern 6-register form with byte offset, so the
         // existing NativeMmapSyscall works as-is.
+        // ARM64 uses asm-generic numbering. Note: asm-generic does NOT
+        // define `pause` (29 on i386/arm) or `alarm` (27 on i386/arm) —
+        // glibc on aarch64 emulates them via setitimer / rt_sigtimedwait.
+        // So only kill, tgkill, and rt_sigreturn from angr-0hif.6 land here.
         register_syscalls!(r, "ARM64", [
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
             (93, exit::NativeExitSyscall),
             (94, exit::NativeExitSyscall),
             (113, sim_time::NativeClockGettimeSyscall),
+            (129, signals::NativeKillSyscall),
+            (131, signals::NativeTgkillSyscall),
             (134, sigaction::NativeRtSigactionSyscall),
+            (139, signals::NativeRtSigreturnSyscall),
             (144, identity::NativeSetgidSyscall),
             (146, identity::NativeSetuidSyscall),
             (169, sim_time::NativeGettimeofdaySyscall),
@@ -326,6 +356,9 @@ impl NativeSyscallRegistry {
             (4020, identity::NativeGetpidSyscall),
             (4023, identity::NativeSetuidSyscall),
             (4024, identity::NativeGetuidSyscall),
+            (4027, signals::NativeAlarmSyscall),
+            (4029, signals::NativePauseSyscall),
+            (4037, signals::NativeKillSyscall),
             (4045, brk::NativeBrkSyscall),
             (4046, identity::NativeSetgidSyscall),
             (4047, identity::NativeGetgidSyscall),
@@ -341,11 +374,13 @@ impl NativeSyscallRegistry {
             (4156, memory_extras::NativeMlockallSyscall),
             (4157, memory_extras::NativeMunlockallSyscall),
             (4167, memory_extras::NativeMremapSyscall),
+            (4193, signals::NativeRtSigreturnSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
             (4218, memory_extras::NativeMadviseSyscall),
             (4222, identity::NativeGettidSyscall),
             (4246, exit::NativeExitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
+            (4266, signals::NativeTgkillSyscall),
         ]);
 
         r
@@ -767,6 +802,60 @@ mod tests {
                     *nargs,
                     "{arch} {label} should take {nargs} args"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn signals_registered_on_all_arches() {
+        // angr-0hif.6: kill / tgkill / rt_sigreturn / pause / alarm.
+        // kill, rt_sigreturn, pause, alarm have no Python SimProcedure;
+        // tgkill is concrete-0 (matches procedures/linux_kernel/tgkill.py).
+        // ARM64 does NOT define `pause` (29 on i386/arm) or `alarm` (27)
+        // in asm-generic, so only kill/tgkill/rt_sigreturn land there.
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, kill, tgkill, rt_sigreturn, pause-or-None, alarm-or-None)
+        let table: &[(&str, u64, u64, u64, Option<u64>, Option<u64>)] = &[
+            ("AMD64", 62, 234, 15, Some(34), Some(37)),
+            ("X86", 37, 270, 173, Some(29), Some(27)),
+            ("ARM", 37, 268, 173, Some(29), Some(27)),
+            ("ARM64", 129, 131, 139, None, None),
+            ("MIPS32", 4037, 4266, 4193, Some(4029), Some(4027)),
+        ];
+
+        for &(arch, kill_n, tgkill_n, rtret_n, pause_n, alarm_n) in table {
+            let kill = r
+                .get(arch, kill_n)
+                .unwrap_or_else(|| panic!("{arch} kill ({kill_n}) missing"));
+            assert_eq!(kill.name(), "kill");
+            assert_eq!(kill.num_args(), 2);
+
+            let tg = r
+                .get(arch, tgkill_n)
+                .unwrap_or_else(|| panic!("{arch} tgkill ({tgkill_n}) missing"));
+            assert_eq!(tg.name(), "tgkill");
+            assert_eq!(tg.num_args(), 3);
+
+            let rtret = r
+                .get(arch, rtret_n)
+                .unwrap_or_else(|| panic!("{arch} rt_sigreturn ({rtret_n}) missing"));
+            assert_eq!(rtret.name(), "rt_sigreturn");
+            assert_eq!(rtret.num_args(), 0);
+
+            if let Some(n) = pause_n {
+                let p = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} pause ({n}) missing"));
+                assert_eq!(p.name(), "pause");
+                assert_eq!(p.num_args(), 0);
+            }
+            if let Some(n) = alarm_n {
+                let a = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} alarm ({n}) missing"));
+                assert_eq!(a.name(), "alarm");
+                assert_eq!(a.num_args(), 1);
             }
         }
     }

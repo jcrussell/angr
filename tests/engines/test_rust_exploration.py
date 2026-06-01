@@ -11497,6 +11497,54 @@ class TestNativeMemoryExtraSyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeSignalSyscalls:
+    """angr-0hif.6: native ``kill`` / ``tgkill`` / ``rt_sigreturn`` /
+    ``pause`` / ``alarm`` handlers. ``kill``, ``rt_sigreturn``, ``pause``,
+    and ``alarm`` have no Python ``SimProcedure`` and mirror the
+    ``syscall_stub`` ReturnUnconstrained fallback (fresh symbolic BV per
+    call). ``tgkill`` returns concrete 0, matching
+    ``procedures/linux_kernel/tgkill.py``. ``rt_sigaction`` is already
+    covered by ``syscalls/sigaction.rs``; ``rt_sigprocmask`` is
+    intentionally NOT native (its Python impl mutates
+    ``state.posix.sigmask`` which ``RustSimState`` does not carry).
+
+    The Rust cargo unit tests in ``native/angr/src/syscalls/signals.rs``
+    pin the per-handler invariants; this is the cross-the-FFI dispatch
+    check (``syscall_python_fallback_count`` stays 0 for each one).
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (62, "kill"),
+            (234, "tgkill"),
+            (15, "rt_sigreturn"),
+            (34, "pause"),
+            (37, "alarm"),
+        ],
+    )
+    def test_signal_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
+            setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""

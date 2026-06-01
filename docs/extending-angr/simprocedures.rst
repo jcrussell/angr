@@ -859,10 +859,17 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
        wired
    * - Signals + process control (angr-0hif.6)
      - ``kill``, ``tgkill``, ``rt_sigprocmask``, ``rt_sigaction``,
-       ``pause``, ``alarm``
-     - 1 / 6
-     - angr-0hif.6 (open). ``rt_sigaction`` covered by baseline
-       handler
+       ``rt_sigreturn``, ``pause``, ``alarm``
+     - 6 / 7
+     - ``signals.rs`` — ``kill`` / ``rt_sigreturn`` / ``pause`` /
+       ``alarm`` mirror ``syscall_stub`` and emit a fresh symbolic BV
+       via ``SyscallOutcome::ContinueSymbolic`` (no Python
+       ``SimProcedure`` exists for them); ``tgkill`` returns concrete
+       0 to match ``procedures/linux_kernel/tgkill.py``;
+       ``rt_sigaction`` is the baseline ``sigaction.rs`` handler.
+       ``rt_sigprocmask`` is NOT native — its Python impl mutates
+       ``state.posix.sigmask`` which ``RustSimState`` does not carry,
+       so it falls back to Python for parity
    * - Resource limits + concurrency (angr-0hif.7)
      - ``getrlimit``, ``setrlimit``, ``futex``, ``eventfd``,
        ``epoll_create``, ``epoll_ctl``, ``epoll_wait``
