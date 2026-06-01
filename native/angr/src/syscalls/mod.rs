@@ -19,6 +19,7 @@
 
 pub mod arch_prctl;
 pub mod brk;
+pub mod concurrency;
 pub mod exit;
 pub mod identity;
 pub mod memory_extras;
@@ -26,6 +27,7 @@ pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
 pub mod read;
+pub mod rlimit;
 pub mod sigaction;
 pub mod signals;
 pub mod sim_time;
@@ -157,6 +159,19 @@ impl NativeSyscallRegistry {
         //   tgkill.py exactly). rt_sigprocmask (14) is intentionally NOT
         //   registered — its Python impl mutates state.posix.sigmask which
         //   RustSimState does not carry; falls back to Python for parity.
+        // getrlimit (97), setrlimit (160), prlimit64 (302): resource limits
+        //   (angr-0hif.7). getrlimit mirrors procedures/linux_kernel/
+        //   getrlimit.py — RLIMIT_STACK writes 8388608 + symbolic rlim_max,
+        //   other resources return fresh symbolic. setrlimit / prlimit64
+        //   have no Python SimProcedure and mirror syscall_stub.
+        // futex (202): mirrors procedures/linux_kernel/futex.py — op&1
+        //   (FUTEX_WAKE family) returns 0, else fresh symbolic.
+        // eventfd (284), eventfd2 (290), epoll_create (213), epoll_create1
+        //   (291), epoll_ctl (233), epoll_wait (232): concurrency primitives
+        //   with no Python SimProcedure; native handlers mirror syscall_stub.
+        //   angr is single-threaded symex so blocking is never modeled.
+        //   epoll_ctl_old (214) / epoll_wait_old (215) intentionally NOT
+        //   registered — pre-2.6 legacy that no current binary uses.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -175,6 +190,7 @@ impl NativeSyscallRegistry {
             (60, exit::NativeExitSyscall),
             (62, signals::NativeKillSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
+            (97, rlimit::NativeGetrlimitSyscall),
             (102, identity::NativeGetuidSyscall),
             (104, identity::NativeGetgidSyscall),
             (105, identity::NativeSetuidSyscall),
@@ -187,11 +203,20 @@ impl NativeSyscallRegistry {
             (151, memory_extras::NativeMlockallSyscall),
             (152, memory_extras::NativeMunlockallSyscall),
             (158, arch_prctl::NativeArchPrctlSyscall),
+            (160, rlimit::NativeSetrlimitSyscall),
             (186, identity::NativeGettidSyscall),
             (201, sim_time::NativeTimeSyscall),
+            (202, concurrency::NativeFutexSyscall),
+            (213, concurrency::NativeEpollCreateSyscall),
             (228, sim_time::NativeClockGettimeSyscall),
             (231, exit::NativeExitSyscall),
+            (232, concurrency::NativeEpollWaitSyscall),
+            (233, concurrency::NativeEpollCtlSyscall),
             (234, signals::NativeTgkillSyscall),
+            (284, concurrency::NativeEventfdSyscall),
+            (290, concurrency::NativeEventfd2Syscall),
+            (291, concurrency::NativeEpollCreate1Syscall),
+            (302, rlimit::NativePrlimit64Syscall),
         ]);
 
         // ===== Per-arch registrations (angr-7xms) =====
@@ -236,6 +261,8 @@ impl NativeSyscallRegistry {
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
             (64, identity::NativeGetppidSyscall),
+            (75, rlimit::NativeSetrlimitSyscall),
+            (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
@@ -247,6 +274,8 @@ impl NativeSyscallRegistry {
             (163, memory_extras::NativeMremapSyscall),
             (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
+            (191, rlimit::NativeGetrlimitSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
@@ -255,9 +284,17 @@ impl NativeSyscallRegistry {
             (214, identity::NativeSetgidSyscall),
             (219, memory_extras::NativeMadviseSyscall),
             (224, identity::NativeGettidSyscall),
+            (240, concurrency::NativeFutexSyscall),
             (252, exit::NativeExitSyscall),
+            (254, concurrency::NativeEpollCreateSyscall),
+            (255, concurrency::NativeEpollCtlSyscall),
+            (256, concurrency::NativeEpollWaitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
             (270, signals::NativeTgkillSyscall),
+            (323, concurrency::NativeEventfdSyscall),
+            (328, concurrency::NativeEventfd2Syscall),
+            (329, concurrency::NativeEpollCreate1Syscall),
+            (340, rlimit::NativePrlimit64Syscall),
         ]);
 
         // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
@@ -280,6 +317,8 @@ impl NativeSyscallRegistry {
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
             (64, identity::NativeGetppidSyscall),
+            (75, rlimit::NativeSetrlimitSyscall),
+            (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
@@ -291,6 +330,8 @@ impl NativeSyscallRegistry {
             (163, memory_extras::NativeMremapSyscall),
             (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
+            (191, rlimit::NativeGetrlimitSyscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
@@ -299,9 +340,17 @@ impl NativeSyscallRegistry {
             (214, identity::NativeSetgidSyscall),
             (220, memory_extras::NativeMadviseSyscall),
             (224, identity::NativeGettidSyscall),
+            (240, concurrency::NativeFutexSyscall),
             (248, exit::NativeExitSyscall),
+            (250, concurrency::NativeEpollCreateSyscall),
+            (251, concurrency::NativeEpollCtlSyscall),
+            (252, concurrency::NativeEpollWaitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
             (268, signals::NativeTgkillSyscall),
+            (351, concurrency::NativeEventfdSyscall),
+            (356, concurrency::NativeEventfd2Syscall),
+            (357, concurrency::NativeEpollCreate1Syscall),
+            (369, rlimit::NativePrlimit64Syscall),
         ]);
 
         // Linux AArch64 (asm-generic/unistd.h). Uses the asm-generic ABI:
@@ -311,11 +360,21 @@ impl NativeSyscallRegistry {
         // define `pause` (29 on i386/arm) or `alarm` (27 on i386/arm) —
         // glibc on aarch64 emulates them via setitimer / rt_sigtimedwait.
         // So only kill, tgkill, and rt_sigreturn from angr-0hif.6 land here.
+        // ARM64 asm-generic note: epoll_create (legacy) and epoll_wait are
+        //   absent; binaries use epoll_create1 (20) and epoll_pwait (22).
+        //   epoll_pwait is intentionally NOT registered here — bd-0hif.7
+        //   scoped epoll_wait specifically, and a stub for epoll_pwait is
+        //   a small follow-up. Likewise the legacy 1-arg eventfd is absent
+        //   (only eventfd2 at 19).
         register_syscalls!(r, "ARM64", [
+            (19, concurrency::NativeEventfd2Syscall),
+            (20, concurrency::NativeEpollCreate1Syscall),
+            (21, concurrency::NativeEpollCtlSyscall),
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
             (93, exit::NativeExitSyscall),
             (94, exit::NativeExitSyscall),
+            (98, concurrency::NativeFutexSyscall),
             (113, sim_time::NativeClockGettimeSyscall),
             (129, signals::NativeKillSyscall),
             (131, signals::NativeTgkillSyscall),
@@ -323,6 +382,8 @@ impl NativeSyscallRegistry {
             (139, signals::NativeRtSigreturnSyscall),
             (144, identity::NativeSetgidSyscall),
             (146, identity::NativeSetuidSyscall),
+            (163, rlimit::NativeGetrlimitSyscall),
+            (164, rlimit::NativeSetrlimitSyscall),
             (169, sim_time::NativeGettimeofdaySyscall),
             (172, identity::NativeGetpidSyscall),
             (173, identity::NativeGetppidSyscall),
@@ -342,6 +403,7 @@ impl NativeSyscallRegistry {
             (230, memory_extras::NativeMlockallSyscall),
             (231, memory_extras::NativeMunlockallSyscall),
             (233, memory_extras::NativeMadviseSyscall),
+            (261, rlimit::NativePrlimit64Syscall),
         ]);
 
         // Linux MIPS32 O32 (asm/unistd_o32.h). Numbers start at 4000.
@@ -365,6 +427,8 @@ impl NativeSyscallRegistry {
             (4049, identity::NativeGeteuidSyscall),
             (4050, identity::NativeGetegidSyscall),
             (4064, identity::NativeGetppidSyscall),
+            (4075, rlimit::NativeSetrlimitSyscall),
+            (4076, rlimit::NativeGetrlimitSyscall),
             (4078, sim_time::NativeGettimeofdaySyscall),
             (4091, munmap::NativeMunmapSyscall),
             (4125, mprotect::NativeMprotectSyscall),
@@ -378,9 +442,17 @@ impl NativeSyscallRegistry {
             (4194, sigaction::NativeRtSigactionSyscall),
             (4218, memory_extras::NativeMadviseSyscall),
             (4222, identity::NativeGettidSyscall),
+            (4238, concurrency::NativeFutexSyscall),
             (4246, exit::NativeExitSyscall),
+            (4248, concurrency::NativeEpollCreateSyscall),
+            (4249, concurrency::NativeEpollCtlSyscall),
+            (4250, concurrency::NativeEpollWaitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
             (4266, signals::NativeTgkillSyscall),
+            (4319, concurrency::NativeEventfdSyscall),
+            (4325, concurrency::NativeEventfd2Syscall),
+            (4326, concurrency::NativeEpollCreate1Syscall),
+            (4338, rlimit::NativePrlimit64Syscall),
         ]);
 
         r
@@ -856,6 +928,139 @@ mod tests {
                     .unwrap_or_else(|| panic!("{arch} alarm ({n}) missing"));
                 assert_eq!(a.name(), "alarm");
                 assert_eq!(a.num_args(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn rlimit_registered_on_all_arches() {
+        // angr-0hif.7: getrlimit / setrlimit / prlimit64.
+        // getrlimit mirrors procedures/linux_kernel/getrlimit.py — the
+        // RLIMIT_STACK branch writes 8388608 to *rlim and returns 0;
+        // other resources return a fresh symbolic. setrlimit/prlimit64
+        // have no Python SimProcedure and fall through to syscall_stub.
+        // x86 and ARM also expose `ugetrlimit` (191), aliased to the
+        // same handler since Python defines ugetrlimit(getrlimit).
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, getrlimit, setrlimit, prlimit64, ugetrlimit-or-None)
+        let table: &[(&str, u64, u64, u64, Option<u64>)] = &[
+            ("AMD64", 97, 160, 302, None),
+            ("X86", 76, 75, 340, Some(191)),
+            ("ARM", 76, 75, 369, Some(191)),
+            ("ARM64", 163, 164, 261, None),
+            ("MIPS32", 4076, 4075, 4338, None),
+        ];
+
+        for &(arch, get_n, set_n, pr_n, uget_n) in table {
+            let g = r
+                .get(arch, get_n)
+                .unwrap_or_else(|| panic!("{arch} getrlimit ({get_n}) missing"));
+            assert_eq!(g.name(), "getrlimit");
+            assert_eq!(g.num_args(), 2);
+
+            let s = r
+                .get(arch, set_n)
+                .unwrap_or_else(|| panic!("{arch} setrlimit ({set_n}) missing"));
+            assert_eq!(s.name(), "setrlimit");
+            assert_eq!(s.num_args(), 2);
+
+            let p = r
+                .get(arch, pr_n)
+                .unwrap_or_else(|| panic!("{arch} prlimit64 ({pr_n}) missing"));
+            assert_eq!(p.name(), "prlimit64");
+            assert_eq!(p.num_args(), 4);
+
+            if let Some(un) = uget_n {
+                let u = r
+                    .get(arch, un)
+                    .unwrap_or_else(|| panic!("{arch} ugetrlimit ({un}) missing"));
+                // Alias: ugetrlimit shares the getrlimit handler.
+                assert_eq!(u.name(), "getrlimit", "{arch} ugetrlimit must alias to getrlimit");
+            }
+        }
+    }
+
+    #[test]
+    fn concurrency_registered_on_all_arches() {
+        // angr-0hif.7: futex + eventfd/eventfd2 + epoll_create/_create1/
+        // _ctl/_wait. ARM64 (asm-generic) drops legacy epoll_create,
+        // epoll_wait, and 1-arg eventfd — only the *_create1 / epoll_ctl
+        // / epoll_pwait / eventfd2 variants exist.
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, futex, eventfd-or-None, eventfd2, epoll_create-or-None,
+        //  epoll_create1, epoll_ctl, epoll_wait-or-None)
+        #[allow(clippy::type_complexity)]
+        let table: &[(
+            &str,
+            u64,
+            Option<u64>,
+            u64,
+            Option<u64>,
+            u64,
+            u64,
+            Option<u64>,
+        )] = &[
+            ("AMD64", 202, Some(284), 290, Some(213), 291, 233, Some(232)),
+            ("X86", 240, Some(323), 328, Some(254), 329, 255, Some(256)),
+            ("ARM", 240, Some(351), 356, Some(250), 357, 251, Some(252)),
+            ("ARM64", 98, None, 19, None, 20, 21, None),
+            (
+                "MIPS32",
+                4238,
+                Some(4319),
+                4325,
+                Some(4248),
+                4326,
+                4249,
+                Some(4250),
+            ),
+        ];
+
+        for &(arch, futex_n, evfd_n, evfd2_n, ec_n, ec1_n, ectl_n, ewait_n) in table {
+            let f = r
+                .get(arch, futex_n)
+                .unwrap_or_else(|| panic!("{arch} futex ({futex_n}) missing"));
+            assert_eq!(f.name(), "futex");
+            assert_eq!(f.num_args(), 6);
+
+            let e2 = r
+                .get(arch, evfd2_n)
+                .unwrap_or_else(|| panic!("{arch} eventfd2 ({evfd2_n}) missing"));
+            assert_eq!(e2.name(), "eventfd2");
+            assert_eq!(e2.num_args(), 2);
+
+            let ec1 = r
+                .get(arch, ec1_n)
+                .unwrap_or_else(|| panic!("{arch} epoll_create1 ({ec1_n}) missing"));
+            assert_eq!(ec1.name(), "epoll_create1");
+            assert_eq!(ec1.num_args(), 1);
+
+            let ectl = r
+                .get(arch, ectl_n)
+                .unwrap_or_else(|| panic!("{arch} epoll_ctl ({ectl_n}) missing"));
+            assert_eq!(ectl.name(), "epoll_ctl");
+            assert_eq!(ectl.num_args(), 4);
+
+            if let Some(n) = evfd_n {
+                let e = r.get(arch, n).unwrap_or_else(|| panic!("{arch} eventfd ({n}) missing"));
+                assert_eq!(e.name(), "eventfd");
+                assert_eq!(e.num_args(), 1);
+            }
+            if let Some(n) = ec_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} epoll_create ({n}) missing"));
+                assert_eq!(h.name(), "epoll_create");
+                assert_eq!(h.num_args(), 1);
+            }
+            if let Some(n) = ewait_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} epoll_wait ({n}) missing"));
+                assert_eq!(h.name(), "epoll_wait");
+                assert_eq!(h.num_args(), 4);
             }
         }
     }

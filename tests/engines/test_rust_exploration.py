@@ -11545,6 +11545,142 @@ class TestNativeSignalSyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeResourceLimitSyscalls:
+    """angr-0hif.7: native ``getrlimit`` / ``setrlimit`` / ``prlimit64``
+    handlers. ``getrlimit`` mirrors ``procedures/linux_kernel/getrlimit.py``
+    — RLIMIT_STACK (resource=3) writes 8388608 + fresh symbolic to
+    ``*rlim`` and returns 0; other resources return a fresh symbolic.
+    ``setrlimit`` and ``prlimit64`` have no Python ``SimProcedure`` and
+    mirror the ``syscall_stub`` ReturnUnconstrained fallback. Rust unit
+    tests in ``native/angr/src/syscalls/rlimit.rs`` pin the per-handler
+    invariants; this is the cross-FFI dispatch + integration check.
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (97, "getrlimit"),
+            (160, "setrlimit"),
+            (302, "prlimit64"),
+        ],
+    )
+    def test_rlimit_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        # Concrete args. For getrlimit pass resource != 3 so we hit the
+        # symbolic-return branch (no memory write needed).
+        state.regs.rdi = 1  # resource (RLIMIT_FSIZE for getrlimit)
+        state.regs.rsi = 0  # rlim* (unused on non-stack branch)
+        state.regs.rdx = 0
+        state.regs.r10 = 0
+        state.regs.r8 = 0
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+    def test_getrlimit_rlimit_stack_writes_concrete_cur(self):
+        """RLIMIT_STACK branch must populate ``*rlim`` with 8388608 as
+        ``rlim_cur`` (8 bytes LE), matching Python's
+        ``procedures/linux_kernel/getrlimit.py``.
+
+        We allocate a small mapped page for ``rlim``, fire the syscall
+        with ``rdi=3, rsi=<page>``, and read back ``state.memory[page:8]``.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = 97  # getrlimit
+        state.regs.rdi = 3  # RLIMIT_STACK
+        rlim_addr = 0x500000
+        state.memory.map_region(rlim_addr, 0x1000, 0b110)  # RW
+        state.regs.rsi = rlim_addr
+        state.regs.rdx = 0
+        state.regs.r10 = 0
+        state.regs.r8 = 0
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0
+        # Successor should still be reachable; load *rlim and confirm.
+        all_states = (
+            list(mgr.active) + list(mgr.deadended) + list(mgr.found)
+        )
+        assert all_states, "expected at least one state after getrlimit"
+        s = all_states[0]
+        cur = s.memory.load(rlim_addr, 8, endness="Iend_LE")
+        cur_val = s.solver.eval(cur)
+        assert cur_val == 8388608, (
+            f"RLIMIT_STACK rlim_cur should be 8388608, got {cur_val}"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeConcurrencySyscalls:
+    """angr-0hif.7: native ``futex`` / ``eventfd`` / ``eventfd2`` /
+    ``epoll_create`` / ``epoll_create1`` / ``epoll_ctl`` / ``epoll_wait``
+    handlers. ``futex`` mirrors ``procedures/linux_kernel/futex.py``
+    (FUTEX_WAKE returns 0, else symbolic). The other six fall through
+    to ``syscall_stub`` in Python and emit fresh symbolic from native.
+    angr is single-threaded symex; blocking is never modeled.
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label,futex_op",
+        [
+            (202, "futex_wake", 1),    # FUTEX_WAKE -> concrete 0
+            (202, "futex_wait", 0),    # FUTEX_WAIT -> symbolic
+            (284, "eventfd", 0),
+            (290, "eventfd2", 0),
+            (213, "epoll_create", 0),
+            (291, "epoll_create1", 0),
+            (233, "epoll_ctl", 0),
+            (232, "epoll_wait", 0),
+        ],
+    )
+    def test_concurrency_syscall_dispatches_natively(
+        self, syscall_num, label, futex_op
+    ):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        state.regs.rdi = 0
+        state.regs.rsi = futex_op
+        state.regs.rdx = 0
+        state.regs.r10 = 0
+        state.regs.r8 = 0
+        state.regs.r9 = 0
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""
