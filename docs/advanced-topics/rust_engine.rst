@@ -1657,6 +1657,199 @@ Decision history
 * ``angr-ji7h`` (2026-05-25): consolidated the allowlist to a single
   source of truth + CI tests guarding against silent pass-through.
 
+Exploration technique compatibility
+-----------------------------------
+
+The Rust manager accepts ``mgr.use_technique(...)`` with the standard
+``angr.exploration_techniques`` classes, but dispatch is handled in
+``angr/exploration/rust_techniques.py`` rather than by the stock
+``SimulationManager`` machinery — the matrix below tracks which
+classes are wired natively, which run as Python fallback through
+``RustStateProxy``, and which are known not to work.
+
+.. list-table::
+   :widths: 22 16 62
+   :header-rows: 1
+
+   * - Technique
+     - Status
+     - Notes
+   * - ``DFS`` / ``DepthFirst``
+     - **Native**
+     - Sets ``set_state_selection_lifo()``; the active stash is popped
+       in LIFO order each step.
+   * - ``BFS`` / ``BreadthFirst``
+     - **Native**
+     - Default ordering; ``set_state_selection_fifo()`` is also a
+       no-op since FIFO is the built-in policy.
+   * - ``Explorer``
+     - **Native (int-only)**
+     - ``find`` / ``avoid`` addresses are forwarded into Rust when
+       supplied as ``int``, ``list``, ``tuple``, or ``set``. Callable
+       predicates fall back to a best-effort probe over
+       ``_extra_stop_points`` against a mock state — there is no
+       per-step Python callback path for live predicates.
+   * - ``LengthLimiter``
+     - **Native**
+     - ``register_length_limiter(max_length, drop)`` — drop=True
+       discards over-length states; drop=False routes them to the
+       ``cut`` stash.
+   * - ``Timeout``
+     - **Native**
+     - ``register_timeout(secs)`` — wall-clock; checked between steps
+       in the Rust run loop.
+   * - ``CheckUniqueness``
+     - **Native (x86 / AMD64)**
+     - ``register_uniqueness_filter(regs)`` with a built-in default
+       register list for ``X86`` / ``AMD64``; other architectures
+       fall through to the Python ``filter()`` path.
+   * - ``LoopSeer``
+     - **Python fallback**
+     - Registered as an ordinary technique; ``filter()`` / ``step()``
+       run against ``RustStateProxy``. No native loop bound or
+       trip-count discount yet.
+   * - ``MemoryWatcher``
+     - **Python fallback (untested)**
+     - Only reads ``psutil.virtual_memory()`` and calls
+       ``simgr.move`` on the wrapper proxy. Should work as a
+       safety valve but is not exercised in
+       ``tests/engines/test_rust_exploration.py``.
+   * - ``Spiller``
+     - **Untested**
+     - Relies on ``state.copy()`` and ``state.posix.dumps``; the Rust
+       state-materialization path supports both, so it likely works
+       but has no CI coverage.
+   * - ``Veritesting``
+     - **Unsupported (raises)**
+     - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in
+       ``_RAISE_OPTION_NAMES`` (the Rust engine does not drive
+       ``SimStateHistory``'s strongref path). Construction raises
+       ``NotImplementedError`` listing the offending option.
+       Drop to the Python engine for veritesting workflows.
+   * - ``Threading``
+     - **Unsupported (untested, unsafe)**
+     - Wraps ``simgr.step`` in a thread pool. The Rust engine is
+       single-threaded internally, and the PyO3 ``Send`` / ``Sync``
+       audit on exposed classes is still open (spike ``angr-8fo6``).
+       Do not enable until that audit lands.
+   * - ``Oppologist``
+     - **Untested (semantics mismatch)**
+     - Catches ``angr.errors.SimError`` to single-step around
+       unsupported instructions. The Rust engine raises typed
+       ``Rust*Error`` exceptions (``RustUnsupportedVexOpError`` and
+       siblings), which are *not* subclasses of ``SimError`` — the
+       catch will miss them.
+   * - ``Tracer`` / ``Director`` / ``Slicecutor`` /
+       ``Stochastic`` / ``Bucketizer`` / ``DrillerCore`` /
+       ``ManualMergepoint`` / ``StubStasher`` / ``Suggestions``
+     - **Untested**
+     - Registered as ordinary techniques and run against
+       ``RustStateProxy``. They have no CI coverage in
+       ``tests/engines/test_rust_exploration.py`` and may depend on
+       ``state.history`` / ``state.posix`` semantics that the proxy
+       only partially supports — verify on your workload before
+       relying on them.
+
+Anything not listed above will be accepted, tracked in
+``mgr._active_techniques``, and dispatched as
+``filter`` / ``complete`` / ``successors`` over ``RustStateProxy``
+just like the “Untested” entries. The accept-everything default keeps
+construction non-fatal, but the techniques that read internal
+``SimState`` plugins beyond the proxy's contract (full ``state.copy``,
+``state.history.parent``, ``state.solver.constraints`` mutation) will
+silently misbehave rather than raise — vet each one against the proxy
+read-only invariant before counting on it in CI.
+
+Memory pressure and OOM
+-----------------------
+
+The Rust engine has no built-in memory budget or watchdog. The user-
+facing knobs that cap memory growth are:
+
+``max_active_states``
+  Constructor argument to ``RustExplorationManager``. When the active
+  stash reaches this size, new forks are silently pruned. ``None``
+  (default) disables the cap.
+
+``max_history``
+  Constructor argument (default ``1000``). Caps the per-state
+  ``state.history`` / ``detailed_history`` ring buffer. Setting it to
+  ``0`` disables truncation entirely and is only safe for short runs
+  — long explorations will accumulate per-state history blocks
+  proportional to step count and *can OOM*.
+
+``MemoryWatcher`` technique
+  ``mgr.use_technique(MemoryWatcher(min_memory=512))`` moves the
+  active stash into a ``lowmem`` stash when system free memory drops
+  below the threshold (MB). Runs as Python fallback; works against
+  the Rust manager because it only inspects ``psutil`` and calls
+  ``simgr.move``.
+
+External resource limit
+  Set ``resource.setrlimit(RLIMIT_AS, ...)`` in the host process
+  before constructing the manager. ``tests/benchmarks/run_single.py``
+  uses a 4 GB ``RLIMIT_AS`` to keep the benchmark loop from
+  OOM-killing the orchestrator on 8 GB / no-swap machines.
+
+Where memory accumulates
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **Active stash** — one ``RustSimState`` per live path (memory pages,
+  register file, constraint AST trees, Z3 solver clone). The Z3 solver
+  is the dominant per-state cost on constraint-heavy workloads.
+* **Avoided / errored stashes** — states moved to non-active stashes
+  still hold their full ``SymContext`` (including the Z3 solver
+  clone). On wide explorations like ``hackcon2016_angry-reverser``
+  these accumulate hundreds of solver clones; the engine drops them
+  at the push sites in ``exploration/run_loop.rs`` to bound the
+  per-stash cost, but a user-controlled ``mgr.avoid`` workload can
+  still grow O(paths).
+* **claripy AST caches** — Python-side, ``WeakValueDictionary`` based;
+  trims with GC, no explicit knob.
+* **Rust AST translation caches** — thread-local LRUs, bounded.
+  ``RustExplorationManager(..., clear_caches_on_cleanup=True)`` flushes
+  them in ``__del__`` for Callable-heavy workflows.
+
+Behavior on exhaustion
+~~~~~~~~~~~~~~~~~~~~~~
+
+* **Python ``MemoryError`` mid-step** — propagates back through the
+  PyO3 boundary as a normal Python exception. The Rust ``run`` call
+  unwinds, the manager remains constructed, and the caller sees
+  ``MemoryError`` at the ``mgr.run(...)`` / ``mgr.explore(...)``
+  call site. States already moved to the ``found`` / ``deadended``
+  stashes before the failure remain accessible.
+* **Kernel OOM-kill** — the process dies; all in-memory state is
+  lost. There is no graceful drain to disk. Stashes are not persisted.
+* **Rust ``alloc::handle_alloc_error``** — defaults to aborting the
+  process (``cargo`` release profile). ``RustOomError`` exists in the
+  exception hierarchy but is currently only raised by an explicit
+  test hook (``engine.rs:312``); real Rust allocation failures abort
+  rather than propagate.
+
+Recovery contract
+~~~~~~~~~~~~~~~~~
+
+There is **no built-in snapshot / restore primitive** today. To
+survive an OOM-kill, the caller is responsible for persisting whatever
+is interesting (e.g. ``state.posix.dumps(0)`` for a ``find`` callback
+match) before the kill. A ``RustBV`` op-tree snapshot prototype is
+filed as ``angr-x04s.1`` (opt-in, single-bench scope) but is not in
+the default code path.
+
+Recommended posture for adversarial / long-running workloads:
+
+#. Set ``max_active_states`` to a workload-appropriate cap.
+#. Add ``MemoryWatcher(min_memory=...)`` so over-budget states drain
+   into a stash instead of growing the active set.
+#. Tune ``solver_timeout_ms`` (constructor) to bound per-query Z3
+   memory growth.
+#. Run inside a process with ``RLIMIT_AS`` set, and treat the
+   resulting ``MemoryError`` (or process abort, when Rust hits the
+   ceiling first) as a non-recoverable terminal signal — write the
+   interesting bits out from ``find`` / ``avoid`` callbacks, not at
+   the end.
+
 Known slower benchmarks
 -----------------------
 
