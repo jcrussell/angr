@@ -4561,6 +4561,52 @@ class TestExplorationIntegration:
 
         assert len(mgr.found) > 0, "Should find at least one state"
 
+    def test_python_callback_aggregate_counters(self, fauxware_project):
+        """angr-b00q: mgr.stats exposes aggregate `python_callback_count` and
+        `python_callback_dispatch_us` that sum across all per-kind callback
+        buckets in PerformanceTracker. Both must be non-zero after a real
+        exploration (driven by lift_block / memory_load / simprocedure
+        callbacks, which always fire on fauxware) and dispatch_us must be
+        bounded by the exploration's wall-clock time.
+        """
+        import time
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        _start = time.perf_counter()
+        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        elapsed_us = (time.perf_counter() - _start) * 1e6
+
+        stats = mgr.stats
+        assert "python_callback_count" in stats
+        assert "python_callback_dispatch_us" in stats
+        assert stats["python_callback_count"] > 0, (
+            f"expected non-zero aggregate callback count; got {stats['python_callback_count']}"
+        )
+        assert stats["python_callback_dispatch_us"] > 0, (
+            f"expected non-zero aggregate dispatch_us; got {stats['python_callback_dispatch_us']}"
+        )
+        assert stats["python_callback_dispatch_us"] <= elapsed_us, (
+            f"dispatch_us must be bounded by exploration wall time; "
+            f"got dispatch_us={stats['python_callback_dispatch_us']} > elapsed_us={elapsed_us:.0f}"
+        )
+
+        # Aggregate must equal the sum of per-kind buckets we surface.
+        # NB `callback_count` (no kind suffix) is a Python-side FFI-crossing
+        # bookkeeping counter, not a PerformanceTracker bucket — skip it.
+        bucket_count = sum(
+            v for k, v in stats.items()
+            if k.startswith("callback_") and k.endswith("_count") and k != "callback_count"
+        )
+        bucket_ns = sum(
+            v for k, v in stats.items()
+            if k.startswith("callback_") and k.endswith("_total_ns")
+        )
+        assert stats["python_callback_count"] == bucket_count
+        assert stats["python_callback_dispatch_us"] == bucket_ns // 1000
+
     def test_explore_with_timeout_technique(self, fauxware_project):
         """Timeout technique stops exploration after time limit."""
         from angr.exploration import RustExplorationManager

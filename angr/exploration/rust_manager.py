@@ -3906,9 +3906,22 @@ class RustExplorationManager(
         # counters. Keys are kept verbatim ("callback_<kind>_count",
         # "callback_<kind>_total_ns") so downstream analysis can extract the
         # bucket by name without translation.
+        #
+        # angr-b00q: aggregate `python_callback_count` and
+        # `python_callback_dispatch_us` give a single top-level signal for
+        # "are Python round-trips dominating this run?" without forcing
+        # callers to sum the per-kind buckets themselves.
+        callback_total_count = 0
+        callback_total_ns = 0
         for key, val in self._perf_stats.as_dict().items():
             if key.startswith("callback_"):
                 result[key] = val
+                if key.endswith("_count"):
+                    callback_total_count += val
+                elif key.endswith("_total_ns"):
+                    callback_total_ns += val
+        result['python_callback_count'] = callback_total_count
+        result['python_callback_dispatch_us'] = callback_total_ns // 1000
         # angr-h0dv: defensive counter for Path A (rust_solver_ctx attach)
         # regressions. The other legacy constraint-sync counters were retired
         # after a 20-bench soak proved Path B was dead code.
