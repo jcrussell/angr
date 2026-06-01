@@ -41,11 +41,7 @@ impl RustExplorationManager {
         state.set_max_history(self.environment.max_history);
 
         self.index_state(state_id, stash);
-        self.sm
-            .stashes_mut()
-            .entry(stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(state);
+        self.sm.ensure_stash(stash).push_back(state);
 
         Ok(state_id)
     }
@@ -75,11 +71,7 @@ impl RustExplorationManager {
         self.sm.set_root(state_id, state_id);
 
         self.index_state(state_id, stash);
-        self.sm
-            .stashes_mut()
-            .entry(stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(forked);
+        self.sm.ensure_stash(stash).push_back(forked);
     }
 
     pub(crate) fn _merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
@@ -127,11 +119,7 @@ impl RustExplorationManager {
         // Track state root
         self.sm.set_root(merged_id, merged_id);
         self.index_state(merged_id, dest_stash);
-        self.sm
-            .stashes_mut()
-            .entry(dest_stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(merged);
+        self.sm.ensure_stash(dest_stash).push_back(merged);
 
         Ok(merged_id)
     }
@@ -150,11 +138,7 @@ impl RustExplorationManager {
                 for state in from.iter() {
                     self.sm.index(state.state_id(), to_stash);
                 }
-                let to = self
-                    .sm
-                    .stashes_mut()
-                    .entry(to_stash.to_string())
-                    .or_insert_with(VecDeque::new);
+                let to = self.sm.ensure_stash(to_stash);
                 to.append(&mut from);
                 self.sm.insert(from_stash, VecDeque::new());
                 return Ok(count);
@@ -199,11 +183,7 @@ impl RustExplorationManager {
             self.sm.index(state.state_id(), to_stash);
         }
         let count = moved.len();
-        let to = self
-            .sm
-            .stashes_mut()
-            .entry(to_stash.to_string())
-            .or_insert_with(VecDeque::new);
+        let to = self.sm.ensure_stash(to_stash);
         for state in moved.into_iter().rev() {
             to.push_back(state);
         }
@@ -234,12 +214,7 @@ impl RustExplorationManager {
         // Add to destination stash if found
         if let Some(state) = found_state {
             self.index_state(state_id, to_stash);
-            let to = self
-                .sm
-                .stashes_mut()
-                .entry(to_stash.to_string())
-                .or_insert_with(VecDeque::new);
-            to.push_back(state);
+            self.sm.ensure_stash(to_stash).push_back(state);
             Ok(true)
         } else {
             Ok(false)

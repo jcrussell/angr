@@ -19,6 +19,19 @@ pub const STASH_ERRORED: &str = "errored";
 pub const STASH_PRUNED: &str = "pruned";
 pub const STASH_UNCONSTRAINED: &str = "unconstrained";
 
+/// Standard stash names pre-registered at construction. Anything else triggers
+/// a one-time `log::warn!` on first creation via `ensure_stash` — typo guard
+/// per angr-630x (follow-up from the angr-9l9j PyO3 trust-model audit).
+pub const STANDARD_STASHES: &[&str] = &[
+    STASH_ACTIVE,
+    STASH_FOUND,
+    STASH_AVOID,
+    STASH_DEADENDED,
+    STASH_ERRORED,
+    STASH_PRUNED,
+    STASH_UNCONSTRAINED,
+];
+
 /// Manages state stashes, indices, and lineage tracking.
 pub struct StashManager {
     /// Named stashes holding exploration states.
@@ -116,6 +129,26 @@ impl StashManager {
     /// Insert a stash with given contents.
     pub fn insert(&mut self, stash: &str, states: VecDeque<RustSimState>) {
         self.stashes.insert(stash.to_string(), states);
+    }
+
+    /// Get or create a stash by name, returning a mutable reference. Emits a
+    /// `log::warn!` the first time a non-standard stash name is created so
+    /// that typos like `actve` for `active` are surfaced rather than silently
+    /// vanishing into an invisible stash. Subsequent calls with the same name
+    /// are silent — the stash exists in the map after the first creation.
+    pub fn ensure_stash(&mut self, name: &str) -> &mut VecDeque<RustSimState> {
+        if !self.stashes.contains_key(name) {
+            log::warn!(
+                "Rust exploration: creating new stash '{}' (not one of the \
+                 standard stashes {:?}); if this is a typo, the state will be \
+                 invisible to mgr.active / mgr.found / mgr.deadended etc.",
+                name,
+                STANDARD_STASHES,
+            );
+        }
+        self.stashes
+            .entry(name.to_string())
+            .or_insert_with(VecDeque::new)
     }
 
     // =========================================================================

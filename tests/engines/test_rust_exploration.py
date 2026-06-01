@@ -13777,5 +13777,98 @@ class TestImportZ3ConstraintPtrsValidation:
         )
 
 
+class TestStashNameValidation:
+    """angr-630x: warn on unknown stash names in create_state/move_state/etc.
+
+    Follow-up from the angr-9l9j PyO3 trust-model audit. A typo like
+    ``actve`` for ``active`` previously created an invisible stash and the
+    state vanished from ``mgr.active`` / ``mgr.found``. Now the first
+    creation of a non-standard stash emits a ``log::warn!`` line so the typo
+    is surfaced at the boundary.
+    """
+
+    def _set_warn_level(self):
+        from angr.rustylib.vex_engine import set_rust_log_level
+
+        set_rust_log_level("warn")
+
+    def _new_low_level_mgr(self):
+        from angr.rustylib.vex_engine import RustExplorationManager as _LL
+
+        return _LL("amd64")
+
+    def test_unknown_dest_stash_in_create_state_warns(self, capfd):
+        """create_state with a typo'd stash name logs a one-time warning."""
+        self._set_warn_level()
+        mgr = self._new_low_level_mgr()
+        _ = capfd.readouterr()
+
+        sid = mgr.create_state("actve")
+        captured = capfd.readouterr()
+        assert "creating new stash 'actve'" in captured.err, (
+            f"expected warn for typo stash; got stderr:\n{captured.err!r}"
+        )
+        # State is still actually placed (warn, don't reject) — typo-tolerant.
+        assert sid in mgr.get_state_ids("actve")
+        assert mgr.stash_count("actve") == 1
+
+    def test_standard_stash_names_do_not_warn(self, capfd):
+        """create_state with one of the seven standard stash names is silent."""
+        self._set_warn_level()
+        mgr = self._new_low_level_mgr()
+        _ = capfd.readouterr()
+
+        for stash in (
+            "active",
+            "found",
+            "avoid",
+            "deadended",
+            "errored",
+            "pruned",
+            "unconstrained",
+        ):
+            mgr.create_state(stash)
+
+        captured = capfd.readouterr()
+        assert "creating new stash" not in captured.err, (
+            f"standard stash names should not warn; got stderr:\n{captured.err!r}"
+        )
+
+    def test_unknown_stash_warns_only_once(self, capfd):
+        """Repeated use of the same non-standard stash warns only on first
+        creation — the stash exists in the map after that and subsequent
+        operations are silent."""
+        self._set_warn_level()
+        mgr = self._new_low_level_mgr()
+        _ = capfd.readouterr()
+
+        mgr.create_state("custom_stash_630x")
+        mgr.create_state("custom_stash_630x")
+        mgr.create_state("custom_stash_630x")
+
+        captured = capfd.readouterr()
+        warn_count = captured.err.count("creating new stash 'custom_stash_630x'")
+        assert warn_count == 1, (
+            f"expected exactly one warn for repeated use; got {warn_count} "
+            f"in stderr:\n{captured.err!r}"
+        )
+        assert mgr.stash_count("custom_stash_630x") == 3
+
+    def test_move_state_to_unknown_stash_warns(self, capfd):
+        """move_state into a typo'd destination also warns on first creation."""
+        self._set_warn_level()
+        mgr = self._new_low_level_mgr()
+        sid = mgr.create_state("active")
+        _ = capfd.readouterr()
+
+        moved = mgr.move_state(sid, "active", "fnd")
+        assert moved is True
+        captured = capfd.readouterr()
+        assert "creating new stash 'fnd'" in captured.err, (
+            f"expected warn for move_state typo; got stderr:\n{captured.err!r}"
+        )
+        assert mgr.stash_count("fnd") == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

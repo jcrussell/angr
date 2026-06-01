@@ -2087,16 +2087,32 @@ a raw pointer with no validation:
 Stash name validation (footgun, not unsafe)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``_create_state`` and ``_move_state``
-(``exploration/state_lifecycle.rs:43, 235``) use
-``stashes_mut().entry(stash.to_string()).or_insert_with(VecDeque::new)``
-to add the state to the destination stash. A typo
-(``"actve"`` instead of ``"active"``) silently creates a new stash
-and the state vanishes from the standard ``mgr.active`` /
-``mgr.found`` etc. views. This is not a memory-safety issue but it is
-an easy debugging trap. A whitelist (or at least a warning when a
-new stash is created at run-time) would surface the bug at the API
-boundary.
+``StashManager::ensure_stash`` (``native/angr/src/stash.rs``) wraps
+the destination-stash insertion path used by ``_create_state``,
+``_add_state``, ``_merge_states``, ``_move_state``, and
+``_move_states``. When the destination stash does not yet exist *and*
+the name is not one of the seven standard stashes
+(``active`` / ``found`` / ``avoid`` / ``deadended`` / ``errored`` /
+``pruned`` / ``unconstrained``), a ``log::warn!`` line is emitted
+listing the typo and the standard set:
+
+.. code-block:: text
+
+   [rust:WARN] angr::stash: Rust exploration: creating new stash
+   'actve' (not one of the standard stashes [...]); if this is a
+   typo, the state will be invisible to mgr.active / mgr.found /
+   mgr.deadended etc.
+
+The warn fires exactly once per fresh name — subsequent calls into
+the now-existing stash are silent, so user techniques with their own
+custom stash names (e.g. ``"timeout"`` in ``rust_techniques.py``,
+``"_merge_drop"`` in the merge fallback path) pay at most one warn
+per process. The default log level is ``off`` so the warn only
+surfaces when the user opts in with
+``set_rust_log_level("warn")`` (or higher) or ``ANGR_RUST_LOG=warn``.
+The behavior is otherwise unchanged — typos are surfaced, not
+rejected. Tested by ``TestStashNameValidation`` in
+``tests/engines/test_rust_exploration.py``.
 
 PyRustSimState lifetime
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -2115,6 +2131,7 @@ Summary
 For real-world angr scripts, the trust model holds: state IDs,
 addresses, BV handles, callbacks, and claripy ASTs all surface
 type/lookup errors as ``PyErr`` rather than panicking or UB-ing.
-The one production-relevant hardening opportunity is
-``import_z3_constraint_ptrs``; the stash-name footgun is a
-quality-of-life concern. Both have follow-up ``task`` beads filed.
+The ``import_z3_constraint_ptrs`` hardening landed under angr-33t9;
+the stash-name footgun landed under angr-630x. The trust-model audit
+itself was closed under angr-9l9j with no remaining production-blocking
+gaps.
