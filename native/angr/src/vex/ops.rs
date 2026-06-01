@@ -1144,9 +1144,15 @@ impl VEXOps {
             // Raw opcode — try concrete x87 transcendental fast path first
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
             // These arrive as Binop(rm, x); `left` carries rm, `right` the value.
-            // Symbolic falls through to the existing fresh-symbolic fallback.
+            // For Iop_2xm1F64 with symbolic input, try the concretize-and-pin
+            // fallback (angr-i5lj.1). All other symbolic transcendentals fall
+            // through to the existing fresh-symbolic fallback.
             IROp::Raw(code) => {
                 if let Some(result) = transcendentals::try_concrete_binop_rm(code, &left, &right) {
+                    Ok(result)
+                } else if let Some(result) =
+                    transcendentals::try_concretize_binop_rm(code, &left, &right, ctx)
+                {
                     Ok(result)
                 } else {
                     Err(OpError::RawOpcode(code))
@@ -1276,11 +1282,18 @@ impl VEXOps {
             IROp::FDiv(t) => (FloatOpKind::DivRm, t),
             IROp::Raw(code) => {
                 // x87 Triop transcendentals: Iop_AtanF64, Iop_Yl2xF64,
-                // Iop_Yl2xp1F64, Iop_ScaleF64. Concrete-only fast path;
-                // symbolic falls through to the existing fresh-symbolic
-                // fallback in expressions.rs::IRExpr::Triop.
+                // Iop_Yl2xp1F64, Iop_ScaleF64. Try concrete libm path first;
+                // for Iop_Yl2xF64 with symbolic input, fall back to the
+                // concretize-and-pin path (angr-i5lj.1). Other symbolic
+                // triops fall through to the fresh-symbolic fallback in
+                // expressions.rs::IRExpr::Triop.
                 if let Some(result) =
                     transcendentals::try_concrete_triop_rm(code, &rm, &left, &right)
+                {
+                    return Ok(result);
+                }
+                if let Some(result) =
+                    transcendentals::try_concretize_triop_rm(code, &rm, &left, &right, ctx)
                 {
                     return Ok(result);
                 }

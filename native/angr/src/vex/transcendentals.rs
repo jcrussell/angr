@@ -5,14 +5,42 @@
 //! lifter passes them through as `IROp::Raw(opcode)`.
 //!
 //! When all value operands are concrete f32/f64, this module computes the
-//! result via Rust's libm bindings. Symbolic operands return `None` so
-//! the caller falls back to `unsup_*` fresh-symbolic — Z3 has no native
-//! sin/cos/log/exp theory.
+//! result via Rust's libm bindings. Symbolic operands fall back to
+//! `unsup_*` fresh-symbolic by default — Z3 has no native sin/cos/log/exp
+//! theory.
+//!
+//! ## Symbolic concretization fallback (Iop_Yl2xF64 / Iop_2xm1F64 only)
+//!
+//! `try_concretize_binop_rm` / `try_concretize_triop_rm` extend the binop
+//! and triop paths with an **input-concretization** strategy for the two
+//! x87 log/exp ops covered by bd `angr-i5lj.1`. When the input is
+//! symbolic and the concrete path returned `None`, the solver is asked
+//! for one model of the input(s), the libm op is computed on that
+//! sample, the input(s) are pinned to the sampled value(s) with hard
+//! constraints (so the path stays consistent), and the concrete f64
+//! result is returned.
+//!
+//! Strategy rationale (option 1 in the bd description): cheap, no new
+//! Z3 theory; loses symbolic precision — the path now sees ONE specific
+//! value for the input. Alternative options not adopted:
+//!
+//! * Option 2 — Python callback to claripy: claripy itself has no
+//!   log/exp theory, so this would just trampoline back to the same
+//!   concretization with extra FFI cost.
+//! * Option 3 — Pure-symbolic via a Z3 UF with monotonicity / range
+//!   axioms (cf. closed angr-9l1y): expensive, brittle, and no current
+//!   benchmark routes a symbolic path through these ops
+//!   (sokohashv2 hooks them out at the test driver). TODO: revisit if
+//!   precision becomes an issue for real workloads.
+//!
+//! Other transcendentals (Sin/Cos/Tan/Atan/Yl2xp1/Scale/RecpExp) are
+//! intentionally NOT in this fallback yet — bd `angr-i5lj.2` covers
+//! the misc-FP ops with the same strategy.
 //!
 //! Opcode values: libvex_ir.h Iop_* enum, base 0x1400. Validated against
 //! pyvex.const.enums_to_ints (2026-05-07).
 
-use crate::symbolic::RustBV;
+use crate::symbolic::{RustBV, SymContext};
 
 pub const IOP_ATAN_F64: u32 = 0x14de;
 pub const IOP_YL2X_F64: u32 = 0x14df;
@@ -67,6 +95,81 @@ pub fn try_concrete_triop_rm(opcode: u32, _rm: &RustBV, a: &RustBV, b: &RustBV) 
         IOP_ATAN_F64 => af.atan2(bf),
         _ => return None,
     };
+    Some(RustBV::concrete(r.to_bits() as u128, 64))
+}
+
+/// Symbolic-input fallback for `Iop_2xm1F64`. Returns `None` for any
+/// other opcode (the caller will then fall back to fresh-symbolic).
+///
+/// When `x` is symbolic, evaluates one model via `ctx.eval`, runs the
+/// libm `exp2(x) - 1.0` on that sample, pins `x` to the sampled value
+/// with a hard constraint, and returns the concrete result. See the
+/// module-level docs for the strategy rationale (option 1 of
+/// `angr-i5lj.1`).
+///
+/// Returns `None` if the solver is UNSAT under the current constraints
+/// or the opcode is not `IOP_2XM1_F64`.
+pub fn try_concretize_binop_rm(
+    opcode: u32,
+    rm: &RustBV,
+    x: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if opcode != IOP_2XM1_F64 {
+        return None;
+    }
+    // Concrete already — defer to the libm fast path (caller usually
+    // tries that first; handle here for robustness).
+    if x.is_concrete() {
+        return try_concrete_binop_rm(opcode, rm, x);
+    }
+    let xv = ctx.eval(x)? as u64;
+    let xf = f64::from_bits(xv);
+    let r = xf.exp2() - 1.0;
+    let pinned = RustBV::concrete(xv as u128, x.width());
+    let cond = x.eq(&pinned, ctx);
+    ctx.assume_true(&cond);
+    Some(RustBV::concrete(r.to_bits() as u128, 64))
+}
+
+/// Symbolic-input fallback for `Iop_Yl2xF64`. Returns `None` for any
+/// other opcode (the caller will then fall back to fresh-symbolic).
+///
+/// When `a` (y) and/or `b` (x) are symbolic, evaluates one model of each
+/// via `ctx.eval`, runs the libm `y * log2(x)` on the sample, pins each
+/// symbolic input to its sampled value, and returns the concrete f64
+/// result. See the module-level docs for the strategy rationale.
+///
+/// Returns `None` if either eval fails (UNSAT) or the opcode is not
+/// `IOP_YL2X_F64`.
+pub fn try_concretize_triop_rm(
+    opcode: u32,
+    rm: &RustBV,
+    a: &RustBV,
+    b: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if opcode != IOP_YL2X_F64 {
+        return None;
+    }
+    if a.is_concrete() && b.is_concrete() {
+        return try_concrete_triop_rm(opcode, rm, a, b);
+    }
+    let av = ctx.eval(a)? as u64;
+    let bv = ctx.eval(b)? as u64;
+    let af = f64::from_bits(av);
+    let bf = f64::from_bits(bv);
+    let r = af * bf.log2();
+    if a.is_symbolic() {
+        let pinned = RustBV::concrete(av as u128, a.width());
+        let cond = a.eq(&pinned, ctx);
+        ctx.assume_true(&cond);
+    }
+    if b.is_symbolic() {
+        let pinned = RustBV::concrete(bv as u128, b.width());
+        let cond = b.eq(&pinned, ctx);
+        ctx.assume_true(&cond);
+    }
     Some(RustBV::concrete(r.to_bits() as u128, 64))
 }
 
