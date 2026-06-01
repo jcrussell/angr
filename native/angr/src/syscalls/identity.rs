@@ -14,11 +14,15 @@
 //! (`angr/state_plugins/posix.py:159`).
 //!
 //! Note on `setuid` / `setgid`: angr has no Python `SimProcedure` for
-//! these. The unhandled syscall falls through to the generic stub which
-//! emits a fresh symbolic return — meaningfully different from a
-//! constant-success return. To preserve parity, those two syscalls are
-//! intentionally NOT registered here; they continue through the Python
-//! callback path.
+//! these — the unhandled syscall falls through to `procedures/stubs/
+//! syscall_stub.py::syscall`, which returns
+//! `state.solver.Unconstrained("syscall_stub_<name>", returnty.size, ...)`.
+//! `NativeSetuidSyscall` / `NativeSetgidSyscall` mirror that exactly:
+//! ignore the single uid_t/gid_t argument and emit a fresh
+//! `RustBV::symbolic` sized to `arch().bits()` (the C `long` return
+//! width on every supported arch). The dispatcher routes this through
+//! `SyscallOutcome::ContinueSymbolic`, matching the stub semantics
+//! bit-for-bit so binaries can fork on the return value.
 //!
 //! No-argument syscalls: handlers advertise `num_args() == 0`, so the
 //! dispatcher passes an empty slice. No symbolic-argument fallback is
@@ -73,6 +77,47 @@ constant_syscall!(NativeGeteuidSyscall, "geteuid", DEFAULT_UID_GID);
 constant_syscall!(NativeGetgidSyscall, "getgid", DEFAULT_UID_GID);
 constant_syscall!(NativeGetegidSyscall, "getegid", DEFAULT_UID_GID);
 
+/// Macro to declare a 1-arg syscall handler that returns a fresh symbolic
+/// value (matches Python `syscall_stub.py::syscall` ReturnUnconstrained
+/// semantics for syscalls with no dedicated `SimProcedure`).
+///
+/// Used for `setuid` / `setgid`: the single argument is intentionally
+/// ignored (no semantic effect on simulated process state), and the
+/// return is a fresh `RustBV::symbolic` sized to the arch's `long` width
+/// (`arch().bits()` for every supported arch). The symbol name mirrors
+/// Python's `f"syscall_stub_{display_name}"`.
+macro_rules! stub_syscall_1arg {
+    ($ty:ident, $label:expr, $sym_name:expr) => {
+        pub struct $ty;
+
+        impl NativeSyscall for $ty {
+            fn name(&self) -> &'static str {
+                $label
+            }
+
+            fn num_args(&self) -> usize {
+                1
+            }
+
+            fn call(
+                &self,
+                state: &mut RustSimState,
+                _args: &[RustBV],
+            ) -> Result<SyscallOutcome, SyscallError> {
+                let bits = state.arch().bits();
+                let ret = {
+                    let ctx = state.solver().borrow();
+                    RustBV::symbolic(&ctx, $sym_name, bits)
+                };
+                Ok(SyscallOutcome::ContinueSymbolic { ret })
+            }
+        }
+    };
+}
+
+stub_syscall_1arg!(NativeSetuidSyscall, "setuid", "syscall_stub_setuid");
+stub_syscall_1arg!(NativeSetgidSyscall, "setgid", "syscall_stub_setgid");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +156,68 @@ mod tests {
         assert_eq!(h.name(), "getppid");
         let outcome = h.call(&mut state, &[]).expect("getppid never errs");
         assert_continue(outcome, DEFAULT_PPID);
+    }
+
+    #[test]
+    fn setuid_setgid_return_fresh_symbolic() {
+        // setuid / setgid have no Python SimProcedure; the stub returns
+        // a fresh unconstrained symbol. The native handler must do the
+        // same — every invocation yields a distinct symbol (distinct
+        // RustBV::Symbolic.id), and the BV must be sized to the arch's
+        // `long` (== arch().bits()) on every supported arch.
+        for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+
+            for handler in [
+                &NativeSetuidSyscall as &dyn NativeSyscall,
+                &NativeSetgidSyscall as &dyn NativeSyscall,
+            ] {
+                assert_eq!(handler.num_args(), 1);
+                let arg = RustBV::concrete(0, bits);
+                let outcome = handler
+                    .call(&mut state, &[arg])
+                    .expect("setuid/setgid never errs");
+                let ret = match outcome {
+                    SyscallOutcome::ContinueSymbolic { ret } => ret,
+                    other => panic!(
+                        "{arch} {} expected ContinueSymbolic, got {other:?}",
+                        handler.name()
+                    ),
+                };
+                assert_eq!(
+                    ret.width(),
+                    bits,
+                    "{arch} {} return width should match arch().bits()",
+                    handler.name(),
+                );
+                assert!(
+                    ret.as_u64().is_none(),
+                    "{arch} {} return must be symbolic (not concrete)",
+                    handler.name(),
+                );
+                // Fresh symbol on every call: confirm by id inequality
+                // across a second invocation.
+                let arg2 = RustBV::concrete(0, bits);
+                let outcome2 = handler.call(&mut state, &[arg2]).unwrap();
+                let ret2 = match outcome2 {
+                    SyscallOutcome::ContinueSymbolic { ret } => ret,
+                    _ => unreachable!(),
+                };
+                let (id1, id2) = match (&ret, &ret2) {
+                    (
+                        RustBV::Symbolic { id: a, .. },
+                        RustBV::Symbolic { id: b, .. },
+                    ) => (*a, *b),
+                    _ => panic!("{arch} {} both returns should be Symbolic", handler.name()),
+                };
+                assert_ne!(
+                    id1, id2,
+                    "{arch} {} successive calls must yield distinct fresh symbols",
+                    handler.name(),
+                );
+            }
+        }
     }
 
     #[test]

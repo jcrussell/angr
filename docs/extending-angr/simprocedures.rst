@@ -835,11 +835,12 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
    * - Process identity (angr-0hif.3)
      - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``geteuid``,
        ``getgid``, ``getegid``, ``setuid``, ``setgid``
-     - 7 / 9
-     - ``identity.rs`` — angr defaults (pid=1337, ppid=1336,
-       uid/gid=1000). ``setuid``/``setgid`` intentionally fall through
-       to Python (no Python ``SimProcedure``, so the unhandled-syscall
-       path returns a fresh symbolic value)
+     - 9 / 9
+     - ``identity.rs`` — getters return angr defaults (pid=1337,
+       ppid=1336, uid/gid=1000). ``setuid``/``setgid`` (angr-pqgu)
+       mirror Python's ``syscall_stub`` and emit a fresh symbolic BV
+       via ``SyscallOutcome::ContinueSymbolic`` (no Python
+       ``SimProcedure`` exists for them)
    * - Memory extras (angr-0hif.4)
      - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``
      - 0 / 5

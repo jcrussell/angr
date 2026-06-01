@@ -142,10 +142,9 @@ impl NativeSyscallRegistry {
         //   returning angr's posix defaults (pid=1337, ppid=1336).
         // getuid (102), geteuid (107), getgid (104), getegid (108): return
         //   1000 (matches angr Python proc default).
-        // setuid / setgid intentionally NOT registered: angr has no Python
-        //   SimProcedure for them, so the unhandled-syscall path returns a
-        //   fresh symbolic value — a constant-success native return would
-        //   diverge.
+        // setuid (105), setgid (106): return fresh symbolic BV (matches
+        //   Python `syscall_stub.py::syscall` ReturnUnconstrained fallback —
+        //   angr has no dedicated SimProcedure for these).
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -159,6 +158,8 @@ impl NativeSyscallRegistry {
             (96, sim_time::NativeGettimeofdaySyscall),
             (102, identity::NativeGetuidSyscall),
             (104, identity::NativeGetgidSyscall),
+            (105, identity::NativeSetuidSyscall),
+            (106, identity::NativeSetgidSyscall),
             (107, identity::NativeGeteuidSyscall),
             (108, identity::NativeGetegidSyscall),
             (110, identity::NativeGetppidSyscall),
@@ -200,8 +201,10 @@ impl NativeSyscallRegistry {
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
             (20, identity::NativeGetpidSyscall),
+            (23, identity::NativeSetuidSyscall),
             (24, identity::NativeGetuidSyscall),
             (45, brk::NativeBrkSyscall),
+            (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
@@ -214,6 +217,8 @@ impl NativeSyscallRegistry {
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
             (202, identity::NativeGetegidSyscall),
+            (213, identity::NativeSetuidSyscall),
+            (214, identity::NativeSetgidSyscall),
             (224, identity::NativeGettidSyscall),
             (252, exit::NativeExitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
@@ -228,8 +233,10 @@ impl NativeSyscallRegistry {
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
             (20, identity::NativeGetpidSyscall),
+            (23, identity::NativeSetuidSyscall),
             (24, identity::NativeGetuidSyscall),
             (45, brk::NativeBrkSyscall),
+            (46, identity::NativeSetgidSyscall),
             (47, identity::NativeGetgidSyscall),
             (49, identity::NativeGeteuidSyscall),
             (50, identity::NativeGetegidSyscall),
@@ -242,6 +249,8 @@ impl NativeSyscallRegistry {
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
             (202, identity::NativeGetegidSyscall),
+            (213, identity::NativeSetuidSyscall),
+            (214, identity::NativeSetgidSyscall),
             (224, identity::NativeGettidSyscall),
             (248, exit::NativeExitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
@@ -257,6 +266,8 @@ impl NativeSyscallRegistry {
             (94, exit::NativeExitSyscall),
             (113, sim_time::NativeClockGettimeSyscall),
             (134, sigaction::NativeRtSigactionSyscall),
+            (144, identity::NativeSetgidSyscall),
+            (146, identity::NativeSetuidSyscall),
             (169, sim_time::NativeGettimeofdaySyscall),
             (172, identity::NativeGetpidSyscall),
             (173, identity::NativeGetppidSyscall),
@@ -281,8 +292,10 @@ impl NativeSyscallRegistry {
             (4004, write::NativeWriteSyscall),
             (4013, sim_time::NativeTimeSyscall),
             (4020, identity::NativeGetpidSyscall),
+            (4023, identity::NativeSetuidSyscall),
             (4024, identity::NativeGetuidSyscall),
             (4045, brk::NativeBrkSyscall),
+            (4046, identity::NativeSetgidSyscall),
             (4047, identity::NativeGetgidSyscall),
             (4049, identity::NativeGeteuidSyscall),
             (4050, identity::NativeGetegidSyscall),
@@ -631,27 +644,46 @@ mod tests {
     }
 
     #[test]
-    fn setuid_setgid_intentionally_absent() {
-        // angr has no Python SimProcedure for setuid / setgid — the
-        // unhandled-syscall path returns a fresh symbolic value, so
-        // registering a constant-success native handler would diverge.
-        // Document the intentional gap on the arches that have explicit
-        // setuid/setgid numbers.
+    fn setuid_setgid_registered_on_all_arches() {
+        // angr-pqgu: setuid / setgid have no Python SimProcedure, so the
+        // unhandled-syscall path falls through to syscall_stub which
+        // returns a fresh symbolic value. The native handlers mirror
+        // that via SyscallOutcome::ContinueSymbolic; they should be
+        // registered (with name() == "setuid"/"setgid", 1 arg) on every
+        // supported arch. Legacy and LFS variants on x86/ARM both alias
+        // to the same handler — the syscall semantics are identical
+        // and angr's prototype is also the same.
         let r = NativeSyscallRegistry::new();
-        // AMD64: setuid=105, setgid=106.
-        assert!(r.get("AMD64", 105).is_none(), "AMD64 setuid intentionally absent");
-        assert!(r.get("AMD64", 106).is_none(), "AMD64 setgid intentionally absent");
-        // X86/ARM: setuid=23, setgid=46 (legacy); setuid32=213, setgid32=214.
-        assert!(r.get("X86", 23).is_none(), "X86 setuid intentionally absent");
-        assert!(r.get("X86", 46).is_none(), "X86 setgid intentionally absent");
-        assert!(r.get("ARM", 23).is_none(), "ARM setuid intentionally absent");
-        assert!(r.get("ARM", 46).is_none(), "ARM setgid intentionally absent");
-        // ARM64: setuid=146, setgid=144.
-        assert!(r.get("ARM64", 146).is_none(), "ARM64 setuid intentionally absent");
-        assert!(r.get("ARM64", 144).is_none(), "ARM64 setgid intentionally absent");
-        // MIPS-O32: setuid=4023, setgid=4046.
-        assert!(r.get("MIPS32", 4023).is_none(), "MIPS32 setuid intentionally absent");
-        assert!(r.get("MIPS32", 4046).is_none(), "MIPS32 setgid intentionally absent");
+        // arch → (setuid_num, setgid_num)
+        for (arch, setuid, setgid) in [
+            ("AMD64", 105u64, 106u64),
+            ("X86", 23, 46),
+            ("ARM", 23, 46),
+            ("ARM64", 146, 144),
+            ("MIPS32", 4023, 4046),
+        ] {
+            let u = r
+                .get(arch, setuid)
+                .unwrap_or_else(|| panic!("{arch} setuid ({setuid}) missing"));
+            assert_eq!(u.name(), "setuid", "{arch} {setuid} should be setuid");
+            assert_eq!(u.num_args(), 1, "{arch} setuid takes 1 arg");
+            let g = r
+                .get(arch, setgid)
+                .unwrap_or_else(|| panic!("{arch} setgid ({setgid}) missing"));
+            assert_eq!(g.name(), "setgid", "{arch} {setgid} should be setgid");
+            assert_eq!(g.num_args(), 1, "{arch} setgid takes 1 arg");
+        }
+        // x86/ARM LFS variants (32-bit uid_t/gid_t) share the handler.
+        for arch in ["X86", "ARM"] {
+            let u = r
+                .get(arch, 213)
+                .unwrap_or_else(|| panic!("{arch} setuid32 (213) missing"));
+            assert_eq!(u.name(), "setuid");
+            let g = r
+                .get(arch, 214)
+                .unwrap_or_else(|| panic!("{arch} setgid32 (214) missing"));
+            assert_eq!(g.name(), "setgid");
+        }
     }
 
     #[test]

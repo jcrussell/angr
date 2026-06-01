@@ -11413,6 +11413,44 @@ class TestNativeIdentitySyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeSetuidSetgidSyscalls:
+    """angr-pqgu: native ``setuid`` / ``setgid`` handlers mirror the
+    Python ``syscall_stub`` ReturnUnconstrained fallback. The Rust
+    cargo unit test ``setuid_setgid_return_fresh_symbolic`` in
+    ``native/angr/src/syscalls/identity.rs`` pins the symbolic-return
+    invariant (fresh BV each call, width == arch().bits()); this is
+    the cross-the-FFI dispatch check (``syscall_python_fallback_count``
+    stays 0).
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (105, "setuid"),
+            (106, "setgid"),
+        ],
+    )
+    def test_set_id_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        state.regs.rdi = 0  # concrete uid/gid arg (ignored by handler)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""
