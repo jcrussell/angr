@@ -289,6 +289,11 @@ solver context:
 This is intended for low-level solver experiments and tests; for
 exploration use ``RustExplorationManager`` instead.
 
+For the build-time wiring that makes a shared ``libz3.so`` possible,
+the ``SymContext`` lifecycle across forks, and the push/pop discipline
+that ``RustSolverContext`` / ``SharedLineageSolver`` both rely on,
+see :doc:`rust_z3_sharing`.
+
 Z3 solver profiling counters
 ----------------------------
 

@@ -13,6 +13,7 @@ Advanced Topics
    rust_lazy_memory_design
    rust_parallel_design
    rust_proxy_writes_design
+   rust_z3_sharing
    file_system
    ir
    structured_data
