@@ -42,7 +42,7 @@ impl RustExplorationManager {
 
             let mut added = 0u32;
             for item in constraints.iter() {
-                // Fast path: extract raw Z3 AST and assert directly
+                // Fast path: extract typed Z3 AST handle and assert directly
                 #[cfg(feature = "vex-engine-z3")]
                 {
                     if let Some(ref backend) = z3_backend {
@@ -51,10 +51,14 @@ impl RustExplorationManager {
                                 if let Ok(ptr) =
                                     ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
                                 {
-                                    if ptr != 0 {
-                                        unsafe {
-                                            ctx_ref.add_constraint_raw(ptr);
-                                        }
+                                    let z3_ctx = z3::Context::thread_local();
+                                    // SAFETY: claripy's z3 backend returned
+                                    // this pointer for a live AST it caches;
+                                    // matches our thread-local Z3 context.
+                                    if let Some(z3_ast) = unsafe {
+                                        Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr)
+                                    } {
+                                        ctx_ref.add_constraint_raw(z3_ast);
                                         if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
                                             ctx_ref.assumed_constraints_push(bv, true);
                                         }
@@ -149,9 +153,14 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
+            let z3_ctx = z3::Context::thread_local();
             for ptr in &ptrs {
-                unsafe {
-                    ctx.add_constraint_raw(*ptr);
+                // SAFETY: every ptr was validated above by the
+                // Z3_get_sort/sort_kind probe to be a live Bool-sorted AST
+                // in `z3_ctx`. `Z3AstPtr::from_borrowed_raw` takes its own
+                // ref via `Z3_inc_ref`.
+                if let Some(z3_ast) = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, *ptr) } {
+                    ctx.add_constraint_raw(z3_ast);
                 }
             }
             log::debug!(

@@ -1569,11 +1569,16 @@ impl SymContext {
         self.push_level.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Add a constraint from a raw Z3_ast pointer (shared context fast path).
+    /// Add a constraint from a typed Z3 AST handle (shared context fast path).
     ///
     /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
     /// the original Z3 AST structure from Python's claripy/z3 backend.
-    /// SAFETY: The pointer must be a valid Z3_ast Bool in the same Z3 context.
+    ///
+    /// The [`Z3AstPtr`] handle carries its own refcount; on entry, this
+    /// function wraps the pointer as a [`z3::ast::Bool`] (which takes its
+    /// own ref via `Z3_inc_ref`) and the handle's `Drop` releases the
+    /// extraction-time ref before return — net zero change to the AST's
+    /// refcount across the call.
     ///
     /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the
     /// pattern landed in slice 4c.1 for [`Self::add_constraint`]):
@@ -1592,19 +1597,21 @@ impl SymContext {
     /// See [`Self::add_constraint`] for the full rationale on why the
     /// Some branch can't route through `with_z3_solver` (would put the
     /// assert at scope 0 = lineage base = leak to all siblings).
+    ///
+    /// **Caller contract:** the wrapped pointer must denote a Bool-sorted
+    /// AST. The constructor of [`Z3AstPtr`] is `unsafe` precisely so this
+    /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
+    /// this method is safe to call.
     #[cfg(feature = "vex-engine-z3")]
-    pub unsafe fn add_constraint_raw(&self, z3_ast_ptr: usize) {
+    pub fn add_constraint_raw(&self, ast: super::Z3AstPtr) {
         use z3::ast::Ast;
         let ctx = z3::Context::thread_local();
-        // SAFETY: caller guarantees `z3_ast_ptr` is a valid, live `Z3_ast` Bool
-        // in the active thread-local Z3 context (per the fn-level doc).
-        // `NonNull::new_unchecked` is sound because the same precondition
-        // requires the pointer to be non-null. `Ast::wrap` takes ownership of
-        // the ref-count slot the caller has already incremented.
-        let constraint: z3::ast::Bool = unsafe {
-            let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
-            z3::ast::Ast::wrap(&ctx, raw_ast)
-        };
+        // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an active
+        // ref via `Z3_inc_ref`). The pointer denotes a Bool by the
+        // documented caller contract. `Ast::wrap` performs its own
+        // `Z3_inc_ref` so the wrapped `Bool` is independent of `ast`'s
+        // ref, which drops at end of function.
+        let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&ctx, ast.as_z3_ast()) };
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
         // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
@@ -1740,12 +1747,14 @@ impl SymContext {
 
     /// Batched fast path for `add_constraint_raw`: asserts N constraints under
     /// one `local_constraints` lock, one solver/lineage transition, and one
-    /// model invalidation pass. Each `(z3_ast_ptr, bv, is_true)` tuple
+    /// model invalidation pass. Each `(z3_ast, bv, is_true)` tuple
     /// corresponds to the per-constraint metadata that the single-shot path
     /// stores in `local_constraints.{z3_assertions, assumed}`.
     ///
-    /// SAFETY: every pointer must be a valid `Z3_ast` Bool in the active
-    /// thread-local Z3 context (same precondition as `add_constraint_raw`).
+    /// Same precondition as [`Self::add_constraint_raw`]: every [`Z3AstPtr`]
+    /// must denote a Bool-sorted AST in the active thread-local Z3 context.
+    /// The constructor of `Z3AstPtr` is `unsafe` so this is checked at
+    /// extraction time.
     ///
     /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2c; mirrors the
     /// pattern landed in slice 4c.1 for [`Self::add_constraint`], slice 4c.2
@@ -1777,9 +1786,9 @@ impl SymContext {
     /// then-switch keeps every constraint inside its own fresh push that
     /// only this state holds in its `scope_path`.
     #[cfg(feature = "vex-engine-z3")]
-    pub unsafe fn add_constraints_raw_batch(
+    pub fn add_constraints_raw_batch(
         &self,
-        entries: Vec<(usize, RustBV, bool)>,
+        entries: Vec<(super::Z3AstPtr, RustBV, bool)>,
     ) {
         if entries.is_empty() {
             return;
@@ -1787,16 +1796,14 @@ impl SymContext {
         let z3_ctx = z3::Context::thread_local();
         let mut constraints: Vec<z3::ast::Bool> = Vec::with_capacity(entries.len());
         let mut assumed: Vec<(RustBV, bool)> = Vec::with_capacity(entries.len());
-        for (ptr, bv, is_true) in entries {
-            // SAFETY: caller guarantees every `ptr` in `entries` is a valid,
-            // live `Z3_ast` Bool in the active thread-local Z3 context (per
-            // the fn-level doc — same precondition as `add_constraint_raw`).
-            // `NonNull::new_unchecked` requires non-null, which the contract
-            // mandates. `Ast::wrap` takes ownership of the caller's ref-count.
-            let constraint: z3::ast::Bool = unsafe {
-                let raw_ast = std::ptr::NonNull::new_unchecked(ptr as *mut _);
-                z3::ast::Ast::wrap(&z3_ctx, raw_ast)
-            };
+        for (ast, bv, is_true) in entries {
+            // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an
+            // active ref via `Z3_inc_ref`). The pointer denotes a Bool by
+            // the documented caller contract. `Ast::wrap` performs its
+            // own `Z3_inc_ref` so the wrapped `Bool` is independent of
+            // `ast`'s ref, which drops at end of this iteration.
+            let constraint: z3::ast::Bool =
+                unsafe { z3::ast::Ast::wrap(&z3_ctx, ast.as_z3_ast()) };
             constraints.push(constraint);
             assumed.push((bv, is_true));
         }
@@ -4260,6 +4267,8 @@ impl Default for SymContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "vex-engine-z3")]
+    use crate::symbolic::Z3AstPtr;
 
     #[test]
     fn test_id_generation() {
@@ -4715,17 +4724,20 @@ mod tests {
 
     /// angr-v5a5 slice 4c.2: helper mirrors `batch_entry` for the
     /// single-shot `add_constraint_raw` path. Lifts a width-1 RustBV's
-    /// Z3 Bool AST into a raw pointer, leaking the wrapper so its
-    /// ref-count survives until `add_constraint_raw` rewraps the
-    /// pointer (matching the production claripy → Rust bridge shape).
+    /// Z3 Bool AST into a typed [`Z3AstPtr`] handle whose own ref keeps
+    /// the AST alive until consumption (no `mem::forget` leak required —
+    /// the wrapper does proper refcounting via `Z3_inc_ref` / `Z3_dec_ref`).
     #[cfg(feature = "vex-engine-z3")]
-    fn raw_entry(cond: &RustBV) -> usize {
+    fn raw_entry(cond: &RustBV) -> Z3AstPtr {
         use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         let bool_ast = cond.to_z3_bool();
+        let ctx = z3::Context::thread_local();
         let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
-        std::mem::forget(bool_ast);
-        ptr
+        // SAFETY: `bool_ast` keeps the AST alive across the inc_ref call;
+        // the resulting Z3AstPtr holds its own ref so the AST survives
+        // `bool_ast` dropping at end of this function.
+        unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.expect("non-null Bool AST")
     }
 
     /// angr-v5a5 slice 4c.2: with no lineage attached, `add_constraint_raw`
@@ -4742,13 +4754,8 @@ mod tests {
 
         let x = RustBV::symbolic(&ctx, "test_add_constraint_raw_none_x", 8);
         let five = RustBV::concrete(5, 8);
-        let ptr = raw_entry(&x.eq(&five, &ctx));
-        // SAFETY: `ptr` comes from `raw_entry`, which leaks a width-1 Z3 Bool
-        // wrapper so the AST stays live in this thread's Z3 context until
-        // `add_constraint_raw` re-wraps it.
-        unsafe {
-            ctx.add_constraint_raw(ptr);
-        }
+        let ast = raw_entry(&x.eq(&five, &ctx));
+        ctx.add_constraint_raw(ast);
 
         // None branch must not touch scope_path.
         assert_eq!(
@@ -4781,12 +4788,8 @@ mod tests {
 
         let x = RustBV::symbolic(&ctx, "test_add_constraint_raw_some_x", 8);
         let five = RustBV::concrete(5, 8);
-        let ptr = raw_entry(&x.eq(&five, &ctx));
-        // SAFETY: `ptr` comes from `raw_entry`, which leaks a width-1 Z3 Bool
-        // wrapper to keep the AST live until `add_constraint_raw` re-wraps it.
-        unsafe {
-            ctx.add_constraint_raw(ptr);
-        }
+        let ast = raw_entry(&x.eq(&five, &ctx));
+        ctx.add_constraint_raw(ast);
 
         // Some branch must mint exactly one frame on scope_path.
         assert_eq!(
@@ -4822,13 +4825,8 @@ mod tests {
         // Sibling A adds x == 5 via the raw path.
         let x_a = RustBV::symbolic(&sibling_a, "test_add_constraint_raw_sibling_x", 8);
         let five = RustBV::concrete(5, 8);
-        let ptr = raw_entry(&x_a.eq(&five, &sibling_a));
-        // SAFETY: `ptr` comes from `raw_entry`, which leaks a width-1 Z3 Bool
-        // wrapper to keep the AST live until `add_constraint_raw` re-wraps it.
-        // Sibling contexts share the thread-local Z3 context via lineage.
-        unsafe {
-            sibling_a.add_constraint_raw(ptr);
-        }
+        let ast = raw_entry(&x_a.eq(&five, &sibling_a));
+        sibling_a.add_constraint_raw(ast);
         assert_eq!(sibling_a.scope_path_len(), 1);
         assert_eq!(sibling_b.scope_path_len(), 0);
 
@@ -4852,18 +4850,15 @@ mod tests {
         let ctx = SymContext::new();
         let x = RustBV::symbolic(&ctx, "test_dedup_repeat_x", 8);
         let five = RustBV::concrete(5, 8);
-        let ptr = raw_entry(&x.eq(&five, &ctx));
+        let ast = raw_entry(&x.eq(&five, &ctx));
 
         let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
 
-        // SAFETY: `ptr` comes from `raw_entry`, which leaks a width-1 Z3 Bool
-        // wrapper to keep the AST live across all three `add_constraint_raw`
-        // calls — Z3 hash-cons guarantees the same `Z3_ast` survives intact.
-        unsafe {
-            ctx.add_constraint_raw(ptr);
-            ctx.add_constraint_raw(ptr);
-            ctx.add_constraint_raw(ptr);
-        }
+        // Three calls with the same Z3_ast — dedup must catch reps 2 and 3.
+        // `clone_ref` produces independent handles pointing at the same AST.
+        ctx.add_constraint_raw(ast.clone_ref());
+        ctx.add_constraint_raw(ast.clone_ref());
+        ctx.add_constraint_raw(ast);
 
         // Only one entry should land in local.z3_assertions despite three
         // calls — the side-table catches reps 2 and 3.
@@ -4893,22 +4888,17 @@ mod tests {
         let parent = SymContext::new();
         let x = RustBV::symbolic(&parent, "test_dedup_shared_x", 8);
         let five = RustBV::concrete(5, 8);
-        let ptr = raw_entry(&x.eq(&five, &parent));
-        // SAFETY: `ptr` comes from `raw_entry`, which leaks a width-1 Z3 Bool
-        // wrapper to keep the AST live across both `add_constraint_raw` calls.
-        unsafe {
-            parent.add_constraint_raw(ptr);
-        }
+        let ast = raw_entry(&x.eq(&five, &parent));
+        // Take a second ref for the child call below before the parent
+        // consumes its handle.
+        let ast_for_child = ast.clone_ref();
+        parent.add_constraint_raw(ast);
         // Fork the parent; child's frozen_shared should contain the
         // assertion, and child's local.dedup_set is unseeded.
         let child = parent.fork();
         assert!(!child.local_constraints.lock().dedup_set_seeded);
         let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
-        // SAFETY: same `ptr` as above; the `raw_entry` leak keeps the AST
-        // live for the child's `add_constraint_raw` call too.
-        unsafe {
-            child.add_constraint_raw(ptr);
-        }
+        child.add_constraint_raw(ast_for_child);
         // Seeded from shared; the ptr was already there, so this call is
         // a dedup hit. Child's local.z3_assertions stays empty.
         {
@@ -5280,20 +5270,23 @@ mod tests {
         assert_eq!(ctx.max(&x, false), Some(199));
     }
 
-    /// Helper: build a `(z3_ast_ptr, RustBV, bool)` tuple from a width-1 cond
+    /// Helper: build a `(Z3AstPtr, RustBV, bool)` tuple from a width-1 cond
     /// for use with `add_constraints_raw_batch`. Mirrors what the
     /// `RustSolverContext::add_constraints` fast path does with claripy ASTs.
+    /// The typed `Z3AstPtr` does proper refcounting via `Z3_inc_ref` —
+    /// no `mem::forget` leak required.
     #[cfg(feature = "vex-engine-z3")]
-    fn batch_entry(cond: &RustBV) -> (usize, RustBV, bool) {
+    fn batch_entry(cond: &RustBV) -> (Z3AstPtr, RustBV, bool) {
         use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         let bool_ast = cond.to_z3_bool();
+        let ctx = z3::Context::thread_local();
         let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
-        // The pointer borrows from `bool_ast`; intentionally leak it via
-        // forget so the Z3 ref-count survives until add_constraints_raw_batch
-        // rewraps it (it bumps the refcount on wrap and decrements on drop).
-        std::mem::forget(bool_ast);
-        (ptr, cond.clone(), true)
+        // SAFETY: `bool_ast` keeps the AST alive across the inc_ref call;
+        // the resulting Z3AstPtr holds its own ref so the AST survives
+        // `bool_ast` dropping at end of this function.
+        let ast = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.expect("non-null Bool AST");
+        (ast, cond.clone(), true)
     }
 
     #[cfg(feature = "vex-engine-z3")]
@@ -5314,12 +5307,7 @@ mod tests {
             batch_entry(&x.uge(&mid, &ctx)),
         ];
         let before = ctx.num_constraints();
-        // SAFETY: each `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep every AST live until
-        // `add_constraints_raw_batch` re-wraps the pointers.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
         assert_eq!(ctx.num_constraints(), before + 3);
         // x must satisfy 15 <= x < 20.
         assert!(ctx.solution(&x, 15));
@@ -5334,11 +5322,7 @@ mod tests {
         // Empty batch must not touch the solver or counter.
         let ctx = SymContext::new();
         let before = ctx.num_constraints();
-        // SAFETY: empty batch — no pointers to validate; the loop body in
-        // `add_constraints_raw_batch` never runs.
-        unsafe {
-            ctx.add_constraints_raw_batch(Vec::new());
-        }
+        ctx.add_constraints_raw_batch(Vec::new());
         assert_eq!(ctx.num_constraints(), before);
         assert!(ctx.is_sat());
     }
@@ -5358,11 +5342,7 @@ mod tests {
         let new_val = if first == 0 { 1 } else { 0 };
         let pinned = RustBV::concrete(new_val, 32);
         let entries = vec![batch_entry(&x.eq(&pinned, &ctx))];
-        // SAFETY: the `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep the AST live until the call.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
         // The next eval must produce the newly-required value.
         assert_eq!(ctx.eval(&x), Some(new_val));
     }
@@ -5380,11 +5360,7 @@ mod tests {
         assert_eq!(v, 7);
         // Batch-add a constraint that the model already satisfies.
         let entries = vec![batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx))];
-        // SAFETY: the `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep the AST live until the call.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
         // Still SAT, still 7.
         assert!(ctx.is_sat());
         assert_eq!(ctx.eval(&x), Some(7));
@@ -5403,11 +5379,7 @@ mod tests {
             batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx)),
         ];
         let before = ctx.export_z3_assertion_ptrs().len();
-        // SAFETY: each `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep every AST live until the call.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
         let after = ctx.export_z3_assertion_ptrs().len();
         assert_eq!(after - before, 2);
     }
@@ -5431,11 +5403,7 @@ mod tests {
             batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
             batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
         ];
-        // SAFETY: each `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep every AST live until the call.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
 
         // None branch must not mint scope frames.
         assert_eq!(
@@ -5475,11 +5443,7 @@ mod tests {
             batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
             batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
         ];
-        // SAFETY: each `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep every AST live until the call.
-        unsafe {
-            ctx.add_constraints_raw_batch(entries);
-        }
+        ctx.add_constraints_raw_batch(entries);
 
         // Some branch must mint exactly N frames on scope_path.
         assert_eq!(
@@ -5519,12 +5483,7 @@ mod tests {
             batch_entry(&x_a.ugt(&RustBV::concrete(10, 32), &sibling_a)),
             batch_entry(&x_a.ult(&RustBV::concrete(20, 32), &sibling_a)),
         ];
-        // SAFETY: each `entries` tuple comes from `batch_entry`, which leaks
-        // a width-1 Z3 Bool wrapper to keep every AST live across the call.
-        // Sibling contexts share the thread-local Z3 context via lineage.
-        unsafe {
-            sibling_a.add_constraints_raw_batch(entries);
-        }
+        sibling_a.add_constraints_raw_batch(entries);
         assert_eq!(sibling_a.scope_path_len(), 2);
         assert_eq!(sibling_b.scope_path_len(), 0);
 

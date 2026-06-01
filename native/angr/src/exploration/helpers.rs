@@ -458,17 +458,12 @@ impl RustExplorationManager {
                                 },
                             };
 
-                            let z3_ptr = backend
-                                .as_ref()
-                                .and_then(|b| {
-                                    Self::extract_z3_ptr_from_claripy(b, &constraint).ok()
-                                })
-                                .filter(|p| *p != 0);
+                            let z3_ast = backend.as_ref().and_then(|b| {
+                                Self::extract_z3_ptr_from_claripy(b, &constraint).ok().flatten()
+                            });
 
-                            if let Some(ptr) = z3_ptr {
-                                unsafe {
-                                    sym_ctx.add_constraint_raw(ptr);
-                                }
+                            if let Some(ast) = z3_ast {
+                                sym_ctx.add_constraint_raw(ast);
                                 z3_ptr_fallback_count += 1;
                                 success_count += 1;
                                 log::debug!(
@@ -552,18 +547,26 @@ impl RustExplorationManager {
         backends.getattr("z3")
     }
 
-    /// Extract a raw Z3_ast pointer (as usize) from a claripy AST by going
-    /// through `claripy.backends.z3.convert(ast).as_ast().value`. Returns 0
-    /// if the extraction fails. Caller decides what 0 means; `add_constraint_raw`
-    /// must not be called with 0.
+    /// Extract a typed [`Z3AstPtr`] from a claripy AST by going through
+    /// `claripy.backends.z3.convert(ast).as_ast().value`. Returns `Ok(None)`
+    /// if the conversion succeeded but the extracted pointer is null;
+    /// returns `Err` if the Python conversion path itself failed.
+    ///
+    /// The returned handle has its own `Z3_inc_ref` ref; callers can drop
+    /// it without affecting claripy's cached AST.
     #[cfg(feature = "vex-engine-z3")]
     fn extract_z3_ptr_from_claripy(
         z3_backend: &Bound<'_, PyAny>,
         ast: &Bound<'_, PyAny>,
-    ) -> PyResult<usize> {
+    ) -> PyResult<Option<Z3AstPtr>> {
         let z3_obj = z3_backend.call_method1("convert", (ast,))?;
         let raw_ast = z3_obj.call_method0("as_ast")?;
-        raw_ast.getattr("value")?.extract::<usize>()
+        let ptr = raw_ast.getattr("value")?.extract::<usize>()?;
+        let ctx = z3::Context::thread_local();
+        // SAFETY: claripy's z3 backend returned this pointer for a live
+        // AST it holds in its own cache; the AST is in the process-global
+        // Z3 context, which matches our thread-local context.
+        Ok(unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) })
     }
 
     /// Extract procedure arguments from state registers (and stack, when

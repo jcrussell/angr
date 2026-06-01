@@ -14,6 +14,8 @@ pub mod lineage;
 pub mod registry;
 mod table;
 mod value;
+#[cfg(feature = "vex-engine-z3")]
+mod z3_ast_ptr;
 
 pub use context::{
     ConstraintSharingStats, ConstraintSharingWalk, ConstraintSyncError, DEFAULT_SOLVER_TIMEOUT_MS,
@@ -29,3 +31,5 @@ pub use handle::RustBVHandle;
 pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};
 pub use table::RustSymbolTable;
 pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV, Signedness};
+#[cfg(feature = "vex-engine-z3")]
+pub use z3_ast_ptr::Z3AstPtr;

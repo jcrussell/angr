@@ -16,25 +16,37 @@ use std::sync::Arc;
 
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
-
-/// Try to extract raw Z3_ast pointer from a claripy AST's z3 backend.
-/// Returns the pointer as a non-zero usize, or an error if unavailable
-/// or null. Guaranteeing non-null at the source means callers can pass
-/// the value directly to `NonNull::new_unchecked` without re-checking.
-/// This preserves claripy's original Z3 AST structure.
 #[cfg(feature = "vex-engine-z3")]
-fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<usize> {
+use crate::symbolic::Z3AstPtr;
+
+/// Extract a typed [`Z3AstPtr`] from a claripy AST's z3 backend.
+///
+/// Returns `Err` if the claripy → z3 backend conversion fails or yields a
+/// null pointer. The returned handle carries its own refcount (taken via
+/// `Z3_inc_ref` at construction); claripy's original AST remains alive
+/// independently in claripy's cache.
+///
+/// # Safety
+///
+/// This function is itself safe — the unsafety is encapsulated inside
+/// [`Z3AstPtr::from_borrowed_raw`]. The precondition (pointer denotes a
+/// live `Z3_ast` in the active thread-local Z3 context) is met by
+/// construction: `claripy.backends.z3.convert(...)` always returns a
+/// live Z3 AST in the process-global Z3 context (which is also our
+/// thread-local context because z3-rs 0.19+ shares it).
+#[cfg(feature = "vex-engine-z3")]
+fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstPtr> {
     let claripy = py.import("claripy")?;
     let z3_backend = claripy.getattr("backends")?.getattr("z3")?;
     let z3_obj = z3_backend.call_method1("convert", (ast,))?;
     let ast_ref = z3_obj.call_method0("as_ast")?;
     let ptr: usize = ast_ref.getattr("value")?.extract()?;
-    if ptr == 0 {
-        return Err(PyRuntimeError::new_err(
-            "claripy z3 backend returned null Z3_ast pointer",
-        ));
-    }
-    Ok(ptr)
+    let ctx = z3::Context::thread_local();
+    // SAFETY: claripy's z3 backend returned this pointer for a live AST
+    // it holds in its own cache; the AST is in the process-global Z3
+    // context, which matches our thread-local context (z3-rs 0.19+).
+    unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }
+        .ok_or_else(|| PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer"))
 }
 
 /// Convert a BridgeError to a PyErr.
@@ -131,11 +143,8 @@ impl RustSolverContext {
         // divergence that causes 3-7x slower Z3 solving.
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
-                // SAFETY: extract_z3_ast_ptr guarantees non-null on Ok.
-                unsafe {
-                    ctx.add_constraint_raw(z3_ast_ptr);
-                }
+            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
+                ctx.add_constraint_raw(z3_ast);
                 // Also track in RustBV for export (best-effort, non-critical)
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
                     ctx.assumed_constraints_push(bv, true);
@@ -175,7 +184,7 @@ impl RustSolverContext {
         {
             let ctx = self.inner.ctx();
             let n = asts.len();
-            let mut entries: Vec<(usize, RustBV, bool)> = Vec::with_capacity(n);
+            let mut entries: Vec<(Z3AstPtr, RustBV, bool)> = Vec::with_capacity(n);
             let mut all_raw = true;
             for ast in asts.iter() {
                 let ptr = match extract_z3_ast_ptr(py, &ast) {
@@ -195,11 +204,7 @@ impl RustSolverContext {
                 entries.push((ptr, bv, true));
             }
             if all_raw {
-                // SAFETY: every ptr came from extract_z3_ast_ptr (non-null,
-                // claripy z3 backend), same precondition as add_constraint_raw.
-                unsafe {
-                    ctx.add_constraints_raw_batch(entries);
-                }
+                ctx.add_constraints_raw_batch(entries);
                 return Ok(());
             }
         }
@@ -233,12 +238,12 @@ impl RustSolverContext {
         let ctx = self.inner.ctx();
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
+            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
                 let z3_ctx = z3::Context::thread_local();
-                let constraint: z3::ast::Bool = unsafe {
-                    let raw = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
-                    z3::ast::Ast::wrap(&z3_ctx, raw)
-                };
+                // SAFETY: `z3_ast` is a live Bool-sorted `Z3_ast` (holds its
+                // own ref via Z3AstPtr); `Ast::wrap` takes its own ref.
+                let constraint: z3::ast::Bool =
+                    unsafe { z3::ast::Ast::wrap(&z3_ctx, z3_ast.as_z3_ast()) };
                 let idx = ctx.add_constraint_tracked_indexed(constraint);
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
                     ctx.assumed_constraints_push(bv, true);
@@ -328,59 +333,11 @@ impl RustSolverContext {
         // constraints already in the solver.
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
-                return self.eval_z3_ast_ptr(py, z3_ptr, ast);
+            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
+                return self.eval_z3_ast_ptr(py, z3_ast, ast);
             }
         }
         Ok(None)
-    }
-
-    /// Evaluate a Z3 AST pointer directly in the solver context.
-    #[cfg(feature = "vex-engine-z3")]
-    fn eval_z3_ast_ptr(
-        &self,
-        py: Python<'_>,
-        z3_ptr: usize,
-        ast: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        use z3::ast::Ast;
-        let ctx = self.inner.ctx();
-
-        // Get the bit width from claripy
-        let width: u32 = match ast.getattr("length") {
-            Ok(l) => l.extract().unwrap_or(64),
-            Err(_) => 64,
-        };
-
-        // Build a RustBV::Symbolic wrapping this Z3 AST
-        let z3_bv = unsafe {
-            let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
-            let z3_ctx = z3::Context::thread_local();
-            z3::ast::BV::wrap(&z3_ctx, raw)
-        };
-        let bv = RustBV::Symbolic {
-            id: 0,
-            ast: z3_bv,
-            width,
-            name: Arc::from(""),
-        };
-
-        if width <= 128 {
-            match ctx.eval(&bv) {
-                Some(v) => Ok(Some(v.into_pyobject(py)?.into())),
-                None => Ok(None),
-            }
-        } else {
-            match ctx.eval_wide(&bv) {
-                Some(bytes) => {
-                    let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
-                    let int_class = py.get_type::<pyo3::types::PyInt>();
-                    let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
-                    Ok(Some(py_int.into()))
-                }
-                None => Ok(None),
-            }
-        }
     }
 
     /// Evaluate a claripy AST and return up to n solutions.
@@ -414,12 +371,13 @@ impl RustSolverContext {
                 #[cfg(feature = "vex-engine-z3")]
                 {
                     use z3::ast::Ast;
-                    if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
-                        // SAFETY: extract_z3_ast_ptr guarantees non-null on Ok.
+                    if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
+                        // SAFETY: `z3_ast` is a live Z3_ast (Z3AstPtr holds
+                        // its own ref); width comes from claripy and matches
+                        // the BV sort. `BV::wrap` takes its own ref.
                         let z3_bv = unsafe {
-                            let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
                             let z3_ctx = z3::Context::thread_local();
-                            z3::ast::BV::wrap(&z3_ctx, raw)
+                            z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
                         };
                         RustBV::Symbolic {
                             id: 0,
@@ -1123,6 +1081,60 @@ impl Default for RustSolverContext {
 }
 
 impl RustSolverContext {
+    /// Evaluate a typed Z3 AST handle directly in the solver context.
+    ///
+    /// Lives outside `#[pymethods]` because [`Z3AstPtr`] is not a PyO3-
+    /// bridgeable type (it owns a Z3 refcount and cannot be reconstructed
+    /// from a Python value).
+    #[cfg(feature = "vex-engine-z3")]
+    fn eval_z3_ast_ptr(
+        &self,
+        py: Python<'_>,
+        z3_ast: Z3AstPtr,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        use z3::ast::Ast;
+        let ctx = self.inner.ctx();
+
+        // Get the bit width from claripy
+        let width: u32 = match ast.getattr("length") {
+            Ok(l) => l.extract().unwrap_or(64),
+            Err(_) => 64,
+        };
+
+        // SAFETY: `z3_ast` is a live `Z3_ast` (Z3AstPtr holds an active
+        // ref). The width came from claripy's `length` attribute, which
+        // matches the BV-sortedness of the underlying AST in claripy's
+        // z3 backend. `BV::wrap` takes its own ref.
+        let z3_bv = unsafe {
+            let z3_ctx = z3::Context::thread_local();
+            z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
+        };
+        let bv = RustBV::Symbolic {
+            id: 0,
+            ast: z3_bv,
+            width,
+            name: Arc::from(""),
+        };
+
+        if width <= 128 {
+            match ctx.eval(&bv) {
+                Some(v) => Ok(Some(v.into_pyobject(py)?.into())),
+                None => Ok(None),
+            }
+        } else {
+            match ctx.eval_wide(&bv) {
+                Some(bytes) => {
+                    let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+                    let int_class = py.get_type::<pyo3::types::PyInt>();
+                    let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                    Ok(Some(py_int.into()))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
     /// Create a RustSolverContext from an existing SymContext.
     ///
     /// This is used when forking solver contexts during callback handling,
