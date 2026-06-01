@@ -1922,3 +1922,186 @@ be tracked.
        to 22.0s to cover slow mode. See
        :doc:`rust_bimodal_variance` and
        ``invariant-bimodal-variance-benchmarks``.
+
+PyO3 API trust model
+--------------------
+
+The Rust engine assumes a **cooperative-Python** trust model: the
+Python code that drives ``RustExplorationManager`` /
+``RustSolverContext`` / ``PyRustSimState`` is treated as in-process,
+non-adversarial collaborator code. The FFI surface validates inputs
+enough to keep well-behaved Python from corrupting Rust state, but it
+does **not** sandbox a hostile or buggy caller out of all undefined
+behavior. The narrow exception is the ``import_z3_constraint_ptrs``
+fast path documented below.
+
+Spike report (``angr-9l9j``, 2026-06-01). Audit scope: every
+``#[pyclass]`` / ``#[pymethods]`` / ``#[pyfunction]`` in
+``native/angr/src/``, focused on the four classes most likely to be
+driven directly from user Python: ``RustExplorationManager``,
+``RustSimState``, ``RustSolverContext``, ``RustBVHandle``,
+``PythonCallbacks``. Not in scope: fuzzer/icicle/automaton FFI (only
+exercised by their own integration tests).
+
+State ID handling
+~~~~~~~~~~~~~~~~~
+
+Every public method that accepts a ``state_id: u64`` routes through
+``RustExplorationManager::find_state`` /
+``find_state_mut`` (``exploration/helpers.rs:103``). Misses become one
+of two surfaces depending on the call site:
+
+* **Optional reads** — ``get_state_pc_by_id``,
+  ``get_state_bbl_history_tail``, ``state_constraint_count``,
+  ``state_stash``, ``get_state_root`` return ``Option<…>`` so a stale
+  ID maps to Python ``None``.
+* **Mutating or solver-bearing reads** —
+  ``set_state_solver_timeout``, ``set_state_mmap_base``,
+  ``import_symbolic_to_state``, ``add_constraints_to_state``, and the
+  ``with_state`` / ``with_state_mut`` helpers raise
+  ``PyValueError("<api>: state {id} not found")``.
+
+No public ``state_id`` path panics. Negative ``state_id`` values from
+Python collide with the ``u64`` extraction (PyO3 raises
+``OverflowError`` at the FFI boundary) and never reach Rust.
+
+``move_state`` and ``move_states`` return ``Ok(false)`` on miss
+instead of raising — a silent no-op rather than an error. Callers
+that need an assertion should check the return value
+(``rust_manager.py`` does).
+
+Callback registration
+~~~~~~~~~~~~~~~~~~~~~
+
+``PythonCallbacks`` (``callbacks.rs:303``) holds 24 ``Option<Py<PyAny>>``
+slots, one per dispatch site (memory load/store, hooks, syscall,
+lift_block, dirty_call, page fetch, six ``state.inspect`` slots,
+etc.). ``Py<PyAny>`` is an owning Python refcount, so a callback
+cannot dangle even if Python "drops" it locally — the engine's clone
+keeps it alive.
+
+* **Errors propagate**. Every dispatch site reads
+  ``self.<slot>.as_ref().ok_or_else(|| PyRuntimeError::new_err("…
+  callback not set"))?`` and then ``cb.call1(py, args)?``. A Python
+  ``raise`` becomes a ``PyErr`` that the engine returns up through
+  the exploration loop (``run_loop.rs``).
+* **Type/arity mismatches propagate**. Result destructuring uses
+  ``.cast_bound::<PyTuple>(py)?.get_item(N)?.extract()?`` — a 1-tuple
+  returned for a 3-tuple slot raises ``IndexError``; a wrong-type
+  field raises ``TypeError``. The engine surfaces these as
+  ``PyErr`` rather than misinterpreting bytes.
+* **GC cycle break**. ``PythonCallbacks::__traverse__`` /
+  ``__clear__`` (``callbacks.rs:809``) walk every ``Py<PyAny>`` slot
+  so Python GC can collect the ``mgr → _callbacks → bound-method →
+  mgr`` cycle. Without this, ``RustExplorationManager`` (and its
+  ``_state_cache`` of ~4030 angr pages on ``mma_howtouse``) would
+  leak permanently.
+
+Address arguments
+~~~~~~~~~~~~~~~~~
+
+Guest-VM addresses cross the FFI as ``u64``. They reach
+``state.memory_load(addr, size)`` /
+``state.memory_mut().import_symbolic_value(addr, bv, …)`` etc., which
+delegate to ``SymbolicMemory`` — a page-table abstraction over the
+guest's address space, **not** host-process memory. Unmapped pages
+return ``Err`` which the FFI maps to ``Ok(None)``. There is no raw
+pointer deref reachable via an address argument.
+
+Equally, ``addr`` values used as map keys (``set_state_symbolic_pages``,
+``addr_to_ast``, ``hook_symbolic_memory``) are stored verbatim — a
+malformed address just lives in the map and is ignored on lookup.
+
+BV inputs (``RustBVHandle``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RustBVHandle`` (``symbolic/handle.rs:28``) is a pure value type:
+``id: u64``, ``width: u32``, ``concrete: Option<u128>``. It carries
+**no raw Rust pointer** — Python only gets back a numeric handle.
+The class is ``#[derive(Clone)]``; ``__eq__`` and ``__hash__`` are
+``id``-based, so a forged handle compares equal to a real one with
+the same ID. The symbol-table lookup that resolves the handle to a
+``RustBV`` (``RustSymbolTable``) returns ``Option<…>`` on miss — no
+UB risk from forged or stale IDs.
+
+Claripy AST inputs (``add_constraint_ast``, ``eval``,
+``import_symbolic_memory``, etc.) flow through ``claripy_to_rustbv``
+(``claripy_bridge.rs``). Any leaf type the bridge doesn't recognize
+raises ``BridgeError`` → ``PyRuntimeError``. No malformed-AST input
+reaches the Z3 layer un-converted.
+
+Raw Z3 pointer fast path (the **only** unsafe FFI surface)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The audit found one place where a Python caller's input is treated as
+a raw pointer with no validation:
+
+* ``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
+  Vec<usize>)`` (``exploration/state_api.rs:102``) iterates ``ptrs``
+  and calls ``unsafe { ctx.add_constraint_raw(*ptr) }`` whenever
+  ``*ptr != 0``. The ``add_constraint_raw`` SAFETY contract
+  (``symbolic/context.rs:1524``) requires each pointer to be a valid,
+  live ``Z3_ast Bool`` in the active thread-local Z3 context. The
+  function calls ``NonNull::new_unchecked(ptr as *mut _)`` followed by
+  ``z3::ast::Ast::wrap`` — both UB if the pointer is anything other
+  than a valid Z3 AST.
+
+  The intended caller (``rust_manager.py:2876``) always pairs
+  ``import_z3_constraint_ptrs`` with a prior
+  ``export_z3_constraint_ptrs(old_state_id)`` on the same process and
+  Z3 context, so the production trust model is sound. But the method
+  is ``pub fn`` on a ``#[pymethods]`` impl, meaning any Python caller
+  can pass arbitrary integers and trigger UB. ``add_constraint_raw``
+  on ``RustSolverContext`` is **not** Python-callable directly — it
+  is only reachable through ``add_constraint_ast`` /
+  ``add_constraint_tracked_ast``, which extract the pointer from
+  claripy's z3 backend (``solver.rs:26``) and so are safe by
+  construction.
+
+  Hardening options (filed as ``task`` beads):
+
+  * Sanity-check each pointer with ``Z3_get_ast_kind`` /
+    ``Z3_get_sort_kind`` before wrapping, raising
+    ``PyValueError("invalid Z3 AST pointer at index {i}")`` on
+    failure. Cost: one Z3 C call per pointer (~ns), small compared to
+    the assert work that follows.
+  * Move the FFI to take an opaque ``Py<RustZ3AstHandle>`` (newtype
+    around the same usize, constructible only from
+    ``export_z3_constraint_ptrs``). Compatible with the existing
+    snapshot-restore path because Python never inspects the values.
+    Closes the surface entirely.
+
+Stash name validation (footgun, not unsafe)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``_create_state`` and ``_move_state``
+(``exploration/state_lifecycle.rs:43, 235``) use
+``stashes_mut().entry(stash.to_string()).or_insert_with(VecDeque::new)``
+to add the state to the destination stash. A typo
+(``"actve"`` instead of ``"active"``) silently creates a new stash
+and the state vanishes from the standard ``mgr.active`` /
+``mgr.found`` etc. views. This is not a memory-safety issue but it is
+an easy debugging trap. A whitelist (or at least a warning when a
+new stash is created at run-time) would surface the bug at the API
+boundary.
+
+PyRustSimState lifetime
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``add_state(&mut self, stash, state: &PyRustSimState)``
+(``exploration/state_lifecycle.rs:53``) forks the incoming state via
+``state.inner().fork()``, so the engine ends up owning an isolated
+copy. Subsequent Python-side mutations of the original
+``PyRustSimState`` do not affect the engine's state. The ``state``
+parameter is borrowed (``&PyRustSimState``) so PyO3 enforces no
+re-entry while Rust holds the borrow.
+
+Summary
+~~~~~~~
+
+For real-world angr scripts, the trust model holds: state IDs,
+addresses, BV handles, callbacks, and claripy ASTs all surface
+type/lookup errors as ``PyErr`` rather than panicking or UB-ing.
+The one production-relevant hardening opportunity is
+``import_z3_constraint_ptrs``; the stash-name footgun is a
+quality-of-life concern. Both have follow-up ``task`` beads filed.
