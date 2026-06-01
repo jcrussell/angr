@@ -1776,11 +1776,30 @@ be tracked.
      - Speedup
      - Root cause
    * - ``google2016_unbreakable_1``
-     - 0.53x
-     - Was bimodal (1.6s/3.3s); 2026-05-13 campaign found 20/20 runs
-       in 3.01–3.06s (stdev 0.01s) — has unimodalized at what used to
-       be the slow mode. See :doc:`rust_bimodal_variance` and
-       ``benchmark-google2016-unbreakable-1-regression``.
+     - 0.46x (slow tail)
+     - **Re-bimodalized 2026-05-22 (angr-pfy4 spike resolution).**
+       Was bimodal (1.6s/3.3s) pre-May; 2026-05-13 found 20/20 runs in
+       3.01–3.06s (unimodal slow); 2026-05-18 (angr-hyiz.4) found 20/20
+       in 2.43–2.48s and the bench was removed from
+       ``BIMODAL_BENCHMARKS``. 2026-05-22 ralph iter-2 flagged 5.21s vs
+       3.5s baseline, and a 15-sample re-validation on HEAD
+       ``14187073d`` found a multi-modal distribution: 11/15 in
+       0.91–0.99s (fast mode, well below baseline), 2/15 in 1.15s,
+       1/15 in 1.86s, 1/15 in 2.65s, with the gate sample at 5.21s
+       extending the slow tail. The fast mode is now ~3.6× faster than
+       the May-18 median — post-May-18 perf gains (likely angr-b58a
+       UltraPage memcmp + lazy-region FFI, angr-zdho z3_ast cache
+       instrumentation, angr-9jly proxy fast-path) appear to have
+       *widened* the gap between fast and slow Z3 modes rather than
+       collapsing them. Re-added to ``BIMODAL_BENCHMARKS`` in commit
+       ``e30214e88`` (run_regression.py); baseline left at 3.5s. SLA
+       at fast mode would be 1.65× (1.602s Python / 0.97s Rust median)
+       — a new best if not for the slow tail. Spike conclusion
+       (category c, per task description): Z3 SAT heuristic
+       nondeterminism dominates, not actionable in Rust. The
+       ``BIMODAL_BENCHMARKS`` gate is the correct mitigation. See
+       :doc:`rust_bimodal_variance` and bd memory
+       ``benchmark-unbreakable_1-2026-05-22``.
    * - ``hackcon2016_angry-reverser``
      - 0.69x (Py ~10.29s / Rust ~14.84s, 5-sample median 2026-05-19)
      - The 2026-05-17 regression (11.7s → 30.6s) was bisected to
