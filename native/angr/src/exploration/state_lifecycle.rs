@@ -35,6 +35,7 @@
 //!   `state_roots`/`state_index` in `StashManager` — see `stash.rs`.
 
 use super::*;
+use crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS;
 
 impl RustExplorationManager {
     pub(crate) fn _create_state(&mut self, stash: &str) -> PyResult<u64> {
@@ -51,7 +52,7 @@ impl RustExplorationManager {
         }
 
         // Propagate solver timeout
-        if self.constraint_solver.solver_timeout_ms != 30000 {
+        if self.constraint_solver.solver_timeout_ms != DEFAULT_SOLVER_TIMEOUT_MS {
             state
                 .solver()
                 .borrow()
@@ -89,7 +90,7 @@ impl RustExplorationManager {
         }
 
         // Propagate solver timeout
-        if self.constraint_solver.solver_timeout_ms != 30000 {
+        if self.constraint_solver.solver_timeout_ms != DEFAULT_SOLVER_TIMEOUT_MS {
             forked
                 .solver()
                 .borrow()

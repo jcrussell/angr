@@ -72,6 +72,13 @@ use smallvec::SmallVec;
 
 use super::RustBV;
 
+/// Default Z3 solver timeout in milliseconds.
+///
+/// 30 seconds — chosen to match claripy's historical default and to cap the
+/// occasional Z3 outlier on bimodal-SAT benches. Overridable per-state via
+/// [`RustExplorationManager::set_solver_timeout`](crate::exploration::RustExplorationManager).
+pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
+
 /// Inline capacity for SymContext push_* stacks. Branch nesting is typically
 /// shallow (≤8) within a single block; SmallVec avoids the heap allocation
 /// for the first push.
@@ -1284,7 +1291,7 @@ pub struct SymContext {
     /// Each entry is a (track_bool, constraint_ast) pair.
     #[cfg(feature = "vex-engine-z3")]
     constraint_trackers: Mutex<Vec<z3::ast::Bool>>,
-    /// Z3 solver timeout in milliseconds (default: 30000).
+    /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     #[cfg(feature = "vex-engine-z3")]
     timeout_ms: AtomicU32,
 
@@ -1422,7 +1429,7 @@ impl SymContext {
     /// All Z3 operations on this thread will use the same context.
     #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
-        Self::with_timeout(30000)
+        Self::with_timeout(DEFAULT_SOLVER_TIMEOUT_MS)
     }
 
     /// Create a new solver context with Z3 and a custom timeout.

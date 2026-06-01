@@ -13,12 +13,14 @@
 
 use std::collections::HashSet;
 
+use crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS;
+
 /// Solver configuration knobs propagated to each per-state solver.
 #[derive(Debug, Default)]
 pub(crate) struct ConstraintSolver {
     /// When true, skip satisfiability checks on forked states (LAZY_SOLVES).
     pub(crate) lazy_solves: bool,
-    /// Z3 solver timeout in milliseconds (default: 30000).
+    /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     pub(crate) solver_timeout_ms: u32,
 }
 
@@ -26,7 +28,7 @@ impl ConstraintSolver {
     pub(crate) fn new() -> Self {
         ConstraintSolver {
             lazy_solves: false,
-            solver_timeout_ms: 30000,
+            solver_timeout_ms: DEFAULT_SOLVER_TIMEOUT_MS,
         }
     }
 }

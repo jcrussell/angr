@@ -611,7 +611,8 @@ impl RustExplorationManager {
         self.memory_config.zero_fill_unconstrained = enabled;
     }
 
-    /// Set the Z3 solver timeout in milliseconds (default: 30000).
+    /// Set the Z3 solver timeout in milliseconds (default:
+    /// [`DEFAULT_SOLVER_TIMEOUT_MS`](crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS)).
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
         self.constraint_solver.solver_timeout_ms = timeout_ms;
     }
