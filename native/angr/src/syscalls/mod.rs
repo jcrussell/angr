@@ -21,6 +21,7 @@ pub mod arch_prctl;
 pub mod brk;
 pub mod concurrency;
 pub mod exit;
+pub mod file_path;
 pub mod identity;
 pub mod memory_extras;
 pub mod mmap;
@@ -172,9 +173,18 @@ impl NativeSyscallRegistry {
         //   angr is single-threaded symex so blocking is never modeled.
         //   epoll_ctl_old (214) / epoll_wait_old (215) intentionally NOT
         //   registered — pre-2.6 legacy that no current binary uses.
+        // lstat (6), readlink (89), newfstatat (262), readlinkat (267),
+        //   faccessat (269): file-path syscalls without a Python
+        //   SimProcedure (angr-0hif.1, symbolic-return subset). Mirror
+        //   syscall_stub. The companion path-aware syscalls (open, openat,
+        //   close, stat, fstat, access) all have Python procs that touch
+        //   state.posix.fd / state.fs and are intentionally NOT covered
+        //   here — they fall back to Python until the FD/FS plumbing is
+        //   ported into RustSimState.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
+            (6, file_path::NativeLstatSyscall),
             (9, mmap::NativeMmapSyscall),
             (10, mprotect::NativeMprotectSyscall),
             (11, munmap::NativeMunmapSyscall),
@@ -189,6 +199,7 @@ impl NativeSyscallRegistry {
             (39, identity::NativeGetpidSyscall),
             (60, exit::NativeExitSyscall),
             (62, signals::NativeKillSyscall),
+            (89, file_path::NativeReadlinkSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
             (97, rlimit::NativeGetrlimitSyscall),
             (102, identity::NativeGetuidSyscall),
@@ -213,6 +224,9 @@ impl NativeSyscallRegistry {
             (232, concurrency::NativeEpollWaitSyscall),
             (233, concurrency::NativeEpollCtlSyscall),
             (234, signals::NativeTgkillSyscall),
+            (262, file_path::NativeNewfstatatSyscall),
+            (267, file_path::NativeReadlinkatSyscall),
+            (269, file_path::NativeFaccessatSyscall),
             (284, concurrency::NativeEventfdSyscall),
             (290, concurrency::NativeEventfd2Syscall),
             (291, concurrency::NativeEpollCreate1Syscall),
@@ -264,7 +278,9 @@ impl NativeSyscallRegistry {
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
+            (85, file_path::NativeReadlinkSyscall),
             (91, munmap::NativeMunmapSyscall),
+            (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (144, memory_extras::NativeMsyncSyscall),
             (150, memory_extras::NativeMlockSyscall),
@@ -291,6 +307,9 @@ impl NativeSyscallRegistry {
             (256, concurrency::NativeEpollWaitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
             (270, signals::NativeTgkillSyscall),
+            // newfstatat absent on i386 — Linux 32-bit uses fstatat64 (327).
+            (305, file_path::NativeReadlinkatSyscall),
+            (307, file_path::NativeFaccessatSyscall),
             (323, concurrency::NativeEventfdSyscall),
             (328, concurrency::NativeEventfd2Syscall),
             (329, concurrency::NativeEpollCreate1Syscall),
@@ -320,7 +339,9 @@ impl NativeSyscallRegistry {
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
+            (85, file_path::NativeReadlinkSyscall),
             (91, munmap::NativeMunmapSyscall),
+            (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (144, memory_extras::NativeMsyncSyscall),
             (150, memory_extras::NativeMlockSyscall),
@@ -347,6 +368,9 @@ impl NativeSyscallRegistry {
             (252, concurrency::NativeEpollWaitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
             (268, signals::NativeTgkillSyscall),
+            // newfstatat absent on ARM EABI — uses fstatat64 (327).
+            (332, file_path::NativeReadlinkatSyscall),
+            (334, file_path::NativeFaccessatSyscall),
             (351, concurrency::NativeEventfdSyscall),
             (356, concurrency::NativeEventfd2Syscall),
             (357, concurrency::NativeEpollCreate1Syscall),
@@ -370,8 +394,14 @@ impl NativeSyscallRegistry {
             (19, concurrency::NativeEventfd2Syscall),
             (20, concurrency::NativeEpollCreate1Syscall),
             (21, concurrency::NativeEpollCtlSyscall),
+            // asm-generic ABI dropped legacy `lstat` and `readlink` — only
+            // the *at variants exist here. faccessat (48), readlinkat (78),
+            // newfstatat (79).
+            (48, file_path::NativeFaccessatSyscall),
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
+            (78, file_path::NativeReadlinkatSyscall),
+            (79, file_path::NativeNewfstatatSyscall),
             (93, exit::NativeExitSyscall),
             (94, exit::NativeExitSyscall),
             (98, concurrency::NativeFutexSyscall),
@@ -430,7 +460,9 @@ impl NativeSyscallRegistry {
             (4075, rlimit::NativeSetrlimitSyscall),
             (4076, rlimit::NativeGetrlimitSyscall),
             (4078, sim_time::NativeGettimeofdaySyscall),
+            (4085, file_path::NativeReadlinkSyscall),
             (4091, munmap::NativeMunmapSyscall),
+            (4107, file_path::NativeLstatSyscall),
             (4125, mprotect::NativeMprotectSyscall),
             (4144, memory_extras::NativeMsyncSyscall),
             (4154, memory_extras::NativeMlockSyscall),
@@ -449,6 +481,9 @@ impl NativeSyscallRegistry {
             (4250, concurrency::NativeEpollWaitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
             (4266, signals::NativeTgkillSyscall),
+            // newfstatat absent on MIPS32 O32 — uses fstatat64 (4293).
+            (4298, file_path::NativeReadlinkatSyscall),
+            (4300, file_path::NativeFaccessatSyscall),
             (4319, concurrency::NativeEventfdSyscall),
             (4325, concurrency::NativeEventfd2Syscall),
             (4326, concurrency::NativeEpollCreate1Syscall),
@@ -1061,6 +1096,68 @@ mod tests {
                     .unwrap_or_else(|| panic!("{arch} epoll_wait ({n}) missing"));
                 assert_eq!(h.name(), "epoll_wait");
                 assert_eq!(h.num_args(), 4);
+            }
+        }
+    }
+
+    #[test]
+    fn file_path_stubs_registered_on_all_arches() {
+        // angr-0hif.1 symbolic-return subset: lstat / newfstatat /
+        // readlink / readlinkat / faccessat. None have a Python
+        // SimProcedure; the unhandled-syscall path falls through to
+        // `syscall_stub`. The native handlers mirror that via
+        // SyscallOutcome::ContinueSymbolic.
+        //
+        // Per-arch availability:
+        //   * AArch64 asm-generic ABI dropped legacy `lstat` and `readlink`
+        //     (only *at variants exist).
+        //   * 32-bit Linux i386 / ARM EABI / MIPS32 O32 use `fstatat64`
+        //     instead of `newfstatat`; absent here.
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
+        //  readlinkat, faccessat)
+        let table: &[(&str, Option<u64>, Option<u64>, Option<u64>, u64, u64)] = &[
+            ("AMD64", Some(6), Some(262), Some(89), 267, 269),
+            ("X86", Some(107), None, Some(85), 305, 307),
+            ("ARM", Some(107), None, Some(85), 332, 334),
+            ("ARM64", None, Some(79), None, 78, 48),
+            ("MIPS32", Some(4107), None, Some(4085), 4298, 4300),
+        ];
+
+        for &(arch, lstat_n, nfstatat_n, readlink_n, readlinkat_n, faccessat_n) in table {
+            let rla = r
+                .get(arch, readlinkat_n)
+                .unwrap_or_else(|| panic!("{arch} readlinkat ({readlinkat_n}) missing"));
+            assert_eq!(rla.name(), "readlinkat");
+            assert_eq!(rla.num_args(), 4);
+
+            let fa = r
+                .get(arch, faccessat_n)
+                .unwrap_or_else(|| panic!("{arch} faccessat ({faccessat_n}) missing"));
+            assert_eq!(fa.name(), "faccessat");
+            assert_eq!(fa.num_args(), 3);
+
+            if let Some(n) = lstat_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} lstat ({n}) missing"));
+                assert_eq!(h.name(), "lstat");
+                assert_eq!(h.num_args(), 2);
+            }
+            if let Some(n) = nfstatat_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} newfstatat ({n}) missing"));
+                assert_eq!(h.name(), "newfstatat");
+                assert_eq!(h.num_args(), 4);
+            }
+            if let Some(n) = readlink_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} readlink ({n}) missing"));
+                assert_eq!(h.name(), "readlink");
+                assert_eq!(h.num_args(), 3);
             }
         }
     }

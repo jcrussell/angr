@@ -11631,6 +11631,56 @@ class TestNativeResourceLimitSyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFilePathSyscalls:
+    """angr-0hif.1 (symbolic-return subset): native ``lstat`` /
+    ``newfstatat`` / ``readlink`` / ``readlinkat`` / ``faccessat``.
+    None of these have a Python ``SimProcedure``; the unhandled-syscall
+    path falls through to ``procedures/stubs/syscall_stub.py::syscall``
+    which returns a fresh ``Unconstrained`` BV. The native handlers
+    mirror that via ``SyscallOutcome::ContinueSymbolic``.
+
+    The companion path-aware file syscalls (``open`` / ``openat`` /
+    ``close`` / ``stat`` / ``fstat`` / ``access``) all have Python
+    ``SimProcedure`` impls that touch ``state.posix.fd`` / ``state.fs``
+    and are intentionally NOT covered yet — they fall back to Python.
+
+    The Rust cargo unit tests in ``native/angr/src/syscalls/file_path.rs``
+    pin the per-handler invariants; this is the cross-the-FFI dispatch
+    check (``syscall_python_fallback_count`` stays 0 for each one).
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (6, "lstat"),
+            (89, "readlink"),
+            (262, "newfstatat"),
+            (267, "readlinkat"),
+            (269, "faccessat"),
+        ],
+    )
+    def test_file_path_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
+            setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeConcurrencySyscalls:
     """angr-0hif.7: native ``futex`` / ``eventfd`` / ``eventfd2`` /
     ``epoll_create`` / ``epoll_create1`` / ``epoll_ctl`` / ``epoll_wait``
