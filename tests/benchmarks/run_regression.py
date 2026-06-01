@@ -104,6 +104,12 @@ FAST_SUITE = [
     # integer ops; the ELF wrapper is ELF64 with EI_CLASS=ELF64 and
     # EF_MIPS_ARCH_64, exercising the N64 calling convention path.
     ("mips64_le_branch", 30, "bfs", True),
+    # MIPS64 BE inline-ELF synthetic benchmark (angr-ig3o.3). Big-endian
+    # counterpart of mips64_le_branch — same program shape, but
+    # EI_DATA=MSB and BE-packed instruction words. Validates the BE
+    # instruction-fetch + memory layout path on a 64-bit MIPS target
+    # end-to-end through the Rust interpreter.
+    ("mips64_be_branch", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full

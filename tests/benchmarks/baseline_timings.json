@@ -151,6 +151,14 @@
     "state_creations": 0,
     "steps": 0
   },
+  "mips64_be_branch": {
+    "callback_count": 0,
+    "peak_memory_mb": 285.0,
+    "python_time": null,
+    "rust_time": 0.48,
+    "state_creations": 0,
+    "steps": 0
+  },
   "mips64_le_branch": {
     "callback_count": 0,
     "peak_memory_mb": 252.0,

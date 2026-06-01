@@ -6554,6 +6554,138 @@ class TestMultiArchSupport:
             f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
         )
 
+    def test_mips64_explore_be_real_elf(self, tmp_path):
+        """End-to-end MIPS64 big-endian exploration on a hand-assembled ELF.
+
+        Closes the last gap in the ``ig3o`` Arch BE validation campaign
+        (sibling of ``test_armeb_explore_blob``, angr-ig3o.1). MIPS64
+        BE was wired up (register table, N64 calling convention) and
+        the LE path was end-to-end tested via
+        ``test_mips64_explore_le_real_elf``, but BE memory + instruction
+        layout had never been driven through the Rust interpreter on a
+        multi-block control flow — the same risk class as the latent
+        Cdecl x86 EAX/EDX bug (commit 5329d8222).
+
+        MIPS64 base-integer instruction encodings match MIPS32 for the
+        opcodes used here; the storage byte order changes with EI_DATA.
+        The ELF wrapper is ELF64 with ``EI_CLASS=ELF64`` and
+        ``EI_DATA=MSB``, exercising the N64 calling convention path on
+        BE memory.
+
+        No MIPS64 binaries ship with angr-examples and no cross-compiler
+        is available locally, so the ELF is constructed inline (same
+        pattern as ``test_mips64_explore_le_real_elf``).
+
+        Pairs with the ``mips64_be_branch`` synthetic benchmark.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # MIPS64 instruction encodings — same as MIPS32 for these opcodes
+        # since registers are still 5 bits. ADDIU sign-extends the 16-bit
+        # immediate to 64 bits on MIPS64. Stored big-endian.
+        #   0x00: ADDIU t0, zero, 42     2408002A  ; $t0 = sign-extend(42)
+        #   0x04: BEQ a0, t0, +3         10880003  ; on equal -> +0x14 (found)
+        #   0x08: NOP (delay slot)       00000000
+        #   0x0c: B +2 (BEQ zero,zero)   10000002  ; -> +0x18 (avoid)
+        #   0x10: NOP (delay slot)       00000000
+        #   0x14: NOP (found)            00000000
+        #   0x18: NOP (avoid)            00000000
+        code = struct.pack(
+            ">IIIIIII",
+            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
+            0x00000000, 0x00000000, 0x00000000,
+        )
+
+        # Minimal ELF64 (MIPS64 BE) header. PT_LOAD covers file
+        # [0, 120+len(code)] → vaddr [0x400000, ...). Entry = first instr.
+        BASE = 0x400000
+        EHDR_SIZE = 64  # ELF64 header
+        PHDR_SIZE = 56  # ELF64 program header
+        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
+        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
+
+        # ELF64 header (big-endian)
+        ehdr = b"\x7fELF" + bytes([
+            2,  # EI_CLASS = ELF64
+            2,  # EI_DATA = MSB (big-endian)
+            1,  # EI_VERSION
+            0,  # EI_OSABI = System V
+            0,  # EI_ABIVERSION
+        ]) + b"\x00" * 7  # EI_PAD
+        ehdr += struct.pack(
+            ">HHIQQQIHHHHHH",
+            2,                  # e_type = ET_EXEC
+            0x08,               # e_machine = EM_MIPS
+            1,                  # e_version
+            ENTRY,              # e_entry
+            EHDR_SIZE,          # e_phoff
+            0,                  # e_shoff
+            0x60000000,         # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
+            EHDR_SIZE,          # e_ehsize
+            PHDR_SIZE,          # e_phentsize
+            1,                  # e_phnum
+            0,                  # e_shentsize
+            0,                  # e_shnum
+            0,                  # e_shstrndx
+        )
+        assert len(ehdr) == EHDR_SIZE
+
+        # ELF64 PT_LOAD program header (field order: p_type, p_flags first)
+        phdr = struct.pack(
+            ">IIQQQQQQ",
+            1,                  # p_type = PT_LOAD
+            5,                  # p_flags = PF_R | PF_X
+            0,                  # p_offset
+            BASE,               # p_vaddr
+            BASE,               # p_paddr
+            TOTAL,              # p_filesz
+            TOTAL,              # p_memsz
+            0x1000,             # p_align
+        )
+        assert len(phdr) == PHDR_SIZE
+
+        elf_bytes = ehdr + phdr + code
+        elf_path = tmp_path / "mips64be_branch.elf"
+        elf_path.write_bytes(elf_bytes)
+
+        proj = angr.Project(str(elf_path), auto_load_libs=False)
+        assert proj.arch.name == "MIPS64"
+        assert proj.arch.bits == 64
+        assert proj.arch.memory_endness == "Iend_BE", (
+            f"cle ELF loader did not pick up EI_DATA=MSB for MIPS64: "
+            f"got {proj.arch.memory_endness}"
+        )
+        assert proj.arch.instruction_endness == "Iend_BE"
+        assert proj.entry == ENTRY, (
+            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
+        )
+
+        state = proj.factory.blank_state(addr=proj.entry)
+        a0 = claripy.BVS("a0", 64)
+        state.regs.a0 = a0
+
+        mgr = RustExplorationManager(proj, [state])
+        # Branch targets are at +0x14 / +0x18 from the first instruction,
+        # which sits at ENTRY (just past the ELF header / phdr).
+        mgr.explore(
+            find=ENTRY + 0x14,
+            avoid=ENTRY + 0x18,
+            num_find=1,
+            max_steps=50,
+        )
+
+        assert len(mgr.found) >= 1, (
+            f"MIPS64 BE ELF exploration did not reach {ENTRY + 0x14:#x}; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        assert found.solver.eval(a0) == 42, (
+            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
+        )
+
     # ------------------------------------------------------------------
     # SimProcedure round-trip tests (angr-orc9). One per non-amd64 arch:
     # exercise the calling-convention path through the dispatcher

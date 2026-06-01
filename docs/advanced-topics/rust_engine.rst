@@ -207,8 +207,8 @@ below "Supported" as experimental.
      - Supported
    * - MIPS64
      - 0
-     - 2 (LE real ELF, native-proc)
-     - 1 (mips64_le_branch synthetic)
+     - 3 (LE real ELF, BE real ELF, native-proc)
+     - 2 (mips64_le_branch + mips64_be_branch synthetics)
      - MipsN64
      - Supported
 
@@ -229,7 +229,8 @@ Wired-up but not fully verified:
 * Register offsets for all six arches in ``native/angr/src/arch/*.rs``.
 * Endianness flag (ARM BE blob test added via ``armeb`` arch, see
   ``test_armeb_explore_blob``; MIPS32 BE+LE end-to-end via ELF + blob;
-  MIPS64 LE end-to-end; ARM64 / MIPS64 BE untested).
+  MIPS64 BE+LE end-to-end via ELF; ARM64 BE untested — blocked on
+  archinfo, see ``archinfo-be-arch-alias-support`` memory).
 * ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
   ``calling_conventions.rs``.
 
