@@ -348,3 +348,151 @@ What *not* to do
   access) is the engine's most useful internal boundary; preserving it
   keeps the test surface small (``SymContext::new_mock()`` is enough
   to test any pure op).
+
+Unsupported op coverage matrix
+------------------------------
+
+At-a-glance status for op families that have historically been
+placeholders. *Implemented* means a dispatch arm exists in
+``native/angr/src/vex/ops.rs`` and the opcode parses to a concrete
+``IROp`` variant (not ``IROp::NeonUnimplemented`` or
+``IROp::Unmapped``). *Placeholder* means the opcode parses but
+dispatch returns ``OpError::UnsupportedNeon``, which the engine
+surfaces as ``RustUnsupportedVexOpError``. *Stubbed-symbolic* means
+dispatch returns a fresh-symbolic value of the expected width — used
+for ops whose semantics are too expensive or under-specified to
+model (e.g. ``URECPE`` / ``URSQRTE`` per-lane reciprocal estimates).
+
+Source of truth: ``native/angr/src/vex/opcode_map.rs``
+(``parse_neon_unimplemented`` is the remaining placeholder list) and
+``native/angr/src/vex/ops.rs`` (the dispatch arms). Refresh this
+table whenever a campaign child closes — the bead column makes the
+provenance scannable.
+
+NEON op families
+^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 15 20 35
+
+   * - Op family
+     - Count
+     - Status
+     - Provenance
+   * - Saturating add / sub (``Iop_QAdd*`` / ``Iop_QSub*``)
+     - ~24
+     - Implemented
+     - ``IROp::VQAdd`` / ``IROp::VQSub`` (angr-tukg.1)
+   * - Pairwise integer (``Iop_PwAdd*`` / ``Iop_PwAddL*`` /
+       ``Iop_PwMin*`` / ``Iop_PwMax*``)
+     - ~24
+     - Implemented
+     - ``IROp::VPwAdd`` / ``VPwAddL`` / ``VPwMin`` / ``VPwMax``
+       (angr-tukg.2)
+   * - Pairwise FP (``Iop_PwAdd32Fx2``)
+     - 1
+     - Placeholder
+     - Last entry in ``parse_neon_unimplemented`` —
+       routes to ``IROp::NeonUnimplemented``
+   * - Rounding halving add (``Iop_Avg{N}{S/U}x{M}``)
+     - ~12
+     - Implemented
+     - ``IROp::VAvg`` (angr-tukg.3)
+   * - Byte / halfword / word / bit reversal within lane
+       (``Iop_Reverse{N}sIn{M}_x{K}``)
+     - ~12
+     - Implemented
+     - ``IROp::VReverse`` via ``parse_vreverse`` (angr-tukg.4)
+   * - FP reciprocal estimates (``Iop_RecipEst{,S}*`` /
+       ``Iop_RecipStep*`` / ``Iop_RSqrtEst{,S}*`` /
+       ``Iop_RSqrtStep*``)
+     - ~14
+     - Implemented
+     - ``IROp::VFRecipEst{,S}`` / ``VFRecipStep`` /
+       ``VFRSqrtEst{,S}`` / ``VFRSqrtStep`` (angr-iyon)
+   * - Integer reciprocal estimates (``Iop_RecipEst32Ux{2,4}`` —
+       URECPE; ``Iop_RSqrtEst32Ux{2,4}`` — URSQRTE)
+     - 4
+     - Stubbed-symbolic
+     - ``IROp::VIRecipEst`` / ``IROp::VIRSqrtEst`` — fresh-symbolic
+       per lane (angr-tukg.5)
+   * - Polynomial multiply (``Iop_PolynomialMul8x{8,16}`` /
+       ``Iop_PolynomialMull8x8``)
+     - 3
+     - Implemented
+     - ``IROp::VPolynomialMul`` (angr-tukg.6)
+   * - Per-lane bitcount (``Iop_Cnt8x{8,16}`` /
+       ``Iop_Clz{N}x{M}`` / ``Iop_Cls{N}x{M}``)
+     - ~13
+     - Implemented
+     - ``IROp::VCnt`` / ``VClz`` / ``VCls`` (angr-tukg.6)
+   * - Vector shift by vector (``Iop_Shl/Shr/Sar/Sal{N}x{M}``)
+     - ~16
+     - Implemented
+     - ``IROp::VShl`` / ``VShr`` / ``VSar`` — ``Sal`` aliased to
+       ``VShl`` (angr-tukg.7)
+   * - NEON saturating shift-left by vector
+       (``Iop_QShl{N}x{M}`` / ``Iop_QSal{N}x{M}``)
+     - ~8
+     - Implemented
+     - ``IROp::VQShlSat`` (angr-tukg.8)
+   * - NEON saturating shift-by-immediate (``Iop_QShlN*``)
+     - ~4
+     - Placeholder
+     - Noted in ``parse_neon_unimplemented`` rustdoc — no enum
+       variant or dispatch arm yet
+
+The remaining placeholders (``Iop_PwAdd32Fx2``, ``Iop_QShlN*``) are
+the residual entries after the NEON campaign (``angr-tukg``) closed.
+Promote them to standalone beads when a benchmark drives a symbolic
+path through them.
+
+x87 transcendental ops
+^^^^^^^^^^^^^^^^^^^^^^
+
+These ops do *not* parse to ``IROp::NeonUnimplemented`` — they fall
+all the way through ``parse_opcode`` and surface as
+``IROp::Unmapped(name)``. Same end-user error
+(``RustUnsupportedVexOpError``), different provenance: there is no
+parse arm yet, not just a missing dispatch arm.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 15 20 35
+
+   * - Op family
+     - Count
+     - Status
+     - Provenance
+   * - Log / exp (``Iop_Fyl2x``, ``Iop_F2xm1``)
+     - 2
+     - Placeholder
+     - Routes to ``IROp::Unmapped`` (angr-i5lj.1)
+   * - Misc FP (``Iop_Fscale``, ``Iop_Fpatan``, ``Iop_Fcos``,
+       ``Iop_Fsin``, ``Iop_Fxam``, ``Iop_Fxbm1``)
+     - 6
+     - Placeholder
+     - Routes to ``IROp::Unmapped`` (angr-i5lj.2)
+
+The x87 transcendentals only matter on workloads that drive a
+symbolic path through them. ``securityfest_fairlight`` and
+``ekopartyctf2016_sokohashv2`` both hit them in the original binary
+but the test drivers hook them out at the Python layer, so the
+matrix above does not yet block any tracked benchmark.
+
+Catching new placeholders
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you encounter ``RustUnsupportedVexOpError("Iop_<name>", arch)``
+on a new workload:
+
+1. ``grep "Iop_<name>"`` under ``native/angr/src/vex/`` to confirm
+   it has no parse arm. (If it does, the missing piece is a dispatch
+   arm in ``ops.rs`` — see the "Pipeline overview" section above.)
+2. If it has no parse arm, decide which sub-router in ``opcode_map.rs``
+   it belongs in (``parse_float`` / ``parse_vector`` / etc.) and add
+   it there.
+3. Add a row to the matrix above with status ``Placeholder`` and a
+   pointer to whichever bead tracks the implementation work.
+
