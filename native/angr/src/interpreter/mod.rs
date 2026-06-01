@@ -163,6 +163,14 @@ define_execution_stats! {
     cache_hit_count: sum,
     /// Number of IRSB cache misses (lifts needed).
     cache_miss_count: sum,
+    /// Number of IRSB cache evictions (capacity reached, LRU entry dropped).
+    /// Tallied at every `block_cache.put()` site whose return value is `Some`
+    /// AND the key was not already present (an overwrite, not an eviction).
+    /// Together with `cache_hit_count`/`cache_miss_count` this gives the data
+    /// needed to tune `BLOCK_CACHE_CAPACITY`: a high eviction-to-miss ratio
+    /// indicates capacity pressure (working set exceeds cache); near-zero
+    /// evictions on a benchmark mean the cache is oversized for that workload.
+    cache_eviction_count: sum,
     /// Time spent lifting blocks (nanoseconds).
     lift_time_ns: sum,
     /// Number of Rust memory loads (vs callback fallback).
@@ -1301,6 +1309,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Get the program counter.
+    #[inline]
     pub fn get_pc(&self) -> u64 {
         self.pc
     }

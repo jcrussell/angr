@@ -350,10 +350,12 @@ pub enum BitWidth {
 }
 
 impl BitWidth {
+    #[inline]
     pub fn bits(&self) -> u32 {
         *self as u32
     }
 
+    #[inline]
     pub fn bytes(&self) -> u32 {
         self.bits() / 8
     }
@@ -370,6 +372,7 @@ impl BitWidth {
         }
     }
 
+    #[inline]
     pub fn mask(&self) -> u128 {
         match self {
             BitWidth::W1 => 0x1,
@@ -598,6 +601,7 @@ impl RustBV {
     }
 
     /// Create a bitvector with all bits set to 1.
+    #[inline]
     pub fn ones(width: u32) -> Self {
         RustBV::Concrete {
             value: Self::all_ones_mask(width),

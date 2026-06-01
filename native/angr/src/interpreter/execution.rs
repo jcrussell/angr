@@ -319,17 +319,18 @@ impl<'a> VEXInterpreter<'a> {
                 .map_err(|e| CbExecutionError::Memory(e.to_string()))?;
         }
 
-        // Check cache first - Arc clone is O(1)
+        // Check cache first - Arc clone is O(1).
+        //
+        // Hit/miss/eviction counters are always-on (not gated by
+        // `profiling_enabled`): a `u64 += 1` per cache lookup is negligible
+        // compared to the lift work it precedes, and these counters need to
+        // be reliable for capacity-tuning regardless of profiling state.
         if let Some(irsb) = self.block_cache.get(&addr) {
-            if self.profiling_enabled {
-                self.stats.cache_hit_count += 1;
-            }
+            self.stats.cache_hit_count += 1;
             return Ok(Arc::clone(irsb));
         }
 
-        if self.profiling_enabled {
-            self.stats.cache_miss_count += 1;
-        }
+        self.stats.cache_miss_count += 1;
 
         let lift_start = profile_start!(self);
 
@@ -376,7 +377,15 @@ impl<'a> VEXInterpreter<'a> {
                                     );
                                     profile_add!(lift_start, self.stats.lift_time_ns);
                                     let arc_irsb = Arc::new(irsb);
-                                    self.block_cache.put(addr, Arc::clone(&arc_irsb));
+                                    // Post-miss: any returned Some is an eviction
+                                    // (the key was just confirmed not present above).
+                                    if self
+                                        .block_cache
+                                        .put(addr, Arc::clone(&arc_irsb))
+                                        .is_some()
+                                    {
+                                        self.stats.cache_eviction_count += 1;
+                                    }
                                     return Ok(arc_irsb);
                                 }
                                 Err(_e) => {
@@ -430,7 +439,13 @@ impl<'a> VEXInterpreter<'a> {
                                         log::trace!("Native lift succeeded at 0x{:x}", addr);
                                         profile_add!(lift_start, self.stats.lift_time_ns);
                                         let arc_irsb = Arc::new(irsb);
-                                        self.block_cache.put(addr, Arc::clone(&arc_irsb));
+                                        if self
+                                            .block_cache
+                                            .put(addr, Arc::clone(&arc_irsb))
+                                            .is_some()
+                                        {
+                                            self.stats.cache_eviction_count += 1;
+                                        }
                                         return Ok(arc_irsb);
                                     }
                                     Err(e) => {
@@ -490,9 +505,16 @@ impl<'a> VEXInterpreter<'a> {
 
         profile_add!(lift_start, self.stats.lift_time_ns);
 
-        // Cache it - Arc allows O(1) cloning
+        // Cache it - Arc allows O(1) cloning. Post-miss: any returned Some
+        // is an eviction (key was just confirmed not present).
         let arc_irsb = Arc::new(irsb);
-        self.block_cache.put(addr, Arc::clone(&arc_irsb));
+        if self
+            .block_cache
+            .put(addr, Arc::clone(&arc_irsb))
+            .is_some()
+        {
+            self.stats.cache_eviction_count += 1;
+        }
 
         Ok(arc_irsb)
     }

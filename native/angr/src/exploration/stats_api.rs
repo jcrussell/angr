@@ -26,6 +26,23 @@ impl RustExplorationManager {
         dict.set_item("find_addrs", self.find_addrs.len())?;
         dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
         dict.set_item("block_cache_size", self.environment.block_cache.len())?;
+        // IRSB block-cache hit/miss/eviction counters (always-on; merged from
+        // the per-interpreter ExecutionStats on each `swap_block_cache`).
+        // Use these to tune `BLOCK_CACHE_CAPACITY`: a high eviction-to-miss
+        // ratio means the working set exceeds capacity; near-zero evictions
+        // mean the cache is oversized for that workload.
+        dict.set_item(
+            "block_cache_hits",
+            self.profiling.accumulated_stats.cache_hit_count,
+        )?;
+        dict.set_item(
+            "block_cache_misses",
+            self.profiling.accumulated_stats.cache_miss_count,
+        )?;
+        dict.set_item(
+            "block_cache_evictions",
+            self.profiling.accumulated_stats.cache_eviction_count,
+        )?;
         dict.set_item(
             "native_proc_calls",
             self.profiling.native_proc_stats.native_calls,
