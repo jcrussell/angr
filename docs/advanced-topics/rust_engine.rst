@@ -1744,14 +1744,36 @@ when ``state.addr`` is inside a real (non-loader) binary, so
 re-iterates ``loader.all_objects``, re-loads every page via
 ``loader.memory.load``, and re-issues the FFI ``map_memory_batch`` from
 scratch. The loader-pages output of ``_extract_loader_pages``
-(``rust_manager.py:406``) is a pure function of the loader state and is
+(``rust_manager.py:441``) is a pure function of the loader state and is
 identical for all 45 Callables.
 
-A follow-up fix is tracked in ``angr-bzsc``: cache the loader-pages
-output class-wide (keyed by ``binary_path + arch_name``) so that the
-second-through-Nth Callable skip the slow loader iteration and only pay
-the small per-state stack / overlay stages. Expected impact: ~36 ms ×
-44 ≈ 1.6 s, which would close most of the residual 3 s gap.
+**Resolution (angr-bzsc 2026-05-19, angr-b58a 2026-05-20).** Two
+follow-up fixes landed against the 36.7 ms per-Callable Memory sync:
+
+#. ``angr-bzsc`` (commit ``f7873d9de``) added a class-wide
+   ``RustExplorationManager._loader_pages_cache`` (a
+   ``WeakKeyDictionary`` keyed by the ``cle.Loader`` instance, weak
+   so projects auto-evict on GC). ``_get_loader_pages_cache`` in
+   ``rust_state_sync.py:348`` is consumed by both
+   ``_map_loader_pages`` (line 375) and ``_add_loader_lazy_regions``
+   (line 466). Per-Callable ``map_loader`` dropped from several ms
+   to ~32 µs and ``lazy_regions`` from N_objects-iteration to ~4 µs.
+#. ``angr-b58a`` (commit ``47bf6284b``) followed up by cutting
+   ``_sync_extra_python_pages`` from 35 ms to 1.84 ms per Callable
+   (~19×) via UltraPage memcmp + a batched ``add_lazy_regions_batch``
+   FFI. ``extra_pages`` was the dominant residual phase after the
+   loader-pages cache landed.
+
+Together these brought Rust wall from ~7.23 s to ~6.26 s
+(0.59× → 0.70×) and per-Callable total memory sync from ~39 ms to
+~5 ms (see bd memory ``bzsc-mma-sync-phase-breakdown``). The
+remaining ~2 s gap is spread across phases too small individually
+to be worth attribution.
+
+A 2026-06-01 spike (``angr-eyt7``) re-verified that
+``_loader_pages_cache`` is wired up and consumed, and closed without
+further code change: the bead description was filed 2026-05-30 from
+a stale snapshot that pre-dated the angr-bzsc commit by eleven days.
 
 **Why this was not chased earlier.** Pre-attribution, the cheap
 mitigations considered (manual claripy cache clears, Rust LRU flush)
