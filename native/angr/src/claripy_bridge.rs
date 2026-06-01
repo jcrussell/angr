@@ -28,9 +28,33 @@ use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, global_
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
 
-// Thread-local LRU cache for AST conversions.
-// Key is the claripy AST's `__hash__` value (stable across GC), value is the converted RustBV.
-// Using hash instead of object ID avoids cache corruption when Python reuses object addresses.
+// Thread-local LRU mapping `claripy_ast.__hash__() → RustBV`.
+//
+// Direction: claripy→Rust. Caches the result of `claripy_to_rustbv`
+// for hot reconversion (e.g. the same constraint walked many times
+// during exploration).
+//
+// Key: `ast.hash()` (Python `Py_hash_t`, fits in `i64`). Hashes are
+// stable across CPython garbage collection unlike `id(ast)`, which
+// can be reused after collection.
+//
+// Value: the converted `RustBV`. `RustBV::clone` is a refcount bump
+// on the operand `Arc<[RustBV]>`, so cache hits are cheap.
+//
+// Width invariant: hashes are content-addressed and include length,
+// but a stale entry from a recycled hash slot could in principle
+// produce a width mismatch. `claripy_to_rustbv` defends against this
+// by checking `cached_bv.width() == ast.length` on hit and evicting
+// + reconverting on mismatch (~L351).
+//
+// Invalidation: cleared by `clear_ast_cache` (block boundary /
+// significant constraint changes) and `clear_all_caches` (exploration
+// restart). Capacity-bounded LRU eviction beyond that.
+//
+// Coherence with CLARIPY_AST_CACHE: a `Symbolic`/`Constrained` hit
+// in this cache implies the underlying `symbol_id` was previously
+// registered via `store_claripy_ast{,_with_info}`, so the inverse
+// mapping lives in `CLARIPY_AST_CACHE` and the global registry.
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
@@ -45,47 +69,111 @@ macro_rules! tl_cache {
     };
 }
 
-// Thread-local cache for preserving original claripy ASTs.
-// Maps RustBV symbol ID to the original claripy AST.
-// This is critical for correctly reconstructing expressions that reference
-// symbolic values imported from Python - without this, BVS("x", 32) would
-// create a new symbol each time instead of referencing the original.
+// Thread-local mapping `rust_symbol_id → original claripy AST`.
+//
+// Direction: Rust→claripy, for leaf symbolic variables. Caches the
+// original `BVS("x", 32)` Python object so that `RustBV::Symbolic { id }`
+// can be returned to Python as the *same* AST identity, preserving
+// any annotations and ensuring constraints on `x` continue to apply
+// to the exported value.
+//
+// Key: `rust_id: u64`, the symbol's Rust-side identifier allocated by
+// `SymbolicIdentityRegistry::allocate_id`. MUST NOT be
+// `RustBV::EXPRESSION_ID` (`u64::MAX`) — that sentinel is reserved
+// for compound `Expression` variants which use `EXPRESSION_CACHE` /
+// `EXPRESSION_BY_OPERANDS_PTR` instead. Enforced by `debug_assert!`
+// in `store_claripy_ast{,_with_info}`.
+//
+// Value: owned `Py<PyAny>` (`pyo3` GIL-independent reference).
+//
+// Why unbounded `HashMap`, not `LruCache`: symbol identities must
+// survive for the entire exploration — evicting them would break
+// identity preservation and force constraint duplication. The set of
+// leaf symbols is bounded by the binary's symbolic input surface and
+// grows slowly (tens to low thousands), so unbounded growth is
+// acceptable.
+//
+// Invalidation: cleared only by `clear_ast_cache` (block boundary,
+// but normally called when starting fresh) and `clear_all_caches`
+// (exploration restart).
+//
+// Coherence with SymbolicIdentityRegistry: every entry inserted here
+// is ALSO registered in the global registry (via `register_by_id` /
+// `register` in `store_claripy_ast*`), so `get_claripy_ast` can fall
+// back to the global registry on thread-local miss. The global
+// registry is the source of truth for cross-thread/callback access;
+// this thread-local is a fast hot path. Enforced by `debug_assert!`
+// in `store_claripy_ast{,_with_info}` that
+// `global_registry().has_original(symbol_id)` holds after insert.
 thread_local! {
     static CLARIPY_AST_CACHE: RefCell<HashMap<u64, Py<PyAny>>> =
         RefCell::new(HashMap::new());
 }
 
-// Thread-local bidirectional expression cache.
-// Maps RustBV expression hash to the original claripy AST.
-// This allows Expression variants to be efficiently converted back to their
-// original claripy representation, preserving AST identity across FFI boundary.
-// Critical for constraint sync - without this, complex expressions would be
-// reconstructed from scratch, potentially losing identity with the original AST.
+// Thread-local LRU mapping `expression_hash → original claripy AST`.
+//
+// Direction: Rust→claripy, for compound `Expression` variants.
+// Counterpart to `CLARIPY_AST_CACHE` for non-leaf nodes. Lets
+// `rustbv_to_claripy_memo` return the imported AST verbatim instead
+// of reconstructing it from `BVOp` + operands, which would drop any
+// claripy annotations attached to the intermediate node and burn
+// allocations.
+//
+// Key: a content-derived `u64` expression hash (computed by the
+// caller from the `RustBV::Expression` structure). Hash collisions
+// are vanishingly rare given the 64-bit space; the downstream
+// consequence of a collision is a wrong-AST return, which would
+// surface as a Python-side constraint mismatch.
+//
+// Value: owned `Py<PyAny>` for the original Python expression.
+//
+// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`.
+// Capacity-bounded LRU eviction (10000) beyond that — eviction is
+// safe here because Expression nodes can always be reconstructed
+// from `op + operands` (just with a fresh AST identity).
+//
+// Coherence with EXPRESSION_BY_OPERANDS_PTR: both caches serve the
+// same goal (return the original Python AST for an `Expression`) but
+// key on different surfaces — this one on the hash, the other on the
+// operands `Arc` pointer. Either hit is sufficient; they may diverge
+// under LRU eviction.
 thread_local! {
     static EXPRESSION_CACHE: RefCell<LruCache<u64, Py<PyAny>>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
 }
 
-// Thread-local Arc-pointer-keyed Expression cache.
+// Thread-local LRU mapping `Arc::as_ptr(operands) → (RustBV pin, claripy AST)`.
 //
+// Direction: Rust→claripy, alternative key for `EXPRESSION_CACHE`.
 // Maps the operands `Arc<[RustBV]>` raw pointer of a freshly-imported
-// claripy Expression to (1) the original `RustBV::Expression` (held to
-// keep the operands Arc alive, ruling out pointer reuse) and (2) the
-// original claripy AST. Used by `rustbv_to_claripy_memo` to return the
-// imported AST verbatim instead of rebuilding from BVOp+operands. This
-// preserves claripy annotations (and any other AST metadata) attached
-// to the Expression itself — without it, annotations on intermediate
-// expression nodes are dropped on the Rust→Python return trip even
-// when the leaves carry annotations that would otherwise propagate.
-// See angr-ykdq.
+// claripy `Expression` to its original Python AST. Used by
+// `rustbv_to_claripy_memo` to return the imported AST verbatim
+// instead of rebuilding from `BVOp + operands`, preserving claripy
+// annotations (and any other AST metadata) attached to the
+// `Expression` node itself — without this, annotations on
+// intermediate expression nodes are dropped on the Rust→Python
+// return trip even when leaves carry annotations that would
+// otherwise propagate. See bd `angr-ykdq`.
 //
-// Why Arc::as_ptr keys: the operands Arc is created fresh by each
-// builder call (`add_into`, `mul_into`, ...) and is stable across
-// `RustBV::clone()` (refcount bump), so a cloned Expression shares its
-// parent's cache entry. Two distinct claripy Expressions get distinct
-// Arcs. Holding the BV clone in the value pins the Arc alive so the
-// allocator cannot reuse the pointer for an unrelated Expression while
-// the entry is in cache. Cleared by `clear_ast_cache`.
+// Key: `Arc::as_ptr(operands) as usize`. The operands `Arc` is
+// created fresh by each builder call (`add_into`, `mul_into`, ...)
+// and is stable across `RustBV::clone()` (refcount bump), so a
+// cloned `Expression` shares its parent's cache entry. Two distinct
+// claripy `Expression`s get distinct `Arc`s.
+//
+// Value: `(RustBV, Py<PyAny>)`. The `RustBV` clone is held alongside
+// the Python AST specifically to pin the operands `Arc` alive: the
+// cache key is a raw pointer, and without holding a strong reference
+// the allocator could reuse the same address for an unrelated
+// `Expression`'s operands while the entry is still in cache —
+// surfacing as a wrong-AST return. The `Py<PyAny>` is the payload
+// returned on hit.
+//
+// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`.
+// Capacity-bounded LRU eviction (10000) beyond that. On eviction,
+// the held `RustBV` drops its refcount, allowing the operands `Arc`
+// to be freed — safe because the evicted entry is no longer
+// reachable via this cache.
 thread_local! {
     static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
@@ -96,18 +184,41 @@ thread_local! {
 ///
 /// This stores in both the global registry (for cross-thread access)
 /// and the thread-local cache (for fast repeated access).
+///
+/// `symbol_id` MUST be a real allocated leaf-symbol id, not
+/// `RustBV::EXPRESSION_ID` — compound expressions use the
+/// expression caches, not this one.
 pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
+    debug_assert_ne!(
+        symbol_id,
+        RustBV::EXPRESSION_ID,
+        "CLARIPY_AST_CACHE must not be keyed by the EXPRESSION_ID sentinel; \
+         use store_expression_ast / store_expression_ast_by_operands for compound nodes",
+    );
+
     tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
 
     // Also store in global registry via public method
     // Note: We use a dummy hash (0) since we only have the symbol_id here
     global_registry().register_by_id(symbol_id, ast);
+
+    // Coherence: the thread-local CLARIPY_AST_CACHE entry must also be
+    // visible in the global registry. `get_claripy_ast` checks global
+    // first; if the post-condition breaks, cross-thread lookups would
+    // miss while same-thread lookups hit, masking the bug.
+    debug_assert!(
+        global_registry().has_original(symbol_id),
+        "store_claripy_ast: global registry missing rust_id={symbol_id} after insert",
+    );
 }
 
 /// Store a claripy AST with full symbol information.
 ///
 /// This is the preferred method when symbol name and width are available,
 /// as it enables name-based lookup for better identity preservation.
+///
+/// `symbol_id` MUST be a real allocated leaf-symbol id, not
+/// `RustBV::EXPRESSION_ID`.
 pub fn store_claripy_ast_with_info(
     py_hash: i64,
     symbol_id: u64,
@@ -115,10 +226,22 @@ pub fn store_claripy_ast_with_info(
     width: u32,
     ast: Py<PyAny>,
 ) {
+    debug_assert_ne!(
+        symbol_id,
+        RustBV::EXPRESSION_ID,
+        "CLARIPY_AST_CACHE must not be keyed by the EXPRESSION_ID sentinel; \
+         use store_expression_ast / store_expression_ast_by_operands for compound nodes",
+    );
+
     tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
 
     // Register in global registry with full information
     global_registry().register(py_hash, symbol_id, name, width, ast);
+
+    debug_assert!(
+        global_registry().has_original(symbol_id),
+        "store_claripy_ast_with_info: global registry missing rust_id={symbol_id} after insert",
+    );
 }
 
 /// Retrieve a previously stored claripy AST by symbol ID.

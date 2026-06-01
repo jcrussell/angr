@@ -435,7 +435,32 @@ pub enum RustBV {
     /// fresh symbolic variables. Z3 ASTs are computed lazily on demand
     /// via `to_z3_ast()` rather than eagerly at construction time.
     Expression {
-        /// Unique identifier (typically EXPRESSION_ID sentinel).
+        /// Identity discriminant — **NOT** a content hash or interner id.
+        ///
+        /// In practice this field is always set to [`RustBV::EXPRESSION_ID`]
+        /// (`u64::MAX`) by every `Expression` constructor in this module
+        /// (see the `define_*_op` macro families and direct builders such as
+        /// `add_into`, `mul_into`, `and_into`, etc.). The sentinel
+        /// distinguishes compound expressions from leaf symbols (`Symbolic`
+        /// / `Constrained`), which carry real allocated ids from
+        /// [`crate::symbolic::SymbolicIdentityRegistry`].
+        ///
+        /// **Why a sentinel, not a per-node hash:** allocating a unique id
+        /// for every intermediate operation was rejected for solver
+        /// compatibility (only real leaf symbols need tracking by the
+        /// claripy-side registry) and to avoid per-construction overhead.
+        ///
+        /// **Identity for caching purposes** is keyed by *other* fields,
+        /// not this one:
+        /// - The structural pointer `Arc::as_ptr(operands)` is the cache
+        ///   key for `EXPRESSION_BY_OPERANDS_PTR` in `claripy_bridge`
+        ///   (stable across `RustBV::clone`, which just bumps the Arc).
+        /// - A caller-computed content hash of (op, operands) keys
+        ///   `EXPRESSION_CACHE` in `claripy_bridge`.
+        ///
+        /// **Collision potential:** none — there is no content hash here
+        /// to collide on. Two structurally distinct `Expression` values
+        /// share the same `id` sentinel.
         id: u64,
         /// Width in bits.
         width: u32,
