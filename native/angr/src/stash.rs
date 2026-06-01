@@ -5,6 +5,21 @@
 //! - State index for O(1) lookups by state_id
 //! - State root tracking for fork lineage
 //! - Terminal state counters
+//!
+//! **Invariant I6 (cross-mixin, mirror of rust_manager.py:74):** the
+//! Python-side `_cleanup_state_cache` orchestrates eviction with pinning
+//! over `_state_roots ∪ {_current_callback_state_id,
+//! _current_stepping_state_id}`. The Rust counterpart here owns the
+//! `state_index` and `state_roots` maps that back lineage tracking. Both
+//! maps must move together — every push/pop on a stash that participates
+//! in lineage must update both, and `remove_state` / `clear` /
+//! `push_or_drop_terminal` are the chokepoints that enforce this.
+//! Without consistent maps, `_state_roots` drift produces orphaned roots
+//! and a freshly-mutated state can race-evict between callbacks on the
+//! same state. Regression tests:
+//! `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
+//! `..._drops_dead_states`, `..._skips_pinned` (tests/engines/
+//! test_rust_exploration.py:2017,2064,2096).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -225,6 +240,10 @@ impl StashManager {
 
     /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
     /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
+    ///
+    /// **Invariant I6:** on the drop path, the corresponding `state_roots`
+    /// entry must be removed to keep lineage tracking consistent with
+    /// `state_index`. Both maps move together here. See module-level I6.
     pub fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         match stash_name {
             "avoid" => self.avoided_count += 1,
@@ -237,7 +256,20 @@ impl StashManager {
         if !self.drop_terminal_states {
             self.push(stash_name, state);
         } else {
-            self.state_roots.remove(&state.state_id());
+            let sid = state.state_id();
+            self.state_roots.remove(&sid);
+            // I6 consistency: the dropped state should not remain in
+            // state_index. The caller pops from a stash before invoking
+            // us, which un-indexes via `pop_active`; this assert documents
+            // that contract and catches a regression where a drop path
+            // skips the un-index step.
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                !self.state_index.contains_key(&sid),
+                "I6: state {} dropped while still indexed under stash {:?}",
+                sid,
+                self.state_index.get(&sid)
+            );
             // State is dropped here, freeing its Z3 solver clone.
         }
     }

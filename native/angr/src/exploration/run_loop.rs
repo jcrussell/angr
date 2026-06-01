@@ -11,6 +11,19 @@
 //! here as a `pub(crate)` method on `RustExplorationManager`, mirroring the
 //! `helpers.rs` / `stepping.rs` extension-impl pattern used elsewhere in
 //! `exploration/`.
+//!
+//! **Invariant I8 (cross-mixin termination, mirror of
+//! rust_manager.py:98):** the run loop must terminate on EITHER (a)
+//! `found_count() >= num_find` (checked at the top of every iteration),
+//! OR (b) the active stash exhausting itself (`pop_*` returns `None`,
+//! emitting an `active_empty` event). `found_count()` covers both
+//! Rust-native finds (forks routed to the found stash by the address
+//! check) and Python-predicate-derived finds (added via the need_callback
+//! resume path). The earlier predicate-only termination check infinite-
+//! looped when `find=int` was combined with a non-predicate technique
+//! like DFS — the technique made `_active_techniques` non-empty, routing
+//! through the Python predicate path, which never saw the Rust find.
+//! See module-level I8 in `state.rs`.
 
 use super::*;
 
@@ -57,7 +70,11 @@ impl RustExplorationManager {
             #[cfg(feature = "vex-engine-z3")]
             crate::symbolic::lineage::tick_and_sample_for_thrash(10, 20, 35);
 
-            // Check if we have enough solutions
+            // Check if we have enough solutions.
+            // I8 termination path (a): `found_count()` covers both
+            // Rust-native finds (`found` stash via address check) and
+            // Python-predicate finds (need_callback resume). See module
+            // header for the full contract.
             if self.found_count() >= self.num_find {
                 return Ok(ExplorationEvent::found(
                     self.found_count(),
@@ -82,7 +99,11 @@ impl RustExplorationManager {
                     s
                 }
                 None => {
-                    // No active states
+                    // No active states.
+                    // I8 termination path (b): active stash exhausted —
+                    // emit `found` if we picked up any solutions, else
+                    // `active_empty`. Either way the loop exits here
+                    // rather than spinning. See module header.
                     if self.found_count() > 0 {
                         return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
                     } else {

@@ -5,6 +5,79 @@
 //! - Supports O(1) forking via copy-on-write
 //! - Minimizes Python-Rust state transfer overhead
 //! - Enables Rust-native exploration loops
+//!
+//! # Cross-mixin invariants (I1–I8)
+//!
+//! The Python `RustExplorationManager` composes several mixins
+//! (RustStateCacheMixin, RustStateExportMixin, RustStateSyncMixin,
+//! RustCallbackDispatchMixin); the cross-mixin invariants are documented as
+//! the source-of-truth header in
+//! `angr/exploration/rust_manager.py:10-100`. Most of those concerns are
+//! Python-orchestration only, but the ones that cross the FFI boundary
+//! manifest on the Rust side. The list below mirrors I1–I8 with the Rust
+//! enforcement site (or "Python-only" when no Rust code participates).
+//! Keep this section in sync with the Python header — divergence between
+//! the two has produced silent correctness bugs (cache poisoning, lost
+//! states, infinite loops) historically; see angr-a2br for the docs-before-
+//! split rationale.
+//!
+//! - **I1. Disk-cache key axes** — Python-only. The cache key mixes
+//!   `(binary_path, _RUST_CACHE_VERSION, _PYTHON_METADATA_VERSION, arch)`
+//!   in `rust_manager.py::_disk_cache_key`. The Rust side only consumes
+//!   the deserialized state via the bulk-setters in this module; it never
+//!   inspects the cache key. Bumps of `_RUST_CACHE_VERSION` must accompany
+//!   any change to fields pickled here (registers, memory, heap metadata).
+//! - **I2. Init pipeline phases** — Python-only. Phases `_load_init_pickle`
+//!   → `_deserialize_init_state` → `_apply_init_side_effects` are the
+//!   single orchestrator. Rust receives the result; no Rust-side state
+//!   machine participates.
+//! - **I3. Init-cache user-symbolic gate** — Python-only. `blank_state`
+//!   round-trips lose user-created BVS identity, so caching is suppressed
+//!   on user-symbolic states. The Rust side has no way to detect a user
+//!   symbolic AST after the fact; the gate must hold on the Python side
+//!   before any FFI call happens.
+//! - **I4. `_apply_state_metadata` allow-list** — Python-only. Only
+//!   `LAZY_SOLVES` + `STRICT_PAGE_ACCESS` SimOptions transfer across the
+//!   cache-hit path. The Rust engine reads SimOptions through the
+//!   `engine.options` snapshot taken at `__init__`; later option changes
+//!   on the cached state do NOT propagate. To check user-set options
+//!   reliably, inspect the user-supplied state in Python's `__init__`
+//!   BEFORE `_run_python_init_if_needed` runs.
+//! - **I5. Register filter at the FFI boundary** — enforced by
+//!   `set_registers_bulk` (this module). The disk init cache pickles
+//!   `arch.register_names.values()` including registers the Rust engine
+//!   does not model (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart, cmlen,
+//!   fpreg, ...). Python's `rust_state_sync.py` filters to
+//!   `_supported_register_names` BEFORE calling into Rust; the Rust setter
+//!   returns `PyValueError("unknown register: ...")` if an unsupported
+//!   name leaks through. Do not "fix" by extending `arch/amd64.rs` etc.;
+//!   the interpreter does not consume those registers.
+//! - **I6. State-cache pinning + manager-vs-mixin override** — Python
+//!   orchestrates pinning of `_state_roots ∪ {_current_callback_state_id,
+//!   _current_stepping_state_id}` in `_cleanup_state_cache`. Rust side
+//!   participates by owning the per-state `RustSimState` (Drop runs on
+//!   eviction) and by maintaining the `state_roots` table inside
+//!   `stash.rs::StashManager`. When `StashManager::remove_state` runs,
+//!   `state_roots` and `state_index` move together — see stash.rs for
+//!   the localized invariant.
+//! - **I7. Rust ↔ Python field sync uses `max()`, not overwrite** — Rust
+//!   owns `mmap_base` and `posix_brk` (this module). The Python export
+//!   path computes `max(rust_value, python_value)` so a Python-side
+//!   advance (e.g. user-set `state.heap.mmap_base` or a fallback
+//!   SimProcedure mutation) is never clobbered by a stale Rust value.
+//!   Rust setters here accept any value; the directionality is enforced
+//!   at the Python export site. Regression tests:
+//!   `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`,
+//!   `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
+//! - **I8. Exploration-loop termination** — enforced in
+//!   `exploration/run_loop.rs`. The Rust loop terminates on EITHER (a)
+//!   `found_count() >= num_find`, OR (b) the active stash returning
+//!   `None` from `pop_front`/`pop_back` (→ `active_empty` event). Both
+//!   paths are covered by `found_count()`, which includes both
+//!   Rust-native finds and Python-predicate-derived finds added via the
+//!   need_callback resume path. Earlier code only checked Python
+//!   predicate flags and infinite-looped when `find=int` was combined
+//!   with a non-predicate technique like DFS.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1068,22 +1141,48 @@ impl RustSimState {
 
     /// Get the POSIX brk pointer (mirrors `state.posix.brk` for the brk(2)
     /// syscall). Distinct from `heap_brk`, which is the malloc bump allocator.
+    ///
+    /// **Invariant I7 (cross-mixin sync):** see `set_posix_brk`.
     pub fn posix_brk(&self) -> u64 {
         self.posix_brk
     }
 
     /// Set the POSIX brk pointer.
+    ///
+    /// **Invariant I7 (cross-mixin sync):** Python and Rust both mutate
+    /// `posix_brk` independently — Rust on native brk(2), Python on
+    /// fallback syscall handlers and user mutation of `state.posix.brk`.
+    /// The Python export path computes `max(rust_value, python_value)` so
+    /// neither side is silently rewound by a stale value. This Rust setter
+    /// is the commanded path: it takes whatever value the caller (native
+    /// syscall handler or the FFI cross-sync) supplies, without enforcing
+    /// monotonicity locally. Directionality lives at the Python export
+    /// site. Regression test:
+    /// `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
     pub fn set_posix_brk(&mut self, addr: u64) {
         self.posix_brk = addr;
     }
 
     /// Get the mmap base pointer (mirrors `state.heap.mmap_base` for the
     /// mmap(2) syscall; advances when addr=0 native mmap allocates).
+    ///
+    /// **Invariant I7 (cross-mixin sync):** see `set_mmap_base`.
     pub fn mmap_base(&self) -> u64 {
         self.mmap_base
     }
 
     /// Set the mmap base pointer.
+    ///
+    /// **Invariant I7 (cross-mixin sync):** Python and Rust both mutate
+    /// `mmap_base` independently — Rust on native mmap(2) with addr=0,
+    /// Python on fallback syscall handlers and user mutation of
+    /// `state.heap.mmap_base`. The Python export path computes
+    /// `max(rust_value, python_value)` so a Python-side advance survives
+    /// even if Rust still holds a stale lower value. This Rust setter is
+    /// the commanded path: it takes whatever value the caller supplies,
+    /// without enforcing monotonicity locally. Directionality lives at
+    /// the Python export site. Regression test:
+    /// `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`.
     pub fn set_mmap_base(&mut self, addr: u64) {
         self.mmap_base = addr;
     }
@@ -2141,6 +2240,18 @@ impl PyRustSimState {
 
     /// Set multiple registers in a single FFI call.
     /// Takes a dict of {name: value} pairs.
+    ///
+    /// **Invariant I5 (cross-mixin):** the caller — Python's
+    /// `rust_state_sync.py` — must pre-filter the dict to
+    /// `_supported_register_names` for the active architecture. The disk
+    /// init cache pickles ALL `arch.register_names.values()` (cr0..8,
+    /// ymm0..15, fs_seg, ds_seg, cmstart, cmlen, fpreg, ...), but only a
+    /// subset has a slot in `RegisterFile` for amd64/x86/arm/etc. If an
+    /// unsupported name leaks through, this method returns
+    /// `PyValueError("unknown register: <name>")` rather than silently
+    /// dropping the write. Do NOT "fix" by extending `arch/amd64.rs`
+    /// unless the interpreter actually consumes the new register. See
+    /// module-level invariant I5 in this file.
     pub fn set_registers_bulk(&mut self, registers: &Bound<'_, PyDict>) -> PyResult<()> {
         for (key, val) in registers.iter() {
             let name: String = key.extract()?;
@@ -2150,6 +2261,16 @@ impl PyRustSimState {
                 .arch()
                 .register_size(&name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            // I5 cross-check: register_size returning Some implies the
+            // register has a RegisterFile slot. This debug assert documents
+            // intent and would catch a regression where arch lookup and
+            // RegisterFile membership drift apart.
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                size > 0,
+                "I5: register {} has zero size — arch table is malformed",
+                name
+            );
             let bv = RustBV::concrete(value, size * 8);
             self.inner.set_register(&name, bv);
         }
