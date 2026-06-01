@@ -664,3 +664,223 @@ otherwise reconstruct, but stays in Python so you can iterate quickly.
 If the callable shows up in benchmark profiles as a hot spot, that's
 your signal to port it to a real ``NativeSimProcedure`` following the
 recipe above.
+
+Native coverage matrix
+----------------------
+
+At-a-glance status for which libc procedures and Linux syscalls have
+native fast paths today. *Native* means a handler is registered in
+``native/angr/src/procedures/mod.rs`` (procedures) or
+``native/angr/src/syscalls/mod.rs`` (syscalls). Every row also has a
+Python fallback — angr's regular ``SimProcedure`` registry — that runs
+when a native handler is missing, disabled, or returns
+``ProcedureError`` for a symbolic argument it cannot handle. The
+fallback is what guarantees correctness; the native path is the speed
+optimization.
+
+Source of truth: the two ``mod.rs`` files above plus the campaign
+beads (``angr-f16h.*`` for procedures, ``angr-0hif.*`` for syscalls).
+Refresh this matrix whenever a campaign child closes — the bead
+column makes the provenance scannable, parallel to the
+``Unsupported op coverage matrix`` in
+:doc:`rust_vex_ops`.
+
+SimProcedures
+^^^^^^^^^^^^^
+
+The original pre-campaign set covers the highest-frequency string,
+memory, I/O, and process primitives; the ``angr-f16h`` campaign
+expanded coverage into stdio file I/O, the extended allocator family,
+the string-to-numeric family, env mutation, and extended string ops.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 15 25
+
+   * - Group
+     - Members
+     - Native
+     - Provenance
+   * - String / memory (pre-campaign)
+     - ``strlen``, ``strnlen``, ``strcpy``, ``strncpy``, ``strdup``,
+       ``strcmp``, ``strncmp``, ``strcasecmp``, ``strcat``,
+       ``strncat``, ``strchr``, ``strstr``, ``memcpy``, ``memmove``,
+       ``memset``, ``memcmp``, ``memchr``
+     - 17 / 17
+     - Original set in ``procedures/mod.rs`` (lines 176–248)
+   * - Character classification (pre-campaign)
+     - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
+       ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
+       ``tolower``, ``toupper``
+     - 10 / 10
+     - ``ctype.rs`` (symbolic-aware, see ``ctype-symbolic-pattern``
+       memory)
+   * - String → integer (pre-campaign)
+     - ``strtol``, ``atoi``
+     - 2 / 2
+     - ``strtol.rs`` (NativeStrtol, NativeAtoi)
+   * - Input (stdin)
+     - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
+       ``scanf``, ``__isoc99_scanf``, ``sscanf``
+     - 8 / 8
+     - ``read.rs``, ``fgets.rs``, ``scanf.rs``
+   * - Output (stdout / formatted)
+     - ``write``, ``puts``, ``putchar``, ``fputc``, ``putc``,
+       ``printf``, ``sprintf``, ``snprintf``
+     - 8 / 8
+     - ``write.rs``, ``puts.rs``, ``printf.rs``, ``sprintf.rs``
+   * - Heap (pre-campaign + angr-f16h.2)
+     - ``malloc``, ``free`` (pre-campaign);
+       ``calloc``, ``realloc``, ``memalign``, ``posix_memalign``
+       (angr-f16h.2)
+     - 6 / 6
+     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``)
+   * - Process / exit / RNG (pre-campaign)
+     - ``exit``, ``_exit``, ``abort``, ``rand``, ``srand``,
+       ``__libc_start_main``
+     - 6 / 6
+     - ``exit.rs``, ``rand.rs``, ``libc_start_main.rs``
+   * - Env read (pre-campaign)
+     - ``getenv``
+     - 1 / 1
+     - ``getenv.rs::NativeGetenv``
+   * - C stdio file I/O (angr-f16h.1)
+     - ``fopen``, ``fclose``, ``feof``, ``ferror``, ``fflush``,
+       ``fputc``, ``fputs``, ``fgetc``, ``ftell``, ``fseek``,
+       ``rewind``
+     - 11 / 11
+     - angr-f16h.1 (closed) — ``stdio.rs``, ``fileops.rs``,
+       ``fgets.rs`` (also covers ``fdopen``, ``fwrite``, ``setvbuf``)
+   * - File ops (pre-campaign)
+     - ``open``, ``close``, ``lseek``, ``dup``, ``dup2``, ``pipe``
+     - 6 / 6
+     - ``fileops.rs`` (fd-tracking through ``FileSystem``)
+   * - String → numeric (angr-f16h.3)
+     - ``atol``, ``strtoul``, ``strtoll``, ``strtoull``, ``strtod``
+     - 5 / 5
+     - angr-f16h.3 (closed) — ``strtol.rs``, ``strtod.rs``
+       (``strtod`` amd64-only, xmm0 return)
+   * - Env mutation (angr-f16h.4)
+     - ``setenv`` ✓, ``putenv`` ✓, ``unsetenv`` ✗, ``clearenv`` ✗
+     - 2 / 4
+     - angr-f16h.4 (open) — ``getenv.rs`` partial; missing handlers
+       fall back to Python
+   * - Extended strings (angr-f16h.5)
+     - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strtok`` ✗,
+       ``strpbrk`` ✗, ``strspn`` ✗, ``strcspn`` ✗, ``strrchr`` ✗
+     - 3 / 8
+     - angr-f16h.5 (open) — three covered by pre-campaign families;
+       remaining fall back to Python
+
+Syscalls
+^^^^^^^^
+
+The native syscall set is currently focused on the AMD64 baseline
+plus the per-arch tables in ``register_<arch>`` (X86, ARM, ARM64,
+MIPS32 in ``syscalls/mod.rs``). Every numbered handler below is
+registered for AMD64; other arches re-register the same handler under
+each arch's syscall number from its ``unistd_*.h``. The ``angr-0hif``
+campaign tracks the remaining gaps — none of those families have a
+native handler yet, so symbolic-num or matching-num dispatches fall
+through ``stepping.rs::RunResult::Syscall`` to Python's
+``engines/successors.py::_resolve_syscall``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 15 25
+
+   * - Group
+     - Members
+     - Native
+     - Provenance
+   * - I/O (baseline)
+     - ``read``, ``write``
+     - 2 / 2
+     - ``read.rs``, ``write.rs`` — symbolic fd → Python fallback
+   * - Memory (baseline)
+     - ``brk``, ``mmap``, ``mprotect``, ``munmap``
+     - 4 / 4
+     - ``brk.rs``, ``mmap.rs`` (anonymous concrete-args fast path;
+       MAP_FIXED collisions tracked by angr-ttr7), ``mprotect.rs``,
+       ``munmap.rs``
+   * - Process exit (baseline)
+     - ``exit``, ``exit_group``
+     - 2 / 2
+     - ``exit.rs`` — terminal, routes state to ``STASH_DEADENDED``
+   * - Time (baseline)
+     - ``time``, ``gettimeofday``, ``clock_gettime``
+     - 3 / 3
+     - ``sim_time.rs`` — fresh-symbolic ``time_t``; CLOCK_REALTIME
+       only (other clocks → Python)
+   * - Signals (baseline, partial)
+     - ``rt_sigaction``
+     - 1 / 1
+     - ``sigaction.rs`` — no-op return 0 (matches Python proc)
+   * - amd64 TLS (baseline)
+     - ``arch_prctl``
+     - 1 / 1
+     - ``arch_prctl.rs`` — fs_const / gs_const set/get
+   * - File path (angr-0hif.1)
+     - ``open``, ``close``, ``openat``, ``stat``, ``fstat``,
+       ``lstat``, ``newfstatat``, ``readlink``, ``access``
+     - 0 / 9
+     - angr-0hif.1 (open, P2). ``open``/``close`` are covered as
+       ``SimProcedures`` (``fileops.rs``) but no syscall handler is
+       wired yet
+   * - Directory (angr-0hif.2)
+     - ``chdir``, ``fchdir``, ``getcwd``, ``mkdir``, ``rmdir``,
+       ``unlink``, ``rename``
+     - 0 / 7
+     - angr-0hif.2 (open)
+   * - Process identity (angr-0hif.3)
+     - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``getgid``,
+       ``setuid``, ``setgid``
+     - 0 / 7
+     - angr-0hif.3 (open)
+   * - Memory extras (angr-0hif.4)
+     - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``
+     - 0 / 5
+     - angr-0hif.4 (open)
+   * - FD control (angr-0hif.5)
+     - ``dup``, ``dup2``, ``dup3``, ``fcntl``, ``ioctl``, ``pipe``,
+       ``pipe2``
+     - 0 / 7
+     - angr-0hif.5 (open). ``dup``/``dup2``/``pipe`` exist as
+       ``SimProcedures`` (``fileops.rs``); no syscall numbers are
+       wired
+   * - Signals + process control (angr-0hif.6)
+     - ``kill``, ``tgkill``, ``rt_sigprocmask``, ``rt_sigaction``,
+       ``pause``, ``alarm``
+     - 1 / 6
+     - angr-0hif.6 (open). ``rt_sigaction`` covered by baseline
+       handler
+   * - Resource limits + concurrency (angr-0hif.7)
+     - ``getrlimit``, ``setrlimit``, ``futex``, ``eventfd``,
+       ``epoll_create``, ``epoll_ctl``, ``epoll_wait``
+     - 0 / 7
+     - angr-0hif.7 (open)
+
+Per-arch coverage of the baseline handlers (X86, ARM, ARM64, MIPS32)
+is summarised in the ``register_<arch>`` blocks of
+``syscalls/mod.rs``; the omitted entries (e.g. legacy ``mmap`` /
+``mmap2`` on X86 / ARM / MIPS32) are documented inline above each
+table.
+
+Maintaining the matrix
+^^^^^^^^^^^^^^^^^^^^^^
+
+When you close an ``angr-f16h.*`` or ``angr-0hif.*`` child, flip the
+``Native`` column for the affected procedure(s) and bump the
+``M / N`` count, mirroring the pattern in
+:doc:`rust_vex_ops` →
+*Unsupported op coverage matrix*. When you add a brand-new family
+(no campaign child yet), append a new row and open a tracking bead so
+the provenance column has somewhere to point.
+
+The ``Native`` count is intentionally fractional (``M / N``) rather
+than a Status enum like the VEX matrix — every row already has a
+Python fallback, so the meaningful axis is "how many of the named
+members are on the fast path", not "implemented / placeholder /
+stubbed". A row at ``0 / N`` means all members fall through to
+Python; a row at ``N / N`` means none of its members enter the
+Python fallback path under concrete arguments.
