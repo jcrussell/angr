@@ -47,6 +47,10 @@ pub struct PendingWrite {
 }
 
 /// Errors from memory operations.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// variants; intra-crate matches must include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum MemoryError {
     /// Unmapped memory access.

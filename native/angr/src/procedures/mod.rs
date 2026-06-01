@@ -80,6 +80,10 @@ pub fn symbol_counter(prefix: &'static str) -> u64 {
 /// Error during native procedure execution.
 ///
 /// Errors trigger fallback to Python SimProcedure handling.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// variants; intra-crate matches must include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ProcedureError {
     /// Argument is symbolic, need Python for constraint handling.

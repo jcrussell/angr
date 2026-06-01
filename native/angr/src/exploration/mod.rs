@@ -66,6 +66,11 @@ pub fn get_stepping_state_id() -> Option<u64> {
 }
 
 /// Reason for returning to Python.
+///
+/// `#[non_exhaustive]` per angr-irwe: new callback reasons land in
+/// minor versions as more event-flow paths emerge; match sites must
+/// include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum CallbackReason {
     /// SimProcedure hook hit.
@@ -96,6 +101,12 @@ pub enum CallbackReason {
 }
 
 /// Event returned from exploration to Python.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[pyo3(get)]` fields as new callback reasons emerge. Construction
+/// outside this crate must go through the `ExplorationEvent::*`
+/// helpers in `exploration::mod` rather than struct-literal syntax.
+#[non_exhaustive]
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct ExplorationEvent {

@@ -4827,6 +4827,11 @@ impl VEXOps {
 }
 
 /// Errors from VEX operation execution.
+///
+/// `#[non_exhaustive]` per angr-irwe: new variants land in minor
+/// versions as more ops gain explicit failure modes (e.g. additional
+/// NEON scaffold buckets). Match sites must include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum OpError {
     /// Operation is not a unary operation.

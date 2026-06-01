@@ -618,6 +618,11 @@ fn next_state_id() -> u64 {
 }
 
 /// Execution event from stepping a state.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// variants as new stepping outcomes emerge; match sites must include
+/// a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ExecutionEvent {
     /// Reached end of a basic block, continuing to next address.

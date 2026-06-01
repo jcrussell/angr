@@ -46,6 +46,10 @@ use crate::symbolic::RustBV;
 ///
 /// Returning `Err` falls back to the Python `_handle_syscall_callback`
 /// path so semantics remain identical to angr's existing behavior.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// variants; intra-crate matches must include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SyscallError {
     #[error("symbolic argument: {0}")]

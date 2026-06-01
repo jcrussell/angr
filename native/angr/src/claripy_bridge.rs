@@ -341,6 +341,10 @@ pub fn cache_stats() -> (usize, usize) {
 }
 
 /// Error type for claripy bridge operations.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// variants; intra-crate matches must include a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BridgeError {
     /// Unsupported claripy operation.

@@ -117,6 +117,12 @@ impl BranchPolicy {
 }
 
 /// Configuration for the execution loop with deferred forks.
+///
+/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[pyo3(get, set)]` knob fields. Construction outside this crate
+/// must go through `ExecutionConfig::py_new` (the PyO3 `__init__`)
+/// rather than struct-literal syntax.
+#[non_exhaustive]
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {

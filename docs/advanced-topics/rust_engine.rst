@@ -2387,3 +2387,74 @@ Follow-up bead filed: ``angr-x04s.1`` (task: prototype
 behind an opt-in Python flag, no production code path touches it
 by default).
 
+API stability contract
+----------------------
+
+The Rust engine's public API consists of the PyO3 ``#[pyclass]`` types
+re-exported from ``angr.exploration`` (and forwarded to the top-level
+``angr`` package per ``angr-nncz``) plus the typed exception hierarchy
+in ``native/angr/src/errors.rs``. The following semver contract
+applies once the engine reaches a tagged release:
+
+**Patch versions (X.Y.Z → X.Y.Z+1)**
+  - No public API changes — bug fixes only.
+  - No new exception classes, no new pyclass methods/fields, no new
+    error-enum variants, no new event-enum variants.
+
+**Minor versions (X.Y.Z → X.Y+1.0)**
+  - May add new exception subclasses under ``RustExecutionError``.
+  - May add new ``#[pyo3(get)]`` fields to event/config pyclass
+    structs (e.g. new ``ExplorationEvent`` callback fields).
+  - May add new variants to internal error/event enums on the Rust
+    side. Public Rust types involved in this surface are marked
+    ``#[non_exhaustive]`` so internal pattern matches require a
+    wildcard arm and downstream Rust consumers (currently none) can
+    add the new variant without it being a breaking change.
+  - May add new pyclass methods. Existing method signatures stay
+    stable.
+
+**Major versions (X.Y.Z → X+1.0.0)**
+  - May rename or remove exception classes, pyclass methods/fields,
+    or error variants. May restructure the ``RustExecutionError``
+    hierarchy.
+
+The Python exception hierarchy intentionally **does not** offer an
+exhaustive-match guarantee. Downstream code that uses
+``pytest.raises(angr.RustExecutionError)`` (the base class) keeps
+working when new sibling classes are added; code that catches a
+specific subclass like ``pytest.raises(angr.RustUnsupportedVexOpError)``
+is not affected by additions either. The variant added in a minor
+release surfaces as a new subclass of ``RustExecutionError``.
+
+On the Rust side, the types currently marked ``#[non_exhaustive]``
+are:
+
+- ``RustExecError`` (``native/angr/src/errors.rs``) — the canonical
+  Rust→Python error enum.
+- ``BridgeError`` (``native/angr/src/claripy_bridge.rs``)
+- ``SyscallError`` (``native/angr/src/syscalls/mod.rs``)
+- ``OpError`` (``native/angr/src/vex/ops.rs``)
+- ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
+- ``MemoryError`` (``native/angr/src/memory/mod.rs``)
+- ``CallbackReason`` (``native/angr/src/exploration/mod.rs``)
+- ``ExecutionEvent`` (``native/angr/src/state.rs``)
+- ``ExplorationEvent`` pyclass struct
+  (``native/angr/src/exploration/mod.rs``) — the Python-visible event
+  envelope, expected to grow ``#[pyo3(get)]`` fields as new
+  callback reasons land.
+- ``ExecutionConfig`` pyclass struct (``native/angr/src/callbacks.rs``)
+  — the Python-visible config struct, expected to grow knobs over
+  time.
+
+Adding a variant or field to these is **not** a breaking change. The
+``#[non_exhaustive]`` attribute makes the rule machine-enforced rather
+than aspirational. Other internal enums (``CbExecutionError``,
+``LiftError``, ``DeserializeError``, ``NativeLiftError``,
+``ConstraintSyncError``, ``ExtractionError``) are crate-local
+implementation detail and are intentionally left without
+``#[non_exhaustive]`` because their match sites are tightly controlled
+within the same crate.
+
+Spike report ``angr-irwe`` (2026-06-01) — see commit history for the
+audit + initial application.
+
