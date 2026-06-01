@@ -13676,5 +13676,106 @@ class TestRustUnsupportedErrorParametrized:
         assert total >= 50, f"only {total} parametrized cases; need >=50"
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestImportZ3ConstraintPtrsValidation:
+    """angr-33t9: validate import_z3_constraint_ptrs rejects malformed input.
+
+    Catches the realistic misuse cases (null ptr, wrong sort) that the PyO3
+    trust-model audit (angr-9l9j) flagged. Does NOT exercise truly garbage
+    integers (e.g. 0xdeadbeef) — those still segfault inside Z3's deref,
+    and ruling them out would require a side-table of blessed ptrs.
+    """
+
+    def test_null_pointer_rejected(self, fauxware_project):
+        """A null (0) pointer in the ptrs list yields PyValueError."""
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        with pytest.raises(ValueError, match="null pointer at index"):
+            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [0])
+
+    def test_null_after_valid_ptr_rejected_atomically(self, fauxware_project):
+        """A null partway through the list rejects the whole batch — validation
+        runs before any constraint is added, so the state's solver is
+        unmutated on failure."""
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        # Obtain a real Bool Z3 ptr to pair with the null.
+        z3_backend = claripy.backends.z3
+        bv = claripy.BVS("x_33t9", 32)
+        bool_ast = z3_backend.convert(bv == 0)
+        bool_ptr = bool_ast.as_ast().value
+        assert bool_ptr != 0
+
+        before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        with pytest.raises(ValueError, match="null pointer at index 1"):
+            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr, 0])
+        after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        assert before == after, (
+            f"validation failure leaked partial constraints: "
+            f"before={before} after={after}"
+        )
+
+    def test_bv_sort_pointer_rejected(self, fauxware_project):
+        """A Z3 AST with non-Bool sort (e.g. a BV) is rejected as the wrong
+        sort kind, not silently asserted (which would corrupt the solver)."""
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        # Convert a BV (not a Bool predicate) to get a non-Bool Z3 ptr.
+        z3_backend = claripy.backends.z3
+        bv = claripy.BVS("y_33t9", 64)
+        bv_ast = z3_backend.convert(bv)
+        bv_ptr = bv_ast.as_ast().value
+        assert bv_ptr != 0
+
+        with pytest.raises(ValueError, match="expected Bool"):
+            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bv_ptr])
+
+    def test_valid_bool_ptr_round_trip(self, fauxware_project):
+        """Sanity: a real Bool ptr is accepted and the constraint becomes
+        visible to subsequent export. Guards against the validation
+        accidentally rejecting valid input."""
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        z3_backend = claripy.backends.z3
+        bv = claripy.BVS("z_33t9", 32)
+        # Hold a strong ref to the z3 wrapper so the AST stays alive
+        # through the import call (z3-side refcount discipline — same as
+        # _cached_z3_ast_ptr in rust_state_sync.py).
+        bool_ast = z3_backend.convert(bv == 0x4242)
+        bool_ptr = bool_ast.as_ast().value
+        assert bool_ptr != 0
+
+        before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        sat = mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr])
+        assert sat is True, "constraint x==0x4242 should be satisfiable"
+        after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        assert after == before + 1, (
+            f"expected 1 constraint to be added; got before={before} after={after}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -2058,18 +2058,31 @@ a raw pointer with no validation:
   claripy's z3 backend (``solver.rs:26``) and so are safe by
   construction.
 
-  Hardening options (filed as ``task`` beads):
+  **Hardening landed (angr-33t9, 2026-06-01).**
+  ``_import_z3_constraint_ptrs`` now runs a first-pass validation
+  loop before any ``add_constraint_raw`` call:
 
-  * Sanity-check each pointer with ``Z3_get_ast_kind`` /
-    ``Z3_get_sort_kind`` before wrapping, raising
-    ``PyValueError("invalid Z3 AST pointer at index {i}")`` on
-    failure. Cost: one Z3 C call per pointer (~ns), small compared to
-    the assert work that follows.
-  * Move the FFI to take an opaque ``Py<RustZ3AstHandle>`` (newtype
-    around the same usize, constructible only from
-    ``export_z3_constraint_ptrs``). Compatible with the existing
-    snapshot-restore path because Python never inspects the values.
-    Closes the surface entirely.
+  * Each pointer is converted via ``NonNull::new`` (rejecting null
+    with ``PyValueError("null pointer at index {i}")``).
+  * ``Z3_get_sort(raw_ctx, raw_ast)`` is called; the Option-wrapped
+    return is ``None`` for ASTs that do not belong to the active
+    thread-local context, surfacing as ``PyValueError("not a valid
+    Z3 AST in the active context")``.
+  * ``Z3_get_sort_kind`` must return ``SortKind::Bool``; anything
+    else (most commonly a BV ptr exported by mistake) raises
+    ``PyValueError("sort kind {kind:?}, expected Bool")``.
+
+  Validation runs over the full list before any constraint is added,
+  so a failure leaves the state's solver unmutated (verified by
+  ``test_null_after_valid_ptr_rejected_atomically``).
+
+  **Residual UB.** Truly arbitrary integers (e.g. ``0xdeadbeef``)
+  still dereference inside Z3 and can segfault before the API call
+  returns. Closing that gap would require either an opaque
+  ``Py<RustZ3AstHandle>`` newtype (constructible only from
+  ``export_z3_constraint_ptrs``) or a thread-local side-table of
+  blessed pointers. Both are tracked as longer-horizon options; the
+  current sanity check covers the realistic misuse cases.
 
 Stash name validation (footgun, not unsafe)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

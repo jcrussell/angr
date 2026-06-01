@@ -104,14 +104,54 @@ impl RustExplorationManager {
         state_id: u64,
         ptrs: Vec<usize>,
     ) -> PyResult<bool> {
+        // angr-33t9: validate every pointer is a Bool-sorted AST in the active
+        // thread-local Z3 context BEFORE handing it to `add_constraint_raw`'s
+        // unsafe wrap. This catches the realistic misuse cases — null in the
+        // middle of a list, a BV ptr exported by mistake, a foreign-context
+        // AST — and converts them to PyValueError. It does NOT defend against
+        // arbitrary integers (e.g. 0xdeadbeef): `Z3_get_sort` dereferences the
+        // pointer, so truly garbage values may still segfault before Z3 has a
+        // chance to signal an error. The SAFETY contract in `add_constraint_raw`
+        // is unchanged; this check just rejects the cheap-to-detect failures.
+        // See PyO3 trust-model audit in docs/advanced-topics/rust_engine.rst.
+        use z3_sys::{SortKind, Z3_get_sort, Z3_get_sort_kind};
+        let z3_ctx_handle = z3::Context::thread_local();
+        let raw_ctx = z3_ctx_handle.get_z3_context();
+        for (idx, ptr) in ptrs.iter().enumerate() {
+            let raw_ast = std::ptr::NonNull::new(*ptr as *mut z3_sys::_Z3_ast).ok_or_else(
+                || {
+                    PyValueError::new_err(format!(
+                        "import_z3_constraint_ptrs: null pointer at index {idx}"
+                    ))
+                },
+            )?;
+            // SAFETY: `raw_ctx` is the active thread-local context for the
+            // duration of this call; `raw_ast` is non-null (checked above).
+            // Z3 returns None when `raw_ast` is not a valid AST belonging to
+            // `raw_ctx`; the binding's Option wrapping converts this safely.
+            // If `raw_ast` is non-AST garbage, the deref inside Z3 may
+            // segfault — that's the residual UB documented above.
+            let sort = unsafe { Z3_get_sort(raw_ctx, raw_ast) }.ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "import_z3_constraint_ptrs: pointer at index {idx} is not a valid Z3 AST in the active context"
+                ))
+            })?;
+            // SAFETY: `sort` came from `Z3_get_sort` on the same context, so
+            // it is a live `Z3_sort` in `raw_ctx`. `Z3_get_sort_kind` is a
+            // pure metadata read.
+            let kind = unsafe { Z3_get_sort_kind(raw_ctx, sort) };
+            if kind != SortKind::Bool {
+                return Err(PyValueError::new_err(format!(
+                    "import_z3_constraint_ptrs: pointer at index {idx} has sort kind {kind:?}, expected Bool"
+                )));
+            }
+        }
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             for ptr in &ptrs {
-                if *ptr != 0 {
-                    unsafe {
-                        ctx.add_constraint_raw(*ptr);
-                    }
+                unsafe {
+                    ctx.add_constraint_raw(*ptr);
                 }
             }
             log::debug!(
