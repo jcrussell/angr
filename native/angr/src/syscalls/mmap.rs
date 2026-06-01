@@ -19,8 +19,13 @@
 //!    already-mapped pages, fall back so Python's loop runs.
 //! 4. addr != 0 && !MAP_FIXED: try the requested addr first; on
 //!    collision, fall back so Python's loop finds a different addr.
-//! 5. addr != 0 && MAP_FIXED: collision → fall back (Python returns -1
-//!    in that path; we let it run for fidelity).
+//! 5. addr != 0 && MAP_FIXED: POSIX semantics — atomically unmap any
+//!    colliding pages in `[addr, addr+length)` and remap with the
+//!    requested perms. This diverges from `procedures/posix/mmap.py`
+//!    (which returns -1 on collision) but matches real Linux mmap(2):
+//!    "If the memory region specified by addr and length overlaps
+//!    pages of any existing mapping(s), then the overlapped part of
+//!    the existing mapping(s) will be discarded." See angr-ttr7.
 //!
 //! Bad-flags fast path: when `(flags & (MAP_SHARED|MAP_PRIVATE)) == 0`
 //! or both bits are set, Python returns -1 outright. Mirror that here
@@ -43,10 +48,8 @@ const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
 const MAP_SHARED: u64 = 0x01;
 const MAP_PRIVATE: u64 = 0x02;
-/// Linux MAP_FIXED. Not consulted by the native fast path (collisions
-/// fall back to Python regardless), but kept here for the spec and used
-/// by the `map_fixed_collision_falls_back` test below.
-#[allow(dead_code)] // see angr-ttr7
+/// Linux MAP_FIXED. When set, the request must be honored at exactly
+/// `addr`; any colliding pages are atomically discarded and remapped.
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
 
@@ -144,26 +147,31 @@ impl NativeSyscall for NativeMmapSyscall {
 
         // Choose a candidate address. addr=0 ⇒ use mmap_base.
         let candidate = if addr == 0 { state.mmap_base() } else { addr };
+        let is_fixed = addr != 0 && (flags & MAP_FIXED) != 0;
 
-        // For both addr=0 and addr!=0 (with or without MAP_FIXED), if the
-        // requested range collides with an existing mapping, fall back to
-        // Python. Reasons:
-        //   - addr=0 + collision: Python's allocate_memory loop would try
-        //     a different mmap_base. We can't reproduce that loop here
-        //     without potentially repeated collisions, and it's rare.
-        //   - addr!=0 without MAP_FIXED + collision: Python loops; same.
-        //   - addr!=0 + MAP_FIXED + collision: Python returns -1; defer
-        //     for fidelity (Python prints a warning on map_region's
-        //     SimMemoryError).
-        if range_collides(state, candidate, length) {
+        // Collision policy:
+        //   - addr=0 + collision: fall back. Python's allocate_memory loop
+        //     would try a different mmap_base; we can't reproduce that loop
+        //     here without potentially repeated collisions, and it's rare.
+        //   - addr!=0 && !MAP_FIXED + collision: fall back. Python loops.
+        //   - addr!=0 && MAP_FIXED: POSIX says discard colliding pages and
+        //     remap at the requested address — handled below (no fallback).
+        if !is_fixed && range_collides(state, candidate, length) {
             return Err(SyscallError::Other(format!(
                 "mmap: collision at {:#x}+{:#x} — fall back",
                 candidate, length,
             )));
         }
 
-        // All checks passed: map the region.
+        // MAP_FIXED with collision: atomically unmap the colliding range.
+        // `unmap` is page-granular and tolerates unmapped pages within
+        // the range (it just removes whatever is there), so it's safe to
+        // call unconditionally on the requested range. We do it only when
+        // MAP_FIXED is set so the non-fixed path stays a pure map().
         let perm = linux_prot_to_permission(prot & 0x7);
+        if is_fixed {
+            state.memory_mut().unmap(candidate, length);
+        }
         state.memory_mut().map(candidate, length, perm);
 
         // Bump mmap_base on addr=0 (kernel chooses): align next base up
@@ -395,19 +403,117 @@ mod tests {
     }
 
     #[test]
-    fn map_fixed_collision_falls_back() {
+    fn map_fixed_collision_unmaps_and_remaps_natively() {
+        // POSIX MAP_FIXED: collision is not an error — the kernel
+        // discards the colliding pages and maps the new range at the
+        // requested address. angr-ttr7.
         let h = NativeMmapSyscall;
         let mut state = fresh_state();
         let target = 0x4000_0000;
+        // Pre-map one page R/W.
         state.map_memory(target, 0x1000, Permission::RW);
+        assert_eq!(
+            state.memory().page_permissions(target >> 12),
+            Some(Permission::RW),
+        );
 
-        let err = h
+        let outcome = h
+            .call(
+                &mut state,
+                // New mapping: R/X (0x5). Verifies that the prior
+                // perms (RW) are replaced, not merged.
+                &args(target, 0x1000, 0x5, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+            )
+            .expect("MAP_FIXED collision must succeed natively");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, target),
+            _ => panic!("expected Continue, got {:?}", outcome),
+        }
+        // The page is now RX (the new perms), not RW (the old perms).
+        assert_eq!(
+            state.memory().page_permissions(target >> 12),
+            Some(Permission::RX),
+        );
+        // mmap_base must NOT advance for an explicit-addr request.
+        assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
+    }
+
+    #[test]
+    fn map_fixed_multi_page_collision_discards_all_overlapped_pages() {
+        // MAP_FIXED with a 3-page request that overlaps a single
+        // pre-existing page in the middle. POSIX semantics: every
+        // overlapped page is discarded and remapped with the new perms.
+        let h = NativeMmapSyscall;
+        let mut state = fresh_state();
+        let base = 0x4000_0000;
+        // Pre-map only the middle page.
+        state.map_memory(base + 0x1000, 0x1000, Permission::RW);
+
+        let outcome = h
+            .call(
+                &mut state,
+                &args(base, 0x3000, 0x7 /* RWX */, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+            )
+            .expect("MAP_FIXED multi-page collision must succeed natively");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, base),
+            _ => panic!("expected Continue, got {:?}", outcome),
+        }
+        // All three pages now carry the new RWX perms.
+        for i in 0..3 {
+            assert_eq!(
+                state.memory().page_permissions((base >> 12) + i),
+                Some(Permission::RWX),
+                "page {i} after MAP_FIXED remap",
+            );
+        }
+    }
+
+    #[test]
+    fn map_fixed_clean_addr_still_maps_without_unmap_noise() {
+        // MAP_FIXED on a clean address: no collision, plain map.
+        // Regression guard for the is_fixed shortcut path.
+        let h = NativeMmapSyscall;
+        let mut state = fresh_state();
+        let target = 0x4000_0000;
+
+        let outcome = h
             .call(
                 &mut state,
                 &args(target, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
             )
-            .expect_err("must fall back");
-        assert!(matches!(err, SyscallError::Other(_)));
+            .expect("MAP_FIXED no-collision must succeed");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, target),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(
+            state.memory().page_permissions(target >> 12),
+            Some(Permission::RW),
+        );
+    }
+
+    #[test]
+    fn map_fixed_with_addr_zero_does_not_engage_fixed_path() {
+        // `is_fixed` requires addr != 0 — MAP_FIXED with addr=0 is a
+        // nonsensical combination (Linux treats it as a portable
+        // suggestion, mapping wherever convenient). Our native path
+        // routes through the normal allocate_from_mmap_base flow:
+        // if mmap_base is clean, it succeeds without unmapping.
+        let h = NativeMmapSyscall;
+        let mut state = fresh_state();
+
+        let outcome = h
+            .call(
+                &mut state,
+                &args(0, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+            )
+            .expect("MAP_FIXED with addr=0 falls through to allocate");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE + 0x1000);
     }
 
     #[test]

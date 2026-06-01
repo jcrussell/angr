@@ -3223,6 +3223,93 @@ class TestMmapBaseSync:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestMmapMapFixedNative:
+    """End-to-end: mmap(addr, len, prot, MAP_FIXED|..., -1, 0) on a
+    range that collides with an existing mapping succeeds natively,
+    discarding the colliding pages and remapping at the requested
+    address. Matches Linux mmap(2) semantics and diverges from the
+    Python posix mmap procedure (which returns -1 on collision).
+
+    Regression for angr-ttr7: previously the native fast path bailed
+    to Python on any collision, including the MAP_FIXED case where
+    Python would just return -1.
+    """
+
+    MAP_PRIVATE = 0x02
+    MAP_FIXED = 0x10
+    MAP_ANONYMOUS = 0x20
+
+    def _build_syscall_state(self, target_addr, length, prot, flags):
+        """A blank amd64 state at a `syscall` instruction with rax=9 (mmap)
+        and the standard amd64 syscall ABI registers set for an mmap call."""
+        import angr
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = 9              # mmap
+        state.regs.rdi = target_addr    # addr
+        state.regs.rsi = length         # length
+        state.regs.rdx = prot           # prot
+        state.regs.r10 = flags          # flags
+        state.regs.r8 = 0xFFFFFFFF_FFFFFFFF  # fd = -1
+        state.regs.r9 = 0               # offset
+        return proj, state
+
+    def test_map_fixed_collision_no_python_fallback(self):
+        """MAP_FIXED + collision: the syscall runs through the native
+        fast path. The load-bearing assertion is that
+        ``syscall_python_fallback_count`` stays at zero — before the
+        fix, every MAP_FIXED collision routed back to Python.
+
+        The Rust unit tests in ``syscalls/mmap.rs`` cover the unmap +
+        remap behavior comprehensively; this Python-level test exists
+        to lock in the integration contract (no fallback)."""
+        from angr.exploration import RustExplorationManager
+
+        target = 0x4000_0000
+        length = 0x1000
+        flags = self.MAP_FIXED | self.MAP_PRIVATE | self.MAP_ANONYMOUS
+
+        proj, state = self._build_syscall_state(target, length, 0x5, flags)
+        mgr = RustExplorationManager(proj, [state])
+
+        # Pre-seed the colliding page in all active Rust states with RW.
+        # A flat "any collision → fall back" path would bump the
+        # fallback counter on this; the native unmap+remap path
+        # absorbs it.
+        mgr._rust_mgr.active_states_map_memory(target, b"\x00" * length, 0x3)
+
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "MAP_FIXED collision must take the native fast path; got "
+            f"{stats['syscall_python_fallback_count']} Python fallback(s)."
+        )
+
+    def test_map_fixed_clean_addr_no_python_fallback(self):
+        """MAP_FIXED on a non-colliding addr also takes the native
+        path (regression guard for the is_fixed shortcut)."""
+        from angr.exploration import RustExplorationManager
+
+        target = 0x4000_0000
+        length = 0x1000
+        flags = self.MAP_FIXED | self.MAP_PRIVATE | self.MAP_ANONYMOUS
+
+        proj, state = self._build_syscall_state(target, length, 0x3, flags)
+        mgr = RustExplorationManager(proj, [state])
+
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "MAP_FIXED without collision must take the native path; got "
+            f"{stats['syscall_python_fallback_count']} Python fallback(s)."
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestPosixBrkSync:
     """Tests that the Rust per-state posix_brk mirrors back to Python's
     state.posix.brk on stash export.
