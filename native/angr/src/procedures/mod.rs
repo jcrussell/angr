@@ -269,6 +269,12 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(stdio::NativeFwrite));
         registry.register(Arc::new(stdio::NativeFflush));
         registry.register(Arc::new(stdio::NativeSetvbuf));
+        // stdio status / write shims (angr-f16h.1): feof/ferror dispatch off
+        // FILE._fileno and return concrete int flags; fputs reuses fwrite's
+        // write_fd path with a NUL-terminated source string.
+        registry.register(Arc::new(stdio::NativeFeof));
+        registry.register(Arc::new(stdio::NativeFerror));
+        registry.register(Arc::new(stdio::NativeFputs));
         // File operations: registered for fd tracking in FileSystem.
         registry.register(Arc::new(fileops::NativeOpen));
         registry.register(Arc::new(fileops::NativeClose));

@@ -10546,6 +10546,182 @@ class TestNativeStringToNumericProcedures:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeStdioStatusAndWrite:
+    """Integration tests for NativeFeof / NativeFerror / NativeFputs
+    (angr-f16h.1).
+
+    feof and ferror dispatch off `FILE._fileno` (amd64 offset 112) and return
+    int flags. fputs reuses fwrite's write_fd path with a NUL-terminated
+    source string. ferror is decl-only in glibc.json (no Python proc), the
+    other two have Python references at `procedures/libc/{feof,fputs}.py`.
+
+    Same in-binary non-executable hook-addr + stub-class pattern as
+    TestNativeStringToNumericProcedures (see that class docstring for the
+    rationale of using a fake hook in fauxware's `.ctors`).
+    """
+
+    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008b0
+    STRING_ADDR = 0x601100   # past .bss, lazy-mapped
+    FILE_PTR    = 0x601200   # FILE struct; +112 = _fileno on amd64
+
+    @staticmethod
+    def _make_stub(proc_name: str, num_args: int):
+        runs = {
+            1: lambda self, a0: 0,             # noqa: ARG005
+            2: lambda self, a0, a1: 0,         # noqa: ARG005
+        }
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": num_args, "run": runs[num_args]},
+        )
+
+    def _setup_state(self, proj, *, fileno: int, source_bytes: bytes | None = None):
+        import claripy
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        # Write FILE._fileno as a 32-bit little-endian int at FILE_PTR + 112.
+        state.memory.store(
+            self.FILE_PTR + 112,
+            claripy.BVV(fileno & 0xFFFFFFFF, 32),
+            endness="Iend_LE",
+        )
+        if source_bytes is not None:
+            buf = source_bytes + b"\x00"
+            for i, b in enumerate(buf):
+                state.memory.store(self.STRING_ADDR + i, claripy.BVV(b, 8))
+        # Return address for the stub call.
+        state.memory.store(state.regs.rsp,
+                           claripy.BVV(self.DEAD_ADDR, 64),
+                           endness="Iend_LE")
+        return state
+
+    def _first_state_id(self, mgr):
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return ids[0]
+        return None
+
+    def test_feof_returns_one_on_empty_fd(self, fauxware_project):
+        """fd=1 (stdout) starts empty: position 0 >= content_len 0 → EOF."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("feof", 1)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, fileno=1)
+            state.regs.rdi = self.FILE_PTR
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("feof", 0) == 1, (
+                f"expected native feof dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None, f"no state: {mgr.stash_counts()}"
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 1, f"feof(empty fd) → rax={rax}, expected 1"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_ferror_always_returns_zero(self, fauxware_project):
+        """ferror has no Python proc — the native entry returns 0 (no error)."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("ferror", 1)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, fileno=1)
+            state.regs.rdi = self.FILE_PTR
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("ferror", 0) == 1, (
+                f"expected native ferror dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 0, f"ferror → rax={rax}, expected 0"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_fputs_writes_to_stdout_and_returns_one(self, fauxware_project):
+        """fputs on stdout must append the NUL-terminated string to fd 1's
+        buffer and return 1."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("fputs", 2)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            payload = b"hello world"
+            state = self._setup_state(proj, fileno=1, source_bytes=payload)
+            state.regs.rdi = self.STRING_ADDR
+            state.regs.rsi = self.FILE_PTR
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("fputs", 0) == 1, (
+                f"expected native fputs dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 1, f"fputs success → rax={rax}, expected 1"
+            stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            assert stdout_bytes == payload, (
+                f"stdout={stdout_bytes!r} expected {payload!r}"
+            )
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_fputs_negative_fileno_returns_minus_one(self, fauxware_project):
+        """fputs with a closed/sentinel fd (-1) must return -1 without writing."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("fputs", 2)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, fileno=-1, source_bytes=b"discarded")
+            state.regs.rdi = self.STRING_ADDR
+            state.regs.rsi = self.FILE_PTR
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("fputs", 0) == 1, (
+                f"expected native fputs dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            # -1 as a 64-bit unsigned value
+            assert rax == (1 << 64) - 1, f"fputs(fd=-1) → rax={rax:#x}"
+            stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            assert stdout_bytes == b"", f"stdout should be untouched, got {stdout_bytes!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
     requires the cached Python SimState to be invalidate-and-replayed per
