@@ -580,6 +580,70 @@ zero-cost when not read. They reset alongside the Z3 counters via
     (e.g. ``reverse(reverse(x)) → x``, fully-concrete fold) do **not**
     bump the counter — these track real Z3-visible emissions.
 
+* **Constraint add path** (bumped in
+  ``symbolic/context.rs::add_constraint_raw``):
+
+  * ``add_constraint_raw_total`` — total ``add_constraint_raw`` calls.
+  * ``add_constraint_raw_dedup_scanned`` — calls that consulted the
+    per-context HashSet side-table.
+  * ``add_constraint_raw_dedup_hit`` — subset where the constraint's
+    ``z3_ast`` pointer was already in the side-table (skipping the
+    solver re-assert and the ``z3_assertions.push``).
+
+  Dedup hit-rate is **bimodal** across the fast-tier corpus (2026-06-01
+  audit, fauxware / defcamp_r100 / sym-write / ais3_crackme /
+  defcon2016quals_baby-re / whitehatvn2015_re400 / csgames2018 /
+  flareon2015_10 / google2016_unbreakable_0 / codegate_2017-angrybird /
+  strcpy_find / flareon2015_2 / ekopartyctf2016_rev250 / csaw_wyvern /
+  flareon2015_5):
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 35 15 15 15 20
+
+     * - Bench
+       - total
+       - hits
+       - rate
+       - regime
+     * - ``defcon2016quals_baby-re``
+       - 13
+       - 12
+       - 92.3%
+       - dedup pays
+     * - ``csaw_wyvern``
+       - 40
+       - 33
+       - 82.5%
+       - dedup pays
+     * - ``whitehatvn2015_re400``
+       - 2
+       - 1
+       - 50.0%
+       - dedup pays
+     * - ``flareon2015_5``
+       - 403
+       - 126
+       - 31.3%
+       - dedup pays
+     * - 11 other benches
+       - 0–13
+       - 0
+       - 0.0%
+       - no hits
+
+  Counter + HashSet are **kept** despite the per-bench wall-clock delta
+  being null in isolation (Z3 internally dedups asserts, so the saved
+  ``solver.assert`` is a no-op — only the ``Bool::clone`` and
+  ``z3_assertions.push`` are skipped). Rationale: 4/15 benches show
+  substantial duplicate-assert traffic (31–92%) that would otherwise
+  accumulate in the per-context ``z3_assertions`` vec and scale
+  constraint-export / lineage-switch work for nothing. The HashSet
+  overhead (one ``insert`` + ``contains`` per add) is bounded above
+  by ``add_constraint_raw_total`` * O(hash), trivial against the
+  ``z3_check`` time it gates. See ``angr-dtrl`` for the audit and
+  ``sfp9-dedup-null-result`` bd memory for the original wall-clock A/B.
+
 Sample output on ``defcamp_r100`` (Rust engine, 3 SAT paths):
 
 .. code-block::
