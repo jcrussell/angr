@@ -2651,3 +2651,182 @@ within the same crate.
 Spike report ``angr-irwe`` (2026-06-01) — see commit history for the
 audit + initial application.
 
+Concurrency / Send-Sync audit
+-----------------------------
+
+Spike report ``angr-8fo6`` (2026-06-01). This section catalogs the
+``Send`` / ``Sync`` posture of every ``#[pyclass]`` exposed to Python
+and identifies the architectural work required before any future
+parallel-exploration story (cf. ``angr-j7kn`` — speculative Z3 theory
+propagator) can land.
+
+Today the engine is **single-threaded by construction** — every entry
+point through ``RustExplorationManager`` is gated by the GIL, and the
+state-graph data structures are intentionally ``!Send`` so the compiler
+prevents accidental cross-thread sharing. The PyO3 ``unsendable`` markers
+on the load-bearing types are not stylistic — they encode a deep
+architectural constraint rooted in z3-rs's thread-local Z3 context model
+(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:81``).
+
+Pyclass inventory
+~~~~~~~~~~~~~~~~~
+
+Six ``#[pyclass(unsendable)]`` types — cannot be shared across OS
+threads even with a ``Mutex``, because they hold ``!Send`` interior
+state:
+
+- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:371``)
+  — coordinator; transitively owns the StashManager (which holds the
+  per-state ``Rc<RefCell<SymContext>>``) plus thread-bound Z3 solver
+  handles. The unsendable marker is correct.
+- ``PyRustSimState`` (``native/angr/src/state.rs:2265``) — wraps
+  ``RustSimState`` which holds ``solver: Rc<RefCell<SymContext>>``
+  (``state.rs:851``). ``Rc`` is the binding constraint; replacing it with
+  ``Arc<Mutex<SymContext>>`` is necessary but **not sufficient** (see
+  Z3 constraints below).
+- ``RustSolverContext`` (``native/angr/src/solver.rs:83``) — holds
+  ``SolverCtxStorage`` which is either ``SymContext`` directly or
+  ``Rc<RefCell<SymContext>>`` shared with a parent state. Same blocker
+  as ``PyRustSimState``.
+- ``Fuzzer`` (``native/angr/src/fuzzer.rs:58``) — libafl state machine;
+  ``unsendable`` for libafl-internal reasons (Python callbacks held as
+  closures). Out of scope for the symex engine's parallel story.
+- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:139``) — libafl
+  on-disk handle; same scope as ``Fuzzer``.
+- ``Icicle`` (``native/angr/src/icicle.rs:229``) — icicle VM owns
+  thread-local JIT state; ``unsendable`` is correct.
+
+The plain ``#[pyclass]`` types (without ``unsendable``) are all
+``Send + Sync`` today because they hold only Plain Old Data or
+``Py<PyAny>`` handles (which PyO3 declares ``Send + Sync`` since the
+GIL controls actual dereference). No refactor needed for these:
+
+- ``DeferredFork``, ``BranchPolicy``, ``ExecutionConfig``,
+  ``PythonCallbacks``, ``LoopExecutionEvent``
+  (``native/angr/src/callbacks.rs``) — value types, plus ``Py<PyAny>``
+  callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.
+- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:110``) —
+  value type built from primitives + ``Py<PyAny>``.
+- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:26``) — three
+  POD fields (``id: u64``, ``width: u32``, ``concrete: Option<u128>``).
+  Cheap to ship across threads but useless without the matching
+  symbol-table entry, which lives inside the ``unsendable``
+  ``RustSolverContext``.
+- ``ExplorationStateSnapshot`` (``native/angr/src/state.rs:2769``) —
+  the serializable snapshot type added by ``angr-zidj`` is already
+  ``Send + Sync``. **This is the recommended cross-thread transport
+  type** (see Recommendation below).
+- ``Segment``, ``SegmentList``, ``SegmentListIter``
+  (``native/angr/src/segmentlist.rs``) — pure value types, Send+Sync.
+- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:45,94``) —
+  C-like enums.
+- ``PyState``, ``PySymbol``, ``PyEpsilon``, ``PyEpsilonNFA``, ``PyDFA``
+  (``native/angr/src/automaton/python_bindings.rs``) — automaton API;
+  hold ``Py<PyAny>`` plus pure-Rust automaton state. Send+Sync today.
+- ``PyHavocMutator``, ``PyInMemoryCorpus``, ``ClientStats``
+  (``native/angr/src/fuzzer/{mutator,corpus,monitor}.rs``) — fuzzer
+  value types; Send+Sync today.
+
+The root blockers
+~~~~~~~~~~~~~~~~~
+
+Three architectural constraints must be relaxed before a worker thread
+can step a state in parallel with the main thread. Each blocker stands
+alone — fixing any one in isolation does not enable parallelism.
+
+**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:851).**
+   Used at 7 mutation sites including all four fork variants
+   (``fork``, ``fork_true``, ``fork_false``, plus the snapshot-restore
+   fork). Pattern is "share parent solver on fork, fork-on-mutate" — a
+   pure single-threaded CoW idiom. Cost to convert: large, touches
+   every state-creation path. Replacing ``Rc`` with ``Arc`` is cheap;
+   ``RefCell`` → ``Mutex`` introduces lock contention on the constraint
+   hot path (``assume_*``, ``add_constraint_raw`` — see
+   ``add-constraint-raw-dedup-83pct-csaw`` memory: 82.5 % of csaw_wyvern
+   calls hit dedup, so the lock would be heavily contended).
+
+**2. Z3 context thread-locality (z3-rs 0.19+).** The z3-rs crate uses
+   ``thread_local!`` Z3 contexts: every thread has its own ``Z3_context``,
+   and an AST handle (``z3::ast::Bool``, ``z3::ast::BV``) is bound to the
+   context of the thread that created it. Crossing the boundary is
+   undefined behavior. Consequence: a state's solver assertions cannot
+   migrate threads. Worker threads must either (a) be pinned to a state
+   from creation, or (b) re-translate the entire assertion stack across
+   threads via SMT-LIB serialization. (b) erases any parallelism gain
+   unless the per-solve cost is enormous.
+
+**3. Claripy bridge thread-local AST caches**
+   (``native/angr/src/claripy_bridge.rs:153, 200, 231, 269``). The four
+   caches documented in the ``claripy-bridge-thread-local-caches``
+   memory (``AST_CACHE``, ``CLARIPY_AST_CACHE``, ``EXPRESSION_CACHE``,
+   ``EXPRESSION_BY_OPERANDS_PTR``) are intentionally ``thread_local!``
+   to avoid lock contention on the hot path. They are **already correct
+   for multi-threading** in the sense that each thread has its own
+   instance and no cross-thread synchronization is needed. Cost:
+   workers pay a cold-cache penalty on their first ~10 000 expressions
+   each.
+
+Secondary considerations
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1239``)
+  mostly uses ``Mutex`` and ``Arc`` for its shared state (constraint
+  stacks, push counters, lineage), but has two ``!Sync`` interior cells:
+  ``sat_cache: Cell<Option<bool>>`` (line 1286) and
+  ``model_cache: RefCell<Option<z3::Model>>`` (line 1289). These would
+  need ``Mutex`` wrappers if ``SymContext`` ever needs ``Sync``. The
+  ``z3::Model`` inside is also thread-bound, so the cell-conversion
+  alone does not lift the Z3 thread-locality constraint.
+- The Python-side proxies (``RustStateProxy`` and its sub-proxies in
+  ``angr/exploration/rust_state_proxy.py``) are pure Python objects that
+  hold a Python reference to the ``unsendable`` Rust manager. They are
+  not directly subject to a Rust ``Send`` / ``Sync`` audit, but inherit
+  the same single-thread constraint via the Rust handle they wrap.
+- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:58``) is
+  fine — each worker would get its own.
+
+Recommendation: ship snapshots, not states
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The least-invasive path to parallel exploration is **not** to make
+``RustExplorationManager`` ``Send``. Instead, lean on the
+``ExplorationStateSnapshot`` type already produced by ``angr-zidj``:
+
+1. Main thread runs a ``RustExplorationManager`` that emits snapshots
+   for states queued onto a parallel-eval lane.
+2. Worker threads receive ``ExplorationStateSnapshot`` (Send+Sync),
+   each constructs its own thread-local ``RustExplorationManager``
+   and ``RustSimState`` from the snapshot, drives Z3 in its own
+   thread-local context, and returns either a result or a successor
+   snapshot.
+3. No ``Rc`` → ``Arc`` migration, no ``RefCell`` → ``Mutex`` migration,
+   no Z3 AST cross-thread shipping. Workers re-build the per-thread
+   solver from the constraint list embedded in the snapshot.
+
+This is the same shape angr-x04s.1 (RustBV op-tree snapshot prototype)
+is heading toward for OOM recovery. The two stories share the same
+serialization primitive — investment is amortized.
+
+Follow-up beads
+~~~~~~~~~~~~~~~
+
+Each candidate below is filed (or proposed) as a separate ``task``
+bead so the parallel-exploration epic can be sequenced. No production
+code changes from this spike.
+
+- **No new beads filed today.** The audit's headline finding is that
+  the visible ``unsendable`` markers are correct and reflect deep
+  architectural constraints — not stylistic safety bumpers. The path
+  forward is the snapshot-transport story above, which is already
+  covered by ``angr-x04s.1`` (op-tree snapshot prototype). Parallel
+  exploration on top of that prototype would be a new epic, not a
+  follow-up to this spike.
+- If parallel exploration becomes a near-term roadmap item, file:
+  a) Worker-pool prototype consuming ``ExplorationStateSnapshot``
+     (depends on ``angr-x04s.1``).
+  b) ``sat_cache`` / ``model_cache`` ``Cell``/``RefCell`` → ``Mutex``
+     migration in ``SymContext`` (cheap, isolated).
+  c) Benchmark harness for snapshot round-trip cost
+     (snapshot-emit + restore + first-solve), to validate that the
+     per-state migration cost stays below the parallel-execution gain.
+
