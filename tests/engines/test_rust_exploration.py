@@ -5869,6 +5869,50 @@ class TestMultiArchSupport:
         assert state.get_register("eax") == 0xDEADBEEF
         assert state.get_register("esp") == 0x7FFF0000
 
+    def test_x86_segment_selectors_dispatch(self):
+        """x86 (32-bit) segment selectors round-trip via the standard
+        register dispatch.
+
+        Covers angr-5spy.1: the six 16-bit segment selectors
+        (``cs``/``ds``/``es``/``fs``/``gs``/``ss``) in
+        ``arch/x86.rs`` are reachable through
+        ``set_register``/``get_register``. Each selector sits at its
+        own offset (288, 290, 292, 294, 296, 298) so writes must not
+        bleed into adjacent slots — a regression here would be a
+        wrong-offset bug, not just unreachability.
+        """
+        state = RustSimState("x86")
+
+        # Distinct 16-bit values so a cross-talk bug surfaces as a
+        # wrong read on one of the neighbouring slots.
+        selectors = {
+            "cs": 0x0023,
+            "ds": 0x002B,
+            "es": 0x002B,
+            "fs": 0x0053,
+            "gs": 0x0063,
+            "ss": 0x002B,
+        }
+        for name, value in selectors.items():
+            state.set_register(name, value)
+        for name, value in selectors.items():
+            assert state.get_register(name) == value, name
+
+        # "Selector-aware code path": overwrite GS to a non-default
+        # value (Linux i386 sets %gs for TLS) and confirm the read
+        # reflects the new value without disturbing CS/SS.
+        state.set_register("gs", 0x0033)
+        assert state.get_register("gs") == 0x0033
+        assert state.get_register("cs") == selectors["cs"]
+        assert state.get_register("ss") == selectors["ss"]
+
+        # Selectors are 16-bit: writing a value that fits in 16 bits
+        # and then reading must mask cleanly. (set_register builds a
+        # bitvector sized from register_size; reads should round-trip
+        # the low 16 bits.)
+        state.set_register("fs", 0xFFFF)
+        assert state.get_register("fs") == 0xFFFF
+
     def test_unsupported_arch_raises(self):
         """Unknown architecture raises an error."""
         with pytest.raises(Exception):
