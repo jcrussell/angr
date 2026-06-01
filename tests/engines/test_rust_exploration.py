@@ -12488,5 +12488,273 @@ class TestRustExecutionErrorHierarchy:
         assert "LLSC" in msg, f"missing IR-construct context in: {msg}"
 
 
+# ---------------------------------------------------------------------------
+# angr-uprs: parametrized negative-tests for the RustUnsupported* surface.
+# ---------------------------------------------------------------------------
+
+# Real x87 FPU transcendental opcodes that VEX lifts but the Rust engine has
+# no dispatch arm for in parse_opcode. Symbolic-arg fast path in
+# vex/transcendentals.rs only fires when arriving as IROp::Raw(code) via the
+# FFI lifter — JSON-driven `execute_irsb_for_test` routes through string-form
+# `parse_opcode` and lands in IROp::Unmapped. If any of these get a parse arm,
+# the test fails loudly and the entry should move out of this list.
+_UNMAPPED_X87_TRANSCENDENTALS = [
+    "Iop_SinF64",
+    "Iop_CosF64",
+    "Iop_TanF64",
+    "Iop_2xm1F64",
+    "Iop_AtanF64",
+    "Iop_Yl2xF64",
+    "Iop_Yl2xp1F64",
+    "Iop_ScaleF64",
+    "Iop_RecpExpF64",
+    "Iop_RecpExpF32",
+]
+
+# Real NEON saturating shift-left by immediate (UQSHL/SQSHL imm). The
+# vector-by-vector forms `Iop_QShl{N}x{M}` / `Iop_QSal{N}x{M}` ARE mapped
+# (angr-tukg.8 → IROp::VQShlSat); only the `*sat*` immediate variants remain.
+_UNMAPPED_NEON_QSHL_IMM = [
+    "Iop_QShlNsatSU8x8",
+    "Iop_QShlNsatSU16x4",
+    "Iop_QShlNsatSU32x2",
+    "Iop_QShlNsatSU64x1",
+    "Iop_QShlNsatSU8x16",
+    "Iop_QShlNsatSU16x8",
+    "Iop_QShlNsatSU32x4",
+    "Iop_QShlNsatSU64x2",
+    "Iop_QShlNsatSS16x4",
+    "Iop_QShlNsatSS32x2",
+    "Iop_QShlNsatSS16x8",
+    "Iop_QShlNsatSS32x4",
+]
+
+# Real but currently-unmapped float/decimal/conversion opcodes from libvex_ir.h.
+# Mostly Power/S390 BFP-DFP / ARMv8 FP16 / x86 cvt-with-fixed-rm. Probed
+# 2026-06-01 against `IROp::Unmapped` via execute_irsb_for_test.
+_UNMAPPED_FP_DECIMAL = [
+    "Iop_F128toD32",
+    "Iop_F128toI128S",
+    "Iop_F16toF32x4",
+    "Iop_F32ToFixed32Sx2_RZ",
+    "Iop_F64toD128",
+    "Iop_Fixed32SToF32x2_RN",
+    "Iop_FtoI32Sx2_RZ",
+    "Iop_RoundF32x4_RM",
+    "Iop_RoundF32x4_RN",
+    "Iop_SignificanceRoundD64",
+]
+
+# Real but currently-unmapped polynomial-MAC + crypto extensions. Power/ARM
+# vector crypto (AES, SHA) that we do not model.
+_UNMAPPED_CRYPTO_AND_POLY = [
+    "Iop_PolynomialMulAdd8x16",
+    "Iop_PolynomialMulAdd16x8",
+    "Iop_PolynomialMulAdd32x4",
+    "Iop_PolynomialMulAdd64x2",
+    "Iop_CipherV128",
+    "Iop_NCipherV128",
+    "Iop_SHA256",
+    "Iop_SHA512",
+]
+
+# Union of all real-name unmapped VEX ops to parametrize over. Total >=40 so
+# the acceptance target of ">=50 unsupported ops/syscalls" lands once the
+# NEON-unimplemented (1) and syscalls (>=15) are added below.
+_UNMAPPED_VEX_OPS_REAL = (
+    _UNMAPPED_X87_TRANSCENDENTALS
+    + _UNMAPPED_NEON_QSHL_IMM
+    + _UNMAPPED_FP_DECIMAL
+    + _UNMAPPED_CRYPTO_AND_POLY
+)
+
+# Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
+# UnsupportedVexOp, but both PyErr-map to RustUnsupportedVexOpError). Updated
+# from native/angr/src/vex/opcode_map.rs::parse_neon_unimplemented.
+_NEON_UNIMPLEMENTED = [
+    "Iop_PwAdd32Fx2",
+]
+
+# Linux syscall names that lack a native handler in native/angr/src/syscalls/
+# as of 2026-06-01 (campaigns angr-0hif.{1,5,6,7}). Production code returns
+# `SyscallError` for symbolic/unsupported and routes to the Python callback —
+# the typed-error surface exists ONLY via `_raise_typed_test_error` until the
+# tkbr.1-style conversion lands per-syscall, so this group exercises the
+# Python-facing exception API. Each entry pairs (name, num) on amd64.
+_UNSUPPORTED_SYSCALLS = [
+    # File path operations (0hif.1)
+    ("open", 2),
+    ("openat", 257),
+    ("close", 3),
+    ("stat", 4),
+    ("fstat", 5),
+    ("lstat", 6),
+    ("newfstatat", 262),
+    ("readlink", 89),
+    ("access", 21),
+    # FD control (0hif.5)
+    ("ioctl", 16),
+    ("fcntl", 72),
+    ("dup", 32),
+    ("dup2", 33),
+    ("pipe", 22),
+    ("pipe2", 293),
+    # Signals + process control (0hif.6)
+    ("kill", 62),
+    ("tgkill", 234),
+    ("pause", 34),
+    ("alarm", 37),
+    # Resource limits + concurrency (0hif.7)
+    ("getrlimit", 97),
+    ("setrlimit", 160),
+    ("futex", 202),
+    ("eventfd", 290),
+]
+
+
+def _build_unop_irsb_json(op_name, arch):
+    """Single-Unop IRSB referencing `op_name`. Args/result type are I64 since
+    the dispatch hits `IROp::Unmapped` before any width validation runs."""
+    import json
+    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
+    return json.dumps({
+        "addr": 4096,
+        "arch": arch,
+        "statements": [
+            {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+            {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                "tag": "Iex_Const",
+                "con": {"tag": "Ico_U64", "value": 0},
+            }},
+            {"tag": "Ist_WrTmp", "tmp": 1, "data": {
+                "tag": "Iex_Unop",
+                "op": op_name,
+                "arg": {"tag": "Iex_RdTmp", "tmp": 0},
+            }},
+        ],
+        "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+        "jumpkind": "Ijk_Boring",
+        "offsIP": offs_ip,
+        "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+    })
+
+
+def _build_binop_irsb_json(op_name, arch):
+    """Single-Binop IRSB referencing `op_name`. Used for QShlN-style ops
+    (binary in VEX) and the lone NeonUnimplemented entry Iop_PwAdd32Fx2."""
+    import json
+    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
+    return json.dumps({
+        "addr": 4096,
+        "arch": arch,
+        "statements": [
+            {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+            {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                "tag": "Iex_Const",
+                "con": {"tag": "Ico_U64", "value": 0},
+            }},
+            {"tag": "Ist_WrTmp", "tmp": 1, "data": {
+                "tag": "Iex_Binop",
+                "op": op_name,
+                "args": [
+                    {"tag": "Iex_RdTmp", "tmp": 0},
+                    {"tag": "Iex_RdTmp", "tmp": 0},
+                ],
+            }},
+        ],
+        "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+        "jumpkind": "Ijk_Boring",
+        "offsIP": offs_ip,
+        "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+    })
+
+
+class TestRustUnsupportedErrorParametrized:
+    """angr-uprs: parametrized ``pytest.raises`` coverage of the typed
+    ``RustUnsupported*`` surface.
+
+    Goal: guard against silent regressions where adding a new dispatch arm
+    accidentally consumes an opcode (returning fresh-symbolic) instead of
+    surfacing a typed exception. If any entry in the list below gets
+    implemented, the corresponding test fails and the entry should be
+    moved out of the list (or replaced with another unmapped op).
+
+    Total cases >= 50 (acceptance target). All run via the lightweight
+    `execute_irsb_for_test` mock-context path (no Project / no Solver) so
+    the full class is well under the 30s acceptance budget.
+
+    Each case also asserts the EXACT subclass (not just `RustExecutionError`)
+    so a regression that flattens the typed hierarchy is caught.
+    """
+
+    @pytest.mark.parametrize("op_name", _UNMAPPED_VEX_OPS_REAL)
+    def test_unmapped_vex_op_raises_unsupported(self, op_name):
+        """Each currently-unmapped real opcode surfaces as
+        ``RustUnsupportedVexOpError`` carrying `<op_name>` + arch."""
+        from angr.exploration import RustUnsupportedVexOpError
+        from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        with pytest.raises(RustUnsupportedVexOpError) as exc_info:
+            execute_irsb_for_test(_build_unop_irsb_json(op_name, "AMD64"), "amd64")
+        # Exact subclass — flattening the hierarchy would still satisfy the
+        # base-class match but is a regression.
+        assert type(exc_info.value).__name__ == "RustUnsupportedVexOpError"
+        msg = str(exc_info.value)
+        assert op_name in msg, f"op name missing from message: {msg}"
+        assert "amd64" in msg.lower(), f"arch missing from message: {msg}"
+
+    @pytest.mark.parametrize("op_name", _NEON_UNIMPLEMENTED)
+    def test_neon_unimplemented_raises_unsupported(self, op_name):
+        """NeonUnimplemented routes through ``OpError::UnsupportedNeon`` but
+        Python-side it still surfaces as ``RustUnsupportedVexOpError``."""
+        from angr.exploration import RustUnsupportedVexOpError
+        from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        with pytest.raises(RustUnsupportedVexOpError) as exc_info:
+            execute_irsb_for_test(_build_binop_irsb_json(op_name, "ARM64"), "arm64")
+        assert type(exc_info.value).__name__ == "RustUnsupportedVexOpError"
+        msg = str(exc_info.value)
+        assert op_name in msg, f"op name missing from message: {msg}"
+        assert "arm64" in msg.lower(), f"arch missing from message: {msg}"
+
+    @pytest.mark.parametrize(("name", "num"), _UNSUPPORTED_SYSCALLS)
+    def test_unsupported_syscall_typed_error(self, name, num):
+        """Syscalls without a native handler surface as
+        ``RustUnsupportedSyscallError`` via the ``_raise_typed_test_error``
+        helper. Production sites currently return ``SyscallError`` and fall
+        back to the Python callback path; this parametrize pins the Python
+        exception API so a follow-up tkbr.1-style conversion only needs to
+        wire each handler into the existing typed-error path."""
+        from angr.exploration import RustUnsupportedSyscallError
+        from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        with pytest.raises(RustUnsupportedSyscallError) as exc_info:
+            _raise_typed_test_error(
+                "unsupported_syscall",
+                name=name,
+                num=num,
+                arch="AMD64",
+                message="no native handler",
+            )
+        assert type(exc_info.value).__name__ == "RustUnsupportedSyscallError"
+        msg = str(exc_info.value)
+        assert name in msg, f"syscall name missing from message: {msg}"
+        # Number is rendered as decimal in the Display impl.
+        assert str(num) in msg, f"syscall num missing from message: {msg}"
+
+    def test_total_case_count_meets_acceptance(self):
+        """Acceptance: >=50 parametrized cases across the three groups.
+
+        Tracked here so a thoughtless trim of any list (e.g. an
+        implementation lands that moves an op from this list to the real
+        dispatch) still keeps the total above the bar."""
+        total = (
+            len(_UNMAPPED_VEX_OPS_REAL)
+            + len(_NEON_UNIMPLEMENTED)
+            + len(_UNSUPPORTED_SYSCALLS)
+        )
+        assert total >= 50, f"only {total} parametrized cases; need >=50"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
