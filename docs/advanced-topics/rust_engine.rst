@@ -200,11 +200,11 @@ below "Supported" as experimental.
      - AArch64
      - Supported
    * - MIPS32
-     - 4
+     - 5
      - 3 (BE blob, LE real ELF, native-proc)
      - 1 (mips32_le_branch synthetic)
      - MipsO32
-     - Supported
+     - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
    * - MIPS64
      - 0
      - 3 (LE real ELF, BE real ELF, native-proc)
