@@ -23,6 +23,7 @@ use std::sync::Arc;
 use lru::LruCache;
 
 use crate::arch::CallingConvention;
+use crate::interpreter::BLOCK_CACHE_CAPACITY;
 use crate::vex::{IRSB, VexArch};
 
 pub(crate) struct ExecutionEnvironment {
@@ -46,7 +47,9 @@ impl ExecutionEnvironment {
             arch_name,
             vex_arch,
             binary_regions: Vec::new(),
-            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
+            block_cache: LruCache::new(
+                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
+            ),
             calling_convention,
             little_endian,
             max_history: 1000,

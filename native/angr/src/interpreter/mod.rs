@@ -32,6 +32,15 @@ use crate::vex::ir::{
 use crate::vex::ops::{OpError, VEXOps, iropclass};
 use crate::vex::{Endness, deserialize_irsb};
 
+/// VEX block (IRSB) LRU cache capacity in entries.
+///
+/// Each cached `IRSB` is Arc-shared, so this caps unique IRSBs simultaneously
+/// resident across an interpreter's lifetime. 4096 covers the working set of
+/// every tracked bench in `baseline_timings.json`; adjust only with a counter
+/// dump showing eviction churn (`mgr.stats()` does not expose hit/miss today;
+/// see angr-l4bs).
+pub(crate) const BLOCK_CACHE_CAPACITY: usize = 4096;
+
 /// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
 ///
 /// Pair with [`profile_add!`] to fold the elapsed nanoseconds into a `u64`
@@ -672,7 +681,9 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_len: 0,
             hook_addrs: Arc::new(FxHashSet::default()),
             arch,
-            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
+            block_cache: LruCache::new(
+                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
+            ),
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,
@@ -1366,8 +1377,8 @@ impl<'a> VEXInterpreter<'a> {
             self.dirtied_code_pages.insert(page_num);
         }
         // Find cached IRSBs whose [start, start + irsb.size()) overlaps the
-        // write. LruCache::iter is O(N) but N <= 4096 and this fires only
-        // on rare in-binary stores, so the cost is bounded.
+        // write. LruCache::iter is O(N) but N <= BLOCK_CACHE_CAPACITY and this
+        // fires only on rare in-binary stores, so the cost is bounded.
         let mut to_remove: Vec<u64> = Vec::new();
         for (block_addr, irsb) in self.block_cache.iter() {
             let block_end = block_addr.saturating_add(irsb.size() as u64);

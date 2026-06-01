@@ -1,6 +1,6 @@
 use super::*;
 use crate::arch::RegisterFile;
-use crate::interpreter::BranchSnapshot;
+use crate::interpreter::{BLOCK_CACHE_CAPACITY, BranchSnapshot};
 use crate::memory::SymbolicMemory;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
@@ -1075,7 +1075,9 @@ impl RustExplorationManager {
         // Swap exploration's populated cache into interp, stash interp's empty one.
         let interp_empty_cache = interp.swap_block_cache(std::mem::replace(
             &mut self.environment.block_cache,
-            LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
+            LruCache::new(
+                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
+            ),
         ));
         // interp now has the exploration's cache; self.environment.block_cache is a temporary empty placeholder
         let _ = interp_empty_cache; // drop the empty cache
@@ -1114,7 +1116,7 @@ impl RustExplorationManager {
 
         // Return shared block cache to exploration before interpreter is dropped
         let updated_block_cache = interp.swap_block_cache(LruCache::new(
-            NonZeroUsize::new(4096).expect("nonzero literal"),
+            NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
         ));
 
         let step_stats = interp.take_stats();
