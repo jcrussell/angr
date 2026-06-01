@@ -29,7 +29,7 @@
 //! that limitation is upstream of these handlers and applies equally
 //! to the Python `syscall_stub` fallback.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -72,46 +72,6 @@ impl NativeSyscall for NativeFutexSyscall {
         };
         Ok(SyscallOutcome::ContinueSymbolic { ret })
     }
-}
-
-/// Macro to declare a stub syscall handler with arbitrary arity.
-///
-/// Generates a unit struct implementing `NativeSyscall` whose `call`
-/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
-/// Python's `syscall_stub.py::syscall` for syscalls with no dedicated
-/// `SimProcedure`). Args are intentionally ignored.
-///
-/// Duplicated from `memory_extras.rs` to keep each module self-contained
-/// without exporting a crate-wide macro. The dedup is tracked as a
-/// follow-up — three identical macros (here, `memory_extras`,
-/// `identity::stub_syscall_1arg`) is worth a single shared helper.
-macro_rules! stub_syscall {
-    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                $nargs
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
 }
 
 // eventfd(count) → int

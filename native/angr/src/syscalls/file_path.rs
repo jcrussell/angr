@@ -30,47 +30,7 @@
 //! On those, the unhandled-syscall path continues to dispatch to the
 //! Python `_handle_syscall_callback`, preserving full semantics.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
-use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-
-/// Macro to declare a stub syscall handler with arbitrary arity.
-///
-/// Generates a unit struct implementing `NativeSyscall` whose `call`
-/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
-/// Python's `syscall_stub.py::syscall` for syscalls with no dedicated
-/// `SimProcedure`). Args are intentionally ignored. This is the fourth
-/// copy of `stub_syscall!` (also in memory_extras.rs / signals.rs /
-/// concurrency.rs); dedup is tracked under bd
-/// `syscall-stub-macro-duplicated`.
-macro_rules! stub_syscall {
-    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                $nargs
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
-}
+use super::stub_syscall;
 
 // lstat(pathname, statbuf) → long
 stub_syscall!(NativeLstatSyscall, "lstat", "syscall_stub_lstat", 2);
@@ -86,6 +46,9 @@ stub_syscall!(NativeFaccessatSyscall, "faccessat", "syscall_stub_faccessat", 3);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::RustSimState;
+    use crate::symbolic::RustBV;
+    use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
     /// Sweep all five stub handlers across every supported arch and
     /// verify they return a fresh `RustBV::symbolic` of width

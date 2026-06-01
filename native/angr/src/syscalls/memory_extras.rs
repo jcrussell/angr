@@ -22,44 +22,7 @@
 //!   `madvise`, `msync`) are inherently no-ops in the symbolic VM —
 //!   the symbolic return surfaces any binary that branches on it.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
-use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-
-/// Macro to declare a stub syscall handler with arbitrary arity.
-///
-/// Generates a unit struct implementing `NativeSyscall` whose `call`
-/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
-/// Python's `syscall_stub.py::syscall` for syscalls with no dedicated
-/// `SimProcedure`). Args are intentionally ignored.
-macro_rules! stub_syscall {
-    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                $nargs
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
-}
+use super::stub_syscall;
 
 // madvise(start, len, behavior) → long
 stub_syscall!(NativeMadviseSyscall, "madvise", "syscall_stub_madvise", 3);
@@ -79,6 +42,9 @@ stub_syscall!(NativeMunlockallSyscall, "munlockall", "syscall_stub_munlockall", 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::RustSimState;
+    use crate::symbolic::RustBV;
+    use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
     /// All seven handlers must return a fresh `RustBV::symbolic` of width
     /// `arch().bits()` on every supported arch, mirroring `syscall_stub`

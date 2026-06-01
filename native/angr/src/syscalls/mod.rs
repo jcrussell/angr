@@ -114,6 +114,48 @@ macro_rules! register_syscalls {
     };
 }
 
+/// Declare a stub syscall handler with arbitrary arity.
+///
+/// Generates a unit struct implementing `NativeSyscall` whose `call`
+/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
+/// Python's `procedures/stubs/syscall_stub.py::syscall` for syscalls with
+/// no dedicated `SimProcedure`). Args are intentionally ignored.
+///
+/// Re-exported `pub(crate)` so individual syscall modules can `use
+/// super::stub_syscall;` instead of redeclaring the same boilerplate.
+macro_rules! stub_syscall {
+    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
+        pub struct $ty;
+
+        impl $crate::syscalls::NativeSyscall for $ty {
+            fn name(&self) -> &'static str {
+                $label
+            }
+
+            fn num_args(&self) -> usize {
+                $nargs
+            }
+
+            fn call(
+                &self,
+                state: &mut $crate::state::RustSimState,
+                _args: &[$crate::symbolic::RustBV],
+            ) -> Result<
+                $crate::syscalls::SyscallOutcome,
+                $crate::syscalls::SyscallError,
+            > {
+                let bits = state.arch().bits();
+                let ret = {
+                    let ctx = state.solver().borrow();
+                    $crate::symbolic::RustBV::symbolic(&ctx, $sym_name, bits)
+                };
+                Ok($crate::syscalls::SyscallOutcome::ContinueSymbolic { ret })
+            }
+        }
+    };
+}
+pub(crate) use stub_syscall;
+
 impl Default for NativeSyscallRegistry {
     fn default() -> Self {
         Self::new()

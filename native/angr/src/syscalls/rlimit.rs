@@ -28,7 +28,7 @@
 //! `"getrlimit"` (same as the Python subclass would inherit if
 //! introspected via `mro()`); per-arch tests assert this alias holds.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -86,38 +86,6 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         };
         Ok(SyscallOutcome::ContinueSymbolic { ret })
     }
-}
-
-/// Macro for stub handlers (syscalls with no Python `SimProcedure`).
-/// Duplicated from `concurrency.rs` / `memory_extras.rs`; consolidating
-/// the three is tracked as a follow-up.
-macro_rules! stub_syscall {
-    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                $nargs
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
 }
 
 // setrlimit(resource, rlim) → int — no Python SimProcedure.

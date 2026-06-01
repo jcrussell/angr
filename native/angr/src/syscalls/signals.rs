@@ -30,46 +30,9 @@
 //!   unhandled-syscall path continues to dispatch to the Python
 //!   `_handle_syscall_callback`, preserving full sigmask semantics.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-/// Macro to declare a stub syscall handler with arbitrary arity.
-///
-/// Generates a unit struct implementing `NativeSyscall` whose `call`
-/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
-/// Python's `syscall_stub.py::syscall` for syscalls with no dedicated
-/// `SimProcedure`). Args are intentionally ignored. Duplicate of the
-/// macro in `memory_extras.rs` — `macro_rules!` is module-local; the
-/// 15-line copy is cheaper than promoting the macro to crate scope.
-macro_rules! stub_syscall {
-    ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                $nargs
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
-}
 
 // kill(pid, sig) → long
 stub_syscall!(NativeKillSyscall, "kill", "syscall_stub_kill", 2);

@@ -28,7 +28,7 @@
 //! dispatcher passes an empty slice. No symbolic-argument fallback is
 //! needed.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -77,46 +77,9 @@ constant_syscall!(NativeGeteuidSyscall, "geteuid", DEFAULT_UID_GID);
 constant_syscall!(NativeGetgidSyscall, "getgid", DEFAULT_UID_GID);
 constant_syscall!(NativeGetegidSyscall, "getegid", DEFAULT_UID_GID);
 
-/// Macro to declare a 1-arg syscall handler that returns a fresh symbolic
-/// value (matches Python `syscall_stub.py::syscall` ReturnUnconstrained
-/// semantics for syscalls with no dedicated `SimProcedure`).
-///
-/// Used for `setuid` / `setgid`: the single argument is intentionally
-/// ignored (no semantic effect on simulated process state), and the
-/// return is a fresh `RustBV::symbolic` sized to the arch's `long` width
-/// (`arch().bits()` for every supported arch). The symbol name mirrors
-/// Python's `f"syscall_stub_{display_name}"`.
-macro_rules! stub_syscall_1arg {
-    ($ty:ident, $label:expr, $sym_name:expr) => {
-        pub struct $ty;
-
-        impl NativeSyscall for $ty {
-            fn name(&self) -> &'static str {
-                $label
-            }
-
-            fn num_args(&self) -> usize {
-                1
-            }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                _args: &[RustBV],
-            ) -> Result<SyscallOutcome, SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    RustBV::symbolic(&ctx, $sym_name, bits)
-                };
-                Ok(SyscallOutcome::ContinueSymbolic { ret })
-            }
-        }
-    };
-}
-
-stub_syscall_1arg!(NativeSetuidSyscall, "setuid", "syscall_stub_setuid");
-stub_syscall_1arg!(NativeSetgidSyscall, "setgid", "syscall_stub_setgid");
+// setuid / setgid: 1-arg stubs (no dedicated Python SimProcedure).
+stub_syscall!(NativeSetuidSyscall, "setuid", "syscall_stub_setuid", 1);
+stub_syscall!(NativeSetgidSyscall, "setgid", "syscall_stub_setgid", 1);
 
 #[cfg(test)]
 mod tests {
