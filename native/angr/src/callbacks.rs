@@ -78,6 +78,12 @@ use std::sync::Arc;
 
 use crate::symbolic::RustBV;
 
+/// One entry in the result of a batched memory-load callback:
+/// `(data_bytes, is_symbolic, symbolic_ast)`. Shared with
+/// `interpreter::expressions` which consumes these slices to mint
+/// per-load `RustBV` values.
+pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
+
 /// A branch that was taken but has an unexplored alternative.
 ///
 /// When the Rust engine encounters a symbolic branch where both paths are
@@ -1237,7 +1243,7 @@ impl PythonCallbacks {
         &self,
         py: Python<'_>,
         loads: &[(u64, u32)], // (address, size) pairs
-    ) -> PyResult<Vec<(Vec<u8>, bool, Option<Py<PyAny>>)>> {
+    ) -> PyResult<Vec<BatchLoadEntry>> {
         if loads.is_empty() {
             return Ok(Vec::new());
         }

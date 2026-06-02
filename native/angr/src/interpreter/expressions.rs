@@ -536,7 +536,7 @@ impl<'a> VEXInterpreter<'a> {
     fn convert_load_result(
         &self,
         py: Python<'_>,
-        load_results: &[(Vec<u8>, bool, Option<Py<PyAny>>)],
+        load_results: &[crate::callbacks::BatchLoadEntry],
         i: usize,
         width: u32,
         fallback_name: impl Fn() -> String,

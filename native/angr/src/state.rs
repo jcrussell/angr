@@ -1930,6 +1930,7 @@ impl RustSimState {
 
     /// Clone the three Python-AST metadata maps. Each PyObject ref-count is
     /// incremented under the GIL so the parent and fork share strong refs.
+    #[allow(clippy::type_complexity)] // single-use private fn; aliases would obscure intent
     fn clone_py_metadata(
         &self,
     ) -> (

@@ -61,6 +61,14 @@ thread_local! {
     static STEPPING_STATE_ID: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
+// Shared return-type aliases for state-inspection PyO3 methods. The thin
+// pyclass wrappers in this file and the pub(crate) bodies in `state_api.rs`
+// must use identical signatures — keep the aliases here so both impls see
+// them via `use super::*`.
+pub(crate) type HeapMetadataReturn = (Vec<(u64, u64)>, Vec<u64>);
+pub(crate) type OpenFdInfo = (u32, String, u64, u32, usize, bool);
+pub(crate) type InspectionEventInfo = (u8, String, u64, u32, u64);
+
 /// Get the current stepping state ID (safe to call from callbacks).
 #[pyfunction]
 pub fn get_stepping_state_id() -> Option<u64> {
@@ -1970,17 +1978,14 @@ impl RustExplorationManager {
     /// - freed: list of freed addresses
     /// - alloc_count: number of active allocations
     /// - free_count: number of free calls
-    pub fn get_state_heap_metadata(&self, state_id: u64) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
+    pub fn get_state_heap_metadata(&self, state_id: u64) -> PyResult<HeapMetadataReturn> {
         self._get_state_heap_metadata(state_id)
     }
 
     /// Get the list of open file descriptors for a state.
     ///
     /// Returns list of (fd, name, position, flags, content_len, is_open) tuples.
-    pub fn get_state_open_fds(
-        &self,
-        state_id: u64,
-    ) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
+    pub fn get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<OpenFdInfo>> {
         self._get_state_open_fds(state_id)
     }
 
@@ -2011,10 +2016,7 @@ impl RustExplorationManager {
     /// Get inspection events for a state.
     ///
     /// Returns list of (event_type, event_name, addr, size, block_addr) tuples.
-    pub fn get_state_inspection_events(
-        &self,
-        state_id: u64,
-    ) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
+    pub fn get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<InspectionEventInfo>> {
         self._get_state_inspection_events(state_id)
     }
 

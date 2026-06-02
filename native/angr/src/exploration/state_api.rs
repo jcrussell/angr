@@ -806,10 +806,7 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_heap_metadata(
-        &self,
-        state_id: u64,
-    ) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
+    pub(crate) fn _get_state_heap_metadata(&self, state_id: u64) -> PyResult<HeapMetadataReturn> {
         self.with_state(state_id, |state| {
             let meta = state.heap_metadata();
             let allocated: Vec<(u64, u64)> = meta
@@ -822,10 +819,7 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_open_fds(
-        &self,
-        state_id: u64,
-    ) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
+    pub(crate) fn _get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<OpenFdInfo>> {
         self.with_state(state_id, |state| {
             Ok(state
                 .file_system_ref()
@@ -891,7 +885,7 @@ impl RustExplorationManager {
     pub(crate) fn _get_state_inspection_events(
         &self,
         state_id: u64,
-    ) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
+    ) -> PyResult<Vec<InspectionEventInfo>> {
         self.with_state(state_id, |state| {
             Ok(state
                 .inspection()
