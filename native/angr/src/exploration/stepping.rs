@@ -8,6 +8,16 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 
 /// Error during state stepping.
+///
+/// `Err` is used as a non-error control-flow signal: `Deadended` /
+/// `Unconstrained` / `Error` carry the terminated `RustSimState` back
+/// to the run loop for stash placement, and `NeedCallback` shuttles a
+/// `PendingCallback` to the resume path. Boxing the inner state would
+/// add a heap allocation on every step termination (`large_enum_variant`)
+/// or every `?` propagation (`result_large_err`); the variants are
+/// intentionally inline. See iter 59/60 handoff: clippy's "fix" is the
+/// wrong call here — the design is the size.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StepError {
     /// Need Python callback.
     NeedCallback(PendingCallback),
@@ -42,6 +52,12 @@ struct InterpreterStepResult {
     symbolic_ip_at_exit: Option<RustBV>,
 }
 
+// `StepError` carries an inline `RustSimState` (see enum doc above) so
+// `Result<_, StepError>` is intentionally large. Every step function below
+// uses Err for control flow, not failures — boxing would add allocs on the
+// hot path. Suppress at the impl level rather than repeating the rationale
+// per-function.
+#[allow(clippy::result_large_err)]
 impl RustExplorationManager {
     /// Step a state, optionally skipping a hook address.
     ///

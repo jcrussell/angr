@@ -59,6 +59,12 @@ impl From<BridgeError> for PyErr {
 /// Storage for SymContext: either owned or shared via Rc.
 /// Shared mode allows Python callbacks to use the pending state's solver
 /// directly (O(1)) instead of forking it (~3ms Z3 clone per callback).
+///
+/// `Owned` holds `SymContext` inline (the common path); `Shared` is a
+/// thin `Rc<RefCell<…>>` pointer. Boxing `Owned` to equalize variants
+/// would add a heap allocation per solver fork — the whole point of
+/// `Owned` is to avoid that. Variant size disparity is intentional.
+#[allow(clippy::large_enum_variant)]
 enum SolverCtxStorage {
     Owned(SymContext),
     Shared(Rc<RefCell<SymContext>>),
