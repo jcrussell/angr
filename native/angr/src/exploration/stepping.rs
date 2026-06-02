@@ -569,6 +569,7 @@ impl RustExplorationManager {
     /// Handle SimProcedure: try native first, fall back to Python callback.
     /// Native success continues at the return address with deferred forks
     /// processed via the unified path; Python fallback returns a NeedCallback.
+    #[allow(clippy::too_many_arguments)]
     fn handle_simprocedure(
         &mut self,
         mut state: RustSimState,
@@ -853,6 +854,7 @@ impl RustExplorationManager {
     /// functions are registered as SimProcedures and dispatched via callback;
     /// unresolved calls use P21 generic skip (set return register to 0,
     /// continue at return address) instead of deadending.
+    #[allow(clippy::too_many_arguments)]
     fn handle_unmodeled_call(
         &mut self,
         py: Python<'_>,

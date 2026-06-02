@@ -114,6 +114,7 @@ impl SymbolicMemory {
     /// * `hi` - Highest index in the current subtree
     /// * `size` - Number of bytes to load
     /// * `ctx` - Solver context
+    #[allow(clippy::too_many_arguments)]
     fn build_strided_ite_tree(
         &self,
         addr_expr: &RustBV,

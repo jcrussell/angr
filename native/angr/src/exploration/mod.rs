@@ -207,6 +207,7 @@ impl ExplorationEvent {
         Self::base("step_complete", found_count, active_count, steps)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn need_simprocedure(
         state_id: u64,
         addr: u64,
@@ -332,6 +333,7 @@ impl PendingCallback {
 
     /// Create a callback with full interpreter context (deferred forks, conditions, snapshots).
     /// Used for SimProcedure, syscall, and symbolic branch callbacks after interpreter execution.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_context(
         state: RustSimState,
         pre_callback_snapshot: Option<RustSimState>,

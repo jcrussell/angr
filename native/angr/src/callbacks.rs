@@ -792,6 +792,7 @@ impl PythonCallbacks {
     /// sites are wired (uq4n.3). Returns whatever Python returned.
     #[pyo3(name = "call_inspect_mem_read")]
     #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_read(
         &self,
         py: Python<'_>,
@@ -808,6 +809,7 @@ impl PythonCallbacks {
     /// Test entry point: invoke the registered mem_write callback directly.
     #[pyo3(name = "call_inspect_mem_write")]
     #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_write(
         &self,
         py: Python<'_>,
@@ -1012,6 +1014,7 @@ impl PythonCallbacks {
     /// Caller is expected to gate this on `inspect_event_enabled(0)` for
     /// the common no-breakpoint case. Errors propagate so the engine can
     /// surface user-action failures rather than swallowing them.
+    #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_read(
         &self,
         py: Python<'_>,
@@ -1035,6 +1038,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect mem_write callback. See `call_inspect_mem_read`.
+    #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_write(
         &self,
         py: Python<'_>,
