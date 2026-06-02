@@ -233,11 +233,15 @@ impl NativeSyscallRegistry {
         //   syscalls that fall through to syscall_stub (angr-0hif.5
         //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
         //   SimProcedure but linux_kernel.py does NOT bind it into the
-        //   kernel library — so the syscall path is pure stub. dup /
-        //   dup2 / dup3 (intentionally NOT registered) have real
-        //   posix/dup.py procs that touch state.posix.fd; they fall
-        //   back to Python until FD plumbing lands (same blocker as
-        //   angr-k3ol).
+        //   kernel library — so the syscall path is pure stub.
+        // dup (32), dup2 (33), dup3 (292): FD-table syscalls
+        //   (angr-vp19). Mutate `RustSimState::file_system()` directly,
+        //   matching the precedent set by `procedures/fileops::
+        //   NativeDup` / `NativeDup2`. Python `state.posix.fd` is NOT
+        //   kept in sync — same as the libc procs — so any callback
+        //   reading `state.posix.fd` after a Rust dup will not see the
+        //   newly allocated slot. See `syscalls/file_descriptor.rs`
+        //   doc comment for the lowest-free-vs-monotonic divergence.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -253,6 +257,8 @@ impl NativeSyscallRegistry {
             (25, memory_extras::NativeMremapSyscall),
             (26, memory_extras::NativeMsyncSyscall),
             (28, memory_extras::NativeMadviseSyscall),
+            (32, file_descriptor::NativeDupSyscall),
+            (33, file_descriptor::NativeDup2Syscall),
             (34, signals::NativePauseSyscall),
             (37, signals::NativeAlarmSyscall),
             (39, identity::NativeGetpidSyscall),
@@ -290,6 +296,7 @@ impl NativeSyscallRegistry {
             (284, concurrency::NativeEventfdSyscall),
             (290, concurrency::NativeEventfd2Syscall),
             (291, concurrency::NativeEpollCreate1Syscall),
+            (292, file_descriptor::NativeDup3Syscall),
             (293, file_descriptor::NativePipe2Syscall),
             (302, rlimit::NativePrlimit64Syscall),
         ]);
@@ -330,6 +337,7 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (41, file_descriptor::NativeDupSyscall),
             (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
@@ -338,6 +346,7 @@ impl NativeSyscallRegistry {
             (50, identity::NativeGetegidSyscall),
             (54, file_descriptor::NativeIoctlSyscall),
             (55, file_descriptor::NativeFcntlSyscall),
+            (63, file_descriptor::NativeDup2Syscall),
             (64, identity::NativeGetppidSyscall),
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
@@ -379,6 +388,7 @@ impl NativeSyscallRegistry {
             (323, concurrency::NativeEventfdSyscall),
             (328, concurrency::NativeEventfd2Syscall),
             (329, concurrency::NativeEpollCreate1Syscall),
+            (330, file_descriptor::NativeDup3Syscall),
             (331, file_descriptor::NativePipe2Syscall),
             (340, rlimit::NativePrlimit64Syscall),
         ]);
@@ -397,6 +407,7 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (41, file_descriptor::NativeDupSyscall),
             (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
             (46, identity::NativeSetgidSyscall),
@@ -405,6 +416,7 @@ impl NativeSyscallRegistry {
             (50, identity::NativeGetegidSyscall),
             (54, file_descriptor::NativeIoctlSyscall),
             (55, file_descriptor::NativeFcntlSyscall),
+            (63, file_descriptor::NativeDup2Syscall),
             (64, identity::NativeGetppidSyscall),
             (75, rlimit::NativeSetrlimitSyscall),
             (76, rlimit::NativeGetrlimitSyscall),
@@ -446,6 +458,7 @@ impl NativeSyscallRegistry {
             (351, concurrency::NativeEventfdSyscall),
             (356, concurrency::NativeEventfd2Syscall),
             (357, concurrency::NativeEpollCreate1Syscall),
+            (358, file_descriptor::NativeDup3Syscall),
             (359, file_descriptor::NativePipe2Syscall),
             (369, rlimit::NativePrlimit64Syscall),
         ]);
@@ -470,6 +483,10 @@ impl NativeSyscallRegistry {
             // asm-generic ABI omits legacy `pipe` (only pipe2 at 59),
             // legacy `fcntl64` (unified fcntl at 25 since asm-generic
             // is 64-bit-oriented), and the older epoll/eventfd variants.
+            // Likewise legacy `dup2` is dropped — only `dup` (23) and
+            // `dup3` (24) exist in asm-generic.
+            (23, file_descriptor::NativeDupSyscall),
+            (24, file_descriptor::NativeDup3Syscall),
             (25, file_descriptor::NativeFcntlSyscall),
             (29, file_descriptor::NativeIoctlSyscall),
             // asm-generic ABI dropped legacy `lstat` and `readlink` — only
@@ -530,6 +547,7 @@ impl NativeSyscallRegistry {
             (4027, signals::NativeAlarmSyscall),
             (4029, signals::NativePauseSyscall),
             (4037, signals::NativeKillSyscall),
+            (4041, file_descriptor::NativeDupSyscall),
             (4042, file_descriptor::NativePipeSyscall),
             (4045, brk::NativeBrkSyscall),
             (4046, identity::NativeSetgidSyscall),
@@ -538,6 +556,7 @@ impl NativeSyscallRegistry {
             (4050, identity::NativeGetegidSyscall),
             (4054, file_descriptor::NativeIoctlSyscall),
             (4055, file_descriptor::NativeFcntlSyscall),
+            (4063, file_descriptor::NativeDup2Syscall),
             (4064, identity::NativeGetppidSyscall),
             (4075, rlimit::NativeSetrlimitSyscall),
             (4076, rlimit::NativeGetrlimitSyscall),
@@ -571,6 +590,7 @@ impl NativeSyscallRegistry {
             (4319, concurrency::NativeEventfdSyscall),
             (4325, concurrency::NativeEventfd2Syscall),
             (4326, concurrency::NativeEpollCreate1Syscall),
+            (4327, file_descriptor::NativeDup3Syscall),
             (4328, file_descriptor::NativePipe2Syscall),
             (4338, rlimit::NativePrlimit64Syscall),
         ]);
@@ -1262,10 +1282,10 @@ mod tests {
         //   * 32-bit i386 / ARM EABI / MIPS32 O32 carry both `fcntl`
         //     and `fcntl64`; AMD64 has only `fcntl` (no fcntl64).
         //
-        // dup / dup2 / dup3 are intentionally NOT registered — those
-        // have `posix/dup.py` procs that mutate state.posix.fd, so
-        // they fall back to Python until the FD-table is plumbed
-        // through `RustSimState` (same blocker as angr-k3ol).
+        // dup / dup2 / dup3 (angr-vp19) ARE registered — they mutate
+        // RustSimState::file_system() directly, matching the libc
+        // `procedures/fileops::NativeDup` precedent. State.posix.fd
+        // intentionally not synced (see file_descriptor.rs doc).
         let r = NativeSyscallRegistry::new();
 
         // (arch, fcntl, fcntl64-or-None, ioctl, pipe-or-None, pipe2)
@@ -1312,10 +1332,9 @@ mod tests {
             }
         }
 
-        // dup / dup2 / dup3 must NOT be registered natively — they need
-        // FD-table plumbing and currently fall back to Python so the
-        // posix/dup.py proc's state.posix.fd mutations apply. ARM64
-        // asm-generic only has dup (23) and dup3 (24); no legacy dup2.
+        // dup / dup2 / dup3 (angr-vp19): native handlers backed by
+        // RustSimState::file_system(). ARM64 asm-generic only has dup
+        // (23) and dup3 (24); no legacy dup2.
         let dup_table: &[(&str, u64, Option<u64>, u64)] = &[
             ("AMD64", 32, Some(33), 292),
             ("X86", 41, Some(63), 330),
@@ -1324,20 +1343,25 @@ mod tests {
             ("MIPS32", 4041, Some(4063), 4327),
         ];
         for &(arch, dup_n, dup2_n, dup3_n) in dup_table {
-            assert!(
-                r.get(arch, dup_n).is_none(),
-                "{arch} dup ({dup_n}) must NOT be native-registered (needs FD table)",
-            );
+            let d = r
+                .get(arch, dup_n)
+                .unwrap_or_else(|| panic!("{arch} dup ({dup_n}) missing"));
+            assert_eq!(d.name(), "dup");
+            assert_eq!(d.num_args(), 1);
+
             if let Some(n) = dup2_n {
-                assert!(
-                    r.get(arch, n).is_none(),
-                    "{arch} dup2 ({n}) must NOT be native-registered (needs FD table)",
-                );
+                let d2 = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} dup2 ({n}) missing"));
+                assert_eq!(d2.name(), "dup2");
+                assert_eq!(d2.num_args(), 2);
             }
-            assert!(
-                r.get(arch, dup3_n).is_none(),
-                "{arch} dup3 ({dup3_n}) must NOT be native-registered (needs FD table)",
-            );
+
+            let d3 = r
+                .get(arch, dup3_n)
+                .unwrap_or_else(|| panic!("{arch} dup3 ({dup3_n}) missing"));
+            assert_eq!(d3.name(), "dup3");
+            assert_eq!(d3.num_args(), 3);
         }
     }
 
