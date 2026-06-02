@@ -8,6 +8,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use super::SymContext;
 use super::context::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
@@ -18,7 +20,7 @@ use super::context::{
 ///
 /// This enum represents all operations that can be performed on bitvectors,
 /// enabling reconstruction of claripy ASTs from Rust expression trees.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BVOp {
     // Arithmetic operations
     Add,
@@ -79,7 +81,7 @@ pub enum BVOp {
 }
 
 /// IEEE-754 precision for symbolic float operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FloatPrec {
     /// 32-bit single precision (8 ebits, 24 sbits).
     F32,
@@ -99,7 +101,7 @@ impl FloatPrec {
 }
 
 /// Kinds of symbolic float operations expressible via Z3 FP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FloatOpKind {
     // Binary arithmetic (round to nearest, ties to even).
     Add,
@@ -339,7 +341,7 @@ impl BVOp {
 
 /// Bit width for parameterized operations.
 /// This reduces ~200 VEX ops to ~30 parameterized variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BitWidth {
     W1 = 1,
     W8 = 8,
@@ -386,7 +388,7 @@ impl BitWidth {
 }
 
 /// Signedness for comparison and extension operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Signedness {
     Signed,
     Unsigned,
@@ -399,7 +401,17 @@ pub enum Signedness {
 ///
 /// With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
 /// lifetime parameters on the Z3 AST.
-#[derive(Clone)]
+///
+/// ## Serialization
+///
+/// `RustBV` implements `Serialize`/`Deserialize` via the [`RustBVData`]
+/// shadow type — the Z3 AST cache on `Symbolic` is skipped at serialize
+/// time and rebuilt on first `to_z3_ast()` call after load
+/// (a fresh `BV::new_const(name, width)` in the active Z3 thread-local
+/// context). Deserialization must happen with a Z3 context active when
+/// the `vex-engine-z3` feature is enabled.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "RustBVData", into = "RustBVData")]
 pub enum RustBV {
     /// A known concrete value.
     Concrete {
@@ -475,6 +487,126 @@ pub enum RustBV {
         /// so each Expression construction is one allocation instead of N+1.
         operands: Arc<[RustBV]>,
     },
+}
+
+/// Serde shadow form for [`RustBV`].
+///
+/// The wire format mirrors `RustBV` field-for-field except:
+///
+/// - The `Symbolic` variant's `ast: z3::ast::BV` cache is dropped (Z3
+///   ASTs cannot cross process boundaries and are reconstructable from
+///   `(name, width)`). On deserialize, the AST is recreated lazily via
+///   `BV::new_const(&name, width)` inside the active thread-local Z3
+///   context — callers must run within `with_z3_context` (or equivalent)
+///   when the `vex-engine-z3` feature is enabled.
+/// - `Arc<str>` / `Arc<[RustBV]>` collapse to owned `String` / `Vec`
+///   on the wire and rebuild Arc handles on load.
+///
+/// This is the snapshot/serialization format from the angr-x04s spike
+/// (see `snapshot-serialization-design` bd memory). Intermediate cache
+/// fields (`EXPRESSION_BY_OPERANDS_PTR`, content hashes) are not part of
+/// the wire format; they rewarm naturally as the loaded ops are touched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RustBVData {
+    Concrete {
+        value: u128,
+        width: u32,
+    },
+    Symbolic {
+        id: u64,
+        width: u32,
+        name: String,
+    },
+    Constrained {
+        id: u64,
+        value: u128,
+        width: u32,
+    },
+    Expression {
+        id: u64,
+        width: u32,
+        op: BVOp,
+        operands: Vec<RustBVData>,
+    },
+}
+
+impl From<RustBV> for RustBVData {
+    fn from(bv: RustBV) -> Self {
+        match bv {
+            RustBV::Concrete { value, width } => RustBVData::Concrete { value, width },
+            RustBV::Symbolic {
+                id, width, name, ..
+            } => RustBVData::Symbolic {
+                id,
+                width,
+                name: name.to_string(),
+            },
+            RustBV::Constrained { id, value, width } => RustBVData::Constrained {
+                id,
+                value,
+                width,
+            },
+            RustBV::Expression {
+                id,
+                width,
+                op,
+                operands,
+            } => RustBVData::Expression {
+                id,
+                width,
+                op,
+                operands: operands.iter().cloned().map(RustBVData::from).collect(),
+            },
+        }
+    }
+}
+
+impl From<RustBVData> for RustBV {
+    fn from(data: RustBVData) -> Self {
+        match data {
+            RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
+            RustBVData::Symbolic { id, width, name } => {
+                #[cfg(feature = "vex-engine-z3")]
+                {
+                    // Rebuild the Z3 AST in the active thread-local context.
+                    // Callers must be inside with_z3_context when this runs.
+                    let ast = z3::ast::BV::new_const(name.as_str(), width);
+                    RustBV::Symbolic {
+                        id,
+                        width,
+                        name: Arc::<str>::from(name),
+                        ast,
+                    }
+                }
+                #[cfg(not(feature = "vex-engine-z3"))]
+                {
+                    RustBV::Symbolic {
+                        id,
+                        width,
+                        name: Arc::<str>::from(name),
+                    }
+                }
+            }
+            RustBVData::Constrained { id, value, width } => RustBV::Constrained {
+                id,
+                value,
+                width,
+            },
+            RustBVData::Expression {
+                id,
+                width,
+                op,
+                operands,
+            } => RustBV::Expression {
+                id,
+                width,
+                op,
+                operands: Arc::<[RustBV]>::from(
+                    operands.into_iter().map(RustBV::from).collect::<Vec<_>>(),
+                ),
+            },
+        }
+    }
 }
 
 /// Generate a borrow + consuming comparison pair for an unsigned ordering
@@ -4452,5 +4584,136 @@ mod tests {
                 name, name
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Serde round-trip tests for the op-tree primitives (angr-x04s.1.1).
+    // Each variant is constructed inside a fresh SymContext, serialized
+    // to JSON, deserialized back, and structurally compared to the
+    // original. The Symbolic variant's Z3 AST is reconstructed lazily
+    // — we verify that round-tripped Symbolic values still produce a
+    // valid Z3 AST via to_z3_ast().
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn serde_roundtrip_concrete() {
+        let bv = RustBV::concrete(0xdead_beef, 32);
+        let json = serde_json::to_string(&bv).expect("serialize");
+        let back: RustBV = serde_json::from_str(&json).expect("deserialize");
+        match (&bv, &back) {
+            (
+                RustBV::Concrete {
+                    value: v1,
+                    width: w1,
+                },
+                RustBV::Concrete {
+                    value: v2,
+                    width: w2,
+                },
+            ) => {
+                assert_eq!(v1, v2);
+                assert_eq!(w1, w2);
+            }
+            _ => panic!("variant changed across round-trip"),
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_constrained() {
+        let bv = RustBV::Constrained {
+            id: 42,
+            value: 7,
+            width: 64,
+        };
+        let json = serde_json::to_string(&bv).expect("serialize");
+        let back: RustBV = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            RustBV::Constrained { id, value, width } => {
+                assert_eq!(id, 42);
+                assert_eq!(value, 7);
+                assert_eq!(width, 64);
+            }
+            _ => panic!("variant changed across round-trip"),
+        }
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn serde_roundtrip_symbolic() {
+        use z3::ast::Ast as Z3AstTrait;
+        let ctx = SymContext::new_mock();
+        let bv = RustBV::symbolic(&ctx, "x_serde", 32);
+        let (orig_id, orig_width, orig_name) = match &bv {
+            RustBV::Symbolic {
+                id, width, name, ..
+            } => (*id, *width, name.to_string()),
+            _ => panic!("expected Symbolic"),
+        };
+        let json = serde_json::to_string(&bv).expect("serialize");
+        // Deserialize under the same context (thread-local is still active).
+        let back: RustBV = serde_json::from_str(&json).expect("deserialize");
+        match &back {
+            RustBV::Symbolic {
+                id, width, name, ..
+            } => {
+                assert_eq!(*id, orig_id);
+                assert_eq!(*width, orig_width);
+                assert_eq!(name.as_ref(), orig_name.as_str());
+            }
+            _ => panic!("variant changed across round-trip"),
+        }
+        // The lazily-rebuilt AST must be usable: it should produce a Z3 AST
+        // pointer (sanity check that BV::new_const succeeded under the
+        // active thread-local context).
+        let _ptr = back.to_z3_ast().get_z3_ast().as_ptr();
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn serde_roundtrip_expression_tree() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x_expr_serde", 32);
+        let c = RustBV::concrete(7, 32);
+        let expr = x.add(&c, &ctx);
+        // expr is Expression(Add, [Symbolic(x), Concrete(7)]) after
+        // commutative canonicalization (concrete sorts to the right).
+        let json = serde_json::to_string(&expr).expect("serialize");
+        let back: RustBV = serde_json::from_str(&json).expect("deserialize");
+        match &back {
+            RustBV::Expression {
+                op,
+                operands,
+                width,
+                ..
+            } => {
+                assert_eq!(*op, BVOp::Add);
+                assert_eq!(*width, 32);
+                assert_eq!(operands.len(), 2);
+                assert!(matches!(operands[0], RustBV::Symbolic { .. }));
+                assert!(matches!(
+                    operands[1],
+                    RustBV::Concrete { value: 7, width: 32 }
+                ));
+            }
+            _ => panic!("variant changed across round-trip"),
+        }
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn serde_roundtrip_float_op() {
+        // BVOp::Float carries kind + prec; verify it survives JSON
+        // round-trip without losing fields (covers FloatOpKind +
+        // FloatPrec derive correctness).
+        let op = BVOp::Float {
+            kind: FloatOpKind::ConvertItoF {
+                src_bits: 32,
+                signed: true,
+            },
+            prec: FloatPrec::F64,
+        };
+        let json = serde_json::to_string(&op).expect("serialize");
+        let back: BVOp = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(op, back);
     }
 }
