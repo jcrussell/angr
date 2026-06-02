@@ -4449,6 +4449,62 @@ class RustExplorationManager(
 
         return self
 
+    def dump_snapshot(self, path: str) -> None:
+        """Write a stash-manager snapshot to ``path`` (opt-in, angr-x04s.1.4).
+
+        Captures every state in every stash via the Rust-side
+        :class:`StashManager` codec (bucket A/B/C — pc, registers, memory,
+        history, fs, posix, call_stack, …) plus the
+        ``SymContext::assumed_constraints`` log per state. Bucket-D
+        ``Py<PyAny>`` overlays (``symbolic_pages`` /
+        ``hook_symbolic_memory`` / ``addr_to_ast``) are NOT captured by
+        Rust and are restored empty; for fauxware-level workflows that's
+        a non-issue because the Rust SimProcedures + native memory plugin
+        keep those overlays empty.
+
+        Args:
+            path: Filesystem path to write the snapshot to. Overwrites if
+                the file exists.
+
+        The format-version byte at envelope head lets :meth:`load_snapshot`
+        reject a stale snapshot fast (see :exc:`ValueError`).
+
+        Known limitation (prototype scope, angr-x04s.1):
+            Constraints added via :meth:`add_constraint_raw` (the path the
+            Python claripy-sync layer uses for initial-state constraints)
+            are NOT serialized — only the ``assume_true``/``assume_false``-
+            tracked subset is. After restore, the resumed solver may have
+            fewer constraints than the original and consequently solve to
+            a different model. End-to-end equality of ``posix.dumps(0)``
+            across a snapshot round-trip is therefore not guaranteed.
+        """
+        bytes_blob = self._rust_mgr.dump_snapshot_bytes()
+        with open(path, "wb") as f:
+            f.write(bytes(bytes_blob))
+
+    def load_snapshot(self, path: str) -> None:
+        """Restore a stash-manager snapshot from ``path`` (opt-in,
+        angr-x04s.1.4).
+
+        Inverse of :meth:`dump_snapshot`. Replaces every stash in this
+        manager wholesale; manager-level configuration (find/avoid addrs,
+        hooks, simprocedures, solver/memory config) is preserved.
+
+        Args:
+            path: Filesystem path to read the snapshot from.
+
+        Raises:
+            ValueError: When the envelope is empty or carries a stale
+                format-version byte.
+        """
+        with open(path, "rb") as f:
+            bytes_blob = f.read()
+        self._rust_mgr.load_snapshot_bytes(bytes_blob)
+        # The post-restore Rust state_ids are the original ones (snapshot
+        # preserves them), so external state-export caches indexed by id
+        # must be flushed.
+        self._invalidate_state_export_cache()
+
     def cleanup(self) -> None:
         """Release this manager's hold on per-process AST caches.
 

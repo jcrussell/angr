@@ -2521,7 +2521,15 @@ impl RustSimState {
                 expected: SNAPSHOT_VERSION,
             });
         }
-        let snap: RustSimStateSnapshot = serde_json::from_slice(&bytes[1..])
+        // serde_json's default recursion limit (128) is hit by deep
+        // RustBV op-trees that real benches accumulate (per-byte memory
+        // loads nest store/load chains hundreds of levels deep).
+        // `disable_recursion_limit()` lifts the cap; the on-disk envelope
+        // is trusted (written by our own `to_serialized`) so the DoS
+        // hardening the limit provides is not load-bearing here.
+        let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+        de.disable_recursion_limit();
+        let snap: RustSimStateSnapshot = serde::Deserialize::deserialize(&mut de)
             .map_err(|e| SnapshotError::Decode(e.to_string()))?;
         Self::from_snapshot(snap).map_err(SnapshotError::Decode)
     }

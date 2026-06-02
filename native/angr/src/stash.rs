@@ -448,7 +448,14 @@ impl StashManager {
                 expected: STASH_SNAPSHOT_VERSION,
             });
         }
-        let snap: StashManagerSnapshot = serde_json::from_slice(&bytes[1..])
+        // Mirror `RustSimState::from_serialized`: deep RustBV op-trees in
+        // accumulated per-state constraints can blow past serde_json's
+        // default recursion limit (128). The on-disk envelope is trusted
+        // (written by our own `dump_snapshot`) so DoS hardening is not
+        // load-bearing.
+        let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+        de.disable_recursion_limit();
+        let snap: StashManagerSnapshot = serde::Deserialize::deserialize(&mut de)
             .map_err(|e| crate::state::SnapshotError::Decode(e.to_string()))?;
         Self::from_snapshot(snap).map_err(crate::state::SnapshotError::Decode)
     }

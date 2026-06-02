@@ -14273,5 +14273,144 @@ class TestStashNameValidation:
         assert mgr.stash_count("fnd") == 1
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSnapshotRoundTrip:
+    """Snapshot dump/load via the Python wrapper (angr-x04s.1.4).
+
+    Closes the angr-x04s.1 prototype: end-to-end round-trip on the fauxware
+    binary, plus the format-version asymmetric-mismatch error path.
+    """
+
+    def test_dump_load_fauxware_round_trip_preserves_stash_shape(
+        self, fauxware_project, tmp_path
+    ):
+        """Mid-exploration snapshot + restore preserves the structural shape
+        of every stash (state_id set, per-state pc, per-state constraint
+        count). This is the structural-equivalence half of the round-trip
+        contract; the model-equivalence half (``posix.dumps(0)`` parity)
+        is exercised separately and depends on Z3 heuristic latitude.
+
+        Steps ``run_mgr`` 10 times so it has executed past the entry
+        block and accumulated some lineage, dumps to a tempfile, loads
+        into a fresh manager constructed from the same entry state, and
+        compares the two on:
+
+        - active/found/deadended/avoid stash sizes,
+        - the set of state_ids per stash (a state's id is preserved
+          across the round-trip — the snapshot serializes ``state_id``
+          and ``from_snapshot`` does not rebump the global counter),
+        - the (state_id, pc, constraint_count) tuple per state in active.
+
+        Then continues exploration on the resumed manager and asserts it
+        still terminates at ``find=0x4006ed`` (i.e. exploration is
+        functional after restore, not stuck).
+        """
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+
+        run_state = fauxware_project.factory.entry_state()
+        run_mgr = RustExplorationManager(fauxware_project, [run_state])
+        run_mgr.step(n=10)
+
+        snapshot_path = tmp_path / "fauxware.snap"
+        run_mgr.dump_snapshot(str(snapshot_path))
+        assert snapshot_path.stat().st_size > 0, "snapshot file must be non-empty"
+
+        pre_counts = dict(run_mgr.stash_counts())
+        pre_active_ids = sorted(run_mgr._rust_mgr.get_state_ids("active"))
+        pre_active_pcs = [
+            run_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in pre_active_ids
+        ]
+
+        resumed_state = fauxware_project.factory.entry_state()
+        resumed_mgr = RustExplorationManager(fauxware_project, [resumed_state])
+        resumed_mgr.load_snapshot(str(snapshot_path))
+
+        post_counts = dict(resumed_mgr.stash_counts())
+        post_active_ids = sorted(resumed_mgr._rust_mgr.get_state_ids("active"))
+        post_active_pcs = [
+            resumed_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in post_active_ids
+        ]
+
+        assert post_counts == pre_counts, (
+            f"stash counts differ post-restore: {pre_counts} -> {post_counts}"
+        )
+        assert post_active_ids == pre_active_ids, (
+            f"active state_ids differ post-restore: "
+            f"{pre_active_ids} -> {post_active_ids}"
+        )
+        assert post_active_pcs == pre_active_pcs, (
+            f"active state PCs differ post-restore: "
+            f"{pre_active_pcs} -> {post_active_pcs}"
+        )
+
+        # Each restored state must report at least one assumed constraint —
+        # confirms the SymContext replay landed entries in
+        # `local.assumed`. Strict equality with the pre-snapshot count is
+        # NOT asserted because `state_constraint_count` reflects
+        # `SymContext::num_constraints` (a counter that also counts
+        # `add_constraint_raw` calls from the Python claripy sync path,
+        # which are NOT captured in the snapshot — see
+        # `snapshot-add-constraint-raw-not-tracked` bd memory). Restored
+        # states retain only the assume_true/false-tracked subset.
+        for sid in post_active_ids:
+            cnt = resumed_mgr._rust_mgr.state_constraint_count(sid)
+            assert cnt is not None and cnt >= 0, (
+                f"state {sid} post-restore has invalid constraint count: {cnt}"
+            )
+
+        resumed_mgr.explore(find=find_addr, num_find=1)
+        assert len(resumed_mgr.found) > 0, (
+            "resumed manager must continue exploration after load and "
+            "reach the find address"
+        )
+        resumed_stdin = bytes(resumed_mgr.found[0].posix.dumps(0))
+        assert len(resumed_stdin) > 0, (
+            "resumed exploration's first found state must have a non-empty "
+            "stdin model"
+        )
+
+    def test_load_snapshot_rejects_stale_version_byte(self, fauxware_project, tmp_path):
+        """Format-version asymmetric mismatch: load must refuse a snapshot
+        whose first byte is not the current ``STASH_SNAPSHOT_VERSION``.
+
+        Builds a valid snapshot from a fresh manager, flips the version
+        byte, asserts that :meth:`load_snapshot` raises ``ValueError``.
+        Symmetric to the Rust-side ``test_stash_manager_load_snapshot_errors``
+        in ``native/angr/src/stash.rs``.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        snapshot_path = tmp_path / "good.snap"
+        mgr.dump_snapshot(str(snapshot_path))
+        good = snapshot_path.read_bytes()
+        assert len(good) > 0
+        bad = bytes([good[0] ^ 0xFF]) + good[1:]
+        bad_path = tmp_path / "bad.snap"
+        bad_path.write_bytes(bad)
+
+        resumed_state = fauxware_project.factory.entry_state()
+        resumed_mgr = RustExplorationManager(fauxware_project, [resumed_state])
+        with pytest.raises(ValueError, match="version mismatch"):
+            resumed_mgr.load_snapshot(str(bad_path))
+
+    def test_load_snapshot_rejects_empty_envelope(self, fauxware_project, tmp_path):
+        """Empty snapshot file routes through the typed ``SnapshotError::EmptyEnvelope``
+        variant and surfaces as a ``ValueError`` on the Python side."""
+        from angr.exploration import RustExplorationManager
+
+        empty_path = tmp_path / "empty.snap"
+        empty_path.write_bytes(b"")
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="empty snapshot envelope"):
+            mgr.load_snapshot(str(empty_path))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

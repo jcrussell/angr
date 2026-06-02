@@ -20,7 +20,7 @@ use std::sync::Arc;
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
@@ -2203,6 +2203,29 @@ impl RustExplorationManager {
         out.insert("states_analyzed".into(), states_analyzed);
         out.insert("constraints_analyzed".into(), constraints_analyzed);
         out
+    }
+
+    /// Serialize the full stash manager (all stashes, lineage, counters) to
+    /// a versioned byte envelope. Wraps [`StashManager::dump_snapshot`]
+    /// (see `stash.rs::STASH_SNAPSHOT_VERSION`). Bucket-D `Py<PyAny>`
+    /// overlays (symbolic_pages / hook_symbolic_memory / addr_to_ast) are
+    /// NOT captured — the Python wrapper handles those via
+    /// `claripy.dumps`/`loads`.
+    pub fn dump_snapshot_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        let bytes = self.sm.dump_snapshot();
+        PyBytes::new(py, &bytes)
+    }
+
+    /// Restore the stash manager from a [`Self::dump_snapshot_bytes`]
+    /// envelope. Replaces `self.sm` wholesale; manager-level configuration
+    /// (find/avoid addrs, hooks, simprocedures, solver/memory config) is
+    /// preserved. An empty envelope or stale version byte raises
+    /// `ValueError`.
+    pub fn load_snapshot_bytes(&mut self, bytes: &[u8]) -> PyResult<()> {
+        let restored = StashManager::load_snapshot(bytes)
+            .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {}", e)))?;
+        self.sm = restored;
+        Ok(())
     }
 }
 

@@ -29,7 +29,7 @@ smallvec = "1.15"
 indexmap = { version = "2.13", optional = true }
 fixedbitset = { version = "0.5", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["unbounded_depth"] }
 log = "0.4"
 target-lexicon = "0.12.16"
 
