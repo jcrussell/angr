@@ -335,10 +335,8 @@ impl RustExplorationManager {
         self.with_pending(|pending| {
             let mut ancestry = vec![pending.state.state_id()];
 
-            let current_parent = pending.state.parent_id();
-            while let Some(parent_id) = current_parent {
+            if let Some(parent_id) = pending.state.parent_id() {
                 ancestry.push(parent_id);
-                break;
             }
 
             let state_id = pending.state.state_id();
