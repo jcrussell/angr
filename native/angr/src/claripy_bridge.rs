@@ -553,6 +553,13 @@ pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
 /// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
 /// Uses thread-local LRU caching with claripy's stable `__hash__` to avoid
 /// redundant conversions across constraint additions.
+///
+/// `py` is part of the public API — 10+ external callers across the
+/// interpreter/solver/prefetch modules pass their existing GIL token in.
+/// The body itself doesn't reach for `py` directly (the `Bound` carries its
+/// own token), but `py` flows through the recursive calls and stays in the
+/// signature for caller ergonomics.
+#[allow(clippy::only_used_in_recursion)]
 pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
