@@ -1305,7 +1305,7 @@ impl PythonCallbacks {
 
             // The callback should return bytes
             let bytes: Vec<u8> = result.extract(py)?;
-            let width = (size * 8) as u32;
+            let width = size * 8;
             let mut value: u128 = 0;
             for (i, &byte) in bytes.iter().enumerate() {
                 if (i * 8) as u32 >= width {
@@ -1319,7 +1319,7 @@ impl PythonCallbacks {
         // Fallback: load from first address only
         if let Some(first_addr) = addrs.first() {
             let (data, _is_symbolic, _ast) = self.call_memory_load(py, *first_addr, size)?;
-            let width = (size * 8) as u32;
+            let width = size * 8;
             let mut value: u128 = 0;
             for (i, &byte) in data.iter().enumerate() {
                 if (i * 8) as u32 >= width {
@@ -1330,7 +1330,7 @@ impl PythonCallbacks {
             Ok(RustBV::concrete(value, width))
         } else {
             // No addresses - return zero
-            Ok(RustBV::zero((size * 8) as u32))
+            Ok(RustBV::zero(size * 8))
         }
     }
 

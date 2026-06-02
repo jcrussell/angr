@@ -1734,7 +1734,7 @@ fn rustbv_to_claripy_memo(
                                     if concrete_val == 0 {
                                         width as u128
                                     } else {
-                                        let leading = (concrete_val as u128).leading_zeros();
+                                        let leading = concrete_val.leading_zeros();
                                         // Adjust for actual bit width (128 - width)
                                         (leading - (128 - width)) as u128
                                     }

@@ -324,14 +324,14 @@ impl NativeSimProcedure for NativePipe {
         // through the standard 32-bit memory load (which respects arch endianness).
         let little = state.arch().is_little_endian();
         let read_bytes = if little {
-            (read_fd as u32).to_le_bytes()
+            read_fd.to_le_bytes()
         } else {
-            (read_fd as u32).to_be_bytes()
+            read_fd.to_be_bytes()
         };
         let write_bytes = if little {
-            (write_fd as u32).to_le_bytes()
+            write_fd.to_le_bytes()
         } else {
-            (write_fd as u32).to_be_bytes()
+            write_fd.to_be_bytes()
         };
         for (i, b) in read_bytes.iter().enumerate() {
             state.memory_store(

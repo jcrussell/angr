@@ -970,7 +970,7 @@ impl RustExplorationManager {
         // concrete 0 is simpler and often sufficient)
         let ret_reg_offset = self.environment.calling_convention.return_register();
         let ptr_size = self.environment.calling_convention.pointer_size();
-        let zero_val = RustBV::zero((ptr_size * 8) as u32);
+        let zero_val = RustBV::zero(ptr_size * 8);
         state.set_register_by_offset(ret_reg_offset, zero_val);
 
         // Continue at return address
@@ -1103,7 +1103,7 @@ impl RustExplorationManager {
         let steps_limit = if self.find_needs_python || self.avoid_needs_python {
             1
         } else {
-            self.max_steps_per_run as u32
+            self.max_steps_per_run
         };
         let (result, _blocks_executed, deferred_forks) =
             interp.run_until_event(py, callbacks, steps_limit);

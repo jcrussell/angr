@@ -2362,8 +2362,8 @@ impl VEXOps {
             let elem_mask = (1u128 << elem_width) - 1;
 
             for i in 0..half_count {
-                let src_lo = (i as u32) * elem_width;
-                let dst_lo = (i as u32) * 2 * elem_width;
+                let src_lo = i * elem_width;
+                let dst_lo = i * 2 * elem_width;
 
                 let l_elem = (l >> src_lo) & elem_mask;
                 let r_elem = (r >> src_lo) & elem_mask;
@@ -2380,7 +2380,7 @@ impl VEXOps {
         let mut elements: Vec<RustBV> = Vec::new();
 
         for i in 0..half_count {
-            let src_lo = (i as u32) * elem_width;
+            let src_lo = i * elem_width;
             let src_hi = src_lo + elem_width - 1;
 
             let l_elem = left.extract(src_hi, src_lo, ctx);
@@ -2411,8 +2411,8 @@ impl VEXOps {
             let elem_mask = (1u128 << elem_width) - 1;
 
             for i in 0..half_count {
-                let src_lo = ((half_count + i) as u32) * elem_width;
-                let dst_lo = (i as u32) * 2 * elem_width;
+                let src_lo = (half_count + i) * elem_width;
+                let dst_lo = i * 2 * elem_width;
 
                 let l_elem = (l >> src_lo) & elem_mask;
                 let r_elem = (r >> src_lo) & elem_mask;
@@ -2429,7 +2429,7 @@ impl VEXOps {
         let mut elements: Vec<RustBV> = Vec::new();
 
         for i in 0..half_count {
-            let src_lo = ((half_count + i) as u32) * elem_width;
+            let src_lo = (half_count + i) * elem_width;
             let src_hi = src_lo + elem_width - 1;
 
             let l_elem = left.extract(src_hi, src_lo, ctx);
