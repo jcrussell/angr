@@ -782,7 +782,7 @@ mod tests {
         // Check that the binop is VFAddS
         if let IRStmt::WrTmp { tmp, data } = &irsb.statements[3] {
             assert_eq!(*tmp, 0);
-            if let IRExpr::Binop { op, left, right } = data {
+            if let IRExpr::Binop { op, left: _, right: _ } = data {
                 println!("Parsed opcode: {:?}", op);
                 assert!(
                     matches!(op, IROp::VFAddS { elem: IRType::F32 }),

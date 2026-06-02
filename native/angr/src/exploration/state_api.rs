@@ -30,7 +30,7 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &*sym_ctx;
+            let ctx_ref: &SymContext = &sym_ctx;
 
             // Pre-fetch Z3 backend for fast path
             #[cfg(feature = "vex-engine-z3")]
@@ -614,7 +614,7 @@ impl RustExplorationManager {
             let bv = {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &*sym_ctx;
+                let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
                     PyValueError::new_err(format!("AST conversion failed: {}", e))
                 })?
@@ -693,7 +693,7 @@ impl RustExplorationManager {
             let bv = {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &*sym_ctx;
+                let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
                     PyValueError::new_err(format!("AST conversion failed: {}", e))
                 })?
@@ -726,7 +726,7 @@ impl RustExplorationManager {
             let (addr_bv, data_bv) = {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
-                let ctx: &SymContext = &*sym_ctx;
+                let ctx: &SymContext = &sym_ctx;
                 let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
                     Ok(bv) => bv,
                     Err(e) => {

@@ -892,7 +892,7 @@ fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
 #[test]
 fn test_phase3_collapse_cache_clones_with_payload() {
     let ctx = SymContext::new_mock();
-    let mut payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
+    let payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
         RustBV::concrete(1, 1),
         RustBV::concrete(0x33, 8),
     )]);

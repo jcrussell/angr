@@ -3382,7 +3382,7 @@ impl RustSimState {
         // Flush pending writes using the current solver context
         {
             let ctx = self.solver.borrow();
-            let _ = self.memory.flush_pending_writes(&*ctx, &self.concretizer);
+            let _ = self.memory.flush_pending_writes(&ctx, &self.concretizer);
         }
         self.export_full()
     }

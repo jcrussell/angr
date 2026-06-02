@@ -20,7 +20,7 @@ fn intern_unmapped_op(op_str: &str) -> &'static str {
     let intern = INTERN.get_or_init(|| Mutex::new(HashSet::new()));
     let mut guard = intern.lock().expect("unmapped-op intern mutex poisoned");
     if let Some(s) = guard.get(op_str) {
-        return *s;
+        return s;
     }
     let leaked: &'static str = Box::leak(op_str.to_string().into_boxed_str());
     guard.insert(leaked);

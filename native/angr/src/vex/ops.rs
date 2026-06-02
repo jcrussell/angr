@@ -5206,7 +5206,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_add_symbolic_constraint() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "x", 32);
@@ -5233,7 +5232,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_sqrt_symbolic_constraint() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "sqrt_x", 64);
@@ -5287,7 +5285,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_add_symbolic() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm0", 128);
@@ -5328,7 +5325,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_sqrt_symbolic() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let xmm = RustBV::symbolic(&ctx, "xmm_sqrt", 128);
@@ -5361,7 +5357,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_max_symbolic() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm_max", 128);
@@ -5391,7 +5386,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_min_symbolic() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm_min", 128);
@@ -5426,7 +5420,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_round_f32_to_int_symbolic_rm() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
@@ -5452,7 +5445,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_round_f64_to_int_symbolic_rm() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
@@ -5541,7 +5533,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_div_with_symbolic_rm_f32() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_div_f32", 32);
@@ -5876,7 +5867,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_shl_n_symbolic_shift() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
 
@@ -5923,7 +5913,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_shr_n_symbolic_shift() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
 
@@ -5969,7 +5958,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_sar_n_symbolic_shift() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
 
@@ -6268,7 +6256,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_reverse_double_apply_is_identity() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         for (sub_width, elem, count) in [
@@ -6305,7 +6292,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "vrev_arg", 128);
@@ -6352,7 +6338,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_int_max_symbolic_signed() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
 
@@ -6615,7 +6600,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_add_symbolic_f32x4() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
 
@@ -7137,7 +7121,6 @@ mod tests {
     fn test_fcmp_scalar_lane_eq_f32_symbolic() {
         // Symbolic: constrain low32(result)==0xFFFFFFFF given right=2.0 and
         // some symbolic left → solver must pick left.lane0 == 2.0.
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let l = RustBV::symbolic(&ctx, "fcmp_lane_l", 128);
         let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
@@ -7212,7 +7195,6 @@ mod tests {
     #[test]
     fn test_fcom_cc_symbolic_lt() {
         // Symbolic: constrain FComCC(x, 5.0) == 0x01 → x must be < 5.0 (and not NaN).
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "fcom_x", 64);
         let five = RustBV::concrete(5.0f64.to_bits() as u128, 64);
@@ -7456,7 +7438,6 @@ mod tests {
     fn test_fcmp_packed_lt_32fx4_symbolic() {
         // Symbolic vector `l` against concrete `r`. Constrain low lane mask to all-1s
         // → solver must satisfy lane 0 of l < lane 0 of r (= 5.0). Other lanes free.
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let l = RustBV::symbolic(&ctx, "fpkd_lt_l", 128);
         let r = RustBV::concrete(pack_4xf32(5.0, 1.0, 1.0, 1.0), 128);
@@ -8015,7 +7996,7 @@ mod tests {
         let mut r: u128 = 0;
         l |= 200u128;
         l |= (50i16 as u16 as u128) << 16;
-        r |= (5i16 as u16 as u128);
+        r |= 5i16 as u16 as u128;
         r |= ((-300i16) as u16 as u128) << (7 * 16);
 
         let res = VEXOps::binop(
@@ -8051,7 +8032,6 @@ mod tests {
     fn test_vdup_symbolic_arg() {
         // Symbolic 8-bit value, dup to 8x8. Constrain the output to a known
         // pattern and check the solver picks the right scalar.
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "dup_arg", 8);
         let res = VEXOps::unop(
@@ -8075,7 +8055,6 @@ mod tests {
     fn test_vqnarrow_un_symbolic_saturates() {
         // Symbolic I16 saturating to signed I8. Constrain output lane to 127
         // and require source > 127 to confirm saturation kicked in.
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "qn_arg", 128); // 8 lanes I16
         let res = VEXOps::unop(
@@ -8113,7 +8092,6 @@ mod tests {
     fn test_vget_elem_symbolic_idx() {
         // Build a concrete vector with distinct lane values, then read
         // through a symbolic idx and constrain it to return a specific lane.
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
         let sym_idx = RustBV::symbolic(&ctx, "get_idx", 8);
@@ -8607,7 +8585,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwadd_16x4_matches_spec_replay() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpwadd_a", 64);
@@ -8650,7 +8627,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwaddl_16sx4_matches_spec_replay() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "vpwaddl_a", 64);
@@ -8690,7 +8666,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwmin_16sx4_matches_spec_replay() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpwmin_a", 64);
@@ -8960,7 +8935,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vavg_16ux4_symbolic_universal_unsigned() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vavg_a", 64);
@@ -9005,7 +8979,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vavg_8sx8_symbolic_universal_signed() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vavg_sa", 64);
@@ -9319,7 +9292,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vcnt_8x8_symbolic_universal() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vcnt_a", 64);
@@ -9348,7 +9320,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vclz_8x8_symbolic_universal() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vclz_a", 64);
@@ -9391,7 +9362,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpolynomial_mul_8x8_symbolic_universal() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpmul_a", 64);
@@ -9695,7 +9665,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vshl_16x4_symbolic_matches_python_ref() {
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "shl_a_16x4", 64);
         let b = RustBV::symbolic(&ctx, "shl_b_16x4", 64);
@@ -9737,7 +9706,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vsar_8x16_symbolic_matches_python_ref() {
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "sar_a_8x16", 128);
         let b = RustBV::symbolic(&ctx, "sar_b_8x16", 128);

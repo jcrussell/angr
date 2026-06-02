@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_build_strlen_chain_concrete() {
-        let mut state = RustSimState::new("amd64").unwrap();
+        let state = RustSimState::new("amd64").unwrap();
         let ctx = state.solver().borrow();
         // Bytes: [(0, 'a'), (1, '\0')]. Chain should reduce to 1.
         let bytes = vec![

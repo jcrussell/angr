@@ -502,7 +502,6 @@ fn common_prefix_len(a: &ScopePath, b: &ScopePath) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use z3::ast::Ast;
 
     fn make_solver() -> z3::Solver {
         // Use the default tactic — these tests don't depend on the

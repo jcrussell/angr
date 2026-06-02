@@ -173,7 +173,7 @@ impl RustExplorationManager {
         self.with_pending_mut(|pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &*sym_ctx;
+            let ctx_ref: &SymContext = &sym_ctx;
 
             let bv = claripy_to_rustbv(py, ast, ctx_ref)
                 .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
@@ -206,7 +206,7 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+            let bv = claripy_to_rustbv(py, ast, &sym_ctx)
                 .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
             drop(sym_ctx);
             state.memory_mut().import_symbolic_value(addr, bv, None);
@@ -223,7 +223,7 @@ impl RustExplorationManager {
         self.with_pending_mut(|pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+            let bv = claripy_to_rustbv(py, ast, &sym_ctx)
                 .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
             drop(sym_ctx);
 
@@ -437,7 +437,7 @@ impl RustExplorationManager {
         self.with_pending_mut(|pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &*sym_ctx;
+            let ctx_ref: &SymContext = &sym_ctx;
 
             let len = constraints.len();
             for i in 0..len {
@@ -527,7 +527,7 @@ impl RustExplorationManager {
         self.with_pending(|pending| {
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
-            match pending.state.memory().load_concrete(addr, size, &*ctx) {
+            match pending.state.memory().load_concrete(addr, size, &ctx) {
                 Ok(bv) => {
                     if let Some(val) = bv.as_u128() {
                         let byte_count = (size as usize).min(16);

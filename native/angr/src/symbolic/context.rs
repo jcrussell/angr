@@ -4616,7 +4616,6 @@ mod tests {
         let unsat = ctx.with_z3_solver(|solver| {
             solver.push();
             solver.assert(&{
-                use z3::ast::Ast;
                 let bv_x =
                     z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
                 bv_x._eq(&z3::ast::BV::from_u64(42, 8))
@@ -4732,7 +4731,6 @@ mod tests {
     #[test]
     fn test_scope_savepoint_truncates_scope_path() {
         use super::super::lineage::{ScopeFrame, SharedLineageSolver};
-        use z3::ast::Ast;
 
         let ctx = SymContext::new();
         let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
@@ -4776,7 +4774,6 @@ mod tests {
     #[test]
     fn test_scope_savepoint_nested_lifo() {
         use super::super::lineage::{ScopeFrame, SharedLineageSolver};
-        use z3::ast::Ast;
 
         let ctx = SymContext::new();
         let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));

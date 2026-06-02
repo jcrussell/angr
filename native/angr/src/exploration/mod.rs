@@ -2347,7 +2347,7 @@ mod tests {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
             let s1 = mgr.create_state("active").unwrap();
-            let s2 = mgr.create_state("active").unwrap();
+            let _s2 = mgr.create_state("active").unwrap();
             assert_eq!(mgr.active_count(), 2);
             assert_eq!(mgr.state_stash(s1).as_deref(), Some("active"));
 

@@ -764,7 +764,7 @@ impl RustExplorationManager {
                 } else {
                     // Add constraint: target_expr == addr
                     let concrete = RustBV::concrete(addr as u128, expr.width());
-                    let constraint = expr.eq(&concrete, &*state.solver().borrow());
+                    let constraint = expr.eq(&concrete, &state.solver().borrow());
                     state.add_constraint(constraint);
                     state.set_pc(addr);
                 }
@@ -806,7 +806,7 @@ impl RustExplorationManager {
                 first_state.set_ip(expr.clone());
             } else {
                 let concrete = RustBV::concrete(first_addr as u128, expr.width());
-                let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
+                let constraint = expr.eq(&concrete, &first_state.solver().borrow());
                 first_state.add_constraint(constraint);
                 first_state.set_pc(first_addr);
             }
@@ -826,7 +826,7 @@ impl RustExplorationManager {
                     forked.set_ip(expr.clone());
                 } else {
                     let concrete = RustBV::concrete(addr as u128, expr.width());
-                    let constraint = expr.eq(&concrete, &*forked.solver().borrow());
+                    let constraint = expr.eq(&concrete, &forked.solver().borrow());
                     forked.add_constraint(constraint);
                     forked.set_pc(addr);
                 }
@@ -1008,7 +1008,7 @@ impl RustExplorationManager {
         // Create interpreter with the state's solver
         let mut interp = VEXInterpreter::with_config(
             self.environment.vex_arch,
-            &*solver_ref,
+            &solver_ref,
             self.exec_config.clone(),
         );
 

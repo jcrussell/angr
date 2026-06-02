@@ -487,7 +487,7 @@ impl RustExplorationManager {
                                         Python::attach(|py| {
                                             let ast = py_ast.bind(py);
                                             let solver_ref = fork_base.solver();
-                                            let ctx: &SymContext = &*solver_ref.borrow();
+                                            let ctx: &SymContext = &solver_ref.borrow();
                                             claripy_to_rustbv(py, ast, ctx).ok()
                                         })
                                     } else {

@@ -951,7 +951,7 @@ impl<'a> VEXInterpreter<'a> {
             Some(rust_mem) => rust_mem.store_with_concretization(
                 addr_val,
                 data_val.clone(),
-                &*conc_result,
+                &conc_result,
                 self.ctx,
             ),
             None => return Ok(false),
@@ -976,7 +976,7 @@ impl<'a> VEXInterpreter<'a> {
                         match rust_mem.store_with_concretization(
                             addr_val,
                             data_val.clone(),
-                            &*conc_result,
+                            &conc_result,
                             self.ctx,
                         ) {
                             Ok(()) => {

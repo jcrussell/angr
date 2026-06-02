@@ -147,7 +147,7 @@ impl RustExplorationManager {
                             .as_ref()
                             .expect("fork_base set before deferred fork processing");
                         let solver_ref = fb.solver();
-                        let ctx: &SymContext = &*solver_ref.borrow();
+                        let ctx: &SymContext = &solver_ref.borrow();
                         claripy_to_rustbv(py, ast, ctx).ok()
                     })
                 } else {
@@ -466,7 +466,7 @@ impl RustExplorationManager {
                         Python::attach(|py| {
                             let ast = py_ast.bind(py);
                             let solver_ref = true_state.solver();
-                            let ctx: &crate::symbolic::SymContext = &*solver_ref.borrow();
+                            let ctx: &crate::symbolic::SymContext = &solver_ref.borrow();
                             crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
                         })
                     } else {
