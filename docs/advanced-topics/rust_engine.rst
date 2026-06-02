@@ -334,6 +334,189 @@ Counters are global (shared across ``SymContext`` instances). Call
 window. The same dict is also merged into ``mgr.stats`` for
 convenience.
 
+Solver incremental discipline
+-----------------------------
+
+Spike report (``angr-li83``, 2026-06-02). Companion to the determinism
+audit in ``angr-iaol.2``: this section characterizes the engine's Z3
+incremental-solving lifecycle — push/pop discipline, soft-assert usage,
+and simplification toggles — to surface where lifecycle overhead lives
+and what is *not* an optimization opportunity today.
+
+Push/pop frame discipline
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Rust engine never uses ``Z3_solver_push`` / ``Z3_solver_pop`` to
+inherit a parent state's frames across a fork. ``SymContext::fork``
+(``native/angr/src/symbolic/context.rs:3432``) constructs a child with
+``solver: Mutex::new(None)`` and ``push_level: 0``. The Z3 solver is
+re-built **lazily** on the child's first solver query
+(``z3_materialize_count``); the parent's accumulated assertions
+propagate via the ``z3_assertions_shared: Arc<Vec<z3::ast::Bool>>``
+that is frozen on each fork and shared by structural reference. No
+``Z3_solver_translate`` is invoked (that path is documented at
+``z3-solver-translate-same-context-bug-z3-solver`` — it loses every
+assertion on a same-context solver, so the engine deliberately avoids
+it).
+
+In-flight push/pop on a single state's solver is balanced inside a
+``with_z3_solver(|solver| { ... })`` closure at every call site:
+
+* ``check_branch_feasibility`` (``context.rs:2164–2215``) — outer
+  closure holds the lock; each direction does ``push → assert →
+  timed_check → pop(1)``. The two pushes (one per direction) are
+  serial, not nested, and dispatched from the cached-model fast path
+  when available (skipping the predicted direction).
+* ``eval_upto`` / ``eval_upto_wide`` (``2391``, ``2464``) — one outer
+  ``push`` brackets up to *n* SAT-and-exclude iterations; one outer
+  ``pop(1)`` discards every exclusion assertion in O(1).
+* ``min`` / ``max`` / ``range_seeded`` (``2592``, ``2714``, ``2853``)
+  — outer push brackets a binary-search loop; per-iteration
+  ``push → assert(bvule/bvuge) → check → pop(1)`` keeps the search
+  assertion local. The signed branch does at most one ``MinInit`` /
+  ``MaxInit`` SAT call to detect a negative witness before the binary
+  search.
+
+Push/pop is O(1) in Z3 (``z3-push-pop-is-o-1-just-records``) — it
+only records trail position + reinit stack position + the inconsistency
+flag (~50 bytes); no clause copying. The bit-blasting cache survives
+push/pop, so the binary-search variants reuse the bit-blasted
+representation of every constraint across the inner loop. The
+``angr-3ms1`` ``bare_z3_push_depth`` counter tracks outstanding
+**unbalanced** pushes that escape the closure brackets — always 0 in
+production paths today and gated by ``debug_assert`` on every fork.
+
+Shared-lineage solver (off by default). When
+``RustExplorationManager(use_shared_lineage_solver=True)`` is set, a
+fresh ``SharedLineageSolver`` (``native/angr/src/symbolic/lineage.rs``)
+is minted on each fork and the child writes constraints onto a
+``scope_path`` instead of the per-context solver. Push/pop are
+emulated: ``scope_savepoint_push`` records ``scope_path.len()`` on a
+``scope_savepoints`` stack; ``scope_savepoint_pop`` truncates the
+path. The shared solver itself is push/pop'd lazily by
+``SharedLineageSolver::switch_to`` only when a sibling reuses the
+solver — see the ``v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental``
+memory for why the path is opt-in (BFS-thrash regression on
+``defcon2016quals_baby-re``).
+
+Concrete counters from ``run_single.py``:
+
+``ais3_crackme`` (49 states, found=1):
+
+* ``z3_check_count`` = 122 = 48 ``satisfiable`` + 48 ``branch_false``
+  + 25 ``branch_true`` + 1 ``eval``.
+* ``z3_materialize_count`` = 50 — every state's lazy-fork solver is
+  materialized exactly once.
+* ``z3_branch_model_hit`` / ``miss`` = 23 / 25 — when the parent's
+  model satisfies the branch, the second direction is skipped
+  (one SAT call instead of two).
+* ``lineage_push_count`` / ``lineage_pop_count`` /
+  ``lineage_switch_count`` = 0 / 0 / 0 — shared-lineage off.
+* Per-call cost: ``z3_site_branch_false_time_ns`` / 48 ≈ 617 µs;
+  ``z3_site_satisfiable_time_ns`` / 48 ≈ 5.1 ms. The push/pop-bracketed
+  branch checks are ~8× cheaper than the bare incremental SAT check.
+
+``fauxware`` (7 steps, 2 active):
+
+* ``z3_check_count`` = 22; ``z3_materialize_count`` = 2;
+  ``z3_assume_symbolic`` = 2. The 16 ``eval_upto`` checks all share
+  a single outer ``push/pop`` pair, exactly as designed.
+
+Finding 1 — no push/pop frame leak: the closure-bracketed pattern
+plus the lazy-fork solver means a parent's transient push/pop frames
+never reach a child. The ``bare_z3_push_depth`` invariant gate plus
+the lineage's two-counter accounting are sufficient; no follow-up
+work is filed.
+
+Soft asserts and ``assert_and_track``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The engine has exactly **one** call site for ``assert_and_track``
+(``context.rs:1924``) reached only via
+``SymContext::add_constraint_tracked_indexed`` →
+``RustSolverContext::add_constraint_tracked_ast`` (``solver.rs:233``).
+That path is the explicit "I want ``solver.get_unsat_core()`` to name
+this constraint" entry point; the Python wrapper
+(``angr/exploration/rust_manager.py``) never calls it during
+exploration. None of the engine's hot-path constraint sinks
+(``add_constraint``, ``add_constraint_raw``, ``assume_true``,
+``assume_false``) opt into tracking.
+
+There is **no use of Z3's soft-assert API**
+(``Z3_solver_assert_soft`` / weighted MaxSMT). The engine never
+formulates a "prefer SAT without this constraint" query — every
+assertion is hard. The path-constraint model in claripy is
+fundamentally non-relaxable (an unsat path must be pruned, not
+softened), so the only conceivable use case is exploration-time
+hinting (e.g. "this constraint is a guess from a callback; treat it
+as soft until we commit"). No such hinting layer exists today, and
+introducing one would mean teaching every constraint sink to carry a
+weight tag.
+
+Finding 2 — soft asserts not actionable today: the architecture
+treats constraints as one-shot hard assertions, so adding a soft tier
+is a large refactor with no identified caller demand. Closed as
+no-action; if a future technique (e.g. ``angr-x04s.1`` op-tree
+snapshots that need to speculate over constraint sets) needs
+relaxable assertions, file a fresh task with the use case attached.
+
+Simplification toggles
+~~~~~~~~~~~~~~~~~~~~~~
+
+Z3 simplification touches the engine in three places:
+
+1. **No call to ``Bool::simplify`` on the assertion hot path.** The
+   only ``.simplify()`` invocation in ``native/angr/src/`` is the
+   sampled measurement helper ``sample_simplify_skip``
+   (``context.rs:907``), which runs every 64th call across
+   ``assume_true`` / ``assume_false`` / ``add_constraint_raw`` and
+   only records whether the simplification would have produced a
+   distinct AST pointer. The simplified Bool is dropped — the
+   un-simplified ``z3::ast::Bool`` is what reaches the solver. The
+   sample rate keeps measurement overhead at ~1.5%.
+2. **Solver-internal preprocessing.** ``build_solver_params``
+   (``context.rs:975``) sets ``bv_extract_prop=true`` and
+   ``mul2concat=true``; the rest of preprocessing
+   (``simplify:propagate-values:solve-eqs:bit-blast:sat``) runs on the
+   first ``check()`` call after each assertion batch
+   (``z3-th-rewriter-invoked-during-solver-preprocessing-on``). The
+   engine never invokes ``Z3_simplify_ex`` directly.
+3. **RustBV-level structural canonicalization.** Commutative ops are
+   canonicalized at construction (``rustbv_commutative_canonicalize_count``
+   / ``rustbv_commutative_swap_count``) so structurally-equivalent
+   ASTs hit the dedup set. This is *not* Z3 simplification — it is
+   pre-Z3 normalization that reduces the input AST size before
+   handing to ``z3-rs``.
+
+Concrete sample data is too thin to make a routing decision: across
+the surveyed benches the sampled-population is 1–2 calls and the
+reduced-count is the same number (100%). The
+``1joc-simplify-sample-too-small`` memory already flagged this — at
+stride 64 even ``ais3_crackme``'s 120 ``z3_assume_symbolic`` calls
+yields only ~2 samples. A full-population run (stride 1) would
+quantify the reduction rate per bench, but it would also tank the
+benchmark gate; the measurement is a low-cost trace, not a candidate
+for hot-path simplification.
+
+Finding 3 — simplify is not on the hot path. The sampled measurement
+gives a binary-pattern signal but the population is too small for
+per-bench attribution. To make this actionable, the sample stride
+needs to be lowered transiently under a profiling kwarg (e.g.
+``rust_log=trace`` plus an env-var stride override) — but
+**only inside a profiling spike**, not as a perf change.
+
+Follow-up beads
+~~~~~~~~~~~~~~~
+
+* **angr-ogko** (filed P3 task): instrument ``sample_simplify_skip``
+  with an env-var stride override (e.g. ``ANGR_Z3_SIMPLIFY_STRIDE=1``)
+  so a profiling spike can take a full-population reading on the
+  bimodal benches (``fairlight``, ``unbreakable_1``, ``sokohashv2``)
+  without changing default behavior. Triggered only if a follow-up
+  spike turns up evidence that Z3's internal preprocessing is leaving
+  reducible structure on the asserted formula. No other follow-up
+  beads filed — the discipline audit is otherwise clean.
+
 Determinism contract
 --------------------
 
