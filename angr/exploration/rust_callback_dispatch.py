@@ -16,6 +16,23 @@ l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)
 
 
+def _simproc_dispatch_name(proc) -> str:
+    """Canonical name used to dispatch a SimProcedure to the Rust native registry.
+
+    Prefer ``display_name`` over ``__class__.__name__``: SimLibrary instantiates
+    unimplemented-libc stubs as ``ReturnUnconstrained(display_name="setenv")``,
+    so keying off the class name would lump every stub under
+    ``"ReturnUnconstrained"`` and the native registry (which keys off the
+    symbol, e.g. ``"setenv"``) would never match. For first-class SimProcs the
+    base class defaults ``display_name`` to ``type(self).__name__``, so this
+    coincides with the previous behaviour.
+    """
+    name = getattr(proc, 'display_name', None)
+    if name:
+        return str(name)
+    return proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+
+
 class RustCallbackDispatchMixin:
     """Callback dispatch and SimProcedure handling for Rust exploration
 
@@ -598,7 +615,7 @@ class RustCallbackDispatchMixin:
         proc = self._project._sim_procedures.get(addr)
         if proc is None and name:
             for proc_addr, candidate in self._project._sim_procedures.items():
-                proc_name = candidate.__class__.__name__ if hasattr(candidate, '__class__') else str(candidate)
+                proc_name = _simproc_dispatch_name(candidate)
                 if proc_name == name:
                     if _DBG:
                         l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
@@ -737,7 +754,7 @@ class RustCallbackDispatchMixin:
                     cont_proc = self._project._sim_procedures.get(cont_addr_int)
                     if not cont_proc:
                         continue
-                    cont_name = cont_proc.__class__.__name__ if hasattr(cont_proc, '__class__') else str(cont_proc)
+                    cont_name = _simproc_dispatch_name(cont_proc)
                     cont_num_args = getattr(cont_proc, 'num_args', 0) or 0
                     cont_no_return = getattr(cont_proc, 'NO_RET', False)
                     self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])

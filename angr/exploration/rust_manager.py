@@ -390,7 +390,7 @@ from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemo
 
 
 from angr.exploration.rust_state_export import RustStateExportMixin
-from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin
+from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
 from angr.exploration.rust_state_sync import RustStateSyncMixin
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 
@@ -2133,7 +2133,7 @@ class RustExplorationManager(
         # Get hooked addresses from project
         if hasattr(self._project, '_sim_procedures'):
             for addr, proc in self._project._sim_procedures.items():
-                name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                name = _simproc_dispatch_name(proc)
                 num_args = getattr(proc, 'num_args', 0) or 0
                 no_return = getattr(proc, 'NO_RET', False)
                 procs.append((addr, name, num_args, no_return))

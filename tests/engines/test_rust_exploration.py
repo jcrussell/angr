@@ -4096,6 +4096,73 @@ class TestHooksAndProcedures:
         assert stats["find_addrs"] == 0
         assert stats["avoid_addrs"] == 0
 
+    def test_simproc_dispatch_name_prefers_display_name(self):
+        """angr-gbk6: dispatch name follows display_name, not class.
+
+        SimLibrary instantiates unimplemented libc symbols as
+        ``ReturnUnconstrained(display_name=<symbol>)``. Keying off the class
+        name would route every libc stub through the same "ReturnUnconstrained"
+        slot, so the per-symbol native registry on the Rust side would never
+        match. The helper must surface the per-instance display_name.
+        """
+        from angr.exploration.rust_callback_dispatch import _simproc_dispatch_name
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+        from angr.procedures.posix.getenv import getenv
+
+        stub = ReturnUnconstrained(display_name="setenv")
+        assert _simproc_dispatch_name(stub) == "setenv"
+
+        # First-class SimProc keeps its class name (display_name defaults to
+        # type(self).__name__ in SimProcedure.__init__).
+        real = getenv()
+        assert _simproc_dispatch_name(real) == "getenv"
+
+    def test_register_simprocedures_uses_display_name_for_stubs(
+        self, fauxware_project, monkeypatch
+    ):
+        """angr-gbk6: _register_simprocedures wires stubs to Rust by symbol.
+
+        Without preferring display_name, every ReturnUnconstrained-backed
+        libc stub on a real binary registers under "ReturnUnconstrained" and
+        the Rust-side native procedure registry never sees the symbol name
+        (so e.g. native ``setenv`` stays dormant). Capture the tuples handed
+        to Rust and assert the stub address went over as "setenv".
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        stub_addr = 0x4F1000
+        stub = ReturnUnconstrained(display_name="setenv")
+        proj._sim_procedures[stub_addr] = stub
+        try:
+            captured = []
+
+            class _SpyRustMgr:
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def register_simprocedures(self, procs):
+                    captured.extend(procs)
+                    return self._inner.register_simprocedures(procs)
+
+                def __getattr__(self, item):
+                    return getattr(self._inner, item)
+
+            monkeypatch.setattr(mgr, "_rust_mgr", _SpyRustMgr(mgr._rust_mgr))
+            mgr._register_simprocedures()
+        finally:
+            proj._sim_procedures.pop(stub_addr, None)
+
+        names_by_addr = {addr: name for (addr, name, _na, _nr) in captured}
+        assert names_by_addr.get(stub_addr) == "setenv", (
+            f"expected stub to register as 'setenv', got "
+            f"{names_by_addr.get(stub_addr)!r}; full capture={captured}"
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateManagement:
