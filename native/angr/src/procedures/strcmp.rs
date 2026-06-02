@@ -101,10 +101,10 @@ pub(super) fn compare_bytes(
                     let mut a = b1 as u8;
                     let mut b = b2 as u8;
                     if case_insensitive {
-                        if (b'A'..=b'Z').contains(&a) {
+                        if a.is_ascii_uppercase() {
                             a += 32;
                         }
-                        if (b'A'..=b'Z').contains(&b) {
+                        if b.is_ascii_uppercase() {
                             b += 32;
                         }
                     }
