@@ -890,6 +890,78 @@ when the Rust engine is run with non-zero counters (see the
 ``vex op dispatch`` / ``memory volume`` / ``concretization fanout`` /
 ``ast emissions`` sections of its output).
 
+Counter prevalence across the fast-tier corpus
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The instrumentation is process-wide and free to read, but interpreting
+a single bench in isolation can mislead. The table below summarizes
+five corpus sweeps run on the fast-tier benches in
+``baseline_timings.json`` (2026-06-02) and is intended as a reference
+for users debugging an unexpected counter value — "is this number
+normal for this counter?". Each row links the counter family to the
+sweep that audited it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 52
+
+   * - Counter family
+     - Zero on …
+     - Top hits
+   * - ``syscall_python_fallback_count``
+     - 19/19 benches
+     - No bench exercises an unregistered ``(arch, num)`` pair on
+       AMD64. The ~60-handler native registry covers the full
+       CTF-heavy corpus end-to-end. Implication: adding new syscall
+       handlers does not move bench numbers until a workload hitting
+       an uncovered syscall lands.
+   * - ``simprocedure_python_fallback_count`` (by name)
+     - 7/17 benches
+     - 74 total fallbacks corpus-wide. Top names:
+       ``__stack_chk_fail`` (14, ``defcon2016quals_baby-re`` only),
+       ``my_scanf`` (13, same bench, app-specific),
+       C++ stdlib ops (``operator<<``, ``operator new``,
+       ``operator delete``, ``memmove``: 5–7 each on
+       ``csaw_wyvern`` only), ``UserHook`` (6, by construction
+       Python-only), ``CallReturn`` (2). The only "easy port"
+       candidates concentrate in benches already at 16.9x speedup
+       (``csaw_wyvern``).
+   * - ``concretize_*``
+     - 17/20 benches
+     - Three benches drive 100% of concretize cost:
+       ``csaw_wyvern`` (28 writes × 7.2 ms = 85% of Rust loop
+       time, max_cands = 1), ``sym-write`` (16 calls, max_cands = 2,
+       2.2 ms total), ``flareon2015_5`` (48 writes, max_cands = 64,
+       5.3 ms total). ``concretize_disjunction_count = 0`` across
+       the whole corpus — no bench triggers the disjunction-hoist
+       path today.
+   * - ``add_constraint_raw_dedup_hit``
+     - 0% hit rate on 11/15
+     - Bimodal: see the per-bench table in the bullet list above.
+       Top four (``defcon2016quals_baby-re`` 92.3%,
+       ``csaw_wyvern`` 82.5%, ``whitehatvn2015_re400`` 50.0%,
+       ``flareon2015_5`` 31.3%) account for all duplicate-assert
+       traffic; the rest pay only the bounded HashSet-insert cost.
+   * - ``mem_ite_depth_*`` /
+       ``mem_{load,store}_symbolic_addr``
+     - 15/16 (ITE depth);
+       16/16 (symbolic-addr)
+     - Only ``sym-write`` materializes a non-trivial read-over-write
+       ITE tree (max_depth = 8, total = 576). Every other fast-tier
+       bench deflects symbolic addressing to concretization before
+       building deep ITEs. ``mem_load_symbolic_addr`` /
+       ``mem_store_symbolic_addr`` are zero everywhere — the public
+       ``load(addr_bv)`` / ``store(addr_bv)`` symbolic-address path
+       is never taken in the surveyed corpus.
+
+Headline takeaway: the engine's "expensive symbolic" paths
+(syscall fallback, simprocedure fallback, symbolic-address memory,
+read-over-write ITEs) are either zero or pinned to a small number of
+known benches across this corpus. New optimizations targeting any of
+these families need a representative workload that *uses* the path
+before a bench delta is plausible — counter-driven hypotheses without
+a positive sample tend to optimize already-fast code.
+
 Experimental: ``ANGR_Z3_TACTIC`` solver-strategy override
 ---------------------------------------------------------
 
