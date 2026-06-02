@@ -2302,7 +2302,7 @@ be tracked.
        :doc:`rust_bimodal_variance` and bd memory
        ``benchmark-unbreakable_1-2026-05-22``.
    * - ``hackcon2016_angry-reverser``
-     - 0.69x (Py ~10.29s / Rust ~14.84s, 5-sample median 2026-05-19)
+     - 0.69x → ~0.45x median (Py ~10.3s / Rust ~22.5s post-fix, bimodal)
      - The 2026-05-17 regression (11.7s → 30.6s) was bisected to
        ``fced54a07`` (angr-9maq, "skip eager allocation of all-zero
        filler pages"), which optimized ``mma_howtouse``'s memory
@@ -2318,11 +2318,32 @@ be tracked.
        integration tests passed). Fixing the bug to emit
        ``Concat(extract[7:0,x], …, extract[N-1:N-8,x])`` — claripy's
        canonical shape — moved the median from ~15.22s to ~14.84s
-       (within stdev). The residual hackcon cost is **not** from
-       the Reverse leaf emission. Suspected next: rustbv↔claripy
-       round-trip producing structurally different concat trees
-       over the flag BVS, per ``hackcon-z3-ast-structure``. Python
-       time unchanged (~10.3s).
+       (within stdev).
+       **AST-structure spike (angr-rbnk, 2026-06-02):** dumped Z3
+       assertion stacks from both engines via
+       ``tools/dump_hackcon_smtlib.py``. With ``flag`` as a 160-bit
+       BVS and 58 final assertions, pre-fix Rust dumped
+       ``total_chars=740,257`` with **19,649** extract operations vs.
+       Python's ``total_chars=431,752`` with **7,158** extracts
+       (2.7× more extracts, 1.7× larger). Root cause: the
+       ``BVOp::SignExt`` to-Z3 emission in
+       ``native/angr/src/symbolic/value.rs`` was a hand-rolled
+       ``concat(sign_bit, …, concat(sign_bit, inner))`` loop where
+       ``sign_bit = inner.extract(w-1, w-1)``. With ``inner =
+       extract(159, 152, flag)``, this emitted nested
+       ``(extract 7 7 (extract 159 152 flag))`` instead of Z3's
+       native ``(_ sign_extend N)`` term. Switching emission to
+       ``operands[0].to_z3_ast_cached(cache).sign_ext(*bits)``
+       collapsed Rust's assertion stack to ``total_chars=54,221``
+       (13.7× smaller; 449 extracts, 0 concats — **8× smaller than
+       Python's**). End-to-end median: ~30s → ~22.5s over an 8-run
+       campaign (sorted: 8.97, 18.66, 22.39, 22.68, 26.24, 28.08,
+       29.49, 34.88). The fast tail at ~9s now matches Python's
+       solve time; the slow tail at ~35s indicates Z3 SAT-search
+       nondeterminism dominates the residual gap (category c per
+       :doc:`rust_bimodal_variance`). The simpler AST gives Z3 more
+       branch-choice freedom, widening the spread. Python time
+       unchanged (~10.3s).
    * - ``securityfest_fairlight``
      - 0.73x (slow mode)
      - Bimodal; 2026-05-13 campaign measured ~7.95s OR ~21.4s

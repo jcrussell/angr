@@ -2350,16 +2350,7 @@ impl RustBV {
 
             // Conversions
             BVOp::ZeroExt(bits) => operands[0].to_z3_ast_cached(cache).zero_ext(*bits),
-            BVOp::SignExt(bits) => {
-                let inner = operands[0].to_z3_ast_cached(cache);
-                let inner_width = operands[0].width();
-                let sign_bit = inner.extract(inner_width - 1, inner_width - 1);
-                let mut result = inner;
-                for _ in 0..*bits {
-                    result = sign_bit.clone().concat(&result);
-                }
-                result
-            }
+            BVOp::SignExt(bits) => operands[0].to_z3_ast_cached(cache).sign_ext(*bits),
             BVOp::Extract(high, low) => {
                 Self::emit_extract_z3_cached(&operands[0], *high, *low, cache)
             }
