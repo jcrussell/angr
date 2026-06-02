@@ -64,16 +64,16 @@ impl RustExplorationManager {
     /// state was added to the active stash, false if pruned.
     #[inline]
     pub(crate) fn push_to_active_or_drop(&mut self, state: RustSimState) -> bool {
-        if let Some(limit) = self.max_active_states {
-            if self.sm.active_count() >= limit {
-                log::debug!(
-                    "max_active_states limit ({}) reached, pruning state {}",
-                    limit,
-                    state.state_id()
-                );
-                self.push_or_drop_terminal(STASH_PRUNED, state);
-                return false;
-            }
+        if let Some(limit) = self.max_active_states
+            && self.sm.active_count() >= limit
+        {
+            log::debug!(
+                "max_active_states limit ({}) reached, pruning state {}",
+                limit,
+                state.state_id()
+            );
+            self.push_or_drop_terminal(STASH_PRUNED, state);
+            return false;
         }
         self.sm.push(STASH_ACTIVE, state);
         true
@@ -102,10 +102,10 @@ impl RustExplorationManager {
     /// Falls back to linear scan if the index is stale.
     pub(crate) fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
         // Check pending callback state first (during find_predicate evaluation)
-        if let Some(ref pending) = self.pending_callback {
-            if pending.state.state_id() == state_id {
-                return Some(&pending.state);
-            }
+        if let Some(ref pending) = self.pending_callback
+            && pending.state.state_id() == state_id
+        {
+            return Some(&pending.state);
         }
         self.sm.find_state(state_id)
     }
@@ -276,11 +276,7 @@ impl RustExplorationManager {
                     if do_drop {
                         // States are simply discarded
                     } else {
-                        let cut_stash = self
-                            .sm
-                            .stashes_mut()
-                            .entry("cut".to_string())
-                            .or_default();
+                        let cut_stash = self.sm.stashes_mut().entry("cut".to_string()).or_default();
                         for state in removed_states {
                             cut_stash.push_back(state);
                         }
@@ -325,11 +321,7 @@ impl RustExplorationManager {
                     }
 
                     if !self.sm.drop_terminal_states() {
-                        let target = self
-                            .sm
-                            .stashes_mut()
-                            .entry(stash_name)
-                            .or_default();
+                        let target = self.sm.stashes_mut().entry(stash_name).or_default();
                         for state in removed_states {
                             target.push_back(state);
                         }
@@ -459,7 +451,9 @@ impl RustExplorationManager {
                             };
 
                             let z3_ast = backend.as_ref().and_then(|b| {
-                                Self::extract_z3_ptr_from_claripy(b, &constraint).ok().flatten()
+                                Self::extract_z3_ptr_from_claripy(b, &constraint)
+                                    .ok()
+                                    .flatten()
                             });
 
                             if let Some(ast) = z3_ast {

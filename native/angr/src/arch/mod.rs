@@ -378,23 +378,23 @@ impl RegisterFile {
         // E.g., writing cl (8-bit at offset 12) when ecx (32-bit at offset 12)
         // is symbolic. We must compose the new value with the remaining symbolic
         // bits to preserve them.
-        if let Some(wider_sym) = self.symbolic.get(&offset).cloned() {
-            if wider_sym.width() > write_bits {
-                // Writing to the LOW portion of a wider symbolic
-                let upper = wider_sym.extract_no_ctx(wider_sym.width() - 1, write_bits);
-                let composed = upper.concat_no_ctx(&value);
-                self.symbolic.insert(offset, composed);
-                // Also update concrete data for the written portion if concrete
-                if let Some(v) = value.as_u128() {
-                    let start = offset as usize;
-                    for i in 0..size as usize {
-                        if start + i < self.data.len() {
-                            self.data[start + i] = (v >> (i * 8)) as u8;
-                        }
+        if let Some(wider_sym) = self.symbolic.get(&offset).cloned()
+            && wider_sym.width() > write_bits
+        {
+            // Writing to the LOW portion of a wider symbolic
+            let upper = wider_sym.extract_no_ctx(wider_sym.width() - 1, write_bits);
+            let composed = upper.concat_no_ctx(&value);
+            self.symbolic.insert(offset, composed);
+            // Also update concrete data for the written portion if concrete
+            if let Some(v) = value.as_u128() {
+                let start = offset as usize;
+                for i in 0..size as usize {
+                    if start + i < self.data.len() {
+                        self.data[start + i] = (v >> (i * 8)) as u8;
                     }
                 }
-                return;
             }
+            return;
         }
         // Also check if writing to the middle/upper portion of a wider symbolic.
         // E.g., writing ch (8-bit at offset 13) when ecx (32-bit at offset 12) is symbolic.
@@ -491,11 +491,10 @@ impl RegisterFile {
         if let (Some(offset), Some(size)) = (
             self.arch.register_offset(name),
             self.arch.register_size(name),
-        ) {
-            if value.width() == size * 8 {
-                self.put(offset, value);
-                return true;
-            }
+        ) && value.width() == size * 8
+        {
+            self.put(offset, value);
+            return true;
         }
         false
     }
@@ -795,7 +794,7 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn serde_roundtrip_register_file_symbolic() {
-        use z3::{with_z3_context, Config, Context};
+        use z3::{Config, Context, with_z3_context};
 
         let ctx = SymContext::new();
         let mut regs = RegisterFile::new(Box::new(AMD64));
@@ -815,8 +814,7 @@ mod tests {
         let new_ctx = Context::new(&cfg);
         let (sym_id, sym_width, sym_name, is_symbolic) =
             with_z3_context(&new_ctx, || -> (u64, u32, String, bool) {
-                let restored: RegisterFile =
-                    serde_json::from_str(&s).expect("deserialize");
+                let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
                 let ctx2 = SymContext::new();
                 let bv = restored.get_reg("rdi", &ctx2).unwrap();
                 match &bv {

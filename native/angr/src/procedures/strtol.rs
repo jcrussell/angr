@@ -27,13 +27,11 @@ fn read_bytes_until_null(
 ) -> Result<Vec<RustBV>, ProcedureError> {
     let mut result = Vec::with_capacity(max_len);
     for i in 0..max_len {
-        let byte = state
-            .memory_load(addr.wrapping_add(i as u64), 1)
-            ?;
-        if let Some(b) = byte.as_u64() {
-            if (b as u8) == 0 {
-                break;
-            }
+        let byte = state.memory_load(addr.wrapping_add(i as u64), 1)?;
+        if let Some(b) = byte.as_u64()
+            && (b as u8) == 0
+        {
+            break;
         }
         result.push(byte);
     }
@@ -112,10 +110,10 @@ fn parse_concrete_prefix(
         if let (Some(b0), Some(b1)) = (
             bytes[idx].as_u64(),
             bytes.get(idx + 1).and_then(|b| b.as_u64()),
-        ) {
-            if (b0 as u8) == b'0' && ((b1 as u8) == b'x' || (b1 as u8) == b'X') {
-                idx += 2;
-            }
+        ) && (b0 as u8) == b'0'
+            && ((b1 as u8) == b'x' || (b1 as u8) == b'X')
+        {
+            idx += 2;
         }
         16
     } else {
@@ -243,13 +241,11 @@ fn run_strtol(
     let (base, negative) = match prefix {
         Some(p) => p,
         None => {
-            if let Some(end) = endptr {
-                if end != 0 {
-                    let end_addr = addr.wrapping_add(prefix_end as u64);
-                    state
-                        .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                        ?;
-                }
+            if let Some(end) = endptr
+                && end != 0
+            {
+                let end_addr = addr.wrapping_add(prefix_end as u64);
+                state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
             }
             return Ok(Some(RustBV::concrete(0, bits)));
         }
@@ -268,20 +264,18 @@ fn run_strtol(
         } else {
             value
         };
-        if let Some(end) = endptr {
-            if end != 0 {
-                let end_addr = if consumed == 0 {
-                    // C says: if no conversion, *endptr = nptr. Preserve the
-                    // pre-existing behavior of pointing past the prefix; tests
-                    // and benchmarks expect this.
-                    addr.wrapping_add(prefix_end as u64)
-                } else {
-                    addr.wrapping_add((prefix_end + consumed) as u64)
-                };
-                state
-                    .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                    ?;
-            }
+        if let Some(end) = endptr
+            && end != 0
+        {
+            let end_addr = if consumed == 0 {
+                // C says: if no conversion, *endptr = nptr. Preserve the
+                // pre-existing behavior of pointing past the prefix; tests
+                // and benchmarks expect this.
+                addr.wrapping_add(prefix_end as u64)
+            } else {
+                addr.wrapping_add((prefix_end + consumed) as u64)
+            };
+            state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
         }
         return Ok(Some(RustBV::concrete(value as u128, bits)));
     }
@@ -295,13 +289,11 @@ fn run_strtol(
 
     // Endptr: best-effort over-approximation = addr + bytes.len() (i.e. past
     // the last byte considered). The actual end depends on path values.
-    if let Some(end) = endptr {
-        if end != 0 {
-            let end_addr = addr.wrapping_add(bytes.len() as u64);
-            state
-                .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                ?;
-        }
+    if let Some(end) = endptr
+        && end != 0
+    {
+        let end_addr = addr.wrapping_add(bytes.len() as u64);
+        state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
     }
 
     Ok(Some(result))

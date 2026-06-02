@@ -246,139 +246,133 @@ impl RustExplorationManager {
                         .iter()
                         .any(|(base, data)| pc >= *base && pc < *base + data.len() as u64);
                     // Try native procedure first (only for external/library hooks)
-                    if !is_in_binary {
-                        if let Some(native_proc) = self.native_procedures.get(&name) {
-                            // Extract arguments from state registers (and stack
-                            // when num_args exceeds the register count). On
-                            // failure (symbolic SP, unmapped stack slot) skip
-                            // the native fast path and let the Python
-                            // SimProcedure callback below handle it — handing
-                            // the native handler fabricated zeros would mask
-                            // the underlying stack-setup bug.
-                            match self.extract_procedure_args(&state, num_args) {
-                                Err(e) => {
-                                    log::debug!(
-                                        "Skipping native procedure {} (arg extraction failed: {:?})",
-                                        name,
-                                        e
-                                    );
-                                    self.profiling.native_proc_stats.python_fallbacks += 1;
+                    if !is_in_binary && let Some(native_proc) = self.native_procedures.get(&name) {
+                        // Extract arguments from state registers (and stack
+                        // when num_args exceeds the register count). On
+                        // failure (symbolic SP, unmapped stack slot) skip
+                        // the native fast path and let the Python
+                        // SimProcedure callback below handle it — handing
+                        // the native handler fabricated zeros would mask
+                        // the underlying stack-setup bug.
+                        match self.extract_procedure_args(&state, num_args) {
+                            Err(e) => {
+                                log::debug!(
+                                    "Skipping native procedure {} (arg extraction failed: {:?})",
+                                    name,
+                                    e
+                                );
+                                self.profiling.native_proc_stats.python_fallbacks += 1;
+                                *self
+                                    .profiling
+                                    .native_proc_stats
+                                    .other_fallbacks_by_name
+                                    .entry(name.clone())
+                                    .or_insert(0) += 1;
+                            }
+                            Ok(args) => match native_proc.call(&mut state, &args) {
+                                Ok(ret_val) => {
+                                    // Native execution succeeded
+                                    self.profiling.native_proc_stats.native_calls += 1;
                                     *self
                                         .profiling
                                         .native_proc_stats
-                                        .other_fallbacks_by_name
+                                        .call_counts
                                         .entry(name.clone())
                                         .or_insert(0) += 1;
-                                }
-                                Ok(args) => match native_proc.call(&mut state, &args) {
-                                    Ok(ret_val) => {
-                                        // Native execution succeeded
-                                        self.profiling.native_proc_stats.native_calls += 1;
-                                        *self
-                                            .profiling
-                                            .native_proc_stats
-                                            .call_counts
-                                            .entry(name.clone())
-                                            .or_insert(0) += 1;
 
-                                        // For no-return procedures (exit/abort), skip
-                                        // the return-address dance and deadend directly.
-                                        // Setting PC to a stack-derived return address
-                                        // can produce a spurious successor (e.g. when
-                                        // exit is called from rejected() in fauxware,
-                                        // the post-call address happens to overlap
-                                        // main's start, causing infinite re-entry).
-                                        if no_return {
-                                            self.push_or_drop_terminal(STASH_DEADENDED, state);
-                                            continue;
-                                        }
-
-                                        // Set return value if present
-                                        if let Some(rv) = ret_val {
-                                            let ret_reg = self
-                                                .environment
-                                                .calling_convention
-                                                .return_register();
-                                            state.set_register_by_offset(ret_reg, rv);
-                                        }
-
-                                        // Get return address and set PC. Use the
-                                        // state's real register file so that LR/X30/$ra
-                                        // overrides see actual values; passing a blank
-                                        // RegisterFile here used to make ARM/ARM64/MIPS
-                                        // read LR=0 and set PC to 0.
-                                        let ctx = state.solver().borrow();
-                                        let ret_addr_opt = self
-                                            .environment
-                                            .calling_convention
-                                            .get_return_addr(state.registers(), None, &ctx);
-                                        let pops_return_addr =
-                                            self.environment.calling_convention.pops_return_addr();
-                                        drop(ctx);
-                                        if let Some(ret_addr) = ret_addr_opt {
-                                            // Only adjust SP for stack-based ABIs
-                                            // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
-                                            // in a register and leave SP untouched.
-                                            if pops_return_addr {
-                                                let sp = state.get_sp().as_u64().unwrap_or(0);
-                                                let ptr_size = state.arch().bytes() as u64;
-                                                state.set_sp(RustBV::concrete(
-                                                    (sp + ptr_size) as u128,
-                                                    state.arch().bits(),
-                                                ));
-                                            }
-                                            state.set_pc(ret_addr);
-                                        } else if pops_return_addr {
-                                            // Fallback: read ret addr from [sp] for
-                                            // stack-based ABIs (only useful when the
-                                            // calling convention's get_return_addr
-                                            // declined to read memory itself).
-                                            if let Some(sp) = state.get_sp().as_u64() {
-                                                if let Ok(ret_bv) =
-                                                    state.memory_load(sp, state.arch().bytes())
-                                                {
-                                                    if let Some(ret_addr) = ret_bv.as_u64() {
-                                                        let ptr_size = state.arch().bytes() as u64;
-                                                        state.set_sp(RustBV::concrete(
-                                                            (sp + ptr_size) as u128,
-                                                            state.arch().bits(),
-                                                        ));
-                                                        state.set_pc(ret_addr);
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        self.push_to_active_or_drop(state);
+                                    // For no-return procedures (exit/abort), skip
+                                    // the return-address dance and deadend directly.
+                                    // Setting PC to a stack-derived return address
+                                    // can produce a spurious successor (e.g. when
+                                    // exit is called from rejected() in fauxware,
+                                    // the post-call address happens to overlap
+                                    // main's start, causing infinite re-entry).
+                                    if no_return {
+                                        self.push_or_drop_terminal(STASH_DEADENDED, state);
                                         continue;
                                     }
-                                    Err(e) => {
-                                        // Native execution failed, fall back to Python
-                                        self.profiling.native_proc_stats.python_fallbacks += 1;
-                                        let bucket = match e {
-                                            ProcedureError::SymbolicArgument(_) => {
-                                                &mut self
-                                                    .profiling
-                                                    .native_proc_stats
-                                                    .symbolic_fallbacks_by_name
-                                            }
-                                            ProcedureError::NotImplemented => {
-                                                &mut self
-                                                    .profiling
-                                                    .native_proc_stats
-                                                    .not_implemented_fallbacks_by_name
-                                            }
-                                            _ => {
-                                                &mut self
-                                                    .profiling
-                                                    .native_proc_stats
-                                                    .other_fallbacks_by_name
-                                            }
-                                        };
-                                        *bucket.entry(name.clone()).or_insert(0) += 1;
+
+                                    // Set return value if present
+                                    if let Some(rv) = ret_val {
+                                        let ret_reg =
+                                            self.environment.calling_convention.return_register();
+                                        state.set_register_by_offset(ret_reg, rv);
                                     }
-                                },
-                            }
+
+                                    // Get return address and set PC. Use the
+                                    // state's real register file so that LR/X30/$ra
+                                    // overrides see actual values; passing a blank
+                                    // RegisterFile here used to make ARM/ARM64/MIPS
+                                    // read LR=0 and set PC to 0.
+                                    let ctx = state.solver().borrow();
+                                    let ret_addr_opt = self
+                                        .environment
+                                        .calling_convention
+                                        .get_return_addr(state.registers(), None, &ctx);
+                                    let pops_return_addr =
+                                        self.environment.calling_convention.pops_return_addr();
+                                    drop(ctx);
+                                    if let Some(ret_addr) = ret_addr_opt {
+                                        // Only adjust SP for stack-based ABIs
+                                        // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
+                                        // in a register and leave SP untouched.
+                                        if pops_return_addr {
+                                            let sp = state.get_sp().as_u64().unwrap_or(0);
+                                            let ptr_size = state.arch().bytes() as u64;
+                                            state.set_sp(RustBV::concrete(
+                                                (sp + ptr_size) as u128,
+                                                state.arch().bits(),
+                                            ));
+                                        }
+                                        state.set_pc(ret_addr);
+                                    } else if pops_return_addr {
+                                        // Fallback: read ret addr from [sp] for
+                                        // stack-based ABIs (only useful when the
+                                        // calling convention's get_return_addr
+                                        // declined to read memory itself).
+                                        if let Some(sp) = state.get_sp().as_u64()
+                                            && let Ok(ret_bv) =
+                                                state.memory_load(sp, state.arch().bytes())
+                                            && let Some(ret_addr) = ret_bv.as_u64()
+                                        {
+                                            let ptr_size = state.arch().bytes() as u64;
+                                            state.set_sp(RustBV::concrete(
+                                                (sp + ptr_size) as u128,
+                                                state.arch().bits(),
+                                            ));
+                                            state.set_pc(ret_addr);
+                                        }
+                                    }
+
+                                    self.push_to_active_or_drop(state);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    // Native execution failed, fall back to Python
+                                    self.profiling.native_proc_stats.python_fallbacks += 1;
+                                    let bucket = match e {
+                                        ProcedureError::SymbolicArgument(_) => {
+                                            &mut self
+                                                .profiling
+                                                .native_proc_stats
+                                                .symbolic_fallbacks_by_name
+                                        }
+                                        ProcedureError::NotImplemented => {
+                                            &mut self
+                                                .profiling
+                                                .native_proc_stats
+                                                .not_implemented_fallbacks_by_name
+                                        }
+                                        _ => {
+                                            &mut self
+                                                .profiling
+                                                .native_proc_stats
+                                                .other_fallbacks_by_name
+                                        }
+                                    };
+                                    *bucket.entry(name.clone()).or_insert(0) += 1;
+                                }
+                            },
                         }
                     } // if !is_in_binary
 
@@ -455,64 +449,64 @@ impl RustExplorationManager {
                         CallbackReason::SimProcedure { addr, .. } => Some(*addr),
                         _ => None,
                     };
-                    if let Some(addr) = callback_addr {
-                        if self.find_addrs.contains(&addr) || self.avoid_addrs.contains(&addr) {
-                            let is_find = self.find_addrs.contains(&addr);
+                    if let Some(addr) = callback_addr
+                        && (self.find_addrs.contains(&addr) || self.avoid_addrs.contains(&addr))
+                    {
+                        let is_find = self.find_addrs.contains(&addr);
 
-                            // Process deferred forks BEFORE handling the find/avoid state.
-                            // These represent unexplored branches that diverged before
-                            // reaching the find/avoid address and must not be dropped.
-                            let fork_base = pending
-                                .pre_callback_snapshot
-                                .unwrap_or_else(|| pending.state.fork());
-                            let original_state_id = pending.state.state_id();
-                            let root_state_id = self
-                                .sm
-                                .roots()
-                                .get(&original_state_id)
-                                .copied()
-                                .unwrap_or(original_state_id);
+                        // Process deferred forks BEFORE handling the find/avoid state.
+                        // These represent unexplored branches that diverged before
+                        // reaching the find/avoid address and must not be dropped.
+                        let fork_base = pending
+                            .pre_callback_snapshot
+                            .unwrap_or_else(|| pending.state.fork());
+                        let original_state_id = pending.state.state_id();
+                        let root_state_id = self
+                            .sm
+                            .roots()
+                            .get(&original_state_id)
+                            .copied()
+                            .unwrap_or(original_state_id);
 
-                            let mut snapshots = pending.fork_snapshots;
-                            let cb_fork_start = if self.profiling.profiling_enabled {
-                                Some(std::time::Instant::now())
+                        let mut snapshots = pending.fork_snapshots;
+                        let cb_fork_start = if self.profiling.profiling_enabled {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
+                        let cb_fork_total = pending.deferred_forks.len() as u64;
+                        for fork in pending.deferred_forks {
+                            let condition = pending.stored_conditions.get(&fork.condition_id);
+                            let reconstructed = if condition.is_none() {
+                                if let Some(ref py_ast) = fork.condition_ast {
+                                    Python::attach(|py| {
+                                        let ast = py_ast.bind(py);
+                                        let solver_ref = fork_base.solver();
+                                        let ctx: &SymContext = &solver_ref.borrow();
+                                        claripy_to_rustbv(py, ast, ctx).ok()
+                                    })
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             };
-                            let cb_fork_total = pending.deferred_forks.len() as u64;
-                            for fork in pending.deferred_forks {
-                                let condition = pending.stored_conditions.get(&fork.condition_id);
-                                let reconstructed = if condition.is_none() {
-                                    if let Some(ref py_ast) = fork.condition_ast {
-                                        Python::attach(|py| {
-                                            let ast = py_ast.bind(py);
-                                            let solver_ref = fork_base.solver();
-                                            let ctx: &SymContext = &solver_ref.borrow();
-                                            claripy_to_rustbv(py, ast, ctx).ok()
-                                        })
-                                    } else {
-                                        None
-                                    }
+
+                            if let Some(cond) = condition.or(reconstructed.as_ref()) {
+                                // Add the taken-path constraint to the main state
+                                // (mirrors the BlockEnd handling at line 3560-3564).
+                                if fork.path_taken {
+                                    pending.state.solver().borrow().assume_true(cond);
+                                } else {
+                                    pending.state.solver().borrow().assume_false(cond);
+                                }
+                                let fork_op_start = if self.profiling.profiling_enabled {
+                                    Some(std::time::Instant::now())
                                 } else {
                                     None
                                 };
-
-                                if let Some(cond) = condition.or(reconstructed.as_ref()) {
-                                    // Add the taken-path constraint to the main state
-                                    // (mirrors the BlockEnd handling at line 3560-3564).
-                                    if fork.path_taken {
-                                        pending.state.solver().borrow().assume_true(cond);
-                                    } else {
-                                        pending.state.solver().borrow().assume_false(cond);
-                                    }
-                                    let fork_op_start = if self.profiling.profiling_enabled {
-                                        Some(std::time::Instant::now())
-                                    } else {
-                                        None
-                                    };
-                                    let forked = if let Some(snapshot) =
-                                        snapshots.remove(&fork.condition_id)
-                                    {
+                                let forked =
+                                    if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                                         let mut f = fork_base.fork_from_snapshot(snapshot);
                                         if fork.path_taken {
                                             f.solver().borrow().assume_false(cond);
@@ -530,59 +524,53 @@ impl RustExplorationManager {
                                         f.set_pc(fork.unexplored_target);
                                         f
                                     };
-                                    if let Some(start) = fork_op_start {
-                                        self.profiling.accumulated_stats.solver_fork_time_ns +=
-                                            start.elapsed().as_nanos() as u64;
-                                        self.profiling.accumulated_stats.solver_fork_count += 1;
-                                    }
-                                    self.sm.set_root(forked.state_id(), root_state_id);
-                                    let sat_start = if self.profiling.profiling_enabled {
-                                        Some(std::time::Instant::now())
-                                    } else {
-                                        None
-                                    };
-                                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                                        if let Some(start) = sat_start {
-                                            self.profiling.accumulated_stats.solver_sat_time_ns +=
-                                                start.elapsed().as_nanos() as u64;
-                                            self.profiling.accumulated_stats.solver_sat_count += 1;
-                                        }
-                                        self.push_to_active_or_drop(forked);
-                                    } else if let Some(start) = sat_start {
+                                if let Some(start) = fork_op_start {
+                                    self.profiling.accumulated_stats.solver_fork_time_ns +=
+                                        start.elapsed().as_nanos() as u64;
+                                    self.profiling.accumulated_stats.solver_fork_count += 1;
+                                }
+                                self.sm.set_root(forked.state_id(), root_state_id);
+                                let sat_start = if self.profiling.profiling_enabled {
+                                    Some(std::time::Instant::now())
+                                } else {
+                                    None
+                                };
+                                if self.constraint_solver.lazy_solves || forked.satisfiable() {
+                                    if let Some(start) = sat_start {
                                         self.profiling.accumulated_stats.solver_sat_time_ns +=
                                             start.elapsed().as_nanos() as u64;
                                         self.profiling.accumulated_stats.solver_sat_count += 1;
                                     }
+                                    self.push_to_active_or_drop(forked);
+                                } else if let Some(start) = sat_start {
+                                    self.profiling.accumulated_stats.solver_sat_time_ns +=
+                                        start.elapsed().as_nanos() as u64;
+                                    self.profiling.accumulated_stats.solver_sat_count += 1;
                                 }
                             }
-                            if let Some(start) = cb_fork_start {
-                                self.profiling.accumulated_stats.deferred_fork_time_ns +=
-                                    start.elapsed().as_nanos() as u64;
-                                self.profiling.accumulated_stats.deferred_fork_count +=
-                                    cb_fork_total;
-                            }
-
-                            // Now handle the main state
-                            if is_find {
-                                if self.constraint_solver.lazy_solves || pending.state.satisfiable()
-                                {
-                                    self.sm
-                                        .stashes_mut()
-                                        .entry(STASH_FOUND.to_string())
-                                        .or_default()
-                                        .push_back(pending.state);
-                                } else {
-                                    log::debug!(
-                                        "State at find address 0x{:x} is UNSAT, pruning",
-                                        addr
-                                    );
-                                    self.push_or_drop_terminal(STASH_PRUNED, pending.state);
-                                }
-                            } else {
-                                self.push_or_drop_terminal(STASH_AVOID, pending.state);
-                            }
-                            continue;
                         }
+                        if let Some(start) = cb_fork_start {
+                            self.profiling.accumulated_stats.deferred_fork_time_ns +=
+                                start.elapsed().as_nanos() as u64;
+                            self.profiling.accumulated_stats.deferred_fork_count += cb_fork_total;
+                        }
+
+                        // Now handle the main state
+                        if is_find {
+                            if self.constraint_solver.lazy_solves || pending.state.satisfiable() {
+                                self.sm
+                                    .stashes_mut()
+                                    .entry(STASH_FOUND.to_string())
+                                    .or_default()
+                                    .push_back(pending.state);
+                            } else {
+                                log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
+                                self.push_or_drop_terminal(STASH_PRUNED, pending.state);
+                            }
+                        } else {
+                            self.push_or_drop_terminal(STASH_AVOID, pending.state);
+                        }
+                        continue;
                     }
 
                     // Need Python callback

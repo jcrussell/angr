@@ -272,10 +272,11 @@ impl SymbolicMemory {
     /// thousands of distinct load shapes.
     pub(super) fn insert_wider_load_cache(&self, key: (Address, u32), entry: CachedWiderLoad) {
         let mut cache = self.wider_load_cache.borrow_mut();
-        if cache.len() >= WIDER_LOAD_CACHE_CAP && !cache.contains_key(&key) {
-            if let Some(victim) = cache.keys().next().copied() {
-                cache.remove(&victim);
-            }
+        if cache.len() >= WIDER_LOAD_CACHE_CAP
+            && !cache.contains_key(&key)
+            && let Some(victim) = cache.keys().next().copied()
+        {
+            cache.remove(&victim);
         }
         cache.insert(key, entry);
     }
@@ -817,10 +818,11 @@ impl SymbolicMemory {
 
         // Check pages before the trigger
         for i in 1..=count_before {
-            if let Some(page_num) = trigger_page_num.checked_sub(i) {
-                if self.is_in_lazy_region(page_num) && !self.pages.contains_key(&page_num) {
-                    pages_to_fetch.push(page_num << 12);
-                }
+            if let Some(page_num) = trigger_page_num.checked_sub(i)
+                && self.is_in_lazy_region(page_num)
+                && !self.pages.contains_key(&page_num)
+            {
+                pages_to_fetch.push(page_num << 12);
             }
         }
 
@@ -1050,18 +1052,14 @@ pub struct SymbolicMemorySnapshot {
 impl SymbolicMemory {
     /// Build a serializable snapshot (angr-x04s.1.3).
     pub fn to_snapshot(&self) -> SymbolicMemorySnapshot {
-        let pages: std::collections::BTreeMap<u64, MemoryPage> = self
-            .pages
-            .iter()
-            .map(|(k, v)| (*k, v.clone()))
-            .collect();
+        let pages: std::collections::BTreeMap<u64, MemoryPage> =
+            self.pages.iter().map(|(k, v)| (*k, v.clone())).collect();
         let symbolic_objects: std::collections::BTreeMap<u64, RustBV> = self
             .symbolic_objects
             .iter()
             .map(|(addr, bv)| (addr.raw(), bv.clone()))
             .collect();
-        let mut imported_addrs: Vec<u64> =
-            self.imported_addrs.iter().map(|a| a.raw()).collect();
+        let mut imported_addrs: Vec<u64> = self.imported_addrs.iter().map(|a| a.raw()).collect();
         imported_addrs.sort_unstable();
         SymbolicMemorySnapshot {
             pages,
@@ -1092,21 +1090,16 @@ impl SymbolicMemory {
             .into_iter()
             .map(|(k, v)| (Address::new(k), v))
             .collect();
-        let mut symbolic_spans: FxHashMap<Address, (Address, u32)> =
-            FxHashMap::default();
+        let mut symbolic_spans: FxHashMap<Address, (Address, u32)> = FxHashMap::default();
         for (base, bv) in symbolic_objects.iter() {
             let width = bv.width();
             let bytes = width.div_ceil(8);
             for i in 0..bytes {
-                symbolic_spans
-                    .insert(Address::new(base.raw() + i as u64), (*base, width));
+                symbolic_spans.insert(Address::new(base.raw() + i as u64), (*base, width));
             }
         }
-        let imported_addrs: FxHashSet<Address> = snap
-            .imported_addrs
-            .into_iter()
-            .map(Address::new)
-            .collect();
+        let imported_addrs: FxHashSet<Address> =
+            snap.imported_addrs.into_iter().map(Address::new).collect();
         SymbolicMemory {
             pages,
             symbolic_objects,

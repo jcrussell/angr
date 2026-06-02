@@ -47,10 +47,10 @@ impl<'a> VEXInterpreter<'a> {
         let next_val = self.eval_expr_simple(&irsb.next, &irsb.tyenv)?;
 
         // Fast path: concrete address
-        if let Some(addr) = next_val.as_u64() {
-            if !next_val.is_symbolic() {
-                return Ok(ConcretizedJump::Single(addr));
-            }
+        if let Some(addr) = next_val.as_u64()
+            && !next_val.is_symbolic()
+        {
+            return Ok(ConcretizedJump::Single(addr));
         }
 
         // NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
@@ -294,7 +294,13 @@ mod tests {
         add_internal_region(&mut interp);
         let result = interp.handle_exit(0x1500, JumpKind::Boring);
         assert_eq!(interp.get_pc(), 0x1500);
-        matches!(result, BlockResult::BlockEnd { next_addr: 0x1500, jumpkind: JumpKind::Boring });
+        matches!(
+            result,
+            BlockResult::BlockEnd {
+                next_addr: 0x1500,
+                jumpkind: JumpKind::Boring
+            }
+        );
     }
 
     #[test]
@@ -332,7 +338,9 @@ mod tests {
         add_internal_region(&mut interp);
         // 0x9000 is not in [0x1000, 0x2000) — external.
         match interp.handle_exit(0x9000, JumpKind::Call) {
-            BlockResult::UnmodeledCall { addr, symbol_name, .. } => {
+            BlockResult::UnmodeledCall {
+                addr, symbol_name, ..
+            } => {
                 assert_eq!(addr, 0x9000);
                 // Calls don't get __extern_addr__ tag — that's the post-call path.
                 assert_eq!(symbol_name, None);
@@ -349,7 +357,12 @@ mod tests {
         assert!(interp.call_stack.is_empty());
         // External target + Ret + empty stack -> UnconstrainedJump (see angr-3uye).
         match interp.handle_exit(0x9000, JumpKind::Ret) {
-            BlockResult::UnconstrainedJump { min_target, max_target, jumpkind, .. } => {
+            BlockResult::UnconstrainedJump {
+                min_target,
+                max_target,
+                jumpkind,
+                ..
+            } => {
                 assert_eq!(min_target, 0x9000);
                 assert_eq!(max_target, 0x9000);
                 assert!(jumpkind.is_ret());
@@ -365,7 +378,10 @@ mod tests {
         add_internal_region(&mut interp);
         // Returning to an internal address is a normal block end even with empty stack.
         match interp.handle_exit(0x1800, JumpKind::Ret) {
-            BlockResult::BlockEnd { next_addr, jumpkind } => {
+            BlockResult::BlockEnd {
+                next_addr,
+                jumpkind,
+            } => {
                 assert_eq!(next_addr, 0x1800);
                 assert!(jumpkind.is_ret());
             }
@@ -380,7 +396,9 @@ mod tests {
         add_internal_region(&mut interp);
         // A jump (Boring) to a non-hooked external address is tagged __extern_addr__.
         match interp.handle_exit(0x9000, JumpKind::Boring) {
-            BlockResult::UnmodeledCall { addr, symbol_name, .. } => {
+            BlockResult::UnmodeledCall {
+                addr, symbol_name, ..
+            } => {
                 assert_eq!(addr, 0x9000);
                 assert_eq!(symbol_name.as_deref(), Some("__extern_addr__"));
             }
@@ -395,7 +413,10 @@ mod tests {
         add_internal_region(&mut interp);
         // Internal call (target in binary) — falls through to BlockEnd.
         match interp.handle_exit(0x1234, JumpKind::Call) {
-            BlockResult::BlockEnd { next_addr, jumpkind } => {
+            BlockResult::BlockEnd {
+                next_addr,
+                jumpkind,
+            } => {
                 assert_eq!(next_addr, 0x1234);
                 assert!(jumpkind.is_call());
             }
@@ -418,7 +439,9 @@ mod tests {
             stack_ptr: 0x7ffe_0000,
         });
         match interp.handle_exit(0x9000, JumpKind::Ret) {
-            BlockResult::UnmodeledCall { addr, symbol_name, .. } => {
+            BlockResult::UnmodeledCall {
+                addr, symbol_name, ..
+            } => {
                 assert_eq!(addr, 0x9000);
                 assert_eq!(symbol_name.as_deref(), Some("__extern_addr__"));
             }

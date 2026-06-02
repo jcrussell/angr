@@ -540,12 +540,8 @@ impl VEXOps {
 
             // SSE scalar-in-vector reciprocal/rsqrt estimate (RCPSS / RSQRTSS).
             // Lane 0 fresh-symbolic, upper lanes pass through.
-            IROp::VFRecipEstS { elem } => {
-                Self::vec_float_scalar_fresh(arg, elem, "RecipEst", ctx)
-            }
-            IROp::VFRSqrtEstS { elem } => {
-                Self::vec_float_scalar_fresh(arg, elem, "RSqrtEst", ctx)
-            }
+            IROp::VFRecipEstS { elem } => Self::vec_float_scalar_fresh(arg, elem, "RecipEst", ctx),
+            IROp::VFRSqrtEstS { elem } => Self::vec_float_scalar_fresh(arg, elem, "RSqrtEst", ctx),
 
             // Packed integer absolute value
             IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
@@ -572,12 +568,8 @@ impl VEXOps {
             // generic handler for these integer ops, so any precision answer
             // would be more faithful than angr Python and could diverge. See
             // VFRecipEst for the same policy on FP variants.
-            IROp::VIRecipEst { count } => {
-                Self::vec_int_fresh_per_lane(32, count, "RecipEst", ctx)
-            }
-            IROp::VIRSqrtEst { count } => {
-                Self::vec_int_fresh_per_lane(32, count, "RSqrtEst", ctx)
-            }
+            IROp::VIRecipEst { count } => Self::vec_int_fresh_per_lane(32, count, "RecipEst", ctx),
+            IROp::VIRSqrtEst { count } => Self::vec_int_fresh_per_lane(32, count, "RSqrtEst", ctx),
 
             // NEON broadcast scalar to vector
             IROp::VDup { elem, count } => Self::vec_dup(arg, elem, count, ctx),
@@ -849,7 +841,9 @@ impl VEXOps {
             IROp::CmpLTU(ty) => width_binop!(left, right, ty, ult_into, ctx),
             IROp::CmpLEU(ty) => width_binop!(left, right, ty, ule_into, ctx),
 
-            _ => unreachable!("binop_bitwise_shift_cmp called with non-bitwise/shift/cmp op: {op:?}"),
+            _ => {
+                unreachable!("binop_bitwise_shift_cmp called with non-bitwise/shift/cmp op: {op:?}")
+            }
         }
     }
 
@@ -998,9 +992,7 @@ impl VEXOps {
             IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),
 
             // NEON binary narrow (truncating).
-            IROp::VNarrowBin { from, count } => {
-                Self::vec_narrow_bin(left, right, from, count, ctx)
-            }
+            IROp::VNarrowBin { from, count } => Self::vec_narrow_bin(left, right, from, count, ctx),
 
             // NEON binary saturating narrow.
             IROp::VQNarrowBin {
@@ -1305,10 +1297,10 @@ impl VEXOps {
         // RNE concrete: keep the native-f{32,64} fast path. Most code uses
         // RNE; routing through Z3 here would be a measurable regression on
         // FP-heavy benchmarks.
-        if let Some(m) = rm.as_u128() {
-            if m & 0x3 == 0 {
-                return Self::binop(op, left, right, ctx);
-            }
+        if let Some(m) = rm.as_u128()
+            && m & 0x3 == 0
+        {
+            return Self::binop(op, left, right, ctx);
         }
 
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
@@ -1330,10 +1322,10 @@ impl VEXOps {
             _ => return Self::unop(op, arg, ctx),
         };
 
-        if let Some(m) = rm.as_u128() {
-            if m & 0x3 == 0 {
-                return Self::unop(op, arg, ctx);
-            }
+        if let Some(m) = rm.as_u128()
+            && m & 0x3 == 0
+        {
+            return Self::unop(op, arg, ctx);
         }
 
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
@@ -1731,32 +1723,27 @@ impl VEXOps {
 
     /// NEON broadcast scalar to vector (Iop_Dup{N}x{M}). Replicates `arg` into
     /// `count` lanes of width `elem.bits()`.
-    fn vec_dup(
-        arg: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn vec_dup(arg: RustBV, elem: IRType, count: u8, ctx: &SymContext) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
         debug_assert_eq!(arg.width(), elem_width);
 
         // Concrete fast path.
-        if total_width <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
-                };
-                let lane = v & mask;
-                let mut result: u128 = 0;
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    result |= lane << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+        if total_width <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let lane = v & mask;
+            let mut result: u128 = 0;
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                result |= lane << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic: concat the same value `count` times.
@@ -1782,34 +1769,35 @@ impl VEXOps {
         debug_assert_eq!(arg.width(), in_total);
 
         // Concrete fast path.
-        if in_total <= 128 && (to_width * count as u32) <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let in_mask: u128 = if from_width == 128 {
-                    u128::MAX
+        if in_total <= 128
+            && (to_width * count as u32) <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let in_mask: u128 = if from_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << from_width) - 1
+            };
+            let out_mask: u128 = if to_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << to_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (from_width - 1);
+            let mut result: u128 = 0;
+            for i in 0..count {
+                let lo = (i as u32) * from_width;
+                let lane = (v >> lo) & in_mask;
+                let widened = if signed && (lane & sign_bit != 0) {
+                    // Sign-extend: fill upper (to_width - from_width) bits with 1s.
+                    (lane | !in_mask) & out_mask
                 } else {
-                    (1u128 << from_width) - 1
+                    lane
                 };
-                let out_mask: u128 = if to_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << to_width) - 1
-                };
-                let sign_bit: u128 = 1u128 << (from_width - 1);
-                let mut result: u128 = 0;
-                for i in 0..count {
-                    let lo = (i as u32) * from_width;
-                    let lane = (v >> lo) & in_mask;
-                    let widened = if signed && (lane & sign_bit != 0) {
-                        // Sign-extend: fill upper (to_width - from_width) bits with 1s.
-                        (lane | !in_mask) & out_mask
-                    } else {
-                        lane
-                    };
-                    let out_lo = (i as u32) * to_width;
-                    result |= widened << out_lo;
-                }
-                return Ok(RustBV::concrete(result, to_width * count as u32));
+                let out_lo = (i as u32) * to_width;
+                result |= widened << out_lo;
             }
+            return Ok(RustBV::concrete(result, to_width * count as u32));
         }
 
         // Symbolic: extract each lane, extend, concat.
@@ -1842,18 +1830,18 @@ impl VEXOps {
         debug_assert_eq!(arg.width(), in_total);
 
         // Concrete fast path.
-        if in_total <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let to_mask: u128 = (1u128 << to_width) - 1;
-                let mut result: u128 = 0;
-                for i in 0..count {
-                    let lo = (i as u32) * from_width;
-                    let lane = (v >> lo) & to_mask;
-                    let out_lo = (i as u32) * to_width;
-                    result |= lane << out_lo;
-                }
-                return Ok(RustBV::concrete(result, to_width * count as u32));
+        if in_total <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let to_mask: u128 = (1u128 << to_width) - 1;
+            let mut result: u128 = 0;
+            for i in 0..count {
+                let lo = (i as u32) * from_width;
+                let lane = (v >> lo) & to_mask;
+                let out_lo = (i as u32) * to_width;
+                result |= lane << out_lo;
             }
+            return Ok(RustBV::concrete(result, to_width * count as u32));
         }
 
         // Symbolic: extract each low half-lane, concat.
@@ -1884,21 +1872,22 @@ impl VEXOps {
         debug_assert_eq!(right.width(), in_total);
 
         // Concrete fast path.
-        if in_total <= 128 && (to_width * count as u32) <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let to_mask: u128 = (1u128 << to_width) - 1;
-                let mut result: u128 = 0;
-                for i in 0..per_input {
-                    let lo = i * from_width;
-                    let lane_l = (l >> lo) & to_mask;
-                    let lane_r = (r >> lo) & to_mask;
-                    let out_lo_l = i * to_width;
-                    let out_lo_r = (per_input + i) * to_width;
-                    result |= lane_l << out_lo_l;
-                    result |= lane_r << out_lo_r;
-                }
-                return Ok(RustBV::concrete(result, to_width * count as u32));
+        if in_total <= 128
+            && (to_width * count as u32) <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let to_mask: u128 = (1u128 << to_width) - 1;
+            let mut result: u128 = 0;
+            for i in 0..per_input {
+                let lo = i * from_width;
+                let lane_l = (l >> lo) & to_mask;
+                let lane_r = (r >> lo) & to_mask;
+                let out_lo_l = i * to_width;
+                let out_lo_r = (per_input + i) * to_width;
+                result |= lane_l << out_lo_l;
+                result |= lane_r << out_lo_r;
             }
+            return Ok(RustBV::concrete(result, to_width * count as u32));
         }
 
         // Symbolic: extract each low half-lane from both operands, concat.
@@ -1934,11 +1923,12 @@ impl VEXOps {
         } else {
             // unsigned source — masking width-bits into i128 keeps it
             // non-negative because from_width <= 64 in all NEON QNarrow ops.
-            (lane & if from_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << from_width) - 1
-            }) as i128
+            (lane
+                & if from_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << from_width) - 1
+                }) as i128
         };
         let (min_i, max_i): (i128, i128) = if dst_signed {
             let half = 1i128 << (to_width - 1);
@@ -1980,29 +1970,29 @@ impl VEXOps {
         let sub_per_elem = elem_width / sub_width_u32;
 
         // Concrete fast path: shuffle bits within each lane using integer ops.
-        if total <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
-                };
-                let sub_mask: u128 = (1u128 << sub_width_u32) - 1;
-                let mut result: u128 = 0;
-                for i in 0..count as u32 {
-                    let lane_lo = i * elem_width;
-                    let lane = (v >> lane_lo) & elem_mask;
-                    let mut reversed_lane: u128 = 0;
-                    for j in 0..sub_per_elem {
-                        let src_lo = j * sub_width_u32;
-                        let dst_lo = (sub_per_elem - 1 - j) * sub_width_u32;
-                        let sub = (lane >> src_lo) & sub_mask;
-                        reversed_lane |= sub << dst_lo;
-                    }
-                    result |= reversed_lane << lane_lo;
+        if total <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sub_mask: u128 = (1u128 << sub_width_u32) - 1;
+            let mut result: u128 = 0;
+            for i in 0..count as u32 {
+                let lane_lo = i * elem_width;
+                let lane = (v >> lane_lo) & elem_mask;
+                let mut reversed_lane: u128 = 0;
+                for j in 0..sub_per_elem {
+                    let src_lo = j * sub_width_u32;
+                    let dst_lo = (sub_per_elem - 1 - j) * sub_width_u32;
+                    let sub = (lane >> src_lo) & sub_mask;
+                    reversed_lane |= sub << dst_lo;
                 }
-                return Ok(RustBV::concrete(result, total));
+                result |= reversed_lane << lane_lo;
             }
+            return Ok(RustBV::concrete(result, total));
         }
 
         // Symbolic: extract each sub-unit, place at the mirrored position
@@ -2038,24 +2028,23 @@ impl VEXOps {
         debug_assert_eq!(arg.width(), in_total);
 
         // Concrete fast path.
-        if in_total <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let in_mask: u128 = if from_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << from_width) - 1
-                };
-                let mut result: u128 = 0;
-                for i in 0..count {
-                    let lo = (i as u32) * from_width;
-                    let lane = (v >> lo) & in_mask;
-                    let sat =
-                        Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed);
-                    let out_lo = (i as u32) * to_width;
-                    result |= sat << out_lo;
-                }
-                return Ok(RustBV::concrete(result, to_width * count as u32));
+        if in_total <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let in_mask: u128 = if from_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << from_width) - 1
+            };
+            let mut result: u128 = 0;
+            for i in 0..count {
+                let lo = (i as u32) * from_width;
+                let lane = (v >> lo) & in_mask;
+                let sat = Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed);
+                let out_lo = (i as u32) * to_width;
+                result |= sat << out_lo;
             }
+            return Ok(RustBV::concrete(result, to_width * count as u32));
         }
 
         // Symbolic: per-lane ITE clamp.
@@ -2089,31 +2078,30 @@ impl VEXOps {
         debug_assert_eq!(right.width(), in_total);
 
         // Concrete fast path.
-        if in_total <= 128 && (to_width * count as u32) <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let in_mask: u128 = if from_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << from_width) - 1
-                };
-                let mut result: u128 = 0;
-                for i in 0..per_input {
-                    let lo = i * from_width;
-                    let lane_l = (l >> lo) & in_mask;
-                    let lane_r = (r >> lo) & in_mask;
-                    let sat_l = Self::saturate_lane(
-                        lane_l, from_width, to_width, src_signed, dst_signed,
-                    );
-                    let sat_r = Self::saturate_lane(
-                        lane_r, from_width, to_width, src_signed, dst_signed,
-                    );
-                    let out_lo_l = i * to_width;
-                    let out_lo_r = (per_input + i) * to_width;
-                    result |= sat_l << out_lo_l;
-                    result |= sat_r << out_lo_r;
-                }
-                return Ok(RustBV::concrete(result, to_width * count as u32));
+        if in_total <= 128
+            && (to_width * count as u32) <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let in_mask: u128 = if from_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << from_width) - 1
+            };
+            let mut result: u128 = 0;
+            for i in 0..per_input {
+                let lo = i * from_width;
+                let lane_l = (l >> lo) & in_mask;
+                let lane_r = (r >> lo) & in_mask;
+                let sat_l =
+                    Self::saturate_lane(lane_l, from_width, to_width, src_signed, dst_signed);
+                let sat_r =
+                    Self::saturate_lane(lane_r, from_width, to_width, src_signed, dst_signed);
+                let out_lo_l = i * to_width;
+                let out_lo_r = (per_input + i) * to_width;
+                result |= sat_l << out_lo_l;
+                result |= sat_r << out_lo_r;
             }
+            return Ok(RustBV::concrete(result, to_width * count as u32));
         }
 
         // Symbolic: per-lane clamp from each operand, concatenate.
@@ -2655,62 +2643,57 @@ impl VEXOps {
 
         // Concrete fast path: both operands fit in u128 (covers every NEON
         // shape we route here — 64- and 128-bit vectors).
-        if total_width <= 128 {
-            if let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
+        if total_width <= 128
+            && let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128())
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (elem_width - 1);
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let a = (v >> lo) & elem_mask;
+                // Use the full elem_width-wide count as an unsigned int
+                // — matches Z3 bvshl/bvlshr/bvashr semantics (count ≥
+                // operand width collapses to 0 or sign-fill).
+                let amt = (s >> lo) & elem_mask;
+
+                let shifted: u128 = match kind {
+                    VecShiftKind::Shl => {
+                        if amt >= elem_width as u128 {
+                            0
+                        } else {
+                            (a << amt) & elem_mask
+                        }
+                    }
+                    VecShiftKind::Shr => {
+                        if amt >= elem_width as u128 {
+                            0
+                        } else {
+                            a >> amt
+                        }
+                    }
+                    VecShiftKind::Sar => {
+                        let neg = a & sign_bit != 0;
+                        if amt >= elem_width as u128 {
+                            if neg { elem_mask } else { 0 }
+                        } else if neg {
+                            let shifted_val = a >> amt;
+                            let fill_mask = (elem_mask << (elem_width as u128 - amt)) & elem_mask;
+                            (shifted_val | fill_mask) & elem_mask
+                        } else {
+                            a >> amt
+                        }
+                    }
                 };
-                let sign_bit: u128 = 1u128 << (elem_width - 1);
 
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let a = (v >> lo) & elem_mask;
-                    // Use the full elem_width-wide count as an unsigned int
-                    // — matches Z3 bvshl/bvlshr/bvashr semantics (count ≥
-                    // operand width collapses to 0 or sign-fill).
-                    let amt = (s >> lo) & elem_mask;
-
-                    let shifted: u128 = match kind {
-                        VecShiftKind::Shl => {
-                            if amt >= elem_width as u128 {
-                                0
-                            } else {
-                                (a << amt) & elem_mask
-                            }
-                        }
-                        VecShiftKind::Shr => {
-                            if amt >= elem_width as u128 {
-                                0
-                            } else {
-                                a >> amt
-                            }
-                        }
-                        VecShiftKind::Sar => {
-                            let neg = a & sign_bit != 0;
-                            if amt >= elem_width as u128 {
-                                if neg {
-                                    elem_mask
-                                } else {
-                                    0
-                                }
-                            } else if neg {
-                                let shifted_val = a >> amt;
-                                let fill_mask =
-                                    (elem_mask << (elem_width as u128 - amt)) & elem_mask;
-                                (shifted_val | fill_mask) & elem_mask
-                            } else {
-                                a >> amt
-                            }
-                        }
-                    };
-
-                    result |= (shifted & elem_mask) << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+                result |= (shifted & elem_mask) << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback. Both operands are split into lane-width
@@ -3213,51 +3196,51 @@ impl VEXOps {
         debug_assert_eq!(right.width(), total_width);
 
         // Concrete fast path (only when total fits in u128).
-        if total_width <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
-                };
-                let sign_bit: u128 = 1u128 << (elem_width - 1);
+        if total_width <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (elem_width - 1);
 
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let l_elem = (l >> lo) & elem_mask;
-                    let r_elem = (r >> lo) & elem_mask;
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let l_elem = (l >> lo) & elem_mask;
+                let r_elem = (r >> lo) & elem_mask;
 
-                    let pick_left = if signed {
-                        // Sign-extend each lane to i128 for comparison.
-                        let l_signed = if l_elem & sign_bit != 0 {
-                            (l_elem | !elem_mask) as i128
-                        } else {
-                            l_elem as i128
-                        };
-                        let r_signed = if r_elem & sign_bit != 0 {
-                            (r_elem | !elem_mask) as i128
-                        } else {
-                            r_elem as i128
-                        };
-                        if is_max {
-                            l_signed >= r_signed
-                        } else {
-                            l_signed <= r_signed
-                        }
+                let pick_left = if signed {
+                    // Sign-extend each lane to i128 for comparison.
+                    let l_signed = if l_elem & sign_bit != 0 {
+                        (l_elem | !elem_mask) as i128
                     } else {
-                        if is_max {
-                            l_elem >= r_elem
-                        } else {
-                            l_elem <= r_elem
-                        }
+                        l_elem as i128
                     };
+                    let r_signed = if r_elem & sign_bit != 0 {
+                        (r_elem | !elem_mask) as i128
+                    } else {
+                        r_elem as i128
+                    };
+                    if is_max {
+                        l_signed >= r_signed
+                    } else {
+                        l_signed <= r_signed
+                    }
+                } else {
+                    if is_max {
+                        l_elem >= r_elem
+                    } else {
+                        l_elem <= r_elem
+                    }
+                };
 
-                    let chosen = if pick_left { l_elem } else { r_elem };
-                    result |= (chosen & elem_mask) << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+                let chosen = if pick_left { l_elem } else { r_elem };
+                result |= (chosen & elem_mask) << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback.
@@ -3638,11 +3621,7 @@ impl VEXOps {
                 let addend = cond.ite_into(shifted, zero16.clone(), ctx);
                 acc = acc.xor_into(addend, ctx);
             }
-            let lane_out = if widen {
-                acc
-            } else {
-                acc.extract(7, 0, ctx)
-            };
+            let lane_out = if widen { acc } else { acc.extract(7, 0, ctx) };
             elements.push(lane_out);
         }
         Ok(Self::concat_le_elements(elements, ctx))
@@ -3683,72 +3662,64 @@ impl VEXOps {
 
         // Concrete fast path (fits in u128 — total_width <= 128 covers all
         // currently-mapped NEON shapes).
-        if total_width <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
-                };
-                let sign_bit: u128 = 1u128 << (elem_width - 1);
-                let smax: u128 = sign_bit - 1; // 0x7F... in elem_width bits
-                let smin: u128 = sign_bit; // 0x80...
-                let umax: u128 = elem_mask;
+        if total_width <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (elem_width - 1);
+            let smax: u128 = sign_bit - 1; // 0x7F... in elem_width bits
+            let smin: u128 = sign_bit; // 0x80...
+            let umax: u128 = elem_mask;
 
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let a = (l >> lo) & elem_mask;
-                    let b = (r >> lo) & elem_mask;
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let a = (l >> lo) & elem_mask;
+                let b = (r >> lo) & elem_mask;
 
-                    let sat = if signed {
-                        // Sign-extend each lane to i128 to compute the true
-                        // arithmetic result, then clamp into [-smax-1, smax].
-                        let a_signed = if a & sign_bit != 0 {
-                            (a | !elem_mask) as i128
-                        } else {
-                            a as i128
-                        };
-                        let b_signed = if b & sign_bit != 0 {
-                            (b | !elem_mask) as i128
-                        } else {
-                            b as i128
-                        };
-                        let raw: i128 = if is_sub {
-                            a_signed - b_signed
-                        } else {
-                            a_signed + b_signed
-                        };
-                        let max_signed = smax as i128;
-                        let min_signed = -(sign_bit as i128);
-                        if raw > max_signed {
-                            smax
-                        } else if raw < min_signed {
-                            smin
-                        } else {
-                            (raw as u128) & elem_mask
-                        }
-                    } else if is_sub {
-                        // Unsigned subtract: clamp underflow to 0.
-                        if a >= b {
-                            (a - b) & elem_mask
-                        } else {
-                            0
-                        }
+                let sat = if signed {
+                    // Sign-extend each lane to i128 to compute the true
+                    // arithmetic result, then clamp into [-smax-1, smax].
+                    let a_signed = if a & sign_bit != 0 {
+                        (a | !elem_mask) as i128
                     } else {
-                        // Unsigned add: clamp overflow to UINT_MAX.
-                        let raw = a + b; // both < 2^N, sum < 2^(N+1) ≤ 2^128
-                        if raw > umax {
-                            umax
-                        } else {
-                            raw
-                        }
+                        a as i128
                     };
+                    let b_signed = if b & sign_bit != 0 {
+                        (b | !elem_mask) as i128
+                    } else {
+                        b as i128
+                    };
+                    let raw: i128 = if is_sub {
+                        a_signed - b_signed
+                    } else {
+                        a_signed + b_signed
+                    };
+                    let max_signed = smax as i128;
+                    let min_signed = -(sign_bit as i128);
+                    if raw > max_signed {
+                        smax
+                    } else if raw < min_signed {
+                        smin
+                    } else {
+                        (raw as u128) & elem_mask
+                    }
+                } else if is_sub {
+                    // Unsigned subtract: clamp underflow to 0.
+                    if a >= b { (a - b) & elem_mask } else { 0 }
+                } else {
+                    // Unsigned add: clamp overflow to UINT_MAX.
+                    let raw = a + b; // both < 2^N, sum < 2^(N+1) ≤ 2^128
+                    if raw > umax { umax } else { raw }
+                };
 
-                    result |= (sat & elem_mask) << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+                result |= (sat & elem_mask) << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback. Translates the claripy algorithm:
@@ -3757,7 +3728,10 @@ impl VEXOps {
         //             cap      = (-1)/2 + ~top_r   (signed semantics).
         //   unsigned add: cap_cond = ULT(res, a); cap = -1.
         //   unsigned sub: cap_cond = UGT(res, a); cap =  0.
-        let smax_bv = RustBV::concrete(((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)), elem_width);
+        let smax_bv = RustBV::concrete(
+            ((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)),
+            elem_width,
+        );
         let smin_bv = RustBV::concrete(
             (1u128 << (elem_width - 1)) & ((!0u128) >> (128 - elem_width)),
             elem_width,
@@ -3840,114 +3814,105 @@ impl VEXOps {
 
         // Concrete fast path: both operands fit in u128 (covers every NEON
         // shape we route here — 64- and 128-bit vectors).
-        if total_width <= 128 {
-            if let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
+        if total_width <= 128
+            && let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128())
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (elem_width - 1);
+            let smax: u128 = sign_bit - 1; // 0x7F...
+            let smin: u128 = sign_bit; // 0x80...
+            let umax: u128 = elem_mask;
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let a = (v >> lo) & elem_mask;
+                let amt_raw = (s >> lo) & elem_mask;
+                // Sign-extend the amt lane: ARM SQSHL/UQSHL treat the
+                // shift-amount lane as signed (negative → right shift).
+                let amt_signed: i128 = if amt_raw & sign_bit != 0 {
+                    (amt_raw | !elem_mask) as i128
                 } else {
-                    (1u128 << elem_width) - 1
+                    amt_raw as i128
                 };
-                let sign_bit: u128 = 1u128 << (elem_width - 1);
-                let smax: u128 = sign_bit - 1; // 0x7F...
-                let smin: u128 = sign_bit; // 0x80...
-                let umax: u128 = elem_mask;
 
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let a = (v >> lo) & elem_mask;
-                    let amt_raw = (s >> lo) & elem_mask;
-                    // Sign-extend the amt lane: ARM SQSHL/UQSHL treat the
-                    // shift-amount lane as signed (negative → right shift).
-                    let amt_signed: i128 = if amt_raw & sign_bit != 0 {
-                        (amt_raw | !elem_mask) as i128
-                    } else {
-                        amt_raw as i128
-                    };
-
-                    let sat = if amt_signed >= 0 {
-                        let shift_amt = amt_signed as u32;
-                        if signed {
-                            // Sal: signed left shift with overflow → SMAX/SMIN.
-                            let a_signed = if a & sign_bit != 0 {
-                                (a | !elem_mask) as i128
-                            } else {
-                                a as i128
-                            };
-                            let smax_i = smax as i128;
-                            let smin_i = -(sign_bit as i128);
-                            if shift_amt >= elem_width {
-                                // Out-of-range left shift: any nonzero a → saturate.
-                                if a_signed > 0 {
-                                    smax
-                                } else if a_signed < 0 {
-                                    smin
-                                } else {
-                                    0
-                                }
-                            } else {
-                                // i128 shift never overflows for our widths
-                                // (max elem_width = 64, shift_amt < 64, so
-                                // |a_signed| < 2^63 → |raw| < 2^127).
-                                let raw = a_signed << shift_amt;
-                                if raw > smax_i {
-                                    smax
-                                } else if raw < smin_i {
-                                    smin
-                                } else {
-                                    (raw as u128) & elem_mask
-                                }
-                            }
+                let sat = if amt_signed >= 0 {
+                    let shift_amt = amt_signed as u32;
+                    if signed {
+                        // Sal: signed left shift with overflow → SMAX/SMIN.
+                        let a_signed = if a & sign_bit != 0 {
+                            (a | !elem_mask) as i128
                         } else {
-                            // Shl: unsigned left shift with overflow → UMAX.
-                            if shift_amt >= elem_width {
-                                if a != 0 {
-                                    umax
-                                } else {
-                                    0
-                                }
+                            a as i128
+                        };
+                        let smax_i = smax as i128;
+                        let smin_i = -(sign_bit as i128);
+                        if shift_amt >= elem_width {
+                            // Out-of-range left shift: any nonzero a → saturate.
+                            if a_signed > 0 {
+                                smax
+                            } else if a_signed < 0 {
+                                smin
                             } else {
-                                // a < 2^elem_width and shift_amt < elem_width,
-                                // so raw fits in u128 (elem_width ≤ 64).
-                                let raw = a << shift_amt;
-                                if (raw & !elem_mask) != 0 {
-                                    umax
-                                } else {
-                                    raw & elem_mask
-                                }
-                            }
-                        }
-                    } else {
-                        // amt < 0 → right shift by -amt.
-                        let r_amt = (-amt_signed) as u32;
-                        if signed {
-                            // Ashr: out-of-range → sign-fill.
-                            let neg = a & sign_bit != 0;
-                            if r_amt >= elem_width {
-                                if neg { elem_mask } else { 0 }
-                            } else if neg {
-                                let shifted_val = a >> r_amt;
-                                let fill_mask =
-                                    (elem_mask << (elem_width as u128 - r_amt as u128))
-                                        & elem_mask;
-                                (shifted_val | fill_mask) & elem_mask
-                            } else {
-                                a >> r_amt
-                            }
-                        } else {
-                            // Lshr: out-of-range → 0.
-                            if r_amt >= elem_width {
                                 0
+                            }
+                        } else {
+                            // i128 shift never overflows for our widths
+                            // (max elem_width = 64, shift_amt < 64, so
+                            // |a_signed| < 2^63 → |raw| < 2^127).
+                            let raw = a_signed << shift_amt;
+                            if raw > smax_i {
+                                smax
+                            } else if raw < smin_i {
+                                smin
                             } else {
-                                a >> r_amt
+                                (raw as u128) & elem_mask
                             }
                         }
-                    };
+                    } else {
+                        // Shl: unsigned left shift with overflow → UMAX.
+                        if shift_amt >= elem_width {
+                            if a != 0 { umax } else { 0 }
+                        } else {
+                            // a < 2^elem_width and shift_amt < elem_width,
+                            // so raw fits in u128 (elem_width ≤ 64).
+                            let raw = a << shift_amt;
+                            if (raw & !elem_mask) != 0 {
+                                umax
+                            } else {
+                                raw & elem_mask
+                            }
+                        }
+                    }
+                } else {
+                    // amt < 0 → right shift by -amt.
+                    let r_amt = (-amt_signed) as u32;
+                    if signed {
+                        // Ashr: out-of-range → sign-fill.
+                        let neg = a & sign_bit != 0;
+                        if r_amt >= elem_width {
+                            if neg { elem_mask } else { 0 }
+                        } else if neg {
+                            let shifted_val = a >> r_amt;
+                            let fill_mask =
+                                (elem_mask << (elem_width as u128 - r_amt as u128)) & elem_mask;
+                            (shifted_val | fill_mask) & elem_mask
+                        } else {
+                            a >> r_amt
+                        }
+                    } else {
+                        // Lshr: out-of-range → 0.
+                        if r_amt >= elem_width { 0 } else { a >> r_amt }
+                    }
+                };
 
-                    result |= (sat & elem_mask) << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+                result |= (sat & elem_mask) << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback. The Z3 bvshl/bvlshr/bvashr semantics
@@ -4025,31 +3990,31 @@ impl VEXOps {
         debug_assert_eq!(arg.width(), total_width);
 
         // Concrete fast path.
-        if total_width <= 128 {
-            if let Some(v) = arg.as_u128() {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << elem_width) - 1
-                };
-                let sign_bit: u128 = 1u128 << (elem_width - 1);
+        if total_width <= 128
+            && let Some(v) = arg.as_u128()
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
+            let sign_bit: u128 = 1u128 << (elem_width - 1);
 
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let elem_val = (v >> lo) & elem_mask;
-                    // |x| = (x ^ -1) + 1 when x is negative (two's complement),
-                    // otherwise x. Simulated within elem_width bits.
-                    let abs_val = if elem_val & sign_bit != 0 {
-                        // -x in elem_width bits = (~x + 1) & mask
-                        ((!elem_val).wrapping_add(1)) & elem_mask
-                    } else {
-                        elem_val
-                    };
-                    result |= abs_val << lo;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let elem_val = (v >> lo) & elem_mask;
+                // |x| = (x ^ -1) + 1 when x is negative (two's complement),
+                // otherwise x. Simulated within elem_width bits.
+                let abs_val = if elem_val & sign_bit != 0 {
+                    // -x in elem_width bits = (~x + 1) & mask
+                    ((!elem_val).wrapping_add(1)) & elem_mask
+                } else {
+                    elem_val
+                };
+                result |= abs_val << lo;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback: ITE(elem < 0, -elem, elem).
@@ -4359,60 +4324,60 @@ impl VEXOps {
         // truth-table for Gt/Ge follows the IEEE 754 ordered semantics — Rust's
         // `>` and `>=` on f32/f64 already return false when either operand is
         // NaN, matching VEX. The Un case independently checks NaN.
-        if total_width <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = (1u128 << elem_width) - 1;
-                for i in 0..count {
-                    let shift = (i as u32) * elem_width;
-                    let l_bits = (l >> shift) & elem_mask;
-                    let r_bits = (r >> shift) & elem_mask;
-                    let truth = match (elem, kind) {
-                        (IRType::F32, FCmpKind::Eq) => {
-                            f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32)
-                        }
-                        (IRType::F32, FCmpKind::Lt) => {
-                            f32::from_bits(l_bits as u32) < f32::from_bits(r_bits as u32)
-                        }
-                        (IRType::F32, FCmpKind::Le) => {
-                            f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32)
-                        }
-                        (IRType::F32, FCmpKind::Gt) => {
-                            f32::from_bits(l_bits as u32) > f32::from_bits(r_bits as u32)
-                        }
-                        (IRType::F32, FCmpKind::Ge) => {
-                            f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32)
-                        }
-                        (IRType::F32, FCmpKind::Un) => {
-                            f32::from_bits(l_bits as u32).is_nan()
-                                || f32::from_bits(r_bits as u32).is_nan()
-                        }
-                        (IRType::F64, FCmpKind::Eq) => {
-                            f64::from_bits(l_bits as u64) == f64::from_bits(r_bits as u64)
-                        }
-                        (IRType::F64, FCmpKind::Lt) => {
-                            f64::from_bits(l_bits as u64) < f64::from_bits(r_bits as u64)
-                        }
-                        (IRType::F64, FCmpKind::Le) => {
-                            f64::from_bits(l_bits as u64) <= f64::from_bits(r_bits as u64)
-                        }
-                        (IRType::F64, FCmpKind::Gt) => {
-                            f64::from_bits(l_bits as u64) > f64::from_bits(r_bits as u64)
-                        }
-                        (IRType::F64, FCmpKind::Ge) => {
-                            f64::from_bits(l_bits as u64) >= f64::from_bits(r_bits as u64)
-                        }
-                        (IRType::F64, FCmpKind::Un) => {
-                            f64::from_bits(l_bits as u64).is_nan()
-                                || f64::from_bits(r_bits as u64).is_nan()
-                        }
-                        _ => return Err(OpError::InvalidFloatType(elem)),
-                    };
-                    let lane_val = if truth { lane_mask } else { 0 };
-                    result |= lane_val << shift;
-                }
-                return Ok(RustBV::concrete(result, total_width));
+        if total_width <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let mut result: u128 = 0;
+            let elem_mask: u128 = (1u128 << elem_width) - 1;
+            for i in 0..count {
+                let shift = (i as u32) * elem_width;
+                let l_bits = (l >> shift) & elem_mask;
+                let r_bits = (r >> shift) & elem_mask;
+                let truth = match (elem, kind) {
+                    (IRType::F32, FCmpKind::Eq) => {
+                        f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32)
+                    }
+                    (IRType::F32, FCmpKind::Lt) => {
+                        f32::from_bits(l_bits as u32) < f32::from_bits(r_bits as u32)
+                    }
+                    (IRType::F32, FCmpKind::Le) => {
+                        f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32)
+                    }
+                    (IRType::F32, FCmpKind::Gt) => {
+                        f32::from_bits(l_bits as u32) > f32::from_bits(r_bits as u32)
+                    }
+                    (IRType::F32, FCmpKind::Ge) => {
+                        f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32)
+                    }
+                    (IRType::F32, FCmpKind::Un) => {
+                        f32::from_bits(l_bits as u32).is_nan()
+                            || f32::from_bits(r_bits as u32).is_nan()
+                    }
+                    (IRType::F64, FCmpKind::Eq) => {
+                        f64::from_bits(l_bits as u64) == f64::from_bits(r_bits as u64)
+                    }
+                    (IRType::F64, FCmpKind::Lt) => {
+                        f64::from_bits(l_bits as u64) < f64::from_bits(r_bits as u64)
+                    }
+                    (IRType::F64, FCmpKind::Le) => {
+                        f64::from_bits(l_bits as u64) <= f64::from_bits(r_bits as u64)
+                    }
+                    (IRType::F64, FCmpKind::Gt) => {
+                        f64::from_bits(l_bits as u64) > f64::from_bits(r_bits as u64)
+                    }
+                    (IRType::F64, FCmpKind::Ge) => {
+                        f64::from_bits(l_bits as u64) >= f64::from_bits(r_bits as u64)
+                    }
+                    (IRType::F64, FCmpKind::Un) => {
+                        f64::from_bits(l_bits as u64).is_nan()
+                            || f64::from_bits(r_bits as u64).is_nan()
+                    }
+                    _ => return Err(OpError::InvalidFloatType(elem)),
+                };
+                let lane_val = if truth { lane_mask } else { 0 };
+                result |= lane_val << shift;
             }
+            return Ok(RustBV::concrete(result, total_width));
         }
 
         // Symbolic per-lane fallback: build a 1-bit predicate per lane,
@@ -5206,7 +5171,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_add_symbolic_constraint() {
-
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "x", 32);
         let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
@@ -5232,7 +5196,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_sqrt_symbolic_constraint() {
-
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "sqrt_x", 64);
 
@@ -5285,7 +5248,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_add_symbolic() {
-
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm0", 128);
         // xmm1 = [2.0f, 0, 0, 0]
@@ -5325,7 +5287,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_sqrt_symbolic() {
-
         let ctx = SymContext::new_mock();
         let xmm = RustBV::symbolic(&ctx, "xmm_sqrt", 128);
 
@@ -5357,7 +5318,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_max_symbolic() {
-
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm_max", 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
@@ -5386,7 +5346,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_scalar_min_symbolic() {
-
         let ctx = SymContext::new_mock();
         let xmm0 = RustBV::symbolic(&ctx, "xmm_min", 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
@@ -5420,7 +5379,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_round_f32_to_int_symbolic_rm() {
-
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
         let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
@@ -5445,7 +5403,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_round_f64_to_int_symbolic_rm() {
-
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
         let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
@@ -5533,7 +5490,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_float_div_with_symbolic_rm_f32() {
-
         let ctx = SymContext::new_mock();
         let rm = RustBV::symbolic(&ctx, "rm_div_f32", 32);
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
@@ -5867,7 +5823,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_shl_n_symbolic_shift() {
-
         let ctx = SymContext::new_mock();
 
         // Vector: [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
@@ -5913,7 +5868,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_shr_n_symbolic_shift() {
-
         let ctx = SymContext::new_mock();
 
         // Vector: [0xAABBCCDD, 0x11223344, 0xDEADBEEF, 0xCAFEBABE]
@@ -5958,7 +5912,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_sar_n_symbolic_shift() {
-
         let ctx = SymContext::new_mock();
 
         // Lanes: mix of positive and negative i16 values.
@@ -6256,13 +6209,12 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_reverse_double_apply_is_identity() {
-
         let ctx = SymContext::new_mock();
         for (sub_width, elem, count) in [
-            (8u8, IRType::I32, 4u8),  // Reverse8sIn32_x4
-            (16, IRType::I64, 2),     // Reverse16sIn64_x2
-            (32, IRType::I64, 2),     // Reverse32sIn64_x2
-            (1, IRType::I8, 16),      // Reverse1sIn8_x16
+            (8u8, IRType::I32, 4u8), // Reverse8sIn32_x4
+            (16, IRType::I64, 2),    // Reverse16sIn64_x2
+            (32, IRType::I64, 2),    // Reverse32sIn64_x2
+            (1, IRType::I8, 16),     // Reverse1sIn8_x16
         ] {
             let width = elem.bits() * count as u32;
             let arg = RustBV::symbolic(&ctx, "vrev_arg", width);
@@ -6279,7 +6231,9 @@ mod tests {
             assert!(
                 !ctx.is_sat(),
                 "double-apply must equal identity for sub_width={} elem={:?} count={}",
-                sub_width, elem, count
+                sub_width,
+                elem,
+                count
             );
             ctx.pop();
         }
@@ -6292,7 +6246,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
-
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "vrev_arg", 128);
         let got = VEXOps::unop(
@@ -6338,7 +6291,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_int_max_symbolic_signed() {
-
         let ctx = SymContext::new_mock();
 
         // r = [7, 7, 7, 7] as i32x4
@@ -6600,7 +6552,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vec_float_add_symbolic_f32x4() {
-
         let ctx = SymContext::new_mock();
 
         let mut rv: u128 = 0;
@@ -6674,8 +6625,7 @@ mod tests {
         let ctx = SymContext::new_mock();
         let upper96 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128;
         let arg = RustBV::concrete((upper96 << 32) | 0x4080_0000u128, 128); // lane0 = 4.0f32
-        let result =
-            VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+        let result = VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
         assert_eq!(result.width(), 128);
         let v = eval_v128(&ctx, &result);
         assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
@@ -6687,8 +6637,7 @@ mod tests {
         let ctx = SymContext::new_mock();
         let upper96 = 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFFu128;
         let arg = RustBV::concrete((upper96 << 32) | 0x4400_0000u128, 128); // lane0 = 512.0f32
-        let result =
-            VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+        let result = VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
         assert_eq!(result.width(), 128);
         let v = eval_v128(&ctx, &result);
         assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
@@ -6881,7 +6830,7 @@ mod tests {
         assert!(result.as_u128().is_none());
     }
 
-/// End-to-end opcode-string routing for the integer NEON RecipEst /
+    /// End-to-end opcode-string routing for the integer NEON RecipEst /
     /// RSqrtEst ops — these resolve to the new VIRecipEst / VIRSqrtEst
     /// variants instead of NeonUnimplemented. Catches regressions where
     /// parse_vector and parse_neon_unimplemented fall out of sync.
@@ -6927,9 +6876,7 @@ mod tests {
         }
         assert!(matches!(
             parse_opcode("Iop_RecipEst32F0x4"),
-            IROp::VFRecipEstS {
-                elem: IRType::F32
-            }
+            IROp::VFRecipEstS { elem: IRType::F32 }
         ));
         let rsqrt_est_packed = [
             ("Iop_RSqrtEst32Fx2", IRType::F32, 2),
@@ -6948,9 +6895,7 @@ mod tests {
         }
         assert!(matches!(
             parse_opcode("Iop_RSqrtEst32F0x4"),
-            IROp::VFRSqrtEstS {
-                elem: IRType::F32
-            }
+            IROp::VFRSqrtEstS { elem: IRType::F32 }
         ));
         // Step family: NEON-only, no F0x4 form.
         let step_pairs = [
@@ -7760,8 +7705,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res.width(), 128);
-        let expected: u128 =
-            (0..4).fold(0u128, |acc, i| acc | ((0xDEAD_BEEF as u128) << (i * 32)));
+        let expected: u128 = (0..4).fold(0u128, |acc, i| acc | ((0xDEAD_BEEF as u128) << (i * 32)));
         assert_eq!(res.as_u128().unwrap(), expected);
     }
 
@@ -8298,10 +8242,7 @@ mod tests {
             let top_b = b_lane.extract(7, 7, &ctx);
             let top_r = res.extract(7, 7, &ctx);
             // ~(top_a ^ top_b) & (top_a ^ top_r) == 1
-            let signs_match = top_a
-                .clone()
-                .xor_into(top_b, &ctx)
-                .not_into(&ctx);
+            let signs_match = top_a.clone().xor_into(top_b, &ctx).not_into(&ctx);
             let r_flipped = top_a.xor_into(top_r.clone(), &ctx);
             let overflow = signs_match
                 .and_into(r_flipped, &ctx)
@@ -8585,7 +8526,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwadd_16x4_matches_spec_replay() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpwadd_a", 64);
         let b = RustBV::symbolic(&ctx, "vpwadd_b", 64);
@@ -8627,7 +8567,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwaddl_16sx4_matches_spec_replay() {
-
         let ctx = SymContext::new_mock();
         let arg = RustBV::symbolic(&ctx, "vpwaddl_a", 64);
         let got = VEXOps::unop(
@@ -8666,7 +8605,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpwmin_16sx4_matches_spec_replay() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpwmin_a", 64);
         let b = RustBV::symbolic(&ctx, "vpwmin_b", 64);
@@ -8935,7 +8873,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vavg_16ux4_symbolic_universal_unsigned() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vavg_a", 64);
         let b = RustBV::symbolic(&ctx, "vavg_b", 64);
@@ -8979,7 +8916,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vavg_8sx8_symbolic_universal_signed() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vavg_sa", 64);
         let b = RustBV::symbolic(&ctx, "vavg_sb", 64);
@@ -9001,9 +8937,7 @@ mod tests {
             let hi = lo + 7;
             let al = a.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
             let bl = b.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
-            let sum = al
-                .add_into(bl, &ctx)
-                .add_into(RustBV::concrete(1, 9), &ctx);
+            let sum = al.add_into(bl, &ctx).add_into(RustBV::concrete(1, 9), &ctx);
             let shifted = sum.lshr_into(RustBV::concrete(1, 9), &ctx);
             lanes.push(shifted.extract(7, 0, &ctx));
         }
@@ -9073,8 +9007,7 @@ mod tests {
             a |= (lanes[i] as u128) << (i * 8);
             e |= (expected[i] as u128) << (i * 8);
         }
-        let result =
-            VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(a, 64), &ctx).unwrap();
+        let result = VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(a, 64), &ctx).unwrap();
         assert_eq!(result.width(), 64);
         assert_eq!(result.as_u128().unwrap(), e);
     }
@@ -9292,7 +9225,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vcnt_8x8_symbolic_universal() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vcnt_a", 64);
         let got = VEXOps::unop(IROp::VCnt { count: 8 }, a.clone(), &ctx).unwrap();
@@ -9311,7 +9243,10 @@ mod tests {
 
         ctx.push();
         ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
-        assert!(!ctx.is_sat(), "VCnt 8x8 must match the spec-replay reference");
+        assert!(
+            !ctx.is_sat(),
+            "VCnt 8x8 must match the spec-replay reference"
+        );
         ctx.pop();
     }
 
@@ -9320,7 +9255,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vclz_8x8_symbolic_universal() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vclz_a", 64);
         let got = VEXOps::unop(
@@ -9353,7 +9287,10 @@ mod tests {
 
         ctx.push();
         ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
-        assert!(!ctx.is_sat(), "VClz 8x8 must match the spec-replay reference");
+        assert!(
+            !ctx.is_sat(),
+            "VClz 8x8 must match the spec-replay reference"
+        );
         ctx.pop();
     }
 
@@ -9362,7 +9299,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vpolynomial_mul_8x8_symbolic_universal() {
-
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vpmul_a", 64);
         let b = RustBV::symbolic(&ctx, "vpmul_b", 64);
@@ -9905,7 +9841,11 @@ mod tests {
         let mut s: u128 = 0;
         let mut e: u128 = 0;
         for i in 0..16 {
-            let (a, expected) = if i % 2 == 0 { (1u8, 0x7Fu8) } else { (0xFFu8, 0x80u8) };
+            let (a, expected) = if i % 2 == 0 {
+                (1u8, 0x7Fu8)
+            } else {
+                (0xFFu8, 0x80u8)
+            };
             v |= (a as u128) << (i * 8);
             s |= 8u128 << (i * 8);
             e |= (expected as u128) << (i * 8);
@@ -9984,7 +9924,11 @@ mod tests {
             for (prefix, want_signed) in [("Iop_QShl", false), ("Iop_QSal", true)] {
                 let name = format!("{}{}", prefix, sfx);
                 match parse_opcode(&name) {
-                    IROp::VQShlSat { elem, count, signed } => {
+                    IROp::VQShlSat {
+                        elem,
+                        count,
+                        signed,
+                    } => {
                         assert_eq!(elem, *elem_e, "{}: elem", name);
                         assert_eq!(count, *count_e, "{}: count", name);
                         assert_eq!(signed, want_signed, "{}: signed", name);

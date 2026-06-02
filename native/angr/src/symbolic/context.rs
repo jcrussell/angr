@@ -515,7 +515,10 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "vex_triop_total".into(),
         VEX_TRIOP_TOTAL.load(Ordering::Relaxed),
     );
-    stats.insert("vex_qop_total".into(), VEX_QOP_TOTAL.load(Ordering::Relaxed));
+    stats.insert(
+        "vex_qop_total".into(),
+        VEX_QOP_TOTAL.load(Ordering::Relaxed),
+    );
     stats.insert("vex_op_arith".into(), VEX_OP_ARITH.load(Ordering::Relaxed));
     stats.insert("vex_op_logic".into(), VEX_OP_LOGIC.load(Ordering::Relaxed));
     stats.insert("vex_op_shift".into(), VEX_OP_SHIFT.load(Ordering::Relaxed));
@@ -1238,7 +1241,10 @@ impl ConstraintSharingWalk {
                 StructuralKey::Constrained(*id, *value, *width)
             }
             RustBV::Expression {
-                op, operands, width, ..
+                op,
+                operands,
+                width,
+                ..
             } => {
                 let mut op_ids = Vec::with_capacity(operands.len());
                 for operand in operands.iter() {
@@ -1847,10 +1853,7 @@ impl SymContext {
     /// then-switch keeps every constraint inside its own fresh push that
     /// only this state holds in its `scope_path`.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn add_constraints_raw_batch(
-        &self,
-        entries: Vec<(super::Z3AstPtr, RustBV, bool)>,
-    ) {
+    pub fn add_constraints_raw_batch(&self, entries: Vec<(super::Z3AstPtr, RustBV, bool)>) {
         if entries.is_empty() {
             return;
         }
@@ -1863,8 +1866,7 @@ impl SymContext {
             // the documented caller contract. `Ast::wrap` performs its
             // own `Z3_inc_ref` so the wrapped `Bool` is independent of
             // `ast`'s ref, which drops at end of this iteration.
-            let constraint: z3::ast::Bool =
-                unsafe { z3::ast::Ast::wrap(&z3_ctx, ast.as_z3_ast()) };
+            let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&z3_ctx, ast.as_z3_ast()) };
             constraints.push(constraint);
             assumed.push((bv, is_true));
         }
@@ -2027,12 +2029,12 @@ impl SymContext {
     pub fn add_bv_constraint(&self, bv: &RustBV, value: u128) {
         // Fast path: if bv is already concrete, the constraint is either
         // trivially true (skip) or trivially false (makes UNSAT).
-        if let Some(v) = bv.as_u128() {
-            if v == value {
-                return; // Tautology — skip Z3
-            }
-            // Falls through to add False constraint (UNSAT)
+        if let Some(v) = bv.as_u128()
+            && v == value
+        {
+            return; // Tautology — skip Z3
         }
+        // Falls through to add False constraint (UNSAT)
         let ast = bv.to_z3_ast();
         let val_ast = if bv.width() <= 64 {
             z3::ast::BV::from_u64(value as u64, bv.width())
@@ -2051,17 +2053,17 @@ impl SymContext {
         debug_assert_eq!(cond.width(), 1);
         // Fast path: concrete true is a tautology — skip Z3 entirely (still
         // record it for Python export).
-        if let Some(v) = cond.as_u128() {
-            if v != 0 {
-                self.local_constraints
-                    .lock()
-                    .assumed
-                    .push((cond.clone(), true));
-                Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
-                return; // Asserting True is a no-op
-            }
-            // v == 0: asserting False makes solver UNSAT — still add it
+        if let Some(v) = cond.as_u128()
+            && v != 0
+        {
+            self.local_constraints
+                .lock()
+                .assumed
+                .push((cond.clone(), true));
+            Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
+            return; // Asserting True is a no-op
         }
+        // v == 0: asserting False makes solver UNSAT — still add it
         Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
@@ -2082,17 +2084,17 @@ impl SymContext {
     pub fn assume_false(&self, cond: &RustBV) {
         debug_assert_eq!(cond.width(), 1);
         // Fast path: concrete false (== 0) means not(False) = True — skip Z3
-        if let Some(v) = cond.as_u128() {
-            if v == 0 {
-                self.local_constraints
-                    .lock()
-                    .assumed
-                    .push((cond.clone(), false));
-                Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
-                return; // Asserting not(False) = True is a no-op
-            }
-            // v != 0: asserting not(True) = False makes solver UNSAT — still add it
+        if let Some(v) = cond.as_u128()
+            && v == 0
+        {
+            self.local_constraints
+                .lock()
+                .assumed
+                .push((cond.clone(), false));
+            Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
+            return; // Asserting not(False) = True is a no-op
         }
+        // v != 0: asserting not(True) = False makes solver UNSAT — still add it
         Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
@@ -2131,10 +2133,10 @@ impl SymContext {
             // check_branch_feasibility skip one of two Z3 checks.
             if result {
                 let mut cache = self.model_cache.borrow_mut();
-                if cache.is_none() {
-                    if let Some(m) = solver.get_model() {
-                        *cache = Some(m);
-                    }
+                if cache.is_none()
+                    && let Some(m) = solver.get_model()
+                {
+                    *cache = Some(m);
                 }
             }
             result
@@ -2672,8 +2674,7 @@ impl SymContext {
                     solver.push();
                     let zero = Self::make_bv_const(0, width);
                     solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
-                    let r =
-                        matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
+                    let r = matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
                     solver.pop(1);
                     r
                 };
@@ -2784,8 +2785,7 @@ impl SymContext {
                 let max_positive = sign_bit - 1;
 
                 // Witness's signed interpretation: non-negative iff sign bit clear.
-                let witness_is_non_negative =
-                    witness.map(|v| (v & sign_bit) == 0).unwrap_or(false);
+                let witness_is_non_negative = witness.map(|v| (v & sign_bit) == 0).unwrap_or(false);
 
                 // A non-negative witness proves has_non_negative without a Z3 check.
                 let has_non_negative = if witness_is_non_negative {
@@ -2794,8 +2794,7 @@ impl SymContext {
                     solver.push();
                     let zero = Self::make_bv_const(0, width);
                     solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
-                    let r =
-                        matches!(timed_check(solver, CheckSite::MaxInit), z3::SatResult::Sat);
+                    let r = matches!(timed_check(solver, CheckSite::MaxInit), z3::SatResult::Sat);
                     solver.pop(1);
                     r
                 };
@@ -3505,7 +3504,11 @@ impl SymContext {
             temp.assert(c);
             any = true;
         }
-        if any { format!("{}", temp) } else { String::new() }
+        if any {
+            format!("{}", temp)
+        } else {
+            String::new()
+        }
     }
 
     /// Restore the path-constraint state captured by [`to_snapshot`] into
@@ -3691,9 +3694,7 @@ impl SymContext {
         // working — the simple dismantle variant only suppresses
         // minting on FUTURE forks.
         let dismantled = super::lineage::is_lineage_dismantled();
-        let child_lineage = if self
-            .use_shared_lineage_solver
-            .load(Ordering::Relaxed)
+        let child_lineage = if self.use_shared_lineage_solver.load(Ordering::Relaxed)
             && self.bare_z3_push_depth.load(Ordering::Relaxed) == 0
             && !dismantled
         {
@@ -3753,9 +3754,7 @@ impl SymContext {
             // (today's fork semantics reset push_level, so in practice
             // the child observes 0 unless future code threads bare pushes
             // through fork).
-            bare_z3_push_depth: AtomicUsize::new(
-                self.bare_z3_push_depth.load(Ordering::Relaxed),
-            ),
+            bare_z3_push_depth: AtomicUsize::new(self.bare_z3_push_depth.load(Ordering::Relaxed)),
             // angr-3ms1 step 1b: inherit the opt-in flag from parent so
             // a lineage opt-in on a seed state propagates to every
             // descendant without per-fork plumbing on the Python side.
@@ -3856,8 +3855,7 @@ impl SymContext {
     /// and ships in `tick_and_sample_for_thrash` from `run_loop`.
     #[cfg(feature = "vex-engine-z3")]
     pub fn set_use_shared_lineage_solver(&self, v: bool) {
-        self.use_shared_lineage_solver
-            .store(v, Ordering::Relaxed);
+        self.use_shared_lineage_solver.store(v, Ordering::Relaxed);
     }
 
     /// Save a scope-path savepoint, dispatching by lineage (angr-v5a5
@@ -3895,8 +3893,7 @@ impl SymContext {
                 // angr-3ms1 step 1a: track the bare push so the slice-1c
                 // fork-time materialization gate can refuse to mint a
                 // lineage while bare pushes are outstanding.
-                self.bare_z3_push_depth
-                    .fetch_add(1, Ordering::Relaxed);
+                self.bare_z3_push_depth.fetch_add(1, Ordering::Relaxed);
             }
             Some(_) => {
                 let depth = self.scope_path.lock().len();
@@ -3939,9 +3936,7 @@ impl SymContext {
                 // z3-rs panics on under-pop, so we never reach this on
                 // an unbalanced sequence — the counter stays in sync
                 // with the per-context solver's actual push depth.
-                let prev = self
-                    .bare_z3_push_depth
-                    .fetch_sub(1, Ordering::Relaxed);
+                let prev = self.bare_z3_push_depth.fetch_sub(1, Ordering::Relaxed);
                 debug_assert!(
                     prev > 0,
                     "bare_z3_push_depth underflowed — pop without matching push"
@@ -4616,8 +4611,7 @@ mod tests {
         let unsat = ctx.with_z3_solver(|solver| {
             solver.push();
             solver.assert(&{
-                let bv_x =
-                    z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
+                let bv_x = z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
                 bv_x._eq(&z3::ast::BV::from_u64(42, 8))
             });
             let r = solver.check();
@@ -4738,10 +4732,7 @@ mod tests {
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_x", 8);
         let mk_frame = |is_true: bool, val: u64| {
-            ScopeFrame::new(
-                is_true,
-                bv_x._eq(&z3::ast::BV::from_u64(val, 8)),
-            )
+            ScopeFrame::new(is_true, bv_x._eq(&z3::ast::BV::from_u64(val, 8)))
         };
 
         // Add an initial frame (simulates a pre-existing per-state
@@ -4780,12 +4771,7 @@ mod tests {
         ctx.set_lineage_for_testing(Arc::clone(&lin));
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_nested_x", 8);
-        let mk_frame = |val: u64| {
-            ScopeFrame::new(
-                true,
-                bv_x._eq(&z3::ast::BV::from_u64(val, 8)),
-            )
-        };
+        let mk_frame = |val: u64| ScopeFrame::new(true, bv_x._eq(&z3::ast::BV::from_u64(val, 8)));
 
         // outer save (depth=0), add 1 frame, inner save (depth=1), add 2,
         // pop -> truncate to 1, pop -> truncate to 0.
@@ -5438,7 +5424,11 @@ mod tests {
         ctx.assume_true(&x.sle(&twenty, &ctx));
         // Populate cache.
         let v = ctx.eval(&x).unwrap();
-        assert_eq!(v & (1u128 << 31), 0, "witness should be signed-non-negative");
+        assert_eq!(
+            v & (1u128 << 31),
+            0,
+            "witness should be signed-non-negative"
+        );
 
         assert_eq!(ctx.min(&x, true), Some(5));
         assert_eq!(ctx.max(&x, true), Some(20));
@@ -5736,7 +5726,10 @@ mod tests {
         let base_load_bytes = baseline.get("mem_load_bytes").copied().unwrap_or(0);
         let base_store_bytes = baseline.get("mem_store_bytes").copied().unwrap_or(0);
         let base_lsym = baseline.get("mem_load_symbolic_addr").copied().unwrap_or(0);
-        let base_ssym = baseline.get("mem_store_symbolic_addr").copied().unwrap_or(0);
+        let base_ssym = baseline
+            .get("mem_store_symbolic_addr")
+            .copied()
+            .unwrap_or(0);
         let base_fault = baseline
             .get("mem_lazy_page_fault_count")
             .copied()
@@ -5756,13 +5749,7 @@ mod tests {
         assert!(stats.get("mem_store_bytes").copied().unwrap() >= base_store_bytes + 16);
         assert!(stats.get("mem_load_symbolic_addr").copied().unwrap() >= base_lsym + 1);
         assert!(stats.get("mem_store_symbolic_addr").copied().unwrap() >= base_ssym + 1);
-        assert!(
-            stats
-                .get("mem_lazy_page_fault_count")
-                .copied()
-                .unwrap()
-                >= base_fault + 1
-        );
+        assert!(stats.get("mem_lazy_page_fault_count").copied().unwrap() >= base_fault + 1);
     }
 
     #[test]
@@ -5878,7 +5865,10 @@ mod tests {
         assert!(original_sat, "constraint set should be sat");
         let x_witness = ctx.eval(&x).expect("x evaluable");
         let y_witness = ctx.eval(&y).expect("y evaluable");
-        assert_eq!(x_witness, 11, "x must be 11 (the only value with 10<x<20 whose low 16 bits = 0x000B)");
+        assert_eq!(
+            x_witness, 11,
+            "x must be 11 (the only value with 10<x<20 whose low 16 bits = 0x000B)"
+        );
         assert_eq!(y_witness, 0x0000_0007, "y_high=0, y_low=0x0007");
 
         // Step 1: Serialize via Solver::to_string (SMT-LIB2 S-expression).
@@ -5886,7 +5876,10 @@ mod tests {
         let serialized = ctx.debug_solver_string();
         let serialize_ns = serialize_start.elapsed().as_nanos() as u64;
         let serialized_bytes = serialized.len();
-        assert!(!serialized.is_empty(), "serialized SMT-LIB2 must be non-empty");
+        assert!(
+            !serialized.is_empty(),
+            "serialized SMT-LIB2 must be non-empty"
+        );
 
         // Step 2: Parse into a fresh z3::Solver (shares the thread-local Z3
         // context, but is a logically independent solver). Constants declared
@@ -5901,11 +5894,16 @@ mod tests {
         let new_check_start = Instant::now();
         let new_sat = matches!(new_solver.check(), z3::SatResult::Sat);
         let new_check_ns = new_check_start.elapsed().as_nanos() as u64;
-        assert_eq!(new_sat, original_sat, "round-tripped solver sat-result must match");
+        assert_eq!(
+            new_sat, original_sat,
+            "round-tripped solver sat-result must match"
+        );
 
         // Step 3b: model values for x, y match the original witness (the
         // constraint set is restrictive enough that x=11, y_low=7 are forced).
-        let new_model = new_solver.get_model().expect("sat solver must produce model");
+        let new_model = new_solver
+            .get_model()
+            .expect("sat solver must produce model");
         let new_x_val = new_model
             .eval(&x.to_z3_ast(), true)
             .and_then(|bv| bv.as_u64())
@@ -5914,8 +5912,14 @@ mod tests {
             .eval(&y.to_z3_ast(), true)
             .and_then(|bv| bv.as_u64())
             .expect("model should evaluate y");
-        assert_eq!(new_x_val as u128, x_witness, "round-tripped x model value must match");
-        assert_eq!(new_y_val as u128, y_witness, "round-tripped y model value must match");
+        assert_eq!(
+            new_x_val as u128, x_witness,
+            "round-tripped x model value must match"
+        );
+        assert_eq!(
+            new_y_val as u128, y_witness,
+            "round-tripped y model value must match"
+        );
 
         // Step 4: report measurements. Captured by `cargo test -- --nocapture`
         // or `cargo test test_smtlib2_constraint_round_trip -- --nocapture`,
@@ -5978,7 +5982,9 @@ mod tests {
 
         // Spot-check one variable's model value carries across.
         let original_v0 = ctx.eval(&vars[0]).expect("v0 evaluable");
-        let new_model = new_solver.get_model().expect("sat solver must produce model");
+        let new_model = new_solver
+            .get_model()
+            .expect("sat solver must produce model");
         let new_v0 = new_model
             .eval(&vars[0].to_z3_ast(), true)
             .and_then(|bv| bv.as_u64())
@@ -6022,7 +6028,7 @@ mod tests {
     fn test_smtlib2_cross_context_round_trip() {
         use std::time::Instant;
         use z3::ast::{Ast, BV};
-        use z3::{with_z3_context, Config, Context, Solver};
+        use z3::{Config, Context, Solver, with_z3_context};
 
         // -------- Build constraints in the default (original) context. --------
         let ctx = SymContext::new();
@@ -6056,8 +6062,7 @@ mod tests {
         // `Send + Sync` bound of `with_z3_context` (Z3 raw pointers wrap
         // `NonNull` which isn't `Send`).
         let original_x_ast_usize = x.to_z3_ast().get_z3_ast().as_ptr() as usize;
-        let original_ctx_usize =
-            z3::Context::thread_local().get_z3_context().as_ptr() as usize;
+        let original_ctx_usize = z3::Context::thread_local().get_z3_context().as_ptr() as usize;
 
         let serialize_start = Instant::now();
         let serialized = ctx.debug_solver_string();
@@ -6144,7 +6149,10 @@ mod tests {
         );
 
         // -------- The actual cross-context round-trip claims. --------
-        assert!(new_sat, "cross-context round-tripped solver must remain SAT");
+        assert!(
+            new_sat,
+            "cross-context round-tripped solver must remain SAT"
+        );
         assert_eq!(
             new_x_val as u128, x_witness,
             "cross-context model must give x=11 via name lookup; got {} \
@@ -6520,8 +6528,7 @@ mod tests {
 
         let snap = ctx.to_snapshot();
         let json = serde_json::to_string(&snap).expect("serialize");
-        let restored: SymContextSnapshot =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.assumed_constraints.len(), 3);
 
         let ctx2 = SymContext::new();
@@ -6589,10 +6596,8 @@ mod tests {
             x_z3.bvult(&twenty_z3)
         };
         let raw_ptr = raw_bool.get_z3_ast().as_ptr() as usize;
-        let z3_ast_ptr = unsafe {
-            Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr)
-        }
-        .expect("raw Bool must yield a Z3AstPtr");
+        let z3_ast_ptr = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr) }
+            .expect("raw Bool must yield a Z3AstPtr");
         ctx.add_constraint_raw(z3_ast_ptr);
 
         // Pre-snapshot bookkeeping. `num_constraints` counts both paths;
@@ -6611,8 +6616,7 @@ mod tests {
              are present"
         );
         let json = serde_json::to_string(&snap).expect("serialize");
-        let restored: SymContextSnapshot =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
 
         let ctx2 = SymContext::new();
         ctx2.restore_from_snapshot(&restored);
@@ -6672,8 +6676,7 @@ mod tests {
         ctx.assume_false(&cond_b);
         let snap = ctx.to_snapshot();
         let json = serde_json::to_string(&snap).expect("serialize");
-        let restored: SymContextSnapshot =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
         let ctx2 = SymContext::new_mock();
         ctx2.restore_from_snapshot(&restored);
         let post = ctx2.get_assumed_constraints();

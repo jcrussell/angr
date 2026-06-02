@@ -21,8 +21,8 @@ use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rus
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
-    BVOp, RustBV, RustSymbolTable, SymContext, record_mem_load, record_mem_store,
-    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
+    BVOp, RustBV, RustSymbolTable, SymContext, record_mem_load, record_mem_store, record_vex_binop,
+    record_vex_qop, record_vex_triop, record_vex_unop,
 };
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
@@ -1009,10 +1009,10 @@ impl<'a> VEXInterpreter<'a> {
 
         let ast = result_ast.bind(py);
 
-        if let Some(ref table) = self.symbol_table {
-            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                return Ok(bv);
-            }
+        if let Some(ref table) = self.symbol_table
+            && let Some(bv) = try_handle_to_rustbv(&ast, table)
+        {
+            return Ok(bv);
         }
 
         if is_claripy_ast(&ast) {
@@ -1088,10 +1088,10 @@ impl<'a> VEXInterpreter<'a> {
                 let ast = ast_obj.bind(py);
 
                 // Fast path: check for RustBVHandle first
-                if let Some(ref table) = self.symbol_table {
-                    if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                        return Ok(bv);
-                    }
+                if let Some(ref table) = self.symbol_table
+                    && let Some(bv) = try_handle_to_rustbv(&ast, table)
+                {
+                    return Ok(bv);
                 }
 
                 // Slow path: claripy AST conversion
@@ -1494,13 +1494,13 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Check all_flushed_stores (cross-block within same step)
-        if let Some(data) = self.all_flushed_stores.get(&sp_val) {
-            if data.len() >= ptr_size as usize {
-                let mut bytes = [0u8; 8];
-                let len = std::cmp::min(ptr_size as usize, 8);
-                bytes[..len].copy_from_slice(&data[..len]);
-                return Some(u64::from_le_bytes(bytes));
-            }
+        if let Some(data) = self.all_flushed_stores.get(&sp_val)
+            && data.len() >= ptr_size as usize
+        {
+            let mut bytes = [0u8; 8];
+            let len = std::cmp::min(ptr_size as usize, 8);
+            bytes[..len].copy_from_slice(&data[..len]);
+            return Some(u64::from_le_bytes(bytes));
         }
 
         // Fall back to rust_memory
@@ -1625,9 +1625,9 @@ impl<'a> VEXInterpreter<'a> {
             dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
-            last_branch_condition: None,             // Fresh for fork
-            stored_conditions: FxHashMap::default(), // Fresh for fork
-            fork_snapshots: FxHashMap::default(),    // Fresh for fork
+            last_branch_condition: None,               // Fresh for fork
+            stored_conditions: FxHashMap::default(),   // Fresh for fork
+            fork_snapshots: FxHashMap::default(),      // Fresh for fork
             stats: ExecutionStats::default(),          // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag

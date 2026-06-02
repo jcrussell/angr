@@ -1776,9 +1776,7 @@ impl RustSimState {
     /// first consumer.
     #[cfg(feature = "vex-engine-z3")]
     pub fn set_use_shared_lineage_solver(&self, enabled: bool) {
-        self.solver
-            .borrow()
-            .set_use_shared_lineage_solver(enabled);
+        self.solver.borrow().set_use_shared_lineage_solver(enabled);
     }
 
     /// Whether fork-time `SharedLineageSolver` materialization is opted
@@ -2507,8 +2505,7 @@ impl RustSimState {
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
         let memory = SymbolicMemory::from_snapshot(snap.memory);
-        let environment: HashMap<Vec<u8>, Vec<u8>> =
-            snap.environment.into_iter().collect();
+        let environment: HashMap<Vec<u8>, Vec<u8>> = snap.environment.into_iter().collect();
         let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
         Ok(RustSimState {
             arch,
@@ -2607,8 +2604,8 @@ impl PyRustSimState {
     #[new]
     #[pyo3(signature = (arch="amd64", little_endian=None))]
     pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
-        let inner = RustSimState::new_with_endian(arch, little_endian)
-            .map_err(PyValueError::new_err)?;
+        let inner =
+            RustSimState::new_with_endian(arch, little_endian).map_err(PyValueError::new_err)?;
         Ok(PyRustSimState { inner })
     }
 
@@ -3219,10 +3216,8 @@ impl ExplorationStateSnapshot {
 
         // Find the page
         for page in &self.memory_pages {
-            if page.0 == page_addr {
-                if offset + size <= page.1.len() {
-                    return Some(page.1[offset..offset + size].to_vec());
-                }
+            if page.0 == page_addr && offset + size <= page.1.len() {
+                return Some(page.1[offset..offset + size].to_vec());
             }
         }
         None
@@ -3290,12 +3285,12 @@ impl RustSimState {
         for &name in self.arch.register_names() {
             if let Some(size) = self.arch.register_size(name) {
                 let bv = self.registers.get_reg(name, &ctx);
-                if let Some(bv) = bv {
-                    if let Some(val) = bv.as_u128() {
-                        named_registers.push((name.to_string(), val, size * 8));
-                    }
-                    // Skip symbolic registers (they'll need AST recovery)
+                if let Some(bv) = bv
+                    && let Some(val) = bv.as_u128()
+                {
+                    named_registers.push((name.to_string(), val, size * 8));
                 }
+                // Skip symbolic registers (they'll need AST recovery)
             }
         }
 
@@ -3863,7 +3858,10 @@ mod tests {
         assert_eq!(restored.state_id(), orig.state_id());
         assert_eq!(restored.parent_id(), orig.parent_id());
         assert_eq!(restored.history().to_vec(), orig.history().to_vec());
-        assert_eq!(restored.detailed_history().len(), orig.detailed_history().len());
+        assert_eq!(
+            restored.detailed_history().len(),
+            orig.detailed_history().len()
+        );
         assert_eq!(restored.heap_brk(), orig.heap_brk());
         assert_eq!(restored.posix_brk(), orig.posix_brk());
         assert_eq!(restored.mmap_base(), orig.mmap_base());
@@ -3944,7 +3942,10 @@ mod tests {
     fn test_state_to_from_serialized_round_trip() {
         let orig = build_populated_state();
         let bytes = orig.to_serialized();
-        assert_eq!(bytes[0], SNAPSHOT_VERSION, "envelope must carry version byte");
+        assert_eq!(
+            bytes[0], SNAPSHOT_VERSION,
+            "envelope must carry version byte"
+        );
         let restored = RustSimState::from_serialized(&bytes).expect("from_serialized");
         assert_state_round_trip(&orig, &restored);
     }

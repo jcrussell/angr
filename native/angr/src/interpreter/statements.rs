@@ -61,7 +61,11 @@ impl<'a> VEXInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
 
-            IRStmt::Store { addr, data, endness } => {
+            IRStmt::Store {
+                addr,
+                data,
+                endness,
+            } => {
                 let store_start = profile_start!(self);
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
@@ -91,7 +95,13 @@ impl<'a> VEXInterpreter<'a> {
                 // bump the global mem_store counter here for parity with
                 // the Rust-memory path.
                 record_mem_store(data_size as u64);
-                self.fallback_to_python_store(py, callbacks, &addr_val, data_val.clone(), data_size)?;
+                self.fallback_to_python_store(
+                    py,
+                    callbacks,
+                    &addr_val,
+                    data_val.clone(),
+                    data_size,
+                )?;
                 self.dispatch_mem_write_inspect(
                     py, callbacks, &addr_val, &data_val, data_size, *endness,
                 );
@@ -443,112 +453,107 @@ impl<'a> VEXInterpreter<'a> {
                 }
 
                 // Concrete guard: simple check
-                if let Some(g) = guard_val.as_u64() {
-                    if g != 0 {
-                        // Guard is true - perform the store
-                        let addr_val =
-                            self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let data_val =
-                            self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                        let data_size = data_val.width().div_ceil(8) as usize;
+                if let Some(g) = guard_val.as_u64()
+                    && g != 0
+                {
+                    // Guard is true - perform the store
+                    let addr_val =
+                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let data_val =
+                        self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                    let data_size = data_val.width().div_ceil(8) as usize;
 
-                        if let Some(addr_concrete) = addr_val.as_u64() {
-                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                            // Check if data is symbolic - use symbolic store callback
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value()
-                            {
-                                self.flush_stores(py, callbacks)?;
-                                callbacks
-                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                let data_bytes = bv_to_bytes(&data_val);
-                                self.pending_stores.push(addr_concrete, data_bytes);
-                                if self.pending_stores.len() >= self.max_pending_stores {
-                                    self.flush_stores(py, callbacks)?;
-                                }
-                            }
-                        } else {
-                            // Symbolic address with concrete guard - flush and use callback
+                    if let Some(addr_concrete) = addr_val.as_u64() {
+                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                        // Check if data is symbolic - use symbolic store callback
+                        if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                             self.flush_stores(py, callbacks)?;
-                            // Check if data is symbolic - use symbolic store callback
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value()
-                            {
-                                // Concretize address for write (with cache)
-                                let concret_result = self.concretize_cached_write(&addr_val);
-                                match &*concret_result {
-                                    ConcretizationResult::Single(addr_concrete) => {
-                                        let addr_concrete = *addr_concrete;
+                            callbacks
+                                .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        } else {
+                            let data_bytes = bv_to_bytes(&data_val);
+                            self.pending_stores.push(addr_concrete, data_bytes);
+                            if self.pending_stores.len() >= self.max_pending_stores {
+                                self.flush_stores(py, callbacks)?;
+                            }
+                        }
+                    } else {
+                        // Symbolic address with concrete guard - flush and use callback
+                        self.flush_stores(py, callbacks)?;
+                        // Check if data is symbolic - use symbolic store callback
+                        if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            // Concretize address for write (with cache)
+                            let concret_result = self.concretize_cached_write(&addr_val);
+                            match &*concret_result {
+                                ConcretizationResult::Single(addr_concrete) => {
+                                    let addr_concrete = *addr_concrete;
+                                    callbacks
+                                        .call_memory_store_symbolic_value(
+                                            py,
+                                            addr_concrete,
+                                            &data_val,
+                                        )
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                                }
+                                ConcretizationResult::Multiple(addrs) => {
+                                    // Symbolic data + multiple address solutions: prefer the full
+                                    // symbolic store callback. Otherwise build an ITE chain in Rust
+                                    // (mirrors fallback_to_python_store::Multiple) so all candidate
+                                    // addresses are updated, not just the first one.
+                                    if callbacks.has_memory_store_symbolic_full() {
                                         callbacks
-                                            .call_memory_store_symbolic_value(
-                                                py,
-                                                addr_concrete,
-                                                &data_val,
+                                            .call_memory_store_symbolic_full(
+                                                py, &addr_val, &data_val,
                                             )
                                             .map_err(|e| {
                                                 CbExecutionError::Callback(e.to_string())
                                             })?;
-                                        self.load_prefetch_cache
-                                            .remove(&(addr_concrete, data_size));
-                                    }
-                                    ConcretizationResult::Multiple(addrs) => {
-                                        // Symbolic data + multiple address solutions: prefer the full
-                                        // symbolic store callback. Otherwise build an ITE chain in Rust
-                                        // (mirrors fallback_to_python_store::Multiple) so all candidate
-                                        // addresses are updated, not just the first one.
-                                        if callbacks.has_memory_store_symbolic_full() {
-                                            callbacks
-                                                .call_memory_store_symbolic_full(
-                                                    py, &addr_val, &data_val,
-                                                )
-                                                .map_err(|e| {
-                                                    CbExecutionError::Callback(e.to_string())
-                                                })?;
-                                        } else if callbacks.has_memory_store_symbolic_value()
-                                            && addrs.len() <= 16
-                                        {
-                                            self.build_ite_store_from_callbacks(
-                                                py, callbacks, addrs, &addr_val, &data_val,
-                                            )?;
-                                        } else {
-                                            return Err(CbExecutionError::Unsupported(
+                                    } else if callbacks.has_memory_store_symbolic_value()
+                                        && addrs.len() <= 16
+                                    {
+                                        self.build_ite_store_from_callbacks(
+                                            py, callbacks, addrs, &addr_val, &data_val,
+                                        )?;
+                                    } else {
+                                        return Err(CbExecutionError::Unsupported(
                                                 "symbolic store with multiple address solutions: \
                                                  no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
                                             ));
-                                        }
-                                        // Multiple candidate addresses written; drop the whole cache.
-                                        self.load_prefetch_cache.clear();
                                     }
-                                    _ => {
-                                        // TooLarge or Failed - delegate to Python's full symbolic callback
-                                        if callbacks.has_memory_store_symbolic_full() {
-                                            callbacks
-                                                .call_memory_store_symbolic_full(
-                                                    py, &addr_val, &data_val,
-                                                )
-                                                .map_err(|e| {
-                                                    CbExecutionError::Callback(e.to_string())
-                                                })?;
-                                        } else {
-                                            return Err(CbExecutionError::Unsupported(
-                                                "symbolic store with unconcretizable address"
-                                                    .to_string(),
-                                            ));
-                                        }
-                                        // Touched addresses are unknown, drop the whole cache.
-                                        self.load_prefetch_cache.clear();
-                                    }
+                                    // Multiple candidate addresses written; drop the whole cache.
+                                    self.load_prefetch_cache.clear();
                                 }
-                            } else {
-                                let data_bytes = bv_to_bytes(&data_val);
-                                callbacks
-                                    .call_memory_store(py, 0, &data_bytes)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                _ => {
+                                    // TooLarge or Failed - delegate to Python's full symbolic callback
+                                    if callbacks.has_memory_store_symbolic_full() {
+                                        callbacks
+                                            .call_memory_store_symbolic_full(
+                                                py, &addr_val, &data_val,
+                                            )
+                                            .map_err(|e| {
+                                                CbExecutionError::Callback(e.to_string())
+                                            })?;
+                                    } else {
+                                        return Err(CbExecutionError::Unsupported(
+                                            "symbolic store with unconcretizable address"
+                                                .to_string(),
+                                        ));
+                                    }
+                                    // Touched addresses are unknown, drop the whole cache.
+                                    self.load_prefetch_cache.clear();
+                                }
                             }
+                        } else {
+                            let data_bytes = bv_to_bytes(&data_val);
+                            callbacks
+                                .call_memory_store(py, 0, &data_bytes)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         }
                     }
-                    // Guard is false - skip the store
                 }
+                // Guard is false - skip the store
 
                 Ok(StmtResult::Continue)
             }
@@ -771,11 +776,11 @@ impl<'a> VEXInterpreter<'a> {
                             self.ctx.assume_true(&guard_val);
                         }
                         // Fall through and execute the dirty call.
-                    } else if let Some(g) = guard_val.as_u64() {
-                        if g == 0 {
-                            // Guard is false - skip the dirty call
-                            return Ok(StmtResult::Continue);
-                        }
+                    } else if let Some(g) = guard_val.as_u64()
+                        && g == 0
+                    {
+                        // Guard is false - skip the dirty call
+                        return Ok(StmtResult::Continue);
                     }
                 }
 
@@ -811,34 +816,34 @@ impl<'a> VEXInterpreter<'a> {
                 };
 
                 // Try native dirty helper dispatch first
-                if all_args_concrete {
-                    if let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals) {
-                        // Native handler succeeded!
-                        log::trace!(
-                            "Native dirty call: {} (args: {:?})",
-                            dirty.cee.name,
-                            arg_vals
-                        );
+                if all_args_concrete
+                    && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
+                {
+                    // Native handler succeeded!
+                    log::trace!(
+                        "Native dirty call: {} (args: {:?})",
+                        dirty.cee.name,
+                        arg_vals
+                    );
 
-                        // Store result in temporary if specified
-                        if let Some(tmp) = dirty.tmp {
-                            if let Some(return_value) = result.return_value {
-                                let value = RustBV::concrete(return_value as u128, ret_ty_bits);
-                                if (tmp as usize) < self.temps.len() {
-                                    self.temps[tmp as usize] = Some(value);
-                                }
-                            }
+                    // Store result in temporary if specified
+                    if let Some(tmp) = dirty.tmp
+                        && let Some(return_value) = result.return_value
+                    {
+                        let value = RustBV::concrete(return_value as u128, ret_ty_bits);
+                        if (tmp as usize) < self.temps.len() {
+                            self.temps[tmp as usize] = Some(value);
                         }
-
-                        // Apply any register writes from the helper
-                        for (offset, value) in result.reg_writes {
-                            // Convert u64 value to RustBV and store in register
-                            let bv = RustBV::concrete(value as u128, 64);
-                            self.registers.put(offset, bv);
-                        }
-
-                        return Ok(StmtResult::Continue);
                     }
+
+                    // Apply any register writes from the helper
+                    for (offset, value) in result.reg_writes {
+                        // Convert u64 value to RustBV and store in register
+                        let bv = RustBV::concrete(value as u128, 64);
+                        self.registers.put(offset, bv);
+                    }
+
+                    return Ok(StmtResult::Continue);
                 }
 
                 // No native handler matched. If Python also has no callback
@@ -905,11 +910,7 @@ impl<'a> VEXInterpreter<'a> {
                 if let Some(tmp) = dirty.tmp {
                     let result = if is_symbolic {
                         // Create a symbolic value for the result
-                        RustBV::symbolic(
-                            self.ctx,
-                            format!("dirty_{}", dirty.cee.name),
-                            ret_ty_bits,
-                        )
+                        RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
                     } else {
                         // Convert bytes to concrete value
                         let mut value: u128 = 0;
@@ -1164,10 +1165,7 @@ impl<'a> VEXInterpreter<'a> {
             false // Skip for 64-bit — too expensive
         };
 
-        if data_val.is_symbolic()
-            && callbacks.has_memory_store_symbolic_value()
-            && use_sym_store
-        {
+        if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
             // Try symbolic store callback (preserves expression tree)
             let sym_ok = (|| -> Result<(), CbExecutionError> {
                 self.flush_stores(py, callbacks)?;
@@ -1533,13 +1531,7 @@ impl<'a> VEXInterpreter<'a> {
                 self.cas_store_symbolic_data(py, callbacks, addr, &store_lo, irsb)?;
                 if let Some(d) = dcas {
                     let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi, self.ctx);
-                    self.cas_store_symbolic_data(
-                        py,
-                        callbacks,
-                        &d.addr_hi_expr,
-                        &store_hi,
-                        irsb,
-                    )?;
+                    self.cas_store_symbolic_data(py, callbacks, &d.addr_hi_expr, &store_hi, irsb)?;
                 }
                 Ok(())
             }
@@ -1710,12 +1702,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `crate::state::InspectEvent`; bit 6 is custom for the `instruction`
     /// event (no `InspectEvent` slot — angr Python exposes it but the Rust
     /// `InspectionManager` enum doesn't track it). Dispatches `when='before'`.
-    fn dispatch_instruction_inspect(
-        &self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
-        addr: u64,
-    ) {
+    fn dispatch_instruction_inspect(&self, py: Python<'_>, callbacks: &PythonCallbacks, addr: u64) {
         // Instruction = bit 6 (custom — not in the Rust InspectEvent enum).
         if !callbacks.inspect_event_enabled(6) {
             return;

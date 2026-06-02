@@ -398,10 +398,11 @@ impl AddressConcretizer {
             let mut addrs: Vec<u64> = fast_solutions.iter().map(|&v| v as u64).collect();
             addrs.sort_unstable();
 
-            if self.enable_stride_detection && addrs.len() >= 2 {
-                if let Some(strided) = self.detect_stride_from_solutions(&addrs) {
-                    return strided;
-                }
+            if self.enable_stride_detection
+                && addrs.len() >= 2
+                && let Some(strided) = self.detect_stride_from_solutions(&addrs)
+            {
+                return strided;
             }
 
             return ConcretizationResult::Multiple(addrs);
@@ -441,10 +442,10 @@ impl AddressConcretizer {
 
         let range_size = max.saturating_sub(min);
         if range_size > range_limit {
-            if self.enable_stride_detection {
-                if let Some(strided) = self.try_detect_stride(addr, ctx, min, max) {
-                    return strided;
-                }
+            if self.enable_stride_detection
+                && let Some(strided) = self.try_detect_stride(addr, ctx, min, max)
+            {
+                return strided;
             }
             return ConcretizationResult::TooLarge {
                 min,
@@ -468,10 +469,11 @@ impl AddressConcretizer {
                 let mut addrs: Vec<u64> = solutions.iter().map(|&v| v as u64).collect();
                 addrs.sort_unstable();
 
-                if self.enable_stride_detection && addrs.len() >= 2 {
-                    if let Some(strided) = self.detect_stride_from_solutions(&addrs) {
-                        return strided;
-                    }
+                if self.enable_stride_detection
+                    && addrs.len() >= 2
+                    && let Some(strided) = self.detect_stride_from_solutions(&addrs)
+                {
+                    return strided;
                 }
 
                 ConcretizationResult::Multiple(addrs)

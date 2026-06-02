@@ -45,28 +45,22 @@ impl RustExplorationManager {
                 // Fast path: extract typed Z3 AST handle and assert directly
                 #[cfg(feature = "vex-engine-z3")]
                 {
-                    if let Some(ref backend) = z3_backend {
-                        if let Ok(z3_obj) = backend.call_method1("convert", (&item,)) {
-                            if let Ok(ast_ref) = z3_obj.call_method0("as_ast") {
-                                if let Ok(ptr) =
-                                    ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
-                                {
-                                    let z3_ctx = z3::Context::thread_local();
-                                    // SAFETY: claripy's z3 backend returned
-                                    // this pointer for a live AST it caches;
-                                    // matches our thread-local Z3 context.
-                                    if let Some(z3_ast) = unsafe {
-                                        Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr)
-                                    } {
-                                        ctx_ref.add_constraint_raw(z3_ast);
-                                        if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
-                                            ctx_ref.assumed_constraints_push(bv, true);
-                                        }
-                                        added += 1;
-                                        continue;
-                                    }
-                                }
+                    if let Some(ref backend) = z3_backend
+                        && let Ok(z3_obj) = backend.call_method1("convert", (&item,))
+                        && let Ok(ast_ref) = z3_obj.call_method0("as_ast")
+                        && let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
+                    {
+                        let z3_ctx = z3::Context::thread_local();
+                        // SAFETY: claripy's z3 backend returned
+                        // this pointer for a live AST it caches;
+                        // matches our thread-local Z3 context.
+                        if let Some(z3_ast) = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) } {
+                            ctx_ref.add_constraint_raw(z3_ast);
+                            if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
+                                ctx_ref.assumed_constraints_push(bv, true);
                             }
+                            added += 1;
+                            continue;
                         }
                     }
                 }
@@ -122,13 +116,12 @@ impl RustExplorationManager {
         let z3_ctx_handle = z3::Context::thread_local();
         let raw_ctx = z3_ctx_handle.get_z3_context();
         for (idx, ptr) in ptrs.iter().enumerate() {
-            let raw_ast = std::ptr::NonNull::new(*ptr as *mut z3_sys::_Z3_ast).ok_or_else(
-                || {
+            let raw_ast =
+                std::ptr::NonNull::new(*ptr as *mut z3_sys::_Z3_ast).ok_or_else(|| {
                     PyValueError::new_err(format!(
                         "import_z3_constraint_ptrs: null pointer at index {idx}"
                     ))
-                },
-            )?;
+                })?;
             // SAFETY: `raw_ctx` is the active thread-local context for the
             // duration of this call; `raw_ast` is non-null (checked above).
             // Z3 returns None when `raw_ast` is not a valid AST belonging to
@@ -411,10 +404,10 @@ impl RustExplorationManager {
         if let Some(state) = self.find_state_mut(state_id) {
             return Ok(state.flush_and_export_full());
         }
-        if let Some(ref mut pending) = self.pending_callback {
-            if pending.state.state_id() == state_id {
-                return Ok(pending.state.flush_and_export_full());
-            }
+        if let Some(ref mut pending) = self.pending_callback
+            && pending.state.state_id() == state_id
+        {
+            return Ok(pending.state.flush_and_export_full());
         }
         Err(PyValueError::new_err(format!(
             "state {} not found",
@@ -615,9 +608,8 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
-                claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
-                    PyValueError::new_err(format!("AST conversion failed: {}", e))
-                })?
+                claripy_to_rustbv(py, ast, ctx_ref)
+                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?
             };
             if state.set_register(reg_name, bv) {
                 Ok(())
@@ -694,9 +686,8 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
-                claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
-                    PyValueError::new_err(format!("AST conversion failed: {}", e))
-                })?
+                claripy_to_rustbv(py, ast, ctx_ref)
+                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?
             };
             state
                 .memory_store(addr, bv)

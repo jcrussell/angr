@@ -92,27 +92,25 @@ impl SymbolicMemory {
             // Check if this address falls WITHIN a wider symbolic object
             // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
             // Uses the symbolic_spans reverse index for O(1) lookup.
-            if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr) {
-                if let Some(sym) = self.symbolic_objects.get(&base_addr) {
-                    let base_offset = addr - base_addr;
-                    let sym_bytes = sym.width() / 8;
-                    if base_offset < sym_bytes as u64
-                        && base_offset + size as u64 <= sym_bytes as u64
-                    {
-                        let total_bits = sym.width();
-                        let off_bits = base_offset as u32 * 8;
-                        // BE: bytes [off, off+size) of the wide BV occupy bits
-                        //     [total-1-off_bits : total-off_bits-size*8].
-                        // LE: same byte range occupies bits
-                        //     [off_bits+size*8-1 : off_bits].
-                        let (hi, lo) = match self.endness {
-                            Endness::Big => {
-                                (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
-                            }
-                            Endness::Little => (off_bits + size * 8 - 1, off_bits),
-                        };
-                        return Ok(sym.extract(hi, lo, ctx));
-                    }
+            if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr)
+                && let Some(sym) = self.symbolic_objects.get(&base_addr)
+            {
+                let base_offset = addr - base_addr;
+                let sym_bytes = sym.width() / 8;
+                if base_offset < sym_bytes as u64 && base_offset + size as u64 <= sym_bytes as u64 {
+                    let total_bits = sym.width();
+                    let off_bits = base_offset as u32 * 8;
+                    // BE: bytes [off, off+size) of the wide BV occupy bits
+                    //     [total-1-off_bits : total-off_bits-size*8].
+                    // LE: same byte range occupies bits
+                    //     [off_bits+size*8-1 : off_bits].
+                    let (hi, lo) = match self.endness {
+                        Endness::Big => {
+                            (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
+                        }
+                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                    };
+                    return Ok(sym.extract(hi, lo, ctx));
                 }
             }
         }
@@ -164,10 +162,10 @@ impl SymbolicMemory {
 
         if has_symbolic {
             // Return stored symbolic object if available at exact address+width
-            if let Some(sym) = self.symbolic_objects.get(&addr) {
-                if sym.width() == size * 8 {
-                    return Ok(sym.clone());
-                }
+            if let Some(sym) = self.symbolic_objects.get(&addr)
+                && sym.width() == size * 8
+            {
+                return Ok(sym.clone());
             }
             // Try to reconstruct from per-byte symbolic objects
             // by concatenating individual byte-level entries
@@ -557,10 +555,10 @@ impl SymbolicMemory {
         }
 
         // Check for stored symbolic object first
-        if let Some(sym) = self.symbolic_objects.get(&addr) {
-            if sym.width() == size * 8 {
-                return Ok(sym.clone());
-            }
+        if let Some(sym) = self.symbolic_objects.get(&addr)
+            && sym.width() == size * 8
+        {
+            return Ok(sym.clone());
         }
 
         let start_page = addr.page_num();
@@ -625,10 +623,10 @@ impl SymbolicMemory {
 
         if has_symbolic {
             // Return stored symbolic object if available and width matches
-            if let Some(sym) = self.symbolic_objects.get(&addr) {
-                if sym.width() == size * 8 {
-                    return Ok(sym.clone());
-                }
+            if let Some(sym) = self.symbolic_objects.get(&addr)
+                && sym.width() == size * 8
+            {
+                return Ok(sym.clone());
             }
 
             // Try to combine individual byte objects into a multi-byte value
@@ -741,17 +739,16 @@ impl SymbolicMemory {
         } else {
             None
         };
-        if let Some(fp) = &fingerprint {
-            if let Some(cached) = self.wider_load_cache.borrow().get(&(addr, size)) {
-                if cached.byte_fingerprints == *fp {
-                    // invariant-mem-ite-depth-counter: replay the same
-                    // count the per-byte miss path would have recorded.
-                    if cached.total_ite_depth > 0 {
-                        crate::symbolic::record_mem_ite_depth(cached.total_ite_depth);
-                    }
-                    return Ok(cached.bv.clone());
-                }
+        if let Some(fp) = &fingerprint
+            && let Some(cached) = self.wider_load_cache.borrow().get(&(addr, size))
+            && cached.byte_fingerprints == *fp
+        {
+            // invariant-mem-ite-depth-counter: replay the same
+            // count the per-byte miss path would have recorded.
+            if cached.total_ite_depth > 0 {
+                crate::symbolic::record_mem_ite_depth(cached.total_ite_depth);
             }
+            return Ok(cached.bv.clone());
         }
 
         let mut total_ite_depth: u32 = 0;
@@ -878,12 +875,12 @@ impl SymbolicMemory {
     ) -> Option<(Address, &RustBV)> {
         // O(1) path 1: addr lies strictly inside a wider sym (spans
         // populates offsets 1..sym_bytes; offset 0 is handled below).
-        if let Some(&(base_addr, _base_width)) = self.symbolic_spans.get(&addr) {
-            if let Some(sym) = self.symbolic_objects.get(&base_addr) {
-                let sym_size = sym.width() / 8;
-                if addr + size as u64 <= base_addr + sym_size as u64 {
-                    return Some((base_addr, sym));
-                }
+        if let Some(&(base_addr, _base_width)) = self.symbolic_spans.get(&addr)
+            && let Some(sym) = self.symbolic_objects.get(&base_addr)
+        {
+            let sym_size = sym.width() / 8;
+            if addr + size as u64 <= base_addr + sym_size as u64 {
+                return Some((base_addr, sym));
             }
         }
         // O(1) path 2: addr IS the base of a wider sym. Caller's earlier

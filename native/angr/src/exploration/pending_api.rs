@@ -340,10 +340,10 @@ impl RustExplorationManager {
             }
 
             let state_id = pending.state.state_id();
-            if let Some(&root_id) = self.sm.roots().get(&state_id) {
-                if !ancestry.contains(&root_id) {
-                    ancestry.push(root_id);
-                }
+            if let Some(&root_id) = self.sm.roots().get(&state_id)
+                && !ancestry.contains(&root_id)
+            {
+                ancestry.push(root_id);
             }
 
             Ok(ancestry)

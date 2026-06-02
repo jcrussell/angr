@@ -155,10 +155,10 @@ impl MultiPayload {
     /// Returns an 8-bit `RustBV`. The caller must ensure all alternative
     /// `value` BVs are 8 bits (the type invariant).
     pub fn collapse(&self, default_byte: u8, ctx: &SymContext) -> RustBV {
-        if let Some(cached) = self.cached_collapse.borrow().as_ref() {
-            if cached.default_byte == default_byte {
-                return cached.bv.clone();
-            }
+        if let Some(cached) = self.cached_collapse.borrow().as_ref()
+            && cached.default_byte == default_byte
+        {
+            return cached.bv.clone();
         }
         let default = RustBV::concrete(default_byte as u128, 8);
         let mut acc = default;

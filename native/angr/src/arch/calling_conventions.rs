@@ -180,10 +180,10 @@ pub trait CallingConvention: Send + Sync {
         let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
         let sp_val = sp.as_u64()?;
 
-        if let Some(mem) = memory {
-            if let Ok(ret_val) = mem.load_concrete_lazy(sp_val, ptr_size, ctx) {
-                return ret_val.as_u64();
-            }
+        if let Some(mem) = memory
+            && let Ok(ret_val) = mem.load_concrete_lazy(sp_val, ptr_size, ctx)
+        {
+            return ret_val.as_u64();
         }
 
         None

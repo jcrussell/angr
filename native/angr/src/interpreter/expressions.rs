@@ -113,13 +113,12 @@ impl<'a> VEXInterpreter<'a> {
 
         let value: RustBV = 'load: {
             // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
-            if self.use_rust_memory {
-                if let Some(value) =
+            if self.use_rust_memory
+                && let Some(value) =
                     self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
-                {
-                    // SymbolicMemory::load_concrete already bumped record_mem_load.
-                    break 'load value;
-                }
+            {
+                // SymbolicMemory::load_concrete already bumped record_mem_load.
+                break 'load value;
             }
 
             // angr-obrm: callback-path loads bypass SymbolicMemory, so bump
@@ -181,11 +180,11 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Also check previously flushed concrete stores (cross-block)
-        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
-            if size <= store_data.len() {
-                let data = &store_data[..size];
-                return Ok(bytes_to_bv(data, (size * 8) as u32));
-            }
+        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete)
+            && size <= store_data.len()
+        {
+            let data = &store_data[..size];
+            return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
 
         // FAST PATH 1: Check prefetch cache (batch-loaded values)
@@ -570,16 +569,16 @@ impl<'a> VEXInterpreter<'a> {
         };
         let ast = ast_obj.bind(py);
 
-        if let Some(ref table) = self.symbol_table {
-            if let Some(bv) = try_handle_to_rustbv(ast, table) {
-                return bv;
-            }
+        if let Some(ref table) = self.symbol_table
+            && let Some(bv) = try_handle_to_rustbv(ast, table)
+        {
+            return bv;
         }
 
-        if is_claripy_ast(ast) {
-            if let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx) {
-                return bv;
-            }
+        if is_claripy_ast(ast)
+            && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
+        {
+            return bv;
         }
 
         RustBV::symbolic(self.ctx, fallback_name(), width)
@@ -832,17 +831,16 @@ impl<'a> VEXInterpreter<'a> {
                 // divergence between Rust and Python. Instead, we fall through to
                 // the Python callback which handles memory correctly.
 
-                if page_fetched {
-                    if let Some(ref mut rust_mem) = self.rust_memory {
-                        if let Ok(value) = rust_mem.load_symbolic_unified(
-                            addr_val.clone(),
-                            size as u32,
-                            self.ctx,
-                            &self.concretizer,
-                        ) {
-                            return Ok(Some(value));
-                        }
-                    }
+                if page_fetched
+                    && let Some(ref mut rust_mem) = self.rust_memory
+                    && let Ok(value) = rust_mem.load_symbolic_unified(
+                        addr_val.clone(),
+                        size as u32,
+                        self.ctx,
+                        &self.concretizer,
+                    )
+                {
+                    return Ok(Some(value));
                 }
                 Ok(None)
             }
@@ -1083,7 +1081,9 @@ mod tests {
     fn eval_expr_simple_get_reads_register_after_write() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        interp.registers.put_reg("rax", RustBV::concrete(0xfeed, 64));
+        interp
+            .registers
+            .put_reg("rax", RustBV::concrete(0xfeed, 64));
         let env = TypeEnv::new();
         let bv = interp
             .eval_expr_simple(

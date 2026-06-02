@@ -109,9 +109,7 @@ impl StashManager {
     /// Get or create a stash, returning mutable reference.
     #[inline]
     pub fn entry(&mut self, stash: &str) -> &mut VecDeque<RustSimState> {
-        self.stashes
-            .entry(stash.to_string())
-            .or_default()
+        self.stashes.entry(stash.to_string()).or_default()
     }
 
     /// Iterate over all stashes.
@@ -161,9 +159,7 @@ impl StashManager {
                 STANDARD_STASHES,
             );
         }
-        self.stashes
-            .entry(name.to_string())
-            .or_default()
+        self.stashes.entry(name.to_string()).or_default()
     }
 
     // =========================================================================
@@ -333,12 +329,12 @@ impl StashManager {
     /// Find an immutable reference to a state by ID.
     pub fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
         // Fast path: use index
-        if let Some(stash_name) = self.state_index.get(&state_id) {
-            if let Some(stash) = self.stashes.get(stash_name) {
-                for state in stash {
-                    if state.state_id() == state_id {
-                        return Some(state);
-                    }
+        if let Some(stash_name) = self.state_index.get(&state_id)
+            && let Some(stash) = self.stashes.get(stash_name)
+        {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Some(state);
                 }
             }
         }
@@ -373,12 +369,12 @@ impl StashManager {
             found
         };
 
-        if let Some(name) = stash_name {
-            if let Some(stash) = self.stashes.get_mut(&name) {
-                for state in stash.iter_mut() {
-                    if state.state_id() == state_id {
-                        return Some(state);
-                    }
+        if let Some(name) = stash_name
+            && let Some(stash) = self.stashes.get_mut(&name)
+        {
+            for state in stash.iter_mut() {
+                if state.state_id() == state_id {
+                    return Some(state);
                 }
             }
         }
@@ -435,9 +431,7 @@ impl StashManager {
 
     /// Inverse of [`Self::dump_snapshot`]. Rejects an empty envelope or a
     /// version-byte mismatch with [`crate::state::SnapshotError`].
-    pub fn load_snapshot(
-        bytes: &[u8],
-    ) -> Result<Self, crate::state::SnapshotError> {
+    pub fn load_snapshot(bytes: &[u8]) -> Result<Self, crate::state::SnapshotError> {
         if bytes.is_empty() {
             return Err(crate::state::SnapshotError::EmptyEnvelope);
         }
@@ -498,9 +492,7 @@ impl StashManager {
         }
         // Make sure every standard stash exists so callers can index without panic.
         for name in STANDARD_STASHES {
-            stashes
-                .entry((*name).to_string())
-                .or_default();
+            stashes.entry((*name).to_string()).or_default();
         }
         let state_roots: HashMap<u64, u64> = snap.state_roots.into_iter().collect();
         Ok(StashManager {

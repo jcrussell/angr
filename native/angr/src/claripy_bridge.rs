@@ -1079,23 +1079,21 @@ pub fn claripy_to_rustbv(
     // Cache all symbolic/compound AST nodes using claripy's stable hash.
     // This dramatically reduces conversion overhead when the same expressions
     // appear in multiple constraints.
-    if use_cache {
-        if let Ok(ref bv) = result {
-            // Forward cache: claripy hash → RustBV
-            tl_cache!(AST_CACHE, put(ast_hash, bv.clone()));
-            // Reverse cache: store original claripy AST for later retrieval
-            // This preserves AST identity when converting back to Python
-            // Use the ast_hash as a positive u64 key
-            let expr_key = ast_hash as u64;
-            store_expression_ast(expr_key, ast.clone().unbind());
+    if use_cache && let Ok(ref bv) = result {
+        // Forward cache: claripy hash → RustBV
+        tl_cache!(AST_CACHE, put(ast_hash, bv.clone()));
+        // Reverse cache: store original claripy AST for later retrieval
+        // This preserves AST identity when converting back to Python
+        // Use the ast_hash as a positive u64 key
+        let expr_key = ast_hash as u64;
+        store_expression_ast(expr_key, ast.clone().unbind());
 
-            // For Expression results, also key by the operands Arc pointer so
-            // `rustbv_to_claripy_memo` can return the original AST verbatim
-            // (preserving annotations attached at the Expression level).
-            if let RustBV::Expression { operands, .. } = bv {
-                let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
-                store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone().unbind());
-            }
+        // For Expression results, also key by the operands Arc pointer so
+        // `rustbv_to_claripy_memo` can return the original AST verbatim
+        // (preserving annotations attached at the Expression level).
+        if let RustBV::Expression { operands, .. } = bv {
+            let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+            store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone().unbind());
         }
     }
 
@@ -1147,18 +1145,18 @@ fn ensure_claripy_ast(
         .unwrap_or_else(|_| "unknown".to_string());
 
     // Check if it's exactly a Python bool (not an int that happens to be 0 or 1)
-    if type_name == "bool" {
-        if let Ok(bool_val) = bound.extract::<bool>() {
-            // If width hint is provided, wrap as BVV (for use in BV operations)
-            // Otherwise wrap as BoolV (for use in Bool operations)
-            if let Some(w) = width_hint {
-                let val: i64 = if bool_val { 1 } else { 0 };
-                return claripy_mod.call_method1("BVV", (val, w)).map(|o| o.into());
-            }
-            return claripy_mod
-                .call_method1("BoolV", (bool_val,))
-                .map(|o| o.into());
+    if type_name == "bool"
+        && let Ok(bool_val) = bound.extract::<bool>()
+    {
+        // If width hint is provided, wrap as BVV (for use in BV operations)
+        // Otherwise wrap as BoolV (for use in Bool operations)
+        if let Some(w) = width_hint {
+            let val: i64 = if bool_val { 1 } else { 0 };
+            return claripy_mod.call_method1("BVV", (val, w)).map(|o| o.into());
         }
+        return claripy_mod
+            .call_method1("BoolV", (bool_val,))
+            .map(|o| o.into());
     }
 
     // If it's an int, wrap in BVV with the provided width hint
@@ -1230,12 +1228,12 @@ fn rustbv_to_claripy_memo(
 
     // Check cache first for Symbolic variants
     // This preserves AST identity across FFI boundary
-    if let RustBV::Symbolic { id, width, .. } = bv {
-        if let Some(cached) = get_claripy_ast(*id) {
-            // Validate cached value is a claripy AST, not an int
-            let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
-            return Ok(cached_valid);
-        }
+    if let RustBV::Symbolic { id, width, .. } = bv
+        && let Some(cached) = get_claripy_ast(*id)
+    {
+        // Validate cached value is a claripy AST, not an int
+        let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
+        return Ok(cached_valid);
     }
 
     // For Expression variants imported via claripy_to_rustbv, look up the
@@ -1726,37 +1724,37 @@ fn rustbv_to_claripy_memo(
                     let width = bv.width();
 
                     // If operand is concrete, compute actual result
-                    if let Some(operand) = operands.get(0) {
-                        if let Some(concrete_val) = operand.as_u128() {
-                            let result = match op {
-                                BVOp::Clz => {
-                                    // Count leading zeros, adjusting for width
-                                    if concrete_val == 0 {
-                                        width as u128
-                                    } else {
-                                        let leading = concrete_val.leading_zeros();
-                                        // Adjust for actual bit width (128 - width)
-                                        (leading - (128 - width)) as u128
-                                    }
+                    if let Some(operand) = operands.get(0)
+                        && let Some(concrete_val) = operand.as_u128()
+                    {
+                        let result = match op {
+                            BVOp::Clz => {
+                                // Count leading zeros, adjusting for width
+                                if concrete_val == 0 {
+                                    width as u128
+                                } else {
+                                    let leading = concrete_val.leading_zeros();
+                                    // Adjust for actual bit width (128 - width)
+                                    (leading - (128 - width)) as u128
                                 }
-                                BVOp::Ctz => {
-                                    // Count trailing zeros
-                                    if concrete_val == 0 {
-                                        width as u128
-                                    } else {
-                                        concrete_val.trailing_zeros().min(width) as u128
-                                    }
+                            }
+                            BVOp::Ctz => {
+                                // Count trailing zeros
+                                if concrete_val == 0 {
+                                    width as u128
+                                } else {
+                                    concrete_val.trailing_zeros().min(width) as u128
                                 }
-                                BVOp::Popcount => {
-                                    // Count ones
-                                    concrete_val.count_ones() as u128
-                                }
-                                _ => unreachable!(),
-                            };
-                            return claripy_mod
-                                .call_method1("BVV", (result as i64, width))
-                                .map(|o| o.into());
-                        }
+                            }
+                            BVOp::Popcount => {
+                                // Count ones
+                                concrete_val.count_ones() as u128
+                            }
+                            _ => unreachable!(),
+                        };
+                        return claripy_mod
+                            .call_method1("BVV", (result as i64, width))
+                            .map(|o| o.into());
                     }
 
                     // For symbolic input, create fresh variable (limitation - no constraint relationship)
@@ -1879,19 +1877,18 @@ pub fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
 /// garbage collection or object reallocation.
 pub fn get_stable_ast_id(ast: &Bound<'_, PyAny>) -> Result<i64, BridgeError> {
     // Try internal _hash first (most stable across claripy versions)
-    if let Ok(internal_hash) = ast.getattr("_hash") {
-        if let Ok(hash_val) = internal_hash.extract::<i64>() {
-            return Ok(hash_val);
-        }
+    if let Ok(internal_hash) = ast.getattr("_hash")
+        && let Ok(hash_val) = internal_hash.extract::<i64>()
+    {
+        return Ok(hash_val);
     }
 
     // Try __hash__ attribute directly (for cached hash)
-    if let Ok(hash_method) = ast.getattr("__hash__") {
-        if let Ok(hash_val) = hash_method.call0() {
-            if let Ok(h) = hash_val.extract::<i64>() {
-                return Ok(h);
-            }
-        }
+    if let Ok(hash_method) = ast.getattr("__hash__")
+        && let Ok(hash_val) = hash_method.call0()
+        && let Ok(h) = hash_val.extract::<i64>()
+    {
+        return Ok(h);
     }
 
     // Fall back to PyAny.hash() which calls Python's hash()
@@ -1907,10 +1904,10 @@ pub fn get_ast_width(ast: &Bound<'_, PyAny>) -> Option<u32> {
 
 /// Check if a claripy AST is concrete (BVV).
 pub fn is_concrete_ast(ast: &Bound<'_, PyAny>) -> bool {
-    if let Ok(op) = ast.getattr("op") {
-        if let Ok(op_str) = op.extract::<String>() {
-            return op_str == "BVV";
-        }
+    if let Ok(op) = ast.getattr("op")
+        && let Ok(op_str) = op.extract::<String>()
+    {
+        return op_str == "BVV";
     }
     false
 }

@@ -15,9 +15,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
-use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
+use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Extract a typed [`Z3AstPtr`] from a claripy AST's z3 backend.
 ///
@@ -350,11 +350,11 @@ impl RustSolverContext {
         let result_list = pyo3::types::PyList::empty(py);
 
         // Fast path: concrete BVV has exactly one solution
-        if n > 0 {
-            if let Some((value, _width)) = try_extract_bvv(ast) {
-                result_list.append(value.into_pyobject(py)?)?;
-                return Ok(result_list.into());
-            }
+        if n > 0
+            && let Some((value, _width)) = try_extract_bvv(ast)
+        {
+            result_list.append(value.into_pyobject(py)?)?;
+            return Ok(result_list.into());
         }
 
         let width: u32 = ast

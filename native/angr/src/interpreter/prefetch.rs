@@ -149,12 +149,11 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns all unmapped pages in the lazy region containing `page_addr`,
     /// up to `max_prefetch_batch` pages.
     fn get_eager_prefetch_list(&self, page_addr: u64) -> Vec<u64> {
-        if let Some(ref rust_mem) = self.rust_memory {
-            if let Some(pages) =
+        if let Some(ref rust_mem) = self.rust_memory
+            && let Some(pages) =
                 rust_mem.get_region_prefetch_list(page_addr, self.config.max_prefetch_batch)
-            {
-                return pages;
-            }
+        {
+            return pages;
         }
         // Fallback to just the main page
         vec![page_addr]
@@ -212,10 +211,11 @@ impl<'a> VEXInterpreter<'a> {
         for i in 1..=down_count {
             if let Some(addr) = page_addr.checked_sub(i as u64 * page_size) {
                 // Check if not already mapped
-                if let Some(ref rust_mem) = self.rust_memory {
-                    if !rust_mem.is_mapped(addr) && rust_mem.is_addr_in_lazy_region(addr) {
-                        pages_to_fetch.push(addr);
-                    }
+                if let Some(ref rust_mem) = self.rust_memory
+                    && !rust_mem.is_mapped(addr)
+                    && rust_mem.is_addr_in_lazy_region(addr)
+                {
+                    pages_to_fetch.push(addr);
                 }
             }
         }
@@ -224,10 +224,11 @@ impl<'a> VEXInterpreter<'a> {
         for i in 1..=up_count {
             if let Some(addr) = page_addr.checked_add(i as u64 * page_size) {
                 // Check if not already mapped
-                if let Some(ref rust_mem) = self.rust_memory {
-                    if !rust_mem.is_mapped(addr) && rust_mem.is_addr_in_lazy_region(addr) {
-                        pages_to_fetch.push(addr);
-                    }
+                if let Some(ref rust_mem) = self.rust_memory
+                    && !rust_mem.is_mapped(addr)
+                    && rust_mem.is_addr_in_lazy_region(addr)
+                {
+                    pages_to_fetch.push(addr);
                 }
             }
         }
@@ -597,14 +598,19 @@ mod tests {
     fn try_eval_expr_concrete_handles_concrete_register() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        interp.registers.put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
+        interp
+            .registers
+            .put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
         let env = TypeEnv::new();
         // AMD64 RSP = offset 48
         let expr = IRExpr::Get {
             offset: 48,
             ty: IRType::I64,
         };
-        assert_eq!(interp.try_eval_expr_concrete(&expr, &env), Some(0x7fff_0000));
+        assert_eq!(
+            interp.try_eval_expr_concrete(&expr, &env),
+            Some(0x7fff_0000)
+        );
     }
 
     #[test]
@@ -635,7 +641,9 @@ mod tests {
     fn get_stack_pointer_returns_rsp_value() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        interp.registers.put_reg("rsp", RustBV::concrete(0x1234_5678, 64));
+        interp
+            .registers
+            .put_reg("rsp", RustBV::concrete(0x1234_5678, 64));
         assert_eq!(interp.get_stack_pointer(), Some(0x1234_5678));
     }
 
@@ -643,7 +651,9 @@ mod tests {
     fn is_stack_region_below_rsp_within_window() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        interp.registers.put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
+        interp
+            .registers
+            .put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
         // Address 64KB below RSP — well within the 1MB window.
         assert!(interp.is_stack_region(0x7fff_0000 - 0x10000));
         // Address 2MB below RSP — outside the window.
@@ -654,7 +664,9 @@ mod tests {
     fn is_stack_region_above_rsp_within_window() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        interp.registers.put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
+        interp
+            .registers
+            .put_reg("rsp", RustBV::concrete(0x7fff_0000, 64));
         // Address 16KB above RSP — within 64KB upward margin.
         assert!(interp.is_stack_region(0x7fff_0000 + 0x4000));
         // Address 128KB above RSP — outside upward margin.
