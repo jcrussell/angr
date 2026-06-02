@@ -12,9 +12,9 @@
 //! - When the scan encounters a symbolic byte (or for strncmp when n is
 //!   symbolic — currently unsupported), we switch to building a 32-bit ITE
 //!   chain expressing the byte-wise diff:
-//!     result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i),
-//!                  ITE(c1_i == 0, 0, result_next))   -- strcmp/strncmp
-//!     result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i), result_next) -- memcmp
+//!   result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i),
+//!   ITE(c1_i == 0, 0, result_next))   -- strcmp/strncmp
+//!   result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i), result_next) -- memcmp
 //! - Maximum compare length is 4096 bytes (configurable).
 
 use super::ProcedureError;

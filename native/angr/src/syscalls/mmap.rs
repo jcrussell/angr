@@ -6,7 +6,7 @@
 //!   ARM64 syscall 222). Mirrors `procedures/posix/mmap.py`. Argument
 //!   order matches the Linux amd64 syscall ABI (see
 //!   `invariant-syscall-arg-extraction`):
-//!     rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
+//!   rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
 //! * `NativeOldMmapSyscall` — legacy struct-arg form (i386 syscall 90,
 //!   ARM EABI 90, MIPS32 4090). One pointer argument; the handler reads
 //!   six 32-bit fields (addr, length, prot, flags, fd, offset) from

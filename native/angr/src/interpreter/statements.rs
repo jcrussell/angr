@@ -1481,8 +1481,8 @@ impl<'a> VEXInterpreter<'a> {
     ///   - concrete false: no store.
     ///   - concrete true:  store `data` (reusing the original IRExpr).
     ///   - symbolic:       store `ITE(cmp, data, current)` — the deferred-fork
-    ///                     branch, where both outcomes are encoded into a single
-    ///                     state via ITE rather than splitting into two states.
+    ///     branch, where both outcomes are encoded into a single
+    ///     state via ITE rather than splitting into two states.
     #[allow(clippy::too_many_arguments)]
     fn cas_writeback(
         &mut self,

@@ -898,6 +898,7 @@ pub enum IROp {
     ///   * If `amt < 0`: shift right (logical for unsigned, arithmetic for
     ///     signed) by `-amt`; OOR right shifts collapse to 0 (unsigned) or
     ///     sign-fill (signed).
+    ///
     /// Maps to ARM UQSHL / SQSHL (DDI 0487 C7.2.327 / C7.2.298). Derived from
     /// libVEX `host_generic_simd64/simd128.c` h_generic_calc_QShl* helpers;
     /// no `_op_generic_QShl` exists in claripy.
@@ -911,6 +912,7 @@ pub enum IROp {
     /// same lane width and count as the inputs. Per-lane semantics:
     ///   * result[i]            = a[2i]   + a[2i+1]            for i in 0..count/2
     ///   * result[count/2 + i]  = b[2i]   + b[2i+1]            for i in 0..count/2
+    ///
     /// Maps to ARM VPADD (DDI 0487 C7.2.270) — `Iop_PwAdd32Fx2` (FP variant)
     /// is NOT routed here and remains unimplemented.
     VPwAdd {
@@ -922,6 +924,7 @@ pub enum IROp {
     /// output lane width is `2 * elem`, lane count is `count / 2`, total
     /// width preserved. Per-lane semantics:
     ///   * result[i] = sext_or_zext(a[2i]) + sext_or_zext(a[2i+1])
+    ///
     /// Maps to ARM SADDLP / UADDLP (DDI 0487 C7.2.348 / C7.2.418).
     VPwAddL {
         elem: IRType,

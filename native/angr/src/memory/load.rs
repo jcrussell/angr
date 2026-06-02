@@ -713,6 +713,7 @@ impl SymbolicMemory {
     ///   * Plain Symbolic byte: extract from `symbolic_objects` /
     ///     `symbolic_spans` mirroring `try_byte_merge_load`.
     ///   * Concrete byte: read the page byte into an 8-bit `RustBV`.
+    ///
     /// The per-byte parts are concatenated endianness-correctly to match
     /// `try_byte_merge_load`. The caller is responsible for permission
     /// checks; this helper only handles unmapped pages by returning the

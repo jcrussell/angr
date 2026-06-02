@@ -296,6 +296,7 @@ impl SymbolicMemory {
     ///     `symbolic_objects[run_start]`, and `symbolic_spans` is
     ///     populated for the interior bytes so a per-byte load still
     ///     finds the wider object.
+    ///
     /// Singletons (run length 1) and runs whose pages aren't all mapped
     /// fall back to the per-byte path, byte-identical to the pre-Phase-4.2
     /// behaviour.

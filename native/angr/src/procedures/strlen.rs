@@ -9,7 +9,7 @@
 //! - Concrete fast path scans byte-by-byte.
 //! - When a symbolic byte is encountered, we build an ITE chain expressing
 //!   the symbolic null position:
-//!     result = ITE(b_i == 0, i, result_next)
+//!   result = ITE(b_i == 0, i, result_next)
 //!   built right-to-left up to MAX_STRLEN (or a concrete null). The chain's
 //!   initial right-most value is the upper bound (MAX_STRLEN for strlen,
 //!   maxlen for strnlen). This is an approximation: if no null is ever

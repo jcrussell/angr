@@ -3457,6 +3457,7 @@ impl VEXOps {
     ///   * `Clz`: number of leading-zero bits, in `[0, N]` (all-zero → N).
     ///   * `Cls`: number of consecutive bits below the MSB that equal the
     ///     MSB, in `[0, N-1]` (all-same → N-1).
+    ///
     /// Implementation mirrors claripy's `_op_generic_Clz` ITE-chain pattern
     /// (irop.py L700) but applied per-lane. For Cls, the chain runs over the
     /// non-MSB bits and the comparison is against the lane's MSB.
@@ -3633,17 +3634,18 @@ impl VEXOps {
     /// Mirrors the claripy reference at
     /// `angr/engines/vex/claripy/irop.py::_op_generic_QAdd` (signed):
     ///   * Detect overflow with sign-bit algebra:
-    ///       QAdd: `(~(top_a ^ top_b)) & (top_a ^ top_r)` — both inputs same
-    ///         sign, result flips → overflow.
-    ///       QSub: `( (top_a ^ top_b)) & (top_a ^ top_r)` — inputs differ,
-    ///         result's sign differs from minuend → overflow.
+    ///     QAdd: `(~(top_a ^ top_b)) & (top_a ^ top_r)` — both inputs same
+    ///     sign, result flips → overflow.
+    ///     QSub: `( (top_a ^ top_b)) & (top_a ^ top_r)` — inputs differ,
+    ///     result's sign differs from minuend → overflow.
     ///   * Saturated cap: `INT_MAX + ~top_r` — yields INT_MAX when the result
     ///     would be "too positive" (top_r=0 → +1 wraps to INT_MIN) and INT_MIN
     ///     when "too negative" (top_r=1 → +0 keeps INT_MAX). Actually:
-    ///       top_r=1 (negative result, meaning positive overflow) → ~top_r=0
-    ///         → cap = INT_MAX.
-    ///       top_r=0 (positive result, meaning negative overflow) → ~top_r=1
-    ///         → cap = INT_MAX + 1 = INT_MIN (two's complement wrap).
+    ///     top_r=1 (negative result, meaning positive overflow) → ~top_r=0
+    ///     → cap = INT_MAX.
+    ///     top_r=0 (positive result, meaning negative overflow) → ~top_r=1
+    ///     → cap = INT_MAX + 1 = INT_MIN (two's complement wrap).
+    ///
     /// Unsigned QAdd: overflow iff `res < a` (carry); cap = UINT_MAX.
     /// Unsigned QSub: overflow iff `res > a` (borrow); cap = 0.
     fn vec_int_saturating(
@@ -3797,6 +3799,7 @@ impl VEXOps {
     ///     saturate unless `a == 0`.
     ///   * `amt < 0`: right shift by `-amt`; logical (unsigned) or arithmetic
     ///     (signed). Counts ≥ lane width collapse to 0 / sign-fill.
+    ///
     /// Derived from libVEX `host_generic_simd*` h_generic_calc_QShl* helpers;
     /// claripy has no `_op_generic_QShl` / `_op_generic_QSal` reference.
     fn vec_qshl_sat(

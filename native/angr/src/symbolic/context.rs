@@ -1028,6 +1028,7 @@ fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
 ///   (eval witnesses differ run-to-run by >10^6). The order-stability
 ///   test that *passed* without any seed pin now fails when this form
 ///   is set.
+///
 /// So Z3 4.13 model determinism across solver instances is not
 /// reachable through `Z3_solver_set_params` for these keys; pinning
 /// must instead happen via `Z3_global_param_set` *before* the first
