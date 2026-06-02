@@ -814,11 +814,13 @@ the string-to-numeric family, env mutation, and extended string ops.
      - angr-f16h.4 (open) — ``getenv.rs`` partial; missing handlers
        fall back to Python
    * - Extended strings (angr-f16h.5)
-     - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strtok`` ✗,
-       ``strpbrk`` ✗, ``strspn`` ✗, ``strcspn`` ✗, ``strrchr`` ✗
-     - 3 / 8
-     - angr-f16h.5 (open) — three covered by pre-campaign families;
-       remaining fall back to Python
+     - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strrchr`` ✓,
+       ``strpbrk`` ✓, ``strspn`` ✓, ``strcspn`` ✓, ``strtok`` ✗
+     - 7 / 8
+     - angr-f16h.5 (open) — strtok stateful (uses ``state.globals``
+       save pointer + inline_call to ``strtok_r``), deferred to a
+       follow-up; ``strrchr``/``strpbrk``/``strspn``/``strcspn`` in
+       ``strchr.rs`` and ``strset.rs``
 
 Syscalls
 ^^^^^^^^

@@ -11535,6 +11535,118 @@ class TestNativeReadCacheSync:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeExtendedStringProcedures:
+    """Integration tests for NativeStrrchr / NativeStrpbrk / NativeStrspn /
+    NativeStrcspn (angr-f16h.5).
+
+    angr has no Python SimProcedure for these four — they're declared in
+    `procedures/definitions/common/glibc.json` but no Python file backs
+    them, so the native registry is the only handler. Test pattern matches
+    TestNativeStringToNumericProcedures: stub in fauxware's `.ctors`, set
+    up two concrete buffers, single-step, verify native dispatch fired and
+    rax holds the expected value.
+    """
+
+    HOOK_ADDR = 0x600e30   # in fauxware's .ctors
+    DEAD_ADDR = 0x4008b0
+    S_ADDR = 0x601100      # haystack / scan target
+    SET_ADDR = 0x601200    # accept / reject set
+
+    @staticmethod
+    def _make_stub(proc_name: str):
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": 2, "run": lambda self, a0, a1: 0},
+        )
+
+    def _setup_state(self, proj, s_bytes: bytes, set_bytes: bytes):
+        import claripy
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        for i, b in enumerate(s_bytes + b"\x00"):
+            state.memory.store(self.S_ADDR + i, claripy.BVV(b, 8))
+        for i, b in enumerate(set_bytes + b"\x00"):
+            state.memory.store(self.SET_ADDR + i, claripy.BVV(b, 8))
+        state.memory.store(state.regs.rsp,
+                           claripy.BVV(self.DEAD_ADDR, 64),
+                           endness="Iend_LE")
+        return state
+
+    def _first_state_id(self, mgr):
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return ids[0]
+        return None
+
+    def _run_one(self, proj, name, s_bytes, set_bytes, c_or_set_addr):
+        """Hook, single-step, return (call_count, rax)."""
+        from angr.exploration import RustExplorationManager
+
+        stub_cls = self._make_stub(name)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, s_bytes, set_bytes)
+            state.regs.rdi = self.S_ADDR
+            state.regs.rsi = c_or_set_addr
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            stats = mgr._rust_mgr.native_procedure_stats()
+            count = stats["call_counts"].get(name, 0)
+            sid = self._first_state_id(mgr)
+            assert sid is not None, f"no state: {mgr.stash_counts()}"
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            return count, rax
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strrchr_native_dispatch(self, fauxware_project):
+        # "hello" has two 'l's; last is at S_ADDR + 3.
+        count, rax = self._run_one(
+            fauxware_project, "strrchr", b"hello", b"", ord('l')
+        )
+        assert count == 1, "expected native strrchr dispatch"
+        assert rax == self.S_ADDR + 3, f"rax={rax:#x}"
+
+    def test_strrchr_native_dispatch_not_found(self, fauxware_project):
+        count, rax = self._run_one(
+            fauxware_project, "strrchr", b"hello", b"", ord('z')
+        )
+        assert count == 1
+        assert rax == 0, f"rax={rax:#x}"
+
+    def test_strpbrk_native_dispatch(self, fauxware_project):
+        # First vowel in "hello world" is 'e' at offset 1.
+        count, rax = self._run_one(
+            fauxware_project, "strpbrk", b"hello world", b"aeiou", self.SET_ADDR
+        )
+        assert count == 1, "expected native strpbrk dispatch"
+        assert rax == self.S_ADDR + 1, f"rax={rax:#x}"
+
+    def test_strspn_native_dispatch(self, fauxware_project):
+        # Prefix "abc" of "abc123" is in accept set {a,b,c}.
+        count, rax = self._run_one(
+            fauxware_project, "strspn", b"abc123", b"abc", self.SET_ADDR
+        )
+        assert count == 1, "expected native strspn dispatch"
+        assert rax == 3, f"rax={rax}"
+
+    def test_strcspn_native_dispatch(self, fauxware_project):
+        # First reject byte ',' in "abc,def" is at offset 3.
+        count, rax = self._run_one(
+            fauxware_project, "strcspn", b"abc,def", b",;", self.SET_ADDR
+        )
+        assert count == 1, "expected native strcspn dispatch"
+        assert rax == 3, f"rax={rax}"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeIdentitySyscalls:
     """angr-0hif.3: native ``getpid`` / ``getppid`` / ``gettid`` / ``getuid``
     / ``geteuid`` / ``getgid`` / ``getegid`` handlers must short-circuit the

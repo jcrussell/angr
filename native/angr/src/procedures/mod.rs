@@ -105,6 +105,7 @@ pub mod strcmp;
 pub mod strcpy;
 pub mod strings;
 pub mod strlen;
+pub mod strset;
 pub mod strstr;
 pub mod strtod;
 pub mod strtol;
@@ -282,6 +283,11 @@ impl NativeProcedureRegistry {
         // String/memory search
         registry.register(Arc::new(strchr::NativeStrchr));
         registry.register(Arc::new(strchr::NativeMemchr));
+        registry.register(Arc::new(strchr::NativeStrrchr));
+        // Byte-set search (angr-f16h.5)
+        registry.register(Arc::new(strset::NativeStrpbrk));
+        registry.register(Arc::new(strset::NativeStrspn));
+        registry.register(Arc::new(strset::NativeStrcspn));
         // String-to-integer conversion
         registry.register(Arc::new(strtol::NativeStrtol));
         registry.register(Arc::new(strtol::NativeStrtoul));

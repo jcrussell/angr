@@ -74,9 +74,7 @@ fn scan_for_byte(
         let mut symbolic_seen = false;
         for i in 0..max_scan {
             let byte_addr = addr.wrapping_add(i);
-            let byte_val = state
-                .memory_load(byte_addr, 1)
-                ?;
+            let byte_val = state.memory_load(byte_addr, 1)?;
             if !symbolic_seen {
                 if let Some(b) = byte_val.as_u64() {
                     let byte = b as u8;
@@ -125,9 +123,7 @@ fn scan_for_byte(
     let mut byte_loads: Vec<(u64, RustBV)> = Vec::new();
     for i in 0..max_scan {
         let byte_addr = addr.wrapping_add(i);
-        let byte_val = state
-            .memory_load(byte_addr, 1)
-            ?;
+        let byte_val = state.memory_load(byte_addr, 1)?;
         let stop_scan = stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
         byte_loads.push((byte_addr, byte_val));
         if stop_scan {
@@ -172,6 +168,153 @@ impl NativeSimProcedure for NativeStrchr {
             /*stop_at_null=*/ true,
         )
     }
+}
+
+/// strrchr: find last occurrence of a character in a null-terminated string.
+///
+/// ```c
+/// char *strrchr(const char *s, int c);
+/// ```
+///
+/// Returns pointer to the last occurrence of c in s, or NULL if not found.
+/// Special case (C standard): `strrchr(s, '\0')` returns a pointer to the
+/// trailing null terminator.
+///
+/// # Symbolic handling
+///
+/// Concrete address required. The target byte and individual string bytes
+/// may be symbolic — we build an ITE chain over collected loads in the
+/// *forward* direction so later matches override earlier ones (opposite of
+/// strchr, which builds backward so earlier matches win).
+pub struct NativeStrrchr;
+impl NativeSimProcedure for NativeStrrchr {
+    fn name(&self) -> &'static str {
+        "strrchr"
+    }
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let addr = extract_concrete_arg(&args[0], "s")?;
+        scan_for_byte_last(state, addr, &args[1], MAX_SCAN as u64)
+    }
+}
+
+/// Scan for the LAST match of `target_arg` in the null-terminated buffer at
+/// `addr`. Concrete fast path tracks the last hit; on the first symbolic
+/// byte we collect remaining loads up to (and including) the concrete null
+/// and build an ITE chain.
+fn scan_for_byte_last(
+    state: &mut RustSimState,
+    addr: u64,
+    target_arg: &RustBV,
+    max_scan: u64,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let arch_bits = state.arch().bits();
+    let null_addr = RustBV::concrete(0u128, arch_bits);
+
+    if let Some(target) = target_arg.as_u64() {
+        let target_byte = target as u8;
+        let mut last_match: Option<u64> = None;
+        let mut byte_loads: Vec<(u64, RustBV)> = Vec::new();
+        let mut symbolic_seen = false;
+        for i in 0..max_scan {
+            let byte_addr = addr.wrapping_add(i);
+            let byte_val = state.memory_load(byte_addr, 1)?;
+            if !symbolic_seen {
+                if let Some(b) = byte_val.as_u64() {
+                    let byte = b as u8;
+                    if byte == target_byte {
+                        last_match = Some(byte_addr);
+                    }
+                    if byte == 0 {
+                        // End of string in concrete mode — return last match
+                        // (or NULL if none).
+                        let result_addr = last_match.unwrap_or(0);
+                        return Ok(Some(RustBV::concrete(result_addr as u128, arch_bits)));
+                    }
+                    continue;
+                }
+                symbolic_seen = true;
+                // Seed the chain with the best concrete match so far.
+            }
+            let stop_scan = byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+            byte_loads.push((byte_addr, byte_val));
+            if stop_scan {
+                break;
+            }
+        }
+
+        if !symbolic_seen {
+            // Ran past max without hitting null.
+            return Err(ProcedureError::MaxIterations(max_scan as usize));
+        }
+
+        let ctx = state.solver().borrow();
+        let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
+        // Build forward so later matches override earlier ones.
+        let seed = match last_match {
+            Some(a) => RustBV::concrete(a as u128, arch_bits),
+            None => null_addr.clone(),
+        };
+        let chain = build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &seed, &ctx);
+        return Ok(Some(chain));
+    }
+
+    // Symbolic target: collect bytes up to (and including) concrete null.
+    let mut byte_loads: Vec<(u64, RustBV)> = Vec::new();
+    for i in 0..max_scan {
+        let byte_addr = addr.wrapping_add(i);
+        let byte_val = state.memory_load(byte_addr, 1)?;
+        let stop_scan = byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+        byte_loads.push((byte_addr, byte_val));
+        if stop_scan {
+            break;
+        }
+    }
+
+    let ctx = state.solver().borrow();
+    let target_byte_bv = target_arg.extract(7, 0, &ctx);
+    let chain = build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &null_addr, &ctx);
+    Ok(Some(chain))
+}
+
+/// Forward variant of [`build_ite_chain`]: later matches override earlier
+/// ones. Used by strrchr so the final hit wins over the first hit.
+///
+/// `seed` is the starting result (concrete-match address or NULL); ITE arms
+/// rewrite it with the current address when `byte == target`.
+fn build_ite_chain_forward(
+    byte_loads: &[(u64, RustBV)],
+    target_byte: &RustBV,
+    arch_bits: u32,
+    seed: &RustBV,
+    ctx: &SymContext,
+) -> RustBV {
+    let zero_byte = RustBV::concrete(0u128, 8);
+    let mut result = seed.clone();
+    for (byte_addr, byte_val) in byte_loads.iter() {
+        let addr_bv = RustBV::concrete(*byte_addr as u128, arch_bits);
+        // Past a null terminator the position is unreachable; treat it as
+        // "no match" so the chain doesn't promote bytes beyond end-of-string.
+        let is_null = byte_val.eq(&zero_byte, ctx);
+        let match_cond = byte_val.eq(target_byte, ctx);
+        // If null AND target == 0, we still want the null address to be the
+        // result (C standard: strrchr(s, '\0') → pointer to null terminator).
+        // The match_cond above already covers target == 0 at the null byte,
+        // so just respect match_cond and ignore later positions when null.
+        // Implementation detail: we stop collecting loads after the first
+        // concrete null in scan_for_byte_last, so positions past that point
+        // are never on the chain.
+        let _ = is_null;
+        result = match_cond.ite(&addr_bv, &result, ctx);
+    }
+    result
 }
 
 /// memchr: find byte in memory region.
@@ -385,6 +528,116 @@ mod tests {
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0));
         assert_eq!(ctx.max(&result, false), Some(0));
+    }
+
+    // --- strrchr ---
+
+    #[test]
+    fn test_strrchr_found_last() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // "hello" — 'l' at indices 2 and 3; last is 0x1003.
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+        let p = NativeStrrchr;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'l' as u128, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(0x1003));
+    }
+
+    #[test]
+    fn test_strrchr_not_found() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+        let p = NativeStrrchr;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'z' as u128, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_strrchr_finds_null() {
+        // C standard: strrchr(s, '\0') → pointer to null terminator.
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
+        let p = NativeStrrchr;
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0u128, 64)],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(0x1002));
+    }
+
+    #[test]
+    fn test_strrchr_single_match() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
+        let p = NativeStrrchr;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'b' as u128, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(0x1001));
+    }
+
+    #[test]
+    fn test_strrchr_symbolic_target_returns_symbolic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "c", 64);
+        drop(ctx);
+        let p = NativeStrrchr;
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.width(), 64);
+        assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
+    }
+
+    #[test]
+    fn test_strrchr_symbolic_target_picks_last() {
+        // Constrain symbolic c to 'l' → last 'l' is at 0x1003 in "hello".
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "c", 64);
+        let l_byte = RustBV::concrete(b'l' as u128, 64);
+        let eq = sym.eq(&l_byte, &ctx);
+        drop(ctx);
+        let p = NativeStrrchr;
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
+        state.add_constraint(eq);
+        let ctx = state.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(0x1003));
+        assert_eq!(ctx.max(&result, false), Some(0x1003));
     }
 
     #[test]
