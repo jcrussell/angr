@@ -144,10 +144,19 @@ REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 # 1/15 in 2.65s. The fast mode is well below the May-18 median (post-perf-
 # gains from angr-b58a/zdho/9jly), but the slow tail re-emerged. See bd
 # memory `benchmark-unbreakable_1-2026-05-22`.
+#
+# hackcon2016_angry-reverser was added 2026-06-02 (angr-bl0g) after the
+# angr-rbnk SignExt fix (commit 4dc7fc064) collapsed the bench AST by ~13x
+# but unmasked a Z3 SAT-search nondeterminism floor. 8-sample post-fix
+# distribution: 8.97, 18.66, 22.39, 22.68, 26.24, 28.08, 29.49, 34.88
+# (median ~22.5s, fast tail ~9s matching Python's solve time, slow tail
+# ~35s). Pre-fix the bench was tightly clustered at ~30s; the simpler AST
+# gives Z3 more branch-choice freedom, widening the distribution.
 BIMODAL_BENCHMARKS = frozenset({
     "securityfest_fairlight",
     "ekopartyctf2016_sokohashv2",
     "google2016_unbreakable_1",
+    "hackcon2016_angry-reverser",
 })
 
 

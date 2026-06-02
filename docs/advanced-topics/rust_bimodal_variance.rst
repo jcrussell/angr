@@ -1,13 +1,19 @@
 Rust engine bimodal Z3 variance
 ===============================
 
-Three benchmarks in ``tests/benchmarks/baseline_timings.json`` have
+Four benchmarks in ``tests/benchmarks/baseline_timings.json`` have
 historically shown two distinct timing modes per run, driven by Z3
 model nondeterminism. Their baselines are pinned at the slow mode and
 they are tagged ``rust_only=True`` in ``tests/benchmarks/run_regression.py``
 because the same nondeterminism causes output divergence vs. the
 Python engine. The PR-time gate sets ``--skip-bimodal`` to keep CI
 from flapping; nightly CI runs them.
+
+``hackcon2016_angry-reverser`` joined the bimodal set on 2026-06-02
+(``angr-bl0g``) after the ``angr-rbnk`` SignExt fix (commit ``4dc7fc064``)
+collapsed the asserted constraint AST by ~13x and unmasked the
+underlying Z3 SAT-search nondeterminism — see the 2026-06-02 entry
+below.
 
 This page captures the 2026-05-13 variance campaign — 20 wall-clock
 samples per benchmark, captured with
@@ -290,12 +296,52 @@ The PR-time gate ``--skip-bimodal`` continues to exclude this benchmark
 so a slow-mode run does not flake a PR. See bd memory
 ``benchmark-sokohashv2-2026-05-18``.
 
+2026-06-02 — hackcon2016_angry-reverser joins the bimodal set
+------------------------------------------------------------
+
+``hackcon2016_angry-reverser`` had been a 0.6x outlier with tight
+variance (5-sample median 14.84s, 10-sample 30.79s ±1.33s) prior to
+2026-06-01. Spike ``angr-rbnk`` (commit ``4dc7fc064``) replaced the
+hand-rolled ``BVOp::SignExt`` loop in
+``native/angr/src/symbolic/value.rs`` with the z3-rs native
+``BV::sign_ext`` call. SMT-LIB dump shrinks: 740,257 → 54,221 total
+chars across the 58 final assertions (13.7x smaller; 8x smaller than
+Python's). Extract nodes dropped 7,158 → 449; concat nodes dropped
+9,600 → 0.
+
+8-sample post-fix wall-clock campaign (HEAD ``4dc7fc064``):
+
+.. code-block:: text
+
+   sorted: 8.97, 18.66, 22.39, 22.68, 26.24, 28.08, 29.49, 34.88s
+   median ~22.5s
+   fast tail ~9s matches Python's solve time
+   slow tail ~35s on Z3 SAT-search nondeterminism
+
+The simpler AST gives Z3 more branch-choice freedom: distribution
+widens but median improves and the fast tail finally matches Python.
+Category (c) per the taxonomy — the slow tail is structurally Z3
+SAT-heuristic nondeterminism, not an engine bug.
+
+Decisions:
+
+- ``rust_time`` baseline raised 18.0s → 35.0s to cover the observed
+  slow tail (max 34.88s, threshold gives 40.25s ceiling). Per the
+  ``avoid-update-baseline-without-verification`` invariant the 35s
+  ceiling does not include extra headroom beyond the threshold's
+  built-in margin.
+- Added to ``BIMODAL_BENCHMARKS`` so ``--skip-bimodal`` excludes it
+  from the PR-time gate; the nightly gate continues to track drift.
+- See bd memory ``hackcon-signext-root-cause`` for the full spike
+  writeup including the construction-site analysis.
+
 Reproducing
 -----------
 
-The campaign takes ~12-13 minutes for the three bimodal benchmarks
-combined (unbreakable_1 ~3s × 20, fairlight ~13s mean × 20,
-sokohashv2 ~12s mean × 10). Add 60s overhead.
+The campaign takes ~12-13 minutes for the three pre-existing bimodal
+benchmarks combined (unbreakable_1 ~3s × 20, fairlight ~13s mean × 20,
+sokohashv2 ~12s mean × 10). Add 60s overhead. ``hackcon2016_angry-reverser``
+adds ~5 minutes for 20 samples at the post-fix ~22s median.
 
 .. code-block:: console
 
