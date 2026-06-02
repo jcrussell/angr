@@ -411,6 +411,124 @@ impl StashManager {
     pub fn roots(&self) -> &HashMap<u64, u64> {
         &self.state_roots
     }
+
+    // =========================================================================
+    // Snapshot / Serialization (angr-x04s.1.3)
+    // =========================================================================
+
+    /// Serialize this stash manager to a versioned envelope:
+    /// `[STASH_SNAPSHOT_VERSION: u8] ++ serde_json(StashManagerSnapshot)`.
+    ///
+    /// Each state inside is round-tripped via [`RustSimState::to_snapshot`]
+    /// (bucket A/B/C, see `RustSimStateSnapshot`); the manager-level fields
+    /// captured here are the stash map, the lineage `state_roots`, the
+    /// terminal counters, and the `drop_terminal_states` flag. The
+    /// `state_index` is rebuilt from the dumped stashes on load.
+    pub fn dump_snapshot(&self) -> Vec<u8> {
+        let snap = self.to_snapshot();
+        let body = serde_json::to_vec(&snap).expect("stash snapshot encode");
+        let mut out = Vec::with_capacity(1 + body.len());
+        out.push(STASH_SNAPSHOT_VERSION);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// Inverse of [`Self::dump_snapshot`]. Rejects an empty envelope or a
+    /// version-byte mismatch with [`crate::state::SnapshotError`].
+    pub fn load_snapshot(
+        bytes: &[u8],
+    ) -> Result<Self, crate::state::SnapshotError> {
+        if bytes.is_empty() {
+            return Err(crate::state::SnapshotError::EmptyEnvelope);
+        }
+        let version = bytes[0];
+        if version != STASH_SNAPSHOT_VERSION {
+            return Err(crate::state::SnapshotError::VersionMismatch {
+                found: version,
+                expected: STASH_SNAPSHOT_VERSION,
+            });
+        }
+        let snap: StashManagerSnapshot = serde_json::from_slice(&bytes[1..])
+            .map_err(|e| crate::state::SnapshotError::Decode(e.to_string()))?;
+        Self::from_snapshot(snap).map_err(crate::state::SnapshotError::Decode)
+    }
+
+    /// Build a [`StashManagerSnapshot`] (in-Rust round-trip shape).
+    pub fn to_snapshot(&self) -> StashManagerSnapshot {
+        let stashes: std::collections::BTreeMap<String, Vec<crate::state::RustSimStateSnapshot>> =
+            self.stashes
+                .iter()
+                .map(|(k, v)| (k.clone(), v.iter().map(|s| s.to_snapshot()).collect()))
+                .collect();
+        let state_roots: std::collections::BTreeMap<u64, u64> =
+            self.state_roots.iter().map(|(k, v)| (*k, *v)).collect();
+        StashManagerSnapshot {
+            stashes,
+            state_roots,
+            drop_terminal_states: self.drop_terminal_states,
+            avoided_count: self.avoided_count,
+            pruned_count: self.pruned_count,
+            deadended_count: self.deadended_count,
+            errored_count: self.errored_count,
+            unconstrained_count: self.unconstrained_count,
+        }
+    }
+
+    /// Restore a [`StashManagerSnapshot`] into a fresh manager. Rebuilds
+    /// the `state_index` from the dumped stash contents so cross-stash
+    /// state_id lookups stay consistent.
+    pub fn from_snapshot(snap: StashManagerSnapshot) -> Result<Self, String> {
+        let mut stashes: HashMap<String, VecDeque<RustSimState>> = HashMap::new();
+        let mut state_index: HashMap<u64, String> = HashMap::new();
+        for (stash_name, state_snaps) in snap.stashes {
+            let mut deque: VecDeque<RustSimState> = VecDeque::with_capacity(state_snaps.len());
+            for state_snap in state_snaps {
+                let st = RustSimState::from_snapshot(state_snap)?;
+                state_index.insert(st.state_id(), stash_name.clone());
+                deque.push_back(st);
+            }
+            stashes.insert(stash_name, deque);
+        }
+        // Make sure every standard stash exists so callers can index without panic.
+        for name in STANDARD_STASHES {
+            stashes
+                .entry((*name).to_string())
+                .or_insert_with(VecDeque::new);
+        }
+        let state_roots: HashMap<u64, u64> = snap.state_roots.into_iter().collect();
+        Ok(StashManager {
+            stashes,
+            state_index,
+            state_roots,
+            drop_terminal_states: snap.drop_terminal_states,
+            avoided_count: snap.avoided_count,
+            pruned_count: snap.pruned_count,
+            deadended_count: snap.deadended_count,
+            errored_count: snap.errored_count,
+            unconstrained_count: snap.unconstrained_count,
+        })
+    }
+}
+
+/// Format-version byte at the head of every
+/// [`StashManager::dump_snapshot`] envelope. Independent of
+/// [`crate::state::SNAPSHOT_VERSION`] (the per-state codec) so the two
+/// can evolve without churn at the wrong layer.
+pub const STASH_SNAPSHOT_VERSION: u8 = 1;
+
+/// Manager-level snapshot of all stash contents + lineage maps + terminal
+/// counters. Each entry inside `stashes` is a per-state
+/// [`crate::state::RustSimStateSnapshot`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct StashManagerSnapshot {
+    pub stashes: std::collections::BTreeMap<String, Vec<crate::state::RustSimStateSnapshot>>,
+    pub state_roots: std::collections::BTreeMap<u64, u64>,
+    pub drop_terminal_states: bool,
+    pub avoided_count: u64,
+    pub pruned_count: u64,
+    pub deadended_count: u64,
+    pub errored_count: u64,
+    pub unconstrained_count: u64,
 }
 
 #[cfg(test)]
@@ -438,6 +556,74 @@ mod tests {
         assert_eq!(counts.len(), 7);
         for (_, &count) in &counts {
             assert_eq!(count, 0);
+        }
+    }
+
+    /// Round-trip a non-empty StashManager via the per-state codec.
+    ///
+    /// Pushes two states into `active` and one into `found`, then dumps via
+    /// `dump_snapshot` → `load_snapshot` and asserts (a) stash counts
+    /// match, (b) state_ids survive in their respective stashes, (c) the
+    /// `state_index` is rebuilt so `stash_of` answers consistently.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_stash_manager_dump_load_round_trip() {
+        let mut mgr = StashManager::new();
+        let s1 = RustSimState::new("amd64").unwrap();
+        let s2 = RustSimState::new("amd64").unwrap();
+        let s3 = RustSimState::new("amd64").unwrap();
+        let id1 = s1.state_id();
+        let id2 = s2.state_id();
+        let id3 = s3.state_id();
+
+        mgr.push(STASH_ACTIVE, s1);
+        mgr.push(STASH_ACTIVE, s2);
+        mgr.push(STASH_FOUND, s3);
+        mgr.set_root(id2, id1);
+        mgr.avoided_count = 4;
+        mgr.deadended_count = 7;
+
+        let bytes = mgr.dump_snapshot();
+        assert_eq!(
+            bytes[0], STASH_SNAPSHOT_VERSION,
+            "stash envelope must carry version byte"
+        );
+        let restored = StashManager::load_snapshot(&bytes).expect("load_snapshot");
+
+        assert_eq!(restored.count(STASH_ACTIVE), 2);
+        assert_eq!(restored.count(STASH_FOUND), 1);
+        assert_eq!(restored.avoided_count, 4);
+        assert_eq!(restored.deadended_count, 7);
+
+        // state_index rebuilt: stash_of() answers for every id.
+        assert_eq!(restored.stash_of(id1), Some(STASH_ACTIVE));
+        assert_eq!(restored.stash_of(id2), Some(STASH_ACTIVE));
+        assert_eq!(restored.stash_of(id3), Some(STASH_FOUND));
+
+        // state_roots survived.
+        assert_eq!(restored.get_root(id2), Some(id1));
+    }
+
+    /// Bad envelope handling: empty bytes and mismatched version byte both
+    /// route through the typed `SnapshotError` variants.
+    #[test]
+    fn test_stash_manager_load_snapshot_errors() {
+        match StashManager::load_snapshot(&[]) {
+            Err(crate::state::SnapshotError::EmptyEnvelope) => {}
+            Err(other) => panic!("expected EmptyEnvelope, got {other:?}"),
+            Ok(_) => panic!("empty envelope must fail"),
+        }
+
+        let mgr = StashManager::new();
+        let mut bytes = mgr.dump_snapshot();
+        bytes[0] = STASH_SNAPSHOT_VERSION.wrapping_add(7);
+        match StashManager::load_snapshot(&bytes) {
+            Err(crate::state::SnapshotError::VersionMismatch { found, expected }) => {
+                assert_eq!(expected, STASH_SNAPSHOT_VERSION);
+                assert_eq!(found, STASH_SNAPSHOT_VERSION.wrapping_add(7));
+            }
+            Err(other) => panic!("expected VersionMismatch, got {other:?}"),
+            Ok(_) => panic!("bad version must fail"),
         }
     }
 }

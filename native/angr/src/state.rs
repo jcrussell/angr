@@ -161,7 +161,7 @@ use crate::vex::{Endness, VexArch};
 ///
 /// Tracks call/return pairs during symbolic execution. Pushed on `Ijk_Call`,
 /// popped on `Ijk_Ret`. Cloned on state fork.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CallStackEntry {
     /// Address of the call instruction (caller site).
     pub call_site_addr: u64,
@@ -177,7 +177,7 @@ pub struct CallStackEntry {
 ///
 /// Tracks allocated regions and freed addresses for heap exploitation
 /// analysis. Cloned on fork so each exploration path has its own heap state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HeapMetadata {
     /// Currently allocated regions: address -> size in bytes.
     pub allocated: FxHashMap<u64, u64>,
@@ -222,7 +222,7 @@ impl HeapMetadata {
 }
 
 /// File descriptor flags (matching POSIX O_ constants).
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FdFlags {
     ReadOnly,
     WriteOnly,
@@ -253,7 +253,7 @@ impl FdFlags {
 ///
 /// Represents an open file descriptor with its name, position, flags,
 /// and content buffer. Cloned on state fork.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileDescriptor {
     /// File path/name (e.g. "/dev/stdin", "flag.txt"). Empty for unnamed fds.
     pub name: String,
@@ -296,7 +296,8 @@ impl FileDescriptor {
 /// Manages file descriptors beyond stdin/stdout/stderr. Tracks open/close/read/write/seek
 /// operations. Forking is O(1) via `Arc<HashMap<...>>` — the inner map is only cloned
 /// (via `Arc::make_mut`) when a path actually mutates its file descriptors.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(from = "FileSystemData", into = "FileSystemData")]
 pub struct FileSystem {
     /// Open file descriptors. Standard fds: 0=stdin, 1=stdout, 2=stderr.
     /// Wrapped in Arc for cheap fork; copy-on-write via Arc::make_mut on mutation.
@@ -309,6 +310,42 @@ pub struct FileSystem {
     /// applied, mirroring `procedures/linux_kernel/cwd.py::chdir` which
     /// also assigns the raw concrete path.
     cwd: Vec<u8>,
+}
+
+/// Serde shadow form for [`FileSystem`].
+///
+/// Collapses `Arc<HashMap<u32, FileDescriptor>>` to a deterministic
+/// `BTreeMap<u32, FileDescriptor>` on the wire and carries `next_fd` /
+/// `cwd` explicitly. Mirrors the `MemoryPage` / `RegisterFile` snapshot
+/// shadow pattern (angr-x04s.1.2).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileSystemData {
+    pub fds: std::collections::BTreeMap<u32, FileDescriptor>,
+    pub next_fd: u32,
+    pub cwd: Vec<u8>,
+}
+
+impl From<FileSystem> for FileSystemData {
+    fn from(fs: FileSystem) -> Self {
+        let fds: std::collections::BTreeMap<u32, FileDescriptor> =
+            fs.fds.iter().map(|(k, v)| (*k, v.clone())).collect();
+        FileSystemData {
+            fds,
+            next_fd: fs.next_fd,
+            cwd: fs.cwd,
+        }
+    }
+}
+
+impl From<FileSystemData> for FileSystem {
+    fn from(d: FileSystemData) -> Self {
+        let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
+        FileSystem {
+            fds: Arc::new(fds),
+            next_fd: d.next_fd,
+            cwd: d.cwd,
+        }
+    }
 }
 
 impl Default for FileSystem {
@@ -541,7 +578,7 @@ impl FileSystem {
 }
 
 /// Types of inspection events that can be tracked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum InspectEvent {
     /// Memory read: (addr, size)
@@ -589,7 +626,7 @@ impl InspectEvent {
 }
 
 /// A recorded inspection event with address/offset and size.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InspectRecord {
     /// Event type.
     pub event: InspectEvent,
@@ -606,7 +643,7 @@ pub struct InspectRecord {
 /// Tracks which event types are enabled for logging and maintains a
 /// ring buffer of recent events. Designed for minimal overhead when
 /// no inspections are registered (single bool check).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InspectionManager {
     /// Bitmask of enabled event types (bit N = InspectEvent with value N).
     enabled: u8,
@@ -720,7 +757,7 @@ impl InspectionManager {
 ///
 /// Records block-level execution events with jumpkind and jump target.
 /// Appended at each block execution, cloned on state fork.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
     /// Block address that was executed.
     pub addr: u64,
@@ -2285,6 +2322,212 @@ impl Clone for RustSimState {
 }
 
 // =============================================================================
+// Snapshot / Serialization (angr-x04s.1.3)
+// =============================================================================
+
+/// Format-version byte at the head of every [`RustSimState::to_serialized`]
+/// envelope. Bump on any breaking shape change to [`RustSimStateSnapshot`]
+/// so a stale snapshot fails fast with `SnapshotError::VersionMismatch`
+/// instead of silently producing a wrong-shaped state.
+pub const SNAPSHOT_VERSION: u8 = 1;
+
+/// Errors raised by [`RustSimState::from_serialized`] /
+/// [`StashManager::load_snapshot`].
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    #[error("empty snapshot envelope")]
+    EmptyEnvelope,
+    #[error("snapshot version mismatch: have {found}, expected {expected}")]
+    VersionMismatch { found: u8, expected: u8 },
+    #[error("decode error: {0}")]
+    Decode(String),
+}
+
+/// Snapshot of a [`RustSimState`]'s persistable state (angr-x04s.1.3).
+///
+/// Covers all bucket A/B/C fields per the `rustsimstate-field-buckets` bd
+/// memory:
+///
+/// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
+///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
+///   stdin_symbols, call_stack, heap_metadata, no_ip_concretization,
+///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
+///   inspection, concretizer, fs, track_history, drop_terminal flag
+///   (carried on StashManager side).
+/// * **Bucket B (concrete + symbolic overlay)** — registers
+///   ([`RegisterFile`] serde), memory ([`SymbolicMemorySnapshot`]).
+/// * **Bucket C (Arc-shared collapse)** — hooks (Vec<u64>), environment
+///   (BTreeMap<bytes, bytes>).
+/// * **SymContext** — captured via [`SymContextSnapshot`] (replays
+///   `assumed_constraints` into a fresh Z3 solver on restore).
+///
+/// **Bucket D (`Py<PyAny>` overlays)** — symbolic_pages,
+/// hook_symbolic_memory, addr_to_ast, last_time — deferred per the task
+/// acceptance. After restore these fields are empty / None; Python-side
+/// integration tests (.1.4) will route them through claripy.dumps/loads.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct RustSimStateSnapshot {
+    pub arch_name: String,
+    pub vex_arch: crate::vex::VexArch,
+    pub registers: crate::arch::RegisterFile,
+    pub memory: crate::memory::SymbolicMemorySnapshot,
+    pub solver: crate::symbolic::SymContextSnapshot,
+    pub pc: u64,
+    pub state_id: u64,
+    pub parent_id: Option<u64>,
+    pub history: Vec<u64>,
+    pub detailed_history: Vec<HistoryEntry>,
+    pub max_history: usize,
+    pub hooks: Vec<u64>,
+    pub concretizer: AddressConcretizer,
+    pub track_history: bool,
+    pub fs: FileSystem,
+    pub heap_brk: u64,
+    pub posix_brk: u64,
+    pub mmap_base: u64,
+    pub stdin_symbols: Vec<(String, u32)>,
+    pub call_stack: Vec<CallStackEntry>,
+    pub heap_metadata: HeapMetadata,
+    pub inspection: InspectionManager,
+    /// `(key, value)` byte pairs sorted by key for deterministic ordering.
+    /// Not a `BTreeMap<Vec<u8>, Vec<u8>>` because `serde_json` only allows
+    /// string-shaped map keys; the angr environment is byte-keyed.
+    pub environment: Vec<(Vec<u8>, Vec<u8>)>,
+    pub no_ip_concretization: bool,
+    pub no_symbolic_jump_resolution: bool,
+    pub keep_ip_symbolic: bool,
+}
+
+impl RustSimState {
+    /// Build a serializable snapshot of this state (angr-x04s.1.3).
+    ///
+    /// Bucket-D `Py<PyAny>` overlays (symbolic_pages, hook_symbolic_memory,
+    /// addr_to_ast, last_time) are NOT captured here — see
+    /// [`RustSimStateSnapshot`].
+    pub fn to_snapshot(&self) -> RustSimStateSnapshot {
+        let mut hooks: Vec<u64> = self.hooks.iter().copied().collect();
+        hooks.sort_unstable();
+        let mut environment: Vec<(Vec<u8>, Vec<u8>)> = self
+            .environment
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        environment.sort_by(|a, b| a.0.cmp(&b.0));
+        RustSimStateSnapshot {
+            arch_name: self.arch.name().to_string(),
+            vex_arch: self.vex_arch,
+            registers: self.registers.clone(),
+            memory: self.memory.to_snapshot(),
+            solver: self.solver.borrow().to_snapshot(),
+            pc: self.pc,
+            state_id: self.state_id,
+            parent_id: self.parent_id,
+            history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
+            max_history: self.max_history,
+            hooks,
+            concretizer: self.concretizer.clone(),
+            track_history: self.track_history,
+            fs: self.fs.clone(),
+            heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
+            stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
+            environment,
+            no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
+            keep_ip_symbolic: self.keep_ip_symbolic,
+        }
+    }
+
+    /// Restore a snapshot into a fresh [`RustSimState`]. Replays solver
+    /// constraints via [`SymContext::restore_from_snapshot`] so the Z3
+    /// solver, sat/model caches, and `assumed_constraints` log all rebuild
+    /// consistently. Bucket-D `Py<PyAny>` overlays restore to empty (see
+    /// [`RustSimStateSnapshot`]).
+    pub fn from_snapshot(snap: RustSimStateSnapshot) -> Result<Self, String> {
+        let arch = arch_from_name(&snap.arch_name)
+            .ok_or_else(|| format!("unknown architecture: {}", snap.arch_name))?;
+        let solver = Rc::new(RefCell::new(SymContext::new()));
+        solver.borrow().restore_from_snapshot(&snap.solver);
+        let memory = SymbolicMemory::from_snapshot(snap.memory);
+        let environment: HashMap<Vec<u8>, Vec<u8>> =
+            snap.environment.into_iter().collect();
+        let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
+        Ok(RustSimState {
+            arch,
+            vex_arch: snap.vex_arch,
+            registers: snap.registers,
+            memory,
+            solver,
+            pc: snap.pc,
+            state_id: snap.state_id,
+            parent_id: snap.parent_id,
+            history: snap.history,
+            detailed_history: snap.detailed_history,
+            max_history: snap.max_history,
+            hooks: Arc::new(hooks),
+            concretizer: snap.concretizer,
+            track_history: snap.track_history,
+            fs: snap.fs,
+            heap_brk: snap.heap_brk,
+            posix_brk: snap.posix_brk,
+            mmap_base: snap.mmap_base,
+            stdin_symbols: snap.stdin_symbols,
+            call_stack: snap.call_stack,
+            heap_metadata: snap.heap_metadata,
+            inspection: snap.inspection,
+            environment: Arc::new(environment),
+            symbolic_pages: HashMap::new(),
+            hook_symbolic_memory: HashMap::new(),
+            addr_to_ast: HashMap::new(),
+            last_time: None,
+            no_ip_concretization: snap.no_ip_concretization,
+            no_symbolic_jump_resolution: snap.no_symbolic_jump_resolution,
+            keep_ip_symbolic: snap.keep_ip_symbolic,
+        })
+    }
+
+    /// Serialize this state to a versioned envelope:
+    /// `[SNAPSHOT_VERSION: u8] ++ serde_json(RustSimStateSnapshot)`.
+    /// The format-version byte lets [`Self::from_serialized`] reject a
+    /// stale on-disk snapshot fast. `serde_json` was chosen over postcard
+    /// for the prototype because the inner [`RustBV`] op-tree carries
+    /// `Arc<...>` boxed enums whose postcard schema would lock the format
+    /// to today's [`crate::symbolic::value::BVOp`] layout; JSON tolerates
+    /// minor variant churn without a breaking change.
+    pub fn to_serialized(&self) -> Vec<u8> {
+        let snap = self.to_snapshot();
+        let body = serde_json::to_vec(&snap).expect("snapshot encode");
+        let mut out = Vec::with_capacity(1 + body.len());
+        out.push(SNAPSHOT_VERSION);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// Inverse of [`Self::to_serialized`]. Rejects an empty envelope or a
+    /// version-byte mismatch with [`SnapshotError`].
+    pub fn from_serialized(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        if bytes.is_empty() {
+            return Err(SnapshotError::EmptyEnvelope);
+        }
+        let version = bytes[0];
+        if version != SNAPSHOT_VERSION {
+            return Err(SnapshotError::VersionMismatch {
+                found: version,
+                expected: SNAPSHOT_VERSION,
+            });
+        }
+        let snap: RustSimStateSnapshot = serde_json::from_slice(&bytes[1..])
+            .map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        Self::from_snapshot(snap).map_err(SnapshotError::Decode)
+    }
+}
+
+// =============================================================================
 // Python Bindings
 // =============================================================================
 
@@ -3486,5 +3729,188 @@ mod tests {
             state.inspection().event_counts()[InspectEvent::MemWrite as usize],
             0
         );
+    }
+
+    // =========================================================================
+    // Snapshot / Serialization tests (angr-x04s.1.3)
+    // =========================================================================
+
+    /// Build a representative RustSimState that touches each bucket A/B/C
+    /// field (concrete + symbolic registers, mapped memory pages, solver
+    /// constraints, history, call stack, file system, hooks, environment,
+    /// flags). The Z3 ASTs are minted inside whichever Z3 context the test
+    /// is currently running under.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_populated_state() -> RustSimState {
+        let mut s = RustSimState::new("amd64").unwrap();
+        s.set_pc(0x4012a0);
+
+        // Bucket B (registers): one concrete, one symbolic.
+        s.set_register("rax", RustBV::concrete(0xdead_beef, 64));
+        let rbx_sym = {
+            let ctx = s.solver().borrow();
+            RustBV::symbolic(&ctx, "rbx_sym", 64)
+        };
+        s.set_register("rbx", rbx_sym.clone());
+
+        // Bucket B (memory): map a page with concrete bytes.
+        s.memory_mut()
+            .map_data(0x10_0000u64, &[1u8, 2, 3, 4, 5], Permission::RWX);
+
+        // Bucket A: history + call stack.
+        s.add_to_history(0x4011a0);
+        s.add_to_history(0x4012a0);
+        s.push_call(0x4012a0, 0x401400, 0x4012a5, 0x7fff_ffff_0000);
+        // Heap metadata via the public heap_alloc/heap_free helpers.
+        let a1 = s.heap_alloc(32);
+        let _a2 = s.heap_alloc(64);
+        let _ = s.heap_free(a1);
+
+        // Bucket C: hook + environment + stdin symbols.
+        s.add_hook(0x401200);
+        s.setenv(b"PATH".to_vec(), b"/usr/bin".to_vec());
+        s.setenv(b"HOME".to_vec(), b"/root".to_vec());
+        s.record_stdin_symbol("stdin_chunk_0".to_string(), 16);
+
+        // Flags.
+        s.set_no_ip_concretization(true);
+        s.set_keep_ip_symbolic(false);
+        s.set_no_symbolic_jump_resolution(true);
+        s.set_posix_brk(0x1B0_4000);
+        s.set_mmap_base(0xC100_8000);
+
+        // Solver constraints — `rbx > 10` must hold after restore.
+        let cmp = {
+            let ctx = s.solver().borrow();
+            let ten = RustBV::concrete(10, 64);
+            rbx_sym.ugt(&ten, &ctx)
+        };
+        s.solver().borrow().assume_true(&cmp);
+
+        s
+    }
+
+    /// Round-trip assertions: bucket A scalars + bucket B field counts +
+    /// bucket C collection contents must match. Solver SAT + concretize
+    /// proves the assumed_constraints were faithfully replayed (the
+    /// SymContextSnapshot path is already covered separately, this just
+    /// confirms the wiring through RustSimStateSnapshot).
+    #[cfg(feature = "vex-engine-z3")]
+    fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
+        // Bucket A scalars.
+        assert_eq!(restored.pc(), orig.pc());
+        assert_eq!(restored.state_id(), orig.state_id());
+        assert_eq!(restored.parent_id(), orig.parent_id());
+        assert_eq!(restored.history().to_vec(), orig.history().to_vec());
+        assert_eq!(restored.detailed_history().len(), orig.detailed_history().len());
+        assert_eq!(restored.heap_brk(), orig.heap_brk());
+        assert_eq!(restored.posix_brk(), orig.posix_brk());
+        assert_eq!(restored.mmap_base(), orig.mmap_base());
+        assert_eq!(restored.no_ip_concretization(), orig.no_ip_concretization());
+        assert_eq!(restored.keep_ip_symbolic(), orig.keep_ip_symbolic());
+        assert_eq!(
+            restored.no_symbolic_jump_resolution(),
+            orig.no_symbolic_jump_resolution()
+        );
+        assert_eq!(restored.call_stack().len(), orig.call_stack().len());
+        assert_eq!(restored.vex_arch(), orig.vex_arch());
+        assert_eq!(restored.arch().name(), orig.arch().name());
+
+        // Bucket A subset: heap metadata.
+        assert_eq!(
+            restored.heap_metadata().alloc_count(),
+            orig.heap_metadata().alloc_count()
+        );
+        assert_eq!(
+            restored.heap_metadata().free_count(),
+            orig.heap_metadata().free_count()
+        );
+
+        // Bucket A: stdin symbols.
+        assert_eq!(restored.stdin_symbols(), orig.stdin_symbols());
+
+        // Bucket B: registers — concrete rax and symbolic rbx width.
+        assert_eq!(
+            restored.get_register("rax").and_then(|bv| bv.as_u64()),
+            Some(0xdead_beef)
+        );
+        let restored_rbx = restored.get_register("rbx").expect("rbx present");
+        assert_eq!(restored_rbx.width(), 64);
+
+        // Bucket B: memory — first concrete bytes survived.
+        let restored_bytes = restored
+            .memory()
+            .read_concrete_bytes_for_lift(crate::memory::Address::new(0x10_0000), 5)
+            .expect("memory readable");
+        assert_eq!(restored_bytes, vec![1, 2, 3, 4, 5]);
+
+        // Bucket C: hooks + env.
+        assert!(restored.is_hooked(0x401200));
+        assert_eq!(
+            restored.getenv(b"PATH").map(|v| v.to_vec()),
+            Some(b"/usr/bin".to_vec())
+        );
+        assert_eq!(
+            restored.getenv(b"HOME").map(|v| v.to_vec()),
+            Some(b"/root".to_vec())
+        );
+
+        // Solver replayed — restored context must be SAT with the rbx > 10
+        // constraint honored.
+        assert!(restored.solver().borrow().is_sat());
+        let restored_rbx_val = restored
+            .solver()
+            .borrow()
+            .eval(&restored_rbx)
+            .expect("rbx evaluable");
+        assert!(
+            restored_rbx_val > 10,
+            "constraint rbx > 10 not honored after restore (got {restored_rbx_val})"
+        );
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_state_snapshot_round_trip_buckets_a_b_c() {
+        let orig = build_populated_state();
+        let snap = orig.to_snapshot();
+        let restored = RustSimState::from_snapshot(snap).expect("from_snapshot");
+        assert_state_round_trip(&orig, &restored);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_state_to_from_serialized_round_trip() {
+        let orig = build_populated_state();
+        let bytes = orig.to_serialized();
+        assert_eq!(bytes[0], SNAPSHOT_VERSION, "envelope must carry version byte");
+        let restored = RustSimState::from_serialized(&bytes).expect("from_serialized");
+        assert_state_round_trip(&orig, &restored);
+    }
+
+    #[test]
+    fn test_state_from_serialized_empty_envelope() {
+        match RustSimState::from_serialized(&[]) {
+            Err(SnapshotError::EmptyEnvelope) => {}
+            Err(other) => panic!("expected EmptyEnvelope, got {other:?}"),
+            Ok(_) => panic!("empty envelope must fail"),
+        }
+    }
+
+    #[test]
+    fn test_state_from_serialized_version_mismatch() {
+        // Bump-byte trick: build a real envelope, replace version byte, expect
+        // a fast VersionMismatch.
+        let orig = RustSimState::new("amd64").unwrap();
+        let mut bytes = orig.to_serialized();
+        bytes[0] = SNAPSHOT_VERSION.wrapping_add(1);
+        match RustSimState::from_serialized(&bytes) {
+            Err(SnapshotError::VersionMismatch { found, expected }) => {
+                assert_eq!(expected, SNAPSHOT_VERSION);
+                assert_eq!(found, SNAPSHOT_VERSION.wrapping_add(1));
+            }
+            Err(other) => panic!("expected VersionMismatch, got {other:?}"),
+            Ok(_) => panic!("bad version must fail"),
+        }
     }
 }

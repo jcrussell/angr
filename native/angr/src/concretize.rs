@@ -132,7 +132,7 @@ fn candidate_count(result: &ConcretizationResult) -> u32 {
 /// Mirrors Python's strategy chain with separate read/write configurations:
 /// - Read: SimConcretizationStrategyRange(read_range_limit) → SimConcretizationStrategyAny()
 /// - Write: SimConcretizationStrategyRange(write_range_limit) → SimConcretizationStrategyMax()
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AddressConcretizer {
     /// Maximum address range for read concretization (default: 1024, matching Python).
     pub read_range_limit: u64,

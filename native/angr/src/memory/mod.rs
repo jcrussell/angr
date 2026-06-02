@@ -1017,3 +1017,113 @@ impl Clone for SymbolicMemory {
         self.fork()
     }
 }
+
+/// Snapshot of a [`SymbolicMemory`]'s persistable state (angr-x04s.1.3).
+///
+/// Captures the concrete page map, symbolic-overlay objects, lazy-region
+/// hints, and per-state policy flags. Per-state runtime caches
+/// (`dirty_pages`, `wider_load_cache`, `multi_versions`) are NOT included;
+/// they rebuild lazily after restore. `symbolic_spans` is reconstructed
+/// from `symbolic_objects` at load time so the reverse index stays
+/// consistent.
+///
+/// **Deferred to a follow-up snapshot phase:** `multi_objects` and
+/// `pending_writes` carry lazy-store state used by the
+/// symbolic-address optimization path. The fauxware prototype does not
+/// exercise either; for now both restore to empty. Callers that snapshot
+/// a state mid-Multi/Pending must `flush_multi_cells` / drain pending
+/// writes first or accept that the lazy queue is dropped.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SymbolicMemorySnapshot {
+    pub pages: std::collections::BTreeMap<u64, MemoryPage>,
+    pub symbolic_objects: std::collections::BTreeMap<u64, RustBV>,
+    pub next_sym_id: u64,
+    pub default_permissions: Permission,
+    pub endness: Endness,
+    pub lazy_regions: Vec<(u64, u64)>,
+    pub imported_addrs: Vec<u64>,
+    pub zero_fill_unconstrained: bool,
+    pub enforce_permissions: bool,
+    pub enforce_nx: bool,
+}
+
+impl SymbolicMemory {
+    /// Build a serializable snapshot (angr-x04s.1.3).
+    pub fn to_snapshot(&self) -> SymbolicMemorySnapshot {
+        let pages: std::collections::BTreeMap<u64, MemoryPage> = self
+            .pages
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        let symbolic_objects: std::collections::BTreeMap<u64, RustBV> = self
+            .symbolic_objects
+            .iter()
+            .map(|(addr, bv)| (addr.raw(), bv.clone()))
+            .collect();
+        let mut imported_addrs: Vec<u64> =
+            self.imported_addrs.iter().map(|a| a.raw()).collect();
+        imported_addrs.sort_unstable();
+        SymbolicMemorySnapshot {
+            pages,
+            symbolic_objects,
+            next_sym_id: self.next_sym_id,
+            default_permissions: self.default_permissions,
+            endness: self.endness,
+            lazy_regions: self.lazy_regions.clone(),
+            imported_addrs,
+            zero_fill_unconstrained: self.zero_fill_unconstrained,
+            enforce_permissions: self.enforce_permissions,
+            enforce_nx: self.enforce_nx,
+        }
+    }
+
+    /// Restore a snapshot into a fresh [`SymbolicMemory`]. Rebuilds the
+    /// `symbolic_spans` reverse index from `symbolic_objects` (per-byte
+    /// entries keyed by base + offset, width recorded as the BV width in
+    /// bits). Lazy-store side tables (`multi_objects`, `pending_writes`)
+    /// start empty — see [`SymbolicMemorySnapshot`].
+    pub fn from_snapshot(snap: SymbolicMemorySnapshot) -> Self {
+        let mut pages: OrdMap<u64, MemoryPage> = OrdMap::new();
+        for (k, v) in snap.pages {
+            pages.insert(k, v);
+        }
+        let symbolic_objects: FxHashMap<Address, RustBV> = snap
+            .symbolic_objects
+            .into_iter()
+            .map(|(k, v)| (Address::new(k), v))
+            .collect();
+        let mut symbolic_spans: FxHashMap<Address, (Address, u32)> =
+            FxHashMap::default();
+        for (base, bv) in symbolic_objects.iter() {
+            let width = bv.width();
+            let bytes = width.div_ceil(8);
+            for i in 0..bytes {
+                symbolic_spans
+                    .insert(Address::new(base.raw() + i as u64), (*base, width));
+            }
+        }
+        let imported_addrs: FxHashSet<Address> = snap
+            .imported_addrs
+            .into_iter()
+            .map(Address::new)
+            .collect();
+        SymbolicMemory {
+            pages,
+            symbolic_objects,
+            next_sym_id: snap.next_sym_id,
+            default_permissions: snap.default_permissions,
+            endness: snap.endness,
+            dirty_pages: FxHashSet::default(),
+            lazy_regions: snap.lazy_regions,
+            symbolic_spans,
+            multi_objects: FxHashMap::default(),
+            pending_writes: Vec::new(),
+            zero_fill_unconstrained: snap.zero_fill_unconstrained,
+            imported_addrs,
+            enforce_permissions: snap.enforce_permissions,
+            enforce_nx: snap.enforce_nx,
+            multi_versions: FxHashMap::default(),
+            wider_load_cache: RefCell::new(FxHashMap::default()),
+        }
+    }
+}

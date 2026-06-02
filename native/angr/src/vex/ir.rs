@@ -87,7 +87,7 @@ impl TypeEnv {
 }
 
 /// VEX architectures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VexArch {
     X86,
     AMD64,
@@ -1667,7 +1667,7 @@ impl JumpKind {
 }
 
 /// Endianness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Endness {
     Little,
     Big,

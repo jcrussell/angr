@@ -19,7 +19,7 @@ mod z3_ast_ptr;
 
 pub use context::{
     ConstraintSharingStats, ConstraintSharingWalk, ConstraintSyncError, DEFAULT_SOLVER_TIMEOUT_MS,
-    SymContext, VexOpFamily,
+    SymContext, SymContextSnapshot, VexOpFamily,
     get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
     record_concretize_disjunction, record_concretize_read, record_concretize_write,
     record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_load,
