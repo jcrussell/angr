@@ -12227,6 +12227,47 @@ class TestNativeFstatSyscall:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeStatSyscall:
+    """angr-k3ol.4: native ``stat`` resolves ``pathname`` via
+    ``read_path``, queries ``FileSystem::is_path_known`` (returning
+    ``-1`` for empty / unknown paths) and reuses ``write_amd64_stat``
+    when the path is known. AMD64 only — ARM64's asm-generic ABI
+    dropped legacy ``stat``. Diverges from
+    ``procedures/linux_kernel/stat.py``'s open→fstat→close in that the
+    Rust path never mutates the fd table.
+
+    Rust cargo tests in ``native/angr/src/syscalls/file_path.rs`` pin
+    the per-handler semantics (unknown→-1, empty→-1, known→0,
+    largest-content-len-across-fds, unsupported-arch, symbolic fd /
+    statbuf fallback, unmapped buf MemoryError). This Python test pins
+    cross-FFI dispatch (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_stat_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 4  # stat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0x4000  # pathname
+        state.regs.rsi = 0x5000  # statbuf (unread on the failure path)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native stat(4) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeConcurrencySyscalls:
     """angr-0hif.7: native ``futex`` / ``eventfd`` / ``eventfd2`` /
     ``epoll_create`` / ``epoll_create1`` / ``epoll_ctl`` / ``epoll_wait``

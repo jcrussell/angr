@@ -242,10 +242,15 @@ impl NativeSyscallRegistry {
         //   per-arch `struct stat` (AMD64 + ARM64 only — i386/ARM/MIPS32
         //   use the legacy 32-bit struct stat and have no Python proc).
         //   st_mode is the concrete S_IFREG|0o755 instead of a fresh
-        //   symbolic BVS (Python's `fstat_with_result` mints one). The
-        //   companion `stat` (4) syscall still falls back to Python
-        //   pending its open→fstat→close wrapper (separate subtask
-        //   under angr-k3ol).
+        //   symbolic BVS (Python's `fstat_with_result` mints one).
+        // stat (4): native path-keyed struct-stat write (angr-k3ol.4).
+        //   Resolves pathname via read_path, returns -1 for empty /
+        //   unknown paths, otherwise reuses `write_amd64_stat` with
+        //   `FileSystem::content_size_for_path(path)` as the size
+        //   field. AMD64 only — ARM64's asm-generic ABI dropped legacy
+        //   `stat` (only newfstatat 79, already a stub). Diverges from
+        //   `procedures/linux_kernel/stat.py`'s open→fstat→close in
+        //   that the Rust path never mutates the fd table.
         // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
         //   syscalls that fall through to syscall_stub (angr-0hif.5
         //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
@@ -275,6 +280,7 @@ impl NativeSyscallRegistry {
             (1, write::NativeWriteSyscall),
             (2, file_path::NativeOpenSyscall),
             (3, file_path::NativeCloseSyscall),
+            (4, file_path::NativeStatSyscall),
             (5, file_path::NativeFstatSyscall),
             (6, file_path::NativeLstatSyscall),
             (9, mmap::NativeMmapSyscall),

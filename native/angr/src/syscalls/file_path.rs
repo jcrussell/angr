@@ -65,15 +65,31 @@
 //! Unknown fd → `-1` with no buffer write (matches
 //! `fstat_with_result`'s `result = -1` branch).
 //!
-//! ## What is intentionally NOT covered here (separate subtasks under
-//! angr-k3ol):
+//! ## `stat` (angr-k3ol.4)
 //!
-//! * `stat` (`stat(pathname, statbuf)`) — opens a temp fd, calls
-//!   fstat, closes. Will be a thin wrapper over the fstat helper
-//!   once it lands. Falls back to Python for now.
+//! `stat(pathname, statbuf) → 0 | -1` resolves `pathname` via
+//! `read_path`, returns `-1` for empty / unknown paths (via
+//! `FileSystem::is_path_known`), and otherwise writes a per-arch
+//! `struct stat` using the same `write_amd64_stat` /
+//! `write_aarch64_stat` helpers used by `fstat`. The size field is
+//! sourced from `FileSystem::content_size_for_path(path)` (largest
+//! `content_len` across any fd that opened the path) — `0` if the
+//! path was registered via `register_known_path` without a content
+//! payload. This diverges from `procedures/linux_kernel/stat.py`,
+//! which opens a temp fd, calls `fstat`, then closes. The Rust path
+//! never mutates the fd table, so the next-fd counter is stable
+//! across stat queries. Arch coverage: AMD64 only — ARM64 has no
+//! legacy `stat` syscall (only `newfstatat` 79, already a stub).
+//! Other arches (x86 / ARM EABI / MIPS32 carry the legacy 32-bit
+//! `struct stat`) fall back to Python's error path, matching the
+//! `fstat` policy.
 //!
-//! On those, the unhandled-syscall path continues to dispatch to the
-//! Python `_handle_syscall_callback`, preserving full semantics.
+//! Symbolic pathname pointer / pathname byte → `SymbolicArgument`
+//! (dispatcher falls back to Python). Unmapped statbuf surfaces a
+//! `MemoryError` via the `?` conversion. Unsupported arch returns
+//! `Other("unsupported arch …")` — checked FIRST before reading the
+//! path, so a state on a non-AMD64 arch never even attempts to
+//! traverse memory.
 
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
@@ -418,6 +434,59 @@ impl NativeSyscall for NativeFstatSyscall {
             "ARM64" => write_aarch64_stat(state, buf, size as u64)?,
             _ => unreachable!(),
         }
+        Ok(SyscallOutcome::Continue { ret: 0 })
+    }
+}
+
+/// `stat(pathname, statbuf) → 0 | -1` — resolve `pathname`, look up
+/// its content length via `FileSystem::content_size_for_path`, write a
+/// per-arch `struct stat` using the existing `write_amd64_stat` /
+/// `write_aarch64_stat` helpers, return `0`. Unknown / empty path
+/// returns `-1` with no buffer write. Arch coverage: AMD64 only
+/// (ARM64's asm-generic ABI dropped legacy `stat` — only `newfstatat`
+/// remains, already a stub). Unsupported arch returns `Other` BEFORE
+/// touching the path, mirroring the `fstat` policy.
+pub struct NativeStatSyscall;
+
+impl NativeSyscall for NativeStatSyscall {
+    fn name(&self) -> &'static str {
+        "stat"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        // Arch check first: avoid traversing memory if we will fall
+        // back to Python anyway. AMD64 is the only arch that retains
+        // a legacy `stat` syscall *and* has a working Python proc.
+        let arch_name = state.arch().name();
+        if arch_name != "AMD64" {
+            return Err(SyscallError::Other(format!(
+                "stat: unsupported arch {arch_name} (only AMD64 has a Rust handler)"
+            )));
+        }
+
+        let pathname_addr = extract_concrete_arg(&args[0], "stat pathname")?;
+        let buf = extract_concrete_arg(&args[1], "stat statbuf")?;
+
+        let path = read_path(state, pathname_addr, "stat")?;
+        if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+
+        let fs = state.file_system_ref();
+        if !fs.is_path_known(&path) {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        let size = fs.content_size_for_path(&path).unwrap_or(0) as u64;
+
+        write_amd64_stat(state, buf, size)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
@@ -1102,6 +1171,224 @@ mod tests {
             SyscallError::Memory(_) => {}
             other => panic!("expected Memory error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stat_unknown_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/never-registered");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        let out = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("stat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        // Buffer must NOT have been touched on the failure path.
+        assert_eq!(read_u64_le(&state, 0x4000), 0);
+    }
+
+    #[test]
+    fn stat_empty_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        state
+            .memory_store(0x2000, RustBV::concrete(0, 8))
+            .expect("nul");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        let out = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("stat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stat_known_path_with_content_writes_amd64_layout() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/sized");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        // Seed an fd with 13 bytes so content_size_for_path returns Some(13).
+        let _fd = state
+            .file_system()
+            .open_with_content("/tmp/sized".into(), FdFlags::ReadOnly, b"hello, world!".to_vec());
+
+        let out = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("stat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+
+        // st_size at offset 0x30
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
+        // st_mode at offset 0x18 (u32)
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+        // st_blksize at offset 0x38
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x38), ST_BLKSIZE);
+    }
+
+    #[test]
+    fn stat_registered_path_without_fd_uses_zero_size() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/etc/registered-only");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        // Register without allocating an fd — content_size_for_path → None.
+        state
+            .file_system()
+            .register_known_path("/etc/registered-only".to_string());
+
+        let out = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("stat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        // st_size defaults to 0 when content_size_for_path is None.
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 0);
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+    }
+
+    #[test]
+    fn stat_unsupported_arch_falls_back() {
+        // ARM64 has no legacy stat (only newfstatat). x86 / armel /
+        // mipsel carry the legacy 32-bit struct stat with no Python
+        // proc support — handler errors out so the dispatcher falls
+        // back to Python's error path.
+        for arch in ["x86", "armel", "aarch64", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            // Register the path so we'd otherwise succeed.
+            state
+                .file_system()
+                .register_known_path("/tmp/foo".to_string());
+
+            let err = NativeStatSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0x4000, bits),
+                    ],
+                )
+                .expect_err("must surface as Other");
+            match err {
+                SyscallError::Other(msg) => assert!(
+                    msg.contains("unsupported arch"),
+                    "{arch}: got {msg:?}",
+                ),
+                other => panic!("{arch}: expected Other, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stat_symbolic_pathname_addr_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_ptr = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        };
+        let err = NativeStatSyscall
+            .call(&mut state, &[sym_ptr, RustBV::concrete(0x4000, 64)])
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("pathname"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stat_symbolic_buf_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_buf = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "statbuf", 64)
+        };
+        let err = NativeStatSyscall
+            .call(&mut state, &[RustBV::concrete(0x2000, 64), sym_buf])
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("statbuf"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stat_unmapped_buf_surfaces_error() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/known");
+        state
+            .file_system()
+            .register_known_path("/tmp/known".to_string());
+        // Do NOT map the statbuf page.
+        let err = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x8000, 64)],
+            )
+            .expect_err("unmapped should error");
+        match err {
+            SyscallError::Memory(_) => {}
+            other => panic!("expected Memory error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stat_uses_largest_content_len_across_fds_for_same_path() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/shared");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        // Two fds for the same name with different sizes. Helper takes
+        // the max (deterministic regardless of iteration order).
+        let _fd_small = state.file_system().open_with_content(
+            "/tmp/shared".into(),
+            FdFlags::ReadOnly,
+            vec![0u8; 4],
+        );
+        let _fd_big = state.file_system().open_with_content(
+            "/tmp/shared".into(),
+            FdFlags::ReadOnly,
+            vec![0u8; 17],
+        );
+
+        let out = NativeStatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("stat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 17);
     }
 
     #[test]

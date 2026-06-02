@@ -520,6 +520,18 @@ impl FileSystem {
         })
     }
 
+    /// Largest `content_len` across all fds (open or closed) that share
+    /// the given name. Returns `None` when no fd has been opened with
+    /// that name. Drives `NativeStatSyscall`, which needs a content
+    /// length for the path without minting a fresh fd.
+    pub fn content_size_for_path(&self, name: &str) -> Option<usize> {
+        self.fds
+            .values()
+            .filter(|d| d.name == name)
+            .map(|d| d.content.len())
+            .max()
+    }
+
     /// List all file descriptor numbers (including closed ones).
     pub fn all_fds(&self) -> Vec<u32> {
         let mut fds: Vec<u32> = self.fds.keys().copied().collect();
