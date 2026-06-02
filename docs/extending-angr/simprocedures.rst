@@ -817,9 +817,11 @@ the string-to-numeric family, env mutation, and extended string ops.
      - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strrchr`` ✓,
        ``strpbrk`` ✓, ``strspn`` ✓, ``strcspn`` ✓, ``strtok`` ✗
      - 7 / 8
-     - angr-f16h.5 (open) — strtok stateful (uses ``state.globals``
-       save pointer + inline_call to ``strtok_r``), deferred to a
-       follow-up; ``strrchr``/``strpbrk``/``strspn``/``strcspn`` in
+     - ``strtok`` intentionally left on the Python fallback path
+       (angr-4c65 wontfix). 14-bench fallback profile shows zero
+       strtok appearances, so the stateful ``state.globals`` save
+       pointer + ``strtok_r`` symbolic-write plumbing is not justified.
+       ``strrchr``/``strpbrk``/``strspn``/``strcspn`` in
        ``strchr.rs`` and ``strset.rs``
 
 Syscalls
