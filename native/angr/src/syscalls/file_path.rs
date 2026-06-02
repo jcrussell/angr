@@ -26,13 +26,22 @@
 //! fd since the Rust-side `FileSystem` does not mirror Python's
 //! `state.fs`. This is the same trade-off the libc procedure made.
 //!
-//! What is intentionally NOT covered here (separate subtasks under
+//! ## `access` (angr-k3ol.2)
+//!
+//! `access(pathname, mode) → 0 | -1` queries
+//! `RustSimState::file_system().is_path_known(path)`, which mirrors the
+//! Python proc `procedures/linux_kernel/access.py::run` (returns `-1`
+//! when `state.fs.get(path)` is `None`, else `0`). The path set is
+//! populated by `open` / `open_with_content` calls — pre-populated
+//! Python `state.fs` entries are NOT mirrored unless an explicit
+//! `register_known_path` call is made on the Rust state. Same
+//! trade-off as `open` / `openat` here.
+//!
+//! ## What is intentionally NOT covered here (separate subtasks under
 //! angr-k3ol):
 //!
 //! * `stat`, `fstat` — need per-arch `struct stat` field layouts and
 //!   `state.posix.fstat_with_result`. Falls back to Python.
-//! * `access` — needs `state.fs.get(path)` plumbing into Rust. Falls
-//!   back to Python.
 //!
 //! On those, the unhandled-syscall path continues to dispatch to the
 //! Python `_handle_syscall_callback`, preserving full semantics.
@@ -194,6 +203,45 @@ impl NativeSyscall for NativeCloseSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let fd = extract_concrete_arg(&args[0], "close fd")?;
         let ret = if state.file_system().close(fd as u32) {
+            0
+        } else {
+            NEG_ONE
+        };
+        Ok(SyscallOutcome::Continue { ret })
+    }
+}
+
+/// `access(pathname, mode) → 0 | -1` — return `0` if the path has been
+/// registered as known (via prior `open` / `openat` or
+/// `FileSystem::register_known_path`), `-1` otherwise. Mirrors
+/// `procedures/linux_kernel/access.py::run`. The `mode` arg
+/// (`F_OK` / `R_OK` / ...) is ignored — the Python proc also ignores it.
+/// Empty path → `-1` (defensive: Python would also miss in `state.fs`).
+pub struct NativeAccessSyscall;
+
+impl NativeSyscall for NativeAccessSyscall {
+    fn name(&self) -> &'static str {
+        "access"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let pathname_addr = extract_concrete_arg(&args[0], "access pathname")?;
+        // args[1] = mode — Python proc ignores it; so do we.
+        let _ = args.get(1);
+
+        let path = read_path(state, pathname_addr, "access")?;
+        if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        let ret = if state.file_system_ref().is_path_known(&path) {
             0
         } else {
             NEG_ONE
@@ -506,6 +554,190 @@ mod tests {
                 assert!(msg.contains("fd"), "got {msg:?}");
             }
             other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_unknown_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/no/such/file");
+
+        let out = NativeAccessSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .expect("access ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_after_open_returns_zero() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/exists.txt");
+
+        // Open registers the path.
+        NativeOpenSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("open ok");
+
+        // Re-stage path at a different addr to prove access reads it
+        // fresh (not relying on caller-side cached state).
+        stage_path(&mut state, 0x3000, b"/tmp/exists.txt");
+
+        let out = NativeAccessSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x3000, 64), RustBV::concrete(0, 64)],
+            )
+            .expect("access ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_registered_path_returns_zero() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        // Mirror the Python state.fs.insert path: register without
+        // allocating an fd.
+        state
+            .file_system()
+            .register_known_path("/etc/passwd".to_string());
+        stage_path(&mut state, 0x2000, b"/etc/passwd");
+
+        let out = NativeAccessSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .expect("access ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_empty_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        state
+            .memory_store(0x2000, RustBV::concrete(0, 8))
+            .expect("store NUL");
+
+        let out = NativeAccessSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .expect("access ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_symbolic_path_byte_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        let sym_byte = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "first_path_byte", 8)
+        };
+        state.memory_store(0x2000, sym_byte).unwrap();
+
+        let err = NativeAccessSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("access"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_symbolic_pathname_addr_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_ptr = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        };
+        let err = NativeAccessSyscall
+            .call(&mut state, &[sym_ptr, RustBV::concrete(0, 64)])
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("pathname"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_round_trip_sweeps_supported_arches() {
+        // AArch64 has no legacy `access` syscall (asm-generic only ships
+        // faccessat), but the handler itself is arch-agnostic — exercise
+        // it from each `RustSimState::new(...)` arch to confirm the
+        // path-read + lookup path is independent of pointer width.
+        for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            stage_path(&mut state, 0x2000, b"/tmp/access-rt");
+
+            // Unknown → -1.
+            let out = NativeAccessSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("access");
+            match out {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, NEG_ONE, "{arch} pre-open")
+                }
+                other => panic!("{arch} pre-open: got {other:?}"),
+            }
+
+            // Register, then known → 0.
+            state
+                .file_system()
+                .register_known_path("/tmp/access-rt".to_string());
+            let out2 = NativeAccessSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("access");
+            match out2 {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, 0, "{arch} post-register")
+                }
+                other => panic!("{arch} post-register: got {other:?}"),
+            }
         }
     }
 

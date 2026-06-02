@@ -310,6 +310,13 @@ pub struct FileSystem {
     /// applied, mirroring `procedures/linux_kernel/cwd.py::chdir` which
     /// also assigns the raw concrete path.
     cwd: Vec<u8>,
+    /// Paths known to exist (Rust-side mirror of Python `state.fs._files`
+    /// keys). Populated by `open` / `open_with_content` so that a
+    /// subsequent `access(path)` syscall sees the file. Pre-populated
+    /// Python entries (via `state.fs.insert` before the Rust state is
+    /// built) are NOT mirrored — same trade-off as `open` / `openat`
+    /// (angr-k3ol.1). Queried by `NativeAccessSyscall` (angr-k3ol.2).
+    known_paths: Arc<HashSet<String>>,
 }
 
 /// Serde shadow form for [`FileSystem`].
@@ -323,16 +330,24 @@ pub struct FileSystemData {
     pub fds: std::collections::BTreeMap<u32, FileDescriptor>,
     pub next_fd: u32,
     pub cwd: Vec<u8>,
+    /// `#[serde(default)]` keeps pre-angr-k3ol.2 snapshots loadable —
+    /// the field reconstitutes to an empty set, matching the previous
+    /// behavior (no native access lookups would succeed).
+    #[serde(default)]
+    pub known_paths: std::collections::BTreeSet<String>,
 }
 
 impl From<FileSystem> for FileSystemData {
     fn from(fs: FileSystem) -> Self {
         let fds: std::collections::BTreeMap<u32, FileDescriptor> =
             fs.fds.iter().map(|(k, v)| (*k, v.clone())).collect();
+        let known_paths: std::collections::BTreeSet<String> =
+            fs.known_paths.iter().cloned().collect();
         FileSystemData {
             fds,
             next_fd: fs.next_fd,
             cwd: fs.cwd,
+            known_paths,
         }
     }
 }
@@ -340,10 +355,12 @@ impl From<FileSystem> for FileSystemData {
 impl From<FileSystemData> for FileSystem {
     fn from(d: FileSystemData) -> Self {
         let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
+        let known_paths: HashSet<String> = d.known_paths.into_iter().collect();
         FileSystem {
             fds: Arc::new(fds),
             next_fd: d.next_fd,
             cwd: d.cwd,
+            known_paths: Arc::new(known_paths),
         }
     }
 }
@@ -368,15 +385,24 @@ impl Default for FileSystem {
             fds: Arc::new(fds),
             next_fd: 3,
             cwd: b"/".to_vec(),
+            known_paths: Arc::new(HashSet::new()),
         }
     }
 }
 
 impl FileSystem {
     /// Open a new file descriptor. Returns the allocated fd number.
+    ///
+    /// Also registers `name` in `known_paths` so that a subsequent
+    /// `NativeAccessSyscall` against the same path returns 0
+    /// (file-exists). Mirrors the way Python `procedures/posix/open.py`
+    /// drops a fresh `SimFile` into `state.fs` on creation — our model
+    /// treats any successfully-opened path as "existing" from that
+    /// point forward.
     pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
+        Arc::make_mut(&mut self.known_paths).insert(name.clone());
         Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new(name, flags));
         fd
     }
@@ -385,8 +411,23 @@ impl FileSystem {
     pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
+        Arc::make_mut(&mut self.known_paths).insert(name.clone());
         Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::with_content(name, flags, content));
         fd
+    }
+
+    /// Register an existing-file path without allocating an fd. Used by
+    /// the Python state-export path to seed `state.fs._files` entries
+    /// (`register_known_path` PyO3 setter) and by tests.
+    pub fn register_known_path(&mut self, name: String) {
+        Arc::make_mut(&mut self.known_paths).insert(name);
+    }
+
+    /// True if `name` was previously registered via `open` /
+    /// `open_with_content` / `register_known_path`. Drives
+    /// `NativeAccessSyscall`.
+    pub fn is_path_known(&self, name: &str) -> bool {
+        self.known_paths.contains(name)
     }
 
     /// Close a file descriptor. Returns true if it was open.

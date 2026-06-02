@@ -12097,9 +12097,11 @@ class TestNativeFdAllocatingSyscalls:
     (``syscall_python_fallback_count`` stays 0 for open / openat /
     close on amd64).
 
-    The companion ``stat`` (4) / ``fstat`` (5) / ``access`` (21)
-    syscalls still fall back to Python — separate subtasks under
-    angr-k3ol.
+    The companion ``stat`` (4) / ``fstat`` (5) syscalls still fall
+    back to Python (need per-arch struct stat layouts +
+    ``state.posix.fstat_with_result``). ``access`` (21) is covered by
+    ``TestNativeAccessSyscall`` below — it queries
+    ``FileSystem::known_paths``.
     """
 
     @pytest.mark.parametrize(
@@ -12134,6 +12136,48 @@ class TestNativeFdAllocatingSyscalls:
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
             f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeAccessSyscall:
+    """angr-k3ol.2: native ``access`` looks up the path in the Rust
+    ``FileSystem::known_paths`` set (populated by ``open`` / ``openat``
+    or seeded by ``register_known_path``) and returns ``0`` if known,
+    ``-1`` otherwise. Mirrors ``procedures/linux_kernel/access.py`` —
+    the Python proc returns ``-1`` when ``state.fs.get(path)`` is
+    ``None`` and ``0`` otherwise.
+
+    Pre-populated Python ``state.fs`` entries are NOT mirrored into
+    the Rust side automatically — same trade-off as the FD-allocating
+    handlers in ``TestNativeFdAllocatingSyscalls``. Rust cargo tests
+    in ``native/angr/src/syscalls/file_path.rs`` pin the per-handler
+    semantics (unknown→-1, known→0, empty path→-1, symbolic
+    fallback); this test pins cross-FFI dispatch
+    (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_access_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 21  # access
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0x4000  # pathname
+        state.regs.rsi = 0       # mode = F_OK
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native access(21) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
 

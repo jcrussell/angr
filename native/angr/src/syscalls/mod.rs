@@ -231,11 +231,15 @@ impl NativeSyscallRegistry {
         //   mirroring the existing `procedures/fileops::NativeOpen` /
         //   `NativeClose` libc procs. Python `state.posix.fd` / `state.fs`
         //   are NOT mirrored — same trade-off as the libc procs and
-        //   `dup`/`dup2`. The companion `stat` (4), `fstat` (5),
-        //   `access` (21) syscalls still fall back to Python: stat/fstat
-        //   need per-arch struct stat layouts (`state.posix.
-        //   fstat_with_result`) and access needs `state.fs.get` plumbing
-        //   into Rust state (separate subtasks under angr-k3ol).
+        //   `dup`/`dup2`.
+        // access (21): file-existence check (angr-k3ol.2). Queries the
+        //   `FileSystem::known_paths` set populated by `open` /
+        //   `openat` / `open_with_content`. Pre-populated Python
+        //   `state.fs._files` entries are NOT mirrored — same trade-off
+        //   as the FD-allocating handlers. The companion `stat` (4),
+        //   `fstat` (5) syscalls still fall back to Python: they need
+        //   per-arch struct stat layouts (`state.posix.
+        //   fstat_with_result` — separate subtask under angr-k3ol).
         // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
         //   syscalls that fall through to syscall_stub (angr-0hif.5
         //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
@@ -273,6 +277,7 @@ impl NativeSyscallRegistry {
             (13, sigaction::NativeRtSigactionSyscall),
             (15, signals::NativeRtSigreturnSyscall),
             (16, file_descriptor::NativeIoctlSyscall),
+            (21, file_path::NativeAccessSyscall),
             (22, file_descriptor::NativePipeSyscall),
             (25, memory_extras::NativeMremapSyscall),
             (26, memory_extras::NativeMsyncSyscall),
@@ -372,6 +377,7 @@ impl NativeSyscallRegistry {
             (24, identity::NativeGetuidSyscall),
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
+            (33, file_path::NativeAccessSyscall),
             (37, signals::NativeKillSyscall),
             (38, directory::NativeRenameSyscall),
             (39, directory::NativeMkdirSyscall),
@@ -456,6 +462,7 @@ impl NativeSyscallRegistry {
             (24, identity::NativeGetuidSyscall),
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
+            (33, file_path::NativeAccessSyscall),
             (37, signals::NativeKillSyscall),
             (38, directory::NativeRenameSyscall),
             (39, directory::NativeMkdirSyscall),
@@ -619,6 +626,7 @@ impl NativeSyscallRegistry {
             (4024, identity::NativeGetuidSyscall),
             (4027, signals::NativeAlarmSyscall),
             (4029, signals::NativePauseSyscall),
+            (4033, file_path::NativeAccessSyscall),
             (4037, signals::NativeKillSyscall),
             (4038, directory::NativeRenameSyscall),
             (4039, directory::NativeMkdirSyscall),
