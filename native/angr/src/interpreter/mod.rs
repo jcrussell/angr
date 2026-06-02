@@ -1105,9 +1105,7 @@ impl<'a> VEXInterpreter<'a> {
                             // (claripy conversion can fail for complex/unsupported ops)
                         }
                     }
-                } else {
                 }
-            } else {
             }
             // Fallback: create a fresh symbolic value
             let bv = RustBV::symbolic(
