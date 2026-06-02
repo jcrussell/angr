@@ -2228,7 +2228,7 @@ impl SymContext {
                     // can_be_true=true is proven by the model. Check the
                     // other direction (¬cond) with Z3.
                     solver.push();
-                    solver.assert(&bool_ast.not());
+                    solver.assert(bool_ast.not());
                     let can_false = matches!(
                         timed_check(solver, CheckSite::BranchFalse),
                         z3::SatResult::Sat
@@ -2264,7 +2264,7 @@ impl SymContext {
                     }
 
                     solver.push();
-                    solver.assert(&bool_ast.not());
+                    solver.assert(bool_ast.not());
                     let can_false = matches!(
                         timed_check(solver, CheckSite::BranchFalse),
                         z3::SatResult::Sat
@@ -2470,7 +2470,7 @@ impl SymContext {
                                         );
                                         hi.concat(&lo)
                                     };
-                                    solver.assert(&ast.eq(&val_ast).not());
+                                    solver.assert(ast.eq(&val_ast).not());
                                 } else {
                                     break;
                                 }
@@ -2534,7 +2534,7 @@ impl SymContext {
                                     // Exclude this value from future solutions
                                     // Build Z3 constant from bytes for full-precision exclusion
                                     let val_ast = Self::make_bv_from_bytes(&bytes, width);
-                                    solver.assert(&ast.eq(&val_ast).not());
+                                    solver.assert(ast.eq(&val_ast).not());
                                     results.push(bytes);
                                 } else {
                                     break;
@@ -2671,7 +2671,7 @@ impl SymContext {
                 } else {
                     solver.push();
                     let zero = Self::make_bv_const(0, width);
-                    solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
+                    solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
                     let r =
                         matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
                     solver.pop(1);
@@ -2712,9 +2712,9 @@ impl SymContext {
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
                 if signed {
-                    solver.assert(&ast.bvsle(&mid_ast));
+                    solver.assert(ast.bvsle(&mid_ast));
                 } else {
-                    solver.assert(&ast.bvule(&mid_ast));
+                    solver.assert(ast.bvule(&mid_ast));
                 }
                 let can_be_le_mid = matches!(
                     timed_check(solver, CheckSite::MinSearch),
@@ -2793,7 +2793,7 @@ impl SymContext {
                 } else {
                     solver.push();
                     let zero = Self::make_bv_const(0, width);
-                    solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
+                    solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
                     let r =
                         matches!(timed_check(solver, CheckSite::MaxInit), z3::SatResult::Sat);
                     solver.pop(1);
@@ -2836,9 +2836,9 @@ impl SymContext {
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
                 if signed {
-                    solver.assert(&ast.bvsge(&mid_ast));
+                    solver.assert(ast.bvsge(&mid_ast));
                 } else {
-                    solver.assert(&ast.bvuge(&mid_ast));
+                    solver.assert(ast.bvuge(&mid_ast));
                 }
                 let can_be_ge_mid = matches!(
                     timed_check(solver, CheckSite::MaxSearch),
@@ -2920,7 +2920,7 @@ impl SymContext {
                 let mid = lo + (hi - lo) / 2;
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
-                solver.assert(&ast.bvule(&mid_ast));
+                solver.assert(ast.bvule(&mid_ast));
                 let can_be_le_mid = matches!(
                     timed_check(solver, CheckSite::MinSearch),
                     z3::SatResult::Sat
@@ -2941,7 +2941,7 @@ impl SymContext {
                 let mid = lo + (hi - lo).div_ceil(2);
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
-                solver.assert(&ast.bvuge(&mid_ast));
+                solver.assert(ast.bvuge(&mid_ast));
                 let can_be_ge_mid = matches!(
                     timed_check(solver, CheckSite::MaxSearch),
                     z3::SatResult::Sat

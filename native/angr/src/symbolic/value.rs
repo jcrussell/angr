@@ -2171,35 +2171,35 @@ impl RustBV {
                 match op {
                     BVOp::Eq => operands[0]
                         .to_z3_ast_cached(cache)
-                        .eq(&operands[1].to_z3_ast_cached(cache)),
+                        .eq(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Ne => operands[0]
                         .to_z3_ast_cached(cache)
-                        .eq(&operands[1].to_z3_ast_cached(cache))
+                        .eq(operands[1].to_z3_ast_cached(cache))
                         .not(),
                     BVOp::Ult => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvult(&operands[1].to_z3_ast_cached(cache)),
+                        .bvult(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Ule => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvule(&operands[1].to_z3_ast_cached(cache)),
+                        .bvule(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Ugt => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvugt(&operands[1].to_z3_ast_cached(cache)),
+                        .bvugt(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Uge => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvuge(&operands[1].to_z3_ast_cached(cache)),
+                        .bvuge(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Slt => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvslt(&operands[1].to_z3_ast_cached(cache)),
+                        .bvslt(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Sle => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvsle(&operands[1].to_z3_ast_cached(cache)),
+                        .bvsle(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Sgt => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvsgt(&operands[1].to_z3_ast_cached(cache)),
+                        .bvsgt(operands[1].to_z3_ast_cached(cache)),
                     BVOp::Sge => operands[0]
                         .to_z3_ast_cached(cache)
-                        .bvsge(&operands[1].to_z3_ast_cached(cache)),
+                        .bvsge(operands[1].to_z3_ast_cached(cache)),
                     // Not() on a 1-bit comparison: negate the inner bool
                     BVOp::Not if operands.len() == 1 => operands[0].to_z3_bool_cached(cache).not(),
                     // Fallback: convert BV to Bool via _eq(1)
@@ -2367,116 +2367,116 @@ impl RustBV {
             // Arithmetic
             BVOp::Add => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvadd(&operands[1].to_z3_ast_cached(cache)),
+                .bvadd(operands[1].to_z3_ast_cached(cache)),
             BVOp::Sub => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvsub(&operands[1].to_z3_ast_cached(cache)),
+                .bvsub(operands[1].to_z3_ast_cached(cache)),
             BVOp::Mul => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvmul(&operands[1].to_z3_ast_cached(cache)),
+                .bvmul(operands[1].to_z3_ast_cached(cache)),
             BVOp::UDiv => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvudiv(&operands[1].to_z3_ast_cached(cache)),
+                .bvudiv(operands[1].to_z3_ast_cached(cache)),
             BVOp::SDiv => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvsdiv(&operands[1].to_z3_ast_cached(cache)),
+                .bvsdiv(operands[1].to_z3_ast_cached(cache)),
             BVOp::URem => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvurem(&operands[1].to_z3_ast_cached(cache)),
+                .bvurem(operands[1].to_z3_ast_cached(cache)),
             BVOp::SRem => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvsrem(&operands[1].to_z3_ast_cached(cache)),
+                .bvsrem(operands[1].to_z3_ast_cached(cache)),
             BVOp::Neg => operands[0].to_z3_ast_cached(cache).bvneg(),
 
             // Bitwise
             BVOp::And => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvand(&operands[1].to_z3_ast_cached(cache)),
+                .bvand(operands[1].to_z3_ast_cached(cache)),
             BVOp::Or => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvor(&operands[1].to_z3_ast_cached(cache)),
+                .bvor(operands[1].to_z3_ast_cached(cache)),
             BVOp::Xor => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvxor(&operands[1].to_z3_ast_cached(cache)),
+                .bvxor(operands[1].to_z3_ast_cached(cache)),
             BVOp::Not => operands[0].to_z3_ast_cached(cache).bvnot(),
 
             // Shifts
             BVOp::Shl => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvshl(&operands[1].to_z3_ast_cached(cache)),
+                .bvshl(operands[1].to_z3_ast_cached(cache)),
             BVOp::Lshr => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvlshr(&operands[1].to_z3_ast_cached(cache)),
+                .bvlshr(operands[1].to_z3_ast_cached(cache)),
             BVOp::Ashr => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvashr(&operands[1].to_z3_ast_cached(cache)),
+                .bvashr(operands[1].to_z3_ast_cached(cache)),
             BVOp::RotL => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvrotl(&operands[1].to_z3_ast_cached(cache)),
+                .bvrotl(operands[1].to_z3_ast_cached(cache)),
             BVOp::RotR => operands[0]
                 .to_z3_ast_cached(cache)
-                .bvrotr(&operands[1].to_z3_ast_cached(cache)),
+                .bvrotr(operands[1].to_z3_ast_cached(cache)),
 
             // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
             BVOp::Eq => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .eq(&operands[1].to_z3_ast_cached(cache));
+                    .eq(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ne => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .eq(&operands[1].to_z3_ast_cached(cache))
+                    .eq(operands[1].to_z3_ast_cached(cache))
                     .not();
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ult => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvult(&operands[1].to_z3_ast_cached(cache));
+                    .bvult(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ule => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvule(&operands[1].to_z3_ast_cached(cache));
+                    .bvule(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ugt => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvugt(&operands[1].to_z3_ast_cached(cache));
+                    .bvugt(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Uge => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvuge(&operands[1].to_z3_ast_cached(cache));
+                    .bvuge(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Slt => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvslt(&operands[1].to_z3_ast_cached(cache));
+                    .bvslt(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sle => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvsle(&operands[1].to_z3_ast_cached(cache));
+                    .bvsle(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sgt => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvsgt(&operands[1].to_z3_ast_cached(cache));
+                    .bvsgt(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sge => {
                 let cmp = operands[0]
                     .to_z3_ast_cached(cache)
-                    .bvsge(&operands[1].to_z3_ast_cached(cache));
+                    .bvsge(operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
 
@@ -2520,7 +2520,7 @@ impl RustBV {
             BVOp::Ite => {
                 let cond = operands[0]
                     .to_z3_ast_cached(cache)
-                    .eq(&z3::ast::BV::from_u64(0, operands[0].width()))
+                    .eq(z3::ast::BV::from_u64(0, operands[0].width()))
                     .not();
                 cond.ite(
                     &operands[1].to_z3_ast_cached(cache),

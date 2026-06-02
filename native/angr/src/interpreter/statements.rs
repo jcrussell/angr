@@ -856,7 +856,7 @@ impl<'a> VEXInterpreter<'a> {
                         let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
                         let stub = RustBV::symbolic(
                             self.ctx,
-                            &format!("dirty_{}_stub", dirty.cee.name),
+                            format!("dirty_{}_stub", dirty.cee.name),
                             bits,
                         );
                         if (tmp as usize) < self.temps.len() {
@@ -907,7 +907,7 @@ impl<'a> VEXInterpreter<'a> {
                         // Create a symbolic value for the result
                         RustBV::symbolic(
                             self.ctx,
-                            &format!("dirty_{}", dirty.cee.name),
+                            format!("dirty_{}", dirty.cee.name),
                             ret_ty_bits,
                         )
                     } else {

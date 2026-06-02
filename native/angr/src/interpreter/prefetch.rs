@@ -421,7 +421,7 @@ impl<'a> VEXInterpreter<'a> {
                                         // Fallback to fresh symbolic
                                         RustBV::symbolic(
                                             self.ctx,
-                                            &format!("prefetch_{:x}_{}", addr, size),
+                                            format!("prefetch_{:x}_{}", addr, size),
                                             (size * 8) as u32,
                                         )
                                     }
@@ -429,7 +429,7 @@ impl<'a> VEXInterpreter<'a> {
                             } else {
                                 RustBV::symbolic(
                                     self.ctx,
-                                    &format!("prefetch_{:x}_{}", addr, size),
+                                    format!("prefetch_{:x}_{}", addr, size),
                                     (size * 8) as u32,
                                 )
                             }
@@ -440,7 +440,7 @@ impl<'a> VEXInterpreter<'a> {
                                     // Fallback to fresh symbolic
                                     RustBV::symbolic(
                                         self.ctx,
-                                        &format!("prefetch_{:x}_{}", addr, size),
+                                        format!("prefetch_{:x}_{}", addr, size),
                                         (size * 8) as u32,
                                     )
                                 }
@@ -448,14 +448,14 @@ impl<'a> VEXInterpreter<'a> {
                         } else {
                             RustBV::symbolic(
                                 self.ctx,
-                                &format!("prefetch_{:x}_{}", addr, size),
+                                format!("prefetch_{:x}_{}", addr, size),
                                 (size * 8) as u32,
                             )
                         }
                     } else {
                         RustBV::symbolic(
                             self.ctx,
-                            &format!("prefetch_{:x}_{}", addr, size),
+                            format!("prefetch_{:x}_{}", addr, size),
                             (size * 8) as u32,
                         )
                     }

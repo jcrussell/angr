@@ -1110,7 +1110,7 @@ impl<'a> VEXInterpreter<'a> {
             // Fallback: create a fresh symbolic value
             let bv = RustBV::symbolic(
                 self.ctx,
-                &format!("mem_{:x}_{}", addr_concrete, size),
+                format!("mem_{:x}_{}", addr_concrete, size),
                 (size * 8) as u32,
             );
             Ok(bv)
