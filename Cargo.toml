@@ -30,6 +30,7 @@ cargo = "warn"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "abort"
 
 [patch.crates-io]
 z3 = { path = "native/z3-patched" }
