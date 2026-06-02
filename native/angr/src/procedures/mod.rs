@@ -318,6 +318,8 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(getenv::NativeGetenv));
         registry.register(Arc::new(getenv::NativeSetenv));
         registry.register(Arc::new(getenv::NativePutenv));
+        registry.register(Arc::new(getenv::NativeUnsetenv));
+        registry.register(Arc::new(getenv::NativeClearenv));
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));

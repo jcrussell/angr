@@ -1227,6 +1227,17 @@ impl RustSimState {
         Arc::make_mut(&mut self.environment).insert(key, value);
     }
 
+    /// Remove an environment variable. Returns true if the key was present.
+    pub fn unsetenv(&mut self, key: &[u8]) -> bool {
+        let env = Arc::make_mut(&mut self.environment);
+        env.remove(key).is_some()
+    }
+
+    /// Clear all environment variables.
+    pub fn clearenv(&mut self) {
+        Arc::make_mut(&mut self.environment).clear();
+    }
+
     /// Get the environment map (for export).
     pub fn environment(&self) -> &HashMap<Vec<u8>, Vec<u8>> {
         &self.environment
