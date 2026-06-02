@@ -756,7 +756,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _has_state_stdout(&self, state_id: u64) -> bool {
         // find_state already checks pending_callback first.
-        self.find_state(state_id).map_or(false, |s| s.has_stdout())
+        self.find_state(state_id).is_some_and(|s| s.has_stdout())
     }
 
     pub(crate) fn _get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
@@ -769,7 +769,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _has_state_stdin_symbols(&self, state_id: u64) -> bool {
         self.find_state(state_id)
-            .map_or(false, |s| s.has_stdin_symbols())
+            .is_some_and(|s| s.has_stdin_symbols())
     }
 
     pub(crate) fn _get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {

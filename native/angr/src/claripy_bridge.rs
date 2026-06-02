@@ -1473,7 +1473,7 @@ fn rustbv_to_claripy_memo(
                         || result
                             .get_type()
                             .name()
-                            .map_or(false, |n| n == "NotImplementedType")
+                            .is_ok_and(|n| n == "NotImplementedType")
                     {
                         return Err(pyo3::exceptions::PyRuntimeError::new_err(
                             "__and__ returned NotImplemented",
@@ -1488,7 +1488,7 @@ fn rustbv_to_claripy_memo(
                         || result
                             .get_type()
                             .name()
-                            .map_or(false, |n| n == "NotImplementedType")
+                            .is_ok_and(|n| n == "NotImplementedType")
                     {
                         let t0 = args[0]
                             .bind(py)
@@ -1526,7 +1526,7 @@ fn rustbv_to_claripy_memo(
                         || result
                             .get_type()
                             .name()
-                            .map_or(false, |n| n == "NotImplementedType")
+                            .is_ok_and(|n| n == "NotImplementedType")
                     {
                         return Err(pyo3::exceptions::PyRuntimeError::new_err(
                             "__xor__ returned NotImplemented",

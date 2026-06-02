@@ -1151,7 +1151,7 @@ impl<'a> VEXInterpreter<'a> {
         _data_size: usize,
     ) -> Result<(), CbExecutionError> {
         let use_sym_store = if self.arch.pointer_size() == 32 {
-            let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
+            let is_stack = self.registers.get_sp_value().is_some_and(|sp_val| {
                 // Non-wrapping distance check
                 let dist = if addr_concrete >= sp_val {
                     addr_concrete - sp_val

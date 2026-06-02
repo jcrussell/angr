@@ -189,7 +189,7 @@ impl StashManager {
     pub fn has_active(&self) -> bool {
         self.stashes
             .get(STASH_ACTIVE)
-            .map_or(false, |s| !s.is_empty())
+            .is_some_and(|s| !s.is_empty())
     }
 
     /// Get state IDs in a stash.
