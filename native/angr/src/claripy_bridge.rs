@@ -1357,7 +1357,7 @@ fn rustbv_to_claripy_memo(
                         )?;
                         return {
                             // Redo the operation with the converted operand
-                            let args_fixed = vec![bv.unbind(), args[1].clone()];
+                            let args_fixed = [bv.unbind(), args[1].clone()];
                             // Fall through to the match op block below
                             // by replacing args
                             match op {
@@ -1393,7 +1393,7 @@ fn rustbv_to_claripy_memo(
                             ),
                         )?;
                         return {
-                            let args_fixed = vec![args[0].clone(), bv.unbind()];
+                            let args_fixed = [args[0].clone(), bv.unbind()];
                             match op {
                                 BVOp::And => args_fixed[0]
                                     .bind(py)
