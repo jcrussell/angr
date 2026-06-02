@@ -68,9 +68,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::RustBV;
+
+/// Snapshot of a [`SymContext`]'s path-constraint state.
+///
+/// Captures the `assumed_constraints` Vec — the canonical record from
+/// which Z3 solver state, scope paths, and fast-path caches re-derive
+/// after load. Built by [`SymContext::to_snapshot`] and consumed by
+/// [`SymContext::restore_from_snapshot`].
+///
+/// Carries `(RustBV, bool)` directly via the [`RustBV`] serde derive
+/// (angr-x04s.1.1). Per-Z3-context cache state (solver, model_cache,
+/// sat_cache, lineage scope_path, push stacks) is NOT included — these
+/// are runtime caches that the loader rebuilds on first query against
+/// the restored constraints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymContextSnapshot {
+    /// `(constraint, is_assumed_true)` pairs in insertion order.
+    pub assumed_constraints: Vec<(RustBV, bool)>,
+}
 
 /// Default Z3 solver timeout in milliseconds.
 ///
@@ -3401,6 +3420,53 @@ impl SymContext {
         self.assumed_constraints_shared.lock().len() + self.local_constraints.lock().assumed.len()
     }
 
+    /// Build a serializable snapshot of this context's path-constraint state
+    /// (angr-x04s.1.2).
+    ///
+    /// Captures `assumed_constraints` — the canonical record from which all
+    /// per-context Z3 cache state (solver, sat_cache, model_cache, lineage
+    /// scope_path, push stacks) re-derives. Other [`SymContext`] fields are
+    /// either runtime-only caches (rebuild on first query) or runtime
+    /// counters (`next_id`, `constraint_count`) that the loader can leave
+    /// at defaults — the IDs carried inside each `RustBV` are already
+    /// globally unique and survive the round-trip.
+    ///
+    /// See `snapshot-serialization-design` for the broader plan and
+    /// `rustsimstate-field-buckets` for which surrounding state buckets
+    /// are covered (RegisterFile / MemoryPage) versus deferred
+    /// (Python-side `Py<PyAny>` overlays).
+    pub fn to_snapshot(&self) -> SymContextSnapshot {
+        SymContextSnapshot {
+            assumed_constraints: self.get_assumed_constraints(),
+        }
+    }
+
+    /// Restore the path-constraint state captured by [`to_snapshot`] into
+    /// a fresh context. The caller is responsible for constructing the
+    /// `SymContext` (typically via [`SymContext::new`] or `new_mock`); this
+    /// method replays the captured constraints through `assume_true` /
+    /// `assume_false` so the underlying Z3 solver, fast-path caches, and
+    /// `assumed_constraints` log all rebuild consistently.
+    ///
+    /// Replay matches what `fork()` does after deserialization: each
+    /// captured `(constraint, is_true)` is re-asserted via the public
+    /// assume APIs. The shared/local split is collapsed — the restored
+    /// context starts with all entries on the local side and can be
+    /// re-shared by a subsequent `fork()`.
+    ///
+    /// Must run inside an active Z3 thread-local context when the
+    /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
+    /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
+    pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
+        for (cond, is_true) in &snap.assumed_constraints {
+            if *is_true {
+                self.assume_true(cond);
+            } else {
+                self.assume_false(cond);
+            }
+        }
+    }
+
     /// Fold this context's assumed constraints into the in-progress sharing
     /// walk (angr-zdho). Each (RustBV, _) is treated as a top-level constraint
     /// tree and walked recursively; pointer-keyed dedup matches today's
@@ -6309,5 +6375,105 @@ mod tests {
             grandchild.use_shared_lineage_solver(),
             "flag inherits down the chain"
         );
+    }
+
+    /// Round-trip the snapshot through serde JSON and verify the captured
+    /// assumed_constraints reconstruct equivalent Z3 ASTs (angr-x04s.1.2
+    /// acceptance check). Uses Z3 `Bool::eq` to confirm that the original
+    /// and restored constraint ASTs are *structurally* the same expression
+    /// (after Z3's `simplify()`), not just satisfy the same models.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "snap_x04s_x", 32);
+        let y = RustBV::symbolic(&ctx, "snap_x04s_y", 32);
+        let zero = RustBV::concrete(0, 32);
+        let ten = RustBV::concrete(10, 32);
+        let twenty = RustBV::concrete(20, 32);
+
+        ctx.assume_true(&x.ugt(&ten, &ctx));
+        ctx.assume_true(&x.ult(&twenty, &ctx));
+        ctx.assume_false(&y.eq(&zero, &ctx));
+
+        let pre = ctx.get_assumed_constraints();
+        assert_eq!(pre.len(), 3);
+
+        // Capture the original Z3 Bool ASTs (after simplify) so we can
+        // compare structurally against the restored ones.
+        let original_simplified: Vec<z3::ast::Bool> = pre
+            .iter()
+            .map(|(cond, is_true)| {
+                let b = cond.to_z3_bool();
+                let b = if *is_true { b } else { b.not() };
+                b.simplify()
+            })
+            .collect();
+
+        let snap = ctx.to_snapshot();
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let restored: SymContextSnapshot =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.assumed_constraints.len(), 3);
+
+        let ctx2 = SymContext::new();
+        ctx2.restore_from_snapshot(&restored);
+        let post = ctx2.get_assumed_constraints();
+        assert_eq!(post.len(), 3);
+
+        // is_true flags match.
+        for (i, ((_, a), (_, b))) in pre.iter().zip(post.iter()).enumerate() {
+            assert_eq!(a, b, "is_true flag mismatch at slot {i}");
+        }
+
+        // Each restored constraint produces a Z3 Bool that is
+        // structurally identical (after simplify) to the original — proves
+        // the AST cache rebuild followed the original tree shape.
+        for (i, (cond, is_true)) in post.iter().enumerate() {
+            let restored_bool = cond.to_z3_bool();
+            let restored_bool = if *is_true {
+                restored_bool
+            } else {
+                restored_bool.not()
+            };
+            assert_eq!(
+                restored_bool.simplify(),
+                original_simplified[i],
+                "restored constraint slot {i} does not match original Z3 AST"
+            );
+        }
+
+        // The restored context must still be SAT and concretize x and y
+        // to values that honor every constraint.
+        assert!(ctx2.is_sat());
+        let x_val = ctx2.eval(&x).expect("x evaluable");
+        let y_val = ctx2.eval(&y).expect("y evaluable");
+        assert!(x_val > 10 && x_val < 20, "x={x_val} must satisfy 10<x<20");
+        assert_ne!(y_val, 0, "y must be non-zero");
+    }
+
+    /// Mock-backend round-trip: with the Z3 feature off, the snapshot
+    /// still preserves the `(RustBV, bool)` log and restore replays the
+    /// pairs into a fresh context.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    #[test]
+    fn test_snapshot_assumed_constraints_roundtrip_mock() {
+        let ctx = SymContext::new_mock();
+        let cond_a = RustBV::concrete(1, 1);
+        let cond_b = RustBV::concrete(0, 1);
+        ctx.assume_true(&cond_a);
+        ctx.assume_false(&cond_b);
+        let snap = ctx.to_snapshot();
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let restored: SymContextSnapshot =
+            serde_json::from_str(&json).expect("deserialize");
+        let ctx2 = SymContext::new_mock();
+        ctx2.restore_from_snapshot(&restored);
+        let post = ctx2.get_assumed_constraints();
+        assert_eq!(post.len(), 2);
+        assert_eq!(post[0].1, true);
+        assert_eq!(post[1].1, false);
     }
 }

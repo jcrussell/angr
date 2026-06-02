@@ -26,6 +26,8 @@ pub use x86::X86;
 use crate::symbolic::RustBV;
 use crate::vex::VexArch;
 use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Architecture trait.
 ///
@@ -165,6 +167,18 @@ macro_rules! impl_arch_registers {
 pub(crate) use impl_arch_registers;
 
 /// Register file for storing register values.
+///
+/// ## Serialization
+///
+/// Implements `Serialize`/`Deserialize` via the [`RegisterFileData`]
+/// shadow type — the `FxHashMap<u32, RustBV>` collapses to a
+/// `BTreeMap<u32, RustBV>` for deterministic ordering on the wire, and
+/// the architecture is recorded by its `arch.name()` string and rebuilt
+/// via [`arch_from_name`]. Symbolic overlay AST caches are rebuilt
+/// inside the active thread-local Z3 context per the [`RustBV`] serde
+/// shape (see `snapshot-rustbv-shadow-type-pattern` bd memory).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "RegisterFileData", into = "RegisterFileData")]
 pub struct RegisterFile {
     /// Raw storage (byte-addressable).
     data: Vec<u8>,
@@ -172,6 +186,48 @@ pub struct RegisterFile {
     symbolic: FxHashMap<u32, RustBV>,
     /// Architecture information.
     arch: Box<dyn Arch>,
+}
+
+/// Serde shadow form for [`RegisterFile`].
+///
+/// The architecture is represented by its `name()` string. Unknown
+/// architecture names round-trip through [`arch_from_name`]'s AMD64
+/// fallback (matches the existing `Box<dyn Arch>` Clone behavior at
+/// arch/mod.rs:638). `data` is right-padded / truncated to the rebuilt
+/// architecture's `state_size()` so a snapshot taken at one arch is
+/// structurally usable even if reloaded under a different one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterFileData {
+    pub data: Vec<u8>,
+    pub symbolic: BTreeMap<u32, RustBV>,
+    pub arch_name: String,
+}
+
+impl From<RegisterFile> for RegisterFileData {
+    fn from(rf: RegisterFile) -> Self {
+        let arch_name = rf.arch.name().to_string();
+        RegisterFileData {
+            data: rf.data,
+            symbolic: rf.symbolic.into_iter().collect(),
+            arch_name,
+        }
+    }
+}
+
+impl From<RegisterFileData> for RegisterFile {
+    fn from(d: RegisterFileData) -> Self {
+        let arch = arch_from_name(&d.arch_name).unwrap_or_else(|| Box::new(AMD64));
+        let size = arch.state_size();
+        let mut data = vec![0u8; size];
+        let copy_len = d.data.len().min(size);
+        data[..copy_len].copy_from_slice(&d.data[..copy_len]);
+        let symbolic: FxHashMap<u32, RustBV> = d.symbolic.into_iter().collect();
+        RegisterFile {
+            data,
+            symbolic,
+            arch,
+        }
+    }
 }
 
 impl RegisterFile {
@@ -706,5 +762,89 @@ mod tests {
         // Read back
         let rax = regs.get_reg("rax", &ctx).unwrap();
         assert!(rax.is_symbolic());
+    }
+
+    /// Concrete-only round-trip: write a few registers, serialize, restore,
+    /// and verify the same values come back. Uses mock SymContext so the
+    /// test does not require Z3.
+    #[test]
+    fn serde_roundtrip_register_file_concrete() {
+        let ctx = SymContext::new_mock();
+        let mut regs = RegisterFile::new(Box::new(AMD64));
+        regs.put_reg("rax", RustBV::concrete(0x1234567890ABCDEF, 64));
+        regs.put_reg("rsp", RustBV::concrete(0x7fff_ffff_0000_1000, 64));
+
+        let s = serde_json::to_string(&regs).expect("serialize");
+        let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
+
+        assert_eq!(restored.arch().name(), "AMD64");
+        assert_eq!(
+            restored.get_reg("rax", &ctx).unwrap().as_u64(),
+            Some(0x1234567890ABCDEF)
+        );
+        assert_eq!(
+            restored.get_reg("rsp", &ctx).unwrap().as_u64(),
+            Some(0x7fff_ffff_0000_1000)
+        );
+    }
+
+    /// Symbolic round-trip: a register holding a `RustBV::Symbolic` is
+    /// reconstructed with a fresh Z3 AST under the active thread-local
+    /// context, and the rebuilt value is still recognized as symbolic
+    /// with the same `id`, `width`, and `name`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn serde_roundtrip_register_file_symbolic() {
+        use z3::{with_z3_context, Config, Context};
+
+        let ctx = SymContext::new();
+        let mut regs = RegisterFile::new(Box::new(AMD64));
+        let sym = RustBV::symbolic(&ctx, "rdi_sym", 64);
+        let (orig_id, orig_width) = match &sym {
+            RustBV::Symbolic { id, width, .. } => (*id, *width),
+            _ => panic!("expected symbolic"),
+        };
+        regs.put_reg("rdi", sym);
+
+        let s = serde_json::to_string(&regs).expect("serialize");
+
+        // Deserialize inside a fresh Z3 context to prove the AST cache
+        // rebuilds correctly across context boundaries (the production
+        // snapshot/restore path).
+        let cfg = Config::new();
+        let new_ctx = Context::new(&cfg);
+        let (sym_id, sym_width, sym_name, is_symbolic) =
+            with_z3_context(&new_ctx, || -> (u64, u32, String, bool) {
+                let restored: RegisterFile =
+                    serde_json::from_str(&s).expect("deserialize");
+                let ctx2 = SymContext::new();
+                let bv = restored.get_reg("rdi", &ctx2).unwrap();
+                match &bv {
+                    RustBV::Symbolic {
+                        id, width, name, ..
+                    } => (*id, *width, name.to_string(), true),
+                    _ => (0, 0, String::new(), false),
+                }
+            });
+
+        assert!(is_symbolic, "restored register must still be Symbolic");
+        assert_eq!(sym_id, orig_id);
+        assert_eq!(sym_width, orig_width);
+        assert_eq!(sym_name, "rdi_sym");
+    }
+
+    /// Unknown arch names fall back to AMD64 (matches `Box<dyn Arch>::clone`
+    /// at arch/mod.rs:638), so a corrupted snapshot still loads into a
+    /// usable register file. Tests the fallback path explicitly.
+    #[test]
+    fn serde_unknown_arch_name_falls_back_to_amd64() {
+        let bad = RegisterFileData {
+            data: vec![0u8; AMD64.state_size()],
+            symbolic: BTreeMap::new(),
+            arch_name: "not_a_real_arch".to_string(),
+        };
+        let s = serde_json::to_string(&bad).expect("serialize");
+        let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(restored.arch().name(), "AMD64");
     }
 }

@@ -4,6 +4,7 @@
 //! `crate::memory` so existing call sites that use `crate::memory::MemoryPage`
 //! / `crate::memory::Permission` / `crate::memory::PAGE_SIZE` keep working.
 
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Page size in bytes (4KB).
@@ -24,7 +25,7 @@ const _: () = assert!(
 const BITMAP_BITS_PER_WORD: u16 = 64;
 
 /// Memory permissions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Permission {
     pub read: bool,
     pub write: bool,
@@ -98,7 +99,17 @@ impl Permission {
 }
 
 /// A memory page with copy-on-write semantics.
-#[derive(Clone)]
+///
+/// ## Serialization
+///
+/// Implements `Serialize`/`Deserialize` via the [`MemoryPageData`] shadow
+/// type — the `Arc<Vec<u8>>` collapses to an owned `Vec` and the
+/// `Box<[u64; BITMAP_WORDS]>` bitmaps collapse to `Vec<u64>` on the wire,
+/// rebuilding the Arc / Box on load. Symbolic AST values are NOT carried
+/// on the page itself (they live in `SymbolicMemory::symbolic_objects` etc.);
+/// only the per-byte symbolic/multi bitmaps are part of the snapshot.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "MemoryPageData", into = "MemoryPageData")]
 pub struct MemoryPage {
     /// Concrete data (4KB) - uses Arc for CoW.
     data: Arc<Vec<u8>>,
@@ -328,5 +339,136 @@ impl MemoryPage {
             symbolic_bitmap: self.symbolic_bitmap.clone(),
             multi_bitmap: self.multi_bitmap.clone(),
         }
+    }
+}
+
+/// Serde shadow form for [`MemoryPage`].
+///
+/// Collapses `Arc<Vec<u8>>` to `Vec<u8>` and `Box<[u64; BITMAP_WORDS]>`
+/// bitmaps to `Vec<u64>` on the wire. On deserialize, malformed bitmap
+/// lengths fall back to `None` (treated as "no symbolic bytes on this
+/// page"); the data buffer is right-padded / truncated to `PAGE_SIZE` so
+/// a corrupted snapshot still produces a structurally-valid page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPageData {
+    pub data: Vec<u8>,
+    pub permissions: Permission,
+    pub base_addr: u64,
+    pub symbolic_bitmap: Option<Vec<u64>>,
+    pub multi_bitmap: Option<Vec<u64>>,
+}
+
+impl From<MemoryPage> for MemoryPageData {
+    fn from(page: MemoryPage) -> Self {
+        MemoryPageData {
+            data: (*page.data).clone(),
+            permissions: page.permissions,
+            base_addr: page.base_addr,
+            symbolic_bitmap: page.symbolic_bitmap.map(|b| b.to_vec()),
+            multi_bitmap: page.multi_bitmap.map(|b| b.to_vec()),
+        }
+    }
+}
+
+impl From<MemoryPageData> for MemoryPage {
+    fn from(data: MemoryPageData) -> Self {
+        let mut page_data = vec![0u8; PAGE_SIZE as usize];
+        let copy_len = data.data.len().min(PAGE_SIZE as usize);
+        page_data[..copy_len].copy_from_slice(&data.data[..copy_len]);
+
+        let to_bitmap = |v: Vec<u64>| -> Option<Box<[u64; BITMAP_WORDS]>> {
+            if v.len() != BITMAP_WORDS {
+                return None;
+            }
+            let mut arr = [0u64; BITMAP_WORDS];
+            arr.copy_from_slice(&v);
+            Some(Box::new(arr))
+        };
+
+        MemoryPage {
+            data: Arc::new(page_data),
+            permissions: data.permissions,
+            base_addr: data.base_addr,
+            symbolic_bitmap: data.symbolic_bitmap.and_then(to_bitmap),
+            multi_bitmap: data.multi_bitmap.and_then(to_bitmap),
+        }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn serde_roundtrip_concrete_page() {
+        let mut p = MemoryPage::new(0x1000, Permission::RW);
+        p.store_concrete(0, &[1, 2, 3, 4]);
+        p.store_concrete(PAGE_SIZE as u16 - 4, &[0xde, 0xad, 0xbe, 0xef]);
+
+        let s = serde_json::to_string(&p).expect("serialize");
+        let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
+
+        assert_eq!(restored.base_addr(), 0x1000);
+        assert_eq!(restored.permissions(), Permission::RW);
+        assert!(!restored.has_symbolic());
+        assert_eq!(restored.load_concrete(0, 4), vec![1, 2, 3, 4]);
+        assert_eq!(
+            restored.load_concrete(PAGE_SIZE as u16 - 4, 4),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_symbolic_bitmap() {
+        let mut p = MemoryPage::new(0x2000, Permission::RWX);
+        p.store_concrete(0, &[0xaa; 16]);
+        // Mark a scattered set of bytes as symbolic.
+        for off in [0u16, 7, 63, 64, 100, 4095] {
+            p.mark_symbolic(off, 1);
+        }
+        assert!(p.has_symbolic());
+        let before = p.symbolic_offsets();
+
+        let s = serde_json::to_string(&p).expect("serialize");
+        let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
+
+        assert_eq!(restored.base_addr(), 0x2000);
+        assert_eq!(restored.permissions(), Permission::RWX);
+        assert!(restored.has_symbolic());
+        assert_eq!(restored.symbolic_offsets(), before);
+        // Concrete bytes survive too (sanity check on the data side).
+        assert_eq!(restored.load_concrete(0, 16), vec![0xaa; 16]);
+    }
+
+    #[test]
+    fn serde_roundtrip_multi_bitmap() {
+        let mut p = MemoryPage::new(0x3000, Permission::R);
+        p.mark_multi(5);
+        p.mark_multi(2050);
+
+        let s = serde_json::to_string(&p).expect("serialize");
+        let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
+
+        assert!(restored.is_multi(5));
+        assert!(restored.is_multi(2050));
+        assert!(!restored.is_multi(6));
+        assert!(!restored.has_symbolic());
+    }
+
+    #[test]
+    fn serde_malformed_bitmap_length_drops_to_none() {
+        // A snapshot that names a symbolic bitmap with the wrong word
+        // count should not crash; instead the page should come back as
+        // fully concrete (the safer fallback).
+        let bad = MemoryPageData {
+            data: vec![0u8; PAGE_SIZE as usize],
+            permissions: Permission::RW,
+            base_addr: 0x4000,
+            symbolic_bitmap: Some(vec![0u64; BITMAP_WORDS - 1]),
+            multi_bitmap: None,
+        };
+        let s = serde_json::to_string(&bad).expect("serialize");
+        let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
+        assert!(!restored.has_symbolic());
     }
 }
