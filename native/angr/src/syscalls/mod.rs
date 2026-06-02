@@ -20,6 +20,7 @@
 pub mod arch_prctl;
 pub mod brk;
 pub mod concurrency;
+pub mod directory;
 pub mod exit;
 pub mod file_descriptor;
 pub mod file_path;
@@ -242,6 +243,17 @@ impl NativeSyscallRegistry {
         //   reading `state.posix.fd` after a Rust dup will not see the
         //   newly allocated slot. See `syscalls/file_descriptor.rs`
         //   doc comment for the lowest-free-vs-monotonic divergence.
+        // chdir (80), fchdir (81), getcwd (79), mkdir (83), mkdirat (258),
+        //   rmdir (84), unlink (87), unlinkat (263), rename (82),
+        //   renameat (264), renameat2 (316): directory syscalls
+        //   (angr-0hif.2). chdir / getcwd back the per-state
+        //   `FileSystem::cwd` field added for this subset; the rest
+        //   mirror `procedures/stubs/syscall_stub.py::syscall` — no
+        //   Python `SimProcedure` exists for fchdir/mkdir/rmdir/rename
+        //   etc., and unlink's Python proc needs the path → SimFile
+        //   plumbing not yet in `RustSimState` (same trade-off as
+        //   angr-k3ol for open/close). See `syscalls/directory.rs` doc
+        //   comment for the rationale on the stub subset.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -265,6 +277,13 @@ impl NativeSyscallRegistry {
             (60, exit::NativeExitSyscall),
             (62, signals::NativeKillSyscall),
             (72, file_descriptor::NativeFcntlSyscall),
+            (79, directory::NativeGetcwdSyscall),
+            (80, directory::NativeChdirSyscall),
+            (81, directory::NativeFchdirSyscall),
+            (82, directory::NativeRenameSyscall),
+            (83, directory::NativeMkdirSyscall),
+            (84, directory::NativeRmdirSyscall),
+            (87, directory::NativeUnlinkSyscall),
             (89, file_path::NativeReadlinkSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
             (97, rlimit::NativeGetrlimitSyscall),
@@ -290,7 +309,10 @@ impl NativeSyscallRegistry {
             (232, concurrency::NativeEpollWaitSyscall),
             (233, concurrency::NativeEpollCtlSyscall),
             (234, signals::NativeTgkillSyscall),
+            (258, directory::NativeMkdiratSyscall),
             (262, file_path::NativeNewfstatatSyscall),
+            (263, directory::NativeUnlinkatSyscall),
+            (264, directory::NativeRenameatSyscall),
             (267, file_path::NativeReadlinkatSyscall),
             (269, file_path::NativeFaccessatSyscall),
             (284, concurrency::NativeEventfdSyscall),
@@ -299,6 +321,7 @@ impl NativeSyscallRegistry {
             (292, file_descriptor::NativeDup3Syscall),
             (293, file_descriptor::NativePipe2Syscall),
             (302, rlimit::NativePrlimit64Syscall),
+            (316, directory::NativeRenameat2Syscall),
         ]);
 
         // ===== Per-arch registrations (angr-7xms) =====
@@ -330,6 +353,8 @@ impl NativeSyscallRegistry {
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
+            (10, directory::NativeUnlinkSyscall),
+            (12, directory::NativeChdirSyscall),
             (13, sim_time::NativeTimeSyscall),
             (20, identity::NativeGetpidSyscall),
             (23, identity::NativeSetuidSyscall),
@@ -337,6 +362,9 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (38, directory::NativeRenameSyscall),
+            (39, directory::NativeMkdirSyscall),
+            (40, directory::NativeRmdirSyscall),
             (41, file_descriptor::NativeDupSyscall),
             (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
@@ -355,6 +383,7 @@ impl NativeSyscallRegistry {
             (91, munmap::NativeMunmapSyscall),
             (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
+            (133, directory::NativeFchdirSyscall),
             (144, memory_extras::NativeMsyncSyscall),
             (150, memory_extras::NativeMlockSyscall),
             (151, memory_extras::NativeMunlockSyscall),
@@ -363,6 +392,7 @@ impl NativeSyscallRegistry {
             (163, memory_extras::NativeMremapSyscall),
             (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            (183, directory::NativeGetcwdSyscall),
             // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
             (191, rlimit::NativeGetrlimitSyscall),
             (199, identity::NativeGetuidSyscall),
@@ -382,6 +412,9 @@ impl NativeSyscallRegistry {
             (256, concurrency::NativeEpollWaitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
             (270, signals::NativeTgkillSyscall),
+            (296, directory::NativeMkdiratSyscall),
+            (301, directory::NativeUnlinkatSyscall),
+            (302, directory::NativeRenameatSyscall),
             // newfstatat absent on i386 — Linux 32-bit uses fstatat64 (327).
             (305, file_path::NativeReadlinkatSyscall),
             (307, file_path::NativeFaccessatSyscall),
@@ -391,6 +424,7 @@ impl NativeSyscallRegistry {
             (330, file_descriptor::NativeDup3Syscall),
             (331, file_descriptor::NativePipe2Syscall),
             (340, rlimit::NativePrlimit64Syscall),
+            (353, directory::NativeRenameat2Syscall),
         ]);
 
         // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
@@ -400,6 +434,8 @@ impl NativeSyscallRegistry {
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
+            (10, directory::NativeUnlinkSyscall),
+            (12, directory::NativeChdirSyscall),
             (13, sim_time::NativeTimeSyscall),
             (20, identity::NativeGetpidSyscall),
             (23, identity::NativeSetuidSyscall),
@@ -407,6 +443,9 @@ impl NativeSyscallRegistry {
             (27, signals::NativeAlarmSyscall),
             (29, signals::NativePauseSyscall),
             (37, signals::NativeKillSyscall),
+            (38, directory::NativeRenameSyscall),
+            (39, directory::NativeMkdirSyscall),
+            (40, directory::NativeRmdirSyscall),
             (41, file_descriptor::NativeDupSyscall),
             (42, file_descriptor::NativePipeSyscall),
             (45, brk::NativeBrkSyscall),
@@ -425,6 +464,7 @@ impl NativeSyscallRegistry {
             (91, munmap::NativeMunmapSyscall),
             (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
+            (133, directory::NativeFchdirSyscall),
             (144, memory_extras::NativeMsyncSyscall),
             (150, memory_extras::NativeMlockSyscall),
             (151, memory_extras::NativeMunlockSyscall),
@@ -433,6 +473,7 @@ impl NativeSyscallRegistry {
             (163, memory_extras::NativeMremapSyscall),
             (173, signals::NativeRtSigreturnSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            (183, directory::NativeGetcwdSyscall),
             // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
             (191, rlimit::NativeGetrlimitSyscall),
             (199, identity::NativeGetuidSyscall),
@@ -452,7 +493,11 @@ impl NativeSyscallRegistry {
             (252, concurrency::NativeEpollWaitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
             (268, signals::NativeTgkillSyscall),
+            (323, directory::NativeMkdiratSyscall),
+            (328, directory::NativeUnlinkatSyscall),
+            (329, directory::NativeRenameatSyscall),
             // newfstatat absent on ARM EABI — uses fstatat64 (327).
+            // renameat2 absent in angr's ARM EABI table.
             (332, file_path::NativeReadlinkatSyscall),
             (334, file_path::NativeFaccessatSyscall),
             (351, concurrency::NativeEventfdSyscall),
@@ -485,14 +530,21 @@ impl NativeSyscallRegistry {
             // is 64-bit-oriented), and the older epoll/eventfd variants.
             // Likewise legacy `dup2` is dropped — only `dup` (23) and
             // `dup3` (24) exist in asm-generic.
+            (17, directory::NativeGetcwdSyscall),
             (23, file_descriptor::NativeDupSyscall),
             (24, file_descriptor::NativeDup3Syscall),
             (25, file_descriptor::NativeFcntlSyscall),
             (29, file_descriptor::NativeIoctlSyscall),
             // asm-generic ABI dropped legacy `lstat` and `readlink` — only
             // the *at variants exist here. faccessat (48), readlinkat (78),
-            // newfstatat (79).
+            // newfstatat (79). Likewise legacy `mkdir`/`rmdir`/`unlink`/
+            // `rename` are absent; only the *at variants exist.
+            (34, directory::NativeMkdiratSyscall),
+            (35, directory::NativeUnlinkatSyscall),
+            (38, directory::NativeRenameatSyscall),
             (48, file_path::NativeFaccessatSyscall),
+            (49, directory::NativeChdirSyscall),
+            (50, directory::NativeFchdirSyscall),
             (59, file_descriptor::NativePipe2Syscall),
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
@@ -540,6 +592,8 @@ impl NativeSyscallRegistry {
             (4001, exit::NativeExitSyscall),
             (4003, read::NativeReadSyscall),
             (4004, write::NativeWriteSyscall),
+            (4010, directory::NativeUnlinkSyscall),
+            (4012, directory::NativeChdirSyscall),
             (4013, sim_time::NativeTimeSyscall),
             (4020, identity::NativeGetpidSyscall),
             (4023, identity::NativeSetuidSyscall),
@@ -547,6 +601,9 @@ impl NativeSyscallRegistry {
             (4027, signals::NativeAlarmSyscall),
             (4029, signals::NativePauseSyscall),
             (4037, signals::NativeKillSyscall),
+            (4038, directory::NativeRenameSyscall),
+            (4039, directory::NativeMkdirSyscall),
+            (4040, directory::NativeRmdirSyscall),
             (4041, file_descriptor::NativeDupSyscall),
             (4042, file_descriptor::NativePipeSyscall),
             (4045, brk::NativeBrkSyscall),
@@ -565,6 +622,7 @@ impl NativeSyscallRegistry {
             (4091, munmap::NativeMunmapSyscall),
             (4107, file_path::NativeLstatSyscall),
             (4125, mprotect::NativeMprotectSyscall),
+            (4133, directory::NativeFchdirSyscall),
             (4144, memory_extras::NativeMsyncSyscall),
             (4154, memory_extras::NativeMlockSyscall),
             (4155, memory_extras::NativeMunlockSyscall),
@@ -573,6 +631,7 @@ impl NativeSyscallRegistry {
             (4167, memory_extras::NativeMremapSyscall),
             (4193, signals::NativeRtSigreturnSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
+            (4203, directory::NativeGetcwdSyscall),
             (4218, memory_extras::NativeMadviseSyscall),
             // 4220 = fcntl64 (LFS-style 64-bit offset variant).
             (4220, file_descriptor::NativeFcntl64Syscall),
@@ -585,6 +644,10 @@ impl NativeSyscallRegistry {
             (4263, sim_time::NativeClockGettimeSyscall),
             (4266, signals::NativeTgkillSyscall),
             // newfstatat absent on MIPS32 O32 — uses fstatat64 (4293).
+            // renameat2 absent in angr's MIPS-O32 table.
+            (4289, directory::NativeMkdiratSyscall),
+            (4294, directory::NativeUnlinkatSyscall),
+            (4295, directory::NativeRenameatSyscall),
             (4298, file_path::NativeReadlinkatSyscall),
             (4300, file_path::NativeFaccessatSyscall),
             (4319, concurrency::NativeEventfdSyscall),
@@ -1362,6 +1425,182 @@ mod tests {
                 .unwrap_or_else(|| panic!("{arch} dup3 ({dup3_n}) missing"));
             assert_eq!(d3.name(), "dup3");
             assert_eq!(d3.num_args(), 3);
+        }
+    }
+
+    #[test]
+    fn directory_syscalls_registered_on_all_arches() {
+        // angr-0hif.2: chdir / fchdir / getcwd back the per-state cwd;
+        // mkdir/mkdirat/rmdir/unlink/unlinkat/rename/renameat/renameat2
+        // mirror syscall_stub (no Python proc). Per-arch availability:
+        //   * ARM64 asm-generic drops legacy mkdir/rmdir/unlink/rename
+        //     (only *at variants exist) and has no renameat2 in angr.
+        //   * ARM EABI / MIPS-O32 have no renameat2 in angr's table.
+        let r = NativeSyscallRegistry::new();
+
+        // (arch, getcwd, chdir, fchdir, mkdirat, unlinkat, renameat,
+        //  mkdir-or-None, rmdir-or-None, unlink-or-None, rename-or-None,
+        //  renameat2-or-None)
+        #[allow(clippy::type_complexity)]
+        let table: &[(
+            &str,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+        )] = &[
+            (
+                "AMD64",
+                79,
+                80,
+                81,
+                258,
+                263,
+                264,
+                Some(83),
+                Some(84),
+                Some(87),
+                Some(82),
+                Some(316),
+            ),
+            (
+                "X86",
+                183,
+                12,
+                133,
+                296,
+                301,
+                302,
+                Some(39),
+                Some(40),
+                Some(10),
+                Some(38),
+                Some(353),
+            ),
+            (
+                "ARM",
+                183,
+                12,
+                133,
+                323,
+                328,
+                329,
+                Some(39),
+                Some(40),
+                Some(10),
+                Some(38),
+                None,
+            ),
+            ("ARM64", 17, 49, 50, 34, 35, 38, None, None, None, None, None),
+            (
+                "MIPS32",
+                4203,
+                4012,
+                4133,
+                4289,
+                4294,
+                4295,
+                Some(4039),
+                Some(4040),
+                Some(4010),
+                Some(4038),
+                None,
+            ),
+        ];
+
+        for &(
+            arch,
+            gc_n,
+            cd_n,
+            fcd_n,
+            mka_n,
+            ula_n,
+            rea_n,
+            mk_n,
+            rm_n,
+            ul_n,
+            rn_n,
+            rea2_n,
+        ) in table
+        {
+            let g = r
+                .get(arch, gc_n)
+                .unwrap_or_else(|| panic!("{arch} getcwd ({gc_n}) missing"));
+            assert_eq!(g.name(), "getcwd");
+            assert_eq!(g.num_args(), 2);
+
+            let c = r
+                .get(arch, cd_n)
+                .unwrap_or_else(|| panic!("{arch} chdir ({cd_n}) missing"));
+            assert_eq!(c.name(), "chdir");
+            assert_eq!(c.num_args(), 1);
+
+            let fc = r
+                .get(arch, fcd_n)
+                .unwrap_or_else(|| panic!("{arch} fchdir ({fcd_n}) missing"));
+            assert_eq!(fc.name(), "fchdir");
+            assert_eq!(fc.num_args(), 1);
+
+            let mka = r
+                .get(arch, mka_n)
+                .unwrap_or_else(|| panic!("{arch} mkdirat ({mka_n}) missing"));
+            assert_eq!(mka.name(), "mkdirat");
+            assert_eq!(mka.num_args(), 3);
+
+            let ula = r
+                .get(arch, ula_n)
+                .unwrap_or_else(|| panic!("{arch} unlinkat ({ula_n}) missing"));
+            assert_eq!(ula.name(), "unlinkat");
+            assert_eq!(ula.num_args(), 3);
+
+            let rea = r
+                .get(arch, rea_n)
+                .unwrap_or_else(|| panic!("{arch} renameat ({rea_n}) missing"));
+            assert_eq!(rea.name(), "renameat");
+            assert_eq!(rea.num_args(), 4);
+
+            if let Some(n) = mk_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} mkdir ({n}) missing"));
+                assert_eq!(h.name(), "mkdir");
+                assert_eq!(h.num_args(), 2);
+            }
+            if let Some(n) = rm_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} rmdir ({n}) missing"));
+                assert_eq!(h.name(), "rmdir");
+                assert_eq!(h.num_args(), 1);
+            }
+            if let Some(n) = ul_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} unlink ({n}) missing"));
+                assert_eq!(h.name(), "unlink");
+                assert_eq!(h.num_args(), 1);
+            }
+            if let Some(n) = rn_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} rename ({n}) missing"));
+                assert_eq!(h.name(), "rename");
+                assert_eq!(h.num_args(), 2);
+            }
+            if let Some(n) = rea2_n {
+                let h = r
+                    .get(arch, n)
+                    .unwrap_or_else(|| panic!("{arch} renameat2 ({n}) missing"));
+                assert_eq!(h.name(), "renameat2");
+                assert_eq!(h.num_args(), 5);
+            }
         }
     }
 

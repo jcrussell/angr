@@ -303,6 +303,12 @@ pub struct FileSystem {
     fds: Arc<HashMap<u32, FileDescriptor>>,
     /// Next file descriptor number to allocate.
     next_fd: u32,
+    /// Current working directory as raw bytes (matches Python
+    /// `state.fs.cwd` shape: `bytes`, default `b"/"`). chdir / getcwd
+    /// (angr-0hif.2) read & write this directly; no normalization is
+    /// applied, mirroring `procedures/linux_kernel/cwd.py::chdir` which
+    /// also assigns the raw concrete path.
+    cwd: Vec<u8>,
 }
 
 impl Default for FileSystem {
@@ -324,6 +330,7 @@ impl Default for FileSystem {
         FileSystem {
             fds: Arc::new(fds),
             next_fd: 3,
+            cwd: b"/".to_vec(),
         }
     }
 }
@@ -457,6 +464,18 @@ impl FileSystem {
     /// Get the next fd number (for pre-allocating).
     pub fn next_fd(&self) -> u32 {
         self.next_fd
+    }
+
+    /// Current working directory bytes (mirrors Python `state.fs.cwd`).
+    pub fn cwd(&self) -> &[u8] {
+        &self.cwd
+    }
+
+    /// Replace the current working directory bytes. `chdir(2)` semantics —
+    /// the raw concrete path is stored verbatim (no `_normalize_path`
+    /// applied, matching `procedures/linux_kernel/cwd.py::chdir`).
+    pub fn set_cwd(&mut self, cwd: Vec<u8>) {
+        self.cwd = cwd;
     }
 
     /// Duplicate an open file descriptor, allocating the lowest unused fd.
