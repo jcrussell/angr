@@ -997,8 +997,8 @@ impl SymbolicMemory {
 
         // Merge symbolic objects from other that aren't page-based
         for (&addr, other_obj) in &other.symbolic_objects {
-            if !self.symbolic_objects.contains_key(&addr) {
-                self.symbolic_objects.insert(addr, other_obj.clone());
+            if let std::collections::hash_map::Entry::Vacant(e) = self.symbolic_objects.entry(addr) {
+                e.insert(other_obj.clone());
                 self.symbolic_spans.insert(addr, (addr, other_obj.width()));
                 merged = true;
             }

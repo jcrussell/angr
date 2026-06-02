@@ -1817,7 +1817,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
     // For larger values, use Python's int.to_bytes
     let bit_length: usize = obj.call_method0("bit_length")?.extract().unwrap_or(128);
     let byte_length = bit_length.div_ceil(8);
-    let byte_length = byte_length.max(1).min(16); // Clamp to 1-16 bytes
+    let byte_length = byte_length.clamp(1, 16);
 
     let bytes_obj = obj.call_method1("to_bytes", (byte_length, "little"))?;
     let bytes: Vec<u8> = bytes_obj.extract()?;

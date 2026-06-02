@@ -2011,7 +2011,7 @@ impl RustBV {
                 let leading = if v == 0 {
                     self.width()
                 } else {
-                    (self.width() - (128 - v.leading_zeros())).max(0)
+                    self.width() - (128 - v.leading_zeros())
                 };
                 Self::concrete(leading as u128, self.width())
             }
@@ -2557,7 +2557,7 @@ impl RustBV {
                             if w == 8 {
                                 p.to_z3_ast_cached(cache)
                             } else {
-                                Self::build_z3_ast_cached(&BVOp::Reverse, &[p.clone()], w, cache)
+                                Self::build_z3_ast_cached(&BVOp::Reverse, std::slice::from_ref(p), w, cache)
                             }
                         })
                         .collect();
