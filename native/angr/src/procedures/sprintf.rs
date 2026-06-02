@@ -420,10 +420,10 @@ impl NativeSimProcedure for NativeSnprintf {
         // Write output to destination, respecting size limit
         if size > 0 {
             let write_len = output.len().min(size - 1);
-            for i in 0..write_len {
+            for (i, byte) in output.iter().enumerate().take(write_len) {
                 state.memory_store(
                     dest.wrapping_add(i as u64),
-                    RustBV::concrete(output[i] as u128, 8),
+                    RustBV::concrete(*byte as u128, 8),
                 )?;
             }
             // Always null-terminate if size > 0

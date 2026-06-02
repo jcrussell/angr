@@ -53,8 +53,8 @@ pub(super) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
 
     if let Some(value) = bv.as_u128() {
         let mut bytes = vec![0u8; num_bytes];
-        for i in 0..num_bytes {
-            bytes[i] = (value >> (i * 8)) as u8;
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = (value >> (i * 8)) as u8;
         }
         bytes
     } else {

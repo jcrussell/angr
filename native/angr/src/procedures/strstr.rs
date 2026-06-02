@@ -63,14 +63,14 @@ impl NativeSimProcedure for NativeStrstr {
             // Try to match needle at this position
             if first == needle[0] {
                 let mut matched = true;
-                for j in 1..needle.len() {
+                for (j, needle_byte) in needle.iter().enumerate().skip(1) {
                     let h_byte_addr = h_addr.wrapping_add(j as u64);
                     let val = state
                         .memory_load(h_byte_addr, 1)
                         ?;
                     let byte =
                         extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
-                    if byte != needle[j] {
+                    if byte != *needle_byte {
                         matched = false;
                         break;
                     }

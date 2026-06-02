@@ -348,8 +348,8 @@ impl SymbolicMemory {
             if coalesce {
                 // Collect per-byte concrete defaults.
                 let mut concrete_bytes: Vec<u8> = Vec::with_capacity(run_len);
-                for k in i..j {
-                    let byte_addr = entries[k].0;
+                for entry in &entries[i..j] {
+                    let byte_addr = entry.0;
                     let page_num = byte_addr.page_num();
                     let offset = byte_addr.page_offset();
                     let page = self
@@ -373,8 +373,8 @@ impl SymbolicMemory {
                 for c in (0..alt_count).rev() {
                     let cond = entries[i].1.alternatives()[c].cond.clone();
                     let mut byte_vals: Vec<RustBV> = Vec::with_capacity(run_len);
-                    for k in i..j {
-                        byte_vals.push(entries[k].1.alternatives()[c].value.clone());
+                    for entry in &entries[i..j] {
+                        byte_vals.push(entry.1.alternatives()[c].value.clone());
                     }
                     let wider_val = build_wider_value(&byte_vals, endness, ctx);
                     acc = cond.ite(&wider_val, &acc, ctx);
@@ -383,8 +383,8 @@ impl SymbolicMemory {
                 // Apply state mutations: bump versions, drop Multi bits,
                 // set Symbolic bits, dirty pages, insert wider object,
                 // record reverse-span entries for interior bytes.
-                for k in i..j {
-                    let byte_addr = entries[k].0;
+                for entry in &entries[i..j] {
+                    let byte_addr = entry.0;
                     self.bump_multi_version(byte_addr);
                     let page_num = byte_addr.page_num();
                     let offset = byte_addr.page_offset();
@@ -407,8 +407,7 @@ impl SymbolicMemory {
 
             // Fall-back per-byte path: singleton runs and runs with any
             // unmapped page. Byte-identical to the pre-Phase-4.2 flush.
-            for k in i..j {
-                let (byte_addr, payload) = &entries[k];
+            for (byte_addr, payload) in &entries[i..j] {
                 self.bump_multi_version(*byte_addr);
                 let page_num = byte_addr.page_num();
                 let offset = byte_addr.page_offset();
