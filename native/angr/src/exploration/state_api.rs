@@ -194,18 +194,14 @@ impl RustExplorationManager {
             let assumed = ctx.get_assumed_constraints();
             let mut results = Vec::new();
             for (bv, is_true) in &assumed {
-                match rustbv_to_claripy(py, bv, claripy.as_any()) {
-                    Ok(ast) => {
-                        if *is_true {
-                            results.push(ast);
-                        } else {
-                            match claripy.call_method1("Not", (ast,)) {
-                                Ok(negated) => results.push(negated.unbind()),
-                                Err(_) => {}
-                            }
+                if let Ok(ast) = rustbv_to_claripy(py, bv, claripy.as_any()) {
+                    if *is_true {
+                        results.push(ast);
+                    } else {
+                        if let Ok(negated) = claripy.call_method1("Not", (ast,)) {
+                            results.push(negated.unbind())
                         }
                     }
-                    Err(_) => {}
                 }
             }
             Ok(results)

@@ -212,10 +212,8 @@ impl<'a> VEXInterpreter<'a> {
         match &*self.concretize_cached_read(addr_val) {
             ConcretizationResult::Single(addr_concrete) => {
                 let addr_concrete = *addr_concrete;
-                if self.arch.pointer_size() == 32
-                    && addr_concrete >= 0x400000
-                    && addr_concrete < 0x420000
-                {}
+                if self.arch.pointer_size() == 32 && (0x400000..0x420000).contains(&addr_concrete) {
+                }
                 if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                     return Ok(bytes_to_bv(data, (size * 8) as u32));
                 }
@@ -569,7 +567,7 @@ impl<'a> VEXInterpreter<'a> {
         };
         let ast = ast_obj.bind(py);
 
-        if let Some(ref table) = self.symbol_table
+        if let Some(table) = self.symbol_table
             && let Some(bv) = try_handle_to_rustbv(ast, table)
         {
             return bv;

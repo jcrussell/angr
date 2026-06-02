@@ -1009,14 +1009,14 @@ impl<'a> VEXInterpreter<'a> {
 
         let ast = result_ast.bind(py);
 
-        if let Some(ref table) = self.symbol_table
-            && let Some(bv) = try_handle_to_rustbv(&ast, table)
+        if let Some(table) = self.symbol_table
+            && let Some(bv) = try_handle_to_rustbv(ast, table)
         {
             return Ok(bv);
         }
 
-        if is_claripy_ast(&ast) {
-            if let Ok(bv) = claripy_to_rustbv(py, &ast, self.ctx) {
+        if is_claripy_ast(ast) {
+            if let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx) {
                 return Ok(bv);
             }
             log::warn!(
@@ -1088,15 +1088,15 @@ impl<'a> VEXInterpreter<'a> {
                 let ast = ast_obj.bind(py);
 
                 // Fast path: check for RustBVHandle first
-                if let Some(ref table) = self.symbol_table
-                    && let Some(bv) = try_handle_to_rustbv(&ast, table)
+                if let Some(table) = self.symbol_table
+                    && let Some(bv) = try_handle_to_rustbv(ast, table)
                 {
                     return Ok(bv);
                 }
 
                 // Slow path: claripy AST conversion
-                if is_claripy_ast(&ast) {
-                    match claripy_to_rustbv(py, &ast, self.ctx) {
+                if is_claripy_ast(ast) {
+                    match claripy_to_rustbv(py, ast, self.ctx) {
                         Ok(bv) => {
                             return Ok(bv);
                         }

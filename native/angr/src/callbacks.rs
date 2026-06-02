@@ -910,7 +910,7 @@ impl PythonCallbacks {
     /// by RustExplorationManager.__traverse__ which holds a cloned copy of
     /// PythonCallbacks (and so participates in the same cycle).
     pub fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
-        for opt in [
+        for obj in [
             &self.memory_load,
             &self.memory_store,
             &self.memory_store_batch,
@@ -936,10 +936,11 @@ impl PythonCallbacks {
             &self.inspect_instruction,
             &self.inspect_irsb,
             &self.inspect_exit,
-        ] {
-            if let Some(obj) = opt {
-                visit.call(obj)?;
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            visit.call(obj)?;
         }
         Ok(())
     }
