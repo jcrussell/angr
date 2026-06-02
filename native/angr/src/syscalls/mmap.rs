@@ -1,13 +1,27 @@
-//! amd64 mmap syscall handler.
+//! mmap syscall handlers.
 //!
-//! Mirrors `procedures/posix/mmap.py`. Handles the common case
-//! (anonymous, concrete args, fd=-1); falls back to Python for the
-//! cases that require sim_fd, page-collision retry loops, or symbolic
-//! reasoning that the Python procedure already covers.
+//! Three flavors share a `do_mmap` core:
 //!
-//! Argument order matches the Linux amd64 syscall ABI (see
-//! `invariant-syscall-arg-extraction`):
-//!   rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
+//! * `NativeMmapSyscall` — modern 6-register form (amd64 syscall 9,
+//!   ARM64 syscall 222). Mirrors `procedures/posix/mmap.py`. Argument
+//!   order matches the Linux amd64 syscall ABI (see
+//!   `invariant-syscall-arg-extraction`):
+//!     rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
+//! * `NativeOldMmapSyscall` — legacy struct-arg form (i386 syscall 90,
+//!   ARM EABI 90, MIPS32 4090). One pointer argument; the handler reads
+//!   six 32-bit fields (addr, length, prot, flags, fd, offset) from
+//!   guest memory and dispatches into `do_mmap`. Mirrors
+//!   `procedures/linux_kernel/mmap.py::old_mmap`.
+//! * `NativeMmap2Syscall` — 6-register form with page-unit offset
+//!   (i386 syscall 192, ARM EABI 192). The offset argument is in
+//!   page-size units; the handler scales it by PAGE_SIZE before
+//!   dispatching to `do_mmap`. Mirrors
+//!   `procedures/linux_kernel/mmap.py::mmap2`.
+//!
+//! Handles the common case (anonymous, concrete args, fd=-1); falls
+//! back to Python for the cases that require sim_fd, page-collision
+//! retry loops, or symbolic reasoning that the Python procedure
+//! already covers.
 //!
 //! Native subset:
 //! 1. All six args are concrete; flags are valid (exactly one of
@@ -85,6 +99,95 @@ fn range_collides(state: &RustSimState, addr: u64, size: u64) -> bool {
     false
 }
 
+/// Shared mmap implementation, called by all three flavors.
+///
+/// `addr`/`length`/`prot`/`flags`/`fd_full`/`_offset` are the already-extracted
+/// concrete syscall args. `_offset` is unused (mmap2/old_mmap callers
+/// handle the page-unit scaling before reaching here, matching Python's
+/// `posix/mmap.py::run` which also ignores offset for anonymous mappings).
+fn do_mmap(
+    state: &mut RustSimState,
+    addr: u64,
+    length: u64,
+    prot: u64,
+    flags: u64,
+    fd_full: u64,
+    _offset: u64,
+) -> Result<SyscallOutcome, SyscallError> {
+    // Bad-flags fast path: Python's mmap returns BVV(-1, bits) when
+    // exactly-one-of(MAP_SHARED, MAP_PRIVATE) doesn't hold.
+    let shared = flags & MAP_SHARED != 0;
+    let private = flags & MAP_PRIVATE != 0;
+    if shared == private {
+        return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+    }
+
+    // File-backed mappings need sim_fd. Python compares `fd[31:0] == -1`
+    // — i.e. only the low 32 bits matter. Anonymous: fd == 0xFFFFFFFF.
+    let fd_low32 = fd_full & 0xFFFF_FFFF;
+    let is_anonymous = (flags & MAP_ANONYMOUS) != 0;
+    if !is_anonymous || fd_low32 != 0xFFFF_FFFF {
+        return Err(SyscallError::Other(
+            "mmap: file-backed (fd != -1) — fall back".into(),
+        ));
+    }
+
+    // Length 0: Python's posix mmap.py runs the loop with size=0;
+    // map_region(.., 0, ..) on the page system maps zero pages, so
+    // Python effectively returns the candidate addr without mapping.
+    // Match that here — return the candidate addr (mmap_base if
+    // addr=0, else addr) without any mapping. No collision check
+    // needed since size=0 covers no pages.
+    if length == 0 {
+        let ret = if addr == 0 { state.mmap_base() } else { addr };
+        return Ok(SyscallOutcome::Continue { ret });
+    }
+
+    // Choose a candidate address. addr=0 ⇒ use mmap_base.
+    let candidate = if addr == 0 { state.mmap_base() } else { addr };
+    let is_fixed = addr != 0 && (flags & MAP_FIXED) != 0;
+
+    // Collision policy:
+    //   - addr=0 + collision: fall back. Python's allocate_memory loop
+    //     would try a different mmap_base; we can't reproduce that loop
+    //     here without potentially repeated collisions, and it's rare.
+    //   - addr!=0 && !MAP_FIXED + collision: fall back. Python loops.
+    //   - addr!=0 && MAP_FIXED: POSIX says discard colliding pages and
+    //     remap at the requested address — handled below (no fallback).
+    if !is_fixed && range_collides(state, candidate, length) {
+        return Err(SyscallError::Other(format!(
+            "mmap: collision at {:#x}+{:#x} — fall back",
+            candidate, length,
+        )));
+    }
+
+    // MAP_FIXED with collision: atomically unmap the colliding range.
+    // `unmap` is page-granular and tolerates unmapped pages within
+    // the range (it just removes whatever is there), so it's safe to
+    // call unconditionally on the requested range. We do it only when
+    // MAP_FIXED is set so the non-fixed path stays a pure map().
+    let perm = linux_prot_to_permission(prot & 0x7);
+    if is_fixed {
+        state.memory_mut().unmap(candidate, length);
+    }
+    state.memory_mut().map(candidate, length, perm);
+
+    // Bump mmap_base on addr=0 (kernel chooses): align next base up
+    // to the next page if the chosen region didn't end on a page
+    // boundary. Mirrors mmap.allocate_memory in Python.
+    if addr == 0 {
+        let new_base = candidate.wrapping_add(length);
+        let aligned = if new_base & PAGE_MASK != 0 {
+            (new_base & !PAGE_MASK) + PAGE_SIZE
+        } else {
+            new_base
+        };
+        state.set_mmap_base(aligned);
+    }
+
+    Ok(SyscallOutcome::Continue { ret: candidate })
+}
+
 pub struct NativeMmapSyscall;
 
 impl NativeSyscall for NativeMmapSyscall {
@@ -112,80 +215,112 @@ impl NativeSyscall for NativeMmapSyscall {
         let prot = extract_concrete_arg(&args[2], "mmap prot")?;
         let flags = extract_concrete_arg(&args[3], "mmap flags")?;
         let fd_full = extract_concrete_arg(&args[4], "mmap fd")?;
-        let _offset = extract_concrete_arg(&args[5], "mmap offset")?;
+        let offset = extract_concrete_arg(&args[5], "mmap offset")?;
+        do_mmap(state, addr, length, prot, flags, fd_full, offset)
+    }
+}
 
-        // Bad-flags fast path: Python's mmap returns BVV(-1, bits) when
-        // exactly-one-of(MAP_SHARED, MAP_PRIVATE) doesn't hold.
-        let shared = flags & MAP_SHARED != 0;
-        let private = flags & MAP_PRIVATE != 0;
-        if shared == private {
-            return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+/// Legacy struct-arg mmap (i386 syscall 90, ARM EABI 90, MIPS32 4090).
+///
+/// One pointer argument; the kernel reads six 32-bit fields from
+/// `[arg, arg+24)`:
+///
+/// ```c
+/// struct mmap_arg_struct {
+///     unsigned long addr;
+///     unsigned long len;
+///     unsigned long prot;
+///     unsigned long flags;
+///     unsigned long fd;
+///     unsigned long offset;  // byte offset, not page units
+/// };
+/// ```
+///
+/// Mirrors `procedures/linux_kernel/mmap.py::old_mmap` which dispatches
+/// to the base mmap proc after reading 6 dwords. The reads use the
+/// memory's natural endianness, so this handler is correct for both
+/// LE and BE arches as long as `state.memory()` is configured to match
+/// the binary.
+pub struct NativeOldMmapSyscall;
+
+impl NativeSyscall for NativeOldMmapSyscall {
+    fn name(&self) -> &'static str {
+        "old_mmap"
+    }
+
+    fn num_args(&self) -> usize {
+        1
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let ptr = extract_concrete_arg(&args[0], "old_mmap arg_struct ptr")?;
+
+        // Read six 32-bit fields. If any byte is symbolic, fall back to
+        // Python with a SymbolicArgument error so the syscall completes
+        // through the normal callback path.
+        let mut fields = [0u64; 6];
+        for (i, field) in fields.iter_mut().enumerate() {
+            let bv = state
+                .memory_load(ptr.wrapping_add(i as u64 * 4), 4)
+                .map_err(|e| {
+                    SyscallError::Other(format!("old_mmap arg_struct field {i}: {e:?}"))
+                })?;
+            *field = bv.as_u64().ok_or_else(|| {
+                SyscallError::SymbolicArgument(format!("old_mmap arg_struct field {i}"))
+            })?;
         }
+        let [addr, length, prot, flags, fd_full, offset] = fields;
+        do_mmap(state, addr, length, prot, flags, fd_full, offset)
+    }
+}
 
-        // File-backed mappings need sim_fd. Python compares `fd[31:0] == -1`
-        // — i.e. only the low 32 bits matter. Anonymous: fd == 0xFFFFFFFF.
-        let fd_low32 = fd_full & 0xFFFF_FFFF;
-        let is_anonymous = (flags & MAP_ANONYMOUS) != 0;
-        if !is_anonymous || fd_low32 != 0xFFFF_FFFF {
-            return Err(SyscallError::Other(
-                "mmap: file-backed (fd != -1) — fall back".into(),
-            ));
-        }
+/// `mmap2` (i386 syscall 192, ARM EABI 192).
+///
+/// Same 6-register signature as modern mmap, but the offset is in
+/// page-size units rather than bytes — multiplied by `PAGE_SIZE` here
+/// before dispatch. Mirrors `procedures/linux_kernel/mmap.py::mmap2`.
+///
+/// Note: not registered for MIPS32 O32. The O32 ABI passes args 5-6
+/// on the stack and `extract_syscall_args` does not currently traverse
+/// it; mmap2 falls back to Python on MIPS32 for that reason.
+pub struct NativeMmap2Syscall;
 
-        // Length 0: Python's posix mmap.py runs the loop with size=0;
-        // map_region(.., 0, ..) on the page system maps zero pages, so
-        // Python effectively returns the candidate addr without mapping.
-        // Match that here — return the candidate addr (mmap_base if
-        // addr=0, else addr) without any mapping. No collision check
-        // needed since size=0 covers no pages.
-        if length == 0 {
-            let ret = if addr == 0 { state.mmap_base() } else { addr };
-            return Ok(SyscallOutcome::Continue { ret });
-        }
+impl NativeSyscall for NativeMmap2Syscall {
+    fn name(&self) -> &'static str {
+        "mmap2"
+    }
 
-        // Choose a candidate address. addr=0 ⇒ use mmap_base.
-        let candidate = if addr == 0 { state.mmap_base() } else { addr };
-        let is_fixed = addr != 0 && (flags & MAP_FIXED) != 0;
+    fn num_args(&self) -> usize {
+        6
+    }
 
-        // Collision policy:
-        //   - addr=0 + collision: fall back. Python's allocate_memory loop
-        //     would try a different mmap_base; we can't reproduce that loop
-        //     here without potentially repeated collisions, and it's rare.
-        //   - addr!=0 && !MAP_FIXED + collision: fall back. Python loops.
-        //   - addr!=0 && MAP_FIXED: POSIX says discard colliding pages and
-        //     remap at the requested address — handled below (no fallback).
-        if !is_fixed && range_collides(state, candidate, length) {
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.len() < 6 {
             return Err(SyscallError::Other(format!(
-                "mmap: collision at {:#x}+{:#x} — fall back",
-                candidate, length,
+                "mmap2 expected 6 args, got {}",
+                args.len()
             )));
         }
-
-        // MAP_FIXED with collision: atomically unmap the colliding range.
-        // `unmap` is page-granular and tolerates unmapped pages within
-        // the range (it just removes whatever is there), so it's safe to
-        // call unconditionally on the requested range. We do it only when
-        // MAP_FIXED is set so the non-fixed path stays a pure map().
-        let perm = linux_prot_to_permission(prot & 0x7);
-        if is_fixed {
-            state.memory_mut().unmap(candidate, length);
-        }
-        state.memory_mut().map(candidate, length, perm);
-
-        // Bump mmap_base on addr=0 (kernel chooses): align next base up
-        // to the next page if the chosen region didn't end on a page
-        // boundary. Mirrors mmap.allocate_memory in Python.
-        if addr == 0 {
-            let new_base = candidate.wrapping_add(length);
-            let aligned = if new_base & PAGE_MASK != 0 {
-                (new_base & !PAGE_MASK) + PAGE_SIZE
-            } else {
-                new_base
-            };
-            state.set_mmap_base(aligned);
-        }
-
-        Ok(SyscallOutcome::Continue { ret: candidate })
+        let addr = extract_concrete_arg(&args[0], "mmap2 addr")?;
+        let length = extract_concrete_arg(&args[1], "mmap2 length")?;
+        let prot = extract_concrete_arg(&args[2], "mmap2 prot")?;
+        let flags = extract_concrete_arg(&args[3], "mmap2 flags")?;
+        let fd_full = extract_concrete_arg(&args[4], "mmap2 fd")?;
+        // Python's mmap2 zero-extends a 32-bit offset to 64 bits before
+        // scaling by PAGE_SIZE; the syscall ABI already delivers a 32-bit
+        // unsigned value zero-extended into the 64-bit register on our
+        // side, so wrapping_mul is enough.
+        let offset_pages = extract_concrete_arg(&args[5], "mmap2 offset")?;
+        let offset = offset_pages.wrapping_mul(PAGE_SIZE);
+        do_mmap(state, addr, length, prot, flags, fd_full, offset)
     }
 }
 
@@ -644,5 +779,218 @@ mod tests {
         // Mutating parent does not affect fork.
         state.set_mmap_base(0xC100_9000);
         assert_eq!(forked.mmap_base(), 0xC100_5000);
+    }
+
+    // --- Legacy mmap (struct-arg) tests -----------------------------------
+
+    /// Write six little-endian 32-bit fields into memory at `ptr`,
+    /// matching the layout `mmap_arg_struct` reads.
+    fn write_struct_le(
+        state: &mut RustSimState,
+        ptr: u64,
+        addr: u32,
+        length: u32,
+        prot: u32,
+        flags: u32,
+        fd: u32,
+        offset: u32,
+    ) {
+        let fields = [addr, length, prot, flags, fd, offset];
+        for (i, f) in fields.iter().enumerate() {
+            state
+                .memory_store(ptr + (i as u64) * 4, RustBV::concrete(*f as u128, 32))
+                .expect("store");
+        }
+    }
+
+    #[test]
+    fn old_mmap_dispatches_anonymous_struct_call() {
+        let h = NativeOldMmapSyscall;
+        let mut state = fresh_state();
+        let ptr: u64 = 0x4000;
+        state.map_memory(ptr, 0x1000, Permission::RW);
+        // Anonymous private, RW perms, addr=0 (kernel chooses).
+        write_struct_le(
+            &mut state,
+            ptr,
+            0,        // addr
+            0x1000,   // length
+            0x3,      // prot RW
+            ANON_PRIVATE as u32,
+            ANON_FD as u32,
+            0,        // offset
+        );
+
+        let outcome = h
+            .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE + 0x1000);
+        assert_eq!(
+            state.memory().page_permissions(DEFAULT_MMAP_BASE >> 12),
+            Some(Permission::RW),
+        );
+    }
+
+    #[test]
+    fn old_mmap_bad_flags_returns_neg_one() {
+        let h = NativeOldMmapSyscall;
+        let mut state = fresh_state();
+        let ptr: u64 = 0x4000;
+        state.map_memory(ptr, 0x1000, Permission::RW);
+        // MAP_ANONYMOUS only (no SHARED/PRIVATE) — Python returns -1.
+        write_struct_le(
+            &mut state,
+            ptr,
+            0,
+            0x1000,
+            0x3,
+            MAP_ANONYMOUS as u32,
+            ANON_FD as u32,
+            0,
+        );
+        let outcome = h
+            .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn old_mmap_file_backed_falls_back() {
+        let h = NativeOldMmapSyscall;
+        let mut state = fresh_state();
+        let ptr: u64 = 0x4000;
+        state.map_memory(ptr, 0x1000, Permission::RW);
+        // fd=3 + no MAP_ANONYMOUS → Python.
+        write_struct_le(
+            &mut state,
+            ptr,
+            0,
+            0x1000,
+            0x3,
+            MAP_PRIVATE as u32,
+            3,
+            0,
+        );
+        let err = h
+            .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
+            .expect_err("fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
+    }
+
+    #[test]
+    fn old_mmap_symbolic_field_falls_back() {
+        let h = NativeOldMmapSyscall;
+        let mut state = fresh_state();
+        let ptr: u64 = 0x4000;
+        state.map_memory(ptr, 0x1000, Permission::RW);
+        // Initial concrete struct, then poison the `length` field with a
+        // symbolic BV so the field read errors with SymbolicArgument.
+        write_struct_le(
+            &mut state,
+            ptr,
+            0,
+            0x1000,
+            0x3,
+            ANON_PRIVATE as u32,
+            ANON_FD as u32,
+            0,
+        );
+        let ctx = SymContext::new();
+        state
+            .memory_store(ptr + 4, RustBV::symbolic(&ctx, "len", 32))
+            .expect("store sym");
+        let err = h
+            .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
+            .expect_err("fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("field 1"), "got {msg:?}")
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn old_mmap_handler_metadata() {
+        let h = NativeOldMmapSyscall;
+        assert_eq!(h.name(), "old_mmap");
+        assert_eq!(h.num_args(), 1);
+    }
+
+    // --- mmap2 (page-offset 6-reg) tests ----------------------------------
+
+    #[test]
+    fn mmap2_dispatches_with_zero_offset() {
+        let h = NativeMmap2Syscall;
+        let mut state = fresh_state();
+        let outcome = h
+            .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0))
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE + 0x1000);
+    }
+
+    #[test]
+    fn mmap2_offset_is_in_page_units() {
+        // Anonymous mappings ignore offset, but the multiplication must
+        // not overflow or otherwise crash for a non-zero page offset.
+        // Page offset 0x20 → byte offset 0x20_000.
+        let h = NativeMmap2Syscall;
+        let mut state = fresh_state();
+        let outcome = h
+            .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0x20))
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { .. }));
+    }
+
+    #[test]
+    fn mmap2_bad_flags_returns_neg_one() {
+        let h = NativeMmap2Syscall;
+        let mut state = fresh_state();
+        let outcome = h
+            .call(&mut state, &args(0, 0x1000, 0x3, MAP_ANONYMOUS, ANON_FD, 0))
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn mmap2_file_backed_falls_back() {
+        let h = NativeMmap2Syscall;
+        let mut state = fresh_state();
+        let err = h
+            .call(&mut state, &args(0, 0x1000, 0x3, MAP_PRIVATE, 3, 0))
+            .expect_err("fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
+    }
+
+    #[test]
+    fn mmap2_symbolic_offset_falls_back() {
+        let h = NativeMmap2Syscall;
+        let mut state = fresh_state();
+        let ctx = SymContext::new();
+        let mut a = args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0);
+        a[5] = RustBV::symbolic(&ctx, "offset", 64);
+        let err = h.call(&mut state, &a).expect_err("fall back");
+        assert!(matches!(err, SyscallError::SymbolicArgument(_)));
+    }
+
+    #[test]
+    fn mmap2_handler_metadata() {
+        let h = NativeMmap2Syscall;
+        assert_eq!(h.name(), "mmap2");
+        assert_eq!(h.num_args(), 6);
     }
 }

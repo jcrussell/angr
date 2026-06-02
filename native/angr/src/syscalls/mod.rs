@@ -360,17 +360,21 @@ impl NativeSyscallRegistry {
         // Linux ABI to the same set of handlers.
         //
         // Notes on what is *not* registered here:
-        //  - x86/ARM/MIPS32 mmap is the legacy struct-arg form (Iop_mmap on
-        //    these archs takes one pointer arg, not six). mmap2 takes six
-        //    register args but uses page offsets, not byte offsets — needs a
-        //    distinct handler. Skipped to avoid silent semantic drift.
         //  - arch_prctl is amd64-only (no equivalent on other Linux arches).
         //  - On x86/ARM, EAX/R0 also hold the return value, so the
         //    Cdecl/ARMEABI return_register matches the kernel ABI.
+        //
+        // i386/ARM mmap family (angr-6gmc): the legacy struct-arg form
+        // `old_mmap` (90 on both) and `mmap2` (192 on both) are now
+        // registered. `old_mmap` reads six 32-bit fields from a
+        // `struct mmap_arg_struct *` and dispatches to `do_mmap`;
+        // `mmap2` takes 6 register args with offset in page units and
+        // scales by PAGE_SIZE. MIPS32 O32 registers only `old_mmap`
+        // (4090) — `mmap2` (4210) takes 6 args but O32 passes args 5-6
+        // on the stack which `extract_syscall_args` does not currently
+        // traverse, so MIPS32 mmap2 still falls back to Python.
 
-        // Linux i386 (asm/unistd_32.h). Skipped: mmap (90, legacy struct-arg
-        // form) and mmap2 (192, uses page-offset semantics — needs a distinct
-        // handler).
+        // Linux i386 (asm/unistd_32.h).
         //
         // Identity getters: i386 has both the legacy 16-bit-uid_t variants
         // (numbers 20/24/47/49/50/64) and the LFS 32-bit-uid_t variants
@@ -410,6 +414,7 @@ impl NativeSyscallRegistry {
             (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (85, file_path::NativeReadlinkSyscall),
+            (90, mmap::NativeOldMmapSyscall),
             (91, munmap::NativeMunmapSyscall),
             (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
@@ -425,6 +430,7 @@ impl NativeSyscallRegistry {
             (183, directory::NativeGetcwdSyscall),
             // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
             (191, rlimit::NativeGetrlimitSyscall),
+            (192, mmap::NativeMmap2Syscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
@@ -458,9 +464,10 @@ impl NativeSyscallRegistry {
             (353, directory::NativeRenameat2Syscall),
         ]);
 
-        // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
-        // form) and mmap2 (192, page-offset semantics). Identity getters
-        // share numbering with i386 (both legacy 16-bit and 32-bit variants).
+        // Linux ARM EABI (arm/asm/unistd-eabi.h). Identity getters share
+        // numbering with i386 (both legacy 16-bit and 32-bit variants).
+        // `old_mmap` (90) and `mmap2` (192) handled by the same handlers as
+        // i386 — see angr-6gmc.
         register_syscalls!(r, "ARM", [
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
@@ -495,6 +502,7 @@ impl NativeSyscallRegistry {
             (76, rlimit::NativeGetrlimitSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (85, file_path::NativeReadlinkSyscall),
+            (90, mmap::NativeOldMmapSyscall),
             (91, munmap::NativeMunmapSyscall),
             (107, file_path::NativeLstatSyscall),
             (125, mprotect::NativeMprotectSyscall),
@@ -510,6 +518,7 @@ impl NativeSyscallRegistry {
             (183, directory::NativeGetcwdSyscall),
             // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
             (191, rlimit::NativeGetrlimitSyscall),
+            (192, mmap::NativeMmap2Syscall),
             (199, identity::NativeGetuidSyscall),
             (200, identity::NativeGetgidSyscall),
             (201, identity::NativeGeteuidSyscall),
@@ -623,9 +632,11 @@ impl NativeSyscallRegistry {
         ]);
 
         // Linux MIPS32 O32 (asm/unistd_o32.h). Numbers start at 4000.
-        // mmap (4090, legacy) and mmap2 (4210) skipped — mmap2 takes 6 args
-        // but O32 only passes 4 in registers ($a0-$a3); arg 5+ live on the
-        // stack and our extract_syscall_args does not currently traverse it.
+        // `old_mmap` (4090) registered — one struct-pointer arg, fits in
+        // $a0 (angr-6gmc). `mmap2` (4210) still skipped: it takes 6 args
+        // but O32 only passes 4 in registers ($a0-$a3); args 5-6 live on
+        // the stack and our extract_syscall_args does not currently
+        // traverse it.
         register_syscalls!(r, "MIPS32", [
             (4001, exit::NativeExitSyscall),
             (4003, read::NativeReadSyscall),
@@ -660,6 +671,7 @@ impl NativeSyscallRegistry {
             (4076, rlimit::NativeGetrlimitSyscall),
             (4078, sim_time::NativeGettimeofdaySyscall),
             (4085, file_path::NativeReadlinkSyscall),
+            (4090, mmap::NativeOldMmapSyscall),
             (4091, munmap::NativeMunmapSyscall),
             (4107, file_path::NativeLstatSyscall),
             (4125, mprotect::NativeMprotectSyscall),
@@ -878,9 +890,10 @@ mod tests {
                 "X86 syscall {num} ({label}) should be registered",
             );
         }
-        // x86 has no native mmap/mmap2 handler (legacy struct-arg / page-offset).
-        assert!(r.get("X86", 90).is_none(), "x86 mmap (90) intentionally absent");
-        assert!(r.get("X86", 192).is_none(), "x86 mmap2 (192) intentionally absent");
+        // i386 mmap family (angr-6gmc): old_mmap (90, struct-arg) and
+        // mmap2 (192, page-offset) are now native.
+        assert!(r.get("X86", 90).is_some(), "x86 old_mmap (90) should be registered");
+        assert!(r.get("X86", 192).is_some(), "x86 mmap2 (192) should be registered");
     }
 
     #[test]
@@ -915,7 +928,9 @@ mod tests {
                 "ARM syscall {num} ({label}) should be registered",
             );
         }
-        assert!(r.get("ARM", 192).is_none(), "ARM mmap2 (192) intentionally absent");
+        // ARM mmap family (angr-6gmc): old_mmap (90) and mmap2 (192) native.
+        assert!(r.get("ARM", 90).is_some(), "ARM old_mmap (90) should be registered");
+        assert!(r.get("ARM", 192).is_some(), "ARM mmap2 (192) should be registered");
     }
 
     #[test]
@@ -976,7 +991,12 @@ mod tests {
                 "MIPS32 syscall {num} ({label}) should be registered",
             );
         }
-        // MIPS32 mmap2 (4210) takes 6 args but O32 only passes 4 in regs.
+        // MIPS32 old_mmap (4090) registered (angr-6gmc). mmap2 (4210)
+        // still absent — takes 6 args but O32 only passes 4 in regs.
+        assert!(
+            r.get("MIPS32", 4090).is_some(),
+            "MIPS32 old_mmap (4090) should be registered"
+        );
         assert!(
             r.get("MIPS32", 4210).is_none(),
             "MIPS32 mmap2 (4210) intentionally absent — args 5+ live on stack"
