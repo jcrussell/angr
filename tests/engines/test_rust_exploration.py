@@ -14322,6 +14322,9 @@ class TestSnapshotRoundTrip:
         pre_active_pcs = [
             run_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in pre_active_ids
         ]
+        pre_active_constraint_counts = [
+            run_mgr._rust_mgr.state_constraint_count(sid) for sid in pre_active_ids
+        ]
 
         resumed_state = fauxware_project.factory.entry_state()
         resumed_mgr = RustExplorationManager(fauxware_project, [resumed_state])
@@ -14331,6 +14334,10 @@ class TestSnapshotRoundTrip:
         post_active_ids = sorted(resumed_mgr._rust_mgr.get_state_ids("active"))
         post_active_pcs = [
             resumed_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in post_active_ids
+        ]
+        post_active_constraint_counts = [
+            resumed_mgr._rust_mgr.state_constraint_count(sid)
+            for sid in post_active_ids
         ]
 
         assert post_counts == pre_counts, (
@@ -14345,20 +14352,20 @@ class TestSnapshotRoundTrip:
             f"{pre_active_pcs} -> {post_active_pcs}"
         )
 
-        # Each restored state must report at least one assumed constraint —
-        # confirms the SymContext replay landed entries in
-        # `local.assumed`. Strict equality with the pre-snapshot count is
-        # NOT asserted because `state_constraint_count` reflects
-        # `SymContext::num_constraints` (a counter that also counts
-        # `add_constraint_raw` calls from the Python claripy sync path,
-        # which are NOT captured in the snapshot — see
-        # `snapshot-add-constraint-raw-not-tracked` bd memory). Restored
-        # states retain only the assume_true/false-tracked subset.
-        for sid in post_active_ids:
-            cnt = resumed_mgr._rust_mgr.state_constraint_count(sid)
-            assert cnt is not None and cnt >= 0, (
-                f"state {sid} post-restore has invalid constraint count: {cnt}"
-            )
+        # angr-82g6: `state_constraint_count` (the
+        # `SymContext::num_constraints` counter) now round-trips because
+        # the snapshot captures the full Z3 solver as SMT-LIB2 and
+        # restore replays every assertion through `add_constraint_raw`.
+        # The `assumed_constraints` BV log is restored separately via
+        # `assumed_constraints_push` (no second solver assert), so the
+        # two captures don't double-count. Pre-82g6, the raw-path
+        # constraints from the Python claripy sync layer were dropped —
+        # see `snapshot-add-constraint-raw-not-tracked` for the old gap.
+        assert post_active_constraint_counts == pre_active_constraint_counts, (
+            f"per-state num_constraints differ post-restore: "
+            f"{pre_active_constraint_counts} -> "
+            f"{post_active_constraint_counts}"
+        )
 
         resumed_mgr.explore(find=find_addr, num_find=1)
         assert len(resumed_mgr.found) > 0, (

@@ -89,6 +89,28 @@ use super::RustBV;
 pub struct SymContextSnapshot {
     /// `(constraint, is_assumed_true)` pairs in insertion order.
     pub assumed_constraints: Vec<(RustBV, bool)>,
+    /// Full Z3 solver state as an SMT-LIB2 dump (angr-82g6).
+    ///
+    /// Captures every assertion currently on the solver — both the
+    /// `assume_*`-tracked entries (already in `assumed_constraints`)
+    /// and the raw entries from [`SymContext::add_constraint_raw`] that
+    /// have no [`RustBV`] form (the Python-claripy-sync fallback path
+    /// in `_add_constraints_to_state` and the cross-process pointer-
+    /// import path in `_import_z3_constraint_ptrs`).
+    ///
+    /// Restore replays this dump through `add_constraint_raw` to
+    /// rebuild Z3-side solver state, then populates the
+    /// `assumed_constraints` BV log via `assumed_constraints_push`
+    /// (no second solver assert). The two captures are independent —
+    /// no ptr-level dedup needed, which side-steps the case where
+    /// Python-claripy ASTs and `claripy_to_rustbv`-rebuilt ASTs are
+    /// structurally different and hash-cons to different pointers.
+    ///
+    /// `#[serde(default)]` keeps round-trip compat with older snapshots
+    /// that predate this field — they fall through to the original
+    /// `assume_*` replay path with the pre-82g6 lossy semantics.
+    #[serde(default)]
+    pub solver_smtlib2: String,
 }
 
 /// Default Z3 solver timeout in milliseconds.
@@ -3436,9 +3458,54 @@ impl SymContext {
     /// are covered (RegisterFile / MemoryPage) versus deferred
     /// (Python-side `Py<PyAny>` overlays).
     pub fn to_snapshot(&self) -> SymContextSnapshot {
+        let assumed_constraints = self.get_assumed_constraints();
+        // angr-82g6: also dump the full Z3 solver state in SMT-LIB2 so
+        // every assertion — including constraints added via
+        // `add_constraint_raw` that have no [`RustBV`] form in
+        // `assumed_constraints` (the Python claripy-sync fallback path
+        // in `_add_constraints_to_state` and the cross-process pointer-
+        // import path in `_import_z3_constraint_ptrs`) — survives the
+        // round-trip.
+        //
+        // Restore replays this dump through `add_constraint_raw` and
+        // separately writes the `assumed_constraints` log via
+        // `assumed_constraints_push` (no solver re-assert), so the two
+        // captures are independent and don't need ptr-level dedup. This
+        // sidesteps the pitfall that Python-claripy ASTs and our
+        // `claripy_to_rustbv`-rebuilt ASTs are structurally different
+        // (hash-cons to different pointers) — both forms land back where
+        // they came from.
+        #[cfg(feature = "vex-engine-z3")]
+        let solver_smtlib2 = self.dump_solver_smtlib2();
+        #[cfg(not(feature = "vex-engine-z3"))]
+        let solver_smtlib2 = String::new();
         SymContextSnapshot {
-            assumed_constraints: self.get_assumed_constraints(),
+            assumed_constraints,
+            solver_smtlib2,
         }
+    }
+
+    /// Helper for [`Self::to_snapshot`]: dump the union of
+    /// `z3_assertions_shared` and the local Z3 assertion vector into a
+    /// temp [`z3::Solver`] and emit SMT-LIB2.
+    ///
+    /// Returns the empty string when no Z3 assertions exist, so the
+    /// snapshot envelope stays minimal in the no-constraints case.
+    #[cfg(feature = "vex-engine-z3")]
+    fn dump_solver_smtlib2(&self) -> String {
+        let temp = z3::Solver::new();
+        let mut any = false;
+        let shared = Arc::clone(&self.z3_assertions_shared.lock());
+        for c in shared.iter() {
+            temp.assert(c);
+            any = true;
+        }
+        let local = self.local_constraints.lock();
+        for c in local.z3_assertions.iter() {
+            temp.assert(c);
+            any = true;
+        }
+        if any { format!("{}", temp) } else { String::new() }
     }
 
     /// Restore the path-constraint state captured by [`to_snapshot`] into
@@ -3454,10 +3521,52 @@ impl SymContext {
     /// context starts with all entries on the local side and can be
     /// re-shared by a subsequent `fork()`.
     ///
+    /// angr-82g6: the Z3 solver state is rebuilt from `solver_smtlib2`
+    /// (every assertion replayed through [`Self::add_constraint_raw`])
+    /// so constraints added via the raw path — which has no [`RustBV`]
+    /// form in `assumed_constraints` — round-trip faithfully. The
+    /// `assumed_constraints` log is then populated directly via
+    /// [`Self::assumed_constraints_push`] (no second solver assert) so
+    /// the BV-export log matches the original without double-counting
+    /// against `constraint_count`. Snapshots written before this field
+    /// existed (`solver_smtlib2` empty by `#[serde(default)]`) fall
+    /// through to the original `assume_*` replay path.
+    ///
     /// Must run inside an active Z3 thread-local context when the
     /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
     /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if !snap.solver_smtlib2.is_empty() {
+                use z3::ast::Ast;
+                let tmp = z3::Solver::new();
+                tmp.from_string(snap.solver_smtlib2.as_str());
+                let z3_ctx = z3::Context::thread_local();
+                for assertion in tmp.get_assertions() {
+                    let ptr = assertion.get_z3_ast().as_ptr() as usize;
+                    // SAFETY: `ptr` came from a Bool returned by
+                    // `get_assertions()` parsed into the thread-local
+                    // Z3 context (the same one `add_constraint_raw`
+                    // will use). `from_borrowed_raw` takes its own ref
+                    // via `Z3_inc_ref`, independent of the temp
+                    // solver's reference.
+                    if let Some(z3_ast) =
+                        unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
+                    {
+                        self.add_constraint_raw(z3_ast);
+                    }
+                }
+                for (cond, is_true) in &snap.assumed_constraints {
+                    self.assumed_constraints_push(cond.clone(), *is_true);
+                }
+                return;
+            }
+        }
+        // Legacy / non-Z3 path: replay assumed_constraints via the
+        // public assume APIs. This is the only path when
+        // `solver_smtlib2` is empty (older snapshots, or vex-engine-z3
+        // disabled at build time).
         for (cond, is_true) in &snap.assumed_constraints {
             if *is_true {
                 self.assume_true(cond);
@@ -6452,6 +6561,105 @@ mod tests {
         let y_val = ctx2.eval(&y).expect("y evaluable");
         assert!(x_val > 10 && x_val < 20, "x={x_val} must satisfy 10<x<20");
         assert_ne!(y_val, 0, "y must be non-zero");
+    }
+
+    /// angr-82g6: constraints added via `add_constraint_raw` (no RustBV
+    /// available, e.g. the Python claripy-sync fallback path) must
+    /// survive snapshot round-trip via the `solver_smtlib2` dump.
+    /// `assumed_constraint_count` stays unchanged across the trip (the
+    /// raw entries never touch the BV log), but `num_constraints` and
+    /// solver SAT state are preserved end-to-end.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_snapshot_add_constraint_raw_roundtrip() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+        // Mix: one assume_true (RustBV-known), one add_constraint_raw
+        // (Z3-only, no RustBV form recorded).
+        let x = RustBV::symbolic(&ctx, "snap_82g6_x", 32);
+        let ten = RustBV::concrete(10, 32);
+        let twenty = RustBV::concrete(20, 32);
+        ctx.assume_true(&x.ugt(&ten, &ctx));
+
+        // Raw path: build a Z3 Bool directly and feed it through
+        // add_constraint_raw — mirrors `_add_constraints_to_state`'s
+        // Z3-ptr fast path when claripy_to_rustbv fails to translate.
+        let z3_ctx = z3::Context::thread_local();
+        let raw_bool = {
+            let x_z3 = x.to_z3_ast();
+            let twenty_z3 = twenty.to_z3_ast();
+            x_z3.bvult(&twenty_z3)
+        };
+        let raw_ptr = raw_bool.get_z3_ast().as_ptr() as usize;
+        let z3_ast_ptr = unsafe {
+            Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr)
+        }
+        .expect("raw Bool must yield a Z3AstPtr");
+        ctx.add_constraint_raw(z3_ast_ptr);
+
+        // Pre-snapshot bookkeeping. `num_constraints` counts both paths;
+        // `assumed_constraint_count` only the assume path.
+        let pre_total = ctx.num_constraints();
+        let pre_assumed = ctx.assumed_constraint_count();
+        assert_eq!(pre_total, 2, "raw + assume = 2 logical constraints");
+        assert_eq!(pre_assumed, 1, "only the assume entry hits the BV log");
+
+        // Round-trip through serde.
+        let snap = ctx.to_snapshot();
+        assert_eq!(snap.assumed_constraints.len(), 1);
+        assert!(
+            !snap.solver_smtlib2.is_empty(),
+            "snapshot must carry an SMT-LIB2 dump when raw constraints \
+             are present"
+        );
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let restored: SymContextSnapshot =
+            serde_json::from_str(&json).expect("deserialize");
+
+        let ctx2 = SymContext::new();
+        ctx2.restore_from_snapshot(&restored);
+
+        // angr-82g6: num_constraints now matches pre-snapshot (was the
+        // bug — restored counted only assumed_constraints).
+        assert_eq!(
+            ctx2.num_constraints(),
+            pre_total,
+            "num_constraints must round-trip through snapshot"
+        );
+        assert_eq!(
+            ctx2.assumed_constraint_count(),
+            pre_assumed,
+            "assumed_constraint_count is preserved (raw entries stay raw)"
+        );
+
+        // Solver is still SAT and respects BOTH constraints (x > 10
+        // AND x < 20).
+        assert!(ctx2.is_sat());
+        let x_val = ctx2.eval(&x).expect("x evaluable");
+        assert!(
+            x_val > 10 && x_val < 20,
+            "restored x={x_val} must satisfy 10 < x < 20 — including \
+             the raw-path x<20 constraint"
+        );
+    }
+
+    /// angr-82g6: backward-compat path — a snapshot deserialized from
+    /// JSON that omits `solver_smtlib2` (older payloads) must still
+    /// restore via the assumed-replay codepath alone.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
+        // Legacy JSON shape — pre-82g6 snapshots only carry
+        // assumed_constraints.
+        let legacy_json = r#"{"assumed_constraints":[]}"#;
+        let restored: SymContextSnapshot =
+            serde_json::from_str(legacy_json).expect("legacy JSON must parse");
+        assert!(restored.solver_smtlib2.is_empty());
+
+        let ctx = SymContext::new();
+        ctx.restore_from_snapshot(&restored);
+        assert_eq!(ctx.num_constraints(), 0);
     }
 
     /// Mock-backend round-trip: with the Z3 feature off, the snapshot
