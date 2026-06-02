@@ -435,6 +435,12 @@ pub struct RustExplorationManager {
     /// Includes: no native handler registered for (arch, num) and native
     /// handler returned `Err`. Surfaced via `stats()`.
     pub(crate) syscall_python_fallback_count: u64,
+    /// Per-syscall-number breakdown of `syscall_python_fallback_count`.
+    /// Key is the syscall number (architecture-specific), or `-1` when the
+    /// syscall register was symbolic at dispatch time (the native registry is
+    /// skipped without consulting any concrete number). Used by `stats()` to
+    /// surface which native handlers would close the next gap.
+    pub(crate) syscall_python_fallback_by_num: HashMap<i64, u64>,
     /// State IDs that have already produced a DCAS warning. We log the first
     /// DCAS hit per state to avoid spamming the log on tight DCAS loops.
     pub(crate) dcas_warned_states: HashSet<u64>,
@@ -507,6 +513,7 @@ impl RustExplorationManager {
             simprocedure_python_fallback_count: 0,
             simprocedure_fallback_by_name: HashMap::new(),
             syscall_python_fallback_count: 0,
+            syscall_python_fallback_by_num: HashMap::new(),
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false, // P9: Default to BFS (FIFO)

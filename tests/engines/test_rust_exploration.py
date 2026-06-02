@@ -1076,6 +1076,13 @@ class TestRustExplorationPython:
             "otherwise Rust silently dispatched to native syscall 0 (read on "
             f"amd64). Got {stats['syscall_python_fallback_count']}."
         )
+        # angr-0wam: the per-num breakdown must record symbolic syscalls under
+        # the -1 sentinel key (no concrete num was consulted).
+        by_num = stats["syscall_python_fallback_by_num"]
+        assert by_num.get(-1, 0) >= 1, (
+            "symbolic syscall must increment syscall_python_fallback_by_num[-1] "
+            f"(got {by_num})"
+        )
 
     def test_concrete_syscall_num_still_uses_native_dispatch(self):
         """Sanity check that the angr-gffd `Option<u64>` plumbing did not

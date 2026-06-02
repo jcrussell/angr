@@ -110,6 +110,11 @@ impl RustExplorationManager {
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,
         )?;
+        let syscall_fallback_by_num = PyDict::new(py);
+        for (num, count) in &self.syscall_python_fallback_by_num {
+            syscall_fallback_by_num.set_item(*num, *count)?;
+        }
+        dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
         Ok(dict)
     }
 
@@ -135,6 +140,11 @@ impl RustExplorationManager {
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,
         )?;
+        let syscall_fallback_by_num = PyDict::new(py);
+        for (num, count) in &self.syscall_python_fallback_by_num {
+            syscall_fallback_by_num.set_item(*num, *count)?;
+        }
+        dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
         Ok(dict)
     }
 

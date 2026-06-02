@@ -219,6 +219,10 @@ impl RustExplorationManager {
                             args.unwrap_err()
                         );
                         self.syscall_python_fallback_count += 1;
+                        *self
+                            .syscall_python_fallback_by_num
+                            .entry(num.map(|n| n as i64).unwrap_or(-1))
+                            .or_insert(0) += 1;
                         let pre_callback_snapshot = if !deferred_forks.is_empty() {
                             Some(state.fork())
                         } else {
@@ -288,6 +292,10 @@ impl RustExplorationManager {
                 // Falling through to Python syscall callback (no native handler
                 // matched, or native handler returned Err).
                 self.syscall_python_fallback_count += 1;
+                *self
+                    .syscall_python_fallback_by_num
+                    .entry(num.map(|n| n as i64).unwrap_or(-1))
+                    .or_insert(0) += 1;
                 // Only snapshot if deferred forks need it
                 let pre_callback_snapshot = if !deferred_forks.is_empty() {
                     Some(state.fork())

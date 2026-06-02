@@ -278,6 +278,7 @@ _DUMP_EXPLICIT_GROUPS = {
         "simprocedure_python_fallback_count",
         "simprocedure_fallback_by_name",
         "syscall_python_fallback_count",
+        "syscall_python_fallback_by_num",
         "native_proc_calls", "native_proc_fallbacks",
         "native_proc_symbolic_fallbacks",
         "native_proc_symbolic_fallbacks_by_name",
