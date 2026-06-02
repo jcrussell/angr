@@ -196,7 +196,7 @@ pub fn sample_for_thrash(
     if LINEAGE_DISMANTLED.load(Ordering::Relaxed) {
         return false;
     }
-    if sample_interval == 0 || tick == 0 || tick % sample_interval != 0 {
+    if sample_interval == 0 || tick == 0 || !tick.is_multiple_of(sample_interval) {
         return false;
     }
     LINEAGE_SAMPLE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);

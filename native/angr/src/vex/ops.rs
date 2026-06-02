@@ -3294,7 +3294,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
         debug_assert_eq!(arg.width(), total_width);
-        debug_assert!(count >= 2 && count % 2 == 0);
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
         let out_pairs = count / 2;
         let out_elem_width = elem_width * 2;
 
@@ -3338,7 +3338,7 @@ impl VEXOps {
         let total_width = elem_width * count as u32;
         debug_assert_eq!(left.width(), total_width);
         debug_assert_eq!(right.width(), total_width);
-        debug_assert!(count >= 2 && count % 2 == 0);
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
         let half = count / 2;
 
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);

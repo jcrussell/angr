@@ -445,7 +445,7 @@ fn symbolic_eflags_logic(nbits: u32, dep1: &RustBV, ctx: &SymContext, ret_bits: 
 fn calc_parity(val: u64) -> u8 {
     let byte = val as u8;
     // Count 1 bits in the byte, return 1 if even (even parity)
-    if byte.count_ones() % 2 == 0 { 1 } else { 0 }
+    if byte.count_ones().is_multiple_of(2) { 1 } else { 0 }
 }
 
 /// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).

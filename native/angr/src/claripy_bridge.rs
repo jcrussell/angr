@@ -1837,7 +1837,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 /// Byte-reverse a RustBV value.
 fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
     let width = bv.width();
-    if width % 8 != 0 {
+    if !width.is_multiple_of(8) {
         return Err(BridgeError::InvalidArgs(
             "Reverse requires byte-aligned width".into(),
         ));

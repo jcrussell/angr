@@ -1336,7 +1336,7 @@ impl RustBV {
     #[inline]
     pub fn reverse_into(self, _ctx: &SymContext) -> Self {
         let w = self.width();
-        debug_assert!(w % 8 == 0, "reverse requires byte-aligned width");
+        debug_assert!(w.is_multiple_of(8), "reverse requires byte-aligned width");
         if w <= 8 {
             return self; // Single byte, no-op
         }
@@ -1822,7 +1822,7 @@ impl RustBV {
                 //
                 // The previous form dropped the byte-shuffle for the multi-byte
                 // case, which is silently wrong on a Z3 round-trip.
-                BVOp::Reverse if operands[0].width() % 8 == 0 && high % 8 == 7 && low % 8 == 0 => {
+                BVOp::Reverse if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) => {
                     let w = operands[0].width();
                     let inner = operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
                     if high - low + 1 == 8 {
@@ -2297,7 +2297,7 @@ impl RustBV {
                 // (emitted as the canonical Concat-of-Extracts Z3 shape, matching
                 // build_z3_ast_cached's BVOp::Reverse arm).
                 BVOp::Reverse
-                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low % 8 == 0 =>
+                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
                 {
                     let w = operands[0].width();
                     let inner_ast = Self::emit_extract_z3_cached(
@@ -2570,7 +2570,7 @@ impl RustBV {
 
                 let ast = operands[0].to_z3_ast_cached(cache);
                 let w = operands[0].width();
-                if w % 8 == 0 && w >= 16 {
+                if w.is_multiple_of(8) && w >= 16 {
                     // Same canonical shape as the non-cached path above.
                     let bytes = w / 8;
                     let parts: Vec<z3::ast::BV> =
