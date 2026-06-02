@@ -2608,7 +2608,7 @@ impl PyRustSimState {
     #[pyo3(signature = (arch="amd64", little_endian=None))]
     pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
         let inner = RustSimState::new_with_endian(arch, little_endian)
-            .map_err(|e| PyValueError::new_err(e))?;
+            .map_err(PyValueError::new_err)?;
         Ok(PyRustSimState { inner })
     }
 

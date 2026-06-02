@@ -43,7 +43,7 @@ impl RustExplorationManager {
             &self.environment.arch_name,
             self.environment.little_endian,
         )
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
         let state_id = state.state_id();
 
         // Propagate memory options
