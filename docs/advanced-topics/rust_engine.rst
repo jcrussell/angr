@@ -505,17 +505,39 @@ needs to be lowered transiently under a profiling kwarg (e.g.
 ``rust_log=trace`` plus an env-var stride override) — but
 **only inside a profiling spike**, not as a perf change.
 
+Stride override (``ANGR_Z3_SIMPLIFY_STRIDE``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``sample_simplify_skip`` reads its stride from
+``ANGR_Z3_SIMPLIFY_STRIDE`` via a ``OnceLock`` on first sample (same
+pattern as ``ANGR_Z3_TACTIC`` / ``ANGR_Z3_QFBV_THRESHOLD``). The const
+default ``SIMPLIFY_SAMPLE_STRIDE_DEFAULT = 64``
+(``native/angr/src/symbolic/context.rs:317``) applies when the env var
+is unset, empty, unparseable, or ``0`` — so production runs and the
+benchmark gate see exactly the previous behavior. The override is
+write-once per process: changing the env var after the first
+``add_constraint_raw`` / ``assume_true`` / ``assume_false`` has no
+effect.
+
+Recipe for a full-population spike on a bimodal bench::
+
+    ANGR_Z3_SIMPLIFY_STRIDE=1 \
+      python tests/benchmarks/run_single.py securityfest_fairlight \
+        --engine rust --counters-json \
+      | jq '.branch_cond_simplify_sampled_count,
+            .branch_cond_simplify_reduced_count'
+
+A stride of 1 calls ``Bool::simplify`` on every assertion (one extra
+Z3 call per assertion). On dense-assertion benches this measurably
+slows the run — never enable in CI; reach for it only inside an
+ad-hoc profiling session.
+
 Follow-up beads
 ~~~~~~~~~~~~~~~
 
-* **angr-ogko** (filed P3 task): instrument ``sample_simplify_skip``
-  with an env-var stride override (e.g. ``ANGR_Z3_SIMPLIFY_STRIDE=1``)
-  so a profiling spike can take a full-population reading on the
-  bimodal benches (``fairlight``, ``unbreakable_1``, ``sokohashv2``)
-  without changing default behavior. Triggered only if a follow-up
-  spike turns up evidence that Z3's internal preprocessing is leaving
-  reducible structure on the asserted formula. No other follow-up
-  beads filed — the discipline audit is otherwise clean.
+* **angr-ogko** (closed 2026-06-02): the env-var stride override above
+  shipped per the ``li83`` follow-up. No other follow-up beads filed —
+  the discipline audit is otherwise clean.
 
 Determinism contract
 --------------------

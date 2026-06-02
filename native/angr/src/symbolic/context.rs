@@ -312,9 +312,11 @@ static BRANCH_COND_SIMPLIFY_SAMPLED_COUNT: AtomicU64 = AtomicU64::new(0);
 static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Every Nth assertion runs Z3 simplify() for measurement.  Driven by a
 /// shared atomic counter across all three assert sites.  N=64 gives ~1.5%
-/// overhead with a single simplify call per sample.
+/// overhead with a single simplify call per sample. Override via
+/// `ANGR_Z3_SIMPLIFY_STRIDE` (e.g. `=1` for full-population sampling
+/// during a profiling spike); see `simplify_sample_stride()` below.
 #[cfg(feature = "vex-engine-z3")]
-const SIMPLIFY_SAMPLE_STRIDE: u64 = 64;
+const SIMPLIFY_SAMPLE_STRIDE_DEFAULT: u64 = 64;
 static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
 // (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
 // appears in shared+local `z3_assertions` (angr-sfp9). Always-on via the
@@ -898,8 +900,26 @@ pub fn record_commutative_canonicalize(swapped: bool) {
     }
 }
 
+/// Sampling stride for `sample_simplify_skip`. Default 64; override via
+/// `ANGR_Z3_SIMPLIFY_STRIDE` (any positive integer; values <=0 / unparseable
+/// fall back to the default). Read once via `OnceLock` on first sample —
+/// matches the `tactic_spec` / `qfbv_smart_threshold` pattern. A stride of 1
+/// gives full-population sampling for a profiling spike (~`SIMPLIFY_SAMPLE_STRIDE_DEFAULT`x
+/// overhead on the simplify path; safe for offline runs only).
+#[cfg(feature = "vex-engine-z3")]
+fn simplify_sample_stride() -> u64 {
+    static STRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *STRIDE.get_or_init(|| {
+        std::env::var("ANGR_Z3_SIMPLIFY_STRIDE")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(SIMPLIFY_SAMPLE_STRIDE_DEFAULT)
+    })
+}
+
 /// angr-1joc: sampled Z3 simplify() check on a freshly-added Bool. Every
-/// Nth call (N = SIMPLIFY_SAMPLE_STRIDE) runs `simplify()` and records
+/// Nth call (N = `simplify_sample_stride()`) runs `simplify()` and records
 /// whether the resulting Z3 AST ptr differs from the input. The ticker is
 /// shared across `assume_true`, `assume_false`, and `add_constraint_raw`.
 #[cfg(feature = "vex-engine-z3")]
@@ -907,7 +927,7 @@ pub fn record_commutative_canonicalize(swapped: bool) {
 fn sample_simplify_skip(constraint: &z3::ast::Bool) {
     use z3::ast::Ast;
     let tick = SIMPLIFY_SAMPLE_TICKER.fetch_add(1, Ordering::Relaxed);
-    if !tick.is_multiple_of(SIMPLIFY_SAMPLE_STRIDE) {
+    if !tick.is_multiple_of(simplify_sample_stride()) {
         return;
     }
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.fetch_add(1, Ordering::Relaxed);
