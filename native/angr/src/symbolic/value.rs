@@ -3318,10 +3318,7 @@ fn try_zext_const_cmp_fold(
     ctx: &SymContext,
 ) -> Option<RustBV> {
     let (extend_bits, inner) = match zext_side {
-        RustBV::Expression { op: bv_op, operands, .. } => match bv_op {
-            BVOp::ZeroExt(k) => (*k, &operands[0]),
-            _ => return None,
-        },
+        RustBV::Expression { op: BVOp::ZeroExt(k), operands, .. } => (*k, &operands[0]),
         _ => return None,
     };
     // ZeroExt(0, x) → x; the wrapping caller hands us a normal width

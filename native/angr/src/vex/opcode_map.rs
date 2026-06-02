@@ -50,11 +50,9 @@ fn intern_unmapped_op(op_str: &str) -> &'static str {
 /// IROp::Variant(IRType::Ty)
 macro_rules! tuple_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => $ty:ident ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant(IRType::$ty)), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant(IRType::$ty)), )*
+            _ => {}
         }
     }};
 }
@@ -62,11 +60,9 @@ macro_rules! tuple_arms {
 /// IROp::Variant { elem: IRType::Ty, count: N }
 macro_rules! vec_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($elem:ident, $count:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { elem: IRType::$elem, count: $count }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { elem: IRType::$elem, count: $count }), )*
+            _ => {}
         }
     }};
 }
@@ -74,11 +70,9 @@ macro_rules! vec_arms {
 /// IROp::Variant { elem: IRType::Ty }
 macro_rules! scalar_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => $elem:ident ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { elem: IRType::$elem }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { elem: IRType::$elem }), )*
+            _ => {}
         }
     }};
 }
@@ -86,11 +80,9 @@ macro_rules! scalar_arms {
 /// IROp::Variant { from: IRType::From, to: IRType::To }
 macro_rules! cast_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($from:ident, $to:ident) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { from: IRType::$from, to: IRType::$to }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { from: IRType::$from, to: IRType::$to }), )*
+            _ => {}
         }
     }};
 }
@@ -98,11 +90,9 @@ macro_rules! cast_arms {
 /// IROp::Variant { elem: IRType::Ty, count: N, signed: bool }
 macro_rules! vec_signed_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($elem:ident, $count:literal, $signed:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { elem: IRType::$elem, count: $count, signed: $signed }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { elem: IRType::$elem, count: $count, signed: $signed }), )*
+            _ => {}
         }
     }};
 }
@@ -110,11 +100,9 @@ macro_rules! vec_signed_arms {
 /// IROp::VWiden { from: IRType::From, count: N, signed: bool }
 macro_rules! vec_widen_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($from:ident, $count:literal, $signed:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { from: IRType::$from, count: $count, signed: $signed }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { from: IRType::$from, count: $count, signed: $signed }), )*
+            _ => {}
         }
     }};
 }
@@ -122,11 +110,9 @@ macro_rules! vec_widen_arms {
 /// IROp::VNarrowUn / VNarrowBin { from: IRType::From, count: N }
 macro_rules! vec_narrow_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($from:ident, $count:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant { from: IRType::$from, count: $count }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant { from: IRType::$from, count: $count }), )*
+            _ => {}
         }
     }};
 }
@@ -134,14 +120,12 @@ macro_rules! vec_narrow_arms {
 /// IROp::VQNarrowUn / VQNarrowBin { from, count, src_signed, dst_signed }
 macro_rules! vec_qnarrow_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($from:ident, $count:literal, $src:literal, $dst:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::$variant {
-                    from: IRType::$from, count: $count,
-                    src_signed: $src, dst_signed: $dst,
-                }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant {
+                from: IRType::$from, count: $count,
+                src_signed: $src, dst_signed: $dst,
+            }), )*
+            _ => {}
         }
     }};
 }
@@ -149,13 +133,11 @@ macro_rules! vec_qnarrow_arms {
 /// IROp::FCmpVecPacked { kind, elem, count }
 macro_rules! fcmp_vec_arms {
     ($s:expr; $prefix:literal => $kind:ident { $( $sfx:literal => ($elem:ident, $count:literal) ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::FCmpVecPacked {
-                    kind: FCmpKind::$kind, elem: IRType::$elem, count: $count,
-                }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::FCmpVecPacked {
+                kind: FCmpKind::$kind, elem: IRType::$elem, count: $count,
+            }), )*
+            _ => {}
         }
     }};
 }
@@ -163,13 +145,11 @@ macro_rules! fcmp_vec_arms {
 /// IROp::FCmpScalarLane { kind, ty }
 macro_rules! fcmp_scalar_arms {
     ($s:expr; $prefix:literal => $kind:ident { $( $sfx:literal => $ty:ident ),* $(,)? }) => {{
-        if let Some(rest) = $s.strip_prefix($prefix) {
-            match rest {
-                $( $sfx => return Some(IROp::FCmpScalarLane {
-                    kind: FCmpKind::$kind, ty: IRType::$ty,
-                }), )*
-                _ => {}
-            }
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::FCmpScalarLane {
+                kind: FCmpKind::$kind, ty: IRType::$ty,
+            }), )*
+            _ => {}
         }
     }};
 }
