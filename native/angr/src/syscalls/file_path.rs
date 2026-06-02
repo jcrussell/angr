@@ -37,11 +37,40 @@
 //! `register_known_path` call is made on the Rust state. Same
 //! trade-off as `open` / `openat` here.
 //!
+//! ## `fstat` (angr-k3ol.3)
+//!
+//! `fstat(fd, statbuf) → 0 | -1` reads `(name, _, _, content_len, _)`
+//! from `FileSystem::fd_info(fd)` and writes a per-arch `struct stat`
+//! to `statbuf`. Mirrors `procedures/linux_kernel/fstat.py`, which
+//! delegates to `state.posix.fstat_with_result`. The Rust handler
+//! diverges in two intentional ways:
+//!
+//! * `st_mode` is written as the concrete constant `S_IFREG | 0o755`
+//!   instead of a fresh symbolic BVS (Python's
+//!   `fstat_with_result` mints `BVS("st_mode", 32)`). The concrete
+//!   value matches a regular file's permissions and avoids spawning
+//!   a symbolic the binary will likely just compare against
+//!   `S_IFREG`. Anything that depends on a symbolic mode must use
+//!   the Python proc.
+//! * `st_size` comes from `content_len` (whatever was last written
+//!   to the fd's backing buffer) — concrete, not symbolic.
+//!
+//! Per-arch struct layouts cover AMD64 and ARM64 (the two 64-bit
+//! arches with a sys-call 5 / 80 `fstat` and a Python
+//! implementation). x86 / ARM / MIPS32 carry the legacy 32-bit
+//! `struct stat`; the Python proc itself raises on those — there is
+//! no benefit to a Rust copy, so fstat for those arches continues to
+//! fall through to the Python error path.
+//!
+//! Unknown fd → `-1` with no buffer write (matches
+//! `fstat_with_result`'s `result = -1` branch).
+//!
 //! ## What is intentionally NOT covered here (separate subtasks under
 //! angr-k3ol):
 //!
-//! * `stat`, `fstat` — need per-arch `struct stat` field layouts and
-//!   `state.posix.fstat_with_result`. Falls back to Python.
+//! * `stat` (`stat(pathname, statbuf)`) — opens a temp fd, calls
+//!   fstat, closes. Will be a thin wrapper over the fstat helper
+//!   once it lands. Falls back to Python for now.
 //!
 //! On those, the unhandled-syscall path continues to dispatch to the
 //! Python `_handle_syscall_callback`, preserving full semantics.
@@ -247,6 +276,149 @@ impl NativeSyscall for NativeAccessSyscall {
             NEG_ONE
         };
         Ok(SyscallOutcome::Continue { ret })
+    }
+}
+
+/// Concrete defaults for the `struct stat` fields. `fstat_with_result`
+/// in Python returns a symbolic `st_mode` and `st_size` plus a
+/// `st_blksize` of `0x400`; the Rust handler swaps `st_mode` for
+/// `S_IFREG | 0o755` (regular file, rwxr-xr-x) and `st_size` for the
+/// concrete length of the fd's backing buffer (`content_len`). Other
+/// fields stay zero, matching the Python defaults.
+const S_IFREG_0755: u64 = 0o100_755;
+const ST_BLKSIZE: u64 = 0x400;
+
+/// AMD64 `struct stat` layout — total 0x90 bytes. Mirrors
+/// `angr/procedures/linux_kernel/fstat.py::_store_amd64`. Writes are
+/// arch-LE per `RustSimState::memory.endness`.
+///
+/// Field widths (offsets cumulative):
+/// `dev` u64, `ino` u64, `nlink` u64, `mode` u32, `uid` u32,
+/// `gid` u32, pad u32, `rdev` u64, `size` u64, `blksize` u64,
+/// `blocks` u64, `atime+nsec` u64×2, `mtime+nsec` u64×2,
+/// `ctime+nsec` u64×2, pad u64×3.
+fn write_amd64_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+) -> Result<(), SyscallError> {
+    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
+        Ok(())
+    };
+    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
+        Ok(())
+    };
+
+    store_u64(state, 0x00, 0)?; // st_dev
+    store_u64(state, 0x08, 0)?; // st_ino
+    store_u64(state, 0x10, 0)?; // st_nlink
+    store_u32(state, 0x18, S_IFREG_0755 as u32)?; // st_mode
+    store_u32(state, 0x1C, 0)?; // st_uid
+    store_u32(state, 0x20, 0)?; // st_gid
+    store_u32(state, 0x24, 0)?; // pad
+    store_u64(state, 0x28, 0)?; // st_rdev
+    store_u64(state, 0x30, size)?; // st_size
+    store_u64(state, 0x38, ST_BLKSIZE)?; // st_blksize
+    store_u64(state, 0x40, 0)?; // st_blocks
+    store_u64(state, 0x48, 0)?; // st_atime
+    store_u64(state, 0x50, 0)?; // st_atimensec
+    store_u64(state, 0x58, 0)?; // st_mtime
+    store_u64(state, 0x60, 0)?; // st_mtimensec
+    store_u64(state, 0x68, 0)?; // st_ctime
+    store_u64(state, 0x70, 0)?; // st_ctimensec
+    store_u64(state, 0x78, 0)?; // pad
+    store_u64(state, 0x80, 0)?; // pad
+    store_u64(state, 0x88, 0)?; // pad
+    Ok(())
+}
+
+/// AArch64 `struct stat` layout — total 0x80 bytes. Mirrors
+/// `_store_aarch64` (note: `nlink` is u32 here, `blksize` is u32, and
+/// the field order around mode/nlink/uid/gid differs from AMD64).
+fn write_aarch64_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+) -> Result<(), SyscallError> {
+    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
+        Ok(())
+    };
+    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
+        Ok(())
+    };
+
+    store_u64(state, 0x00, 0)?; // st_dev
+    store_u64(state, 0x08, 0)?; // st_ino
+    store_u32(state, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_u32(state, 0x14, 0)?; // st_nlink
+    store_u32(state, 0x18, 0)?; // st_uid
+    store_u32(state, 0x1C, 0)?; // st_gid
+    store_u64(state, 0x20, 0)?; // st_rdev
+    store_u64(state, 0x28, 0)?; // pad
+    store_u64(state, 0x30, size)?; // st_size
+    store_u32(state, 0x38, ST_BLKSIZE as u32)?; // st_blksize
+    store_u32(state, 0x3C, 0)?; // pad
+    store_u64(state, 0x40, 0)?; // st_blocks
+    store_u64(state, 0x48, 0)?; // st_atime
+    store_u64(state, 0x50, 0)?; // st_atimensec
+    store_u64(state, 0x58, 0)?; // st_mtime
+    store_u64(state, 0x60, 0)?; // st_mtimensec
+    store_u64(state, 0x68, 0)?; // st_ctime
+    store_u64(state, 0x70, 0)?; // st_ctimensec
+    store_u64(state, 0x78, 0)?; // pad
+    Ok(())
+}
+
+/// `fstat(fd, statbuf) → 0 | -1` — look up `fd` in the Rust
+/// `FileSystem`, fill a per-arch `struct stat` at `statbuf`. Returns
+/// `-1` when the fd is unknown to the Rust state (matches
+/// `state.posix.fstat_with_result`'s `result = -1` branch). Falls
+/// back to Python on symbolic fd / buf or unsupported arch.
+pub struct NativeFstatSyscall;
+
+impl NativeSyscall for NativeFstatSyscall {
+    fn name(&self) -> &'static str {
+        "fstat"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let fd = extract_concrete_arg(&args[0], "fstat fd")?;
+        let buf = extract_concrete_arg(&args[1], "fstat statbuf")?;
+
+        // arch check first: avoid mutating state.memory if we will fall
+        // back to Python anyway.
+        let arch_name = state.arch().name();
+        if arch_name != "AMD64" && arch_name != "ARM64" {
+            return Err(SyscallError::Other(format!(
+                "fstat: unsupported arch {arch_name} (only AMD64/ARM64 have a Rust handler)"
+            )));
+        }
+
+        // Look up fd — `content.len()` is `content_len` (index 3 in the
+        // tuple). Borrow ends before any memory_store.
+        let size_opt = state.file_system_ref().fd_info(fd as u32).map(|t| t.3);
+        let Some(size) = size_opt else {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        };
+
+        match arch_name {
+            "AMD64" => write_amd64_stat(state, buf, size as u64)?,
+            "ARM64" => write_aarch64_stat(state, buf, size as u64)?,
+            _ => unreachable!(),
+        }
+        Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
 
@@ -738,6 +910,197 @@ mod tests {
                 }
                 other => panic!("{arch} post-register: got {other:?}"),
             }
+        }
+    }
+
+    /// Read `size` bytes of LE-packed u64 from memory at `addr`.
+    fn read_u64_le(state: &RustSimState, addr: u64) -> u64 {
+        let bv = state.memory_load(addr, 8).expect("load");
+        bv.as_u64().expect("concrete")
+    }
+
+    fn read_u32_le(state: &RustSimState, addr: u64) -> u32 {
+        let bv = state.memory_load(addr, 4).expect("load");
+        bv.as_u64().expect("concrete") as u32
+    }
+
+    #[test]
+    fn fstat_unknown_fd_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        let out = NativeFstatSyscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(99, 64), RustBV::concrete(0x4000, 64)],
+            )
+            .expect("fstat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        // Buffer must NOT have been touched on the failure path
+        // (read 0s from the freshly-mapped page).
+        assert_eq!(read_u64_le(&state, 0x4000), 0);
+    }
+
+    #[test]
+    fn fstat_known_fd_writes_amd64_layout_and_returns_zero() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        // Seed a file with concrete content so content_len = 13.
+        let fd = state
+            .file_system()
+            .open_with_content("/tmp/hello".into(), FdFlags::ReadOnly, b"hello, world!".to_vec());
+
+        let out = NativeFstatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x4000, 64),
+                ],
+            )
+            .expect("fstat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+
+        // st_size at offset 0x30
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
+        // st_mode at offset 0x18 (u32)
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+        // st_blksize at offset 0x38
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x38), ST_BLKSIZE);
+        // st_dev at offset 0 — zero
+        assert_eq!(read_u64_le(&state, 0x4000), 0);
+        // st_ctimensec at 0x70 — zero
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x70), 0);
+    }
+
+    #[test]
+    fn fstat_known_fd_writes_aarch64_layout_and_returns_zero() {
+        let mut state = RustSimState::new("aarch64").expect("state");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+
+        let fd = state
+            .file_system()
+            .open_with_content("/tmp/arm".into(), FdFlags::ReadOnly, vec![0u8; 4096]);
+
+        let out = NativeFstatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x4000, 64),
+                ],
+            )
+            .expect("fstat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+
+        // AArch64-specific: st_mode at 0x10 (NOT 0x18 like AMD64).
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFREG_0755 as u32);
+        // st_nlink at 0x14 — zero u32
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x14), 0);
+        // st_size at 0x30
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 4096);
+        // st_blksize at 0x38 is u32 here
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x38), ST_BLKSIZE as u32);
+        // The last padding word at 0x78 — zero
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x78), 0);
+    }
+
+    #[test]
+    fn fstat_unsupported_arch_falls_back() {
+        // X86 / ARM / MIPS32 have legacy 32-bit struct stat and no
+        // Python implementation in fstat.py either, so the handler
+        // intentionally errors out and lets the dispatcher fall back
+        // to the Python proc (which itself raises).
+        for arch in ["x86", "armel", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            let fd = state
+                .file_system()
+                .open("/tmp/foo".into(), FdFlags::ReadOnly);
+
+            let err = NativeFstatSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(fd as u128, bits),
+                        RustBV::concrete(0x4000, bits),
+                    ],
+                )
+                .expect_err("{arch}: must surface as Other");
+            match err {
+                SyscallError::Other(msg) => assert!(
+                    msg.contains("unsupported arch"),
+                    "{arch}: got {msg:?}",
+                ),
+                other => panic!("{arch}: expected Other, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn fstat_symbolic_fd_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_fd = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "fd", 64)
+        };
+        let err = NativeFstatSyscall
+            .call(&mut state, &[sym_fd, RustBV::concrete(0x4000, 64)])
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("fd"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fstat_symbolic_buf_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_buf = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "statbuf", 64)
+        };
+        let err = NativeFstatSyscall
+            .call(&mut state, &[RustBV::concrete(0, 64), sym_buf])
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("statbuf"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fstat_unmapped_buf_surfaces_error() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let fd = state.file_system().open("/tmp/x".into(), FdFlags::ReadOnly);
+        // Do NOT map the destination page — store should error.
+        let err = NativeFstatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x8000, 64),
+                ],
+            )
+            .expect_err("unmapped should error");
+        // The MemoryError surfaces as SyscallError via the `?` conversion.
+        match err {
+            SyscallError::Memory(_) => {}
+            other => panic!("expected Memory error, got {other:?}"),
         }
     }
 

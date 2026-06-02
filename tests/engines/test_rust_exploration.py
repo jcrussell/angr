@@ -12183,6 +12183,50 @@ class TestNativeAccessSyscall:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFstatSyscall:
+    """angr-k3ol.3: native ``fstat`` looks up ``content_len`` via the
+    Rust ``FileSystem::fd_info(fd)`` and writes a per-arch
+    ``struct stat`` (AMD64 + ARM64 only) to the buffer. Mirrors
+    ``procedures/linux_kernel/fstat.py::run`` semantics with two
+    intentional divergences: ``st_mode`` is the concrete
+    ``S_IFREG | 0o755`` instead of a fresh ``BVS`` (the Python proc
+    mints one in ``state.posix.fstat_with_result``) and ``st_size``
+    is concrete (``content_len`` of the fd's backing buffer).
+
+    Unknown fd → ``-1`` (matches ``fstat_with_result``'s ``result=-1``
+    branch). Rust cargo tests in
+    ``native/angr/src/syscalls/file_path.rs`` pin the per-arch field
+    offsets and the symbolic/unmapped fallback paths; this test pins
+    cross-FFI dispatch (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_fstat_unknown_fd_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        # statbuf at 0x4000 — page is mapped by blank_state setup or the
+        # store would fault, but with an unknown fd the handler returns
+        # NEG_ONE before touching memory, so we do not need to map.
+        state.regs.rax = 5  # fstat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 99       # fd that was never opened
+        state.regs.rsi = 0x4000   # statbuf
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native fstat(5) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeConcurrencySyscalls:
     """angr-0hif.7: native ``futex`` / ``eventfd`` / ``eventfd2`` /
     ``epoll_create`` / ``epoll_create1`` / ``epoll_ctl`` / ``epoll_wait``

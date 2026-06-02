@@ -236,10 +236,16 @@ impl NativeSyscallRegistry {
         //   `FileSystem::known_paths` set populated by `open` /
         //   `openat` / `open_with_content`. Pre-populated Python
         //   `state.fs._files` entries are NOT mirrored — same trade-off
-        //   as the FD-allocating handlers. The companion `stat` (4),
-        //   `fstat` (5) syscalls still fall back to Python: they need
-        //   per-arch struct stat layouts (`state.posix.
-        //   fstat_with_result` — separate subtask under angr-k3ol).
+        //   as the FD-allocating handlers.
+        // fstat (5): native struct-stat write (angr-k3ol.3). Reads
+        //   content_len from FileSystem::fd_info(fd) and writes a
+        //   per-arch `struct stat` (AMD64 + ARM64 only — i386/ARM/MIPS32
+        //   use the legacy 32-bit struct stat and have no Python proc).
+        //   st_mode is the concrete S_IFREG|0o755 instead of a fresh
+        //   symbolic BVS (Python's `fstat_with_result` mints one). The
+        //   companion `stat` (4) syscall still falls back to Python
+        //   pending its open→fstat→close wrapper (separate subtask
+        //   under angr-k3ol).
         // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
         //   syscalls that fall through to syscall_stub (angr-0hif.5
         //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
@@ -269,6 +275,7 @@ impl NativeSyscallRegistry {
             (1, write::NativeWriteSyscall),
             (2, file_path::NativeOpenSyscall),
             (3, file_path::NativeCloseSyscall),
+            (5, file_path::NativeFstatSyscall),
             (6, file_path::NativeLstatSyscall),
             (9, mmap::NativeMmapSyscall),
             (10, mprotect::NativeMprotectSyscall),
@@ -574,6 +581,7 @@ impl NativeSyscallRegistry {
             (64, write::NativeWriteSyscall),
             (78, file_path::NativeReadlinkatSyscall),
             (79, file_path::NativeNewfstatatSyscall),
+            (80, file_path::NativeFstatSyscall),
             (93, exit::NativeExitSyscall),
             (94, exit::NativeExitSyscall),
             (98, concurrency::NativeFutexSyscall),
