@@ -1501,6 +1501,13 @@ impl SymContext {
     }
 
     /// Create a new solver context with Z3 and a custom timeout.
+    // Arc<Vec<RustBV/z3::ast::Bool>> for assumed_constraints_shared / z3_assertions_shared:
+    // the inner types are not Send/Sync (z3 AST handles, Python-backed RustBV), but the Arc
+    // is correct — fork() shares the constraint prefix across sibling SymContexts via
+    // Arc::clone for O(1) copy. The engine runs single-threaded under Python's GIL, so the
+    // missing Send/Sync is not a real constraint; switching to Rc would propagate non-Send
+    // through the SymContext API surface.
+    #[allow(clippy::arc_with_non_send_sync)]
     #[cfg(feature = "vex-engine-z3")]
     pub fn with_timeout(timeout_ms: u32) -> Self {
         // unsat_core disabled for performance — tracking booleans add
@@ -3627,6 +3634,12 @@ impl SymContext {
     ///   gets `None` (NOT `Arc::clone(parent.lineage)`). Cloning would
     ///   give the child a stale base — see the inline comment for the
     ///   baby-re chr() repro this prevents.
+    // Arc<Mutex<SharedLineageSolver>>: SharedLineageSolver wraps a z3::Solver (not Send/Sync),
+    // but the Arc is load-bearing — every sibling SymContext minted from a common fork shares
+    // the same Arc so cross-state lineage queries hit the same Z3 solver (see field doc on
+    // `lineage`). Engine runs single-threaded under Python's GIL; Rc would force the fork
+    // signature to surface non-Send, breaking the Arc<Mutex<...>> sharing contract.
+    #[allow(clippy::arc_with_non_send_sync)]
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;

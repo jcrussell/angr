@@ -863,12 +863,6 @@ impl RustBV {
         }
     }
 
-    /// Wrap this RustBV in an Arc for use as an operand.
-    #[inline]
-    pub fn into_arc(self) -> Arc<RustBV> {
-        Arc::new(self)
-    }
-
     /// Get the concrete value, panicking if symbolic.
     #[inline]
     pub fn to_u128(&self) -> u128 {
