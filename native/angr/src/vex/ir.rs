@@ -459,7 +459,7 @@ impl IRType {
 
     /// Get the size in bytes (rounded up).
     pub fn bytes(&self) -> u32 {
-        (self.bits() + 7) / 8
+        self.bits().div_ceil(8)
     }
 
     /// Convert to BitWidth if applicable.

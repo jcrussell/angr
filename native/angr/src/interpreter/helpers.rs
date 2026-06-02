@@ -49,7 +49,7 @@ pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec
 /// Convert a RustBV to bytes (little-endian).
 pub(super) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
     let width = bv.width();
-    let num_bytes = ((width + 7) / 8) as usize;
+    let num_bytes = width.div_ceil(8) as usize;
 
     if let Some(value) = bv.as_u128() {
         let mut bytes = vec![0u8; num_bytes];

@@ -43,7 +43,7 @@ impl<'a> VEXInterpreter<'a> {
 
             IRStmt::Put { offset, data } => {
                 let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                let size = ((value.width() + 7) / 8) as u32;
+                let size = value.width().div_ceil(8);
                 self.dispatch_reg_write_inspect(py, callbacks, *offset, size, &value);
                 self.registers.put(*offset, value);
                 self.mark_register_dirty(*offset);
@@ -65,7 +65,7 @@ impl<'a> VEXInterpreter<'a> {
                 let store_start = profile_start!(self);
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                let data_size = ((data_val.width() + 7) / 8) as usize;
+                let data_size = data_val.width().div_ceil(8) as usize;
                 if self.profiling_enabled {
                     self.stats.store_stmt_count += 1;
                 }
@@ -332,7 +332,7 @@ impl<'a> VEXInterpreter<'a> {
                             self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                         let data_val =
                             self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                        let data_size = ((data_val.width() + 7) / 8) as usize;
+                        let data_size = data_val.width().div_ceil(8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
@@ -359,7 +359,7 @@ impl<'a> VEXInterpreter<'a> {
                         self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                     let data_val =
                         self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                    let data_size = ((data_val.width() + 7) / 8) as usize;
+                    let data_size = data_val.width().div_ceil(8) as usize;
 
                     if let Some(addr_concrete) = addr_val.as_u64() {
                         // Load current value at address
@@ -450,7 +450,7 @@ impl<'a> VEXInterpreter<'a> {
                             self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                         let data_val =
                             self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-                        let data_size = ((data_val.width() + 7) / 8) as usize;
+                        let data_size = data_val.width().div_ceil(8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
@@ -1587,7 +1587,7 @@ impl<'a> VEXInterpreter<'a> {
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr_expr, &irsb.tyenv)?;
-        let data_size = ((data_bv.width() + 7) / 8) as usize;
+        let data_size = data_bv.width().div_ceil(8) as usize;
         if let Some(addr_concrete) = addr_val.as_u64() {
             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
             if callbacks.has_memory_store_symbolic_value() {

@@ -2345,7 +2345,7 @@ impl SymContext {
 
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            let byte_len = ((width + 7) / 8) as usize;
+            let byte_len = width.div_ceil(8) as usize;
             let mut result = vec![0u8; byte_len];
             let bytes = v.to_be_bytes();
             let offset = byte_len.saturating_sub(16);
@@ -2498,7 +2498,7 @@ impl SymContext {
 
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            let byte_len = ((width + 7) / 8) as usize;
+            let byte_len = width.div_ceil(8) as usize;
             let bytes = v.to_be_bytes();
             let result = if byte_len <= 16 {
                 bytes[16 - byte_len..].to_vec()
@@ -2587,7 +2587,7 @@ impl SymContext {
 
         while bits_remaining > 0 {
             let chunk_bits = std::cmp::min(bits_remaining, 64);
-            let chunk_bytes = ((chunk_bits + 7) / 8) as usize;
+            let chunk_bytes = chunk_bits.div_ceil(8) as usize;
             let mut val: u64 = 0;
             for i in 0..chunk_bytes {
                 if pos + i < byte_len {
@@ -2831,7 +2831,7 @@ impl SymContext {
             // differ in the comparison operator (bvsge vs bvuge).
             while lo < hi {
                 // Use ceiling division to avoid infinite loop when lo + 1 == hi
-                let mid = lo + (hi - lo + 1) / 2;
+                let mid = lo + (hi - lo).div_ceil(2);
 
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
@@ -2938,7 +2938,7 @@ impl SymContext {
             let mut lo: u128 = lo_seed;
             let mut hi: u128 = max_val;
             while lo < hi {
-                let mid = lo + (hi - lo + 1) / 2;
+                let mid = lo + (hi - lo).div_ceil(2);
                 solver.push();
                 let mid_ast = Self::make_bv_const(mid, width);
                 solver.assert(&ast.bvuge(&mid_ast));
@@ -3276,7 +3276,7 @@ impl SymContext {
         // Without Z3, can only evaluate concrete values
         let width = bv.width();
         bv.as_u128().map(|v| {
-            let byte_len = ((width + 7) / 8) as usize;
+            let byte_len = width.div_ceil(8) as usize;
             let bytes = v.to_be_bytes();
             if byte_len <= 16 {
                 bytes[16 - byte_len..].to_vec()
@@ -4374,7 +4374,7 @@ fn parse_wide_binary_low128(s: &str) -> Option<u128> {
 /// Parse a hex string to full bytes (big-endian).
 #[cfg(feature = "vex-engine-z3")]
 fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
-    let byte_len = ((width + 7) / 8) as usize;
+    let byte_len = width.div_ceil(8) as usize;
     let mut result = vec![0u8; byte_len];
 
     // Pad hex string to even length
@@ -4404,7 +4404,7 @@ fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
 /// Parse a binary string to full bytes (big-endian).
 #[cfg(feature = "vex-engine-z3")]
 fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
-    let byte_len = ((width + 7) / 8) as usize;
+    let byte_len = width.div_ceil(8) as usize;
     let mut result = vec![0u8; byte_len];
 
     // Parse bits from right to left
@@ -4436,7 +4436,7 @@ fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
 fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     // For small values, parse and convert
     if let Ok(v) = s.parse::<u128>() {
-        let byte_len = ((width + 7) / 8) as usize;
+        let byte_len = width.div_ceil(8) as usize;
         let mut result = vec![0u8; byte_len];
         let bytes = v.to_be_bytes();
         let offset = byte_len.saturating_sub(16);
