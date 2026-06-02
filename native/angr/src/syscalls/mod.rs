@@ -225,11 +225,17 @@ impl NativeSyscallRegistry {
         // lstat (6), readlink (89), newfstatat (262), readlinkat (267),
         //   faccessat (269): file-path syscalls without a Python
         //   SimProcedure (angr-0hif.1, symbolic-return subset). Mirror
-        //   syscall_stub. The companion path-aware syscalls (open, openat,
-        //   close, stat, fstat, access) all have Python procs that touch
-        //   state.posix.fd / state.fs and are intentionally NOT covered
-        //   here — they fall back to Python until the FD/FS plumbing is
-        //   ported into RustSimState.
+        //   syscall_stub.
+        // open (2), openat (257), close (3): FD-allocating syscalls
+        //   (angr-k3ol.1). Mutate `RustSimState::file_system()` directly,
+        //   mirroring the existing `procedures/fileops::NativeOpen` /
+        //   `NativeClose` libc procs. Python `state.posix.fd` / `state.fs`
+        //   are NOT mirrored — same trade-off as the libc procs and
+        //   `dup`/`dup2`. The companion `stat` (4), `fstat` (5),
+        //   `access` (21) syscalls still fall back to Python: stat/fstat
+        //   need per-arch struct stat layouts (`state.posix.
+        //   fstat_with_result`) and access needs `state.fs.get` plumbing
+        //   into Rust state (separate subtasks under angr-k3ol).
         // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
         //   syscalls that fall through to syscall_stub (angr-0hif.5
         //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
@@ -257,6 +263,8 @@ impl NativeSyscallRegistry {
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
+            (2, file_path::NativeOpenSyscall),
+            (3, file_path::NativeCloseSyscall),
             (6, file_path::NativeLstatSyscall),
             (9, mmap::NativeMmapSyscall),
             (10, mprotect::NativeMprotectSyscall),
@@ -309,6 +317,7 @@ impl NativeSyscallRegistry {
             (232, concurrency::NativeEpollWaitSyscall),
             (233, concurrency::NativeEpollCtlSyscall),
             (234, signals::NativeTgkillSyscall),
+            (257, file_path::NativeOpenatSyscall),
             (258, directory::NativeMkdiratSyscall),
             (262, file_path::NativeNewfstatatSyscall),
             (263, directory::NativeUnlinkatSyscall),
@@ -353,6 +362,8 @@ impl NativeSyscallRegistry {
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
+            (5, file_path::NativeOpenSyscall),
+            (6, file_path::NativeCloseSyscall),
             (10, directory::NativeUnlinkSyscall),
             (12, directory::NativeChdirSyscall),
             (13, sim_time::NativeTimeSyscall),
@@ -412,6 +423,7 @@ impl NativeSyscallRegistry {
             (256, concurrency::NativeEpollWaitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
             (270, signals::NativeTgkillSyscall),
+            (295, file_path::NativeOpenatSyscall),
             (296, directory::NativeMkdiratSyscall),
             (301, directory::NativeUnlinkatSyscall),
             (302, directory::NativeRenameatSyscall),
@@ -434,6 +446,8 @@ impl NativeSyscallRegistry {
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
+            (5, file_path::NativeOpenSyscall),
+            (6, file_path::NativeCloseSyscall),
             (10, directory::NativeUnlinkSyscall),
             (12, directory::NativeChdirSyscall),
             (13, sim_time::NativeTimeSyscall),
@@ -493,6 +507,7 @@ impl NativeSyscallRegistry {
             (252, concurrency::NativeEpollWaitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
             (268, signals::NativeTgkillSyscall),
+            (322, file_path::NativeOpenatSyscall),
             (323, directory::NativeMkdiratSyscall),
             (328, directory::NativeUnlinkatSyscall),
             (329, directory::NativeRenameatSyscall),
@@ -545,6 +560,8 @@ impl NativeSyscallRegistry {
             (48, file_path::NativeFaccessatSyscall),
             (49, directory::NativeChdirSyscall),
             (50, directory::NativeFchdirSyscall),
+            (56, file_path::NativeOpenatSyscall),
+            (57, file_path::NativeCloseSyscall),
             (59, file_descriptor::NativePipe2Syscall),
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
@@ -592,6 +609,8 @@ impl NativeSyscallRegistry {
             (4001, exit::NativeExitSyscall),
             (4003, read::NativeReadSyscall),
             (4004, write::NativeWriteSyscall),
+            (4005, file_path::NativeOpenSyscall),
+            (4006, file_path::NativeCloseSyscall),
             (4010, directory::NativeUnlinkSyscall),
             (4012, directory::NativeChdirSyscall),
             (4013, sim_time::NativeTimeSyscall),
@@ -645,6 +664,7 @@ impl NativeSyscallRegistry {
             (4266, signals::NativeTgkillSyscall),
             // newfstatat absent on MIPS32 O32 — uses fstatat64 (4293).
             // renameat2 absent in angr's MIPS-O32 table.
+            (4288, file_path::NativeOpenatSyscall),
             (4289, directory::NativeMkdiratSyscall),
             (4294, directory::NativeUnlinkatSyscall),
             (4295, directory::NativeRenameatSyscall),

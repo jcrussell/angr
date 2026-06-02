@@ -12042,10 +12042,11 @@ class TestNativeFilePathSyscalls:
     which returns a fresh ``Unconstrained`` BV. The native handlers
     mirror that via ``SyscallOutcome::ContinueSymbolic``.
 
-    The companion path-aware file syscalls (``open`` / ``openat`` /
-    ``close`` / ``stat`` / ``fstat`` / ``access``) all have Python
-    ``SimProcedure`` impls that touch ``state.posix.fd`` / ``state.fs``
-    and are intentionally NOT covered yet — they fall back to Python.
+    The FD-allocating sibling cohort (``open`` / ``openat`` / ``close``)
+    is now native via ``angr-k3ol.1`` and exercised by
+    ``TestNativeFdAllocatingSyscalls`` below. ``stat`` / ``fstat`` /
+    ``access`` still fall back to Python (separate subtasks under
+    angr-k3ol).
 
     The Rust cargo unit tests in ``native/angr/src/syscalls/file_path.rs``
     pin the per-handler invariants; this is the cross-the-FFI dispatch
@@ -12072,6 +12073,60 @@ class TestNativeFilePathSyscalls:
         state.regs.rax = syscall_num
         for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
             setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFdAllocatingSyscalls:
+    """angr-k3ol.1: native ``open`` / ``openat`` / ``close`` allocate /
+    release FDs in ``RustSimState::file_system()``. They mirror the
+    existing ``procedures/fileops::NativeOpen`` / ``NativeClose`` libc
+    procs and do NOT mirror Python's ``state.posix.fd`` / ``state.fs``
+    — same trade-off as ``dup``/``dup2``. The Rust cargo tests in
+    ``native/angr/src/syscalls/file_path.rs`` pin per-handler semantics
+    (fresh fd, NEG_ONE for empty/relative-without-AT_FDCWD paths, fd
+    book-keeping for close); this is the cross-the-FFI dispatch check
+    (``syscall_python_fallback_count`` stays 0 for open / openat /
+    close on amd64).
+
+    The companion ``stat`` (4) / ``fstat`` (5) / ``access`` (21)
+    syscalls still fall back to Python — separate subtasks under
+    angr-k3ol.
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label,setup_args",
+        [
+            # open: rdi = path_addr, rsi = O_RDONLY, rdx = mode
+            (2, "open", {"rdi": 0x4000, "rsi": 0, "rdx": 0}),
+            # openat: rdi = AT_FDCWD (-100 as u32), rsi = path_addr, rdx = O_RDONLY
+            (257, "openat", {"rdi": 0xFFFFFFFFFFFFFF9C, "rsi": 0x4000, "rdx": 0, "r10": 0}),
+            # close: rdi = fd (use 0 = stdin which is pre-open)
+            (3, "close", {"rdi": 0}),
+        ],
+    )
+    def test_fd_alloc_syscall_dispatches_natively(self, syscall_num, label, setup_args):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/tmp/k3ol\x00")
+        state.regs.rax = syscall_num
+        # Zero out then apply the setup args.
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        for reg, val in setup_args.items():
+            setattr(state.regs, reg, val)
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
