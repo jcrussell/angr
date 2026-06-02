@@ -94,50 +94,60 @@ need the full ``RustSimulationManagerProxy`` wrapper. Use the full
 needs full ``SimState`` plugins (``posix.dumps(0)``, ``simgr.explore``
 seeding, claripy AST round-trips).
 
-RustStateProxy read-only contract
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+RustStateProxy write-through contract
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``RustStateProxy`` is a **read-only** view. Calling
-``proxy.memory.store(addr, data)`` or
-``proxy.regs.<name> = value`` from inside a find/avoid predicate or a
-``state.inspect`` breakpoint raises ``NotImplementedError`` — the proxy
-delegates reads to Rust but does not push writes back. Constraints are
-the one exception: ``proxy.solver.add(...)`` writes through to a forked
-Rust solver via the ``_rust_add`` interceptor in
-``rust_callback_dispatch.py``.
+``RustStateProxy`` is a **live, mutable view**. Writes go straight to
+the Rust state — there is no Python-side shadow store. Reads after a
+write observe the new value, both through the proxy and through the
+underlying Rust engine when the next step executes.
 
-The asymmetry is by design. Proxy-backed register/memory writes were
-evaluated end-to-end and explicitly deferred in
-:doc:`rust_proxy_writes_design` (Option A): the measured per-callback
-diff-and-push cost is 1–14 ms, the aggregate is at most ~7 % of wall
-time on the fastest bench and well under 1 % on the rest, and the
-plugin-substitution refactor needed to write-through cleanly carries
-the same silent-divergence risk that
-``avoid-state-copy-optimization`` flagged on the diff path.
+Supported writes (all immediate, no queueing):
 
-Workarounds:
+* ``proxy.regs.<name> = value`` — forwards to
+  ``set_state_register_symbolic_ast``. ``value`` may be a claripy AST
+  (concrete or symbolic), a Python ``int``, or ``bytes``. Ints/bytes
+  are wrapped in a ``BVV`` at the register's native width.
+* ``proxy.memory.store(addr, data, endness=None, size=None)`` —
+  forwards to ``set_state_memory_concrete`` (concrete data) or
+  ``set_state_memory_ast`` (symbolic data). ``addr`` must be concrete
+  (``int`` or concrete claripy AST). Symbolic-data writes route through
+  the shared symbol cache so reads return the same Z3 AST that Rust is
+  tracking.
+* ``proxy.solver.add(...)`` — forwards constraints to the forked Rust
+  solver context (unchanged from the read-only era).
 
-* **Mutate the seed state before exploration.** Write to the
-  ``SimState`` you pass to ``RustExplorationManager`` (or
-  ``proj.factory.simulation_manager(use_rust_engine=True)``) before
-  ``run``/``explore`` — those writes land in Rust at seed time.
-* **Use a SimProcedure-style hook** (``proj.hook(addr, fn)``) when you
-  need an in-exploration mutation at a specific address. SimProcedure
-  callbacks receive a **full** ``SimState`` (not a proxy), and
-  ``state.memory.store(...)`` / ``state.regs.<name> = ...`` are synced
-  back to the Rust state via the diff-and-push path in
-  ``rust_state_sync.py`` after the callback returns.
-* **Drop back to the Python engine** for analyses whose find/avoid
-  predicates fundamentally need to mutate state. Omit
-  ``use_rust_engine=True`` and the standard angr predicate API
-  applies.
+Refused writes:
 
-Read-only paths the proxy supports — ``proxy.regs.<name>`` /
-``proxy.memory.load(addr, size)`` / ``proxy.solver.eval(...)`` /
-``proxy.solver.add(...)`` — are stable. The reopen condition for
-proxy-write support is the same as for the other deferred
-write-through items in :doc:`rust_proxy_writes_design` (callback
-density 10K+/bench or an unblocking dependency from ``angr-2k64``).
+* ``proxy.memory.store(symbolic_addr, ...)`` raises
+  ``NotImplementedError``. The lazy Multi-cell symbolic-address path
+  exists for the in-engine store but requires solver coordination the
+  proxy lacks. Use a SimProcedure-style hook (``proj.hook(addr, fn)``)
+  for in-exploration symbolic-address writes — SimProcedure callbacks
+  receive a full ``SimState`` and writes are synced back via the lazy
+  Multi-cell path.
+
+Implementation notes:
+
+* Register writes update the per-state ``RustRegisterProxy._cache``
+  after the FFI call so a subsequent ``proxy.regs.<name>`` read returns
+  the AST that was written, without an FFI round-trip.
+* Memory writes do not maintain a Python cache; reads always re-query
+  Rust. This keeps load semantics aligned with the Rust engine's
+  page-load behavior (a write of N bytes at ``addr`` may overlap a
+  later N′-byte read at ``addr ± k``).
+* Symbolic register and memory writes round-trip the claripy AST
+  through ``claripy_to_rustbv`` so the symbol is registered in the
+  shared cache. The inverse ``get_state_register_ast`` /
+  ``memory.load`` returns the same AST identity, which is what makes
+  later ``proxy.solver.add(reg == K)`` constraints land on the live
+  symbol Rust is tracking.
+
+If the diff-and-push cost surfaced in earlier benchmarks becomes a
+concern again, the queueing strategy in the ``angr-j28e`` design
+(flush only on actually-written proxies at the next safe boundary) is
+available as a follow-up optimization. The fast-tier benchmark gate
+catches any regression > 15 %.
 
 Architecture
 ------------

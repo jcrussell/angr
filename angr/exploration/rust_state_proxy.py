@@ -246,10 +246,14 @@ class RustRegisterProxy:
     """
 
     def __init__(self, rust_mgr, state_id, arch):
-        self._mgr = rust_mgr
-        self._state_id = state_id
-        self._arch = arch
-        self._cache = {}  # name -> claripy BVV/BVS
+        # Use object.__setattr__ to bypass our own __setattr__ during init
+        # (which routes name= writes through to Rust). Without this, the
+        # first attribute assignment below would try to look up self._mgr
+        # before it exists.
+        object.__setattr__(self, "_mgr", rust_mgr)
+        object.__setattr__(self, "_state_id", state_id)
+        object.__setattr__(self, "_arch", arch)
+        object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
 
     def prefetch(self, names):
         """Batch-fetch multiple registers in one FFI call and cache them."""
@@ -337,6 +341,57 @@ class RustRegisterProxy:
             return size_bytes * 8
         return self._arch.bits
 
+    def __setattr__(self, name, value):
+        """Write-through register assignment (angr-j28e).
+
+        ``proxy.regs.<name> = value`` from a state.inspect callback,
+        find/avoid predicate, or external user code is forwarded immediately
+        to the Rust state via ``set_state_register_symbolic_ast``. Rust is
+        the single source of truth — there is no Python-side shadow store.
+
+        ``value`` may be a claripy AST (BVV/BVS/any expression), an int, or
+        ``bytes``. Ints/bytes are wrapped in a BVV at the register's native
+        width before forwarding. After a successful write, the proxy cache
+        is updated so the next ``proxy.regs.<name>`` read returns the new
+        value without an FFI round-trip.
+
+        Underscore-prefixed names (``_mgr``, ``_state_id``, ``_cache``,
+        ``_arch``) and Python protocol attributes are stored as ordinary
+        Python attributes via ``object.__setattr__`` — only public register
+        names route to Rust.
+        """
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        width = self._get_register_width(name)
+        ast = self._coerce_to_ast(value, width)
+        self._mgr.set_state_register_symbolic_ast(self._state_id, name, ast)
+        # Keep the cache coherent so a subsequent __getattr__ returns the
+        # AST we just wrote (matches the post-write read invariant the
+        # caller would otherwise see if no cache existed).
+        self._cache[name] = ast
+
+    @staticmethod
+    def _coerce_to_ast(value, width):
+        """Coerce a Python int / bytes / claripy AST to a claripy AST.
+
+        The FFI shim wants a claripy AST so it can route through
+        ``claripy_to_rustbv`` and register the symbol in the shared cache.
+        Plain ints and bytes are wrapped in a ``BVV`` at the requested
+        width — same convention as ``state.regs.<name> = 0x41`` on a
+        regular SimState.
+        """
+        if isinstance(value, claripy.ast.Base):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            return claripy.BVV(bytes(value), width)
+        if isinstance(value, int):
+            return claripy.BVV(value, width)
+        raise TypeError(
+            f"register write expects claripy AST, int, or bytes; "
+            f"got {type(value).__name__}"
+        )
+
     def load(self, reg_name_or_offset, size=None):
         """Load register by name or by ``(offset, size)`` tuple.
 
@@ -417,39 +472,90 @@ class RustMemoryProxy:
             val = int.from_bytes(data, "big")
         return claripy.BVV(val, size * 8)
 
-    def store(self, addr, data, **kwargs):
-        """Store not supported on proxy (read-only view).
+    def store(self, addr, data, endness=None, **kwargs):
+        """Write-through memory store to the Rust state (angr-j28e).
 
-        ``RustStateProxy`` is the lightweight view used by find/avoid
-        predicates and ``state.inspect`` breakpoints — paths where
-        materializing a full ``SimState`` per state would dominate cost.
-        Mutating memory through the proxy was evaluated as the
-        ``set_state_memory`` write-through path in
-        ``docs/advanced-topics/rust_proxy_writes_design.rst`` and
-        explicitly deferred (high plugin-contract risk, <=7% wall savings
-        on the worst-affected bench).
+        ``proxy.memory.store(addr, value)`` from a state.inspect callback,
+        find/avoid predicate, or external user code is forwarded immediately
+        to the Rust state. Rust is the single source of truth — there is no
+        Python-side shadow store.
 
-        Workarounds (see ``docs/advanced-topics/rust_engine.rst``
-        "RustStateProxy read-only contract"):
+        Address handling:
 
-        * To mutate memory before exploration: write to the seed
-          ``SimState`` via ``state.memory.store(...)`` before adding it
-          to the manager.
-        * To mutate memory at an address during exploration: register a
-          SimProcedure-style hook (``proj.hook(addr, fn)``). SimProcedure
-          callbacks receive a full ``SimState`` and ``memory.store``
-          writes are synced back to Rust via the diff-and-push path at
-          ``rust_state_sync.py``.
-        * For analyses that fundamentally need mutating predicates,
-          drop back to the Python engine
-          (omit ``use_rust_engine=True``).
+        * Concrete ``int`` or concrete claripy AST → direct FFI store.
+        * Symbolic claripy AST → ``NotImplementedError``. Symbolic-address
+          writes from a callback would need the lazy Multi-cell path
+          (which exists for the in-engine store but requires solver
+          coordination that the proxy lacks); the symmetric refusal here
+          matches how ``solver.add`` does not accept symbolic-AST
+          constraints with no boolean structure.
+
+        Value handling:
+
+        * ``int`` → wrapped in a ``BVV`` at ``size * 8`` bits (caller must
+          pass ``size``).
+        * ``bytes`` / ``bytearray`` → wrapped at ``len(value) * 8`` bits.
+        * concrete claripy ``BVV`` → fast path through the concrete-bytes
+          FFI shim.
+        * symbolic claripy AST → routes through ``set_state_memory_ast``
+          so the symbol is registered in the shared cache.
+
+        Endianness defaults to ``Iend_BE`` (matches angr's ``memory.store``
+        default for raw bytes); pass ``endness='Iend_LE'`` to mirror VEX's
+        little-endian convention.
         """
-        raise NotImplementedError(
-            "memory store not supported on RustStateProxy (read-only). "
-            "Workaround: use a SimProcedure-style hook (proj.hook(addr, fn)) "
-            "for in-exploration writes, or mutate the seed state before "
-            "adding it to the manager. See docs/advanced-topics/"
-            "rust_engine.rst 'RustStateProxy read-only contract' for details."
+        if isinstance(addr, claripy.ast.Base):
+            if addr.concrete:
+                addr = addr.concrete_value
+            else:
+                raise NotImplementedError(
+                    "symbolic-address memory store is not supported on "
+                    "RustStateProxy. Workaround: use a SimProcedure-style hook "
+                    "(proj.hook(addr, fn)) — SimProcedure callbacks receive "
+                    "a full SimState and writes are synced back via the "
+                    "lazy Multi-cell path. See docs/advanced-topics/"
+                    "rust_engine.rst for details."
+                )
+        size = kwargs.pop('size', None)
+        if endness is None:
+            endness = "Iend_BE"
+
+        if isinstance(data, claripy.ast.Base):
+            width_bits = data.length if hasattr(data, 'length') else data.size()
+            if data.concrete:
+                value = data.concrete_value
+                nbytes = width_bits // 8
+                byteorder = "little" if endness == "Iend_LE" else "big"
+                payload = value.to_bytes(nbytes, byteorder)
+                self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+                return
+            # Symbolic AST — route through the AST FFI so the symbol is
+            # registered in the shared cache. Endianness on a symbolic AST
+            # is the caller's responsibility (claripy ASTs don't carry an
+            # endianness flag); we forward verbatim.
+            self._mgr.set_state_memory_ast(self._state_id, addr, data)
+            return
+
+        if isinstance(data, (bytes, bytearray)):
+            payload = bytes(data)
+            if endness == "Iend_LE":
+                payload = payload[::-1]
+            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+            return
+
+        if isinstance(data, int):
+            if size is None:
+                raise TypeError(
+                    "memory store with an int value requires size=N (bytes)"
+                )
+            byteorder = "little" if endness == "Iend_LE" else "big"
+            payload = data.to_bytes(size, byteorder)
+            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+            return
+
+        raise TypeError(
+            f"memory store expects claripy AST, int, or bytes; "
+            f"got {type(data).__name__}"
         )
 
 

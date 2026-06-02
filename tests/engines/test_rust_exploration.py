@@ -3192,30 +3192,157 @@ class TestProxyLiskovGaps:
         with pytest.raises(claripy.errors.UnsatError):
             proxy.memory.load(addr_sym, 4)
 
-    def test_memory_store_raises_with_documented_workaround(self, fauxware_project):
-        """``proxy.memory.store`` raises NotImplementedError and the message
-        names the documented workaround (angr-nt4q).
+    def test_memory_store_symbolic_addr_raises_with_documented_workaround(
+        self, fauxware_project
+    ):
+        """``proxy.memory.store`` with a symbolic address raises
+        NotImplementedError and the message names the documented workaround
+        (angr-j28e).
 
-        Proxy writes were evaluated in rust_proxy_writes_design.rst and
-        deferred; instead of staying silent the proxy must point users at
-        the SimProcedure-hook path that DOES write through. Pattern matches
-        the loud-error model from angr-osuu (state.inspect unsupported
-        events): the error message is part of the documented API.
+        Concrete-address writes are write-through (see
+        TestProxyWriteThrough); symbolic-address writes require solver
+        coordination the proxy lacks, so we refuse loudly and route users
+        to the SimProcedure-hook path. Pattern matches the loud-error
+        model from angr-osuu (state.inspect unsupported events): the
+        error message is part of the documented API.
         """
+        import claripy
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         proxy = mgr.proxy.active[0]
 
+        sym_addr = claripy.BVS("write_addr_sym", 64)
         with pytest.raises(NotImplementedError) as exc_info:
-            proxy.memory.store(0x1000, b"\x90\x90")
+            proxy.memory.store(sym_addr, b"\x90\x90")
 
         msg = str(exc_info.value)
         # The error must name the SimProcedure-hook workaround (the path
         # users redirect to) and reference the documentation entry.
         assert "proj.hook" in msg, f"workaround not surfaced in error: {msg}"
         assert "rust_engine.rst" in msg, f"doc pointer missing: {msg}"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestProxyWriteThrough:
+    """angr-j28e: RustStateProxy register and memory writes must write through
+    to the Rust state (Rust is the single source of truth — no Python-side
+    shadow store). Reads after a write observe the new value, both via the
+    proxy and via the underlying RustSimState.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        """Initialize the shared Z3 context so symbolic-AST writes round-trip
+        through the shared cache. Required for the symbolic-write tests below;
+        a concrete-only test would not need this, but we want one setup site
+        for both halves of the class.
+        """
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
+    def test_register_write_concrete_int(self, fauxware_project):
+        """proxy.regs.<name> = <int> writes through to Rust and re-reads
+        return the BVV-wrapped value."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        proxy.regs.rax = 0xDEADBEEF
+        rax = proxy.regs.rax
+        assert rax.size() == 64
+        assert rax.concrete and rax.concrete_value == 0xDEADBEEF
+
+        # Sanity: the underlying Rust state actually holds the new value
+        # (not a Python-only stash on the proxy cache).
+        sid = proxy.state_id
+        assert mgr._rust_mgr.get_state_register(sid, "rax") == 0xDEADBEEF
+
+    def test_register_write_concrete_bvv(self, fauxware_project):
+        """proxy.regs.<name> = <BVV> writes through (BVV path, no int wrap)."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        proxy.regs.rbx = claripy.BVV(0x4141414141414141, 64)
+        rbx = proxy.regs.rbx
+        assert rbx.concrete and rbx.concrete_value == 0x4141414141414141
+        sid = proxy.state_id
+        assert mgr._rust_mgr.get_state_register(sid, "rbx") == 0x4141414141414141
+
+    def test_register_write_symbolic_round_trip(self, fauxware_project):
+        """proxy.regs.<name> = <BVS> registers the symbol in the shared
+        cache so the subsequent constraint-add path narrows the live
+        symbol (angr-4pm1 invariant carried over for the write path)."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        sym = claripy.BVS("write_sym_rcx", 64)
+        proxy.regs.rcx = sym
+        rcx = proxy.regs.rcx
+        assert rcx.symbolic, "rcx must read back as symbolic after a BVS write"
+        # Constrain the symbol and evaluate — proves the AST identity is
+        # preserved end-to-end (write → cache → solver fork).
+        proxy.solver.add(rcx == 0x55)
+        assert proxy.solver.eval(rcx) == 0x55
+
+    def test_memory_write_concrete_bytes_round_trips(self, fauxware_project):
+        """proxy.memory.store(int_addr, bytes) writes through and the next
+        proxy.memory.load returns the same bytes."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        # Pick a writable mapped address inside the binary's text/data
+        # range that the entry_state already touches — fauxware's entry
+        # point sits well inside the .text page.
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, b"\xab\xcd\xef\x12")
+        loaded = proxy.memory.load(addr, 4)
+        assert loaded.concrete_value == 0xABCDEF12
+
+    def test_memory_write_int_value_requires_size(self, fauxware_project):
+        """proxy.memory.store(addr, 0xCAFE) without size= is a programmer
+        error — store mirrors angr's API where ``state.memory.store(a, int)``
+        always carries an explicit size."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(TypeError):
+            proxy.memory.store(fauxware_project.entry, 0xCAFE)
+
+    def test_memory_write_int_value_with_size(self, fauxware_project):
+        """proxy.memory.store(addr, int, size=N) writes N bytes big-endian
+        by default; little-endian via endness='Iend_LE'."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, 0xCAFEBABE, size=4)
+        # BE default: high byte 0xCA at the lowest address.
+        assert proxy.memory.load(addr, 4).concrete_value == 0xCAFEBABE
+        # Now overwrite with little-endian: 0x12345678 LE = 78 56 34 12
+        proxy.memory.store(addr, 0x12345678, size=4, endness="Iend_LE")
+        # memory.load default is BE so we should read the byte-swapped value
+        assert proxy.memory.load(addr, 4).concrete_value == 0x78563412
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

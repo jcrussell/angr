@@ -654,6 +654,56 @@ impl RustExplorationManager {
         })
     }
 
+    /// Concrete-address concrete-value memory store on `state_id`
+    /// (angr-j28e write-through). Mirrors `_set_pending_memory` for an
+    /// arbitrary state. Used by the Python-side `RustMemoryProxy.store`
+    /// when a hook callback or `state.inspect` user code mutates memory
+    /// through the proxy with a concrete address + concrete bytes.
+    pub(crate) fn _set_state_memory_concrete(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let width = (data.len() * 8) as u32;
+            let mut value: u128 = 0;
+            for (i, &b) in data.iter().enumerate() {
+                value |= (b as u128) << (i * 8);
+            }
+            let bv = crate::symbolic::RustBV::concrete(value, width);
+            state
+                .memory_store(addr, bv)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
+    }
+
+    /// Concrete-address symbolic-value memory store on `state_id`
+    /// (angr-j28e write-through). The value is supplied as a claripy AST;
+    /// routes through `claripy_to_rustbv` so the symbol is registered in
+    /// the shared cache and downstream reads see the same Z3 AST.
+    pub(crate) fn _set_state_memory_ast(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bv = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx_ref: &SymContext = &*sym_ctx;
+                claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
+                    PyValueError::new_err(format!("AST conversion failed: {}", e))
+                })?
+            };
+            state
+                .memory_store(addr, bv)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
+    }
+
     /// Phase 1.4 (angr-5zw8): perform a symbolic-address store on `state_id`
     /// via the lazy Multi-cell path. Mirrors the eager fallback in
     /// `_cb_memory_store_symbolic_full` but installs Multi alternatives at

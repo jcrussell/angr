@@ -1857,6 +1857,32 @@ impl RustExplorationManager {
         self._get_state_memory(state_id, addr, size)
     }
 
+    /// Set memory on a state from concrete bytes (angr-j28e write-through).
+    /// See [`state_api::_set_state_memory_concrete`] for the body.
+    pub fn set_state_memory_concrete(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self._set_state_memory_concrete(state_id, addr, data)
+    }
+
+    /// Set memory on a state from a claripy AST (angr-j28e write-through).
+    /// Used when the value is symbolic (e.g., a BVS or expression). The
+    /// address is concrete; symbolic addresses are not supported on the
+    /// proxy write path — callers fall back to the Python engine.
+    /// See [`state_api::_set_state_memory_ast`] for the body.
+    pub fn set_state_memory_ast(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self._set_state_memory_ast(py, state_id, addr, ast)
+    }
+
     /// Phase 1.4 (angr-5zw8): route a symbolic-address store through the
     /// Multi-cell lazy path on the given state. Used by
     /// `_cb_memory_store_symbolic_full` when the address AST carries a

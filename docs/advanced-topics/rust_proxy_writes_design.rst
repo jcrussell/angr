@@ -1,19 +1,33 @@
 Rust engine: proxy-backed SimState writes — design comparison
 =============================================================
 
+.. note::
+
+   **Status: partially superseded (angr-j28e, 2026-06-02).**
+
+   ``RustStateProxy`` writes (``proxy.regs.<name> = value`` and
+   ``proxy.memory.store(addr, data)``) are now implemented as direct
+   write-through to Rust — the read-only contract this document
+   compared against is no longer current. See
+   :doc:`rust_engine` "RustStateProxy write-through contract" for the
+   shipped behavior.
+
+   The diff-and-push path described below still governs the
+   **SimProcedure callback boundary** (Python full ``SimState``
+   mutates → Rust syncs back on return). That part of the document
+   is current. The "proposed proxy-plugin design" section is now
+   historical reading — the proxy uses an immediate write-through
+   model, not the queued-mutation plugin substitution this doc
+   compared against.
+
 This document is the design-phase deliverable for the parking bead
 ``angr-g7ug`` ("Proxy-backed SimState writes — eliminate
-_compute_register_changes diff-and-push"). It does **not** describe
-shipped code — the engine currently uses the diff-and-push path
-documented below. The measured sync-back numbers were captured on
-this machine via ``run_single.py --dump-counters`` at HEAD
-``5ad385aef``.
+_compute_register_changes diff-and-push"). The measured sync-back
+numbers were captured on this machine via
+``run_single.py --dump-counters`` at HEAD ``5ad385aef``.
 
 Audience: contributors deciding whether to replace the existing
 SimProcedure callback boundary with a proxy-plugin design.
-
-Status: **proposed, not implemented**. The recommendation feeds the
-GO/NOGO decision for the parent bead.
 
 
 Why this work
