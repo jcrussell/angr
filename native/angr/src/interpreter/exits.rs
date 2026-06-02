@@ -184,8 +184,6 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Simple expression evaluation (no callbacks, for already-evaluated temps).
-
     /// Handle an exit (update PC, return result).
     pub(super) fn handle_exit(&mut self, target: u64, jumpkind: JumpKind) -> BlockResult {
         self.set_pc(target);

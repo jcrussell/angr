@@ -291,7 +291,7 @@ impl RustExplorationManager {
 
             let claripy_mod = py.import("claripy")?;
 
-            for (_condition_id, rustbv) in &pending.stored_conditions {
+            for rustbv in pending.stored_conditions.values() {
                 match rustbv_to_claripy(py, rustbv, &claripy_mod) {
                     Ok(ast) => {
                         result.push(ast);
@@ -310,7 +310,7 @@ impl RustExplorationManager {
     pub(crate) fn _get_active_handle_ids(&self) -> Vec<u64> {
         let mut ids = Vec::new();
         if let Some(ref pending) = self.pending_callback {
-            for (id, _) in &pending.stored_conditions {
+            for id in pending.stored_conditions.keys() {
                 ids.push(*id);
             }
             for fork in &pending.deferred_forks {

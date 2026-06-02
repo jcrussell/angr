@@ -1575,8 +1575,6 @@ impl<'a> VEXInterpreter<'a> {
         self.symbolic_ip_at_exit.take()
     }
 
-    /// Run the execution loop until an event requires Python handling.
-
     /// Fork the interpreter state.
     pub fn fork(&self) -> VEXInterpreter<'a> {
         // Clone the calling convention based on its type

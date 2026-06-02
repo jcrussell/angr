@@ -225,7 +225,7 @@ fn pack_cpuid_result(vals: &CpuidValues) -> u64 {
 
 fn handle_cpuid_baseline(args: &[u64]) -> Option<DirtyHelperResult> {
     // Args: (eax_in)
-    let leaf = args.get(0).copied().unwrap_or(0) as u32;
+    let leaf = args.first().copied().unwrap_or(0) as u32;
     let vals = get_cpuid_values(leaf, 0);
     Some(DirtyHelperResult::with_return(pack_cpuid_result(&vals)))
 }

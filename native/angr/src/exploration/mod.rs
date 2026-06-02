@@ -58,7 +58,7 @@ use self::stepping::StepError;
 
 // Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
 thread_local! {
-    static STEPPING_STATE_ID: Cell<Option<u64>> = Cell::new(None);
+    static STEPPING_STATE_ID: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// Get the current stepping state ID (safe to call from callbacks).
@@ -2186,7 +2186,7 @@ impl RustExplorationManager {
         let mut walk = crate::symbolic::ConstraintSharingWalk::new();
         let mut states_analyzed: u64 = 0;
         let mut constraints_analyzed: u64 = 0;
-        for (_name, stash) in self.sm.stashes() {
+        for stash in self.sm.stashes().values() {
             for state in stash.iter() {
                 let ctx = state.solver().borrow();
                 let n_constraints = ctx.assumed_constraint_count();

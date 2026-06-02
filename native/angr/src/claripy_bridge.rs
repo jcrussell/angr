@@ -1724,7 +1724,7 @@ fn rustbv_to_claripy_memo(
                     let width = bv.width();
 
                     // If operand is concrete, compute actual result
-                    if let Some(operand) = operands.get(0)
+                    if let Some(operand) = operands.first()
                         && let Some(concrete_val) = operand.as_u128()
                     {
                         let result = match op {

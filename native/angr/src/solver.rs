@@ -305,20 +305,16 @@ impl RustSolverContext {
         if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
             let width = bv.width();
             if width <= 128 {
-                match ctx.eval(&bv) {
-                    Some(v) => return Ok(Some(v.into_pyobject(py)?.into())),
-                    None => {} // fall through to Z3 AST pointer path
+                if let Some(v) = ctx.eval(&bv) {
+                    return Ok(Some(v.into_pyobject(py)?.into()));
                 }
-            } else {
-                match ctx.eval_wide(&bv) {
-                    Some(bytes) => {
-                        let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
-                        let int_class = py.get_type::<pyo3::types::PyInt>();
-                        let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
-                        return Ok(Some(py_int.into()));
-                    }
-                    None => {} // fall through to Z3 AST pointer path
-                }
+                // fall through to Z3 AST pointer path
+            } else if let Some(bytes) = ctx.eval_wide(&bv) {
+                let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+                let int_class = py.get_type::<pyo3::types::PyInt>();
+                let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                return Ok(Some(py_int.into()));
+                // None → fall through to Z3 AST pointer path
             }
         }
 

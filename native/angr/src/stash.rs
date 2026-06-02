@@ -65,6 +65,12 @@ pub struct StashManager {
     pub unconstrained_count: u64,
 }
 
+impl Default for StashManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StashManager {
     /// Create a new StashManager with default stashes.
     pub fn new() -> Self {

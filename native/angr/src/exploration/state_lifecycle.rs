@@ -121,7 +121,7 @@ impl RustExplorationManager {
         let mut states: Vec<RustSimState> = Vec::new();
         for &sid in &state_ids {
             let mut found = false;
-            for (_stash_name, stash) in self.sm.stashes() {
+            for stash in self.sm.stashes().values() {
                 for state in stash.iter() {
                     if state.state_id() == sid {
                         states.push(state.fork());
