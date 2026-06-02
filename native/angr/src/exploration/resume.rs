@@ -260,7 +260,7 @@ impl RustExplorationManager {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new)
+                    .or_default()
                     .push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
@@ -337,7 +337,7 @@ impl RustExplorationManager {
                             self.sm
                                 .stashes_mut()
                                 .entry(STASH_FOUND.to_string())
-                                .or_insert_with(VecDeque::new)
+                                .or_default()
                                 .push_back(forked);
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, forked);
@@ -376,7 +376,7 @@ impl RustExplorationManager {
         self.sm
             .stashes_mut()
             .entry(STASH_ERRORED.to_string())
-            .or_insert_with(VecDeque::new)
+            .or_default()
             .push_back(pending.state);
 
         Ok(())
@@ -544,7 +544,7 @@ impl RustExplorationManager {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new)
+                    .or_default()
                     .push_back(true_state);
             } else if self.avoid_addrs.contains(&true_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, true_state);
@@ -555,7 +555,7 @@ impl RustExplorationManager {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new)
+                    .or_default()
                     .push_back(false_state);
             } else if self.avoid_addrs.contains(&false_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, false_state);
@@ -583,7 +583,7 @@ impl RustExplorationManager {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new)
+                    .or_default()
                     .push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
@@ -630,7 +630,7 @@ impl RustExplorationManager {
             self.sm
                 .stashes_mut()
                 .entry(STASH_FOUND.to_string())
-                .or_insert_with(VecDeque::new)
+                .or_default()
                 .push_back(pending.state);
             self.sm.index(state_id, STASH_FOUND);
         } else {

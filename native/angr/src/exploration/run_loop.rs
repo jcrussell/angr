@@ -210,7 +210,7 @@ impl RustExplorationManager {
                     self.sm
                         .stashes_mut()
                         .entry(STASH_FOUND.to_string())
-                        .or_insert_with(VecDeque::new)
+                        .or_default()
                         .push_back(state);
                 } else {
                     log::debug!("State at find address 0x{:x} is UNSAT, pruning", pc);
@@ -438,7 +438,7 @@ impl RustExplorationManager {
                                 self.sm
                                     .stashes_mut()
                                     .entry(STASH_FOUND.to_string())
-                                    .or_insert_with(VecDeque::new)
+                                    .or_default()
                                     .push_back(successor);
                             }
                         } else if self.avoid_addrs.contains(&spc) {
@@ -569,7 +569,7 @@ impl RustExplorationManager {
                                     self.sm
                                         .stashes_mut()
                                         .entry(STASH_FOUND.to_string())
-                                        .or_insert_with(VecDeque::new)
+                                        .or_default()
                                         .push_back(pending.state);
                                 } else {
                                     log::debug!(
@@ -675,7 +675,7 @@ impl RustExplorationManager {
                     self.sm
                         .stashes_mut()
                         .entry(STASH_ERRORED.to_string())
-                        .or_insert_with(VecDeque::new)
+                        .or_default()
                         .push_back(state);
                 }
                 Err(StepError::Unconstrained(state)) => {

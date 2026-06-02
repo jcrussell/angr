@@ -1625,7 +1625,7 @@ impl RustExplorationManager {
         self.sm
             .stashes_mut()
             .entry("not_unique".to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
     }
 
     /// Disable the native uniqueness filter.
@@ -1659,7 +1659,7 @@ impl RustExplorationManager {
             self.sm
                 .stashes_mut()
                 .entry("cut".to_string())
-                .or_insert_with(VecDeque::new);
+                .or_default();
         }
     }
 
@@ -1675,7 +1675,7 @@ impl RustExplorationManager {
         self.sm
             .stashes_mut()
             .entry("timeout".to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
     }
 
     /// Register a native LoopBound technique.
@@ -1692,7 +1692,7 @@ impl RustExplorationManager {
         self.sm
             .stashes_mut()
             .entry(discard_stash.to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
     }
 
     /// Get the number of registered native techniques.

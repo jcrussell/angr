@@ -193,7 +193,7 @@ impl RustExplorationManager {
                 .sm
                 .stashes_mut()
                 .entry("not_unique".to_string())
-                .or_insert_with(VecDeque::new);
+                .or_default();
             for state in removed_states {
                 not_unique.push_back(state);
             }
@@ -231,7 +231,7 @@ impl RustExplorationManager {
                                 .sm
                                 .stashes_mut()
                                 .entry("timeout".to_string())
-                                .or_insert_with(VecDeque::new);
+                                .or_default();
                             for s in states {
                                 timeout_stash.push_back(s);
                             }
@@ -280,7 +280,7 @@ impl RustExplorationManager {
                             .sm
                             .stashes_mut()
                             .entry("cut".to_string())
-                            .or_insert_with(VecDeque::new);
+                            .or_default();
                         for state in removed_states {
                             cut_stash.push_back(state);
                         }
@@ -329,7 +329,7 @@ impl RustExplorationManager {
                             .sm
                             .stashes_mut()
                             .entry(stash_name)
-                            .or_insert_with(VecDeque::new);
+                            .or_default();
                         for state in removed_states {
                             target.push_back(state);
                         }

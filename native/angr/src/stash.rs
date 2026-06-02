@@ -111,7 +111,7 @@ impl StashManager {
     pub fn entry(&mut self, stash: &str) -> &mut VecDeque<RustSimState> {
         self.stashes
             .entry(stash.to_string())
-            .or_insert_with(VecDeque::new)
+            .or_default()
     }
 
     /// Iterate over all stashes.
@@ -163,7 +163,7 @@ impl StashManager {
         }
         self.stashes
             .entry(name.to_string())
-            .or_insert_with(VecDeque::new)
+            .or_default()
     }
 
     // =========================================================================
@@ -500,7 +500,7 @@ impl StashManager {
         for name in STANDARD_STASHES {
             stashes
                 .entry((*name).to_string())
-                .or_insert_with(VecDeque::new);
+                .or_default();
         }
         let state_roots: HashMap<u64, u64> = snap.state_roots.into_iter().collect();
         Ok(StashManager {
