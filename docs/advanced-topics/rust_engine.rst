@@ -110,6 +110,26 @@ keep using the Python engine or wait for a future major release.
   in the kernel-syscall layer that is shared with Python angr, not a
   Rust-engine-private feature.
 
+* **Writing symbolic output to a real OS file descriptor is out of
+  scope.** ``RustPosixProxy`` (``angr/exploration/rust_state_proxy.py``)
+  implements ``dumps(fd) -> bytes`` for stdin (fd=0), stdout (fd=1),
+  and Rust-tracked file descriptors, mirroring
+  ``SimSystemPosix.dumps(fd)`` in Python angr
+  (``angr/state_plugins/posix.py:683``). There is no companion
+  ``dump_fd(fd, target_fd)`` API that writes the concretized bytes
+  back to a real OS file descriptor — and there is no such API in
+  Python angr either, so this is a parity-preserving omission rather
+  than a Rust-engine gap. Callers that need to pipe symbolic output
+  to a real ``fd`` should write the bytes themselves::
+
+      data = state.posix.dumps(0)   # works on both engines
+      os.write(target_fd, data)
+
+  Adding ``dump_fd`` would create a Rust-only convenience method
+  that the Python engine does not expose, breaking the
+  "behavioral parity" contract that lets ``RustExplorationManager``
+  drop in for ``SimulationManager`` without surprising users.
+
 This scope decision is informed by the Send/Sync audit
 (``angr-8fo6``, 2026-06-01) and the FFI ownership audit
 (``angr-t1w7``, 2026-06-03) — both audits confirmed the
