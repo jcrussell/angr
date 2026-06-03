@@ -260,6 +260,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(exit::NativeExit));
         registry.register(Arc::new(exit::NativeUnderscoreExit));
         registry.register(Arc::new(exit::NativeAbort));
+        registry.register(Arc::new(exit::NativeStackChkFail));
         registry.register(Arc::new(rand::NativeRand));
         registry.register(Arc::new(rand::NativeSrand));
         // Heap procedures (bump allocator, matching SimHeapBrk)

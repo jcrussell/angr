@@ -87,6 +87,37 @@ impl NativeSimProcedure for NativeAbort {
     }
 }
 
+/// Native `__stack_chk_fail` implementation.
+///
+/// Stack-protector failure handler emitted by GCC/Clang. Like abort, it
+/// never returns — the state is deadended by the dispatcher when
+/// `no_return()` is true. Already recognized as a terminal in the Python
+/// callback dispatcher's `_SIMPROC_NO_RET_TERMINAL` set, so the native
+/// path keeps semantics identical while skipping the Python round-trip.
+pub struct NativeStackChkFail;
+
+impl NativeSimProcedure for NativeStackChkFail {
+    fn name(&self) -> &'static str {
+        "__stack_chk_fail"
+    }
+
+    fn num_args(&self) -> usize {
+        0
+    }
+
+    fn no_return(&self) -> bool {
+        true
+    }
+
+    fn call(
+        &self,
+        _state: &mut RustSimState,
+        _args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +155,17 @@ mod tests {
         assert!(proc.no_return());
         assert_eq!(proc.num_args(), 0);
         assert_eq!(proc.name(), "abort");
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = proc.call(&mut state, &[]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stack_chk_fail() {
+        let proc = NativeStackChkFail;
+        assert!(proc.no_return());
+        assert_eq!(proc.num_args(), 0);
+        assert_eq!(proc.name(), "__stack_chk_fail");
         let mut state = RustSimState::new("amd64").unwrap();
         let result = proc.call(&mut state, &[]).unwrap();
         assert!(result.is_none());
