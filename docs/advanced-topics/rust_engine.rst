@@ -3066,6 +3066,33 @@ Snapshot test ``angr-9cps .3`` (planned) consumes
 names; any unintended addition, rename, or removal trips CI before it
 ships.
 
+Reading the engine version
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Rust engine carries its own version, distinct from
+``angr.__version__``. The engine API evolves on a different cadence
+than core angr (CTF-style speedup work, write-through proxy epic, Z3
+solver tuning), so consumers that gate on engine features should read
+the engine version directly:
+
+.. code-block:: python
+
+    from angr.exploration import __rust_engine_version__
+
+    print(__rust_engine_version__)  # e.g. '0.1.0'
+
+The value comes from ``CARGO_PKG_VERSION`` at compile time
+(``native/angr/Cargo.toml`` is the source of truth) and is re-exported
+from ``angr.rustylib.vex_engine.__version__``. Same string, two
+import paths — prefer ``angr.exploration.__rust_engine_version__``
+since it does not require knowing the rustylib submodule name.
+
+The attribute is intentionally **not** in ``angr.exploration.__all__``
+(it follows the standard ``__version__`` convention — accessible via
+explicit name, excluded from star-import). The semver rules in the
+next section apply to the value of this attribute, not to
+``angr.__version__``.
+
 Semver rules (within 9.2.x and onwards)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

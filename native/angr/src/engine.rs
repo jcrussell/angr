@@ -351,5 +351,11 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;
     m.add("PAGE_MASK", crate::memory::PAGE_MASK)?;
+    // Engine version, sourced from native/angr/Cargo.toml at compile time.
+    // Re-exported by Python as `angr.exploration.__rust_engine_version__` so
+    // user code can branch on engine API version independently of
+    // `angr.__version__`. See policy in
+    // `docs/advanced-topics/rust_engine.rst` (:ref:`rust-engine-api-stability`).
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

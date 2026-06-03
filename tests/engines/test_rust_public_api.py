@@ -107,6 +107,49 @@ def _actual_public_attrs(cls_name: str, cls: type) -> set[str]:
     return {n for n in names if not n.startswith('_')}
 
 
+class TestRustEngineVersion:
+    """The ``__rust_engine_version__`` attribute exists, is a non-empty
+    string, and matches what the Rust submodule exposes.
+
+    The value is sourced from ``native/angr/Cargo.toml`` via
+    ``CARGO_PKG_VERSION`` at compile time; both import paths must agree.
+    Intentionally **not** in ``__all__`` (follows the standard
+    ``__version__`` convention — excluded from ``import *`` but
+    accessible by explicit name).
+    """
+
+    def test_attribute_is_non_empty_string(self):
+        import angr.exploration
+
+        version = angr.exploration.__rust_engine_version__
+        assert isinstance(version, str) and version, (
+            f"__rust_engine_version__ must be a non-empty string, "
+            f"got {version!r}"
+        )
+
+    def test_attribute_matches_rustylib_submodule(self):
+        import angr.exploration
+        from angr.rustylib.vex_engine import __version__ as rust_version
+
+        assert angr.exploration.__rust_engine_version__ == rust_version, (
+            f"Version drift between angr.exploration.__rust_engine_version__ "
+            f"({angr.exploration.__rust_engine_version__!r}) and "
+            f"angr.rustylib.vex_engine.__version__ ({rust_version!r})"
+        )
+
+    def test_attribute_not_in_dunder_all(self):
+        """Follows the standard ``__version__`` convention: explicit access
+        only, never via ``from angr.exploration import *``.
+        """
+        import angr.exploration
+
+        assert '__rust_engine_version__' not in angr.exploration.__all__, (
+            "__rust_engine_version__ should follow the __version__ convention "
+            "(excluded from __all__). If you intentionally added it, update "
+            "this test and the policy doc."
+        )
+
+
 class TestModuleExports:
     """The ``angr.exploration.__all__`` contract."""
 

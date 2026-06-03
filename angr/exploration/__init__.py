@@ -35,6 +35,7 @@ from angr.rustylib.vex_engine import (
     RustUnsupportedSyscallError,
     RustUnsupportedVexOpError,
     RustZ3Error,
+    __version__ as __rust_engine_version__,
 )
 
 from .rust_manager import RustErrorRecord, RustExplorationManager
