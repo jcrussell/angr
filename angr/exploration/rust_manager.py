@@ -2315,6 +2315,27 @@ class RustExplorationManager(
             # address_concretization event is dropped (no breakpoint fired).
             l.warning("inspect address_concretization dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_fork(self, state_id: int, when: str):
+        """PyO3 callback target for fork events.
+
+        Fired `when='after'` once per forked state created by the
+        deferred-fork processing in `exploration/stepping.rs`
+        (`handle_block_end` + `process_deferred_forks_into`). `state_id`
+        is the FORKED state's id (matching Python's
+        `engines/successors.py:203` where the BP fires on the newly-added
+        successor, not the parent). The fork event has no attrs in
+        angr's `inspect_attributes` table; the BP just gets the per-state
+        proxy via `state.inspect`. UNSAT-pruned forks still fire the BP
+        (the Rust dispatch is pre-satisfiability check, matching
+        Python's pre-discard fire).
+        """
+        try:
+            self._dispatch_inspect_event("fork", state_id, when)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # fork event is dropped (no breakpoint fired).
+            l.warning("inspect fork dispatch failed: %s: %s", type(e).__name__, e)
+
     def _cb_inspect_symbolic_variable(
         self,
         state_id: int,

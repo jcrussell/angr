@@ -2016,15 +2016,15 @@ class TestRustInspectMarshalling:
         simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
         moved in angr-64pi; statement moved in angr-t8vf; expr moved in
         angr-lge2; address_concretization/symbolic_variable moved in
-        angr-vfst. Events whose dispatchers are not yet wired
-        (fork, constraints, vex_lift, ...) must still raise.
+        angr-vfst; fork moved in angr-ysml. Events whose dispatchers are
+        not yet wired (constraints, vex_lift, ...) must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "constraints", "vex_lift"):
+        for evt in ("constraints", "vex_lift"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -3127,6 +3127,66 @@ class TestRustInspectExtendedEvents:
         # early — at least one before-BP should have fired.
         assert names, "no simprocedure events captured during exploration"
         assert all(isinstance(n, str) for n in names)
+
+    # ---- angr-ysml: fork (deferred-fork dispatch in stepping.rs) ----
+
+    def test_fork_callback_slot_exposed(self):
+        """PythonCallbacks gained set_inspect_fork / call_inspect_fork."""
+        cbs = PythonCallbacks()
+        for name in ('set_inspect_fork', 'call_inspect_fork'):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_fork_bit_matches_spec(self, fauxware_project):
+        """Registering a `fork` BP flips bit 4 (previously reserved)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('fork', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 4) != 0
+
+    def test_dispatch_fork_fires_bp(self, fauxware_project):
+        """_cb_inspect_fork invokes the user's BP (no attrs — fork has none)."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        fired = []
+
+        def on_fork(s):
+            # state is a RustStateProxy bound to the forked state id;
+            # `state.inspect` exposes no fork-specific attrs (angr's
+            # inspect_attributes table has none for fork).
+            fired.append(s)
+
+        mgr._get_inspect_proxy().b('fork', when='after', action=on_fork)
+        mgr._cb_inspect_fork(sid, 'after')
+        assert len(fired) == 1
+
+    def test_fork_fires_during_exploration(self, fauxware_project):
+        """fork BP fires for each branch fauxware takes during exploration.
+
+        fauxware has a symbolic input-driven branch (good_password vs.
+        backdoor); the deferred-fork machinery in stepping.rs creates a
+        sibling state per resolved branch, and the dispatch must fire on
+        each one.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fork_count = [0]
+
+        def on_fork(s):
+            fork_count[0] += 1
+
+        mgr._get_inspect_proxy().b('fork', when='after', action=on_fork)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 4) != 0
+        mgr.run(max_steps=40)
+        # fauxware has at least one symbolic branch within 40 steps;
+        # the deferred-fork loop should fire the BP at least once.
+        assert fork_count[0] > 0, "no fork events captured during exploration"
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

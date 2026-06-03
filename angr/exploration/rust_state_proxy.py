@@ -1056,7 +1056,21 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": "after",
     },
-    # bit 4 reserved for "fork" (not yet wired)
+    # angr-ysml: fork dispatch fires from `exploration/stepping.rs` for
+    # each forked state created by the deferred-fork processing in
+    # `handle_block_end` and `process_deferred_forks_into`. Matches
+    # Python's `engines/successors.py:203` where `state._inspect("fork",
+    # BP_AFTER)` fires on the newly-added successor after constraints +
+    # ip are applied. The BP fires BEFORE the Rust-side satisfiability
+    # check so UNSAT-pruned forks still surface — same pre-discard
+    # intent as Python's add_successor flow. Has NO attrs in
+    # `inspect_attributes` (verified against state_plugins/inspect.py);
+    # the BP just sees the forked state's id via the proxy.
+    "fork": {
+        "bit": 4,
+        "attrs": (),
+        "when_fired": "after",
+    },
     "exit": {
         "bit": 5,
         "attrs": (

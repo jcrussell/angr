@@ -551,6 +551,19 @@ pub struct PythonCallbacks {
     /// the engine when Python returned `is_symbolic=True` with no AST.
     /// Gated on `inspect_event_enabled(18)`.
     pub inspect_symbolic_variable: Option<Py<PyAny>>,
+    /// Callback for state.inspect fork events.
+    /// Signature: `fn(state_id: int, when: str) -> None`. Fires
+    /// `when='after'` for each forked state created by the deferred-fork
+    /// processing in `exploration/stepping.rs` (both `handle_block_end`
+    /// and `process_deferred_forks_into`). The dispatch fires on the
+    /// FORKED state's id (matching Python `engines/successors.py:203`
+    /// where `state` is the newly-added successor), not the original
+    /// state being forked from. UNSAT-pruned forks still fire the BP
+    /// before the satisfiability check so the user sees every fork
+    /// attempt — same intent as Python's pre-discard fire. The `fork`
+    /// event takes NO attrs in `inspect_attributes`; the dispatch is
+    /// state_id + when only. Gated on `inspect_event_enabled(4)`.
+    pub inspect_fork: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -607,6 +620,7 @@ impl PythonCallbacks {
             inspect_expr: None,
             inspect_address_concretization: None,
             inspect_symbolic_variable: None,
+            inspect_fork: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
@@ -903,17 +917,25 @@ impl PythonCallbacks {
         self.inspect_symbolic_variable = Some(cb);
     }
 
+    /// Set the inspect fork callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str) -> None`.
+    pub fn set_inspect_fork(&mut self, cb: Py<PyAny>) {
+        self.inspect_fork = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
     ///
     /// `inspect_enabled` is `Arc<AtomicU32>` so this write is visible to
     /// the cloned PythonCallbacks held by the Rust manager. 32 bits leave
-    /// ample headroom; current layout: 0..=5 mirror `InspectEvent`,
-    /// 6/7 custom for instruction/irsb, 8/9 call/return, 10..=12
-    /// Python-dispatched (simprocedure/syscall/dirty), 13/14 tmp_read/
-    /// tmp_write, 15 statement, 16 expr, 17 address_concretization,
-    /// 18 symbolic_variable.
+    /// ample headroom; current layout: 0..=3 mem/reg read/write,
+    /// 4 fork (deferred-fork dispatch in exploration/stepping.rs),
+    /// 5 exit, 6/7 custom for instruction/irsb, 8/9 call/return,
+    /// 10..=12 Python-dispatched (simprocedure/syscall/dirty),
+    /// 13/14 tmp_read/tmp_write, 15 statement, 16 expr,
+    /// 17 address_concretization, 18 symbolic_variable.
     #[pyo3(name = "set_inspect_enabled")]
     pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
@@ -1139,6 +1161,17 @@ impl PythonCallbacks {
         self.call_inspect_symbolic_variable(py, state_id, when, name, size, &expr_ast)
     }
 
+    /// Test entry point: invoke the registered fork callback directly.
+    #[pyo3(name = "call_inspect_fork")]
+    pub fn py_call_inspect_fork(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+    ) -> PyResult<()> {
+        self.call_inspect_fork(py, state_id, when)
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -1199,6 +1232,7 @@ impl PythonCallbacks {
             &self.inspect_expr,
             &self.inspect_address_concretization,
             &self.inspect_symbolic_variable,
+            &self.inspect_fork,
         ]
         .into_iter()
         .flatten()
@@ -1244,6 +1278,7 @@ impl PythonCallbacks {
         self.inspect_expr = None;
         self.inspect_address_concretization = None;
         self.inspect_symbolic_variable = None;
+        self.inspect_fork = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1583,6 +1618,24 @@ impl PythonCallbacks {
         };
         let expr_obj = expr_ast.clone_ref(py);
         cb.call1(py, (state_id, when, name, size, expr_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect fork callback.
+    /// Fires `when='after'` for each forked state created by the
+    /// deferred-fork processing in `exploration/stepping.rs`.
+    /// No attrs — the BP just sees the forked state's id.
+    pub fn call_inspect_fork(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_fork.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when))?;
         Ok(())
     }
 

@@ -519,6 +519,12 @@ impl RustExplorationManager {
                 // Track root state ID for this forked state
                 self.sm.set_root(forked.state_id(), root_state_id);
 
+                // state.inspect fork BP fires BEFORE the satisfiability
+                // check (matching Python successors.py:203 which fires
+                // before downstream pruning). UNSAT forks still get the
+                // BP — same intent as Python's pre-discard fire.
+                self.dispatch_fork_inspect(forked.state_id());
+
                 // P13: Check satisfiability before adding to successors
                 let sat_start = if self.profiling.profiling_enabled {
                     Some(std::time::Instant::now())
@@ -555,6 +561,8 @@ impl RustExplorationManager {
                 let mut forked = successors[0].fork();
                 forked.set_pc(fork.unexplored_target);
                 self.sm.set_root(forked.state_id(), root_state_id);
+
+                self.dispatch_fork_inspect(forked.state_id());
 
                 // P13: Still check satisfiability
                 if self.constraint_solver.lazy_solves || forked.satisfiable() {
@@ -1218,6 +1226,9 @@ impl RustExplorationManager {
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 
+                // state.inspect fork BP — see handle_block_end for rationale.
+                self.dispatch_fork_inspect(forked.state_id());
+
                 if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
@@ -1228,6 +1239,9 @@ impl RustExplorationManager {
                 let mut forked = successors[0].fork();
                 forked.set_pc(fork.unexplored_target);
                 self.sm.set_root(forked.state_id(), root_state_id);
+
+                self.dispatch_fork_inspect(forked.state_id());
+
                 if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
@@ -1237,6 +1251,36 @@ impl RustExplorationManager {
         }
 
         self.profiling.accumulated_stats.deferred_fork_count += deferred_forks.len() as u64;
+    }
+
+    /// Fire a `state.inspect.fork` BP for the given forked state id.
+    /// Bit-gated on `InspectEvent::Fork` (bit 4) — single atomic load in
+    /// the common no-BP case. Dispatches `when='after'` with no attrs,
+    /// matching Python `engines/successors.py:203` where the BP fires
+    /// on the newly-added successor after constraints + ip are applied
+    /// but before satisfiability is checked downstream. Errors from the
+    /// user's BP action are swallowed (logged at debug) — same MVP
+    /// pattern as the other Rust-side inspect dispatchers.
+    #[inline]
+    pub(crate) fn dispatch_fork_inspect(&self, forked_state_id: u64) {
+        let cb = match self.callbacks.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+        // Fork = bit 4 (reserved slot mirrored in
+        // `_INSPECT_EVENT_SPECS["fork"]`).
+        if !cb.inspect_event_enabled(4) {
+            return;
+        }
+        Python::attach(|py| {
+            if let Err(e) = cb.call_inspect_fork(py, forked_state_id as i64, "after") {
+                log::debug!(
+                    "fork inspect dispatch raised (state {}): {}",
+                    forked_state_id,
+                    e
+                );
+            }
+        });
     }
 }
 

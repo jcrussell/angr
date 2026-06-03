@@ -31,10 +31,11 @@ Overview
   ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
   ``instruction``, ``irsb``, ``exit``, ``call``, ``return``,
   ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``,
-  ``tmp_write``, ``statement``, and ``expr`` events to Python BPs.
-  Unsupported events (``fork``, ``constraints``,
-  ``address_concretization``, …) still raise
-  ``NotImplementedError`` at registration time.
+  ``tmp_write``, ``statement``, ``expr``,
+  ``address_concretization``, ``symbolic_variable``, and ``fork``
+  events to Python BPs. Unsupported events (``constraints``,
+  ``vex_lift``, …) still raise ``NotImplementedError`` at
+  registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
   bimodal Z3 solver nondeterminism.
@@ -1839,6 +1840,13 @@ Event          Fires when        BP attributes
 ``tmp_write``   ``after``         ``tmp_write_num``, ``tmp_write_expr``
 ``statement``   ``before``        ``statement`` (stmt index in irsb.statements)
 ``expr``        ``after``         ``expr`` (always ``None``), ``expr_result``
+``address_concretization`` ``before``/``after`` ``address_concretization_action``,
+                                  ``address_concretization_expr``,
+                                  ``address_concretization_result``
+``symbolic_variable`` ``after``   ``symbolic_name``, ``symbolic_size``,
+                                  ``symbolic_expr``
+``fork``         ``after``         (none — fork event takes no attrs in angr's
+                                  ``inspect_attributes`` table)
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
@@ -1870,10 +1878,9 @@ require wrapping ``proc.execute`` to observe the inner
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
-Registering a BP for any of ``fork``, ``constraints``,
-``address_concretization``,
-``vex_lift``, ``symbolic_variable``,
-``engine_process``, or ``memory_page_map`` raises
+Registering a BP for ``constraints``, ``vex_lift``,
+``engine_process``, ``memory_page_map``, ``cfg_handle_job``,
+``vfg_handle_successor``, or ``vfg_widen_state`` raises
 ``NotImplementedError`` with a message pointing at this document.
 ``_NoOpInspectProxy`` previously silently accepted every registration
 (see angr-osuu); raising loudly prevents users from depending on a
@@ -1933,9 +1940,9 @@ this document so callers can find these workarounds in order:
    above; check it before falling back to the next workarounds.
 
 2. **Drop back to the Python engine** for analyses that fundamentally
-   depend on an unsupported event (``fork``, ``constraints``,
-   ``address_concretization``, …) or on an unsupported behavior of a
-   supported event (e.g., overriding ``dirty_result`` from BP_BEFORE):
+   depend on an unsupported event (``constraints``, ``vex_lift``, …)
+   or on an unsupported behavior of a supported event (e.g.,
+   overriding ``dirty_result`` from BP_BEFORE):
 
    .. code-block:: python
 
@@ -2052,6 +2059,19 @@ Decision history
   because Rust IRExpr doesn't round-trip cleanly into ``pyvex.IRExpr``.
   User mutations to ``expr_result`` are not honored (same MVP gap as
   the other inspect events).
+* ``angr-ysml`` (2026-06-03): wired ``fork`` dispatch at the
+  previously-reserved bit 4. The dispatch fires from
+  ``exploration/stepping.rs`` for each forked state created by the
+  deferred-fork processing (``handle_block_end`` and
+  ``process_deferred_forks_into`` — covers ``fork_from_snapshot``,
+  ``fork_true``/``fork_false``, and the P15 conservative
+  ``fork()`` fallback path). Mirrors Python
+  ``engines/successors.py:203`` where ``state._inspect("fork",
+  BP_AFTER)`` fires on the newly-added successor; the Rust dispatch
+  passes the FORKED state's id (not the parent) and fires BEFORE the
+  satisfiability check so UNSAT-pruned forks still surface. The fork
+  event takes no attrs in angr's ``inspect_attributes`` table — the
+  BP gets only the state via the proxy.
 
 Exploration technique compatibility
 -----------------------------------
