@@ -518,20 +518,33 @@ pub struct PythonCallbacks {
     /// Fired `when="before"` from `execute_block_with_callbacks` just before
     /// each statement runs. Gated on `inspect_event_enabled(15)`.
     pub inspect_statement: Option<Py<PyAny>>,
+    /// Callback for state.inspect expr events (per VEX IR expression eval).
+    /// Signature: `fn(state_id: int, when: str, expr_result: object | None)
+    /// -> None`. Fired `when="after"` from `eval_expr_with_callbacks` once
+    /// the expression has been reduced to a value. `expr` itself is passed
+    /// as `None` because Rust IRExpr does not round-trip cleanly into a
+    /// pyvex.IRExpr; the BP receives only the computed `expr_result` (the
+    /// RustBV reconstructed as a claripy AST). User mutations to
+    /// `expr_result` in BP_AFTER actions are not honored — same MVP gap
+    /// as the other inspect events. Gated on `inspect_event_enabled(16)`;
+    /// this dispatch site fires more often than any other (every VEX
+    /// expression evaluation), so the bitmask short-circuit is critical.
+    pub inspect_expr: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
     /// execution at one branch per Load/Store.
     /// Python writes via `set_inspect_enabled`; defaults to 0 (off).
     ///
-    /// Wrapped in `Arc<AtomicU16>` because `PythonCallbacks` is `Clone` and
+    /// Wrapped in `Arc<AtomicU32>` because `PythonCallbacks` is `Clone` and
     /// the Rust exploration manager stores a CLONED copy after Python
     /// passes the original in via `set_callbacks`. Bitmask updates from
     /// Python (`mgr._callbacks.set_inspect_enabled(...)`) must be visible
     /// to the Rust side; sharing the atomic makes both copies read/write
-    /// the same word. Widened from `AtomicU8` in angr-4ai9 so call/return
-    /// events (bits 8/9) fit alongside the existing mem/reg/exit family.
-    pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    /// the same word. Widened from `AtomicU8` in angr-4ai9 (added bits 8/9
+    /// for call/return), then from `AtomicU16` in angr-lge2 so `expr`
+    /// (bit 16) fits after `statement` filled bit 15.
+    pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[pymethods]
@@ -570,7 +583,8 @@ impl PythonCallbacks {
             inspect_tmp_read: None,
             inspect_tmp_write: None,
             inspect_statement: None,
-            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
+            inspect_expr: None,
+            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -842,23 +856,33 @@ impl PythonCallbacks {
         self.inspect_statement = Some(cb);
     }
 
+    /// Set the inspect expr (per VEX IR expression eval) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, expr_result: object | None)
+    ///                 -> None`.
+    pub fn set_inspect_expr(&mut self, cb: Py<PyAny>) {
+        self.inspect_expr = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
     ///
-    /// `inspect_enabled` is `Arc<AtomicU16>` so this write is visible to
-    /// the cloned PythonCallbacks held by the Rust manager. 16 bits leave
-    /// headroom over the InspectEvent enum (0..=5), the two custom bits
-    /// for instruction/irsb (6/7), and the call/return bits (8/9).
+    /// `inspect_enabled` is `Arc<AtomicU32>` so this write is visible to
+    /// the cloned PythonCallbacks held by the Rust manager. 32 bits leave
+    /// ample headroom; current layout: 0..=5 mirror `InspectEvent`,
+    /// 6/7 custom for instruction/irsb, 8/9 call/return, 10..=12
+    /// Python-dispatched (simprocedure/syscall/dirty), 13/14 tmp_read/
+    /// tmp_write, 15 statement, 16 expr.
     #[pyo3(name = "set_inspect_enabled")]
-    pub fn py_set_inspect_enabled(&self, mask: u16) {
+    pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
             .store(mask, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).
     #[pyo3(name = "get_inspect_enabled")]
-    pub fn py_get_inspect_enabled(&self) -> u16 {
+    pub fn py_get_inspect_enabled(&self) -> u32 {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1032,6 +1056,19 @@ impl PythonCallbacks {
         self.call_inspect_statement(py, state_id, when, stmt_idx)
     }
 
+    /// Test entry point: invoke the registered expr callback directly.
+    #[pyo3(name = "call_inspect_expr")]
+    #[pyo3(signature = (state_id, when, expr_result))]
+    pub fn py_call_inspect_expr(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        expr_result: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_expr(py, state_id, when, expr_result.as_ref())
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -1089,6 +1126,7 @@ impl PythonCallbacks {
             &self.inspect_tmp_read,
             &self.inspect_tmp_write,
             &self.inspect_statement,
+            &self.inspect_expr,
         ]
         .into_iter()
         .flatten()
@@ -1131,6 +1169,7 @@ impl PythonCallbacks {
         self.inspect_tmp_read = None;
         self.inspect_tmp_write = None;
         self.inspect_statement = None;
+        self.inspect_expr = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1145,18 +1184,19 @@ impl Default for PythonCallbacks {
 impl PythonCallbacks {
     /// Fast O(1) check for whether an inspect event is enabled.
     /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
-    /// `event_bit` is taken as `u8` for ergonomics; values up to 15 are valid
-    /// since the underlying bitmask is `AtomicU16`.
+    /// `event_bit` is taken as `u8` for ergonomics; values up to 31 are valid
+    /// since the underlying bitmask is `AtomicU32` (widened in angr-lge2 to
+    /// fit `expr` at bit 16).
     #[inline(always)]
     pub fn inspect_event_enabled(&self, event_bit: u8) -> bool {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
-            & (1u16 << event_bit)
+            & (1u32 << event_bit)
             != 0
     }
 
     /// Debug-only: read the raw bitmask. Used by eprintln traces.
-    pub fn get_inspect_enabled_for_debug(&self) -> u16 {
+    pub fn get_inspect_enabled_for_debug(&self) -> u32 {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1398,6 +1438,29 @@ impl PythonCallbacks {
             None => return Ok(()),
         };
         cb.call1(py, (state_id, when, stmt_idx))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect expr (per VEX IR expression eval) callback.
+    /// Fires `when='after'` with the computed expression value reconstructed
+    /// as a claripy AST. `expr` itself is passed as `None` (Rust IRExpr
+    /// doesn't round-trip cleanly into a `pyvex.IRExpr`).
+    pub fn call_inspect_expr(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        expr_result: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_expr.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match expr_result {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, value_obj))?;
         Ok(())
     }
 

@@ -972,7 +972,7 @@ _COPY_NOT_IMPLEMENTED_MSG = (
 # Single source of truth for the Rust engine's state.inspect dispatch.
 #
 # Each entry maps an angr `event_types` member to a spec dict with:
-#   - bit: position in the Rust callbacks `inspect_enabled` u16 bitmask
+#   - bit: position in the Rust callbacks `inspect_enabled` u32 bitmask
 #   - attrs: SimInspector attribute names this event populates
 #   - when_fired: 'before' or 'after' — when in the Rust pipeline it fires
 #   - dispatch_origin: 'rust' (default) when the Rust engine invokes the
@@ -1177,14 +1177,34 @@ _INSPECT_EVENT_SPECS: dict = {
     # `irsb.statements`) — matches Python's `SimInspectMixin._handle_vex_stmt`
     # BP_BEFORE call signature. BP_AFTER is not wired (same MVP gap as
     # `instruction` BP_AFTER). Bit 15 is the LAST free slot in the
-    # `AtomicU16` bitmask; the companion `expr` event (and any future bit
-    # ≥16) will require widening to `AtomicU32`.
+    # `AtomicU16` bitmask; the companion `expr` event widened
+    # `inspect_enabled` to `AtomicU32` in angr-lge2.
     "statement": {
         "bit": 15,
         "attrs": (
             "statement",
         ),
         "when_fired": "before",
+    },
+    # angr-lge2: expr dispatch fires from `eval_expr_with_callbacks` in
+    # `interpreter/expressions.rs`, once per IR expression evaluation
+    # (every constant, RdTmp, Get, Load, unop/binop arg, ITE, etc.).
+    # `when='after'`, with `expr_result` set to the claripy-reconstructed
+    # value of the expression. `expr` itself is passed as `None` — Rust
+    # IRExpr doesn't round-trip cleanly into `pyvex.IRExpr`, and the BP
+    # would otherwise need an expensive lift on every eval. Bit 16
+    # required widening the bitmask from `AtomicU16` to `AtomicU32` (the
+    # u16 had filled at bit 15 with `statement`). The bitmask short-circuit
+    # is load-bearing for this dispatch site: it's the highest-frequency
+    # call in the engine, so the no-BP cost MUST stay at one atomic load.
+    # User mutations to `expr_result` are NOT honored (MVP gap pattern).
+    "expr": {
+        "bit": 16,
+        "attrs": (
+            "expr",
+            "expr_result",
+        ),
+        "when_fired": "after",
     },
 }
 

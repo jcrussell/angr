@@ -17,6 +17,14 @@ impl<'a> VEXInterpreter<'a> {
         if self.profiling_enabled {
             self.stats.expr_eval_count += 1;
         }
+        // state.inspect expr event (angr-lge2) — fires `when='after'` after
+        // every IRExpr evaluation. Gated on `inspect_event_enabled(16)` so
+        // the no-BP case is one `AtomicU32::load + AND` per call. This is
+        // the highest-frequency dispatch site in the engine (every binop
+        // arg, store data, exit guard, etc. comes through here).
+        if let Ok(ref value) = result {
+            self.dispatch_expr_inspect(py, callbacks, value);
+        }
         result
     }
 
@@ -1004,6 +1012,41 @@ impl<'a> VEXInterpreter<'a> {
             self.current_state_id,
             "after",
             tmp_num,
+            Some(&value_ast),
+        );
+    }
+
+    /// Fire an `expr` inspect callback for a VEX IRExpr eval (angr-lge2).
+    ///
+    /// Gated on `inspect_event_enabled(16)` so the no-BP case is one
+    /// bitmask test per `eval_expr_with_callbacks` call (the most frequent
+    /// dispatch site in the engine — fires for every constant, RdTmp,
+    /// register read, load, unop, binop, ITE, etc.). When fired, the
+    /// computed RustBV is reconstructed as a claripy AST and passed as
+    /// `expr_result`. The original `IRExpr` is intentionally NOT passed
+    /// (Rust IRExpr doesn't round-trip cleanly into a `pyvex.IRExpr`);
+    /// the BP receives `expr=None` and only the computed value.
+    fn dispatch_expr_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        value: &RustBV,
+    ) {
+        if !callbacks.inspect_event_enabled(16) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_expr(
+            py,
+            self.current_state_id,
+            "after",
             Some(&value_ast),
         );
     }

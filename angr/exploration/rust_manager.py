@@ -2260,6 +2260,28 @@ class RustExplorationManager(
             # statement event is dropped (no breakpoint fired).
             l.warning("inspect statement dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_expr(self, state_id: int, when: str, expr_result):
+        """PyO3 callback target for expr events (per VEX IR expression eval).
+
+        Fired `when='after'` from `eval_expr_with_callbacks` once the
+        expression has been reduced to a value. `expr_result` is the
+        claripy reconstruction of the computed RustBV; `expr` itself is
+        passed as `None` because Rust IRExpr doesn't round-trip cleanly
+        into a `pyvex.IRExpr`. User mutations to `expr_result` in BP
+        actions are NOT honored — same MVP gap as the other inspect
+        events.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "expr", state_id, when,
+                expr=None,
+                expr_result=expr_result,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # expr event is dropped (no breakpoint fired).
+            l.warning("inspect expr dispatch failed: %s: %s", type(e).__name__, e)
+
     def _cb_inspect_simprocedure(
         self,
         state_id: int,

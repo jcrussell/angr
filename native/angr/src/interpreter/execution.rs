@@ -608,7 +608,7 @@ impl<'a> VEXInterpreter<'a> {
             // state.inspect statement event — fires `when='before'` once per
             // VEX IR statement, with `stmt_idx` as the only attr. Bit 15 in
             // the inspect-enabled bitmask. The bitmask gate keeps the no-BP
-            // cost at one `AtomicU16::load + AND` per statement.
+            // cost at one `AtomicU32::load + AND` per statement.
             if callbacks.inspect_event_enabled(15) {
                 let _ = callbacks.call_inspect_statement(
                     py,

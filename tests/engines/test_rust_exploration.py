@@ -2014,16 +2014,16 @@ class TestRustInspectMarshalling:
         reg_read, reg_write, instruction, irsb, exit moved into the
         supported set in angr-d46u; call/return moved in angr-4ai9;
         simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
-        moved in angr-64pi; statement moved in angr-t8vf. Events whose
-        dispatchers are not yet wired (fork, constraints, expr, ...)
-        must still raise.
+        moved in angr-64pi; statement moved in angr-t8vf; expr moved in
+        angr-lge2. Events whose dispatchers are not yet wired
+        (fork, constraints, address_concretization, ...) must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "constraints", "expr"):
+        for evt in ("fork", "constraints", "address_concretization"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2834,6 +2834,63 @@ class TestRustInspectExtendedEvents:
             f"stmt indices should start at 0, got min={min(seen_indices)}"
         )
 
+    # ---- angr-lge2: expr (per VEX IR expression eval) ----
+
+    def test_expr_callback_slot_exposed(self):
+        """PythonCallbacks gained set_inspect_expr / call_inspect_expr."""
+        cbs = PythonCallbacks()
+        for name in ('set_inspect_expr', 'call_inspect_expr'):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_expr_bit_matches_spec(self, fauxware_project):
+        """Registering an `expr` BP flips bit 16 (u16→u32 widening)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('expr', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 16) != 0
+
+    def test_dispatch_expr_fires_bp(self, fauxware_project):
+        """_cb_inspect_expr invokes the user's BP with expr_result attr."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_expr(s):
+            seen.append((s.inspect.expr, s.inspect.expr_result))
+
+        mgr._get_inspect_proxy().b('expr', when='after', action=on_expr)
+        sentinel = claripy.BVV(0xdeadbeef, 32)
+        mgr._cb_inspect_expr(sid, 'after', sentinel)
+        assert len(seen) == 1
+        expr_attr, expr_result = seen[0]
+        assert expr_attr is None
+        assert expr_result is sentinel
+
+    def test_expr_fires_during_exploration(self, fauxware_project):
+        """expr BP fires per IR expression eval during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_expr(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('expr', when='after', action=on_expr)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 16) != 0
+        mgr.run(max_steps=3)
+        # eval_expr_with_callbacks fires for every IR expression in every
+        # IRSB (constants, RdTmp, register reads, etc.) — even three steps
+        # of fauxware should produce dozens of events.
+        assert fire_count[0] > 0, "no expr events captured"
+
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 
     def test_python_dispatched_events_have_no_rust_slot(self):
@@ -2979,14 +3036,15 @@ class TestRustInspectAllowlistConsistency:
         assert set(_RUST_INSPECT_EVENT_BITS) == set(_INSPECT_EVENT_SPECS)
 
     def test_event_bits_are_unique_and_in_range(self):
-        """Every supported event has a unique bit position fitting in u16."""
+        """Every supported event has a unique bit position fitting in u32."""
         from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
         bits = [spec["bit"] for spec in _INSPECT_EVENT_SPECS.values()]
         assert len(bits) == len(set(bits)), f"duplicate bits in specs: {bits}"
-        # angr-4ai9 widened inspect_enabled from u8 to u16 to make room
-        # for the call/return bits (8/9). All bits must still fit in u16.
-        assert all(0 <= b < 16 for b in bits), (
-            "inspect_enabled is a u16 — bits must be in 0..=15"
+        # angr-4ai9 widened inspect_enabled from u8 to u16 to make room for
+        # call/return (8/9); angr-lge2 widened from u16 to u32 to make room
+        # for `expr` (bit 16) after `statement` filled bit 15.
+        assert all(0 <= b < 32 for b in bits), (
+            "inspect_enabled is a u32 — bits must be in 0..=31"
         )
 
     def test_every_supported_event_has_dispatch_method(self):

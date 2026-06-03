@@ -31,8 +31,9 @@ Overview
   ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
   ``instruction``, ``irsb``, ``exit``, ``call``, ``return``,
   ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``,
-  ``tmp_write``, and ``statement`` events to Python BPs. Unsupported
-  events (``fork``, ``constraints``, ``expr``, …) still raise
+  ``tmp_write``, ``statement``, and ``expr`` events to Python BPs.
+  Unsupported events (``fork``, ``constraints``,
+  ``address_concretization``, …) still raise
   ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
@@ -1837,6 +1838,7 @@ Event          Fires when        BP attributes
 ``tmp_read``    ``after``         ``tmp_read_num``, ``tmp_read_expr``
 ``tmp_write``   ``after``         ``tmp_write_num``, ``tmp_write_expr``
 ``statement``   ``before``        ``statement`` (stmt index in irsb.statements)
+``expr``        ``after``         ``expr`` (always ``None``), ``expr_result``
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
@@ -1869,7 +1871,7 @@ Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
 Registering a BP for any of ``fork``, ``constraints``,
-``address_concretization``, ``expr``,
+``address_concretization``,
 ``vex_lift``, ``symbolic_variable``,
 ``engine_process``, or ``memory_page_map`` raises
 ``NotImplementedError`` with a message pointing at this document.
@@ -2039,6 +2041,17 @@ Decision history
   the companion ``expr`` event requires widening
   ``inspect_enabled`` from ``AtomicU16`` to ``AtomicU32`` and is
   tracked separately.
+* ``angr-lge2`` (2026-06-03): widened ``inspect_enabled`` from
+  ``AtomicU16`` to ``AtomicU32`` and wired ``expr`` dispatch at bit 16.
+  The dispatch site is ``eval_expr_with_callbacks`` in
+  ``interpreter/expressions.rs`` — the highest-frequency call in the
+  engine (fires for every constant, RdTmp, register read, load, unop,
+  binop, ITE, etc.), so the bitmask short-circuit is load-bearing.
+  Fires ``when='after'`` with ``expr_result`` as the
+  claripy-reconstructed value; ``expr`` is always passed as ``None``
+  because Rust IRExpr doesn't round-trip cleanly into ``pyvex.IRExpr``.
+  User mutations to ``expr_result`` are not honored (same MVP gap as
+  the other inspect events).
 
 Exploration technique compatibility
 -----------------------------------
