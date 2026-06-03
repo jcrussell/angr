@@ -476,7 +476,7 @@ class RustMemoryProxy:
         return claripy.BVV(val, size * 8)
 
     def store(self, addr, data, endness=None, **kwargs):
-        """Write-through memory store to the Rust state (angr-j28e).
+        """Write-through memory store to the Rust state (angr-j28e, angr-4scu).
 
         ``proxy.memory.store(addr, value)`` from a state.inspect callback,
         find/avoid predicate, or external user code is forwarded immediately
@@ -486,12 +486,13 @@ class RustMemoryProxy:
         Address handling:
 
         * Concrete ``int`` or concrete claripy AST → direct FFI store.
-        * Symbolic claripy AST → ``NotImplementedError``. Symbolic-address
-          writes from a callback would need the lazy Multi-cell path
-          (which exists for the in-engine store but requires solver
-          coordination that the proxy lacks); the symmetric refusal here
-          matches how ``solver.add`` does not accept symbolic-AST
-          constraints with no boolean structure.
+        * Symbolic claripy AST → routed through the lazy Multi-cell path
+          (``state_memory_store_symbolic_multi``). Single-solution addrs
+          short-circuit to the eager concrete store; Multiple/Strided
+          concretization installs per-byte Multi alternatives. TooLarge
+          or Failed concretization (e.g. unconstrained symbolic addr,
+          unsat constraints) raises ``NotImplementedError`` with the
+          SimProcedure-hook workaround surfaced (angr-4scu step 2).
 
         Value handling:
 
@@ -507,21 +508,30 @@ class RustMemoryProxy:
         default for raw bytes); pass ``endness='Iend_LE'`` to mirror VEX's
         little-endian convention.
         """
-        if isinstance(addr, claripy.ast.Base):
-            if addr.concrete:
-                addr = addr.concrete_value
-            else:
-                raise NotImplementedError(
-                    "symbolic-address memory store is not supported on "
-                    "RustStateProxy. Workaround: use a SimProcedure-style hook "
-                    "(proj.hook(addr, fn)) — SimProcedure callbacks receive "
-                    "a full SimState and writes are synced back via the "
-                    "lazy Multi-cell path. See docs/advanced-topics/"
-                    "rust_engine.rst for details."
-                )
         size = kwargs.pop('size', None)
         if endness is None:
             endness = "Iend_BE"
+
+        if isinstance(addr, claripy.ast.Base) and not addr.concrete:
+            data_ast = self._data_to_ast(data, size, endness)
+            ok = self._mgr.state_memory_store_symbolic_multi(
+                self._state_id, addr, data_ast
+            )
+            if not ok:
+                raise NotImplementedError(
+                    "RustMemoryProxy.store(): the symbolic-address write "
+                    "could not be routed through the lazy Multi-cell path "
+                    "(typically because the address has too many or zero "
+                    "satisfying solutions). Workaround: use a "
+                    "SimProcedure-style hook (proj.hook(addr, fn)) — "
+                    "SimProcedure callbacks receive a full SimState and "
+                    "writes are synced back via the lazy Multi-cell path. "
+                    "See docs/advanced-topics/rust_engine.rst for details."
+                )
+            return
+
+        if isinstance(addr, claripy.ast.Base):
+            addr = addr.concrete_value
 
         if isinstance(data, claripy.ast.Base):
             width_bits = data.length if hasattr(data, 'length') else data.size()
@@ -556,6 +566,45 @@ class RustMemoryProxy:
             self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
             return
 
+        raise TypeError(
+            f"memory store expects claripy AST, int, or bytes; "
+            f"got {type(data).__name__}"
+        )
+
+    def _data_to_ast(self, data, size, endness):
+        """Coerce ``data`` to a claripy AST, applying endness for concrete
+        ``int`` / ``bytes`` inputs. Used by the symbolic-address store path
+        (angr-4scu step 2), which must hand the Rust Multi-cell entry point
+        a single AST regardless of the Python-side input form.
+
+        Byte-order convention: Rust's ``memory_store(addr, bv)`` lays out
+        the BVV with byte ``i`` of memory equal to ``(value >> (i*8)) & 0xff``.
+        The concrete-addr proxy path (``set_state_memory_concrete``) builds
+        its RustBV via ``int.from_bytes(payload, 'little')`` so that
+        ``payload[0]`` lands at ``addr+0``. We must mirror that for the
+        symbolic-addr path — using ``claripy.BVV(bytes)`` would
+        big-endian-interpret the bytes and produce the reverse layout.
+
+        Symbolic ASTs are forwarded verbatim (endness is the caller's
+        responsibility — claripy ASTs do not carry an endness flag).
+        """
+        if isinstance(data, claripy.ast.Base):
+            return data
+        if isinstance(data, (bytes, bytearray)):
+            payload = bytes(data)
+            if endness == "Iend_LE":
+                payload = payload[::-1]
+            value = int.from_bytes(payload, "little")
+            return claripy.BVV(value, len(payload) * 8)
+        if isinstance(data, int):
+            if size is None:
+                raise TypeError(
+                    "memory store with an int value requires size=N (bytes)"
+                )
+            byteorder = "little" if endness == "Iend_LE" else "big"
+            payload = data.to_bytes(size, byteorder)
+            value = int.from_bytes(payload, "little")
+            return claripy.BVV(value, size * 8)
         raise TypeError(
             f"memory store expects claripy AST, int, or bytes; "
             f"got {type(data).__name__}"

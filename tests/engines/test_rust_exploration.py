@@ -3890,36 +3890,86 @@ class TestProxyLiskovGaps:
         with pytest.raises(claripy.errors.UnsatError):
             proxy.memory.load(addr_sym, 4)
 
-    def test_memory_store_symbolic_addr_raises_with_documented_workaround(
+    def test_memory_store_symbolic_addr_single_solution_routes_multi(
         self, fauxware_project
     ):
-        """``proxy.memory.store`` with a symbolic address raises
-        NotImplementedError and the message names the documented workaround
-        (angr-j28e).
-
-        Concrete-address writes are write-through (see
-        TestProxyWriteThrough); symbolic-address writes require solver
-        coordination the proxy lacks, so we refuse loudly and route users
-        to the SimProcedure-hook path. Pattern matches the loud-error
-        model from angr-osuu (state.inspect unsupported events): the
-        error message is part of the documented API.
+        """angr-4scu step 2: a symbolic-address write that resolves to a
+        single concrete solution under the state's constraints lands in
+        Rust memory and is visible through the proxy's concrete-addr load
+        path. The Multi-cell entry point short-circuits single solutions
+        to the eager concrete store — verify the round-trip.
         """
         import claripy
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
+        target = fauxware_project.entry
+        sym_addr = claripy.BVS("write_addr_single", 64)
+        state.solver.add(sym_addr == target)
         mgr = RustExplorationManager(fauxware_project, [state])
         proxy = mgr.proxy.active[0]
 
-        sym_addr = claripy.BVS("write_addr_sym", 64)
-        with pytest.raises(NotImplementedError) as exc_info:
-            proxy.memory.store(sym_addr, b"\x90\x90")
+        payload = b"\x42\x43\x44\x45"
+        proxy.memory.store(sym_addr, payload)
 
-        msg = str(exc_info.value)
-        # The error must name the SimProcedure-hook workaround (the path
-        # users redirect to) and reference the documentation entry.
-        assert "proj.hook" in msg, f"workaround not surfaced in error: {msg}"
-        assert "rust_engine.rst" in msg, f"doc pointer missing: {msg}"
+        # Round-trip through the concrete-addr load path; default endness
+        # is Iend_BE for both store() and load() so the bytes survive
+        # without a byte-swap.
+        loaded = proxy.memory.load(target, len(payload))
+        assert loaded.concrete_value == int.from_bytes(payload, "big")
+
+    def test_memory_store_symbolic_addr_with_int_value(self, fauxware_project):
+        """The symbolic-address store path coerces ``int`` values into a
+        claripy BVV using the same endness logic as the concrete-addr path
+        before handing them to the Multi-cell entry point.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        target = fauxware_project.entry
+        sym_addr = claripy.BVS("write_addr_int", 64)
+        state.solver.add(sym_addr == target)
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        proxy.memory.store(sym_addr, 0xDEADBEEF, size=4, endness="Iend_LE")
+
+        loaded = proxy.memory.load(target, 4, endness="Iend_LE")
+        assert loaded.concrete_value == 0xDEADBEEF
+
+    def test_memory_store_symbolic_addr_with_symbolic_value(
+        self, fauxware_project
+    ):
+        """A symbolic-AST value at a single-solution symbolic address
+        registers the symbol in the shared cache (the Multi-cell path runs
+        ``claripy_to_rustbv`` on the data AST), so a subsequent solver
+        eval through the proxy returns the expected concrete bits.
+
+        Endness on symbolic-AST data is the caller's responsibility — the
+        proxy forwards verbatim, matching the concrete-addr symbolic-AST
+        path. We use ``Iend_LE`` on the read side so the round-trip
+        produces the constrained value byte-for-byte.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        target = fauxware_project.entry
+        sym_addr = claripy.BVS("write_addr_symdata", 64)
+        sym_val = claripy.BVS("write_val", 32)
+        state.solver.add(sym_addr == target)
+        state.solver.add(sym_val == 0xCAFEBABE)
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        proxy.memory.store(sym_addr, sym_val)
+
+        # AST forwarded verbatim: RustBV value 0xCAFEBABE is laid out
+        # byte 0 of memory = LSB. Read with Iend_LE to recover the
+        # constrained value.
+        loaded = proxy.memory.load(target, 4, endness="Iend_LE")
+        assert loaded.concrete_value == 0xCAFEBABE
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
