@@ -40,6 +40,64 @@ Overview
   number of known slower cases driven by Python-side cache pressure or
   bimodal Z3 solver nondeterminism.
 
+.. _rust-engine-v1-scope:
+
+v1.0 scope
+----------
+
+The v1.0 engine targets **single-threaded** symbolic execution against a
+single in-process project. The following are explicitly out of scope and
+will not be addressed before v1.0 ships; users with these needs should
+keep using the Python engine or wait for a future major release.
+
+* **Multi-threaded / parallel exploration is not supported.** Every
+  ``RustExplorationManager`` entry point is gated by the GIL, and the
+  load-bearing ``#[pyclass]`` types (``RustExplorationManager``,
+  ``PyRustSimState``, ``RustSolverContext``) carry ``unsendable`` markers
+  that prevent cross-thread sharing at compile time. This is not a
+  stylistic choice — it reflects three independent architectural
+  constraints: ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (used at
+  every fork site under a single-threaded CoW idiom), z3-rs 0.19+
+  thread-local Z3 contexts (an AST handle is bound to its creating
+  thread; crossing the boundary is undefined behavior), and intentional
+  ``thread_local!`` AST caches in the claripy bridge. See
+  :ref:`rust-engine-concurrency-send-sync-audit` below for the full
+  blocker inventory, and ``docs/advanced-topics/rust_parallel_design.rst``
+  for the proposed v2 path (snapshot-transport between thread-bound
+  managers, leaning on the already-``Send+Sync`` ``ExplorationStateSnapshot``).
+
+  Two related shortcuts have been ruled out and should not be revisited
+  without a new audit:
+
+  - Setting ``parallel.enable=true`` on the Z3 solver
+    (``params.set_bool("parallel.enable", true)`` in
+    ``build_solver_params``) is *correctness-breaking*, not merely
+    performance-neutral: it produced ``IndexError``,
+    ``AngrCallableError``, and ``KeyError`` on 4 of 6 sampled benchmarks
+    (see ``angr-gfay``, closed 2026-05-21). Re-enabling it would require
+    auditing every solver consumer for Z3-Unknown handling and pinning
+    ``smt.random_seed`` for determinism.
+  - Migrating ``Rc<RefCell<SymContext>>`` to ``Arc<Mutex<SymContext>>``
+    does not by itself unlock parallelism. z3-rs's thread-local context
+    model means AST handles still cannot migrate across threads, and the
+    ``add_constraint_raw`` hot path would suffer heavy lock contention
+    (≈82.5 % of csaw_wyvern calls hit the dedup fast-path; see the
+    Concurrency audit section for details).
+
+* **Multi-process exploration is also single-process.** ``RustExplorationManager``
+  drives one process at a time. Distributing exploration across OS
+  processes is the user's responsibility (e.g. fuzzer-driven workflows
+  with separate orchestration layers, as in libafl). The
+  ``RustExplorationManager`` itself is the unit of parallelism, not a
+  worker inside a larger pool.
+
+This scope decision is informed by the Send/Sync audit
+(``angr-8fo6``, 2026-06-01) and the FFI ownership audit
+(``angr-t1w7``, 2026-06-03) — both audits confirmed the
+single-threaded architecture is sound for v1.0 and that parallelism
+requires a new epic on top of ``ExplorationStateSnapshot``, not a
+typing-only refactor.
+
 Usage
 -----
 
@@ -3733,6 +3791,8 @@ within the same crate.
 
 Spike report ``angr-irwe`` (2026-06-01) — see commit history for the
 audit + initial application.
+
+.. _rust-engine-concurrency-send-sync-audit:
 
 Concurrency / Send-Sync audit
 -----------------------------
