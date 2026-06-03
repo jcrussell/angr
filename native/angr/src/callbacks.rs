@@ -501,6 +501,18 @@ pub struct PythonCallbacks {
     /// the frame about to be popped, once `when="after"` after the pop.
     /// Matches Python's callstack.py:430/432 semantics.
     pub inspect_return: Option<Py<PyAny>>,
+    /// Callback for state.inspect tmp_read events (VEX `RdTmp`).
+    /// Signature: `fn(state_id: int, when: str, tmp_num: int,
+    ///                value_ast: object | None) -> None`.
+    /// Fired `when="after"` with the tmp's stored value as `tmp_read_expr`.
+    /// Gated on `inspect_event_enabled(13)` so the no-breakpoint case costs
+    /// one bitmask test per `RdTmp` evaluation.
+    pub inspect_tmp_read: Option<Py<PyAny>>,
+    /// Callback for state.inspect tmp_write events (VEX `WrTmp`).
+    /// Signature mirrors `inspect_tmp_read`; `value_ast` is the value being
+    /// stored into the tmp. Fired `when="after"` once the tmp slot has
+    /// been written.
+    pub inspect_tmp_write: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -550,6 +562,8 @@ impl PythonCallbacks {
             inspect_exit: None,
             inspect_call: None,
             inspect_return: None,
+            inspect_tmp_read: None,
+            inspect_tmp_write: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
         }
     }
@@ -799,6 +813,22 @@ impl PythonCallbacks {
         self.inspect_return = Some(cb);
     }
 
+    /// Set the inspect tmp_read (VEX `RdTmp`) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, tmp_num: int,
+    ///                value_ast: object | None) -> None`.
+    pub fn set_inspect_tmp_read(&mut self, cb: Py<PyAny>) {
+        self.inspect_tmp_read = Some(cb);
+    }
+
+    /// Set the inspect tmp_write (VEX `WrTmp`) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, tmp_num: int,
+    ///                value_ast: object | None) -> None`.
+    pub fn set_inspect_tmp_write(&mut self, cb: Py<PyAny>) {
+        self.inspect_tmp_write = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -949,6 +979,34 @@ impl PythonCallbacks {
         self.call_inspect_return(py, state_id, when, function_address)
     }
 
+    /// Test entry point: invoke the registered tmp_read callback directly.
+    #[pyo3(name = "call_inspect_tmp_read")]
+    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
+    pub fn py_call_inspect_tmp_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_tmp_read(py, state_id, when, tmp_num, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered tmp_write callback directly.
+    #[pyo3(name = "call_inspect_tmp_write")]
+    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
+    pub fn py_call_inspect_tmp_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_tmp_write(py, state_id, when, tmp_num, value_ast.as_ref())
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -1003,6 +1061,8 @@ impl PythonCallbacks {
             &self.inspect_exit,
             &self.inspect_call,
             &self.inspect_return,
+            &self.inspect_tmp_read,
+            &self.inspect_tmp_write,
         ]
         .into_iter()
         .flatten()
@@ -1042,6 +1102,8 @@ impl PythonCallbacks {
         self.inspect_exit = None;
         self.inspect_call = None;
         self.inspect_return = None;
+        self.inspect_tmp_read = None;
+        self.inspect_tmp_write = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1251,6 +1313,48 @@ impl PythonCallbacks {
             None => return Ok(()),
         };
         cb.call1(py, (state_id, when, function_address))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect tmp_read (VEX `RdTmp`) callback.
+    pub fn call_inspect_tmp_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_tmp_read.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, tmp_num, value_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect tmp_write (VEX `WrTmp`) callback.
+    pub fn call_inspect_tmp_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_tmp_write.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, tmp_num, value_obj))?;
         Ok(())
     }
 

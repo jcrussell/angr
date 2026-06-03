@@ -1144,6 +1144,33 @@ _INSPECT_EVENT_SPECS: dict = {
         "when_fired": "before",
         "dispatch_origin": "python",
     },
+    # angr-64pi: tmp_read / tmp_write dispatch fires from the Rust
+    # interpreter's `RdTmp` / `WrTmp` arms (interpreter/expressions.rs
+    # and interpreter/statements.rs). Each `RdTmp` evaluation pays a
+    # single bitmask test in the no-BP case; with a BP the tmp's value
+    # is round-tripped to a claripy AST and dispatched as
+    # `tmp_read_expr`. `tmp_write` follows the same pattern in the
+    # `WrTmp` arm, firing `when='after'` after the value is computed
+    # but BEFORE the slot is mutated so the BP sees the value going in.
+    # Both events fire many times per IRSB (every binop arg goes
+    # through `RdTmp`); the bitmask short-circuit keeps overhead at
+    # one `AtomicU16::load` per dispatch site when no BP is set.
+    "tmp_read": {
+        "bit": 13,
+        "attrs": (
+            "tmp_read_num",
+            "tmp_read_expr",
+        ),
+        "when_fired": "after",
+    },
+    "tmp_write": {
+        "bit": 14,
+        "attrs": (
+            "tmp_write_num",
+            "tmp_write_expr",
+        ),
+        "when_fired": "after",
+    },
 }
 
 # Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.

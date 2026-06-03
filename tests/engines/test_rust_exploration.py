@@ -2013,16 +2013,16 @@ class TestRustInspectMarshalling:
 
         reg_read, reg_write, instruction, irsb, exit moved into the
         supported set in angr-d46u; call/return moved in angr-4ai9;
-        simprocedure/syscall/dirty moved in angr-xmfj. Events whose
-        dispatchers are not yet wired (fork, constraints, ...) must
-        still raise.
+        simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
+        moved in angr-64pi. Events whose dispatchers are not yet wired
+        (fork, constraints, expr, statement, ...) must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "constraints", "tmp_read", "expr"):
+        for evt in ("fork", "constraints", "expr", "statement"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2683,6 +2683,102 @@ class TestRustInspectExtendedEvents:
         assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
         mgr.run(max_steps=20)
         assert all(t >= 0 for t in seen)
+
+    # ---- angr-64pi: tmp_read / tmp_write (VEX RdTmp/WrTmp) ----
+
+    def test_tmp_callback_slots_exposed(self):
+        """PythonCallbacks gained set_inspect_{tmp_read,tmp_write}."""
+        cbs = PythonCallbacks()
+        for name in (
+            'set_inspect_tmp_read',
+            'set_inspect_tmp_write',
+            'call_inspect_tmp_read',
+            'call_inspect_tmp_write',
+        ):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_tmp_bits_match_spec(self, fauxware_project):
+        """Registering a `tmp_read`/`tmp_write` BP flips bits 13/14."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('tmp_read', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 13) != 0
+        ins.b('tmp_write', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 14) != 0
+
+    def test_dispatch_tmp_read_fires_bp(self, fauxware_project):
+        """_cb_inspect_tmp_read invokes the user's BP with tmp_read_* attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_read(s):
+            seen.append((
+                s.inspect.tmp_read_num,
+                s.inspect.tmp_read_expr,
+            ))
+
+        mgr._get_inspect_proxy().b('tmp_read', when='after', action=on_read)
+        val = claripy.BVV(0xdeadbeef, 32)
+        mgr._cb_inspect_tmp_read(sid, 'after', 7, val)
+        assert seen == [(7, val)]
+
+    def test_dispatch_tmp_write_fires_bp(self, fauxware_project):
+        """_cb_inspect_tmp_write invokes the user's BP with tmp_write_* attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_write(s):
+            seen.append((
+                s.inspect.tmp_write_num,
+                s.inspect.tmp_write_expr,
+            ))
+
+        mgr._get_inspect_proxy().b('tmp_write', when='after', action=on_write)
+        val = claripy.BVS('written_tmp', 64)
+        mgr._cb_inspect_tmp_write(sid, 'after', 3, val)
+        assert seen == [(3, val)]
+
+    def test_tmp_read_fires_during_exploration(self, fauxware_project):
+        """tmp_read BP fires on VEX RdTmp during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_read(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('tmp_read', when='after', action=on_read)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 13) != 0
+        mgr.run(max_steps=3)
+        # Every IRSB has multiple RdTmps (binop args, store data, ...).
+        assert fire_count[0] > 0, "no tmp_read events captured"
+
+    def test_tmp_write_fires_during_exploration(self, fauxware_project):
+        """tmp_write BP fires on VEX WrTmp during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_write(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('tmp_write', when='after', action=on_write)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 14) != 0
+        mgr.run(max_steps=3)
+        assert fire_count[0] > 0, "no tmp_write events captured"
 
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 

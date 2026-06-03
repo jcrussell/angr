@@ -32,7 +32,9 @@ impl<'a> VEXInterpreter<'a> {
 
             IRExpr::RdTmp(tmp) => {
                 if let Some(Some(val)) = self.temps.get(*tmp as usize) {
-                    Ok(val.clone())
+                    let value = val.clone();
+                    self.dispatch_tmp_read_inspect(py, callbacks, *tmp, &value);
+                    Ok(value)
                 } else {
                     Err(CbExecutionError::UnknownTemp(*tmp))
                 }
@@ -967,6 +969,41 @@ impl<'a> VEXInterpreter<'a> {
             "after",
             offset,
             size,
+            Some(&value_ast),
+        );
+    }
+
+    /// Fire a `tmp_read` inspect callback for a VEX `RdTmp` (angr-64pi).
+    ///
+    /// Gated on `inspect_event_enabled(13)` so the no-breakpoint case is
+    /// one bitmask test per `RdTmp` evaluation. Dispatches `when='after'`
+    /// with the tmp's stored value as `tmp_read_expr`. RdTmp can fire many
+    /// times per IRSB (every binop/load/store args go through it); the
+    /// claripy AST round-trip is therefore only done when a BP is set.
+    fn dispatch_tmp_read_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        tmp_num: u32,
+        value: &RustBV,
+    ) {
+        // TmpRead bit assigned in _INSPECT_EVENT_SPECS.
+        if !callbacks.inspect_event_enabled(13) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_tmp_read(
+            py,
+            self.current_state_id,
+            "after",
+            tmp_num,
             Some(&value_ast),
         );
     }

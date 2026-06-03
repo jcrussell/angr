@@ -2205,6 +2205,42 @@ class RustExplorationManager(
             # return event is dropped (no breakpoint fired).
             l.warning("inspect return dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_tmp_read(self, state_id: int, when: str, tmp_num: int, value_ast):
+        """PyO3 callback target for tmp_read events (VEX `RdTmp`).
+
+        Fired `when='after'` once the tmp slot has been read. `value_ast`
+        is the claripy reconstruction of the stored RustBV.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "tmp_read", state_id, when,
+                tmp_read_num=tmp_num,
+                tmp_read_expr=value_ast,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # tmp_read event is dropped (no breakpoint fired).
+            l.warning("inspect tmp_read dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_tmp_write(self, state_id: int, when: str, tmp_num: int, value_ast):
+        """PyO3 callback target for tmp_write events (VEX `WrTmp`).
+
+        Fired `when='after'` with the value about to be stored into the
+        tmp. Note: the slot mutation happens after this callback returns,
+        so user BP_AFTER overrides are not honored — same MVP gap as the
+        Python-dispatched events documented in `rust_engine.rst`.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "tmp_write", state_id, when,
+                tmp_write_num=tmp_num,
+                tmp_write_expr=value_ast,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # tmp_write event is dropped (no breakpoint fired).
+            l.warning("inspect tmp_write dispatch failed: %s: %s", type(e).__name__, e)
+
     def _cb_inspect_simprocedure(
         self,
         state_id: int,

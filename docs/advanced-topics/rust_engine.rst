@@ -29,9 +29,10 @@ Overview
   see the matrix below.
 * **Partial** ``state.inspect`` **dispatch.** The Rust engine dispatches
   ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
-  ``instruction``, ``irsb``, ``exit``, ``call``, and ``return`` events
-  to Python BPs. Unsupported events (``fork``, ``syscall``,
-  ``constraints``, ``simprocedure``, ``dirty``, …) still raise
+  ``instruction``, ``irsb``, ``exit``, ``call``, ``return``,
+  ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``, and
+  ``tmp_write`` events to Python BPs. Unsupported events (``fork``,
+  ``constraints``, ``expr``, ``statement``, …) still raise
   ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
@@ -1833,6 +1834,8 @@ Event          Fires when        BP attributes
 ``syscall``     ``before``/``after`` ``syscall_name``, ``simprocedure``
 ``dirty``       ``before``/``after`` ``dirty_name``, ``dirty_handler``,
                                   ``dirty_args``, ``dirty_result``
+``tmp_read``    ``after``         ``tmp_read_num``, ``tmp_read_expr``
+``tmp_write``   ``after``         ``tmp_write_num``, ``tmp_write_expr``
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
@@ -1865,8 +1868,8 @@ Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
 Registering a BP for any of ``fork``, ``constraints``,
-``address_concretization``, ``expr``, ``statement``, ``tmp_read``,
-``tmp_write``, ``vex_lift``, ``symbolic_variable``,
+``address_concretization``, ``expr``, ``statement``,
+``vex_lift``, ``symbolic_variable``,
 ``engine_process``, or ``memory_page_map`` raises
 ``NotImplementedError`` with a message pointing at this document.
 ``_NoOpInspectProxy`` previously silently accepted every registration
@@ -2018,6 +2021,13 @@ Decision history
   Introduced ``dispatch_origin: 'python'`` in ``_INSPECT_EVENT_SPECS``
   so the consistency tests skip the PythonCallbacks slot check for
   events the Rust engine never invokes directly.
+* ``angr-64pi`` (2026-06-03): wired ``tmp_read`` + ``tmp_write``
+  dispatch from the ``RdTmp`` / ``WrTmp`` arms of
+  ``interpreter/expressions.rs`` and ``interpreter/statements.rs``.
+  Bits 13/14 in ``inspect_enabled``. ``RdTmp`` evaluates many times
+  per IRSB (every binop arg, store data, etc.), so the
+  ``AtomicU16::load + AND`` short-circuit is essential — the
+  no-BP-set bench-regression gate confirmed no measurable overhead.
 
 Exploration technique compatibility
 -----------------------------------

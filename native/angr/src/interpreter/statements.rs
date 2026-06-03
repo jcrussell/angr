@@ -54,6 +54,7 @@ impl<'a> VEXInterpreter<'a> {
             IRStmt::WrTmp { tmp, data } => {
                 let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 if (*tmp as usize) < self.temps.len() {
+                    self.dispatch_tmp_write_inspect(py, callbacks, *tmp, &value);
                     self.temps[*tmp as usize] = Some(value);
                 } else {
                     return Err(CbExecutionError::UnknownTemp(*tmp));
@@ -1689,6 +1690,41 @@ impl<'a> VEXInterpreter<'a> {
             "after",
             offset,
             size,
+            Some(&value_ast),
+        );
+    }
+
+    /// Fire a `tmp_write` inspect callback for a VEX `WrTmp` (angr-64pi).
+    ///
+    /// Gated on `inspect_event_enabled(14)` so the no-breakpoint case is
+    /// one bitmask test per `WrTmp`. Dispatches `when='after'` with the
+    /// written value as `tmp_write_expr`. Fires before the slot mutation
+    /// only when a BP is registered; the mutation itself happens in the
+    /// caller after this returns so the slot is consistent post-dispatch.
+    fn dispatch_tmp_write_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        tmp_num: u32,
+        value: &RustBV,
+    ) {
+        // TmpWrite bit assigned in _INSPECT_EVENT_SPECS.
+        if !callbacks.inspect_event_enabled(14) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_tmp_write(
+            py,
+            self.current_state_id,
+            "after",
+            tmp_num,
             Some(&value_ast),
         );
     }
