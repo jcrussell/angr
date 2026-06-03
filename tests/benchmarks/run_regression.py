@@ -39,6 +39,12 @@ from run_single import (
 )
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
+# Optional per-bench counter snapshot. When present, a timing regression
+# triggers a `bench_diff` table against the cached snapshot so CI logs
+# show *which counter moved* without a manual re-run. Refreshed by
+# ``--update`` alongside BASELINE_FILE. Soft dependency — absent file
+# only suppresses the diff, the gate keeps working.
+BASELINE_COUNTERS_FILE = os.path.join(os.path.dirname(__file__), "baseline_counters.json")
 
 # Tracked metrics beyond timing. Each entry: (key_in_stats, key_in_baseline, regression_threshold_pct)
 # A regression is flagged when the metric INCREASES by more than threshold_pct.
@@ -212,6 +218,19 @@ def save_baseline(data):
     print(f"Baseline saved to {BASELINE_FILE}")
 
 
+def load_baseline_counters():
+    if os.path.exists(BASELINE_COUNTERS_FILE):
+        with open(BASELINE_COUNTERS_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_baseline_counters(data):
+    with open(BASELINE_COUNTERS_FILE, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    print(f"Counter baseline saved to {BASELINE_COUNTERS_FILE}")
+
+
 def _git_revparse(*args):
     try:
         out = subprocess.run(
@@ -256,6 +275,11 @@ def save_history_record(path, results):
 def main():
     parser = argparse.ArgumentParser(description="Rust engine benchmark regression test")
     parser.add_argument("--update", action="store_true", help="Update baseline timings")
+    parser.add_argument("--update-counters", action="store_true",
+                        help="Refresh baseline_counters.json (used by the bench_diff "
+                             "report on a regression) without touching baseline_timings.json. "
+                             "Safe to run periodically — counter snapshots are not "
+                             "performance-gated, only diffed.")
     parser.add_argument("--threshold", type=float, default=0.15,
                         help="Regression threshold (default: 0.15 = 15%% slower)")
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
@@ -318,6 +342,12 @@ def main():
         sys.exit(2)
 
     baseline = load_baseline()
+    baseline_counters = load_baseline_counters()
+    # Per-bench counter dict captured this run. Used to refresh
+    # baseline_counters.json when --update is set, and as the
+    # "current" side of the regression diff against
+    # baseline_counters[baseline_key].
+    current_counters: dict[str, dict] = {}
     results = {}
     failures = []
     # When --retry-failures > 0, each timing-regression failure is recorded here
@@ -382,6 +412,8 @@ def main():
         # Collect algorithmic metrics from Rust stats
         rust_stats = rust_result.get("stats") or {}
         rust_peak_mem = rust_result.get("peak_memory_mb")
+        if rust_stats:
+            current_counters[baseline_key] = rust_stats
 
         # Check timing regression against baseline
         if baseline_key in baseline and not args.update:
@@ -391,6 +423,22 @@ def main():
                 print(f"  REGRESSION: {rust_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%)")
                 failure_msg = f"{name}: {pct:.0f}% regression ({rust_time:.2f}s vs {bl:.2f}s)"
                 failures.append(failure_msg)
+                # Soft-emit a per-counter diff so the CI log shows *which*
+                # counter moved. Requires a cached counter snapshot in
+                # baseline_counters.json — silently skipped otherwise.
+                base_counters = baseline_counters.get(baseline_key)
+                if base_counters and rust_stats:
+                    try:
+                        from bench_diff import compute_diff, format_report
+                        rows = compute_diff(base_counters, rust_stats)
+                        print(format_report(
+                            rows, max_rows=20,
+                            header=f"  counter diff for {baseline_key}:",
+                        ))
+                    except Exception as exc:
+                        # Diff helper is best-effort; never let it mask
+                        # the underlying timing failure.
+                        print(f"  (counter diff failed: {exc})")
                 if args.retry_failures > 0:
                     retry_candidates.append(
                         (failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key)
@@ -497,6 +545,12 @@ def main():
     if args.update and results:
         baseline.update(results)
         save_baseline(baseline)
+        if current_counters:
+            baseline_counters.update(current_counters)
+            save_baseline_counters(baseline_counters)
+    elif args.update_counters and current_counters:
+        baseline_counters.update(current_counters)
+        save_baseline_counters(baseline_counters)
 
     if args.history_record and results:
         save_history_record(args.history_record, results)

@@ -133,6 +133,18 @@ python tests/benchmarks/run_single.py fauxware --dump-counters
 # sections so the JSON is the only structured payload on stdout.
 python tests/benchmarks/run_single.py fauxware --counters-json
 
+# Diff two --counters-json captures by counter delta (largest |delta| first,
+# filters noise below 5% AND below 10 abs). load_counters strips the
+# `OK rust ...` preamble so the raw run_single output can be fed in directly.
+python tests/benchmarks/run_single.py fauxware --counters-json > /tmp/base.json
+# ... apply candidate change, rebuild ...
+python tests/benchmarks/run_single.py fauxware --counters-json > /tmp/curr.json
+python tests/benchmarks/bench_diff.py /tmp/base.json /tmp/curr.json
+
+# Refresh baseline_counters.json (used by run_regression.py to auto-emit the
+# diff on a timing regression) without touching baseline_timings.json.
+python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --update-counters
+
 # Point at a custom angr-examples checkout (defaults to ~/repos/angr-examples)
 ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
 ```
@@ -151,6 +163,11 @@ ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_re
 - Both jobs checkout `angr/angr-examples` and set `ANGR_EXAMPLES_DIR` so
   `tests/benchmarks/run_single.py` finds the example corpus. Without that the
   script falls back to `~/repos/angr-examples/examples`.
+- On a timing regression, the gate auto-emits a `bench_diff` table comparing
+  the per-bench counter dict against `baseline_counters.json` (soft dep —
+  missing file just suppresses the diff). The table caps at 20 rows by
+  default and shows the counters that moved most in absolute terms; ns-level
+  timing counters always lead because they vary slightly across runs.
 
 ## Profiling Rust Benches
 
