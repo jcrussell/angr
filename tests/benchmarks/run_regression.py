@@ -122,6 +122,15 @@ FAST_SUITE = [
     # instruction-fetch + memory layout path on a 64-bit MIPS target
     # end-to-end through the Rust interpreter.
     ("mips64_be_branch", 30, "bfs", True),
+    # CMU binary bomb (angr-w5op). Lives in tests/benchmarks/synthetic_examples/
+    # as a wrapper that skips upstream's broken/path-explosion flags and
+    # runs the FAST subset (1, 4, secret) of the printf/scanf-heavy
+    # teaching binary. Marked rust_only=True because solve_flag_4 returns
+    # a different valid model than Python (Z3 model nondeterminism on
+    # multi-solution constraints — Python picks (7, 0), Rust picks (0, 0)).
+    # See bd memory ``bench-cmu-binary-bomb-broken`` and the wrapper
+    # docstring for the full per-flag rationale.
+    ("cmu_binary_bomb_partial", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full
