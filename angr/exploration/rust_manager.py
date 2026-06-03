@@ -741,6 +741,15 @@ class RustExplorationManager(
         # Access found states
         for state in mgr.found:
             print(state.solver.eval(state.posix.dumps(0)))
+
+    API stability:
+        The public surface of this class is enumerated in
+        ``angr/exploration/_public_api.py`` and governed by the semver
+        + deprecation contract documented in
+        ``docs/advanced-topics/rust_engine.rst`` under
+        "API stability contract". Names with a leading underscore are
+        private implementation detail; names tagged ``Experimental:``
+        in their docstring may change shape in any minor release.
     """
 
     # Class-level cache for Python init results per binary

@@ -2888,14 +2888,49 @@ Follow-up bead filed: ``angr-x04s.1`` (task: prototype
 behind an opt-in Python flag, no production code path touches it
 by default).
 
+.. _rust-engine-api-stability:
+
 API stability contract
 ----------------------
 
 The Rust engine's public API consists of the PyO3 ``#[pyclass]`` types
 re-exported from ``angr.exploration`` (and forwarded to the top-level
 ``angr`` package per ``angr-nncz``) plus the typed exception hierarchy
-in ``native/angr/src/errors.rs``. The following semver contract
-applies once the engine reaches a tagged release:
+in ``native/angr/src/errors.rs``.
+
+Public vs experimental vs private
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Three tiers of stability apply to every name reachable from
+``angr.exploration``:
+
+- **Public.** No leading underscore, listed in
+  ``angr/exploration/_public_api.py`` (``MODULE_EXPORTS``,
+  ``TYPED_EXCEPTIONS``, or as a key in ``CLASS_PUBLIC_ATTRS``), and
+  not marked experimental. Public names follow the semver contract
+  below.
+- **Experimental.** A no-leading-underscore name explicitly tagged
+  ``Experimental:`` in its docstring or RST description (see the
+  ``ANGR_Z3_TACTIC`` example earlier in this document). Experimental
+  surfaces may change or be removed in any minor release without
+  going through the deprecation cycle. They exist so risky/in-flight
+  work can be reached from Python without committing to forever.
+- **Private.** Leading underscore (``_foo``, ``_BAR``) or any name
+  not in ``_public_api.py``. Internal implementation detail — may
+  change or vanish in any release without notice. Do not import,
+  patch, or rely on private names from downstream code.
+
+Snapshot test ``angr-9cps .3`` (planned) consumes
+``angr/exploration/_public_api.py`` as the canonical list of public
+names; any unintended addition, rename, or removal trips CI before it
+ships.
+
+Semver rules (within 9.2.x and onwards)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following semver contract applies once the engine reaches a
+tagged release. It governs the **public** tier only — experimental
+and private names are exempt.
 
 **Patch versions (X.Y.Z → X.Y.Z+1)**
   - No public API changes — bug fixes only.
@@ -2913,11 +2948,75 @@ applies once the engine reaches a tagged release:
     add the new variant without it being a breaking change.
   - May add new pyclass methods. Existing method signatures stay
     stable.
+  - May mark a previously-public name as deprecated. The name keeps
+    working for the rest of the current minor series and is removed
+    no earlier than the **next** minor release (see deprecation
+    cycle below).
 
 **Major versions (X.Y.Z → X+1.0.0)**
   - May rename or remove exception classes, pyclass methods/fields,
     or error variants. May restructure the ``RustExecutionError``
     hierarchy.
+  - May remove any name that has been through one full minor's worth
+    of deprecation warning.
+
+Breaking-change rule of thumb: if a change would break code written
+against ``_public_api.py``, it requires a major version bump *and*
+at least one minor release where the old name still works while
+emitting ``DeprecationWarning``.
+
+Deprecation cycle
+~~~~~~~~~~~~~~~~~
+
+Removing a public name is a two-step process:
+
+1. **Deprecate** in minor release ``X.Y.0``. The name continues to
+   work; access emits ``DeprecationWarning`` (Python side) or a
+   ``#[deprecated]`` attribute (Rust side, when applicable). The
+   ``CLASS_PUBLIC_ATTRS`` tuple in ``_public_api.py`` keeps the
+   name with a trailing ``# deprecated in X.Y, removal targeted
+   X.(Y+1)`` comment.
+2. **Remove** no earlier than ``X.(Y+1).0``. The name vanishes from
+   ``_public_api.py``; the snapshot test enforces the removal.
+
+One minor cycle is the floor, not the ceiling — popular names should
+get more. The cycle exists so downstream code has a release with both
+the new and old name working, where ``DeprecationWarning`` shows up
+in test output and surfaces the rename.
+
+How to mark something experimental
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a new pyclass method, ``#[pyo3(get)]`` field, env-var hook, or
+similar Python-visible knob ships in a state where its shape may
+still change, mark it experimental:
+
+- **Python side.** Add ``"Experimental:"`` (literal prefix) to the
+  first line of the docstring, e.g.
+
+  .. code-block:: python
+
+      def some_new_knob(self, ...):
+          """Experimental: tune the foo strategy.
+
+          May change shape in any minor release until promoted.
+          """
+
+  Do **not** add the name to ``_public_api.py``. The snapshot test
+  treats absence from ``_public_api.py`` as "not public" — exactly
+  the contract we want for experimental.
+
+- **Rust side.** In the RST description of any new ``#[pyo3(get)]``
+  field or pyclass method, lead with ``Experimental:`` and link
+  back to this section (``:ref:`rust-engine-api-stability```).
+  Existing example: ``ANGR_Z3_TACTIC`` solver-strategy override
+  earlier in this document.
+
+Promoting an experimental name to public means: drop the
+``Experimental:`` prefix, add it to the relevant tuple in
+``_public_api.py``, and land both changes in the same minor release.
+Promotion is a *minor*-version event (additive), so it does not
+require a deprecation cycle.
 
 The Python exception hierarchy intentionally **does not** offer an
 exhaustive-match guarantee. Downstream code that uses
