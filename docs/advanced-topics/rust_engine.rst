@@ -1641,18 +1641,48 @@ vs. Python.
      - Required for ``solver.unsat_core()``.
      - (a) implement — Rust solver tracks constraints internally but
        ``unsat_core`` is not surfaced.
-   * - ``BYPASS_UNSUPPORTED_IROP``, ``BYPASS_ERRORED_IROP``,
-       ``BYPASS_UNSUPPORTED_IREXPR``, ``BYPASS_UNSUPPORTED_IRSTMT``,
-       ``BYPASS_UNSUPPORTED_IRDIRTY``, ``BYPASS_UNSUPPORTED_IRCCALL``,
-       ``BYPASS_ERRORED_IRCCALL``, ``BYPASS_UNSUPPORTED_SYSCALL``,
-       ``BYPASS_ERRORED_IRSTMT``, ``BYPASS_VERITESTING_EXCEPTIONS``,
-       ``UNSUPPORTED_BYPASS_ZERO_DEFAULT``,
+   * - ``BYPASS_UNSUPPORTED_IROP``, ``BYPASS_UNSUPPORTED_IRDIRTY``,
+       ``BYPASS_UNSUPPORTED_IRCCALL``, ``BYPASS_UNSUPPORTED_SYSCALL``
+     - Tell Python's ``HeavyResilienceMixin``
+       (``engines/vex/heavy/resilience.py``) to substitute a default
+       symbol/zero on unsupported ops/dirty helpers/ccalls/syscalls.
+     - (a) honored transparently. Rust's interpreter routes unsupported
+       VEX features through ``FallbackStrategy::PythonCallback``
+       (``native/angr/src/interpreter/mod.rs:268-278``); Python re-runs
+       the block, sees the option, and substitutes. Syscalls fall back
+       to Python's syscall engine via ``_handle_syscall_callback``,
+       which also honors ``BYPASS_UNSUPPORTED_SYSCALL``.
+   * - ``BYPASS_UNSUPPORTED_IREXPR``, ``BYPASS_UNSUPPORTED_IRSTMT``
+     - Defined in ``sim_options.py`` but never consulted anywhere in
+       angr today (vestigial).
+     - (a) honored vacuously — neither option has any wired effect in
+       the Python engine either.
+   * - ``UNSUPPORTED_BYPASS_ZERO_DEFAULT``,
        ``UNSUPPORTED_FORCE_CONCRETIZE``
-     - Tell the Python engine to swallow / fall back to a default on
-       unsupported VEX.
-     - (a) implement — Rust has its own error path; the bypass set is
-       not consulted. Resilience modes that work in Python may abort
-       under Rust.
+     - Modify what Python substitutes when a ``BYPASS_UNSUPPORTED_*``
+       fires (zero instead of symbol; or try concretizing inputs first).
+     - (a) honored transparently via the same Python-fallback path as
+       the ``BYPASS_UNSUPPORTED_*`` siblings.
+   * - ``BYPASS_ERRORED_IROP``, ``BYPASS_ERRORED_IRCCALL``,
+       ``BYPASS_ERRORED_IRSTMT``
+     - Tell Python's ``HeavyResilienceMixin`` to catch
+       ``SimOperationError`` / ``SimError`` raised during op / ccall /
+       stmt evaluation and substitute a default.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Rust's ``Op`` / ``TypeMismatch`` /
+       ``InvalidIR`` errors map to ``FallbackStrategy::Panic`` and move
+       the state to the errored stash without falling back to Python —
+       the bypass never fires. Silent divergence from the same state
+       run under Python (angr-6rz8, 2026-06-03).
+   * - ``BYPASS_VERITESTING_EXCEPTIONS``
+     - Tells ``analyses/veritesting.py`` to forward ``resilience=True``
+       to the nested ``SimulationManager.run`` call.
+     - **(b) explicitly reject** — only consulted from inside Veritesting,
+       which already raises via ``EFFICIENT_STATE_MERGING`` (Veritesting
+       auto-adds that option). Outside Veritesting the option is a
+       no-op. Carried by the ``angr.options.resilience`` bundle, so
+       reject-with-warn rather than raise to keep bundle users alive
+       (angr-6rz8, 2026-06-03).
    * - ``UNINITIALIZED_ACCESS_AWARENESS``, ``BEST_EFFORT_MEMORY_STORING``
      - Affect SimMemory error handling.
      - (b) explicitly reject.

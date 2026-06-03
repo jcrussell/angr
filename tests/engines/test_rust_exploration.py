@@ -13147,6 +13147,100 @@ class TestEdgeCases:
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr is not None
 
+    @pytest.mark.parametrize("option_name", [
+        "BYPASS_ERRORED_IROP",
+        "BYPASS_ERRORED_IRCCALL",
+        "BYPASS_ERRORED_IRSTMT",
+    ])
+    def test_bypass_errored_options_raise_at_construction(
+        self, fauxware_project, option_name,
+    ):
+        """The BYPASS_ERRORED_* family must raise NotImplementedError at
+        manager construction. Python's HeavyResilienceMixin catches
+        SimError raised during op/ccall/stmt evaluation and substitutes a
+        default value; Rust's interpreter maps Op / TypeMismatch /
+        InvalidIR errors to FallbackStrategy::Panic and moves the state
+        to the errored stash without ever falling back to Python — the
+        bypass never fires. Silent divergence from the Python engine.
+        Acceptance for angr-6rz8.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={getattr(angr.sim_options, option_name)},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert option_name in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
+    @pytest.mark.parametrize("option_name", [
+        "BYPASS_UNSUPPORTED_IROP",
+        "BYPASS_UNSUPPORTED_IREXPR",
+        "BYPASS_UNSUPPORTED_IRSTMT",
+        "BYPASS_UNSUPPORTED_IRDIRTY",
+        "BYPASS_UNSUPPORTED_IRCCALL",
+        "BYPASS_UNSUPPORTED_SYSCALL",
+        "UNSUPPORTED_BYPASS_ZERO_DEFAULT",
+        "UNSUPPORTED_FORCE_CONCRETIZE",
+    ])
+    def test_bypass_unsupported_options_honored_silently(
+        self, fauxware_project, option_name,
+    ):
+        """The BYPASS_UNSUPPORTED_* family (and the two modifier options
+        UNSUPPORTED_BYPASS_ZERO_DEFAULT / UNSUPPORTED_FORCE_CONCRETIZE)
+        must NOT raise and NOT warn at manager construction. Rust routes
+        unsupported VEX features through FallbackStrategy::PythonCallback
+        (interpreter/mod.rs:268-278), which re-runs the failing block
+        through Python's HeavyResilienceMixin — so these options are
+        honored transparently and need neither raise nor warn entries.
+        BYPASS_UNSUPPORTED_IREXPR and BYPASS_UNSUPPORTED_IRSTMT are
+        vestigial (defined but not consulted anywhere); they pass
+        through vacuously. Acceptance for angr-6rz8.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={getattr(angr.sim_options, option_name)},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr is not None
+        target = [w for w in caught
+                  if issubclass(w.category, UserWarning)
+                  and option_name in str(w.message)]
+        assert not target, (
+            f"{option_name} must not emit a UserWarning at construction; "
+            f"got {[str(w.message) for w in target]!r}"
+        )
+
+    def test_bypass_veritesting_exceptions_warns(self, fauxware_project):
+        """BYPASS_VERITESTING_EXCEPTIONS is consulted only by
+        analyses/veritesting.py; Veritesting under Rust already raises
+        via the EFFICIENT_STATE_MERGING option it auto-adds. Outside
+        Veritesting the option is a no-op. It travels with the
+        ``angr.options.resilience`` bundle, so reject-with-warn (not
+        raise) keeps resilience-bundle users alive while still signaling
+        the divergence. Acceptance for angr-6rz8.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.BYPASS_VERITESTING_EXCEPTIONS},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            RustExplorationManager(fauxware_project, [state])
+        messages = [str(w.message) for w in caught
+                    if issubclass(w.category, UserWarning)]
+        assert any("BYPASS_VERITESTING_EXCEPTIONS" in m for m in messages), (
+            f"expected BYPASS_VERITESTING_EXCEPTIONS warning; got {messages!r}"
+        )
+
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
         from angr.exploration import RustExplorationManager

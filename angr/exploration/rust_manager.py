@@ -205,6 +205,16 @@ _REJECTED_OPTION_NAMES = frozenset({
     "TRUE_RET_EMULATION_GUARD",
     # Alternate Python engines / memory plugins.
     "SUPER_FASTPATH", "FAST_MEMORY", "FAST_REGISTERS", "UNDER_CONSTRAINED_SYMEXEC",
+    # BYPASS_VERITESTING_EXCEPTIONS is consulted only from
+    # angr/analyses/veritesting.py (resilience= kwarg passed to nested
+    # SimulationManager.run). Veritesting under Rust already raises via
+    # EFFICIENT_STATE_MERGING (Veritesting auto-adds that option), so a
+    # user driving Veritesting hits the raise on EFFICIENT_STATE_MERGING
+    # first. Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
+    # no-op — `resilience` bundle users carry it implicitly. Reject with
+    # a warn-once rather than raise so adding `angr.options.resilience`
+    # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)
+    "BYPASS_VERITESTING_EXCEPTIONS",
 })
 
 
@@ -275,6 +285,27 @@ _REJECTED_OPTION_NAMES = frozenset({
 # load_concrete_lazy (native/angr/src/memory/load.rs:333-339) falls back
 # to a fresh `unc_mem_*` symbolic BVS when zero_fill_unconstrained is
 # unset — i.e., symbolic-fill is already Rust's default for memory.
+#
+# BYPASS_ERRORED_IROP / BYPASS_ERRORED_IRCCALL / BYPASS_ERRORED_IRSTMT
+# tell Python's HeavyResilienceMixin (engines/vex/heavy/resilience.py) to
+# catch SimError / SimOperationError raised during op / ccall / stmt
+# evaluation and substitute a default symbol or zero. Rust's interpreter
+# routes its own errors via FallbackStrategy (interpreter/mod.rs:268-278):
+# UnsupportedFeature falls back to Python so the BYPASS_UNSUPPORTED_*
+# bypass fires, but Op / TypeMismatch / InvalidIR are Panic-strategy and
+# move the state to the errored stash without ever giving Python a chance
+# to substitute. The "ERRORED" bypasses therefore silently do nothing
+# under Rust when Rust hits a Panic-strategy variant — a divergence the
+# user paid into resilience for. Promoted to raise (angr-6rz8,
+# 2026-06-03). The "UNSUPPORTED" siblings (BYPASS_UNSUPPORTED_IROP /
+# IRDIRTY / IRCCALL / SYSCALL) are honored transparently via the
+# UnsupportedFeature -> Python fallback path and therefore stay out of
+# both _RAISE and _REJECTED. BYPASS_UNSUPPORTED_IREXPR and
+# BYPASS_UNSUPPORTED_IRSTMT are vestigial — defined but not consulted
+# anywhere in angr today; also honored vacuously. The modifier options
+# UNSUPPORTED_BYPASS_ZERO_DEFAULT and UNSUPPORTED_FORCE_CONCRETIZE only
+# affect what value Python substitutes when its bypass fires, so they
+# are also honored transparently through the same path.
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
@@ -284,6 +315,9 @@ _RAISE_OPTION_NAMES = frozenset({
     "CALLLESS",
     "EFFICIENT_STATE_MERGING",
     "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
+    "BYPASS_ERRORED_IROP",
+    "BYPASS_ERRORED_IRCCALL",
+    "BYPASS_ERRORED_IRSTMT",
 })
 
 
