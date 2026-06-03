@@ -57,6 +57,32 @@ jobs:
           python-version: "3.10"
       - run: cargo test --release
 
+  rust_feature_flags_check:
+    # PR-time compile gate for the four feature-flag combos covered by the
+    # nightly `rust_feature_flags` matrix (no-features, vex-engine,
+    # vex-engine+vex-engine-z3, automaton). Nightly runs full
+    # `cargo test` + `feature_flag_smoke`; this PR-time variant runs only
+    # `cargo check` to keep the budget at ~1-2 min per matrix entry while
+    # still catching cfg-gated compile breaks before merge.
+    # See bd memory `invariant-ci-gate-hygiene` rule (1): every nightly
+    # gate should have a PR-time variant to avoid "broken until next cron".
+    name: Rust Feature Flags (PR check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        features:
+          - ""  # no features
+          - "vex-engine"  # VEX engine without Z3
+          - "vex-engine,vex-engine-z3"  # VEX engine with Z3
+          - "automaton"  # automaton only
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - name: Cargo check with features "${{ matrix.features }}"
+        run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
+
   python_baseline:
     # Fast subset of the vanilla angr test suite — proves rust-symex
     # changes did not regress the Python engine. Distinct from the
