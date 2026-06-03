@@ -227,6 +227,9 @@ CLASS_PUBLIC_ATTRS: dict[str, tuple[str, ...]] = {
         'one_active',
         'one_found',
         'stashes',
+        'step',
+        'step_state',
+        'successors',
     ),
 }
 
