@@ -2869,92 +2869,55 @@ class RustExplorationManager(
         if new_ids:
             actual_state_id = new_ids.pop()
 
-            # Sync constraints from Python state to Rust solver.
-            # When re-using a found state from a previous RustExplorationManager
-            # (multi-stage explore pattern), the Python solver may have 0 constraints
-            # because they all live in the old Rust solver. Detect this and transfer
-            # constraints from the old Rust manager.
-            #
-            # Prefer Z3 pointer transfer (lossless) over claripy AST round-trip
-            # (which silently drops constraints where claripy_to_rustbv fails).
-            z3_transferred = False
+            # Install constraints into the new Rust state with a single call
+            # (angr-tvpk; rust-write-through-supersedes-diff-push). Two paths,
+            # mutually exclusive:
+            #   - Cross-manager transfer (state came from a previous
+            #     RustExplorationManager and the early-reuse branch in __init__
+            #     did NOT take): copy Z3 ASTs by pointer from the old solver.
+            #     Lossless and avoids a claripy round-trip.
+            #   - Fresh Python state: install angr_state.solver.constraints.
+            # Removed: the claripy round-trip via export_state_constraints
+            # (bidirectional cycle) and the post-Z3 Python re-sync (second
+            # installer call). Under the write-through model, Rust owns the
+            # constraint set after this point; subsequent Python-side adds
+            # route through RustSolverFallback's replay path or through
+            # SimSolver write-through (angr-8oiw), not through re-installing
+            # constraints at init.
             old_rust_mgr = getattr(angr_state.scratch, 'rust_mgr', None)
             old_state_id = getattr(angr_state.scratch, 'rust_found_state_id', None)
+            installed = False
             if old_rust_mgr is not None and old_state_id is not None:
                 try:
                     z3_ptrs = old_rust_mgr.export_z3_constraint_ptrs(old_state_id)
                     if z3_ptrs:
-                        # Debug: compare solver states
-                        try:
-                            old_info = old_rust_mgr.debug_solver_info(old_state_id)
-                            l.debug(f"OLD solver ({old_state_id}): {old_info[:300]}")
-                        except Exception as e:
-                            # cat-(a) EXPECTED CONTROL FLOW: debug-only solver-info dump;
-                            # failure is informational only.
-                            l.debug(f"OLD solver debug failed: {e}")
-
                         sat = self._rust_mgr.import_z3_constraint_ptrs(
                             actual_state_id, z3_ptrs)
-
-                        try:
-                            new_info = self._rust_mgr.debug_solver_info(actual_state_id)
-                            l.debug(f"NEW solver ({actual_state_id}): {new_info[:300]}")
-                        except Exception as e:
-                            # cat-(a) EXPECTED CONTROL FLOW: debug-only solver-info dump;
-                            # same as above.
-                            l.debug(f"NEW solver debug failed: {e}")
-
                         l.debug(f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
                                 f"Rust manager (state {old_state_id}), sat={sat}")
-                        z3_transferred = True
+                        installed = True
                 except (AttributeError, Exception) as e:
                     # cat-(b) FALLBACK WITH LOSS: Z3 pointer transfer from old manager
-                    # failed; falls back to lossy claripy round-trip below. Debug-logs.
-                    l.debug(f"Z3 pointer transfer failed, falling back to claripy: {e}")
+                    # failed; falls through to Python-side install below, which on a
+                    # state from a previous Rust manager typically has 0 constraints
+                    # (RustSolverFallback keeps them on the old Rust solver). Debug-logs.
+                    l.debug(f"Z3 pointer transfer failed: {e}")
 
-            if not z3_transferred:
-                # Fallback: claripy AST round-trip (lossy but works without Z3)
-                constraints = []
+            if not installed:
+                py_constraints = None
                 if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
-                    constraints = list(angr_state.solver.constraints)
-                if old_rust_mgr is not None and old_state_id is not None:
-                    try:
-                        exported = old_rust_mgr.export_state_constraints(old_state_id)
-                        if exported:
-                            l.debug(f"Transferring {len(exported)} constraints from previous "
-                                    f"Rust manager (state {old_state_id})")
-                            constraints = exported + constraints
-                    except Exception as e:
-                        # cat-(b) FALLBACK WITH LOSS: legacy export from old Rust manager
-                        # failed; constraints from the old run are not transferred.
-                        # Debug-logs.
-                        l.debug(f"Could not export constraints from old Rust manager: {e}")
-                if constraints:
-                    try:
-                        sat = self._rust_mgr.add_constraints_to_state(
-                            actual_state_id, constraints)
-                        l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
-                                f"{actual_state_id}, sat={sat}")
-                    except Exception as e:
-                        # cat-(c) WRONG-ANSWER RISK: claripy-fallback constraint sync to
-                        # Rust failed; the new state has fewer constraints than the source
-                        # state — eval/satisfiable on it may produce wrong values.
-                        # Already warns.
-                        l.warning(f"Failed to sync initial constraints: {e}")
-
-            # Also sync any Python-side constraints (user-added post-exploration)
-            if z3_transferred and hasattr(angr_state, 'solver') and angr_state.solver.constraints:
-                py_constraints = list(angr_state.solver.constraints)
+                    py_constraints = list(angr_state.solver.constraints)
                 if py_constraints:
                     try:
-                        self._rust_mgr.add_constraints_to_state(
+                        sat = self._rust_mgr.add_constraints_to_state(
                             actual_state_id, py_constraints)
-                        l.debug(f"Synced {len(py_constraints)} additional Python constraints")
+                        l.debug(f"Installed {len(py_constraints)} Python constraints to Rust state "
+                                f"{actual_state_id}, sat={sat}")
                     except Exception as e:
-                        # cat-(b) FALLBACK WITH LOSS: post-Z3-transfer sync of additional
-                        # Python constraints failed; primary Z3 ptr transfer already
-                        # carries the bulk. Debug-logs.
-                        l.debug(f"Could not sync Python constraints: {e}")
+                        # cat-(c) WRONG-ANSWER RISK: constraint install to Rust failed; the
+                        # new state has fewer constraints than the source state — eval /
+                        # satisfiable on it may produce wrong values. Already warns.
+                        l.warning(f"Failed to install initial constraints: {e}")
 
             self._state_cache[actual_state_id] = angr_state
             # Track this as a root state for plugin restoration
