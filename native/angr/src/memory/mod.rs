@@ -233,6 +233,30 @@ impl SymbolicMemory {
         *v = v.wrapping_add(1);
     }
 
+    /// angr-jvjf: returns true iff every byte in `[addr, addr+size)` is
+    /// marked symbolic in the owning page's bitmap. The bitmap is the
+    /// authoritative source of truth — a concrete write inside the range
+    /// of a wider symbolic object correctly clears the byte's bit but
+    /// leaves `symbolic_objects` / `symbolic_spans` claiming the byte is
+    /// still symbolic. Loads must consult this helper before trusting
+    /// the wider-sym fast paths or they will return a stale extract.
+    pub(super) fn bytes_all_marked_symbolic(&self, addr: Address, size: u32) -> bool {
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let page_num = byte_addr.page_num();
+            let offset = byte_addr.page_offset();
+            match self.pages.get(&page_num) {
+                Some(page) => {
+                    if !page.is_symbolic(offset) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// Phase 4.1: compute the per-byte fingerprint for a wider load.
     /// Returns `None` when any byte is plain Symbolic (the wider-load
     /// cache only covers Multi + Concrete bytes) or when a byte's page

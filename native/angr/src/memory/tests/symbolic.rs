@@ -1199,3 +1199,80 @@ fn test_record_mem_ite_depth_helper() {
         "expected max to reach at least 8; base={base_max} after={after_max}"
     );
 }
+
+/// angr-jvjf (case 1): a concrete byte store into the middle of a
+/// wider symbolic object based at the same load address must not be
+/// shadowed by the original wider sym. Pre-fix the load fast path at
+/// load.rs:74 returns `symbolic_objects[addr]` entire because its
+/// width still matches the requested size — the concrete byte we
+/// wrote at addr+3 is silently lost.
+#[test]
+fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Pin sym to a known constant so we can predict the bytes.
+    let k: u128 = 0x1122_3344_5566_7788;
+    let sym = RustBV::symbolic(&ctx, "sym_jvjf_a".to_string(), 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+
+    // Store the 64-bit sym at 0x1000 (covers 0x1000..0x1008).
+    mem.store_concrete(0x1000, sym.clone()).expect("store sym");
+
+    // Concrete-overwrite byte 3 (LE: byte 3 of k = 0x44) with 0xFF.
+    mem.store_concrete(0x1003, RustBV::concrete(0xFF, 8))
+        .expect("store concrete byte");
+    assert!(ctx.is_sat(), "context must remain SAT after the stores");
+
+    // 8-byte load at 0x1000 must reflect the concrete overwrite at
+    // byte 3 — i.e. byte 3 of the loaded value is 0xFF, not 0x44.
+    let loaded = mem
+        .load_concrete(0x1000, 8, &ctx)
+        .expect("8-byte load must succeed");
+    let expected: u128 = (k & !(0xFFu128 << 24)) | (0xFFu128 << 24);
+    assert_eq!(
+        ctx.eval(&loaded),
+        Some(expected),
+        "load(0x1000, 8) must reflect the concrete byte at 0x1003; \
+         expected 0x{:016x}, the bug returns the original sym (0x{:016x})",
+        expected,
+        k,
+    );
+}
+
+/// angr-jvjf (case 2): a concrete byte store into the middle of a
+/// wider symbolic object based at an earlier address must not leave
+/// the `symbolic_spans` entry stale. Pre-fix a 1-byte load at the
+/// overwritten offset hits the span fast path at load.rs:95 and
+/// returns the now-stale extract of the wider sym.
+#[test]
+fn test_concrete_overwrite_clears_stale_symbolic_spans() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let k: u128 = 0x1122_3344_5566_7788;
+    let sym = RustBV::symbolic(&ctx, "sym_jvjf_b".to_string(), 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+
+    // Wider sym at 0x1000 produces span entries at 0x1001..0x1008.
+    mem.store_concrete(0x1000, sym.clone()).expect("store sym");
+
+    // Concrete-overwrite byte 3 with 0xFF (the byte covered by the
+    // span 0x1003 -> (0x1000, 64)).
+    mem.store_concrete(0x1003, RustBV::concrete(0xFF, 8))
+        .expect("store concrete byte");
+
+    // 1-byte load at 0x1003 must be the concrete 0xFF, not the
+    // extracted sym byte 0x44.
+    let byte = mem
+        .load_concrete(0x1003, 1, &ctx)
+        .expect("1-byte load must succeed");
+    assert_eq!(
+        ctx.eval(&byte),
+        Some(0xFF),
+        "load(0x1003, 1) must reflect the concrete overwrite; \
+         the bug returns the stale extract from the wider sym"
+    );
+}

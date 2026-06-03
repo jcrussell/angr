@@ -70,6 +70,23 @@ impl SymbolicMemory {
             // Byte-merge fell through (e.g. unmapped/non-symbolic byte gap);
             // continue to the page-scan path below.
         } else {
+            // angr-jvjf: partial-overwrite guard. `store_concrete` clears
+            // the page bitmap for the overwritten bytes but leaves
+            // `symbolic_objects` / `symbolic_spans` claims intact when
+            // those claims belong to a wider sym based at a different
+            // address. The wider-sym fast paths below would silently
+            // return that stale claim. Detect by combining the claim
+            // signal with a per-byte bitmap scan; on mismatch, route
+            // through `assemble_load_with_multi` which uses the bitmap
+            // per-byte (Symbolic / Spanned / Concrete).
+            let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
+                || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
+            if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
+                let start_page = addr.page_num();
+                let end_page = (addr.raw() + size as u64 - 1) >> 12;
+                self.check_perms_range(start_page, end_page, Permission::R)?;
+                return self.assemble_load_with_multi(addr, size, ctx);
+            }
             // Check for stored symbolic object at exact address first
             if let Some(sym) = self.symbolic_objects.get(&addr) {
                 if sym.width() == size * 8 {
@@ -548,6 +565,21 @@ impl SymbolicMemory {
         if !self.multi_objects.is_empty()
             && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
         {
+            let start_page = addr.page_num();
+            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            self.check_perms_range(start_page, end_page, Permission::R)?;
+            return self.assemble_load_with_multi(addr, size, ctx);
+        }
+
+        // angr-jvjf: same partial-overwrite guard as load_concrete. A
+        // wider sym whose middle byte has been concrete-overwritten by
+        // `store_concrete` will pass the `symbolic_objects[addr]` /
+        // `symbolic_spans[addr]` fast-path checks below and shadow the
+        // page byte. Route to `assemble_load_with_multi` (which honors
+        // the page bitmap per byte) on bitmap mismatch.
+        let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
+            || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
+        if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
             let start_page = addr.page_num();
             let end_page = (addr.raw() + size as u64 - 1) >> 12;
             self.check_perms_range(start_page, end_page, Permission::R)?;
