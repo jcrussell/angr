@@ -35,9 +35,9 @@ head as you read the worked examples below:
        ``IROp`` variants in ``parse_opcode`` and its
        ``parse_arithmetic`` / ``parse_bitwise`` / ``parse_shift`` /
        ``parse_comparison`` / ``parse_conversion`` / ``parse_float`` /
-       ``parse_vector`` / ``parse_special`` sub-routers. Also has a
-       numeric variant ``parse_opcode_from_u32`` for the native FFI
-       path.
+       ``parse_vector`` / ``parse_vreverse`` / ``parse_special`` /
+       ``parse_neon_unimplemented`` sub-routers. Also has a numeric
+       variant ``parse_opcode_from_u32`` for the native FFI path.
    * - ``native/angr/src/vex/ops.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``triop`` /
        ``qop`` dispatch on the ``IROp`` variant and produce a
@@ -62,22 +62,28 @@ The ``parse_*`` family pattern
 .. code-block:: rust
 
    pub fn parse_opcode(op_str: &str) -> IROp {
-       if let Some(op) = parse_arithmetic(op_str) { return op; }
-       if let Some(op) = parse_bitwise(op_str)    { return op; }
-       if let Some(op) = parse_shift(op_str)      { return op; }
-       if let Some(op) = parse_comparison(op_str) { return op; }
-       if let Some(op) = parse_conversion(op_str) { return op; }
-       if let Some(op) = parse_float(op_str)      { return op; }
-       if let Some(op) = parse_vector(op_str)     { return op; }
-       if let Some(op) = parse_special(op_str)    { return op; }
+       if let Some(op) = parse_arithmetic(op_str)         { return op; }
+       if let Some(op) = parse_bitwise(op_str)            { return op; }
+       if let Some(op) = parse_shift(op_str)              { return op; }
+       if let Some(op) = parse_comparison(op_str)         { return op; }
+       if let Some(op) = parse_conversion(op_str)         { return op; }
+       if let Some(op) = parse_float(op_str)              { return op; }
+       if let Some(op) = parse_vector(op_str)             { return op; }
+       if let Some(op) = parse_vreverse(op_str)           { return op; }
+       if let Some(op) = parse_special(op_str)            { return op; }
        if let Some(op) = parse_neon_unimplemented(op_str) { return op; }
        log::warn!("Unmapped VEX operation: {}", op_str);
-       IROp::Raw(0)
+       IROp::Unmapped(intern_unmapped_op(op_str))
    }
+
+The ``IROp::Unmapped(name)`` sentinel (introduced in angr-tkbr.2,
+replacing the older silent ``IROp::Raw(0)``) keeps the original pyvex
+opcode string so dispatch can surface ``RustUnsupportedVexOpError``
+with a useful name instead of returning a fresh-symbolic value.
 
 When you add a new op, the right sub-router is whichever one already
 holds its conceptual siblings. Don't introduce a new sub-router unless
-none of the existing nine fit.
+none of the existing ten fit.
 
 Worked example 1 — arithmetic: ``Add``
 --------------------------------------
@@ -85,8 +91,9 @@ Worked example 1 — arithmetic: ``Add``
 The minimum-friction case: a width-parameterized binary op whose
 implementation already exists on ``RustBV``.
 
-**ir.rs** — the enum variant. ``Add`` lives at
-``native/angr/src/vex/ir.rs:520``:
+**ir.rs** — the enum variant. ``Add`` lives in the ``IROp`` enum at
+``native/angr/src/vex/ir.rs`` (search ``pub enum IROp`` then the
+``// Arithmetic`` group):
 
 .. code-block:: rust
 
@@ -99,27 +106,32 @@ implementation already exists on ``RustBV``.
    }
 
 **opcode_map.rs** — the string-to-variant entries. ``parse_arithmetic``
-(``opcode_map.rs:47``) has four lines per width:
+uses the ``tuple_arms!`` macro to expand one declaration into match
+arms for every width pyvex actually emits:
 
 .. code-block:: rust
 
    fn parse_arithmetic(op_str: &str) -> Option<IROp> {
-       match op_str {
-           "Iop_Add8"  => Some(IROp::Add(IRType::I8)),
-           "Iop_Add16" => Some(IROp::Add(IRType::I16)),
-           "Iop_Add32" => Some(IROp::Add(IRType::I32)),
-           "Iop_Add64" => Some(IROp::Add(IRType::I64)),
-           // …
-       }
+       tuple_arms!(op_str; "Iop_Add" => Add
+                   { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+       tuple_arms!(op_str; "Iop_Sub" => Sub
+                   { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+       // …
+       None
    }
+
+The macro expands to exactly the literal ``match`` arms it would
+otherwise enumerate by hand (``"Iop_Add8" => Some(IROp::Add(IRType::I8))``,
+etc.); use it whenever the new op follows the ``Iop_<base><width>``
+naming convention.
 
 **opcode_map.rs (FFI)** — the numeric mapping. ``parse_opcode_from_u32``
 mirrors the libvex enum order (``Iop_INVALID = 0x1400`` + offset). ``Add``
 sits at ``0x1401`` (I8) through ``0x1404`` (I64). If your new op already
 has an upstream libvex enum value, slot it in here too.
 
-**ops.rs** — the implementation. The dispatch arm
-(``ops.rs:394``) delegates to a ``RustBV`` method via the
+**ops.rs** — the implementation. The dispatch arm inside
+``VEXOps::binop`` delegates to a ``RustBV`` method via the
 ``width_binop!`` macro:
 
 .. code-block:: rust
@@ -138,7 +150,8 @@ delegates to ``left.add_into(right, ctx)``. Symbolic vs. concrete is
 the ``RustBV`` method's responsibility — the dispatch layer doesn't
 care. That's why so many arithmetic arms are one-liners.
 
-**Test.** A representative unit test from ``ops.rs:2950``:
+**Test.** A representative unit test from the
+``#[cfg(test)] mod tests`` block at the bottom of ``ops.rs``:
 
 .. code-block:: rust
 
@@ -158,7 +171,8 @@ Use this shape when an op needs custom logic the ``width_binop!``
 macro can't express. Widening multiply is the canonical example: the
 result is double the operand width.
 
-**ir.rs** — ``MullU(IRType)`` / ``MullS(IRType)`` (``ir.rs:523-524``).
+**ir.rs** — ``MullU(IRType)`` / ``MullS(IRType)`` in the same
+arithmetic group of ``IROp``.
 
 **opcode_map.rs** — entries inside ``parse_arithmetic``:
 
@@ -197,11 +211,11 @@ Things to take away:
   file). Keep them ``#[inline]`` and avoid taking ``&mut`` state — VEX
   ops are pure transforms over ``RustBV`` plus the solver context.
 * When the helper needs both a concrete and a symbolic path (typical
-  for FP and vector ops, see ``FloatLaneOp`` in ``ops.rs:43``), use
-  the trait/struct-pair pattern: each implementation supplies *both*
-  branches so the compiler stops you from forgetting one.
-* The unit test demonstrates both width and overflow behavior
-  (``ops.rs:2961``):
+  for FP and vector ops, see ``FloatLaneOp`` near the top of
+  ``ops.rs``), use the trait/struct-pair pattern: each implementation
+  supplies *both* branches so the compiler stops you from forgetting
+  one.
+* The unit test demonstrates both width and overflow behavior:
 
   .. code-block:: rust
 
@@ -218,15 +232,16 @@ Things to take away:
 Worked example 3 — memory read: ``IRExpr::Load``
 ------------------------------------------------
 
-``Load`` is not an ``IROp`` — it's an ``IRExpr`` variant
-(``ir.rs:270``), and it lives in the **interpreter** layer rather than
+``Load`` is not an ``IROp`` — it's an ``IRExpr`` variant in
+``vex/ir.rs``, and it lives in the **interpreter** layer rather than
 ``ops.rs``. This is a frequent place contributors go looking in the
 wrong file. The reason is that loads need access to the state's memory
 plane, which ``VEXOps`` deliberately does not have (its inputs are
 ``RustBV`` plus a solver context — nothing more).
 
 The dispatch site is in
-``native/angr/src/interpreter/expressions.rs:49``:
+``native/angr/src/interpreter/expressions.rs`` (search
+``IRExpr::Load {``):
 
 .. code-block:: rust
 
@@ -249,8 +264,8 @@ constraints, or call frames goes through ``interpreter``.
 Worked example 4 — memory write: ``IRStmt::Store``
 --------------------------------------------------
 
-Same story as ``Load`` but on the statement side
-(``ir.rs:175-183``):
+Same story as ``Load`` but on the statement side (search
+``IRStmt::Store {`` in ``vex/ir.rs``):
 
 .. code-block:: rust
 
@@ -260,7 +275,9 @@ Same story as ``Load`` but on the statement side
        // …
    }
 
-The dispatch site is ``interpreter/statements.rs:54``:
+The dispatch site is in
+``native/angr/src/interpreter/statements.rs`` (search
+``IRStmt::Store {``):
 
 .. code-block:: rust
 
@@ -284,7 +301,7 @@ Putting the pieces together. Suppose pyvex starts emitting
 ``Iop_PopCnt8`` (a hypothetical 8-bit population count) and the engine
 doesn't know it yet. The end-to-end recipe:
 
-1. **Pick the family.** ``PopCount`` already exists at ``ir.rs:588`` —
+1. **Pick the family.** ``PopCount`` already exists in ``IROp`` —
    so this is just a new width, not a new variant. If your op has no
    conceptual sibling, add a new variant.
 
@@ -336,9 +353,13 @@ What *not* to do
 * Don't add a new sub-router to ``parse_opcode`` for a single op. If
   it doesn't fit any of the nine, the op probably belongs in
   ``parse_special``.
-* Don't reach for ``IROp::Raw(0)`` in production code paths. ``Raw``
-  exists as the "unmapped" sentinel; treating it as an escape hatch
-  hides bugs from contributors who actually want to map the op.
+* Don't reach for ``IROp::Unmapped`` (the "unmapped sentinel") in
+  production code paths. ``Unmapped`` exists to surface
+  ``RustUnsupportedVexOpError`` when ``parse_opcode`` can't match;
+  treating it as an escape hatch hides bugs from contributors who
+  actually want to map the op. The older ``IROp::Raw(u32)`` variant
+  is similarly a fallback for unhandled numeric opcodes — don't lean
+  on it either.
 * Don't bypass the width parameterization just to ship faster.
   ``IROp::Foo32`` / ``IROp::Foo64`` separately is exactly the
   proliferation libvex pays for; the Rust engine's terseness is
@@ -495,4 +516,12 @@ on a new workload:
    it there.
 3. Add a row to the matrix above with status ``Placeholder`` and a
    pointer to whichever bead tracks the implementation work.
+
+.. note::
+
+   *Last verified against commit* ``4215fe99b`` *on 2026-06-03*
+   (angr-1cnv). When you touch ``native/angr/src/vex/opcode_map.rs``
+   or ``native/angr/src/vex/ops.rs``, re-read the *Pipeline overview*,
+   *parse_\* family pattern*, and *Unsupported op coverage matrix*
+   sections and bump this footer to the new commit hash.
 

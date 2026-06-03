@@ -755,7 +755,8 @@ the string-to-numeric family, env mutation, and extended string ops.
        ``strncat``, ``strchr``, ``strstr``, ``memcpy``, ``memmove``,
        ``memset``, ``memcmp``, ``memchr``
      - 17 / 17
-     - Original set in ``procedures/mod.rs`` (lines 176–248)
+     - Original set in ``procedures/mod.rs`` (search
+       ``NativeProcedureRegistry::new``)
    * - Character classification (pre-campaign)
      - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
        ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
@@ -809,10 +810,10 @@ the string-to-numeric family, env mutation, and extended string ops.
      - angr-f16h.3 (closed) — ``strtol.rs``, ``strtod.rs``
        (``strtod`` amd64-only, xmm0 return)
    * - Env mutation (angr-f16h.4)
-     - ``setenv`` ✓, ``putenv`` ✓, ``unsetenv`` ✗, ``clearenv`` ✗
-     - 2 / 4
-     - angr-f16h.4 (open) — ``getenv.rs`` partial; missing handlers
-       fall back to Python
+     - ``setenv`` ✓, ``putenv`` ✓, ``unsetenv`` ✓, ``clearenv`` ✓
+     - 4 / 4
+     - angr-f16h.4 — ``getenv.rs`` (``NativeSetenv`` / ``NativePutenv``
+       / ``NativeUnsetenv`` / ``NativeClearenv``)
    * - Extended strings (angr-f16h.5)
      - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strrchr`` ✓,
        ``strpbrk`` ✓, ``strspn`` ✓, ``strcspn`` ✓, ``strtok`` ✗
@@ -829,12 +830,14 @@ Syscalls
 
 The native syscall set is currently focused on the AMD64 baseline
 plus the per-arch tables in ``register_<arch>`` (X86, ARM, ARM64,
-MIPS32 in ``syscalls/mod.rs``). Every numbered handler below is
-registered for AMD64; other arches re-register the same handler under
-each arch's syscall number from its ``unistd_*.h``. The ``angr-0hif``
-campaign tracks the remaining gaps — none of those families have a
-native handler yet, so symbolic-num or matching-num dispatches fall
-through ``stepping.rs::RunResult::Syscall`` to Python's
+MIPS32 in ``syscalls/mod.rs``; MIPS64 has no syscall table yet —
+``angr-smtv``). Every numbered handler below is registered for AMD64;
+other arches re-register the same handler under each arch's syscall
+number from its ``unistd_*.h``. The ``angr-0hif`` campaign expanded
+the baseline I/O / memory / exit handlers with file-path, directory,
+identity, memory-extras, fd-control, signals, and rlimit/concurrency
+families. Symbolic-num dispatches and any unregistered concrete-num
+still fall through ``stepping.rs::RunResult::Syscall`` to Python's
 ``engines/successors.py::_resolve_syscall``.
 
 .. list-table::
@@ -873,17 +876,21 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
      - 1 / 1
      - ``arch_prctl.rs`` — fs_const / gs_const set/get
    * - File path (angr-0hif.1)
-     - ``open``, ``close``, ``openat``, ``stat``, ``fstat``,
-       ``lstat``, ``newfstatat``, ``readlink``, ``access``
-     - 0 / 9
-     - angr-0hif.1 (open, P2). ``open``/``close`` are covered as
-       ``SimProcedures`` (``fileops.rs``) but no syscall handler is
-       wired yet
+     - ``open``, ``close``, ``stat``, ``fstat``, ``lstat``, ``access``,
+       ``readlink``, ``openat``, ``newfstatat``, ``readlinkat``,
+       ``faccessat``
+     - 11 / 11
+     - angr-0hif.1 — ``file_path.rs`` (AMD64 numbers 2/3/4/5/6/21/89/
+       257/262/267/269; re-registered under per-arch numbers for
+       i386 / ARM / ARM64 / MIPS32)
    * - Directory (angr-0hif.2)
      - ``chdir``, ``fchdir``, ``getcwd``, ``mkdir``, ``rmdir``,
-       ``unlink``, ``rename``
-     - 0 / 7
-     - angr-0hif.2 (open)
+       ``unlink``, ``rename``, ``mkdirat``, ``unlinkat``, ``renameat``,
+       ``renameat2``
+     - 11 / 11
+     - angr-0hif.2 — ``directory.rs`` (AMD64 numbers 79/80/81/82/83/
+       84/87/258/263/264/316; per-arch tables alias each handler under
+       the matching unistd number)
    * - Process identity (angr-0hif.3)
      - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``geteuid``,
        ``getgid``, ``getegid``, ``setuid``, ``setgid``
@@ -902,20 +909,17 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
        emit a fresh symbolic BV via
        ``SyscallOutcome::ContinueSymbolic``. ``mremap`` is a parity
        stub (does not update page tables — neither does Python angr)
-   * - FD control (angr-0hif.5, partial)
+   * - FD control (angr-0hif.5)
      - ``fcntl`` ✓, ``ioctl`` ✓, ``pipe`` ✓, ``pipe2`` ✓,
-       ``dup`` ✗, ``dup2`` ✗, ``dup3`` ✗
-     - 4 / 7
-     - ``file_descriptor.rs`` — stub-fallthrough subset only.
-       ``fcntl``/``ioctl``/``pipe``/``pipe2`` have no Python
-       ``SimProcedure`` bound in the kernel library
+       ``dup`` ✓, ``dup2`` ✓, ``dup3`` ✓
+     - 7 / 7
+     - ``file_descriptor.rs``. ``fcntl``/``ioctl``/``pipe``/``pipe2``
+       have no Python ``SimProcedure`` bound in the kernel library
        (``posix/fcntl.py`` is libc-side only), so native handlers
        mirror ``syscall_stub`` and emit a fresh symbolic BV via
        ``SyscallOutcome::ContinueSymbolic``. ``dup``/``dup2``/``dup3``
-       have real ``posix/dup.py`` procs that mutate
-       ``state.posix.fd``; they fall back to Python until the FD
-       table is plumbed through ``RustSimState`` (same blocker as
-       ``angr-k3ol`` — file-path with real procs)
+       are now wired natively (AMD64 numbers 32/33/292; per-arch
+       tables register them under the matching unistd number)
    * - Signals + process control (angr-0hif.6)
      - ``kill``, ``tgkill``, ``rt_sigprocmask``, ``rt_sigaction``,
        ``rt_sigreturn``, ``pause``, ``alarm``
@@ -971,3 +975,11 @@ members are on the fast path", not "implemented / placeholder /
 stubbed". A row at ``0 / N`` means all members fall through to
 Python; a row at ``N / N`` means none of its members enter the
 Python fallback path under concrete arguments.
+
+.. note::
+
+   The *Native (Rust) SimProcedures* section (above, from
+   *Native coverage matrix* through this paragraph) was last verified
+   against commit ``4215fe99b`` on 2026-06-03 (angr-1cnv). When you
+   close an ``angr-f16h.*`` or ``angr-0hif.*`` child, flip the matching
+   row and bump this footer to the new commit hash.

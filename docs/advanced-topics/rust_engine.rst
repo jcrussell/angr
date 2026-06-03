@@ -4052,3 +4052,12 @@ for the engine's documented single-threaded use, with one latent
 hazard documented above (``angr-bjk8``) gated on a parallel-execution
 story that does not exist yet.
 
+.. note::
+
+   *Last verified against commit* ``4215fe99b`` *on 2026-06-03*
+   (angr-1cnv). The *Architecture support matrix*, *Z3 solver
+   profiling counters*, and exploration-technique tables drift fastest
+   when arches gain a benchmark or a technique flips Native /
+   Unsupported — re-read those sections and bump this footer when you
+   touch them.
+
