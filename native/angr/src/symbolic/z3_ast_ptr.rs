@@ -149,6 +149,7 @@ mod tests {
         let original = Bool::from_bool(false);
         let raw_ptr = original.get_z3_ast().as_ptr() as usize;
 
+        // SAFETY: `original` keeps the AST alive; raw_ptr is its Z3_ast.
         let a = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, raw_ptr) }.unwrap();
         let b = a.clone_ref();
         assert_eq!(a.as_usize(), b.as_usize());

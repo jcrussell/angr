@@ -2765,7 +2765,11 @@ impl PyRustSimState {
             )));
         }
         // Reconstruct z3::ast::BV from raw pointer.
-        // Safety: caller guarantees pointer is a valid Z3_ast in shared context.
+        // SAFETY: caller guarantees `z3_ast_ptr` is a non-null, BV-sorted
+        // Z3_ast in the active thread-local context (z3-rs 0.19+ shares the
+        // process-global context with claripy's z3 backend). `BV::wrap` takes
+        // its own ref. `width` was validated above to match the register's
+        // bit width — i.e. the AST's BV sort width.
         let z3_bv = unsafe {
             let raw = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
             let ctx = z3::Context::thread_local();
