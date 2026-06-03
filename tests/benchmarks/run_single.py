@@ -73,6 +73,7 @@ EXAMPLE_CATALOG = {
     "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "save_unconstrained, Windows PE, Py 8.6s Rust 18.6s (0.46x)"},
     "insomnihack_aeg":         {"tier": "medium",  "rust_ok": None,  "notes": "AEG pattern, uses sys.argv in __main__, incompatible with harness"},
     "0ctf_trace":              {"tier": "medium",  "rust_ok": None,  "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s"},
+    "simple_heap_overflow":    {"tier": "medium",  "rust_ok": False, "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)"},
     # === Slow/problematic examples ===
     "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
     "asisctffinals2015_fake":  {"tier": "very_slow","rust_ok": False, "notes": "Z3 AST structure too complex for post-exploration solve"},
