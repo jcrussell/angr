@@ -57,6 +57,32 @@ jobs:
           python-version: "3.10"
       - run: cargo test --release
 
+  python_baseline:
+    # Fast subset of the vanilla angr test suite — proves rust-symex
+    # changes did not regress the Python engine. Distinct from the
+    # delegated `ci` job (which runs the full suite at master speeds);
+    # this gate fires per-PR with a sub-5-minute budget. Test list lives
+    # in $PYTHON_BASELINE_TESTS in the Makefile — keep both in sync.
+    # Does NOT build the Rust extension: these tests exercise vanilla
+    # Python angr paths only.
+    name: Python-engine baseline regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          path: angr
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv --directory angr sync -p 3.10
+      - name: Run Python-engine baseline tests
+        run: uv --directory angr run make test-python-baseline
+        timeout-minutes: 6
+
   benchmark_regression:
     name: Benchmark Regression (fast tier)
     runs-on: ubuntu-latest

@@ -24,6 +24,28 @@ MANIFEST  := $(REPO_ROOT)/native/angr/Cargo.toml
 
 RUST_TESTS := tests/engines/test_rust_exploration.py
 
+# Curated subset of vanilla angr tests that exercise the Python engine's
+# hot paths (loading, VEX lifter, hooks, sim-procedures, solver, posix,
+# Callable). Intent: catch regressions in vanilla Python angr caused by
+# rust-symex changes BEFORE the full nightly test suite runs.
+# Sized to finish under ~5 minutes on the GitHub Actions ubuntu-latest
+# runner — see `make test-python-baseline` and the `python_baseline` CI
+# job in .github/workflows/ci.yml. Requires angr/binaries cloned at
+# $(REPO_ROOT)/../binaries (the standard layout — same as
+# tests/common.py expects). Add a file here when it covers a Python-
+# engine path that isn't already exercised; keep the total under the
+# 5-minute soft budget.
+PYTHON_BASELINE_TESTS := \
+    tests/test_load_shellcode.py \
+    tests/engines/test_actions.py \
+    tests/engines/test_hook.py \
+    tests/engines/vex/test_lifter.py \
+    tests/state_plugins/solver/test_simsolver.py \
+    tests/state_plugins/solver/test_symbolic.py \
+    tests/state_plugins/posix/test_files.py \
+    tests/procedures/test_sim_procedure.py \
+    tests/factory/test_callable.py
+
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
 .DEFAULT_GOAL := help
@@ -73,6 +95,15 @@ test-verbose:  ## Same as test, but verbose.
 .PHONY: test-full
 test-full:  ## Run the full angr test suite (long; use sparingly).
 	$(PYTEST) tests/ --tb=short -q
+
+.PHONY: test-python-baseline
+test-python-baseline:  ## Run a fast (~5min) vanilla angr Python-engine regression subset (needs angr/binaries).
+	@if [ ! -d "$(REPO_ROOT)/../binaries" ] && [ "$$CI" != "true" ]; then \
+	    echo "ERROR: test-python-baseline needs angr/binaries cloned at $(REPO_ROOT)/../binaries"; \
+	    echo "       git clone https://github.com/angr/binaries.git $(REPO_ROOT)/../binaries"; \
+	    exit 1; \
+	fi
+	$(PYTEST) $(PYTHON_BASELINE_TESTS) --tb=short -q
 
 # --- Benchmarks ----------------------------------------------------------
 

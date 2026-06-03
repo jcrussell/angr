@@ -30,6 +30,7 @@ for the full list. Most-used targets:
 | `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
 | `make check` | `cargo check --release` — fast type/borrow check. |
 | `make test` (`test-quick`) | Run `tests/engines/test_rust_exploration.py` (~1-2 min). |
+| `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
 | `make test-full` | Full angr test suite (long). |
 | `make bench-regression` | Fast-tier benchmark regression check. |
 | `make bench-single EXAMPLE=fauxware ARGS="--both"` | Run one bench in a subprocess. |
