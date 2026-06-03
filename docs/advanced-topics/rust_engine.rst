@@ -39,6 +39,10 @@ Overview
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
   bimodal Z3 solver nondeterminism.
+* **Native registry coverage** for SimProcedures and syscalls (which
+  names short-circuit Python, per-arch coverage, and the bench
+  fallback distribution) is indexed in
+  :doc:`/extending-angr/native_coverage_matrix`.
 
 .. _rust-engine-v1-scope:
 
