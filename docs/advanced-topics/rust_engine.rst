@@ -3560,3 +3560,142 @@ code changes from this spike.
      (snapshot-emit + restore + first-solve), to validate that the
      per-state migration cost stays below the parallel-execution gain.
 
+.. _rust-engine-ffi-ownership-audit:
+
+PyO3 FFI ownership audit
+------------------------
+
+Audit pass ``angr-t1w7`` (2026-06-03). Companion to the Send/Sync audit
+above. Rules out the FFI-ownership class of bugs (GIL discipline,
+``Z3_inc_ref`` / ``Z3_dec_ref`` pairing, ``Py<PyAny>`` drop ordering,
+thread-local cache teardown) on top of the cleanup infrastructure that
+landed in ``angr-518z`` (commit ``af8afa9d3``, 2026-05-17) — see bd
+memory ``angr-518z-infrastructure-landed`` for the baseline.
+
+Headline: the audited surface is clean for the engine's documented
+single-threaded use. One latent hazard is documented for future
+multi-threaded clients; no production fix required today.
+
+GIL discipline
+~~~~~~~~~~~~~~
+
+The Rust extension never implicitly acquires the GIL. Across the 21
+modules that touch the FFI boundary (177 ``Python<'_>`` / ``Python<'py>``
+signature occurrences), every entry point either receives the
+``Python<'_>`` token from a ``#[pyfunction]`` / ``#[pymethods]``
+signature or plumbs a ``Bound<'py, T>`` borrow forward.
+
+- ``rg "with_gil|acquire_gil|allow_threads"`` against ``native/angr/src``
+  returns no matches.
+- ``Py<PyAny>::clone_ref(py)`` is used consistently (not the cheaper
+  ``clone()`` which would still take a refcount but not document the
+  GIL precondition).
+- All ``.extract::<T>()`` and ``Bound::call_method*`` sites operate
+  through a borrowed ``Python<'py>`` token, so there is no risk of a
+  caller invoking PyO3 without holding the GIL.
+
+This eliminates the most common PyO3 hazard class — implicit GIL
+acquisition in a Rust callback that runs after the caller has dropped
+the lock.
+
+``clear_ast_cache`` call graph
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``clear_ast_cache()`` (declared at ``native/angr/src/claripy_bridge.rs:423``,
+exposed to Python via ``native/angr/src/engine.rs:273``) atomically clears
+all four thread-local caches in the bridge:
+
+- ``AST_CACHE`` (LRU, ``claripy_bridge.rs:154``)
+- ``CLARIPY_AST_CACHE`` (unbounded ``HashMap``, ``claripy_bridge.rs:201``)
+- ``EXPRESSION_CACHE`` (LRU, ``claripy_bridge.rs:232``)
+- ``EXPRESSION_BY_OPERANDS_PTR`` (LRU, ``claripy_bridge.rs:270``)
+
+Cross-cache invariant C3 (documented in-file) makes a partial clear
+incorrect by design; the single entry point enforces it.
+
+``clear_all_caches()`` (``claripy_bridge.rs:432``) additionally clears
+the process-global ``SymbolicIdentityRegistry``. It is **deliberately
+not** exposed to Python because the registry is shared across all
+managers in the process — clearing it from one manager would
+invalidate live symbol IDs held by another. The only Python-side
+flush path is ``RustExplorationManager.cleanup()`` (gated by the
+``clear_caches_on_cleanup`` constructor flag, default ``False``), so
+manager teardown never reaches the global registry.
+
+Refcount discipline (Z3 ASTs)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Z3AstPtr`` (``native/angr/src/symbolic/z3_ast_ptr.rs``) is the
+canonical wrapper for raw ``Z3_ast`` pointers crossing the claripy
+boundary. It takes an explicit ``z3::Context`` clone (line 35) so
+``Z3_dec_ref`` in ``Drop`` always sees the context the ref was taken
+under — independent of thread-local context state. The wrapper is
+non-``Copy`` and non-``Clone`` to make double-free impossible at the
+type level; duplication is explicit via ``clone_ref`` (which performs
+a fresh ``Z3_inc_ref``).
+
+``z3::ast::BV`` / ``z3::ast::Bool`` values held inside
+``RustBV::Symbolic`` (``symbolic/value.rs:435``) and
+``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1339``)
+bind to the **active thread-local Z3 context** at construction time.
+While the manager and its states are alive on the thread that created
+them, the TLS context outlives every AST it owns. Drop ordering inside
+the manager is safe (manager → ``StashManager`` → ``RustSimState`` →
+``SymContext`` → Z3 AST handles).
+
+Cross-process exit is handled by ``atexit.register(reset_shared_z3_context)``
+(registered in ``angr/exploration/rust_manager.py:311``), which swaps
+the Rust TLS context to a fresh Rust-owned context **before** Python
+frees its shared Z3 context. This prevents the manager's surviving
+state from dec_ref'ing into a freed Python-owned context.
+
+Thread-local cache teardown
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The four ``claripy_bridge`` thread-locals hold ``Py<PyAny>`` values and
+(via ``RustBV::Symbolic``) ``z3::ast::BV`` values. ``Py<PyAny>::Drop``
+without the GIL is safe — PyO3 0.21+ defers the decref to the next GIL
+acquisition. The z3 AST drop, however, requires the **thread-local Z3
+context** to still be live at TLS-destructor time.
+
+**Latent hazard (not exercised today).** Rust runs ``thread_local!``
+destructors in LIFO order of first access. If a non-main thread first
+populates the four ``claripy_bridge`` caches (registering their
+destructors), then calls into z3-rs (registering z3-rs's TLS destructor
+later), at thread teardown z3-rs's TLS context drops **first** and the
+cache destructors then run with a stale TLS context. ``RustBV::Symbolic``
+drops in those cache values would dec_ref against the wrong context.
+
+This is **not exercised today**: angr-symex is single-threaded by
+construction (cf. Send/Sync audit) and the load-bearing pyclasses are
+``#[pyclass(unsendable)]``. The main thread's TLS destructors are not
+reliably run at process exit on either glibc or musl, so the
+sub-hazard there is a memory leak that the kernel reclaims, not UAF.
+
+If a future story spawns worker threads that touch ``rustylib``
+(e.g., a parallel-eval lane built on ``ExplorationStateSnapshot``),
+the worker should call ``angr.rustylib.vex_engine.clear_ast_cache()``
+**before** ``join``-ing the thread, which empties the caches while the
+TLS Z3 context is still guaranteed live by the runtime. Filed as
+``angr-bjk8`` for the worker-pool epic to honor.
+
+Static-lifetime registries
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SymbolicIdentityRegistry`` lives in a ``OnceLock`` static
+(``symbolic/registry.rs:310``) and holds ``Py<PyAny>`` values keyed by
+Rust symbol IDs. Rust statics do not run ``Drop`` at process exit, so
+the ``Py<PyAny>`` handles inside leak rather than running a non-GIL
+decref. This is intentional: the registry is process-global by design
+and any "cleanup" would race with concurrent live managers. The leak
+is bounded by the leaf-symbol set per process, which grows slowly
+(tens to low thousands).
+
+Audit conclusion
+~~~~~~~~~~~~~~~~
+
+No production-code changes filed. The FFI ownership surface is clean
+for the engine's documented single-threaded use, with one latent
+hazard documented above (``angr-bjk8``) gated on a parallel-execution
+story that does not exist yet.
+
