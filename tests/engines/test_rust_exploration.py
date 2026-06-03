@@ -2012,16 +2012,17 @@ class TestRustInspectMarshalling:
         """Events outside the MVP still raise loudly.
 
         reg_read, reg_write, instruction, irsb, exit moved into the
-        supported set in angr-d46u; call/return moved in angr-4ai9.
-        Events whose dispatchers are not yet wired (fork, syscall,
-        constraints, ...) must still raise.
+        supported set in angr-d46u; call/return moved in angr-4ai9;
+        simprocedure/syscall/dirty moved in angr-xmfj. Events whose
+        dispatchers are not yet wired (fork, constraints, ...) must
+        still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "syscall", "constraints", "tmp_read"):
+        for evt in ("fork", "constraints", "tmp_read", "expr"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2683,6 +2684,127 @@ class TestRustInspectExtendedEvents:
         mgr.run(max_steps=20)
         assert all(t >= 0 for t in seen)
 
+    # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
+
+    def test_python_dispatched_events_have_no_rust_slot(self):
+        """simprocedure/syscall/dirty are dispatched from Python — they
+        intentionally do NOT expose a `set_inspect_<event>` PyO3 slot,
+        since the Rust engine never invokes them."""
+        from angr.exploration.rust_state_proxy import (
+            _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
+        )
+        cbs = PythonCallbacks()
+        assert _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS == frozenset({
+            'simprocedure', 'syscall', 'dirty',
+        })
+        for evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
+            assert not hasattr(cbs, f'set_inspect_{evt}'), (
+                f"unexpected Rust slot for python-dispatched event {evt!r}"
+            )
+
+    def test_simprocedure_syscall_dirty_bits_match_spec(self, fauxware_project):
+        """Registering a `simprocedure`/`syscall`/`dirty` BP flips the
+        expected bits (10/11/12). The Rust engine does not read these
+        bits, but the bitmask stays consistent with the spec."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('simprocedure', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 10) != 0
+        ins.b('syscall', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 11) != 0
+        ins.b('dirty', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 12) != 0
+
+    def test_dispatch_simprocedure_fires_bp(self, fauxware_project):
+        """_cb_inspect_simprocedure invokes the user's BP with attrs."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_sp(s):
+            seen.append((
+                s.inspect.simprocedure_name,
+                s.inspect.simprocedure_addr,
+                s.inspect.simprocedure,
+                s.inspect.simprocedure_result,
+            ))
+
+        mgr._get_inspect_proxy().b('simprocedure', when='before', action=on_sp)
+        sentinel = object()
+        mgr._cb_inspect_simprocedure(sid, 'before', 'malloc', 0x401000, sentinel, None)
+        assert len(seen) == 1
+        name, addr, inst, result = seen[0]
+        assert name == 'malloc'
+        assert addr == 0x401000
+        assert inst is sentinel
+        assert result is None
+
+    def test_dispatch_syscall_fires_bp(self, fauxware_project):
+        """_cb_inspect_syscall invokes the user's BP with syscall_name."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_sc(s):
+            seen.append((s.inspect.syscall_name, s.inspect.simprocedure))
+
+        mgr._get_inspect_proxy().b('syscall', when='after', action=on_sc)
+        sentinel = object()
+        mgr._cb_inspect_syscall(sid, 'after', 'read', sentinel)
+        assert len(seen) == 1
+        sc_name, inst = seen[0]
+        assert sc_name == 'read'
+        assert inst is sentinel
+
+    def test_dispatch_dirty_fires_bp(self, fauxware_project):
+        """_cb_inspect_dirty invokes the user's BP with all four attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_dirty(s):
+            seen.append((
+                s.inspect.dirty_name,
+                s.inspect.dirty_handler,
+                s.inspect.dirty_args,
+                s.inspect.dirty_result,
+            ))
+
+        mgr._get_inspect_proxy().b('dirty', when='after', action=on_dirty)
+        handler = lambda *a: None  # noqa: E731
+        args = [claripy.BVV(0x10, 64), claripy.BVV(0x20, 64)]
+        result = claripy.BVV(0xdeadbeef, 64)
+        mgr._cb_inspect_dirty(sid, 'after', 'amd64g_dirtyhelper_RDTSC', handler, args, result)
+        assert len(seen) == 1
+        name, hand, ar, res = seen[0]
+        assert name == 'amd64g_dirtyhelper_RDTSC'
+        assert hand is handler
+        assert ar == args
+        assert res is result
+
+    def test_simprocedure_fires_during_exploration(self, fauxware_project):
+        """simprocedure BP fires while running fauxware (libc procs hit)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        names = []
+
+        def on_sp(s):
+            names.append(s.inspect.simprocedure_name)
+
+        mgr._get_inspect_proxy().b('simprocedure', when='before', action=on_sp)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 10) != 0
+        mgr.run(max_steps=30)
+        # fauxware hits __libc_start_main, puts, read, strcmp, etc. very
+        # early — at least one before-BP should have fired.
+        assert names, "no simprocedure events captured during exploration"
+        assert all(isinstance(n, str) for n in names)
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectAllowlistConsistency:
@@ -2734,11 +2856,22 @@ class TestRustInspectAllowlistConsistency:
 
     def test_every_supported_event_has_rust_callback_slot(self):
         """PythonCallbacks must expose a `set_inspect_<event>` slot for
-        every honored event; otherwise the dispatcher would never run
-        even with a BP registered."""
-        from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+        every honored Rust-dispatched event; otherwise the dispatcher
+        would never run even with a BP registered.
+
+        Python-dispatched events (`dispatch_origin: 'python'`) are
+        skipped because they fire from existing Python callback handlers
+        in rust_callback_dispatch.py / rust_manager._cb_dirty_call and
+        never traverse the PythonCallbacks slot.
+        """
+        from angr.exploration.rust_state_proxy import (
+            _INSPECT_EVENT_SPECS,
+            _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
+        )
         cbs = PythonCallbacks()
         for evt in _INSPECT_EVENT_SPECS:
+            if evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
+                continue
             slot = f"set_inspect_{evt}"
             assert hasattr(cbs, slot), (
                 f"event {evt!r} is in _INSPECT_EVENT_SPECS but "

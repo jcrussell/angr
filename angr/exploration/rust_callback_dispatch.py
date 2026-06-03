@@ -496,6 +496,16 @@ class RustCallbackDispatchMixin:
         # Track memory writes during callback execution
         memory_tracker = CallbackMemoryTracker(state)
 
+        # state.inspect simprocedure BEFORE (angr-xmfj). The proc may be a
+        # class or instance; pass the raw object so user BPs can introspect.
+        # `simprocedure_result` is `None` on BEFORE because the proc has
+        # not produced a return value yet.
+        sp_display_name = name or proc.__class__.__name__
+        self._cb_inspect_simprocedure(
+            event.callback_state_id, 'before',
+            sp_display_name, addr, proc, None,
+        )
+
         # Run the SimProcedure
         _sp_execute_start = time.perf_counter_ns()
         try:
@@ -511,6 +521,15 @@ class RustCallbackDispatchMixin:
                 else:
                     # It's a class, instantiate it
                     proc().execute(state, successors)
+            # state.inspect simprocedure AFTER (angr-xmfj). MVP scope:
+            # `simprocedure_result` is `None` — capturing the proc's raw
+            # return value would require wrapping `proc.execute()` to
+            # observe the inner `inst.run_func` return; for now BPs see
+            # the result via `successors.artifacts` or the proc instance.
+            self._cb_inspect_simprocedure(
+                event.callback_state_id, 'after',
+                sp_display_name, addr, proc, None,
+            )
             _sp_exec_elapsed = time.perf_counter_ns() - _sp_execute_start
             self._perf_stats.add_simprocedure_phase('execute', _sp_exec_elapsed)
             # Per-procedure timing
@@ -1424,8 +1443,29 @@ class RustCallbackDispatchMixin:
             # Get syscall handler from project
             engine = self._project.factory.default_engine
 
+            # Resolve the syscall handler so the BP attrs match Python's
+            # engine (procedure.py:34 passes `procedure.display_name`).
+            # If resolution fails, fall back to the numeric ID so the BP
+            # still fires.
+            try:
+                sc_proc = self._project.simos.syscall(state)
+                sc_name = getattr(sc_proc, 'display_name', None) or str(syscall_num)
+            except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: SIMOS may not expose
+                # syscall() (non-Unix targets). Fall back to numeric ID.
+                sc_proc = None
+                sc_name = str(syscall_num)
+
+            # state.inspect syscall BEFORE (angr-xmfj).
+            self._cb_inspect_syscall(state_id, 'before', sc_name, None)
+
             # Execute syscall
             successors = engine.process(state, procedure=None)
+
+            # state.inspect syscall AFTER (angr-xmfj). `simprocedure` is
+            # the resolved syscall handler (None if resolution failed),
+            # matching the Python engine's `simprocedure=inst` kwarg.
+            self._cb_inspect_syscall(state_id, 'after', sc_name, sc_proc)
 
             all_succs = successors.all_successors
             if all_succs:

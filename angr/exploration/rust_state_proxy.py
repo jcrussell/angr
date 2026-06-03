@@ -975,14 +975,24 @@ _COPY_NOT_IMPLEMENTED_MSG = (
 #   - bit: position in the Rust callbacks `inspect_enabled` u16 bitmask
 #   - attrs: SimInspector attribute names this event populates
 #   - when_fired: 'before' or 'after' — when in the Rust pipeline it fires
+#   - dispatch_origin: 'rust' (default) when the Rust engine invokes the
+#     callback via PythonCallbacks; 'python' when dispatch is fired from
+#     within an existing Python-side callback handler in
+#     `rust_callback_dispatch.py` / `rust_manager.py`. Python-dispatched
+#     events do not need a PythonCallbacks slot because no Rust code path
+#     ever calls into the inspect callback for them.
 #
 # Bits 0..=5 mirror `crate::state::InspectEvent` ordering; bit 4 (fork) is
 # reserved for future wiring; bits 6 and 7 are custom (instruction / irsb)
 # with no InspectionManager enum slot in Rust; bits 8 and 9 are custom for
 # call / return (angr-4ai9 widened the bitmask from u8 to u16 to make
-# room — the InspectEvent enum is unchanged).
+# room — the InspectEvent enum is unchanged). Bits 10..=12 are
+# Python-dispatched (simprocedure / syscall / dirty) — angr-xmfj wired
+# them from the existing Python callback handlers in
+# `rust_callback_dispatch.py` / `rust_manager._cb_dirty_call`.
 #
-# Wiring a new event requires (mirror the angr-d46u 5-touchpoint pattern):
+# Wiring a new Rust-origin event requires (mirror the angr-d46u 5-touchpoint
+# pattern):
 #   1. Add a row here with a unique bit, attrs, when_fired.
 #   2. Add a PythonCallbacks slot + setter + dispatch helper in
 #      native/angr/src/callbacks.rs and the interpreter dispatch
@@ -992,6 +1002,10 @@ _COPY_NOT_IMPLEMENTED_MSG = (
 #   4. Add a `_cb_inspect_<name>` method on RustExplorationManager
 #      that builds the attrs dict and calls `_dispatch_inspect_event`.
 #   5. Register the callback in RustExplorationManager.set_callbacks().
+#
+# For a Python-dispatched event (`dispatch_origin: 'python'`), steps 2/3
+# collapse to "call self._cb_inspect_<name>(...) from the existing Python
+# handler site". No Rust changes are needed.
 #
 # The CI test `test_inspect_allowlist_complete_and_consistent` enforces
 # that every event in `angr.state_plugins.inspect.event_types` is either
@@ -1086,6 +1100,50 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": "before",
     },
+    # angr-xmfj: simprocedure / syscall / dirty dispatch fires from the
+    # existing Python callback sites in `rust_callback_dispatch.py`
+    # (_handle_simprocedure_callback, _handle_syscall_callback_inner) and
+    # `rust_manager._cb_dirty_call`. The Rust engine never invokes these
+    # inspect callbacks directly — `dispatch_origin: 'python'` flags that
+    # no PythonCallbacks slot is needed. The bit is still flipped in
+    # `_update_inspect_bitmask` for consistency, even though Rust doesn't
+    # read it. Attrs mirror the Python engine's _inspect call signatures
+    # (sim_procedure.py:246/314 for simprocedure, procedure.py:34/50 for
+    # syscall, engines/vex/heavy/inspect.py:10/22 for dirty). MVP scope:
+    # the BP fires with the engine's chosen handler/args/result; user
+    # mutations to those attrs in BP_BEFORE actions do NOT influence the
+    # engine (Python's _inspect_getattr override path is not honored).
+    "simprocedure": {
+        "bit": 10,
+        "attrs": (
+            "simprocedure_name",
+            "simprocedure_addr",
+            "simprocedure",
+            "simprocedure_result",
+        ),
+        "when_fired": "before",
+        "dispatch_origin": "python",
+    },
+    "syscall": {
+        "bit": 11,
+        "attrs": (
+            "syscall_name",
+            "simprocedure",
+        ),
+        "when_fired": "before",
+        "dispatch_origin": "python",
+    },
+    "dirty": {
+        "bit": 12,
+        "attrs": (
+            "dirty_name",
+            "dirty_handler",
+            "dirty_args",
+            "dirty_result",
+        ),
+        "when_fired": "before",
+        "dispatch_origin": "python",
+    },
 }
 
 # Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.
@@ -1096,6 +1154,14 @@ _RUST_INSPECT_ATTRS_BY_EVENT = {
 _RUST_INSPECT_EVENT_BITS = {
     name: spec["bit"] for name, spec in _INSPECT_EVENT_SPECS.items()
 }
+# Events whose dispatch fires from Python (not from the Rust engine's
+# PythonCallbacks invocation path). Used by `_setup_callbacks` to skip
+# Rust slot registration and by the allowlist consistency test to relax
+# the "must have a `set_inspect_<event>` PyO3 slot" requirement.
+_RUST_INSPECT_PYTHON_DISPATCHED_EVENTS = frozenset(
+    name for name, spec in _INSPECT_EVENT_SPECS.items()
+    if spec.get("dispatch_origin") == "python"
+)
 
 
 def _format_unsupported_event_msg(event_type: str) -> str:

@@ -1403,9 +1403,16 @@ class RustExplorationManager(
         # auto-wires registration. Read directly from the module rather
         # than self._INSPECT_EVENT_BITS so this method works even before
         # __init__ has finished. The hasattr() check tolerates older .so
-        # builds.
-        from angr.exploration.rust_state_proxy import _RUST_INSPECT_EVENT_BITS
+        # builds. Skip events whose dispatch fires from Python (angr-xmfj —
+        # simprocedure/syscall/dirty); they have no PythonCallbacks slot
+        # because the Rust engine never invokes them.
+        from angr.exploration.rust_state_proxy import (
+            _RUST_INSPECT_EVENT_BITS,
+            _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
+        )
         for evt in _RUST_INSPECT_EVENT_BITS:
+            if evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
+                continue
             setter_name = f'set_inspect_{evt}'
             cb_name = f'_cb_inspect_{evt}'
             if hasattr(callbacks, setter_name):
@@ -1599,6 +1606,15 @@ class RustExplorationManager(
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
             return (bytes(ret_ty_bits // 8), False, None)
+        # state.inspect dispatch (angr-xmfj). state_id falls back to -1
+        # because dirty calls run from a Rust interpreter dispatch where the
+        # state-id is not threaded through this callback yet; the inspect
+        # proxy falls back to the cached default state, which is the same
+        # SimState the handler sees here. BPs that read `state.inspect.*`
+        # see the live attrs.
+        sid = getattr(self, '_current_callback_state_id', None)
+        if sid is None:
+            sid = -1
         try:
             from angr.engines.vex.heavy import dirty as dirty_module
 
@@ -1608,11 +1624,16 @@ class RustExplorationManager(
 
             handler = getattr(dirty_module, name)
             claripy_args = [claripy.BVV(arg, 64) for arg in args]
+
+            self._cb_inspect_dirty(sid, 'before', name, handler, claripy_args, None)
+
             result, constraints = handler(state, *claripy_args)
 
             if constraints:
                 for c in constraints:
                     state.solver.add(c)
+
+            self._cb_inspect_dirty(sid, 'after', name, handler, claripy_args, result)
 
             if result is None:
                 return (bytes(ret_ty_bits // 8), False, None)
@@ -2183,6 +2204,95 @@ class RustExplorationManager(
             # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
             # return event is dropped (no breakpoint fired).
             l.warning("inspect return dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_simprocedure(
+        self,
+        state_id: int,
+        when: str,
+        sp_name,
+        sp_addr,
+        sp_inst,
+        sp_result,
+    ):
+        """Python-side dispatch target for SimProcedure inspect events.
+
+        Invoked from `_handle_simprocedure_callback` (in the dispatch
+        mixin) wrapping the proc execution. Attrs mirror Python's
+        `sim_procedure.py:246/314` — `simprocedure_name`,
+        `simprocedure_addr`, `simprocedure` (the instance), and
+        `simprocedure_result` (the procedure return value on AFTER;
+        `NO_OVERRIDE` on BEFORE).
+        """
+        try:
+            self._dispatch_inspect_event(
+                "simprocedure", state_id, when,
+                simprocedure_name=sp_name,
+                simprocedure_addr=sp_addr,
+                simprocedure=sp_inst,
+                simprocedure_result=sp_result,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # simprocedure event is dropped (no breakpoint fired).
+            l.warning("inspect simprocedure dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_syscall(
+        self,
+        state_id: int,
+        when: str,
+        syscall_name,
+        sp_inst=None,
+    ):
+        """Python-side dispatch target for syscall inspect events.
+
+        Invoked from `_handle_syscall_callback_inner` wrapping the syscall
+        handler. Attrs mirror Python's `procedure.py:34/50` —
+        `syscall_name`, and `simprocedure` (the executed instance) on
+        AFTER. `simprocedure` is `None` on BEFORE (matches the Python
+        engine, which does not pass it before execution).
+        """
+        try:
+            self._dispatch_inspect_event(
+                "syscall", state_id, when,
+                syscall_name=syscall_name,
+                simprocedure=sp_inst,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # syscall event is dropped (no breakpoint fired).
+            l.warning("inspect syscall dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_dirty(
+        self,
+        state_id: int,
+        when: str,
+        dirty_name,
+        dirty_handler,
+        dirty_args,
+        dirty_result,
+    ):
+        """Python-side dispatch target for VEX Dirty-call inspect events.
+
+        Invoked from `_cb_dirty_call` wrapping the resolved dirty handler
+        invocation. Attrs mirror Python's `engines/vex/heavy/inspect.py:10/22`
+        — `dirty_name`, `dirty_handler` (the resolved handler callable),
+        `dirty_args` (the actual call arguments — claripy BVVs), and
+        `dirty_result` (the handler's return value on AFTER; `None` on
+        BEFORE — Python uses `NO_OVERRIDE` but the Rust dispatch doesn't
+        honor user overrides yet so `None` is unambiguous).
+        """
+        try:
+            self._dispatch_inspect_event(
+                "dirty", state_id, when,
+                dirty_name=dirty_name,
+                dirty_handler=dirty_handler,
+                dirty_args=dirty_args,
+                dirty_result=dirty_result,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # dirty event is dropped (no breakpoint fired).
+            l.warning("inspect dirty dispatch failed: %s: %s", type(e).__name__, e)
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""

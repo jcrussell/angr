@@ -1828,6 +1828,11 @@ Event          Fires when        BP attributes
                                  ``exit_jumpkind``
 ``call``        ``before``/``after`` ``function_address`` (call target)
 ``return``      ``before``/``after`` ``function_address`` (popped frame's callee)
+``simprocedure`` ``before``/``after`` ``simprocedure_name``, ``simprocedure_addr``,
+                                  ``simprocedure``, ``simprocedure_result``
+``syscall``     ``before``/``after`` ``syscall_name``, ``simprocedure``
+``dirty``       ``before``/``after`` ``dirty_name``, ``dirty_handler``,
+                                  ``dirty_args``, ``dirty_result``
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
@@ -1843,17 +1848,30 @@ resolved Ijk_Call target (call) or the popped frame's ``callee_addr``
 (return), wrapped in a word-sized claripy BVV for parity with
 ``state.regs._ip``.
 
+``simprocedure``, ``syscall``, and ``dirty`` (angr-xmfj) are dispatched
+from Python — they fire from the existing callback handlers in
+``rust_callback_dispatch.py`` (``_handle_simprocedure_callback`` /
+``_handle_syscall_callback_inner``) and ``rust_manager._cb_dirty_call``.
+The BP fires with the engine's chosen handler / args / result, but
+user mutations to those attributes in BP_BEFORE actions do NOT
+influence the engine — Python's ``_inspect_getattr`` override path
+(e.g., overriding ``dirty_result`` to short-circuit the call) is not
+honored. ``simprocedure_result`` is ``None`` on both BEFORE and AFTER
+in this MVP because capturing the proc's raw return value would
+require wrapping ``proc.execute`` to observe the inner
+``inst.run_func`` return.
+
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
-Registering a BP for any of ``fork``, ``syscall``, ``constraints``,
-``simprocedure``, ``dirty``, ``address_concretization``, ``expr``,
-``statement``, ``tmp_read``, ``tmp_write``, ``vex_lift``,
-``symbolic_variable``, ``engine_process``, or ``memory_page_map``
-raises ``NotImplementedError`` with a message pointing at this
-document. ``_NoOpInspectProxy`` previously silently accepted every
-registration (see angr-osuu); raising loudly prevents users from
-depending on a feature the engine cannot fulfill.
+Registering a BP for any of ``fork``, ``constraints``,
+``address_concretization``, ``expr``, ``statement``, ``tmp_read``,
+``tmp_write``, ``vex_lift``, ``symbolic_variable``,
+``engine_process``, or ``memory_page_map`` raises
+``NotImplementedError`` with a message pointing at this document.
+``_NoOpInspectProxy`` previously silently accepted every registration
+(see angr-osuu); raising loudly prevents users from depending on a
+feature the engine cannot fulfill.
 
 Manager-wide BP storage
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -1909,8 +1927,9 @@ this document so callers can find these workarounds in order:
    above; check it before falling back to the next workarounds.
 
 2. **Drop back to the Python engine** for analyses that fundamentally
-   depend on an unsupported event (``fork``, ``syscall``,
-   ``constraints``, ``simprocedure``, ``dirty``, …):
+   depend on an unsupported event (``fork``, ``constraints``,
+   ``address_concretization``, …) or on an unsupported behavior of a
+   supported event (e.g., overriding ``dirty_result`` from BP_BEFORE):
 
    .. code-block:: python
 
@@ -1993,6 +2012,12 @@ Decision history
   Ijk_Ret). Widened ``inspect_enabled`` from ``AtomicU8`` to
   ``AtomicU16`` to make room for the two new bits alongside the
   existing 8.
+* ``angr-xmfj`` (2026-06-03): wired ``simprocedure`` + ``syscall`` +
+  ``dirty`` dispatch from the existing Python callback handlers
+  (``rust_callback_dispatch.py``, ``rust_manager._cb_dirty_call``).
+  Introduced ``dispatch_origin: 'python'`` in ``_INSPECT_EVENT_SPECS``
+  so the consistency tests skip the PythonCallbacks slot check for
+  events the Rust engine never invokes directly.
 
 Exploration technique compatibility
 -----------------------------------
