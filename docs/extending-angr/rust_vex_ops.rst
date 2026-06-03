@@ -472,35 +472,127 @@ path through them.
 x87 transcendental ops
 ^^^^^^^^^^^^^^^^^^^^^^
 
-These ops do *not* parse to ``IROp::NeonUnimplemented`` — they fall
-all the way through ``parse_opcode`` and surface as
-``IROp::Unmapped(name)``. Same end-user error
-(``RustUnsupportedVexOpError``), different provenance: there is no
-parse arm yet, not just a missing dispatch arm.
+These ops have a **two-path** status. On the FFI lifter path (numeric
+``IROp::Raw(opcode)``), they hit the concrete-only libm fast path in
+``native/angr/src/vex/transcendentals.rs`` plus a symbolic
+concretization fallback (sample-pin-replace). On the JSON-string
+opcode path (used in unit tests and any caller that round-trips
+through pyvex's string form) they fall all the way through
+``parse_opcode`` and surface as ``IROp::Unmapped(name)`` →
+``RustUnsupportedVexOpError``. The mismatch is intentional: the JSON
+path can't carry the numeric opcode that drives the libm dispatch.
+
+Opcode names below are libvex (matches what pyvex's numeric-to-string
+table emits). Verified 2026-06-01 (angr-uprs).
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 15 20 35
+   :widths: 30 10 25 35
 
    * - Op family
      - Count
      - Status
      - Provenance
-   * - Log / exp (``Iop_Fyl2x``, ``Iop_F2xm1``)
+   * - Trig (``Iop_SinF64``, ``Iop_CosF64``, ``Iop_TanF64``,
+       ``Iop_AtanF64``)
+     - 4
+     - Concrete via ``Raw`` / Unmapped via string
+     - ``transcendentals.rs`` libm path (angr-i5lj.2)
+   * - Log / exp (``Iop_Yl2xF64``, ``Iop_Yl2xp1F64``,
+       ``Iop_2xm1F64``, ``Iop_ScaleF64``)
+     - 4
+     - Concrete via ``Raw`` / Unmapped via string
+     - ``transcendentals.rs`` libm path (angr-i5lj.1)
+   * - ARM AArch64 FRECPX (``Iop_RecpExpF64``, ``Iop_RecpExpF32``)
      - 2
-     - Placeholder
-     - Routes to ``IROp::Unmapped`` (angr-i5lj.1)
-   * - Misc FP (``Iop_Fscale``, ``Iop_Fpatan``, ``Iop_Fcos``,
-       ``Iop_Fsin``, ``Iop_Fxam``, ``Iop_Fxbm1``)
-     - 6
-     - Placeholder
-     - Routes to ``IROp::Unmapped`` (angr-i5lj.2)
+     - Concrete via ``Raw`` / Unmapped via string
+     - ``transcendentals.rs`` exponent-only closed form
 
 The x87 transcendentals only matter on workloads that drive a
 symbolic path through them. ``securityfest_fairlight`` and
 ``ekopartyctf2016_sokohashv2`` both hit them in the original binary
 but the test drivers hook them out at the Python layer, so the
 matrix above does not yet block any tracked benchmark.
+
+FP and decimal conversions
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Wide / decimal / fixed-point FP conversions that pyvex emits for
+x86 SSE / AVX, PowerPC DFP, and ARM SIMD scalar conversions but
+that ``parse_float`` / ``parse_conversion`` do not yet handle.
+All route to ``IROp::Unmapped(name)`` →
+``RustUnsupportedVexOpError`` on dispatch. Verified 2026-06-01
+(angr-uprs).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 25 35
+
+   * - Op family
+     - Count
+     - Status
+     - Provenance
+   * - 128-bit FP / decimal (``Iop_F128toD32``,
+       ``Iop_F128toI128S``)
+     - 2
+     - Placeholder
+     - No parse arm in ``parse_float`` / ``parse_conversion``
+   * - SSE4.1 round-to-int (``Iop_RoundF32x4_RM`` /
+       ``_RN`` / ``_RP`` / ``_RZ``)
+     - 4
+     - Placeholder
+     - No parse arm in ``parse_vector``
+   * - PowerPC DFP significance round
+       (``Iop_SignificanceRoundD64`` / ``D128``)
+     - 2
+     - Placeholder
+     - No parse arm in ``parse_float``
+   * - FP↔fixed conversions (``Iop_F32ToFixed32S*`` /
+       ``Iop_Fixed32SToF32x*``)
+     - ~8
+     - Placeholder
+     - No parse arm in ``parse_conversion``
+
+These are reachable from PowerPC, x86 SSE4.1, and ARM SIMD code.
+No tracked benchmark drives a symbolic path through them today;
+promote to a standalone bead when one does.
+
+Crypto and polynomial multiply
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ARM AES / SHA / NEON polynomial-multiply-accumulate ops. Same
+provenance as the FP-conversion family — no parse arm, so they
+route to ``IROp::Unmapped(name)``. Verified 2026-06-01 (angr-uprs).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 25 35
+
+   * - Op family
+     - Count
+     - Status
+     - Provenance
+   * - Polynomial multiply-accumulate
+       (``Iop_PolynomialMulAdd{8x16,16x8,32x4,64x2}``)
+     - 4
+     - Placeholder
+     - No parse arm in ``parse_vector`` — distinct from
+       ``Iop_PolynomialMul*`` which IS implemented as
+       ``IROp::VPolynomialMul`` (angr-tukg.6)
+   * - AES round (``Iop_CipherV128``, ``Iop_NCipherV128``)
+     - 2
+     - Placeholder
+     - No parse arm in ``parse_special``
+   * - SHA-2 round (``Iop_SHA256``, ``Iop_SHA512``)
+     - 2
+     - Placeholder
+     - No parse arm in ``parse_special``
+
+ARM crypto extension binaries (firmware, AArch64 TLS/IPSec code)
+would hit these. None of the current corpus does — when one
+lands, prefer routing AES / SHA through SimProcedure hooks over
+adding native dispatch arms (the per-round implementations are
+large and Z3-hostile).
 
 Catching new placeholders
 ^^^^^^^^^^^^^^^^^^^^^^^^^
