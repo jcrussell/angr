@@ -242,57 +242,6 @@ impl CallingConvention for SystemVAMD64 {
     }
 }
 
-/// Microsoft x64 calling convention (Windows).
-///
-/// Integer/pointer arguments: RCX, RDX, R8, R9
-/// Floating-point arguments: XMM0-XMM3 (shadow space on stack)
-/// Return value: RAX
-/// Shadow space: 32 bytes reserved on stack
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MicrosoftX64;
-
-impl MicrosoftX64 {
-    /// MicrosoftX64 is not the default for any arch in `default_cc_for_arch`;
-    /// callers select it explicitly when they know they're dealing with a
-    /// Windows binary.
-    pub const ARCH_ALIASES: &'static [&'static str] = &[];
-}
-
-impl CallingConvention for MicrosoftX64 {
-    fn name(&self) -> &'static str {
-        "Microsoft_x64"
-    }
-
-    fn arg_registers(&self) -> &[u32] {
-        // RCX, RDX, R8, R9
-        &[24, 32, 80, 88]
-    }
-
-    fn fp_arg_registers(&self) -> &[u32] {
-        // XMM0-XMM3
-        &[224, 256, 288, 320]
-    }
-
-    fn pointer_size(&self) -> u32 {
-        8
-    }
-
-    fn stack_arg_offset(&self) -> u64 {
-        // After call: [rsp] = return address
-        // Then 32 bytes of shadow space
-        // Args start at [rsp + 8 + 32] = [rsp + 40]
-        40
-    }
-
-    fn endness(&self) -> Endness {
-        Endness::Little
-    }
-
-    fn return_register(&self) -> u32 {
-        16 // RAX
-    }
-}
-
 /// x86 cdecl calling convention.
 ///
 /// All arguments on stack, right-to-left.
@@ -749,7 +698,6 @@ mod tests {
         assert_eq!(Cdecl.return_register(), 8);
         // RAX in amd64 VEX guest state = offset 16.
         assert_eq!(SystemVAMD64.return_register(), 16);
-        assert_eq!(MicrosoftX64.return_register(), 16);
         // ARM r0 = offset 8 (R0 in ARM VEX guest state).
         assert_eq!(ARMEABI.return_register(), 8);
         // AArch64 X0 = offset 16 (X0 in ARM64 VEX guest state).
@@ -765,7 +713,6 @@ mod tests {
         // Stack-based ABIs (x86/AMD64): return addr lives at [sp], so the
         // dispatcher must increment SP after a native procedure returns.
         assert!(SystemVAMD64.pops_return_addr());
-        assert!(MicrosoftX64.pops_return_addr());
         assert!(Cdecl.pops_return_addr());
         // Register-based ABIs (ARM/ARM64/MIPS): return addr lives in
         // LR/X30/$ra, and SP must be left untouched.
@@ -840,7 +787,6 @@ mod tests {
         // becomes order-dependent.
         let groups: &[(&str, &[&str])] = &[
             ("SystemV_AMD64", SystemVAMD64::ARCH_ALIASES),
-            ("Microsoft_x64", MicrosoftX64::ARCH_ALIASES),
             ("cdecl", Cdecl::ARCH_ALIASES),
             ("ARM_EABI", ARMEABI::ARCH_ALIASES),
             ("AArch64", AArch64CC::ARCH_ALIASES),
