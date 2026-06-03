@@ -2047,6 +2047,77 @@ construction non-fatal, but the techniques that read internal
 silently misbehave rather than raise — vet each one against the proxy
 read-only invariant before counting on it in CI.
 
+Analyses compatibility
+----------------------
+
+``proj.analyses.*`` predates the Rust engine. None of the analyses
+listed below accept a ``use_rust_engine`` kwarg, and none currently
+inherit a project-level default — so whether each one "uses Rust" is
+determined by *what it calls internally*, not by user intent. The
+table records each analysis' internal stepping path and the verdict
+for running it against a project that has had a
+``RustExplorationManager`` attached.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 14 72
+
+   * - Analysis
+     - Status
+     - Notes
+   * - ``CFGFast``
+     - **Works (engine-agnostic)**
+     - Pure static lift + heuristics; no ``SimState`` execution. Smoke
+       test: ``tests/analyses/test_cfg_fast_rust.py`` compares the
+       in-text function set against the Python baseline on three
+       binaries.
+   * - ``BackwardSlice``
+     - **Works (engine-agnostic)**
+     - Consumes a ``CFGEmulated`` + ``CDG`` + ``DDG`` triple and walks
+       the dependency graphs; no ``factory.simulation_manager(...)``
+       call site, no ``factory.successors``. Smoke test:
+       ``tests/analyses/test_slicing_ddg_vfg_rust.py``.
+   * - ``DDG``
+     - **Works (engine-agnostic)**
+     - Reads ``state.history.actions`` off the final-state set that
+       ``CFGEmulated`` records on each node (requires
+       ``state_add_options=angr.sim_options.refs``). No internal
+       ``SimulationManager``. Smoke test:
+       ``tests/analyses/test_slicing_ddg_vfg_rust.py``.
+   * - ``VFG``
+     - **Works (Python engine internally)**
+     - Steps states directly through ``project.factory.successors``
+       and maintains its own ``VFGJob`` worklist + abstract-state
+       merging; no ``SimulationManager``. ``factory.successors``
+       dispatches to the Python ``SimEngine`` registry, so a
+       ``RustExplorationManager`` attached to the project does not
+       influence the analysis. Smoke test:
+       ``tests/analyses/test_slicing_ddg_vfg_rust.py``.
+   * - ``CFGEmulated``
+     - **Python engine internally (untested under Rust)**
+     - Builds internal ``SimulationManager`` instances at indirect-
+       jump resolution (``cfg_emulated.py:2611`` / ``:2743``). Has no
+       ``use_rust_engine`` plumbing. Runs to completion against the
+       Python engine; the Rust engine is unused even if a
+       ``RustExplorationManager`` exists on the project. No Rust-
+       parity smoke test exists yet.
+   * - ``Veritesting``
+     - **Unsupported (raises)**
+     - Constructs ``SimulationManager`` directly (``veritesting.py:255``)
+       and auto-adds ``EFFICIENT_STATE_MERGING``, which lives in
+       ``_RAISE_OPTION_NAMES``. See the
+       "Exploration technique compatibility" section above for the
+       parallel technique-side verdict.
+
+If you need Rust-engine execution semantics inside an analysis that
+constructs its own ``SimulationManager``, the only workaround today is
+to monkey-patch ``AngrObjectFactory.simulation_manager`` to return a
+``RustExplorationManager`` — see ``tests/benchmarks/run_single.py`` for
+the precedent and ``tests/engines/test_callable_rust.py`` for a
+context-manager pattern that cleans up the swap. A first-class
+``use_rust_engine`` plumb-through is tracked under the v1.0 Analyses-
+compatibility epic.
+
 Memory pressure and OOM
 -----------------------
 
