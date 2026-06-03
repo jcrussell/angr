@@ -23,6 +23,14 @@
     "state_creations": 0,
     "steps": 47
   },
+  "android_arm_license_validation": {
+    "callback_count": 0,
+    "peak_memory_mb": 222.0,
+    "python_time": 0.2,
+    "rust_time": 0.25,
+    "state_creations": 0,
+    "steps": 0
+  },
   "codegate_2017-angrybird": {
     "callback_count": 0,
     "peak_memory_mb": 1864.7,

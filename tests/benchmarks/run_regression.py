@@ -104,6 +104,12 @@ FAST_SUITE = [
     # unconditionally. Uses only base scalar ARM ops (no NEON / VFP /
     # Thumb).
     ("arm_le_branch", 30, "bfs", True),
+    # First real ARM ELF in the corpus (angr-p3da). The Android NDK
+    # licence-check crackme — complements arm_le_branch with a non-toy
+    # ARM workload that exercises the full lift + explore loop on
+    # production-shaped code. Multiple valid solutions to the find/avoid
+    # set produce benign output divergence with Python, so rust_only=True.
+    ("android_arm_license_validation", 30, "bfs", True),
     # MIPS64 LE inline-ELF synthetic benchmark (angr-duta.4). Same shape
     # and rationale as mips32_le_branch — promotes MIPS64 from
     # Experimental to Supported in the arch matrix. Uses only base MIPS
