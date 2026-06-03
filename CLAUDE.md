@@ -239,9 +239,10 @@ the script falls back to `/usr/include/z3.h` so `bindgen` does not fail.
 
 ## Debugging Rust-side Logs
 
-The Rust engine emits `log::debug!` / `log::info!` / etc. through a custom
-`StderrLogger` (defined at `native/angr/src/engine.rs:1476`). By default the
-log level is unset and nothing is printed.
+The Rust engine emits `log::debug!` / `log::info!` / etc. through a stderr
+logger backed by `env_logger::filter::Filter` (defined in
+`native/angr/src/engine.rs`). By default the log level is unset and nothing
+is printed.
 
 Two ways to turn it on:
 
@@ -249,26 +250,32 @@ Two ways to turn it on:
 # From Python, programmatically
 from angr.exploration.rust_manager import set_rust_log_level
 set_rust_log_level("debug")    # or "error" / "warn" / "info" / "trace" / "off"
+# Or a full RUST_LOG-style spec with per-module filters:
+set_rust_log_level("rustylib::stash=warn,rustylib::exploration=info,off")
 
 mgr = angr.exploration.RustExplorationManager(proj, [state])
 mgr.run(max_steps=100)
-# stderr will carry lines like:  [rust:DEBUG] angr::exploration: ...
+# stderr will carry lines like:  [rust:DEBUG] rustylib::exploration: ...
 ```
 
 ```bash
-# From the shell — applied on first RustExplorationManager construction
+# From the shell — applied on first RustExplorationManager construction.
+# Both env vars are honored; RUST_LOG wins when both are set.
+RUST_LOG=debug python tests/benchmarks/run_single.py fauxware --engine rust
 ANGR_RUST_LOG=debug python tests/benchmarks/run_single.py fauxware --engine rust
+RUST_LOG="rustylib::stash=warn,off" python ...   # per-module filter
 ```
 
 Caveats:
-- The standard `RUST_LOG` env var is **not** honored. The engine uses
-  `log::set_max_level` plus a hand-rolled stderr logger, not `env_logger`.
-- Per-module filters (e.g. `RUST_LOG=angr::stepping=debug`) are not
-  supported — only a single global level.
-- `ANGR_RUST_LOG` is read once per process by `_apply_rust_log_env()`
-  (`angr/exploration/rust_manager.py`); changing it after the first
-  manager is constructed has no effect — call `set_rust_log_level()`
-  explicitly instead.
+- Rust modules show up under the `rustylib` crate (e.g.
+  `rustylib::exploration`, `rustylib::stash`), not `angr::*` — the crate
+  is named `rustylib` for Python import compat.
+- `RUST_LOG` / `ANGR_RUST_LOG` are read once per process by
+  `_apply_rust_log_env()` (`angr/exploration/rust_manager.py`); changing
+  them after the first manager is constructed has no effect — call
+  `set_rust_log_level()` explicitly instead.
+- Stderr format is `[rust:LEVEL] target: msg` (not env_logger's default;
+  we wrap `Filter` inside a custom `log::Log` impl to preserve this).
 
 ## Key Files
 

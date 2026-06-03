@@ -398,28 +398,34 @@ def set_rust_log_level(level: str = "info") -> None:
 _rust_log_env_applied = False
 
 def _apply_rust_log_env() -> None:
-    """Honor ANGR_RUST_LOG on first manager construction.
+    """Honor RUST_LOG (or legacy ANGR_RUST_LOG) on first manager construction.
 
-    Set ANGR_RUST_LOG=debug (or error/warn/info/trace/off) to surface
-    Rust-side log::debug!/info! output. Applies once per process.
-    The Rust engine uses a custom StderrLogger plus log::set_max_level,
-    not env_logger, so the standard RUST_LOG env var is *not* honored
-    and per-module filters are not supported.
+    Accepts either a single level word (``debug`` / ``info`` / ``warn`` / ...)
+    or a full RUST_LOG-style filter spec
+    (``angr::stepping=debug,angr::interpreter=info``). Per-module filters are
+    honored — the Rust side delegates filter parsing to env_logger.
+    Applies once per process.
+
+    Precedence: ``RUST_LOG`` wins if set, else ``ANGR_RUST_LOG`` (kept for
+    backcompat with the pre-env_logger logger). ``ANGR_RUST_LOG`` retains
+    documentation value because the Rust extension does not auto-honor
+    ``RUST_LOG`` — env-driven activation only fires when a
+    ``RustExplorationManager`` is constructed, which is when this hook runs.
     """
     global _rust_log_env_applied
     if _rust_log_env_applied:
         return
     _rust_log_env_applied = True
-    level = os.environ.get("ANGR_RUST_LOG")
+    level = os.environ.get("RUST_LOG") or os.environ.get("ANGR_RUST_LOG")
     if not level:
         return
     try:
         set_rust_log_level(level)
     except Exception as e:  # noqa: BLE001 — never fail manager construction
-        # cat-(b) FALLBACK WITH LOSS: ANGR_RUST_LOG could not be applied;
+        # cat-(b) FALLBACK WITH LOSS: env-driven level could not be applied;
         # manager construction proceeds, but Rust-side log output stays at
         # whatever level was set previously (typically off).
-        l.debug("Failed to set Rust log level from ANGR_RUST_LOG=%r: %s", level, e)
+        l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 
 from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemoryTracker

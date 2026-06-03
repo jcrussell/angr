@@ -15438,6 +15438,58 @@ class TestStashNameValidation:
         )
         assert mgr.stash_count("fnd") == 1
 
+    def test_per_module_filter_silences_other_modules(self, capfd):
+        """angr-c242: RUST_LOG-style spec keeps only the targeted module live.
+
+        Sets the filter to ``rustylib::stash=warn,off`` — the stash module
+        still warns on typo creation, but other modules drop to ``off``. We
+        can't easily emit a non-stash log from Python, so the positive half
+        (stash still warns) covers the parser path and the negative half is
+        the absence of any non-stash output.
+        """
+        from angr.rustylib.vex_engine import set_rust_log_level
+
+        set_rust_log_level("rustylib::stash=warn,off")
+        try:
+            mgr = self._new_low_level_mgr()
+            _ = capfd.readouterr()
+            mgr.create_state("c242_typo")
+            captured = capfd.readouterr()
+            assert "creating new stash 'c242_typo'" in captured.err, (
+                f"per-module filter should keep stash warns live; "
+                f"got stderr:\n{captured.err!r}"
+            )
+            # Only the stash warn should be present; nothing from any other
+            # rustylib::* module slipped through.
+            for line in captured.err.splitlines():
+                if not line.startswith("[rust:"):
+                    continue
+                assert "rustylib::stash" in line, (
+                    f"non-stash log leaked through under per-module 'off' "
+                    f"default: {line!r}"
+                )
+        finally:
+            # Reset so we don't leak this filter into later tests.
+            set_rust_log_level("off")
+
+    def test_set_rust_log_level_accepts_full_filter_spec(self):
+        """angr-c242: full RUST_LOG-style specs (with ``=`` or ``,``) are
+        accepted; invalid single-word levels still raise."""
+        from angr.rustylib.vex_engine import set_rust_log_level
+
+        try:
+            # Specs with `=` or `,` bypass the strict single-word check and
+            # are handed to env_logger's parser. Acceptance is that the call
+            # returns None (no exception).
+            set_rust_log_level("rustylib::stash=warn,info")
+            set_rust_log_level("rustylib::exploration=debug")
+            set_rust_log_level("warn,rustylib::stash=trace")
+            # Single-word typo still fails (matches pre-existing behavior).
+            with pytest.raises(ValueError):
+                set_rust_log_level("bogus")
+        finally:
+            set_rust_log_level("off")
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSnapshotRoundTrip:

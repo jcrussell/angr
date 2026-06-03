@@ -180,15 +180,24 @@ fn set_z3_global_param(key: &str, value: &str) -> PyResult<()> {
     Ok(())
 }
 
-/// Minimal stderr logger for Rust log messages.
-struct StderrLogger;
+/// Stderr logger backed by an [`env_logger::filter::Filter`].
+///
+/// Output format: `[rust:LEVEL] target: msg` (matches the pre-env_logger
+/// hand-rolled logger so any external scrapers stay valid). Filter decisions
+/// (per-module level, plain level, full RUST_LOG-style spec) are delegated
+/// to env_logger's parser — we just install / replace the inner `Filter`
+/// when `set_rust_log_level` is called.
+struct StderrLogger {
+    filter: parking_lot::RwLock<env_logger::filter::Filter>,
+}
 
 impl log::Log for StderrLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.filter.read().enabled(metadata)
     }
     fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
+        let filter = self.filter.read();
+        if filter.matches(record) {
             eprintln!(
                 "[rust:{}] {}: {}",
                 record.level(),
@@ -200,36 +209,57 @@ impl log::Log for StderrLogger {
     fn flush(&self) {}
 }
 
-static LOGGER: StderrLogger = StderrLogger;
+static LOGGER: std::sync::OnceLock<StderrLogger> = std::sync::OnceLock::new();
+
+fn build_filter(spec: &str) -> env_logger::filter::Filter {
+    let mut b = env_logger::filter::Builder::new();
+    b.parse(spec);
+    b.build()
+}
 
 /// Set the Rust log level from Python.
 ///
-/// Valid levels: "error", "warn", "info", "debug", "trace", "off".
-/// Initializes a stderr logger on first call.
+/// Accepts either:
+///   - a single level word: `error` / `warn` / `info` / `debug` / `trace` / `off`
+///   - a full RUST_LOG-style filter spec, e.g.
+///     `angr::stepping=debug,angr::interpreter=info,warn` (per-module filters
+///     plus a fallback level).
+///
+/// Initializes a stderr logger on first call; subsequent calls swap the
+/// active filter in place (no double-install of the global logger).
 #[pyfunction]
 #[pyo3(signature = (level="info"))]
 fn set_rust_log_level(level: &str) -> PyResult<()> {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = log::set_logger(&LOGGER);
-    });
-
-    let filter = match level.to_lowercase().as_str() {
-        "error" => log::LevelFilter::Error,
-        "warn" | "warning" => log::LevelFilter::Warn,
-        "info" => log::LevelFilter::Info,
-        "debug" => log::LevelFilter::Debug,
-        "trace" => log::LevelFilter::Trace,
-        "off" => log::LevelFilter::Off,
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "invalid log level '{}': use error/warn/info/debug/trace/off",
-                level
-            )));
+    // Reject typo'd single-word levels (preserves the pre-existing error for
+    // calls like `set_rust_log_level("invalid")`). A spec with `=` or `,` is
+    // treated as a full RUST_LOG-style filter and validated by env_logger
+    // (parse() silently ignores malformed directives but still returns a
+    // usable Filter — same behavior as standard env_logger initialization).
+    let is_simple_word = !level.contains('=') && !level.contains(',');
+    if is_simple_word {
+        match level.to_lowercase().as_str() {
+            "error" | "warn" | "warning" | "info" | "debug" | "trace" | "off" => {}
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid log level '{}': use error/warn/info/debug/trace/off, \
+                     or a RUST_LOG-style spec like 'angr::stepping=debug'",
+                    level
+                )));
+            }
         }
-    };
-    log::set_max_level(filter);
+    }
+
+    let new_filter = build_filter(level);
+    let max_level = new_filter.filter();
+
+    let logger = LOGGER.get_or_init(|| StderrLogger {
+        filter: parking_lot::RwLock::new(build_filter("off")),
+    });
+    *logger.filter.write() = new_filter;
+    // log::set_logger errors on second call — fine, the first install wins
+    // and from then on we only swap the filter inside our Logger.
+    let _ = log::set_logger(logger);
+    log::set_max_level(max_level);
     Ok(())
 }
 
