@@ -1319,3 +1319,68 @@ fn test_phase42_flush_run_length_cap() {
     assert_eq!(second.width(), 64);
 }
 
+// ============================================================================
+// angr-1tes: cache + multi_objects invariant under concrete overwrite.
+// ============================================================================
+
+/// A concrete store at a byte covered by a previously-installed Multi cell
+/// must produce a re-load that reflects the new concrete byte, not the stale
+/// Multi alternative. Pre-fix, `SymbolicMemory::store_concrete` cleared the
+/// page-level `multi_bitmap` bit but left the `multi_objects` entry (and the
+/// `multi_versions` counter) untouched. The next load's dispatcher (see
+/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
+/// and hands the load to `assemble_load_with_multi`, which folds the orphaned
+/// alternatives over the new page-byte default — returning the old Multi
+/// value when the original cond is satisfiable.
+#[test]
+fn test_concrete_overwrite_clears_multi_cell() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p41_overwrite_addr".to_string(), 64);
+    // Install Multi at 0x1000..0x1004 (4 bytes) with one candidate (0x1000)
+    // and value 0xAABBCCDD. Pre-fix this leaves an orphaned `multi_objects`
+    // entry that survives the concrete store below.
+    mem.store_concrete_multi(
+        &addr_var,
+        &RustBV::concrete(0xAABBCCDD, 32),
+        &[0x1000],
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(mem.multi_cell_count(), 4);
+
+    // Prime the wider-load cache.
+    let _ = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(mem.wider_load_cache_len(), 1);
+
+    // Concrete overwrite of byte 0x1000.
+    mem.store_concrete(0x1000, RustBV::concrete(0x11, 8)).unwrap();
+
+    // The Multi cell at 0x1000 must be gone — both the sidecar map AND the
+    // page bit. The cache entry may remain (eviction is lazy) but a refetch
+    // must not see the stale alternative.
+    assert!(
+        mem.get_multi_alternatives(0x1000).is_none(),
+        "concrete overwrite must drop the orphaned Multi cell at 0x1000"
+    );
+    let page = mem.pages.get(&(0x1000 >> 12)).expect("page mapped");
+    assert!(
+        !page.is_multi(0),
+        "page Multi bit at offset 0 must be cleared by concrete store"
+    );
+
+    // Re-read: under the cond that previously fired the Multi alt
+    // (addr_var == 0x1000), the new concrete byte 0x11 must dominate.
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    let after = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    assert_eq!(
+        probe.eval(&after),
+        Some(0x11),
+        "re-load after concrete overwrite must reflect the new byte, \
+         not the orphaned Multi alternative"
+    );
+}
+

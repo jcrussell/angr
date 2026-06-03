@@ -158,6 +158,25 @@ impl SymbolicMemory {
             }
         }
 
+        // angr-1tes: drop any Multi cells overwritten by this concrete
+        // write and bump their per-byte version so the wider-load cache
+        // fingerprint mismatches on next read. The page-level
+        // `multi_bitmap` is already cleared inside `page.store_concrete`,
+        // but the sidecar `multi_objects` map and `multi_versions`
+        // counter are owned here and must be kept in sync. Without this,
+        // `load_concrete_lazy_inner`'s dispatcher (which checks
+        // `multi_objects.contains_key`) would still hand the load to
+        // `assemble_load_with_multi`, folding the orphaned alternatives
+        // over the new page byte and returning the old Multi value.
+        if !self.multi_objects.is_empty() {
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                if self.multi_objects.remove(&byte_addr).is_some() {
+                    self.bump_multi_version(byte_addr);
+                }
+            }
+        }
+
         Ok(())
     }
 
