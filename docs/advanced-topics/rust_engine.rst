@@ -2147,6 +2147,43 @@ counting on it in CI. ``state.copy()`` is the one exception: the
 proxy raises ``NotImplementedError`` (see the Veritesting analysis row
 below).
 
+Hook contract
+-------------
+
+User hooks installed via :meth:`angr.Project.hook`,
+:meth:`angr.Project.hook_symbol`, and :meth:`angr.Project.unhook`
+work the same under the Rust engine as under the Python engine. The
+Rust interpreter looks up the hook on the ``Project`` at dispatch time
+and runs the callback as a Python ``SimProcedure`` via the standard
+PyO3 dispatch path. The four entry points covered by
+``tests/engines/test_hooks_rust.py``:
+
+* ``proj.hook(addr, simproc, replace=True)`` — install (or override)
+  a :class:`~angr.SimProcedure` at a specific address. ``replace=True``
+  silently overrides any existing hook (including the auto-installed
+  libc bindings created at load time).
+* ``proj.hook_symbol(name, simproc, replace=True)`` — resolve the
+  symbol to an address (via the loader, with a CLE extern fallback
+  for weak symbols) and install the SimProcedure there. Equivalent to
+  ``proj.hook(loader.find_symbol(name).rebased_addr, simproc, replace=True)``
+  but covers the symbol-resolution path.
+* ``proj.hook(addr, hook=callback, length=0)`` — zero-length advance
+  hook. The callback runs and execution resumes at the same PC; the
+  dispatcher emits ``Ijk_NoHook`` so the next step lifts the real
+  instruction underneath (no re-execution loop). For ``length>0``, the
+  hook replaces ``length`` bytes of code and execution resumes at
+  ``addr + length``.
+* ``proj.unhook(addr)`` — remove the hook at ``addr``. Subsequent
+  dispatches at ``addr`` execute the original (or auto-installed)
+  procedure. ``is_hooked(addr)`` returns ``False`` after the call.
+
+Hooks are heavily exercised by the benchmark suite (``flareon2015_5``,
+``flareon2015_10``, ``whitehatvn2015_re400`` and others — see the
+``bench-simprocedure-fallback-distribution`` memory for the per-bench
+``UserHook`` fallback counts), but the explicit smoke tests pin the
+contract end-to-end so a regression here fails loudly rather than as
+a benchmark slowdown.
+
 Analyses compatibility
 ----------------------
 
