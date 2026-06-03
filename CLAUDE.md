@@ -169,6 +169,40 @@ ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_re
   default and shows the counters that moved most in absolute terms; ns-level
   timing counters always lead because they vary slightly across runs.
 
+### Nightly RSS leak check
+
+`.github/workflows/nightly-ci.yml::rss_leak_check` runs
+`tests/benchmarks/run_leak_check.py` against a Callable-heavy bench
+(default `mma_howtouse`, 45 invocations per `main()`) **N=10 times** in a
+single process under a 4 GB `RLIMIT_AS`. Tracks `ru_maxrss` after each
+`main()` call and fails when
+`peak_rss(iterN) / peak_rss(iter1) > --threshold` (default **1.5x**).
+
+Codifies the `9maq-bisect-method` bd memory (used to find the 286 MB ->
+1888 MB Callable leak fixed in 293aa8163) into a gate. Current main holds
+the ratio at ~1.002 across 10 iters, so 1.5x has comfortable headroom while
+still catching a >=2x regression.
+
+```bash
+# Local invocation (~50s for N=10, ~15s for N=3)
+python tests/benchmarks/run_leak_check.py --iters 10
+python tests/benchmarks/run_leak_check.py --iters 3 --threshold 1.3
+python tests/benchmarks/run_leak_check.py --example flareon2015_10 --json
+```
+
+**Threshold tuning notes:**
+- Healthy ratio with the post-293aa8163 cleanup is ~1.00-1.05x (Z3+claripy
+  caches warm up but don't grow unboundedly).
+- Pre-fix ratio was ~6.6x.
+- 1.5x is the recommended default: large enough to avoid false-positives
+  from cache warmup, small enough to catch a ~2x regression on the first
+  nightly after it lands.
+- If a future legitimate change pushes healthy ratio above ~1.3x (e.g. a
+  larger steady-state cache), raise the threshold incrementally — do not
+  lower below 1.2x without first ruling out warmup variance.
+- For benches outside `mma_howtouse`, expect different baselines; rerun
+  N=10 once locally before picking a threshold.
+
 ## Profiling Rust Benches
 
 `tests/benchmarks/profile_rust_bench.sh` wraps the criterion bench in
