@@ -3923,6 +3923,92 @@ class TestProxyLiskovGaps:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestProxyMemoryFind:
+    """angr-4scu step 1: RustMemoryProxy.find() supports the concrete-needle
+    search surface used by libc SimProcs (memchr / strstr against literals).
+    Symbolic needles / conditions / wide-char search raise NotImplementedError
+    and route callers to the SimProcedure-hook path.
+    """
+
+    def test_find_concrete_byte_in_concrete_buffer(self, fauxware_project):
+        """Write a concrete buffer through the proxy, then find a byte in it."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, b"hello\x00world\x00")
+
+        a, constraints, indices = proxy.memory.find(addr, b"world", 16)
+        assert a.concrete_value == addr + 6
+        assert indices == [6]
+        assert constraints == []
+
+    def test_find_no_match_returns_default(self, fauxware_project):
+        """When the needle is absent the default address (BVV) is returned
+        and indices is empty."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, b"abcdefghij")
+
+        a, constraints, indices = proxy.memory.find(addr, b"ZZ", 10, default=0)
+        assert a.concrete_value == 0
+        assert indices == []
+        assert constraints == []
+
+    def test_find_int_needle_treated_as_single_byte(self, fauxware_project):
+        """memchr-style: passing an ``int`` needle treats it as a single byte
+        (low 8 bits), matching what SimProcs pass after ``c[7:0]``."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, b"AAAAXBBBB")
+
+        a, _, indices = proxy.memory.find(addr, ord("X"), 16, default=0)
+        assert a.concrete_value == addr + 4
+        assert indices == [4]
+
+    def test_find_symbolic_needle_raises(self, fauxware_project):
+        """Symbolic needles are out of scope for this proxy step and must
+        raise NotImplementedError with a route to the SimProcedure hook."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        sym = claripy.BVS("needle_sym", 8)
+        with pytest.raises(NotImplementedError, match="symbolic needles"):
+            proxy.memory.find(fauxware_project.entry, sym, 16)
+
+    def test_find_wide_char_raises(self, fauxware_project):
+        """``char_size > 1`` (wide-char) belongs in SimMemory.find(); the
+        proxy refuses with a clear pointer."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(NotImplementedError, match="char_size"):
+            proxy.memory.find(
+                fauxware_project.entry, b"x", 16, char_size=2
+            )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:
     """angr-j28e: RustStateProxy register and memory writes must write through
     to the Rust state (Rust is the single source of truth — no Python-side

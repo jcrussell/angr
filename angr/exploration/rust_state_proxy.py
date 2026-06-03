@@ -561,6 +561,124 @@ class RustMemoryProxy:
             f"got {type(data).__name__}"
         )
 
+    def find(self, addr, data, max_search, *, default=None, endness=None,
+             chunk_size=None, max_symbolic_bytes=None, condition=None,
+             char_size=1, **kwargs):
+        """Search memory at ``addr`` for the byte pattern ``data``.
+
+        Matches angr ``SimMemory.find()`` return shape:
+        ``(result_addr, constraints, match_indices)``. ``result_addr`` is the
+        address of the first match (BVV), or ``default`` (wrapped as BVV) if
+        no match was found.
+
+        Step 1 of angr-4scu (write-through SimMemory proxy). The supported
+        surface is intentionally narrow:
+
+        * ``addr`` — concrete int or concrete claripy AST. Symbolic addrs are
+          resolved via the forked solver context (one solution).
+        * ``data`` — concrete ``bytes``/``bytearray``/``int`` or concrete
+          claripy BVV. Symbolic needles raise ``NotImplementedError``.
+        * ``char_size`` — must be ``1`` (no wide-char search).
+        * ``condition`` — must be ``None`` or syntactically true.
+
+        Concrete-only is sufficient for the SimProcs that drive
+        ``state.memory.find()`` against concrete needles (``memchr(s, 'X', n)``,
+        ``strstr`` against a literal). Symbolic-byte memory contents read
+        through ``proxy.load`` as zeros (the underlying ``get_state_memory``
+        only returns concretized bytes), so symbolic matches would silently
+        miss — we refuse loudly instead and direct callers to the SimProcedure
+        hook path.
+        """
+        if max_search is None or (isinstance(max_search, int) and max_search <= 0):
+            zero = claripy.BVV(default or 0, self._arch.bits)
+            return zero, [], []
+        if isinstance(max_search, claripy.ast.Base):
+            if not max_search.concrete:
+                raise NotImplementedError(
+                    "RustMemoryProxy.find(): symbolic max_search is not "
+                    "supported. Caller must concretize max_search before "
+                    "invoking find() on the proxy."
+                )
+            max_search = max_search.concrete_value
+
+        if char_size != 1:
+            raise NotImplementedError(
+                "RustMemoryProxy.find() supports char_size=1 only "
+                "(wide-char search lives in SimMemory.find())."
+            )
+        if condition is not None and not (
+            hasattr(condition, "is_true") and condition.is_true()
+        ):
+            raise NotImplementedError(
+                "RustMemoryProxy.find() does not support a symbolic "
+                "``condition=`` kwarg. Drop the condition or route through "
+                "a SimProcedure hook."
+            )
+
+        if isinstance(addr, claripy.ast.Base):
+            if addr.concrete:
+                addr = addr.concrete_value
+            else:
+                self._ensure_solver()
+                resolved = self._solver_ctx.eval(addr)
+                if resolved is None:
+                    raise claripy.errors.UnsatError(
+                        "symbolic find addr is unsat"
+                    )
+                addr = resolved
+
+        if isinstance(data, claripy.ast.Base):
+            if not data.concrete:
+                raise NotImplementedError(
+                    "RustMemoryProxy.find(): symbolic needles are not "
+                    "supported. Use a SimProcedure hook so state.memory is "
+                    "a full SimMemory plugin."
+                )
+            width_bits = data.size()
+            if width_bits % 8:
+                raise ValueError(
+                    f"needle width must be a multiple of 8 bits, got {width_bits}"
+                )
+            needle = data.concrete_value.to_bytes(width_bits // 8, "big")
+        elif isinstance(data, (bytes, bytearray)):
+            needle = bytes(data)
+        elif isinstance(data, int):
+            needle = bytes((data & 0xFF,))
+        else:
+            raise TypeError(
+                f"find() needle must be claripy AST, bytes, or int; "
+                f"got {type(data).__name__}"
+            )
+
+        # Load the haystack: max_search candidate starting positions plus
+        # the trailing needle bytes. ``get_state_memory`` returns concretized
+        # bytes (or None if entirely unmapped/uninitialized).
+        needle_len = len(needle)
+        haystack_size = max_search + max(needle_len - 1, 0)
+        haystack = self._mgr.get_state_memory(self._state_id, addr, haystack_size)
+        if haystack is None:
+            haystack = b"\x00" * haystack_size
+
+        match_index = -1
+        if needle_len == 0:
+            match_index = 0  # empty needle matches at offset 0 by convention
+        else:
+            for i in range(min(max_search, len(haystack) - needle_len + 1)):
+                if haystack[i:i + needle_len] == needle:
+                    match_index = i
+                    break
+
+        if match_index < 0:
+            default_bv = (
+                claripy.BVV(default, self._arch.bits)
+                if isinstance(default, int)
+                else (default if default is not None else claripy.BVV(0, self._arch.bits))
+            )
+            return default_bv, [], []
+
+        result = claripy.BVV(addr + match_index, self._arch.bits)
+        return result, [], [match_index]
+
 
 class RustHeapProxy:
     """Proxy for state.heap — exposes mmap_base and allocation metadata
