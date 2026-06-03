@@ -440,9 +440,6 @@ class RustStateExportMixin:
             angr_state = self._snapshot_to_angr(snapshot)
             self._inject_rust_stdout(angr_state, snapshot.state_id)
             self._inject_rust_stdin(angr_state, snapshot.state_id)
-            # Skip _sync_exported_constraints — it's O(n^2) on constraint
-            # ASTs (5.9s for sym-write) and causes identity mismatches.
-            # _snapshot_to_angr already attached the Rust solver fallback.
             self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
             self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
             self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
@@ -814,126 +811,6 @@ class RustStateExportMixin:
         Re-attaching the same state is a no-op.
         """
         RustSolverFallback(state, state_id, self._rust_mgr).attach()
-
-    def _sync_exported_constraints(self, state, state_id):
-        """Sync constraints from Rust solver to Python state.
-
-        Adds Rust-exported constraints to the Python state. Skips register
-        constraints and constraints that use symbols with different identity
-        than existing Python symbols (which would cause UNSAT).
-
-        Note: if constraint sync causes UNSAT due to identity mismatches,
-        the Rust solver fallback in _attach_rust_solver_fallback handles
-        eval() calls by delegating to Rust's Z3 solver directly.
-        """
-        try:
-            root_id = self._state_roots.get(state_id, state_id)
-            if root_id == state_id:
-                try:
-                    rust_root = self._rust_mgr.get_state_root(state_id)
-                    if rust_root is not None:
-                        root_id = rust_root
-                except Exception:
-                    # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust
-                    # root id; absence is normal for entry / unparented
-                    # states.
-                    pass
-
-            rust_constraints = self._rust_mgr.export_state_constraints(state_id)
-            synced = 0
-            skipped = 0
-
-            existing_leaves = {}
-            for c in state.solver.constraints:
-                for leaf in c.leaf_asts():
-                    if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
-                        existing_leaves[leaf.args[0]] = leaf
-
-            # Build substitution map: rust_sym_ADDR → original AST
-            rust_sym_to_original = {}
-            for lookup_id in [state_id, root_id]:
-                if lookup_id is None:
-                    continue
-                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
-                for addr, (ast, size) in addr_map.items():
-                    rust_name = f"rust_sym_{addr:x}"
-                    rust_sym_to_original[rust_name] = ast
-
-            for c in rust_constraints:
-                if c is None:
-                    continue
-                try:
-                    c_str = str(c)
-                    # Skip register-related constraints
-                    if 'reg_' in c_str:
-                        skipped += 1
-                        continue
-
-                    # Replace rust_sym_XXXX references with original ASTs
-                    # This is critical for constraint identity unification
-                    if rust_sym_to_original and 'rust_sym_' in c_str:
-                        try:
-                            for rust_name, orig_ast in rust_sym_to_original.items():
-                                for leaf in c.leaf_asts():
-                                    if hasattr(leaf, 'args') and len(leaf.args) > 0:
-                                        leaf_name = leaf.args[0] if isinstance(leaf.args[0], str) else ''
-                                        if leaf_name.startswith(rust_name):
-                                            # Substitute: replace rust symbol with original
-                                            c = c.replace(leaf, orig_ast)
-                                            break
-                        except Exception:
-                            # cat-(b) FALLBACK WITH LOSS: rust_sym_*
-                            # substitution failed (claripy AST shape
-                            # mismatch). Constraint is added as-is and
-                            # its rust_sym_ leaf may not match the
-                            # Python AST identity, leading to a downstream
-                            # identity-mismatch skip.
-                            pass
-
-                    # Check for identity mismatch: if a Rust constraint uses
-                    # a symbol with the same NAME as a Python symbol but a
-                    # DIFFERENT object identity, skip it to prevent UNSAT.
-                    identity_conflict = False
-                    if existing_leaves:
-                        for leaf in c.leaf_asts():
-                            if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
-                                name = leaf.args[0]
-                                if name in existing_leaves and existing_leaves[name] is not leaf:
-                                    identity_conflict = True
-                                    break
-                    if identity_conflict:
-                        skipped += 1
-                        continue
-
-                    if hasattr(c, 'op'):
-                        if getattr(c, 'length', None) is None:
-                            state.solver.add(c)
-                        else:
-                            state.solver.add(c != 0)
-                        synced += 1
-                except Exception:
-                    # cat-(b) FALLBACK WITH LOSS: this individual
-                    # constraint failed to add (rare malformed AST).
-                    # Other constraints still sync. The Rust solver
-                    # fallback supplies eval/satisfiable so the missing
-                    # constraint is not a wrong-answer source — Python
-                    # solver path may diverge but is not used.
-                    pass
-            if synced or skipped:
-                l.debug(f"Synced {synced} constraints to state {state_id} "
-                        f"({skipped} skipped for identity/register)")
-
-            # Post-sync UNSAT check removed — it was a diagnostic that
-            # called satisfiable() on the full constraint set, which for
-            # LAZY_SOLVES examples (hackcon) takes 60s+ with zero benefit.
-            # The Rust solver fallback handles eval() correctly regardless.
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: outer constraint sync failed.
-            # The Rust solver fallback (attached separately by the caller)
-            # serves eval/min/max/satisfiable from Rust's full constraint
-            # set, so missing Python-side constraints are not a wrong-
-            # answer source.
-            l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
     @property
     def found_states(self) -> list:
