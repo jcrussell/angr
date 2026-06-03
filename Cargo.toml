@@ -32,5 +32,17 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
+# Inner-loop dev profile: ~3x faster warm rebuild than `release` by trading
+# LTO + single-codegen-unit link time for parallelism. Runtime impact on
+# fast-tier benches (fauxware, defcamp_r100, csaw_wyvern) was within 5-sample
+# noise — see bd memory `build-perf-spike-codegen-units` (angr-6w5l).
+# Use via `tools/rebuild-rust.sh --fast`. NOT for benchmark gates or release
+# artifacts — bench-regression and CI continue to use `release`.
+[profile.release-fast]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true
+
 [patch.crates-io]
 z3 = { path = "native/z3-patched" }

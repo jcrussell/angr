@@ -70,6 +70,10 @@ rebuild-clean:  ## Full clean rebuild (wipes .so, build/, cargo cache).
 rebuild-cargo:  ## Rebuild bypassing pip (cargo build + copy) — broken-venv fallback.
 	$(REPO_ROOT)/tools/rebuild-rust.sh --cargo-only
 
+.PHONY: rebuild-fast
+rebuild-fast:  ## Inner-loop rebuild via [profile.release-fast] (~3s warm vs ~36s). NOT for bench gates.
+	$(REPO_ROOT)/tools/rebuild-rust.sh --fast
+
 .PHONY: check
 check:  ## cargo check (release) — fast type/borrow check, no link.
 	$(CARGO) check --manifest-path $(MANIFEST) --release

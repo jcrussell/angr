@@ -22,11 +22,19 @@
 #                        Use when the venv's pip/setuptools is broken but
 #                        cargo+rustc work. The PyO3 .so exports the same module,
 #                        so `import angr.rustylib` works without setup.py.
+#   --fast               Inner-loop dev rebuild via [profile.release-fast]
+#                        (lto=off, codegen-units=16). ~3x faster warm rebuild
+#                        than --cargo-only. Implies --keep-cargo-cache and the
+#                        cargo-direct copy path. NOT for benchmark gates or
+#                        release artifacts — use the standard path for those.
+#                        Runtime impact on fast-tier benches was within 5-sample
+#                        noise; see bd memory `build-perf-spike-codegen-units`.
 #
 # Usage:
 #   ./tools/rebuild-rust.sh
 #   ./tools/rebuild-rust.sh --keep-cargo-cache
 #   ./tools/rebuild-rust.sh --cargo-only
+#   ./tools/rebuild-rust.sh --fast
 
 set -euo pipefail
 
@@ -36,10 +44,12 @@ MANIFEST="$REPO_DIR/native/angr/Cargo.toml"
 
 KEEP_CARGO_CACHE=0
 CARGO_ONLY=0
+FAST=0
 for arg in "$@"; do
     case "$arg" in
         --keep-cargo-cache) KEEP_CARGO_CACHE=1 ;;
         --cargo-only)       CARGO_ONLY=1 ;;
+        --fast)             FAST=1; CARGO_ONLY=1; KEEP_CARGO_CACHE=1 ;;
         -h|--help)
             sed -n '2,/^set /p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'
             exit 0
@@ -95,7 +105,15 @@ fi
 
 if (( CARGO_ONLY == 1 )); then
     echo
-    echo "=== cargo build --release (--cargo-only fallback) ==="
+    if (( FAST == 1 )); then
+        echo "=== cargo build --profile release-fast (--fast inner-loop) ==="
+        CARGO_PROFILE_FLAG=(--profile release-fast)
+        CARGO_PROFILE_DIR=release-fast
+    else
+        echo "=== cargo build --release (--cargo-only fallback) ==="
+        CARGO_PROFILE_FLAG=(--release)
+        CARGO_PROFILE_DIR=release
+    fi
     # z3-sys needs the C header. Honor an existing override; otherwise probe
     # the same locations setup.py::_resolve_z3_header does (venv → pkg-config
     # → system paths). If none match, leave Z3_SYS_Z3_HEADER unset and let
@@ -115,8 +133,8 @@ if (( CARGO_ONLY == 1 )); then
             fi
         done
     fi
-    cargo build --manifest-path "$MANIFEST" --release
-    SRC="$REPO_DIR/target/release/librustylib.so"
+    cargo build --manifest-path "$MANIFEST" "${CARGO_PROFILE_FLAG[@]}"
+    SRC="$REPO_DIR/target/$CARGO_PROFILE_DIR/librustylib.so"
     if [[ ! -f "$SRC" ]]; then
         echo "ERROR: cargo build did not produce $SRC" >&2
         exit 1

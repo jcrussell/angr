@@ -28,6 +28,7 @@ for the full list. Most-used targets:
 |--------|--------------|
 | `make rebuild` | Incremental Rust .so rebuild via pip editable install. |
 | `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
+| `make rebuild-fast` | Inner-loop rebuild via `[profile.release-fast]` (~3s warm vs ~36s). NOT for bench gates. |
 | `make check` | `cargo check --release` — fast type/borrow check. |
 | `make test` (`test-quick`) | Run `tests/engines/test_rust_exploration.py` (~1-2 min). |
 | `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
