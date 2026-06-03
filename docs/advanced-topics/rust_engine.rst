@@ -2196,12 +2196,21 @@ Caveats specific to ``step()`` dispatch:
        audit on exposed classes is still open (spike ``angr-8fo6``).
        Do not enable until that audit lands.
    * - ``Oppologist``
-     - **Untested (semantics mismatch)**
-     - Catches ``angr.errors.SimError`` to single-step around
-       unsupported instructions. The Rust engine raises typed
-       ``Rust*Error`` exceptions (``RustUnsupportedVexOpError`` and
-       siblings), which are *not* subclasses of ``SimError`` — the
-       catch will miss them.
+     - **Unsupported (overrides** ``successors`` **only)**
+     - The technique works by overriding ``successors()`` to wrap the
+       successor call in a ``try / except (SimUnsupportedError,
+       SimCCallError)`` and replay the failing instruction under
+       ``unicorn`` with aggressive concretization. The Rust manager
+       does not dispatch ``successors()`` to techniques — the
+       method on :class:`RustSimulationManagerProxy` raises
+       ``NotImplementedError`` — so the recovery hook is never
+       invoked. Even if dispatch were added, the Rust engine's
+       typed ``Rust*Error`` exceptions (``RustUnsupportedVexOpError``
+       and siblings) do not inherit from ``SimError`` and do not
+       carry ``executed_instruction_count`` / ``ins_addr``, so the
+       existing catch + ``_delayed_oppology`` flow would still need
+       a rewrite. Drop to ``use_rust_engine=False`` if you need
+       unicorn-fallback for unsupported VEX ops.
    * - ``Tracer``
      - **Step hook dispatched, writes to read-only proxy**
      - Trace-following hooks run (``angr-rqvq``), but ``step_state()``
@@ -2704,15 +2713,20 @@ techniques (Veritesting, Spiller, MemoryWatcher, etc.) raises
 Known incompatibilities
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-**Oppologist misses Rust errors.** The ``Oppologist`` exploration
-technique single-steps around unsupported instructions by catching
-``angr.errors.SimError`` inside its ``step`` hook. The Rust engine's
-typed errors (``RustMalformedIRSBError``, ``RustUnsupportedVexOpError``,
-…) **do not** derive from ``SimError``, so the ``except`` clause
-misses them and the user sees a ``Rust*Error`` bubble up unhelpfully
-instead of the oppologist taking over. Tracked in ``angr-v4qi``;
-covered in *Exploration technique compatibility* above as one of the
-rejected techniques.
+**Oppologist is structurally incompatible.** The ``Oppologist``
+exploration technique single-steps around unsupported instructions
+by overriding ``successors()`` and catching
+``angr.errors.SimError`` to replay the failing instruction under
+``unicorn``. The Rust manager does **not** dispatch ``successors()``
+to techniques (the method on :class:`RustSimulationManagerProxy`
+raises ``NotImplementedError``), so the recovery hook never runs —
+the typed ``Rust*Error`` propagates straight out of ``mgr.run(...)``
+as if no technique were installed. Resolution: use
+``use_rust_engine=False`` for the unicorn-fallback workflow. See
+``angr-v4qi`` and the *Exploration technique compatibility* table
+above for the full chain of issues (dispatch, exception inheritance,
+``executed_instruction_count`` attribute) that would each need to be
+addressed before Oppologist could work under Rust.
 
 **Standard ``except SimError`` does not catch Rust errors.** By the
 same mechanism, downstream code that ``except angr.errors.SimError:``
