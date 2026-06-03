@@ -12924,11 +12924,17 @@ class TestNativeResourceLimitSyscalls:
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFilePathSyscalls:
     """angr-0hif.1 (symbolic-return subset): native ``lstat`` /
-    ``newfstatat`` / ``readlink`` / ``readlinkat`` / ``faccessat``.
-    None of these have a Python ``SimProcedure``; the unhandled-syscall
-    path falls through to ``procedures/stubs/syscall_stub.py::syscall``
-    which returns a fresh ``Unconstrained`` BV. The native handlers
-    mirror that via ``SyscallOutcome::ContinueSymbolic``.
+    ``newfstatat`` / ``readlink`` / ``readlinkat``. None of these have
+    a Python ``SimProcedure``; the unhandled-syscall path falls through
+    to ``procedures/stubs/syscall_stub.py::syscall`` which returns a
+    fresh ``Unconstrained`` BV. The native handlers mirror that via
+    ``SyscallOutcome::ContinueSymbolic``.
+
+    ``faccessat`` was promoted to a real handler in angr-6009 (it now
+    mirrors ``NativeAccessSyscall`` against
+    ``FileSystem::is_path_known``) and is covered by
+    ``TestNativeFaccessatSyscall`` below — it needs a mapped pathname
+    so the parametrize harness here would no longer fit.
 
     The FD-allocating sibling cohort (``open`` / ``openat`` / ``close``)
     is now native via ``angr-k3ol.1`` and exercised by
@@ -12948,7 +12954,6 @@ class TestNativeFilePathSyscalls:
             (89, "readlink"),
             (262, "newfstatat"),
             (267, "readlinkat"),
-            (269, "faccessat"),
         ],
     )
     def test_file_path_syscall_dispatches_natively(self, syscall_num, label):
@@ -12968,6 +12973,46 @@ class TestNativeFilePathSyscalls:
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
             f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFaccessatSyscall:
+    """angr-6009: native ``faccessat`` mirrors ``NativeAccessSyscall``
+    with dirfd handling. Absolute paths and ``AT_FDCWD`` query
+    ``FileSystem::is_path_known``; relative paths with non-AT_FDCWD
+    dirfd return ``-1`` (matches ``NativeOpenatSyscall``'s policy — we
+    do not model directory fds).
+
+    Rust cargo tests in ``native/angr/src/syscalls/file_path.rs`` pin
+    the per-handler semantics (unknown→-1, known→0, AT_FDCWD vs
+    arbitrary dirfd, empty path→-1, symbolic fallback,
+    cross-arch). This Python test pins cross-FFI dispatch
+    (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_faccessat_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 269  # faccessat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD (-100 reinterpreted u64)
+        state.regs.rsi = 0x4000              # pathname
+        state.regs.rdx = 0                   # mode = F_OK
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native faccessat(269) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
 

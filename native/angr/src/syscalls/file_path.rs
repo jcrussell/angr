@@ -4,14 +4,42 @@
 //!
 //! ## Symbolic-return stubs (angr-0hif.1)
 //!
-//! `lstat`, `newfstatat`, `readlink`, `readlinkat`, `faccessat` — none
-//! have a dedicated Python `SimProcedure` in
-//! `angr/procedures/linux_kernel/`, so the Python path falls through to
+//! `lstat`, `newfstatat`, `readlink`, `readlinkat` — none have a
+//! dedicated Python `SimProcedure` in `angr/procedures/linux_kernel/`,
+//! so the Python path falls through to
 //! `procedures/stubs/syscall_stub.py::syscall`, which returns
 //! `state.solver.Unconstrained("syscall_stub_<name>", returnty.size, ...)`.
 //! The native stubs match: ignore args, emit a fresh `RustBV::symbolic`
 //! of width `arch().bits()`, routed through
 //! `SyscallOutcome::ContinueSymbolic`.
+//!
+//! ### Audit (angr-6009)
+//!
+//! The stub semantics are accurate Python parity but lose information
+//! that the FileSystem model already has. Improvement vectors:
+//!
+//! * `lstat(path, statbuf)` / `newfstatat(dfd, path, statbuf, flag)`:
+//!   could mirror `stat()` — populate `statbuf` from
+//!   `FileSystem::content_size_for_path` and return `0` for known paths
+//!   (`-1` otherwise). lstat does not follow symlinks, but the
+//!   FileSystem model has no symlinks, so the semantics collapse to the
+//!   same write as `stat()`. Deferred to a follow-up bead because we
+//!   want a separate test surface for the per-arch struct stat writes.
+//! * `readlink(path, buf, bufsiz)` / `readlinkat(dfd, path, buf, bufsiz)`:
+//!   the FileSystem model has no symlinks, so the correct semantics for
+//!   every known path are `-1` (EINVAL: not a symlink) and for every
+//!   unknown path are `-1` (ENOENT). A blanket `-1` return is therefore
+//!   more accurate than the current fresh-symbolic return — but it
+//!   would regress binaries that branch on a positive return (e.g.
+//!   `/proc/self/exe`-discovery code). Deferred to a follow-up bead.
+//!
+//! ## `faccessat` (angr-6009)
+//!
+//! `faccessat(dfd, pathname, mode) → 0 | -1` — clone of `access` with
+//! dirfd handling. Absolute paths and `AT_FDCWD` query
+//! `FileSystem::is_path_known`. Relative paths with any other dirfd
+//! return `-1` (we do not model directory fds — matches `openat`'s
+//! policy). The `mode` arg is ignored. This was previously a stub.
 //!
 //! ## FD-allocating handlers (angr-k3ol.1)
 //!
@@ -105,8 +133,7 @@ stub_syscall!(NativeNewfstatatSyscall, "newfstatat", "syscall_stub_newfstatat", 
 stub_syscall!(NativeReadlinkSyscall, "readlink", "syscall_stub_readlink", 3);
 // readlinkat(dfd, path, buf, bufsiz) → long
 stub_syscall!(NativeReadlinkatSyscall, "readlinkat", "syscall_stub_readlinkat", 4);
-// faccessat(dfd, filename, mode) → long
-stub_syscall!(NativeFaccessatSyscall, "faccessat", "syscall_stub_faccessat", 3);
+// faccessat(dfd, filename, mode) → long — see NativeFaccessatSyscall impl below.
 
 /// Upper bound on the NUL-terminated path we will read from memory.
 /// Matches `procedures/fileops.rs::MAX_FOPEN_PATH_LEN` (256 bytes).
@@ -284,6 +311,50 @@ impl NativeSyscall for NativeAccessSyscall {
 
         let path = read_path(state, pathname_addr, "access")?;
         if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        let ret = if state.file_system_ref().is_path_known(&path) {
+            0
+        } else {
+            NEG_ONE
+        };
+        Ok(SyscallOutcome::Continue { ret })
+    }
+}
+
+/// `faccessat(dirfd, pathname, mode) → 0 | -1` — clone of `access` with
+/// dirfd handling. Absolute paths and `AT_FDCWD` query
+/// `FileSystem::is_path_known`. Relative paths with any other dirfd
+/// return `-1` (we do not model directory fds — matches `openat`'s
+/// policy). The `mode` arg is ignored — Python's stub also ignores it.
+/// Empty path → `-1`.
+pub struct NativeFaccessatSyscall;
+
+impl NativeSyscall for NativeFaccessatSyscall {
+    fn name(&self) -> &'static str {
+        "faccessat"
+    }
+
+    fn num_args(&self) -> usize {
+        3
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let dirfd = extract_concrete_arg(&args[0], "faccessat dirfd")?;
+        let pathname_addr = extract_concrete_arg(&args[1], "faccessat pathname")?;
+        // args[2] = mode — ignored, mirroring NativeAccessSyscall.
+        let _ = args.get(2);
+
+        let path = read_path(state, pathname_addr, "faccessat")?;
+        if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        let absolute = path.starts_with('/');
+        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
         let ret = if state.file_system_ref().is_path_known(&path) {
@@ -521,12 +592,13 @@ mod tests {
     #[test]
     fn stub_handlers_return_fresh_symbolic_on_all_arches() {
         // (handler, expected name, arity)
+        // faccessat dropped (angr-6009) — has a real handler now; covered
+        // by dedicated tests below mirroring the access() suite.
         let cases: &[(&'static dyn NativeSyscall, &str, usize)] = &[
             (&NativeLstatSyscall, "lstat", 2),
             (&NativeNewfstatatSyscall, "newfstatat", 4),
             (&NativeReadlinkSyscall, "readlink", 3),
             (&NativeReadlinkatSyscall, "readlinkat", 4),
-            (&NativeFaccessatSyscall, "faccessat", 3),
         ];
 
         for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
@@ -973,6 +1045,251 @@ mod tests {
                     ],
                 )
                 .expect("access");
+            match out2 {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, 0, "{arch} post-register")
+                }
+                other => panic!("{arch} post-register: got {other:?}"),
+            }
+        }
+    }
+
+    /// `AT_FDCWD` reinterpreted as unsigned 64-bit — same constant the
+    /// handler matches on. Kept inline so the test stays self-contained.
+    const TEST_AT_FDCWD: u64 = AT_FDCWD_UNSIGNED;
+
+    #[test]
+    fn faccessat_unknown_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/no/such/file");
+
+        let out = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64), // mode (ignored)
+                ],
+            )
+            .expect("faccessat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_after_open_returns_zero_with_at_fdcwd() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/fa-exists.txt");
+
+        NativeOpenSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("open ok");
+
+        let out = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("faccessat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_absolute_path_ignores_dirfd() {
+        // Absolute paths bypass dirfd entirely — any value should resolve.
+        let mut state = RustSimState::new("amd64").expect("state");
+        state
+            .file_system()
+            .register_known_path("/etc/passwd".to_string());
+        stage_path(&mut state, 0x2000, b"/etc/passwd");
+
+        let out = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(42, 64), // arbitrary dirfd
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("faccessat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_relative_path_non_atfdcwd_returns_minus_one() {
+        // Mirrors NativeOpenatSyscall: we do not model dirfd directories,
+        // so relative paths with a non-AT_FDCWD dirfd cannot be resolved.
+        let mut state = RustSimState::new("amd64").expect("state");
+        // Register the bare name in case the handler ever resolved it
+        // without consulting dirfd — proves we are NOT doing that.
+        state
+            .file_system()
+            .register_known_path("local.txt".to_string());
+        stage_path(&mut state, 0x2000, b"local.txt");
+
+        let out = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(7, 64), // arbitrary dirfd != AT_FDCWD
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("faccessat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_empty_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        state
+            .memory_store(0x2000, RustBV::concrete(0, 8))
+            .expect("store NUL");
+
+        let out = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("faccessat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_symbolic_path_byte_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        let sym_byte = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "first_path_byte", 8)
+        };
+        state.memory_store(0x2000, sym_byte).unwrap();
+
+        let err = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("faccessat"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_symbolic_dirfd_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/x");
+        let sym_dirfd = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "dirfd", 64)
+        };
+
+        let err = NativeFaccessatSyscall
+            .call(
+                &mut state,
+                &[
+                    sym_dirfd,
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("dirfd"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn faccessat_round_trip_sweeps_supported_arches() {
+        // Like access_round_trip_sweeps_supported_arches but for the
+        // *at variant — arch independence of the dispatch + lookup paths.
+        for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            stage_path(&mut state, 0x2000, b"/tmp/faccessat-rt");
+            // AT_FDCWD truncates to the arch's pointer width — the raw
+            // constant is 32-bit signed -100 reinterpreted unsigned, which
+            // is the same value Python's openat.py uses on every arch.
+            let atfdcwd = if bits == 64 {
+                TEST_AT_FDCWD as u128
+            } else {
+                (TEST_AT_FDCWD & ((1u64 << bits) - 1)) as u128
+            };
+
+            let out = NativeFaccessatSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(atfdcwd, bits),
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("faccessat");
+            match out {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, NEG_ONE, "{arch} pre-register")
+                }
+                other => panic!("{arch} pre-register: got {other:?}"),
+            }
+
+            state
+                .file_system()
+                .register_known_path("/tmp/faccessat-rt".to_string());
+            let out2 = NativeFaccessatSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(atfdcwd, bits),
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("faccessat");
             match out2 {
                 SyscallOutcome::Continue { ret } => {
                     assert_eq!(ret, 0, "{arch} post-register")
