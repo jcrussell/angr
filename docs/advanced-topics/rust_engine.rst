@@ -2094,13 +2094,55 @@ for running it against a project that has had a
        influence the analysis. Smoke test:
        ``tests/analyses/test_slicing_ddg_vfg_rust.py``.
    * - ``CFGEmulated``
-     - **Python engine internally (untested under Rust)**
+     - **Unsupported (v1.0)**
      - Builds internal ``SimulationManager`` instances at indirect-
-       jump resolution (``cfg_emulated.py:2611`` / ``:2743``). Has no
-       ``use_rust_engine`` plumbing. Runs to completion against the
-       Python engine; the Rust engine is unused even if a
-       ``RustExplorationManager`` exists on the project. No Rust-
-       parity smoke test exists yet.
+       jump resolution (``cfg_emulated.py:2611`` / ``:2743`` /
+       ``:2750``). Has no ``use_rust_engine`` plumbing — those
+       internal SMs always dispatch to the Python engine, so a
+       ``RustExplorationManager`` attached to the project is unused.
+       Beyond the SM bypass, the analysis also reads
+       ``state.scratch.ins_addr``, ``state.scratch.exit_stmt_idx``
+       and ``state.scratch.exit_ins_addr`` off successor states
+       (``cfg_emulated.py:1548-1550`` / ``:1756-1757``), which is
+       deep ``SimState`` machinery not modelled on
+       :class:`RustStateProxy`. Workaround: feed it a fresh
+       :class:`SimState` from a project that has *not* had a
+       ``RustExplorationManager`` attached. No Rust-parity smoke
+       test exists yet.
+   * - ``Identifier``
+     - **Unsupported (v1.0)**
+     - Both the function-identification driver
+       (``identifier/identify.py:313``) and the per-call replay path
+       (``identifier/runner.py:70`` / ``:80``) build internal
+       ``SimulationManager`` instances via
+       ``project.factory.simulation_manager(...)``; the symbolic
+       pre-amble walk uses ``project.factory.successors(...)``
+       repeatedly (``identifier/identify.py:480`` / ``:491`` / ``:498``
+       / ``:515`` / ``:531`` / ``:617`` / ``:726``) — both dispatch to
+       the Python engine. The analysis also resets and inspects
+       ``state.scratch`` directly (``runner.py:91``), which is deep
+       ``SimState`` machinery not modelled on
+       :class:`RustStateProxy`. Workaround: feed it a project that
+       has *not* had a ``RustExplorationManager`` attached.
+   * - ``Jumptable`` resolver
+     - **Unsupported (v1.0)**
+     - The ``JumpTableResolver`` (registered as a default
+       ``IndirectJumpResolver`` for x86/AMD64/ARM, used by
+       ``CFGFast`` / ``CFGEmulated`` during indirect-jump
+       discovery) builds an internal ``SimulationManager`` at
+       ``jumptable.py:1051`` with ``resilience=True`` and steps via
+       ``project.factory.successors(...)`` (``:1699`` / ``:2058``).
+       Both paths dispatch to the Python engine regardless of any
+       ``RustExplorationManager`` attached to the project. The
+       resolver also reads ``state.scratch.temps[...]`` directly
+       (``:1744`` / ``:2070`` / ``:2357`` / ``:2361`` / ``:2367``) to
+       recover jump-base addresses and guard tmps, which is deep
+       ``SimState`` machinery not modelled on
+       :class:`RustStateProxy`. In practice the resolver runs as a
+       sub-step of ``CFGFast`` / ``CFGEmulated``; the verdict here
+       inherits from those parents. Defer-fix beads can be filed
+       post-v1.0 if a user needs jumptable resolution against a
+       Rust-attached project.
    * - ``Veritesting``
      - **Unsupported (v1.0)**
      - Constructs ``SimulationManager`` directly
