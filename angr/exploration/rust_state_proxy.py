@@ -1171,6 +1171,21 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": "after",
     },
+    # angr-t8vf: statement dispatch fires from `execute_block_with_callbacks`
+    # in `interpreter/execution.rs`, once per VEX IR statement, before the
+    # statement runs. The only attr is `statement` (the integer index into
+    # `irsb.statements`) — matches Python's `SimInspectMixin._handle_vex_stmt`
+    # BP_BEFORE call signature. BP_AFTER is not wired (same MVP gap as
+    # `instruction` BP_AFTER). Bit 15 is the LAST free slot in the
+    # `AtomicU16` bitmask; the companion `expr` event (and any future bit
+    # ≥16) will require widening to `AtomicU32`.
+    "statement": {
+        "bit": 15,
+        "attrs": (
+            "statement",
+        ),
+        "when_fired": "before",
+    },
 }
 
 # Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.

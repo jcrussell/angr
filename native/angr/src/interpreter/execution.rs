@@ -601,9 +601,21 @@ impl<'a> VEXInterpreter<'a> {
 
         // Execute statements
         let mut stmt_total_ns: u64 = 0;
-        for stmt in &irsb.statements {
+        for (stmt_idx, stmt) in irsb.statements.iter().enumerate() {
             if self.profiling_enabled {
                 self.stats.stmt_count += 1;
+            }
+            // state.inspect statement event — fires `when='before'` once per
+            // VEX IR statement, with `stmt_idx` as the only attr. Bit 15 in
+            // the inspect-enabled bitmask. The bitmask gate keeps the no-BP
+            // cost at one `AtomicU16::load + AND` per statement.
+            if callbacks.inspect_event_enabled(15) {
+                let _ = callbacks.call_inspect_statement(
+                    py,
+                    self.current_state_id,
+                    "before",
+                    stmt_idx as u32,
+                );
             }
             let stmt_start = profile_start!(self);
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {

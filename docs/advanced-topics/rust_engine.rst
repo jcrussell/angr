@@ -30,9 +30,9 @@ Overview
 * **Partial** ``state.inspect`` **dispatch.** The Rust engine dispatches
   ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
   ``instruction``, ``irsb``, ``exit``, ``call``, ``return``,
-  ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``, and
-  ``tmp_write`` events to Python BPs. Unsupported events (``fork``,
-  ``constraints``, ``expr``, ``statement``, …) still raise
+  ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``,
+  ``tmp_write``, and ``statement`` events to Python BPs. Unsupported
+  events (``fork``, ``constraints``, ``expr``, …) still raise
   ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
@@ -1836,6 +1836,7 @@ Event          Fires when        BP attributes
                                   ``dirty_args``, ``dirty_result``
 ``tmp_read``    ``after``         ``tmp_read_num``, ``tmp_read_expr``
 ``tmp_write``   ``after``         ``tmp_write_num``, ``tmp_write_expr``
+``statement``   ``before``        ``statement`` (stmt index in irsb.statements)
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
@@ -1868,7 +1869,7 @@ Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
 Registering a BP for any of ``fork``, ``constraints``,
-``address_concretization``, ``expr``, ``statement``,
+``address_concretization``, ``expr``,
 ``vex_lift``, ``symbolic_variable``,
 ``engine_process``, or ``memory_page_map`` raises
 ``NotImplementedError`` with a message pointing at this document.
@@ -2028,6 +2029,16 @@ Decision history
   per IRSB (every binop arg, store data, etc.), so the
   ``AtomicU16::load + AND`` short-circuit is essential — the
   no-BP-set bench-regression gate confirmed no measurable overhead.
+* ``angr-t8vf`` (2026-06-03): wired ``statement`` dispatch from the
+  per-statement loop in ``interpreter/execution.rs``. Bit 15 in
+  ``inspect_enabled`` — the last free slot in the ``AtomicU16``
+  bitmask. Fires ``when='before'`` with ``statement`` set to the
+  index into ``irsb.statements``, matching Python's
+  ``SimInspectMixin._handle_vex_stmt`` BP_BEFORE signature. BP_AFTER
+  is not wired (same MVP gap as ``instruction``'s BP_AFTER). Wiring
+  the companion ``expr`` event requires widening
+  ``inspect_enabled`` from ``AtomicU16`` to ``AtomicU32`` and is
+  tracked separately.
 
 Exploration technique compatibility
 -----------------------------------

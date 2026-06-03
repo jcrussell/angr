@@ -2241,6 +2241,25 @@ class RustExplorationManager(
             # tmp_write event is dropped (no breakpoint fired).
             l.warning("inspect tmp_write dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_statement(self, state_id: int, when: str, stmt_idx: int):
+        """PyO3 callback target for statement events (per VEX IR statement).
+
+        Fired `when='before'` from `execute_block_with_callbacks` for each
+        statement in the IRSB, with `stmt_idx` (the position in
+        `irsb.statements`) as the only attr. Matches Python's
+        `SimInspectMixin._handle_vex_stmt` BP_BEFORE attr signature.
+        The BP_AFTER mirror is not wired — same MVP scope as `instruction`.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "statement", state_id, when,
+                statement=stmt_idx,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # statement event is dropped (no breakpoint fired).
+            l.warning("inspect statement dispatch failed: %s: %s", type(e).__name__, e)
+
     def _cb_inspect_simprocedure(
         self,
         state_id: int,

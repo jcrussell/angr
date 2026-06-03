@@ -2014,15 +2014,16 @@ class TestRustInspectMarshalling:
         reg_read, reg_write, instruction, irsb, exit moved into the
         supported set in angr-d46u; call/return moved in angr-4ai9;
         simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
-        moved in angr-64pi. Events whose dispatchers are not yet wired
-        (fork, constraints, expr, statement, ...) must still raise.
+        moved in angr-64pi; statement moved in angr-t8vf. Events whose
+        dispatchers are not yet wired (fork, constraints, expr, ...)
+        must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "constraints", "expr", "statement"):
+        for evt in ("fork", "constraints", "expr"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2779,6 +2780,59 @@ class TestRustInspectExtendedEvents:
         assert mgr._callbacks.get_inspect_enabled() & (1 << 14) != 0
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no tmp_write events captured"
+
+    # ---- angr-t8vf: statement (per VEX IR statement) ----
+
+    def test_statement_callback_slot_exposed(self):
+        """PythonCallbacks gained set_inspect_statement / call_inspect_statement."""
+        cbs = PythonCallbacks()
+        for name in ('set_inspect_statement', 'call_inspect_statement'):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_statement_bit_matches_spec(self, fauxware_project):
+        """Registering a `statement` BP flips bit 15."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('statement', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 15) != 0
+
+    def test_dispatch_statement_fires_bp(self, fauxware_project):
+        """_cb_inspect_statement invokes the user's BP with the statement attr."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_stmt(s):
+            seen.append(s.inspect.statement)
+
+        mgr._get_inspect_proxy().b('statement', when='before', action=on_stmt)
+        mgr._cb_inspect_statement(sid, 'before', 4)
+        assert seen == [4]
+
+    def test_statement_fires_during_exploration(self, fauxware_project):
+        """statement BP fires per VEX IR statement during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        seen_indices = []
+
+        def on_stmt(s):
+            seen_indices.append(s.inspect.statement)
+
+        mgr._get_inspect_proxy().b('statement', when='before', action=on_stmt)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 15) != 0
+        mgr.run(max_steps=3)
+        # Every IRSB has multiple statements; we should see indices starting at 0.
+        assert len(seen_indices) > 0, "no statement events captured"
+        assert min(seen_indices) == 0, (
+            f"stmt indices should start at 0, got min={min(seen_indices)}"
+        )
 
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 

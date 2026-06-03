@@ -513,6 +513,11 @@ pub struct PythonCallbacks {
     /// stored into the tmp. Fired `when="after"` once the tmp slot has
     /// been written.
     pub inspect_tmp_write: Option<Py<PyAny>>,
+    /// Callback for state.inspect statement events (per VEX IR statement).
+    /// Signature: `fn(state_id: int, when: str, stmt_idx: int) -> None`.
+    /// Fired `when="before"` from `execute_block_with_callbacks` just before
+    /// each statement runs. Gated on `inspect_event_enabled(15)`.
+    pub inspect_statement: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -564,6 +569,7 @@ impl PythonCallbacks {
             inspect_return: None,
             inspect_tmp_read: None,
             inspect_tmp_write: None,
+            inspect_statement: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
         }
     }
@@ -829,6 +835,13 @@ impl PythonCallbacks {
         self.inspect_tmp_write = Some(cb);
     }
 
+    /// Set the inspect statement (per VEX IR statement) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, stmt_idx: int) -> None`.
+    pub fn set_inspect_statement(&mut self, cb: Py<PyAny>) {
+        self.inspect_statement = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -1007,6 +1020,18 @@ impl PythonCallbacks {
         self.call_inspect_tmp_write(py, state_id, when, tmp_num, value_ast.as_ref())
     }
 
+    /// Test entry point: invoke the registered statement callback directly.
+    #[pyo3(name = "call_inspect_statement")]
+    pub fn py_call_inspect_statement(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        stmt_idx: u32,
+    ) -> PyResult<()> {
+        self.call_inspect_statement(py, state_id, when, stmt_idx)
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -1063,6 +1088,7 @@ impl PythonCallbacks {
             &self.inspect_return,
             &self.inspect_tmp_read,
             &self.inspect_tmp_write,
+            &self.inspect_statement,
         ]
         .into_iter()
         .flatten()
@@ -1104,6 +1130,7 @@ impl PythonCallbacks {
         self.inspect_return = None;
         self.inspect_tmp_read = None;
         self.inspect_tmp_write = None;
+        self.inspect_statement = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1355,6 +1382,22 @@ impl PythonCallbacks {
             None => py.None(),
         };
         cb.call1(py, (state_id, when, tmp_num, value_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect statement (per VEX IR statement) callback.
+    pub fn call_inspect_statement(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        stmt_idx: u32,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_statement.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when, stmt_idx))?;
         Ok(())
     }
 
