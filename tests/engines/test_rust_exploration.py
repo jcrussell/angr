@@ -3033,56 +3033,55 @@ class TestStateProxyRepr:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
-class TestStateProxyCopyIsShallow:
-    """Pin the shallow-copy semantics of ``RustStateProxy.copy()``.
+class TestStateProxyCopyRaises:
+    """``RustStateProxy.copy()`` raises ``NotImplementedError`` in v1.0.
 
-    The proxy's ``copy()`` returns a new :class:`RustStateProxy` that
-    shares ``_state_id`` with the source — there is no per-state Rust
-    fork. This is the foot-gun behind the Veritesting *analysis*
-    incompatibility (``angr-dv24``): Veritesting calls
-    ``input_state.copy()`` at ``veritesting.py:214`` and then mutates
-    the copy inside its internal ``SimulationManager``. Under the
-    shallow proxy, mutations propagate back to the source Rust state.
-    Deep-copy semantics are tracked under ``angr-2zwy``; until that
-    lands, the v1.0 docs flag Veritesting as unsupported and tell
-    users to pass a :class:`SimState` (not a proxy).
+    The previous shallow copy aliased ``_state_id`` with the source and
+    silently corrupted the parent on any mutation. That was the foot-gun
+    behind the Veritesting *analysis* incompatibility (``angr-dv24``):
+    Veritesting calls ``input_state.copy()`` at ``veritesting.py:214``
+    and then mutates the copy. Until a Rust-side CoW deep fork lands
+    (tracked under ``angr-2zwy``), the proxy refuses the operation and
+    points users at the documented limitation rather than risking
+    corruption.
     """
 
-    def test_proxy_copy_shares_state_id(self, fauxware_project):
+    def test_proxy_copy_raises_with_clear_message(self, fauxware_project):
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
-        original = mgr.proxy.active[0]
-        clone = original.copy()
+        proxy = mgr.proxy.active[0]
+        with pytest.raises(NotImplementedError) as excinfo:
+            proxy.copy()
 
-        assert clone is not original, "copy() must return a new proxy instance"
-        assert clone._state_id == original._state_id, (
-            "RustStateProxy.copy() is intentionally shallow (shares "
-            "_state_id). If this assertion fails, the deep-copy work "
-            "tracked under angr-2zwy has landed — update the "
-            "Veritesting analysis row in docs/advanced-topics/"
-            "rust_engine.rst and remove this guard."
-        )
+        msg = str(excinfo.value)
+        # Surface the actionable bits the message owes the caller.
+        assert "RustStateProxy.copy()" in msg
+        assert "angr-2zwy" in msg
+        assert "rust_engine.rst" in msg
+        assert "use_rust_engine=False" in msg
 
-    def test_proxy_copy_preserves_back_references(self, fauxware_project):
-        """The copy must carry the same manager / project handles so
-        downstream reads (addr, constraints, regs) keep working on the
-        clone after the source goes out of scope.
+    def test_proxy_copy_error_does_not_mutate_state(self, fauxware_project):
+        """A failed ``copy()`` must not leave the original Rust state in a
+        weird half-forked condition: the source remains usable for normal
+        proxy reads after the raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
-        original = mgr.proxy.active[0]
-        clone = original.copy()
+        proxy = mgr.proxy.active[0]
+        original_addr = proxy.addr
+        original_sid = proxy._state_id
 
-        assert clone._mgr is original._mgr
-        assert clone._project is original._project
-        # Same shared Rust state → identical address.
-        assert clone.addr == original.addr
+        with pytest.raises(NotImplementedError):
+            proxy.copy()
+
+        assert proxy.addr == original_addr
+        assert proxy._state_id == original_sid
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

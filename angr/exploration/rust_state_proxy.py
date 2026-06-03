@@ -951,6 +951,18 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
     "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
+_COPY_NOT_IMPLEMENTED_MSG = (
+    "RustStateProxy.copy() is not supported in v1.0. The Rust engine owns "
+    "this state's solver/memory/registers, and a faithful CoW deep copy "
+    "requires a Rust-side fork plus per-state metadata duplication that "
+    "has not yet landed (tracked under bd angr-2zwy). The previous shallow "
+    "copy aliased _state_id with the source and silently corrupted the "
+    "parent on any mutation (see docs/advanced-topics/rust_engine.rst — "
+    "the Veritesting row under 'Analyses compatibility'). To work around: "
+    "drop to the Python engine (use_rust_engine=False) for code that needs "
+    "state.copy()."
+)
+
 
 # Single source of truth for the Rust engine's state.inspect dispatch.
 #
@@ -1424,14 +1436,23 @@ class RustStateProxy:
         return self.solver.satisfiable(**kwargs)
 
     def copy(self):
-        """Create a shallow copy of the proxy (same Rust state)."""
-        return RustStateProxy(
-            self._mgr, self._state_id,
-            project=self._project,
-            stdin_vars=self._stdin_vars,
-            stdout_data=self._stdout_data,
-            python_mgr=self._python_mgr,
-        )
+        """Forking a Rust-engine state via the proxy is unsupported in v1.0.
+
+        The Python angr contract for ``SimState.copy()`` is a CoW deep fork:
+        mutations on the copy must not affect the source. The Rust engine
+        owns the per-state solver/memory/registers; producing a faithful
+        deep copy would require routing through ``RustSimState::fork`` and
+        plumbing the new state ID back through the manager's bookkeeping
+        (stash, options dict, globals dict, stdout tracker). That work is
+        tracked under bd ``angr-2zwy`` for a future iteration.
+
+        Until then this method raises rather than silently returning the
+        original-aliased shallow proxy that previously caused state
+        corruption under ``Veritesting`` (see
+        ``docs/advanced-topics/rust_engine.rst`` — Analyses compatibility
+        row, item 1).
+        """
+        raise NotImplementedError(_COPY_NOT_IMPLEMENTED_MSG)
 
     def __repr__(self):
         try:

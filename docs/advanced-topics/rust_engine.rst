@@ -2002,10 +2002,13 @@ classes are wired natively, which run as Python fallback through
        safety valve but is not exercised in
        ``tests/engines/test_rust_exploration.py``.
    * - ``Spiller``
-     - **Untested**
-     - Relies on ``state.copy()`` and ``state.posix.dumps``; the Rust
-       state-materialization path supports both, so it likely works
-       but has no CI coverage.
+     - **Likely broken**
+     - Stashes states to disk and reloads them. If it calls
+       ``state.copy()`` (e.g. through ``state.posix.dumps``-driven
+       snapshotting) on a :class:`RustStateProxy` it now raises
+       ``NotImplementedError`` (``angr-2zwy``). No CI coverage either
+       way; switch to ``use_rust_engine=False`` for spilling
+       workflows.
    * - ``Veritesting``
      - **Unsupported (raises)**
      - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in
@@ -2042,10 +2045,12 @@ Anything not listed above will be accepted, tracked in
 ``filter`` / ``complete`` / ``successors`` over ``RustStateProxy``
 just like the “Untested” entries. The accept-everything default keeps
 construction non-fatal, but the techniques that read internal
-``SimState`` plugins beyond the proxy's contract (full ``state.copy``,
-``state.history.parent``, ``state.solver.constraints`` mutation) will
+``SimState`` plugins beyond the proxy's contract
+(``state.history.parent``, ``state.solver.constraints`` mutation) will
 silently misbehave rather than raise — vet each one against the proxy
-read-only invariant before counting on it in CI.
+read-only invariant before counting on it in CI. ``state.copy()`` is
+the one exception: the proxy raises ``NotImplementedError`` (see the
+Veritesting analysis row below).
 
 Analyses compatibility
 ----------------------
@@ -2150,15 +2155,13 @@ for running it against a project that has had a
        ``RustExplorationManager`` attached to the project has no
        effect on the analysis itself. Two distinct failure modes:
 
-       1. Passing a :class:`RustStateProxy` as ``input_state``
-          corrupts the source Rust state. Veritesting calls
-          ``input_state.copy()`` at ``veritesting.py:214`` and then
-          mutates the copy inside its internal ``SimulationManager``.
-          ``RustStateProxy.copy()``
-          (``angr/exploration/rust_state_proxy.py:1426``) returns a
-          *shallow* proxy that shares ``_state_id`` with the source;
-          mutations to the copy propagate back to the original Rust
-          state. Deep-copy semantics are tracked under ``angr-2zwy``.
+       1. Passing a :class:`RustStateProxy` as ``input_state`` raises
+          ``NotImplementedError`` at the first ``input_state.copy()``
+          call inside ``veritesting.py:214``. ``RustStateProxy.copy()``
+          refuses the operation rather than returning a shallow proxy
+          that aliases ``_state_id`` with the source (the previous
+          behaviour silently corrupted the parent on any mutation). A
+          Rust-side CoW deep fork is tracked under ``angr-2zwy``.
        2. Veritesting needs ``EFFICIENT_STATE_MERGING`` for ancestor
           retention during plugin merging. The Veritesting
           *exploration technique*
