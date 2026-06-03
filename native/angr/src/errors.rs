@@ -27,7 +27,11 @@ create_exception!(
     angr.rustylib.vex_engine,
     RustExecutionError,
     PyException,
-    "Base class for typed errors raised by the Rust execution engine."
+    "Base class for typed errors raised by the Rust execution engine.\n\n\
+     See the 'User-facing error taxonomy' section of\n\
+     docs/advanced-topics/rust_engine.rst for the full hierarchy,\n\
+     per-variant trigger conditions, and known incompatibilities\n\
+     (e.g. Oppologist's except SimError clause does not catch these)."
 );
 
 create_exception!(

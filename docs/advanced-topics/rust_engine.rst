@@ -2576,6 +2576,152 @@ Recommended posture for adversarial / long-running workloads:
    interesting bits out from ``find`` / ``avoid`` callbacks, not at
    the end.
 
+User-facing error taxonomy
+--------------------------
+
+Failures that originate inside the Rust engine surface to Python as one
+of six typed exceptions exported from ``angr.exploration`` (re-exported
+from ``angr.rustylib.vex_engine``). All five concrete classes derive
+from ``RustExecutionError``, which itself derives from the built-in
+``Exception``, so ``except RustExecutionError:`` is the single-clause
+way to catch everything the Rust core raises.
+
+The hierarchy and per-variant trigger conditions are derived from
+``native/angr/src/errors.rs`` (variant list at lines 73–97, dispatch
+table at lines 99–111) — if a future commit grows or renames a
+variant, this table is the first thing to update.
+
+.. list-table:: Typed exception hierarchy
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * - Class
+     - Trigger condition
+     - Where Rust raises it
+   * - ``RustExecutionError``
+     - Catch-all base; raised directly when an interpreter error
+       collapses to ``RustExecError::Other`` (memory mismatch,
+       type-mismatch, unknown temp, Python-callback failure, lift
+       error, or generic ``Unsupported`` — anything not promoted to
+       a specialized subclass). Useful as a single-clause catch for
+       "anything the Rust engine threw".
+     - ``errors.rs:95-108``; populated via the catch-all arms in
+       ``engine.rs:cb_execution_error_to_typed`` / ``op_error_to_typed``.
+   * - ``RustMalformedIRSBError``
+     - The pyvex lifter produced an IRSB the interpreter could not
+       execute (bad/missing statements, malformed exits, invalid
+       block bounds).
+     - ``errors.rs:75-77``; raised from
+       ``CbExecutionError::InvalidIR(reason)`` mapped at
+       ``engine.rs:33``.
+   * - ``RustUnsupportedSyscallError``
+     - A syscall handler that ran in Rust hit a number / name / arch
+       combination it does not implement. Reserved class — the
+       syscall fast path currently routes unimplemented numbers
+       through the Python fallback (``UnsupportedFeature``), so this
+       class is exposed for forward-compatibility and exercised by
+       the ``inject_test_error_kind("unsupported_syscall", ...)``
+       hook (``engine.rs:301``). No production trigger in the
+       current code.
+     - ``errors.rs:78-84``; production sites land here when an
+       upcoming Rust syscall handler chooses to raise rather than
+       fall back to Python.
+   * - ``RustUnsupportedVexOpError``
+     - A VEX op (NEON / vector / unmapped opcode) is not implemented
+       by the Rust interpreter. The op name and arch are baked into
+       the message.
+     - ``errors.rs:86-87``; populated from ``OpError::UnsupportedNeon``,
+       ``OpError::UnsupportedVectorOp``, ``OpError::UnsupportedVexOp``
+       at ``engine.rs:54-68``.
+   * - ``RustZ3Error``
+     - Z3 returned an error status (not ``Unknown`` — that collapses
+       to UNSAT inside ``SymContext::is_sat``). Reserved class —
+       solver hangs are bounded by ``solver_timeout_ms`` and the
+       ``Unknown`` collapse, so this class is exposed for
+       forward-compatibility and exercised only via the
+       ``inject_test_error_kind("z3", ...)`` hook (``engine.rs:311``).
+     - ``errors.rs:89-90``.
+   * - ``RustOomError``
+     - Rust allocator returned a failure that the engine can
+       propagate (as opposed to ``alloc::handle_alloc_error`` aborting
+       the process). Reserved class — see *Behavior on exhaustion*
+       above: today, real Rust allocation failures abort under the
+       release profile rather than raising this. Production sites
+       land here when a Rust allocator hook chooses to propagate
+       instead of abort. Currently only the
+       ``inject_test_error_kind("oom", ...)`` hook
+       (``engine.rs:312``) raises it.
+     - ``errors.rs:92-93``.
+
+The ``RustExecError`` Rust enum is ``#[non_exhaustive]``
+(``errors.rs:72``) so new variants can land in minor versions
+without breaking downstream code that matches on it.
+
+NotImplementedError at manager construction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Separate from the ``RustExecutionError`` family, the manager
+proactively raises ``NotImplementedError`` (a built-in, **not** a
+subclass of ``RustExecutionError``) when a seed state requests
+behavior the Rust engine cannot provide. This fires at
+``RustExplorationManager.__init__`` time — long before any Rust code
+runs — so a misconfigured workload fails fast at the boundary
+instead of silently diverging from the Python engine.
+
+The triggering SimOptions are listed in ``_RAISE_OPTION_NAMES``
+(``angr/exploration/rust_manager.py``); the check itself lives in
+``RustExplorationManager._check_raise_options``. The current set
+(commit ``d05a6006f``):
+
+* Action-stream tracking — ``TRACK_MEMORY_ACTIONS``,
+  ``TRACK_REGISTER_ACTIONS``, ``TRACK_TMP_ACTIONS``,
+  ``TRACK_JMP_ACTIONS``, ``TRACK_OP_ACTIONS``,
+  ``TRACK_ACTION_HISTORY``.
+* Eager concretization / write-strategy refusal —
+  ``CONCRETIZE``, ``CONSERVATIVE_WRITE_STRATEGY``.
+* Calling-convention modeling — ``DO_RET_EMULATION``, ``CALLLESS``.
+* State merging — ``EFFICIENT_STATE_MERGING``.
+* Symbolic register fill — ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``.
+* Errored-op bypass (Panic-strategy variants only) —
+  ``BYPASS_ERRORED_IROP``, ``BYPASS_ERRORED_IRCCALL``,
+  ``BYPASS_ERRORED_IRSTMT``.
+
+The full list, including the rationale for each entry, is documented
+inline above ``_RAISE_OPTION_NAMES`` in ``rust_manager.py``. The
+*Ignored — divergence-risk* rows of the SimOption coverage matrix
+explain why these options were promoted to raise rather than warn.
+
+Unsupported ``state.inspect`` registration also raises
+``NotImplementedError`` (``RustInspectProxy._check_event``,
+``rust_state_proxy.py``); see the *state.inspect support* section
+for the supported/unsupported event split.
+
+``ExplorationTechnique`` ``setup``/``step`` for the eight rejected
+techniques (Veritesting, Spiller, MemoryWatcher, etc.) raises
+``NotImplementedError`` from the manager's technique-dispatch path
+(``rust_manager.py``); see *Exploration technique compatibility*.
+
+Known incompatibilities
+~~~~~~~~~~~~~~~~~~~~~~~
+
+**Oppologist misses Rust errors.** The ``Oppologist`` exploration
+technique single-steps around unsupported instructions by catching
+``angr.errors.SimError`` inside its ``step`` hook. The Rust engine's
+typed errors (``RustMalformedIRSBError``, ``RustUnsupportedVexOpError``,
+…) **do not** derive from ``SimError``, so the ``except`` clause
+misses them and the user sees a ``Rust*Error`` bubble up unhelpfully
+instead of the oppologist taking over. Tracked in ``angr-v4qi``;
+covered in *Exploration technique compatibility* above as one of the
+rejected techniques.
+
+**Standard ``except SimError`` does not catch Rust errors.** By the
+same mechanism, downstream code that ``except angr.errors.SimError:``
+around ``mgr.run(...)`` will not catch the typed Rust exceptions.
+Migration recipe: change the clause to
+``except (angr.errors.SimError, angr.exploration.RustExecutionError):``,
+or catch ``Exception`` if the surrounding code already does broad
+recovery.
+
 Known slower benchmarks
 -----------------------
 
