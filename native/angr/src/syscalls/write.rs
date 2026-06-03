@@ -1,14 +1,18 @@
 //! amd64 write syscall handler.
 //!
 //! Mirrors `procedures/write.rs::NativeWrite`: handles `sys_write(fd, buf,
-//! count)` for `fd == 1` (stdout) and `fd == 2` (stderr) by reading
-//! `count` concrete bytes from memory at `buf` and appending them to the
-//! corresponding fd buffer via `state.write_fd`. Returns `count`.
+//! count)` for any fd open in the Rust `FileSystem` (stdout/stderr
+//! pre-registered, plus any user fd from `NativeOpen`/`NativePipe`/etc.).
+//! Reads `count` concrete bytes from memory at `buf` and appends them to the
+//! fd's content buffer via `state.write_fd`. Returns `count`.
 //!
-//! Symbolic args, symbolic bytes in [buf, buf+count), other fds, and counts
-//! beyond `MAX_WRITE_SIZE` fall back to the Python `_handle_syscall_callback`
-//! path. The Python path goes through `state.posix.get_fd(fd).write(...)`,
-//! which has the symbolic-content + non-stdio fd plumbing.
+//! Falls back to Python (`_handle_syscall_callback`) for: symbolic args,
+//! symbolic bytes in `[buf, buf+count)`, fd=0 (stdin), fds not open in
+//! Rust's `FileSystem`, and counts beyond `MAX_WRITE_SIZE`. The Python path
+//! goes through `state.posix.get_fd(fd).write(...)`, which owns the
+//! symbolic-content + symbolic-fd plumbing.
+//!
+//! See `procedures/write.rs` for the fd-table sync invariant (angr-8j16).
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -39,9 +43,15 @@ impl NativeSyscall for NativeWriteSyscall {
             )));
         }
         let fd = extract_concrete_arg(&args[0], "write fd")?;
-        if fd != 1 && fd != 2 {
+        if fd == 0 {
+            return Err(SyscallError::Other(
+                "write to fd=0 (stdin) falls back to Python".to_string(),
+            ));
+        }
+        let fd_u32 = fd as u32;
+        if !state.file_system_ref().is_open(fd_u32) {
             return Err(SyscallError::Other(format!(
-                "write to fd={} not supported natively",
+                "write to fd={} (not open in Rust FileSystem) falls back to Python",
                 fd
             )));
         }
@@ -72,7 +82,7 @@ impl NativeSyscall for NativeWriteSyscall {
             }
         }
 
-        state.write_fd(fd as u32, &bytes);
+        state.write_fd(fd_u32, &bytes);
         Ok(SyscallOutcome::Continue { ret: count })
     }
 }
@@ -138,7 +148,8 @@ mod tests {
     }
 
     #[test]
-    fn write_unsupported_fd_falls_back() {
+    fn write_unknown_fd_falls_back() {
+        // fd=3 is not open in the FileSystem → Native falls back.
         let h = NativeWriteSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
         state.map_memory_data(0x1000, b"x", Permission::RWX);
@@ -153,8 +164,80 @@ mod tests {
             )
             .expect_err("must fall back");
         assert!(matches!(err, SyscallError::Other(_)));
-        // No append must have occurred.
         assert_eq!(state.stdout_buffer(), b"");
+    }
+
+    #[test]
+    fn write_stdin_falls_back() {
+        let h = NativeWriteSyscall;
+        let mut state = RustSimState::new("amd64").expect("amd64 state");
+        state.map_memory_data(0x1000, b"x", Permission::RWX);
+        let err = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
+        // stdin content must be untouched.
+        assert_eq!(state.file_system_ref().fd_content(0), b"");
+    }
+
+    #[test]
+    fn write_user_fd_appends_to_filesystem() {
+        let h = NativeWriteSyscall;
+        let mut state = RustSimState::new("amd64").expect("amd64 state");
+        state.file_system().open(
+            "out.bin".to_string(),
+            crate::state::FdFlags::WriteOnly,
+        );
+        state.map_memory_data(0x1000, b"hello", Permission::RWX);
+
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(5, 64),
+                ],
+            )
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 5),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(state.file_system_ref().fd_content(3), b"hello");
+        // stdout untouched.
+        assert_eq!(state.stdout_buffer(), b"");
+    }
+
+    #[test]
+    fn write_closed_user_fd_falls_back() {
+        let h = NativeWriteSyscall;
+        let mut state = RustSimState::new("amd64").expect("amd64 state");
+        state.file_system().open(
+            "out.bin".to_string(),
+            crate::state::FdFlags::WriteOnly,
+        );
+        assert!(state.file_system().close(3));
+        state.map_memory_data(0x1000, b"x", Permission::RWX);
+
+        let err = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
     }
 
     #[test]

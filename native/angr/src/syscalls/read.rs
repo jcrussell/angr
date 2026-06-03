@@ -1,16 +1,25 @@
 //! amd64 read syscall handler.
 //!
-//! Mirrors `procedures/read.rs::NativeRead`: handles `sys_read(fd, buf, count)`
-//! when `fd == 0` (stdin) by writing `count` fresh symbolic bytes into memory
-//! at `buf` and returning `count` in rax. Other fds, symbolic args, or counts
-//! beyond `MAX_READ_SIZE` fall back to the Python `_handle_syscall_callback`
-//! path which dispatches through `state.posix.get_fd(fd).read(...)`.
+//! Mirrors `procedures/read.rs::NativeRead`. Handles `sys_read(fd, buf, count)`
+//! for:
+//!   - `fd == 0` (stdin) by writing `count` fresh symbolic bytes into memory
+//!     and returning `count` in rax.
+//!   - any other fd open in the Rust `FileSystem` that has remaining
+//!     concrete content (pos < content_len). Serves bytes from the FS buffer
+//!     and advances the position.
 //!
-//! The dirty pages produced here are picked up by
-//! `_replay_rust_dirty_pages` (rust_state_sync.py) on the next Python
-//! callback, so a downstream Python SimProc (e.g. strcmp) will observe the
-//! symbolic stdin bytes — same contract as NativeRead. See memory
+//! Falls back to the Python `_handle_syscall_callback` path
+//! (`state.posix.get_fd(fd).read(...)`) for: symbolic args, counts beyond
+//! `MAX_READ_SIZE`, fds not open in Rust's `FileSystem`, and non-stdin open
+//! fds with empty / fully-consumed content (Python's symbolic-file model
+//! owns those reads).
+//!
+//! The dirty pages produced here are picked up by `_replay_rust_dirty_pages`
+//! (rust_state_sync.py) on the next Python callback, so a downstream Python
+//! SimProc (e.g. strcmp) observes the bytes — see memory
 //! `invariant-3tek2-replay-ordering`.
+//!
+//! See `procedures/read.rs` for the fd-table sync invariant (angr-8j16).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,12 +58,6 @@ impl NativeSyscall for NativeReadSyscall {
             )));
         }
         let fd = extract_concrete_arg(&args[0], "read fd")?;
-        if fd != 0 {
-            return Err(SyscallError::Other(format!(
-                "read from fd={} not supported natively",
-                fd
-            )));
-        }
         let buf = extract_concrete_arg(&args[1], "read buf")?;
         let count = extract_concrete_arg(&args[2], "read count")?;
 
@@ -69,26 +72,62 @@ impl NativeSyscall for NativeReadSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        let read_id = SYS_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        // Build symbolic bytes first (needs solver borrow), then store to
-        // memory (needs &mut state with the solver borrow released).
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            (0..count)
-                .map(|i| {
-                    let name = format!("sys_read_{}_{}", read_id, i);
-                    RustBV::symbolic(&ctx, &name, 8)
-                })
-                .collect()
-        };
-
-        for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
+        if fd == 0 {
+            return read_stdin_symbolic(state, buf, count);
         }
 
-        Ok(SyscallOutcome::Continue { ret: count })
+        let fd_u32 = fd as u32;
+        let (open, content_len) = match state.file_system_ref().fd_info(fd_u32) {
+            Some((_, _, _, len, is_open)) => (is_open, len),
+            None => (false, 0),
+        };
+        if !open {
+            return Err(SyscallError::Other(format!(
+                "read from fd={} (not open in Rust FileSystem) falls back to Python",
+                fd
+            )));
+        }
+        if content_len == 0 {
+            return Err(SyscallError::Other(format!(
+                "read from fd={} has no concrete content; falling back to Python",
+                fd
+            )));
+        }
+
+        let bytes = state.file_system().read(fd_u32, count as usize);
+        let n = bytes.len();
+        for (i, b) in bytes.iter().enumerate() {
+            state.memory_store(
+                buf.wrapping_add(i as u64),
+                RustBV::concrete(*b as u128, 8),
+            )?;
+        }
+        Ok(SyscallOutcome::Continue { ret: n as u64 })
     }
+}
+
+fn read_stdin_symbolic(
+    state: &mut RustSimState,
+    buf: u64,
+    count: u64,
+) -> Result<SyscallOutcome, SyscallError> {
+    let read_id = SYS_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let sym_bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..count)
+            .map(|i| {
+                let name = format!("sys_read_{}_{}", read_id, i);
+                RustBV::symbolic(&ctx, &name, 8)
+            })
+            .collect()
+    };
+
+    for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
+        state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
+    }
+
+    Ok(SyscallOutcome::Continue { ret: count })
 }
 
 #[cfg(test)]
@@ -165,7 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn read_non_stdin_falls_back() {
+    fn read_unknown_fd_falls_back() {
+        // fd=3 is not open in the FileSystem → fall back.
         let h = NativeReadSyscall;
         let mut state = fresh_state_with_buf();
         let err = h
@@ -175,6 +215,123 @@ mod tests {
                     RustBV::concrete(3, 64),
                     RustBV::concrete(0x2000, 64),
                     RustBV::concrete(4, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
+    }
+
+    #[test]
+    fn read_user_fd_with_content_serves_natively() {
+        // Open fd=3 with concrete content; native read should serve from FS.
+        let h = NativeReadSyscall;
+        let mut state = fresh_state_with_buf();
+        state.file_system().open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcdef".to_vec(),
+        );
+
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(3, 64),
+                ],
+            )
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+            _ => panic!("expected Continue"),
+        }
+        for (i, &want) in b"abc".iter().enumerate() {
+            let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+            assert_eq!(byte.as_u64(), Some(want as u64));
+        }
+        let info = state.file_system_ref().fd_info(3).unwrap();
+        assert_eq!(info.1, 3);
+    }
+
+    #[test]
+    fn read_user_fd_eof_returns_zero() {
+        let h = NativeReadSyscall;
+        let mut state = fresh_state_with_buf();
+        state.file_system().open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"ab".to_vec(),
+        );
+
+        // Drain 2 bytes.
+        h.call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+        .expect("ok");
+
+        // Subsequent read returns 0 (EOF), without falling back.
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x2010, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn read_empty_content_fd_falls_back() {
+        // Open without content → defer to Python so the symbolic-file model
+        // can supply bytes.
+        let h = NativeReadSyscall;
+        let mut state = fresh_state_with_buf();
+        state.file_system().open(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+        );
+        let err = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
+    }
+
+    #[test]
+    fn read_closed_fd_falls_back() {
+        let h = NativeReadSyscall;
+        let mut state = fresh_state_with_buf();
+        state.file_system().open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"x".to_vec(),
+        );
+        assert!(state.file_system().close(3));
+        let err = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(1, 64),
                 ],
             )
             .expect_err("must fall back");
