@@ -4884,6 +4884,47 @@ class RustExplorationManager(
         # must be flushed.
         self._invalidate_state_export_cache()
 
+    @classmethod
+    def load_from_disk(
+        cls,
+        path: str,
+        project: "angr.Project",
+        **kwargs,
+    ) -> "RustExplorationManager":
+        """Construct a fresh manager and restore its stash from ``path``.
+
+        Convenience wrapper around the ``RustExplorationManager(project) +
+        load_snapshot(path)`` two-step. Use this when you want to resume an
+        exploration without re-deriving an entry state just to give the
+        constructor a placeholder.
+
+        Args:
+            path: Filesystem path to read the snapshot from. Same format as
+                :meth:`dump_snapshot` writes.
+            project: angr Project matching the binary the snapshot was
+                captured against. The caller is responsible for the match
+                — there is no cross-check today (binary-hash field is a
+                planned ``angr-x04s.2`` follow-up).
+            **kwargs: Passed through to ``__init__`` so manager-level
+                configuration (``solver_timeout_ms``, ``max_active_states``,
+                ``max_history``, ``exploration_strategy``, …) can be
+                overridden on resume. The snapshot does NOT capture these.
+
+        Returns:
+            A new :class:`RustExplorationManager` whose stashes contain the
+            restored states. Find/avoid addresses, hooks, simprocedures,
+            inspection breakpoints, and other Python-side configuration are
+            NOT restored — the caller must re-register them, same as on a
+            fresh manager.
+
+        Raises:
+            ValueError: When the envelope is empty or carries a stale
+                format-version byte (propagated from :meth:`load_snapshot`).
+        """
+        mgr = cls(project, active_states=None, **kwargs)
+        mgr.load_snapshot(path)
+        return mgr
+
     def cleanup(self) -> None:
         """Release this manager's hold on per-process AST caches.
 

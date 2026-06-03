@@ -88,6 +88,7 @@ CLASS_PUBLIC_ATTRS: dict[str, tuple[str, ...]] = {
         'get_state_globals_py',
         'get_state_options_py',
         'is_satisfiable',
+        'load_from_disk',
         'load_snapshot',
         'merge',
         'move',

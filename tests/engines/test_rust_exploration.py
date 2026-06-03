@@ -15785,6 +15785,72 @@ class TestSnapshotRoundTrip:
         with pytest.raises(ValueError, match="empty snapshot envelope"):
             mgr.load_snapshot(str(empty_path))
 
+    def test_load_from_disk_constructs_fresh_manager_without_placeholder(
+        self, fauxware_project, tmp_path
+    ):
+        """angr-9o4n: the v1.0 classmethod constructs a fresh manager
+        without requiring the caller to pre-build an entry state purely
+        for the constructor's signature. Functionally equivalent to
+        ``mgr = RustExplorationManager(project); mgr.load_snapshot(path)``
+        but with the two-step collapsed and active_states=None made
+        explicit.
+
+        Round-trip contract: save N states from a stepped manager, load
+        into a fresh one via the classmethod, exploration continues to
+        ``find`` and produces a non-empty stdin model.
+        """
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+
+        run_state = fauxware_project.factory.entry_state()
+        run_mgr = RustExplorationManager(fauxware_project, [run_state])
+        run_mgr.step(n=10)
+
+        pre_active = sorted(run_mgr._rust_mgr.get_state_ids("active"))
+        assert pre_active, "stepped manager must have active states"
+
+        snap = tmp_path / "fauxware.snap"
+        run_mgr.dump_snapshot(str(snap))
+
+        resumed = RustExplorationManager.load_from_disk(snap, fauxware_project)
+        assert sorted(resumed._rust_mgr.get_state_ids("active")) == pre_active
+
+        resumed.explore(find=find_addr, num_find=1)
+        assert len(resumed.found) > 0, "resumed exploration must reach find"
+        assert len(bytes(resumed.found[0].posix.dumps(0))) > 0, (
+            "resumed exploration must produce a non-empty stdin model"
+        )
+
+    def test_load_from_disk_passes_kwargs_to_constructor(
+        self, fauxware_project, tmp_path
+    ):
+        """Manager-level configuration (not captured by the snapshot) must
+        be overridable on resume by passing kwargs through to ``__init__``.
+        Smoke-checks that ``exploration_strategy='dfs'`` and a custom
+        ``solver_timeout_ms`` flow through without raising and the
+        resumed manager remains functional."""
+        from angr.exploration import RustExplorationManager
+
+        run_state = fauxware_project.factory.entry_state()
+        run_mgr = RustExplorationManager(fauxware_project, [run_state])
+        run_mgr.step(n=5)
+        snap = tmp_path / "fauxware.snap"
+        run_mgr.dump_snapshot(str(snap))
+
+        resumed = RustExplorationManager.load_from_disk(
+            snap,
+            fauxware_project,
+            exploration_strategy="dfs",
+            solver_timeout_ms=12345,
+        )
+        # Active stash carries the same state_ids as the source.
+        assert sorted(resumed._rust_mgr.get_state_ids("active")) == sorted(
+            run_mgr._rust_mgr.get_state_ids("active")
+        )
+        # Resume is functional after the kwargs path.
+        resumed.step(n=1)
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAvoidMultivaluedOptions:

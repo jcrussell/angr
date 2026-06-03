@@ -2666,12 +2666,16 @@ Behavior on exhaustion
 Recovery contract
 ~~~~~~~~~~~~~~~~~
 
-There is **no built-in snapshot / restore primitive** today. To
-survive an OOM-kill, the caller is responsible for persisting whatever
-is interesting (e.g. ``state.posix.dumps(0)`` for a ``find`` callback
-match) before the kill. A ``RustBV`` op-tree snapshot prototype is
-filed as ``angr-x04s.1`` (opt-in, single-bench scope) but is not in
-the default code path.
+The :ref:`rust-engine-state-serialization` section below documents the
+v1.0 ``dump_snapshot`` / ``load_snapshot`` /
+:meth:`RustExplorationManager.load_from_disk` API. Snapshots are
+opt-in (the caller must explicitly persist at quiescent points), so
+they do not help against a sudden kernel OOM-kill mid-step — but they
+do let a long-running analysis checkpoint between exploration phases
+and resume in a fresh process. The caller is still responsible for
+persisting per-find interesting bits (``state.posix.dumps(0)``) from
+the ``find`` callback if the workload risks termination between
+checkpoints.
 
 Recommended posture for adversarial / long-running workloads:
 
@@ -3337,8 +3341,90 @@ the stash-name footgun landed under angr-630x. The trust-model audit
 itself was closed under angr-9l9j with no remaining production-blocking
 gaps.
 
-State snapshot / serialization
-------------------------------
+.. _rust-engine-state-serialization:
+
+State serialization (save / restore to disk)
+--------------------------------------------
+
+Public API (angr-9o4n, v1.0). The Rust engine ships a built-in
+snapshot codec that round-trips the full stash manager (every state
+in every stash, plus lineage and terminal counters) through a
+versioned byte envelope. Three Python entry points:
+
+.. code-block:: python
+
+   from angr.exploration import RustExplorationManager
+
+   # Capture a snapshot mid-exploration.
+   mgr = RustExplorationManager(project, [project.factory.entry_state()])
+   mgr.step(n=100)
+   mgr.dump_snapshot("/tmp/run.snap")
+
+   # Resume in the SAME manager (replaces every stash).
+   mgr.load_snapshot("/tmp/run.snap")
+
+   # Resume in a FRESH manager (no placeholder state needed).
+   resumed = RustExplorationManager.load_from_disk("/tmp/run.snap", project)
+   resumed.explore(find=0x4006ed, num_find=1)
+
+On-disk envelope is ``[STASH_SNAPSHOT_VERSION: u8] ++ serde_json(...)``.
+A stale version byte fails the load fast with ``ValueError``
+(``"version mismatch ..."``); an empty file fails with
+``ValueError`` (``"empty snapshot envelope"``). The
+``STASH_SNAPSHOT_VERSION`` constant lives at
+``native/angr/src/stash.rs`` and bumps on any breaking shape change
+to the per-state codec (``RustSimStateSnapshot`` at
+``native/angr/src/state.rs``).
+
+What is captured:
+
+* Every state in every stash (active, found, deadended, avoid,
+  errored, unconstrained, plus user stashes).
+* Per-state: ``pc``, ``state_id``, ``parent_id``, registers (concrete
+  bytes + symbolic overlay), memory (concrete pages + symbolic
+  overlays), call_stack, history, posix (fd table), heap metadata,
+  inspection counters, and the ``SymContext::assumed_constraints``
+  log. The full Z3 solver is also captured as SMT-LIB2 so
+  ``state_constraint_count`` round-trips (angr-82g6).
+* Lineage: ``state_roots`` map.
+* Terminal counters: avoided / pruned / deadended / errored /
+  unconstrained tallies.
+
+What is NOT captured:
+
+* **Manager-level Python configuration** — find/avoid addresses,
+  hooks, simprocedures, inspection breakpoints, exploration
+  techniques, solver/memory configuration. ``load_from_disk``
+  accepts ``**kwargs`` so you can re-pass them to the constructor;
+  predicates and hooks must be re-registered explicitly on the
+  resumed manager.
+* **Bucket-D ``Py<PyAny>`` overlays** —
+  ``symbolic_pages`` / ``hook_symbolic_memory`` / ``addr_to_ast``
+  are restored empty. For Rust-native SimProcedure + native memory
+  workloads these overlays stay empty by construction, so the gap
+  doesn't affect a typical bench. Workloads that rely on Python
+  hook-injected symbolic memory will lose those overlays across
+  the round-trip.
+* **Binary identity** — the snapshot does not store a binary path
+  / sha256. Loading against a mismatched ``angr.Project`` is the
+  caller's responsibility (a binary-hash field is a planned
+  ``angr-x04s.2`` follow-up).
+
+Known limitation — **model equality is NOT guaranteed across a
+restore**. The snapshot preserves the constraint set, but Z3's
+solving heuristics are nondeterministic (see ``BIMODAL_BENCHMARKS``
+and :ref:`rust-bimodal-variance`), so a ``state.posix.dumps(0)``
+captured before and after a save/load round-trip may differ in the
+concrete bytes the solver picks. The ``deterministic=True``
+constructor flag narrows but does not close this gap.
+
+Round-trip test: ``tests/engines/test_rust_exploration.py::
+test_dump_load_fauxware_round_trip_preserves_stash_shape`` exercises
+the structural contract on fauxware; the
+``test_load_from_disk_*`` cases exercise the v1.0 classmethod.
+
+State snapshot / serialization (spike report)
+---------------------------------------------
 
 Spike report (``angr-x04s``, 2026-06-01). Question: what would be
 needed to serialize a ``RustSimState`` (and the surrounding
