@@ -67,7 +67,7 @@ EXAMPLE_CATALOG = {
     "whitehatvn2015_re400":    {"tier": "fast",    "rust_ok": True,  "notes": "2.7x speedup, partial output divergence (leading zeros)"},
     "mma_howtouse":            {"tier": "medium",  "rust_ok": True,  "notes": "Callable DLL, 45 calls, Py 4.3s Rust 6.6s (0.65x)"},
     "defcamp_r200":            {"tier": "medium",  "rust_ok": None,  "notes": "BROKEN: Python fails too (ManualMergepoint)"},
-    "CADET_00001":             {"tier": "slow",    "rust_ok": False, "notes": "save_unconstrained, syscall errors, Rust timeout"},
+    "CADET_00001":             {"tier": "medium",  "rust_ok": False, "notes": "CGC challenge: Py 22s (buffer-overflow + 2x easter-egg explore); Rust >90s timeout. save_unconstrained is supported but CGC transmit/receive/fdwait syscalls have no Rust impl (fall through to Python). Tracked in baseline_timings.json (python only) for future bench coverage; see angr-zgk6"},
     "ekopartyctf2015_rev100":  {"tier": "medium",  "rust_ok": False, "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout"},
     "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "Multi-stage explore+unstash, Rust list index error"},
     "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "save_unconstrained, Windows PE, Py 8.6s Rust 18.6s (0.46x)"},
