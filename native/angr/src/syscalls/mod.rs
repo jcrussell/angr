@@ -1562,12 +1562,14 @@ mod tests {
 
     #[test]
     fn file_descriptor_stubs_registered_on_all_arches() {
-        // angr-0hif.5 stub-fallthrough subset: fcntl / fcntl64 / ioctl /
-        // pipe / pipe2. None of these have a Python `SimProcedure` bound
-        // in the kernel library — `posix/fcntl.py` is registered on the
-        // libc side only, and ioctl/pipe/pipe2 have no proc at all. The
-        // unhandled-syscall path falls through to syscall_stub, which the
-        // native handlers mirror via SyscallOutcome::ContinueSymbolic.
+        // angr-0hif.5 originally registered fcntl / fcntl64 / ioctl /
+        // pipe / pipe2 as pure stubs. angr-aig2 promoted fcntl /
+        // fcntl64 / ioctl to concrete-cmd dispatch — they still fall
+        // through to a fresh symbolic for unhandled cmds, so the
+        // registry shape and `name()` / arity remain unchanged. None
+        // of these have a Python `SimProcedure` bound in the kernel
+        // library — `posix/fcntl.py` is registered on the libc side
+        // only; ioctl/pipe/pipe2 have no proc at all.
         //
         // Per-arch availability:
         //   * AArch64 asm-generic omits legacy `pipe` (only pipe2 at 59)
