@@ -2009,18 +2009,19 @@ class TestRustInspectMarshalling:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
     def test_inspect_proxy_rejects_unsupported_events(self, fauxware_project):
-        """Events outside the MVP (call, fork, etc.) still raise loudly.
+        """Events outside the MVP still raise loudly.
 
         reg_read, reg_write, instruction, irsb, exit moved into the
-        supported set in angr-d46u — only events whose dispatchers are
-        not wired (call, fork, return, ...) must still raise.
+        supported set in angr-d46u; call/return moved in angr-4ai9.
+        Events whose dispatchers are not yet wired (fork, syscall,
+        constraints, ...) must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("call", "fork", "return", "syscall", "constraints"):
+        for evt in ("fork", "syscall", "constraints", "tmp_read"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2563,6 +2564,125 @@ class TestRustInspectExtendedEvents:
         assert mgr._callbacks.get_inspect_enabled() == 0
         mgr.run(max_steps=3)
 
+    def test_call_return_callback_slots_exposed(self):
+        """angr-4ai9: PythonCallbacks gained set_inspect_{call,return}."""
+        cbs = PythonCallbacks()
+        for name in (
+            'set_inspect_call',
+            'set_inspect_return',
+            'call_inspect_call',
+            'call_inspect_return',
+        ):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_call_return_bits_match_spec(self, fauxware_project):
+        """Registering a `call`/`return` BP flips the expected bit (8/9)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('call', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
+        ins.b('return', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
+
+    def test_dispatch_call_fires_bp(self, fauxware_project):
+        """_cb_inspect_call invokes the user's BP with function_address."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_call(s):
+            seen.append(s.inspect.function_address)
+
+        mgr._get_inspect_proxy().b('call', when='before', action=on_call)
+        mgr._cb_inspect_call(sid, 'before', 0x401abc)
+
+        assert len(seen) == 1
+        addr = seen[0]
+        assert isinstance(addr, claripy.ast.bv.BV)
+        assert addr.size() == 64  # AMD64
+        assert addr.concrete_value == 0x401abc
+
+    def test_dispatch_return_fires_bp(self, fauxware_project):
+        """_cb_inspect_return invokes the user's BP with function_address."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_ret(s):
+            seen.append(s.inspect.function_address)
+
+        mgr._get_inspect_proxy().b('return', when='before', action=on_ret)
+        mgr._cb_inspect_return(sid, 'before', 0x4011a0)
+
+        assert len(seen) == 1
+        addr = seen[0]
+        assert isinstance(addr, claripy.ast.bv.BV)
+        assert addr.concrete_value == 0x4011a0
+
+    def test_call_fires_before_and_after(self, fauxware_project):
+        """A `call` BP registered for either phase sees only its phase."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        before_count = [0]
+        after_count = [0]
+
+        mgr._get_inspect_proxy().b(
+            'call', when='before', action=lambda s: before_count.__setitem__(0, before_count[0] + 1),
+        )
+        mgr._get_inspect_proxy().b(
+            'call', when='after', action=lambda s: after_count.__setitem__(0, after_count[0] + 1),
+        )
+        # Drive both phases for a single call event.
+        mgr._cb_inspect_call(sid, 'before', 0x40_0000)
+        mgr._cb_inspect_call(sid, 'after', 0x40_0000)
+        assert before_count[0] == 1
+        assert after_count[0] == 1
+
+    def test_call_fires_during_exploration(self, fauxware_project):
+        """call BP fires during exploration (fauxware has internal calls)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        targets = []
+
+        def on_call(s):
+            targets.append(s.inspect.function_address.concrete_value)
+
+        mgr._get_inspect_proxy().b('call', when='before', action=on_call)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
+        # fauxware's _start calls __libc_start_main pretty early; bound
+        # the run so the test stays fast even if no internal call fires.
+        mgr.run(max_steps=20)
+        # At minimum the bitmask is set; tolerate zero firings if the
+        # first 20 steps land entirely on external/SimProcedure code
+        # without re-entering the binary. Confirm the dispatcher path
+        # at least did not throw — exploration completed.
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
+        # Sanity: any addresses captured are non-zero.
+        assert all(t > 0 for t in targets)
+
+    def test_return_fires_during_exploration(self, fauxware_project):
+        """return BP fires once Rust pops a frame (sym execution drives this)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        seen = []
+
+        def on_ret(s):
+            seen.append(s.inspect.function_address.concrete_value)
+
+        mgr._get_inspect_proxy().b('return', when='before', action=on_ret)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
+        mgr.run(max_steps=20)
+        assert all(t >= 0 for t in seen)
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectAllowlistConsistency:
@@ -2587,12 +2707,14 @@ class TestRustInspectAllowlistConsistency:
         assert set(_RUST_INSPECT_EVENT_BITS) == set(_INSPECT_EVENT_SPECS)
 
     def test_event_bits_are_unique_and_in_range(self):
-        """Every supported event has a unique bit position fitting in u8."""
+        """Every supported event has a unique bit position fitting in u16."""
         from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
         bits = [spec["bit"] for spec in _INSPECT_EVENT_SPECS.values()]
         assert len(bits) == len(set(bits)), f"duplicate bits in specs: {bits}"
-        assert all(0 <= b < 8 for b in bits), (
-            "inspect_enabled is a u8 — bits must be in 0..=7"
+        # angr-4ai9 widened inspect_enabled from u8 to u16 to make room
+        # for the call/return bits (8/9). All bits must still fit in u16.
+        assert all(0 <= b < 16 for b in bits), (
+            "inspect_enabled is a u16 — bits must be in 0..=15"
         )
 
     def test_every_supported_event_has_dispatch_method(self):

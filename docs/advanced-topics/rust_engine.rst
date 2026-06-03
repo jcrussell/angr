@@ -29,8 +29,8 @@ Overview
   see the matrix below.
 * **Partial** ``state.inspect`` **dispatch.** The Rust engine dispatches
   ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
-  ``instruction``, ``irsb``, and ``exit`` events to Python BPs.
-  Unsupported events (``call``, ``fork``, ``return``, ``syscall``,
+  ``instruction``, ``irsb``, ``exit``, ``call``, and ``return`` events
+  to Python BPs. Unsupported events (``fork``, ``syscall``,
   ``constraints``, ``simprocedure``, ``dirty``, …) still raise
   ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
@@ -1811,22 +1811,24 @@ registration time so that gaps remain loud.
 Supported events
 ~~~~~~~~~~~~~~~~
 
-============   ============   =====================================================
-Event          Fires when     BP attributes
-============   ============   =====================================================
-``mem_read``    ``after``      ``mem_read_address``, ``mem_read_length``,
-                              ``mem_read_expr``, ``mem_read_endness``
-``mem_write``   ``after``      ``mem_write_address``, ``mem_write_length``,
-                              ``mem_write_expr``, ``mem_write_endness``
-``reg_read``    ``after``      ``reg_read_offset``, ``reg_read_length``,
-                              ``reg_read_expr``
-``reg_write``   ``after``      ``reg_write_offset``, ``reg_write_length``,
-                              ``reg_write_expr``
-``instruction`` ``before``     ``instruction`` (address)
-``irsb``        ``before``     ``address`` (block start)
-``exit``        ``before``     ``exit_target``, ``exit_guard``,
-                              ``exit_jumpkind``
-============   ============   =====================================================
+============   ===============   ==================================================
+Event          Fires when        BP attributes
+============   ===============   ==================================================
+``mem_read``    ``after``         ``mem_read_address``, ``mem_read_length``,
+                                 ``mem_read_expr``, ``mem_read_endness``
+``mem_write``   ``after``         ``mem_write_address``, ``mem_write_length``,
+                                 ``mem_write_expr``, ``mem_write_endness``
+``reg_read``    ``after``         ``reg_read_offset``, ``reg_read_length``,
+                                 ``reg_read_expr``
+``reg_write``   ``after``         ``reg_write_offset``, ``reg_write_length``,
+                                 ``reg_write_expr``
+``instruction`` ``before``        ``instruction`` (address)
+``irsb``        ``before``        ``address`` (block start)
+``exit``        ``before``        ``exit_target``, ``exit_guard``,
+                                 ``exit_jumpkind``
+``call``        ``before``/``after`` ``function_address`` (call target)
+``return``      ``before``/``after`` ``function_address`` (popped frame's callee)
+============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
 by every Rust dispatch site; with no BPs registered the cost is one
@@ -1834,17 +1836,24 @@ by every Rust dispatch site; with no BPs registered the cost is one
 trigger on concrete addresses only — symbolic-address loads/stores are
 skipped for the MVP.
 
+``call`` and ``return`` mirror Python's ``callstack.py`` semantics:
+fired ``before`` and ``after`` around the Rust call-stack push (for
+``call``) or pop (for ``return``). ``function_address`` is the
+resolved Ijk_Call target (call) or the popped frame's ``callee_addr``
+(return), wrapped in a word-sized claripy BVV for parity with
+``state.regs._ip``.
+
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
-Registering a BP for any of ``call``, ``fork``, ``return``,
-``syscall``, ``constraints``, ``simprocedure``, ``dirty``,
-``address_concretization``, ``expr``, ``statement``, ``tmp_read``,
-``tmp_write``, ``vex_lift``, ``symbolic_variable``, ``engine_process``,
-or ``memory_page_map`` raises ``NotImplementedError`` with a message
-pointing at this document. ``_NoOpInspectProxy`` previously silently
-accepted every registration (see angr-osuu); raising loudly prevents
-users from depending on a feature the engine cannot fulfill.
+Registering a BP for any of ``fork``, ``syscall``, ``constraints``,
+``simprocedure``, ``dirty``, ``address_concretization``, ``expr``,
+``statement``, ``tmp_read``, ``tmp_write``, ``vex_lift``,
+``symbolic_variable``, ``engine_process``, or ``memory_page_map``
+raises ``NotImplementedError`` with a message pointing at this
+document. ``_NoOpInspectProxy`` previously silently accepted every
+registration (see angr-osuu); raising loudly prevents users from
+depending on a feature the engine cannot fulfill.
 
 Manager-wide BP storage
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -1900,8 +1909,8 @@ this document so callers can find these workarounds in order:
    above; check it before falling back to the next workarounds.
 
 2. **Drop back to the Python engine** for analyses that fundamentally
-   depend on an unsupported event (``call``, ``fork``, ``return``,
-   ``syscall``, ``constraints``, ``simprocedure``, ``dirty``, …):
+   depend on an unsupported event (``fork``, ``syscall``,
+   ``constraints``, ``simprocedure``, ``dirty``, …):
 
    .. code-block:: python
 
@@ -1979,6 +1988,11 @@ Decision history
   ``reg_write``, ``instruction``, ``irsb``, and ``exit`` events.
 * ``angr-ji7h`` (2026-05-25): consolidated the allowlist to a single
   source of truth + CI tests guarding against silent pass-through.
+* ``angr-4ai9`` (2026-06-03): wired ``call`` + ``return`` dispatch
+  from the BlockEnd path of ``interpreter/execution.rs`` (Ijk_Call /
+  Ijk_Ret). Widened ``inspect_enabled`` from ``AtomicU8`` to
+  ``AtomicU16`` to make room for the two new bits alongside the
+  existing 8.
 
 Exploration technique compatibility
 -----------------------------------

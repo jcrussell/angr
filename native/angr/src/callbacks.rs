@@ -489,19 +489,32 @@ pub struct PythonCallbacks {
     /// Fired BEFORE the branch is taken. `guard_ast` is the symbolic guard
     /// condition (claripy AST). `jumpkind` is the VEX Ijk_* tag name.
     pub inspect_exit: Option<Py<PyAny>>,
+    /// Callback for state.inspect call events (Ijk_Call dispatch).
+    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
+    /// Fires twice per call — once `when="before"` (with the resolved call
+    /// target), once `when="after"` (after the Rust call_stack has been
+    /// pushed). Matches Python's callstack.py:386/419 semantics.
+    pub inspect_call: Option<Py<PyAny>>,
+    /// Callback for state.inspect return events (Ijk_Ret dispatch).
+    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
+    /// Fires twice per return — once `when="before"` with the func_addr of
+    /// the frame about to be popped, once `when="after"` after the pop.
+    /// Matches Python's callstack.py:430/432 semantics.
+    pub inspect_return: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
     /// execution at one branch per Load/Store.
     /// Python writes via `set_inspect_enabled`; defaults to 0 (off).
     ///
-    /// Wrapped in `Arc<AtomicU8>` because `PythonCallbacks` is `Clone` and
+    /// Wrapped in `Arc<AtomicU16>` because `PythonCallbacks` is `Clone` and
     /// the Rust exploration manager stores a CLONED copy after Python
     /// passes the original in via `set_callbacks`. Bitmask updates from
     /// Python (`mgr._callbacks.set_inspect_enabled(...)`) must be visible
     /// to the Rust side; sharing the atomic makes both copies read/write
-    /// the same byte.
-    pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// the same word. Widened from `AtomicU8` in angr-4ai9 so call/return
+    /// events (bits 8/9) fit alongside the existing mem/reg/exit family.
+    pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU16>,
 }
 
 #[pymethods]
@@ -535,7 +548,9 @@ impl PythonCallbacks {
             inspect_instruction: None,
             inspect_irsb: None,
             inspect_exit: None,
-            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            inspect_call: None,
+            inspect_return: None,
+            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
         }
     }
 
@@ -768,21 +783,39 @@ impl PythonCallbacks {
         self.inspect_exit = Some(cb);
     }
 
+    /// Set the inspect call (function-entry) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
+    /// Fires twice per Ijk_Call exit (before/after the frame push).
+    pub fn set_inspect_call(&mut self, cb: Py<PyAny>) {
+        self.inspect_call = Some(cb);
+    }
+
+    /// Set the inspect return (function-exit) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
+    /// Fires twice per Ijk_Ret exit (before/after the frame pop).
+    pub fn set_inspect_return(&mut self, cb: Py<PyAny>) {
+        self.inspect_return = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
     ///
-    /// `inspect_enabled` is `Arc<AtomicU8>` so this write is visible to
-    /// the cloned PythonCallbacks held by the Rust manager.
+    /// `inspect_enabled` is `Arc<AtomicU16>` so this write is visible to
+    /// the cloned PythonCallbacks held by the Rust manager. 16 bits leave
+    /// headroom over the InspectEvent enum (0..=5), the two custom bits
+    /// for instruction/irsb (6/7), and the call/return bits (8/9).
     #[pyo3(name = "set_inspect_enabled")]
-    pub fn py_set_inspect_enabled(&self, mask: u8) {
+    pub fn py_set_inspect_enabled(&self, mask: u16) {
         self.inspect_enabled
             .store(mask, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).
     #[pyo3(name = "get_inspect_enabled")]
-    pub fn py_get_inspect_enabled(&self) -> u8 {
+    pub fn py_get_inspect_enabled(&self) -> u16 {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -892,6 +925,30 @@ impl PythonCallbacks {
         self.call_inspect_exit(py, state_id, when, target, jumpkind, guard_ast.as_ref())
     }
 
+    /// Test entry point: invoke the registered call callback directly.
+    #[pyo3(name = "call_inspect_call")]
+    pub fn py_call_inspect_call(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        function_address: u64,
+    ) -> PyResult<()> {
+        self.call_inspect_call(py, state_id, when, function_address)
+    }
+
+    /// Test entry point: invoke the registered return callback directly.
+    #[pyo3(name = "call_inspect_return")]
+    pub fn py_call_inspect_return(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        function_address: u64,
+    ) -> PyResult<()> {
+        self.call_inspect_return(py, state_id, when, function_address)
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -944,6 +1001,8 @@ impl PythonCallbacks {
             &self.inspect_instruction,
             &self.inspect_irsb,
             &self.inspect_exit,
+            &self.inspect_call,
+            &self.inspect_return,
         ]
         .into_iter()
         .flatten()
@@ -981,6 +1040,8 @@ impl PythonCallbacks {
         self.inspect_instruction = None;
         self.inspect_irsb = None;
         self.inspect_exit = None;
+        self.inspect_call = None;
+        self.inspect_return = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -995,16 +1056,18 @@ impl Default for PythonCallbacks {
 impl PythonCallbacks {
     /// Fast O(1) check for whether an inspect event is enabled.
     /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
+    /// `event_bit` is taken as `u8` for ergonomics; values up to 15 are valid
+    /// since the underlying bitmask is `AtomicU16`.
     #[inline(always)]
     pub fn inspect_event_enabled(&self, event_bit: u8) -> bool {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
-            & (1u8 << event_bit)
+            & (1u16 << event_bit)
             != 0
     }
 
     /// Debug-only: read the raw bitmask. Used by eprintln traces.
-    pub fn get_inspect_enabled_for_debug(&self) -> u8 {
+    pub fn get_inspect_enabled_for_debug(&self) -> u16 {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1156,6 +1219,38 @@ impl PythonCallbacks {
             None => py.None(),
         };
         cb.call1(py, (state_id, when, target, jumpkind, guard_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect call (function-entry) callback.
+    pub fn call_inspect_call(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        function_address: u64,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_call.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when, function_address))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect return (function-exit) callback.
+    pub fn call_inspect_return(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        function_address: u64,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_return.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when, function_address))?;
         Ok(())
     }
 

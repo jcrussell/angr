@@ -2147,6 +2147,43 @@ class RustExplorationManager(
             # exit event is dropped (no breakpoint fired).
             l.warning("inspect exit dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_call(self, state_id: int, when: str, function_address: int):
+        """PyO3 callback target for Ijk_Call events (function entry).
+
+        Mirrors Python `callstack.py:386/419` — fires `when='before'` with
+        the resolved call target, then `when='after'` once the Rust
+        call_stack push has happened. `function_address` is wrapped in a
+        word-sized BVV so user code may compare it with `state.regs._ip`
+        which is also symbolic.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "call", state_id, when,
+                function_address=self._addr_attr_for(function_address),
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # call event is dropped (no breakpoint fired).
+            l.warning("inspect call dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_return(self, state_id: int, when: str, function_address: int):
+        """PyO3 callback target for Ijk_Ret events (function exit).
+
+        Mirrors Python `callstack.py:430/432` — fires `when='before'` with
+        the func_addr of the frame being popped, then `when='after'`.
+        function_address is 0 when the Rust call stack is empty (popping
+        from an unentered frame), matching the int convention.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "return", state_id, when,
+                function_address=self._addr_attr_for(function_address),
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # return event is dropped (no breakpoint fired).
+            l.warning("inspect return dispatch failed: %s: %s", type(e).__name__, e)
+
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""
         regions = []

@@ -972,13 +972,15 @@ _COPY_NOT_IMPLEMENTED_MSG = (
 # Single source of truth for the Rust engine's state.inspect dispatch.
 #
 # Each entry maps an angr `event_types` member to a spec dict with:
-#   - bit: position in the Rust callbacks `inspect_enabled` u8 bitmask
+#   - bit: position in the Rust callbacks `inspect_enabled` u16 bitmask
 #   - attrs: SimInspector attribute names this event populates
 #   - when_fired: 'before' or 'after' — when in the Rust pipeline it fires
 #
 # Bits 0..=5 mirror `crate::state::InspectEvent` ordering; bit 4 (fork) is
 # reserved for future wiring; bits 6 and 7 are custom (instruction / irsb)
-# with no InspectionManager enum slot in Rust.
+# with no InspectionManager enum slot in Rust; bits 8 and 9 are custom for
+# call / return (angr-4ai9 widened the bitmask from u8 to u16 to make
+# room — the InspectEvent enum is unchanged).
 #
 # Wiring a new event requires (mirror the angr-d46u 5-touchpoint pattern):
 #   1. Add a row here with a unique bit, attrs, when_fired.
@@ -1061,6 +1063,26 @@ _INSPECT_EVENT_SPECS: dict = {
         "bit": 7,
         "attrs": (
             "address",
+        ),
+        "when_fired": "before",
+    },
+    # angr-4ai9: call/return dispatched from the BlockEnd path of
+    # interpreter/execution.rs (Ijk_Call / Ijk_Ret). Fires `before` and
+    # `after` around the Rust call_stack push/pop, matching Python
+    # callstack.py:386/419 (call) and :430/432 (return). Only attribute is
+    # `function_address` (the resolved call target on call; the popped
+    # frame's callee on return).
+    "call": {
+        "bit": 8,
+        "attrs": (
+            "function_address",
+        ),
+        "when_fired": "before",
+    },
+    "return": {
+        "bit": 9,
+        "attrs": (
+            "function_address",
         ),
         "when_fired": "before",
     },

@@ -103,14 +103,44 @@ impl<'a> VEXInterpreter<'a> {
                                     .as_u64()
                                     .unwrap_or(0);
                                 let ret_addr = self.get_return_addr().unwrap_or(0);
+                                // angr-4ai9: state.inspect `call` event —
+                                // mirror Python callstack.py:386/419 (BEFORE
+                                // the push with the target IP, AFTER the
+                                // push). function_address is the resolved
+                                // call target (`next_addr`).
+                                self.dispatch_call_inspect(py, callbacks, next_addr, "before");
                                 self.call_stack.push(crate::state::CallStackEntry {
                                     call_site_addr: self.current_insn_addr,
                                     callee_addr: next_addr,
                                     return_addr: ret_addr,
                                     stack_ptr: sp_val,
                                 });
+                                self.dispatch_call_inspect(py, callbacks, next_addr, "after");
                             } else if jumpkind.is_ret() {
+                                // angr-4ai9: state.inspect `return` event —
+                                // mirror Python callstack.py:430/432.
+                                // function_address is the top frame's
+                                // callee_addr (what we are about to return
+                                // FROM). Snapshot before pop so the BEFORE
+                                // callback sees a valid frame.
+                                let popped_func_addr = self
+                                    .call_stack
+                                    .last()
+                                    .map(|f| f.callee_addr)
+                                    .unwrap_or(0);
+                                self.dispatch_return_inspect(
+                                    py,
+                                    callbacks,
+                                    popped_func_addr,
+                                    "before",
+                                );
                                 self.call_stack.pop();
+                                self.dispatch_return_inspect(
+                                    py,
+                                    callbacks,
+                                    popped_func_addr,
+                                    "after",
+                                );
                             }
 
                             // Record detailed history entry
@@ -657,6 +687,43 @@ impl<'a> VEXInterpreter<'a> {
             self.block_solver_pushed = false;
             self.block_forks_asserted = 0;
         }
+    }
+
+    /// Fire a `call` inspect callback into Python for an Ijk_Call exit.
+    /// Gated on bit 8 of the inspect-enabled bitmask (above the
+    /// `InspectEvent` enum's 0..=5 range and the custom bits 6/7 used by
+    /// instruction/irsb). `function_address` is the resolved call target.
+    /// Mirrors Python `callstack.py:386` / `:419`.
+    fn dispatch_call_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        function_address: u64,
+        when: &str,
+    ) {
+        if !callbacks.inspect_event_enabled(8) {
+            return;
+        }
+        let _ = callbacks.call_inspect_call(py, self.current_state_id, when, function_address);
+    }
+
+    /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
+    /// Gated on bit 9 of the inspect-enabled bitmask. `function_address`
+    /// is the callee address of the frame being popped (taken from
+    /// `call_stack.last().callee_addr` before the pop, mirroring Python
+    /// `callstack.py:430` which reads `rself.top.func_addr` prior to
+    /// `pop()`). Falls back to 0 when the call stack is empty.
+    fn dispatch_return_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        function_address: u64,
+        when: &str,
+    ) {
+        if !callbacks.inspect_event_enabled(9) {
+            return;
+        }
+        let _ = callbacks.call_inspect_return(py, self.current_state_id, when, function_address);
     }
 }
 
