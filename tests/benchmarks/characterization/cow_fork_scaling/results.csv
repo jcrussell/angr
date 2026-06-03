@@ -1,0 +1,17 @@
+n,engine,wall_s,rss_kb,terminal,error
+2,rust,0.876,165996,4,None
+2,python,1.199,175232,4,None
+3,rust,0.64,179636,8,None
+3,python,1.757,203524,8,None
+4,rust,0.715,206640,16,None
+4,python,2.918,256772,16,None
+5,rust,0.84,260776,32,None
+5,python,5.338,364948,32,None
+6,rust,1.131,368908,64,None
+6,python,10.064,580596,64,None
+7,rust,1.686,585332,128,None
+7,python,19.78,1012992,128,None
+8,rust,2.8,1019804,256,None
+8,python,38.767,1879428,256,None
+9,rust,5.097,1892216,512,None
+9,python,5.739,2738940,0,Z3Exception: b'out of memory'
