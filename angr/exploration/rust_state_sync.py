@@ -1819,12 +1819,18 @@ class RustStateSyncMixin:
                         disable_actions=True,
                     )
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: concrete page replay failed;
+                    # cached Python state's memory page stays out of sync with
+                    # Rust until the next snapshot refresh.
                     if _DBG:
                         l.debug(f"dirty-page concrete replay failed at 0x{page_addr:x}: {e}")
 
             try:
                 sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(page_addr)
-            except Exception:
+            except (AttributeError, RuntimeError):
+                # cat-(a) EXPECTED CONTROL FLOW: symbolic-page FFI absent on
+                # older builds; symbolic bytes fall through to the older
+                # snapshot path on the next sync.
                 sym_entries = None
 
             if sym_entries:
@@ -1839,12 +1845,18 @@ class RustStateSyncMixin:
                         )
                         self._register_handle(id(ast), ast)
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: symbolic store at addr
+                        # raised; that byte stays at the cached Python value
+                        # instead of the Rust-side symbolic AST.
                         if _DBG:
                             l.debug(f"dirty-page symbolic replay failed at 0x{addr:x}: {e}")
 
         try:
             self._rust_mgr.clear_pending_dirty_tracking()
-        except Exception:
+        except (AttributeError, RuntimeError):
+            # cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;
+            # dirty bits stay set but next replay is idempotent (writes the
+            # same page bytes again).
             if _DBG:
                 l.debug("clear_pending_dirty_tracking failed after replay")
 

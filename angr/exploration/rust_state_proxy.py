@@ -315,7 +315,10 @@ class RustRegisterProxy:
         if hasattr(self._mgr, "get_state_register_ast"):
             try:
                 ast = self._mgr.get_state_register_ast(self._state_id, name)
-            except Exception:
+            except (RuntimeError, ValueError, KeyError, AttributeError):
+                # cat-(b) FALLBACK WITH LOSS: AST recovery failed; we mint
+                # an orphan BVS below. Solver writes through that BVS will
+                # not affect the actual register value.
                 ast = None
             if ast is not None:
                 return ast
@@ -677,7 +680,9 @@ class RustScratchProxy:
         """
         try:
             history = self._mgr.get_state_detailed_history(self._state_id)
-        except Exception as e:
+        except (RuntimeError, AttributeError, KeyError) as e:
+            # cat-(b) FALLBACK WITH LOSS: history fetch failed; caller sees
+            # jumpkind=None as if there were no recorded transitions.
             l.debug("get_state_detailed_history(sid=%d) failed: %s: %s",
                     self._state_id, type(e).__name__, e)
             return None

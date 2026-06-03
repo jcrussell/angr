@@ -2017,6 +2017,9 @@ class RustExplorationManager(
                 mem_write_endness=endness,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # mem_write event is dropped (no breakpoint fired). Exception
+            # type is open since handlers are user code.
             l.warning("inspect mem_write dispatch failed: %s: %s", type(e).__name__, e)
 
     def _cb_inspect_reg_read(
@@ -2038,6 +2041,8 @@ class RustExplorationManager(
                 reg_read_endness=None,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # reg_read event is dropped (no breakpoint fired).
             l.warning("inspect reg_read dispatch failed: %s: %s", type(e).__name__, e)
 
     def _cb_inspect_reg_write(
@@ -2059,6 +2064,8 @@ class RustExplorationManager(
                 reg_write_endness=None,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # reg_write event is dropped (no breakpoint fired).
             l.warning("inspect reg_write dispatch failed: %s: %s", type(e).__name__, e)
 
     def _cb_inspect_instruction(self, state_id: int, when: str, addr: int):
@@ -2069,6 +2076,8 @@ class RustExplorationManager(
                 instruction=addr,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # instruction event is dropped (no breakpoint fired).
             l.warning("inspect instruction dispatch failed: %s: %s", type(e).__name__, e)
 
     def _cb_inspect_irsb(self, state_id: int, when: str, addr: int):
@@ -2079,6 +2088,8 @@ class RustExplorationManager(
                 address=addr,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # irsb event is dropped (no breakpoint fired).
             l.warning("inspect irsb dispatch failed: %s: %s", type(e).__name__, e)
 
     def _cb_inspect_exit(
@@ -2098,6 +2109,8 @@ class RustExplorationManager(
                 exit_jumpkind=jumpkind,
             )
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # exit event is dropped (no breakpoint fired).
             l.warning("inspect exit dispatch failed: %s: %s", type(e).__name__, e)
 
     def _load_binary_regions(self):
@@ -2555,8 +2568,9 @@ class RustExplorationManager(
                     dst_state.options.add(opt)
                 else:
                     dst_state.options.discard(opt)
-        except (ImportError, Exception):
-            # cat-(a) EXPECTED CONTROL FLOW: sim_options optional import;
+        except (ImportError, AttributeError):
+            # cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or one
+            # of the listed option names not present in this angr build;
             # without it the option-mirror step is skipped.
             pass
 
@@ -3216,9 +3230,10 @@ class RustExplorationManager(
                     self._rust_mgr.set_lazy_solves(True)
                     l.debug("Enabled lazy_solves from cached state options at explore() time")
                     break
-        except (ImportError, Exception):
-            # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import; if
-            # absent, lazy_solves stays at the value set during construction.
+        except (ImportError, AttributeError):
+            # cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or
+            # LAZY_SOLVES symbol absent in this angr build; lazy_solves stays
+            # at the value set during construction.
             pass
 
         # Reset solver profiling stats for this exploration run
