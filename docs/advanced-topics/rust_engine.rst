@@ -3125,6 +3125,56 @@ get more. The cycle exists so downstream code has a release with both
 the new and old name working, where ``DeprecationWarning`` shows up
 in test output and surfaces the rename.
 
+Applying the ``@_deprecated`` decorator (Python side)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``angr.exploration._deprecation._deprecated`` decorator is the canonical
+way to mark a Python-side public name as deprecated during step 1 of the
+cycle above. It is intentionally underscore-prefixed (private) — only the
+exploration package itself should import it.
+
+Usage:
+
+.. code-block:: python
+
+    from angr.exploration._deprecation import _deprecated
+
+    class RustExplorationManager:
+        @_deprecated(version="9.3", removed_in="9.4", replacement="run")
+        def explore(self, *args, **kwargs):
+            return self.run(*args, **kwargs)
+
+Arguments:
+
+- ``version`` (required) — the minor release in which deprecation started.
+  Matches ``X.Y`` in the cycle's step 1.
+- ``removed_in`` (required) — the minor release targeted for removal.
+  Matches ``X.(Y+1)`` in the cycle's step 2.
+- ``replacement`` (optional) — the new name a caller should migrate to;
+  appears verbatim in the warning message.
+
+Behavior:
+
+- Emits ``DeprecationWarning`` from the wrapper on first call **per
+  decorated callable per process**. Subsequent calls are silent so test
+  logs and long-running sessions stay legible.
+- ``stacklevel=2`` so the warning points at the caller, not at the
+  wrapper.
+- ``functools.wraps`` preserves ``__name__``, ``__doc__``, and the
+  original signature so the snapshot test in
+  ``tests/engines/test_rust_public_api.py`` still sees the name on the
+  class.
+
+When the rest of step 1 (inventory comment, release-note entry) and step 2
+(removal in the next minor release) happen, the test in
+``tests/engines/test_rust_deprecation.py`` keeps the decorator's contract
+itself stable: the warning fires, carries both versions, and includes the
+replacement name when given.
+
+If no public name is currently being deprecated, the decorator still lives
+in the tree ready for the first cycle — the test verifies that the
+mechanism works, independent of any concrete name using it today.
+
 How to mark something experimental
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
