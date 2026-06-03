@@ -156,6 +156,32 @@ impl SymbolicMemory {
             for i in 1..old_bytes {
                 self.symbolic_spans.remove(&(addr + i as u64));
             }
+            // angr-7qon: if the concrete write doesn't cover the full
+            // wider sym, the trailing bytes [addr+size, addr+old_bytes)
+            // would be orphaned — their `symbolic_spans` entries were
+            // removed by the loop above, but the page bitmap still says
+            // symbolic (page.store_concrete only cleared bits within
+            // [0, size)). Per the bug description's option (b): clear
+            // the bitmap bits so those bytes reclassify as concrete.
+            // We've already lost the wider sym tracking, so this is the
+            // best recovery — the page data bytes for the survivors
+            // were never touched by `mark_symbolic` and remain whatever
+            // they were prior to the sym store.
+            if old_bytes > size {
+                let mut tail = addr + size as u64;
+                let tail_end = addr + old_bytes as u64;
+                while tail < tail_end {
+                    let page_num = tail.page_num();
+                    let page_offset = tail.page_offset();
+                    let bytes_in_page =
+                        ((PAGE_SIZE - page_offset as u64) as usize).min((tail_end - tail) as usize);
+                    if let Some(page) = self.pages.get_mut(&page_num) {
+                        page.clear_symbolic(page_offset, bytes_in_page as u16);
+                        self.dirty_pages.insert(page_num);
+                    }
+                    tail = tail + bytes_in_page as u64;
+                }
+            }
         }
 
         // angr-1tes: drop any Multi cells overwritten by this concrete

@@ -271,6 +271,34 @@ impl MemoryPage {
         }
     }
 
+    /// Clear symbolic bitmap bits in a range, without touching `data`.
+    ///
+    /// Used by `SymbolicMemory::store_concrete_lazy` (angr-7qon) when a
+    /// concrete write truncates a wider sym based at the same address —
+    /// the surviving trailing bytes lose their sym tracking and must be
+    /// reclassified as concrete so subsequent loads don't blow up with
+    /// "symbolic bytes not fully tracked". Drops the bitmap when empty.
+    pub fn clear_symbolic(&mut self, offset: u16, size: u16) {
+        debug_assert!(
+            (offset as usize + size as usize) <= PAGE_SIZE as usize,
+            "clear_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
+            offset,
+            size,
+            PAGE_SIZE
+        );
+        if let Some(ref mut bitmap) = self.symbolic_bitmap {
+            let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
+            for i in offset..loop_end {
+                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
+                let bit_idx = i % BITMAP_BITS_PER_WORD;
+                bitmap[word_idx] &= !(1u64 << bit_idx);
+            }
+            if bitmap.iter().all(|&w| w == 0) {
+                self.symbolic_bitmap = None;
+            }
+        }
+    }
+
     /// Check if a byte is symbolic.
     #[inline]
     pub fn is_symbolic(&self, offset: u16) -> bool {

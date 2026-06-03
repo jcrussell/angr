@@ -1276,3 +1276,106 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
          the bug returns the stale extract from the wider sym"
     );
 }
+
+/// angr-7qon (case 1): a concrete write at the base of a wider sym
+/// that doesn't cover the full sym width must not leave orphaned
+/// page-bitmap bits for the surviving trailing bytes. Pre-fix,
+/// store.rs:154 removes the wider sym entirely (and the spans),
+/// but page.store_concrete only cleared the bitmap bits within the
+/// concrete write range — so byte 0x1001 (the survivor) still has
+/// its symbolic bit set with no symbolic_objects entry covering it,
+/// and a subsequent 1-byte load fails with
+/// "symbolic bytes not fully tracked".
+#[test]
+fn test_concrete_overwrite_at_base_truncates_wider_sym_byte_load_succeeds() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_a".to_string(), 16);
+    mem.store_concrete(0x1000, sym).expect("store 16-bit sym");
+
+    // Concrete 1-byte write at 0x1000 truncates the wider sym (covers
+    // only byte 0x1000 of the 2-byte sym at 0x1000..0x1002).
+    mem.store_concrete(0x1000, RustBV::concrete(0xAA, 8))
+        .expect("store concrete byte");
+
+    // Pre-fix: load(0x1001, 1) fails because the page bitmap still
+    // marks 0x1001 symbolic but no symbolic_objects entry covers it.
+    // Post-fix: bitmap bit cleared, byte reclassified as concrete
+    // (returns the pre-sym page byte, which is 0 here).
+    let byte = mem
+        .load_concrete(0x1001, 1, &ctx)
+        .expect("1-byte load of survivor must succeed");
+    assert_eq!(
+        ctx.eval(&byte),
+        Some(0),
+        "load(0x1001, 1) returns the underlying concrete page byte (0); \
+         pre-fix it errors with 'symbolic bytes not fully tracked'"
+    );
+}
+
+/// angr-7qon (case 2): a concrete write at the base of a wider sym
+/// that covers some but not all bytes of the sym (e.g. 4 bytes of a
+/// 64-bit sym) must clear the page bitmap bits for the survivors
+/// across the whole tail, not just immediately after `addr+size`.
+#[test]
+fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_b".to_string(), 64);
+    mem.store_concrete(0x1000, sym).expect("store 64-bit sym");
+
+    // Concrete 4-byte write at 0x1000 truncates the 64-bit sym, leaving
+    // bytes 0x1004..0x1008 as survivors.
+    mem.store_concrete(0x1000, RustBV::concrete(0xDEADBEEF, 32))
+        .expect("store concrete 4 bytes");
+
+    // Each survivor byte's page bit must be cleared; load must
+    // succeed and return the page byte (0).
+    for survivor in 0x1004u64..0x1008 {
+        let byte = mem
+            .load_concrete(survivor, 1, &ctx)
+            .unwrap_or_else(|e| panic!("load(0x{:x}, 1) must succeed: {:?}", survivor, e));
+        assert_eq!(
+            ctx.eval(&byte),
+            Some(0),
+            "load(0x{:x}, 1) survivor byte must be concrete 0",
+            survivor
+        );
+    }
+
+    // And a single 4-byte load over the whole tail must also succeed.
+    let tail = mem
+        .load_concrete(0x1004, 4, &ctx)
+        .expect("4-byte tail load must succeed");
+    assert_eq!(ctx.eval(&tail), Some(0));
+}
+
+/// angr-7qon (case 3): the truncation cleanup must walk pages
+/// correctly when the wider sym crosses a page boundary. A 16-bit
+/// sym at 0x1FFF spans pages 0 and 1; a 1-byte concrete write at
+/// 0x1FFF leaves byte 0x2000 on the next page as the survivor.
+#[test]
+fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x2000, Permission::RWX);
+
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_c".to_string(), 16);
+    mem.store_concrete(0x1FFF, sym).expect("store cross-page sym");
+
+    mem.store_concrete(0x1FFF, RustBV::concrete(0xAA, 8))
+        .expect("store concrete byte at base");
+
+    let byte = mem
+        .load_concrete(0x2000, 1, &ctx)
+        .expect("survivor on next page must load");
+    assert_eq!(
+        ctx.eval(&byte),
+        Some(0),
+        "cross-page survivor at 0x2000 must reclassify as concrete"
+    );
+}
