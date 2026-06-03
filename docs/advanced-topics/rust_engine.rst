@@ -91,6 +91,25 @@ keep using the Python engine or wait for a future major release.
   ``RustExplorationManager`` itself is the unit of parallelism, not a
   worker inside a larger pool.
 
+* **Real multi-process modeling is out of scope.** The engine does
+  not model ``execve`` (state replacement with a new program image),
+  ``clone`` (kernel-level thread/process state forking with shared
+  address space), or ``wait4`` (parent blocking on child exit). This
+  matches Python angr, which also does not model these — its
+  ``angr/procedures/posix/fork.py`` returns a symbolic ``If(parent,
+  1338, 0)`` rather than spawning a second state, and there are no
+  ``execve``/``wait4`` SimProcedures wired into ``linux_kernel``. A
+  binary that calls ``execve`` to swap its program image is therefore
+  not analyzable end-to-end on either engine, and that gap is
+  intentional for v1.0: users running multi-process targets (forking
+  daemons, exec-style command runners) are expected to either hook
+  the syscalls to redirect control flow, or drive each constituent
+  binary as a separate ``angr.Project`` from fuzzer-style
+  orchestration (libafl is the documented example). Adding real
+  multi-process modeling would require a process-table abstraction
+  in the kernel-syscall layer that is shared with Python angr, not a
+  Rust-engine-private feature.
+
 This scope decision is informed by the Send/Sync audit
 (``angr-8fo6``, 2026-06-01) and the FFI ownership audit
 (``angr-t1w7``, 2026-06-03) — both audits confirmed the
