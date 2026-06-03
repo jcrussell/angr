@@ -71,7 +71,7 @@ EXAMPLE_CATALOG = {
     "ekopartyctf2015_rev100":  {"tier": "medium",  "rust_ok": False, "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout"},
     "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "Multi-stage explore+unstash, Rust list index error"},
     "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "save_unconstrained, Windows PE, Py 8.6s Rust 18.6s (0.46x)"},
-    "insomnihack_aeg":         {"tier": "medium",  "rust_ok": None,  "notes": "AEG pattern, uses sys.argv in __main__, incompatible with harness"},
+    "insomnihack_aeg":         {"tier": "slow",    "rust_ok": False, "notes": "Rust raises on TRACK_ACTION_HISTORY (_RAISE_OPTION); Py >90s (posix.dumps over symbolic stdin)", "argv": ["./demo_bin"]},
     "0ctf_trace":              {"tier": "medium",  "rust_ok": None,  "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s"},
     "simple_heap_overflow":    {"tier": "medium",  "rust_ok": False, "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)"},
     # === Slow/problematic examples ===
@@ -185,6 +185,10 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
         angr.factory.AngrObjectFactory.simulation_manager = patched_python_simulation_manager
         angr.factory.AngrObjectFactory.simgr = patched_python_simulation_manager
 
+    # Optional argv injection for solve.py scripts that read sys.argv[1] as a
+    # binary path (e.g. insomnihack_aeg). Set per-example via EXAMPLE_CATALOG.
+    argv_override = EXAMPLE_CATALOG.get(example_name, {}).get("argv")
+
     try:
         os.chdir(example_dir)
         if example_dir not in sys.path:
@@ -196,6 +200,11 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
         captured = BufferedStringIO()
         original_stdout = sys.stdout
         sys.stdout = captured
+
+        original_argv = None
+        if argv_override is not None:
+            original_argv = sys.argv
+            sys.argv = [solve_script, *argv_override]
 
         start = time.perf_counter()
         try:
@@ -210,6 +219,8 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "elapsed": elapsed}
         finally:
             sys.stdout = original_stdout
+            if original_argv is not None:
+                sys.argv = original_argv
 
         elapsed = time.perf_counter() - start
         output = captured.getvalue()
