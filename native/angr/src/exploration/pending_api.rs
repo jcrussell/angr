@@ -118,6 +118,17 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _get_pending_history_and_jumpkind(&self) -> PyResult<(Vec<u64>, String)> {
+        self.with_pending(|pending| {
+            let history = pending.state.history().to_vec();
+            let jumpkind = pending
+                .jumpkind
+                .clone()
+                .unwrap_or_else(|| "Ijk_Boring".to_string());
+            Ok((history, jumpkind))
+        })
+    }
+
     pub(crate) fn _set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
         self.with_pending_mut(|pending| {
             let size = pending

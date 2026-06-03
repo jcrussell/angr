@@ -1031,6 +1031,15 @@ impl RustExplorationManager {
         self._get_pending_jumpkind()
     }
 
+    /// Get history (BBL addresses) and jumpkind from pending callback state
+    /// in a single FFI call. Avoids the GIL + boundary-crossing cost of
+    /// calling `get_pending_history()` and `get_pending_jumpkind()`
+    /// separately from the callback dispatcher hot path.
+    /// See [`pending_api::_get_pending_history_and_jumpkind`] for the body.
+    pub fn get_pending_history_and_jumpkind(&self) -> PyResult<(Vec<u64>, String)> {
+        self._get_pending_history_and_jumpkind()
+    }
+
     /// Set register value in pending state.
     /// See [`pending_api::_set_pending_register`] for the body.
     pub fn set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {

@@ -56,8 +56,9 @@ class RustCallbackDispatchMixin:
         rust_jumpkind = getattr(state.scratch, '_rust_bundle_jumpkind', None)
         if rust_history is None:
             try:
-                rust_history = self._rust_mgr.get_pending_history()
-                rust_jumpkind = self._rust_mgr.get_pending_jumpkind()
+                rust_history, rust_jumpkind = (
+                    self._rust_mgr.get_pending_history_and_jumpkind()
+                )
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: pending Rust history unavailable;
                 # fall back to a single-element history. State.history may be
