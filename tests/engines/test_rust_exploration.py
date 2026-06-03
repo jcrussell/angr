@@ -3033,6 +3033,59 @@ class TestStateProxyRepr:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStateProxyCopyIsShallow:
+    """Pin the shallow-copy semantics of ``RustStateProxy.copy()``.
+
+    The proxy's ``copy()`` returns a new :class:`RustStateProxy` that
+    shares ``_state_id`` with the source — there is no per-state Rust
+    fork. This is the foot-gun behind the Veritesting *analysis*
+    incompatibility (``angr-dv24``): Veritesting calls
+    ``input_state.copy()`` at ``veritesting.py:214`` and then mutates
+    the copy inside its internal ``SimulationManager``. Under the
+    shallow proxy, mutations propagate back to the source Rust state.
+    Deep-copy semantics are tracked under ``angr-2zwy``; until that
+    lands, the v1.0 docs flag Veritesting as unsupported and tell
+    users to pass a :class:`SimState` (not a proxy).
+    """
+
+    def test_proxy_copy_shares_state_id(self, fauxware_project):
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        original = mgr.proxy.active[0]
+        clone = original.copy()
+
+        assert clone is not original, "copy() must return a new proxy instance"
+        assert clone._state_id == original._state_id, (
+            "RustStateProxy.copy() is intentionally shallow (shares "
+            "_state_id). If this assertion fails, the deep-copy work "
+            "tracked under angr-2zwy has landed — update the "
+            "Veritesting analysis row in docs/advanced-topics/"
+            "rust_engine.rst and remove this guard."
+        )
+
+    def test_proxy_copy_preserves_back_references(self, fauxware_project):
+        """The copy must carry the same manager / project handles so
+        downstream reads (addr, constraints, regs) keep working on the
+        clone after the source goes out of scope.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        original = mgr.proxy.active[0]
+        clone = original.copy()
+
+        assert clone._mgr is original._mgr
+        assert clone._project is original._project
+        # Same shared Rust state → identical address.
+        assert clone.addr == original.addr
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverProxyTimeout:
     """Tests that state.solver.timeout = N propagates to the Rust solver.
 

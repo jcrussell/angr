@@ -2102,10 +2102,38 @@ for running it against a project that has had a
        ``RustExplorationManager`` exists on the project. No Rust-
        parity smoke test exists yet.
    * - ``Veritesting``
-     - **Unsupported (raises)**
-     - Constructs ``SimulationManager`` directly (``veritesting.py:255``)
-       and auto-adds ``EFFICIENT_STATE_MERGING``, which lives in
-       ``_RAISE_OPTION_NAMES``. See the
+     - **Unsupported (v1.0)**
+     - Constructs ``SimulationManager`` directly
+       (``veritesting.py:255``) against the Python engine, so a
+       ``RustExplorationManager`` attached to the project has no
+       effect on the analysis itself. Two distinct failure modes:
+
+       1. Passing a :class:`RustStateProxy` as ``input_state``
+          corrupts the source Rust state. Veritesting calls
+          ``input_state.copy()`` at ``veritesting.py:214`` and then
+          mutates the copy inside its internal ``SimulationManager``.
+          ``RustStateProxy.copy()``
+          (``angr/exploration/rust_state_proxy.py:1426``) returns a
+          *shallow* proxy that shares ``_state_id`` with the source;
+          mutations to the copy propagate back to the original Rust
+          state. Deep-copy semantics are tracked under ``angr-2zwy``.
+       2. Veritesting needs ``EFFICIENT_STATE_MERGING`` for ancestor
+          retention during plugin merging. The Veritesting
+          *exploration technique*
+          (``exploration_techniques/veritesting.py:20-21``) auto-adds
+          this option at ``step_state`` time; the option lives in
+          ``_RAISE_OPTION_NAMES`` so attempting to seed a Rust
+          manager with a state that already has
+          ``EFFICIENT_STATE_MERGING`` set raises
+          ``NotImplementedError``. The Veritesting *analysis* does
+          not auto-add the option, but without it the analysis falls
+          back to weak-ref merging and may miss common ancestors —
+          a silent correctness gap.
+
+       Workaround: run Veritesting on a project that has *not* had a
+       ``RustExplorationManager`` attached. Construct a fresh
+       :class:`angr.Project` for the analysis and feed it a
+       :class:`SimState` (not a proxy). See the
        "Exploration technique compatibility" section above for the
        parallel technique-side verdict.
 
