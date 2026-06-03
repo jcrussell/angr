@@ -2117,12 +2117,52 @@ below).
 Analyses compatibility
 ----------------------
 
-``proj.analyses.*`` predates the Rust engine. None of the analyses
-listed below accept a ``use_rust_engine`` kwarg, and none currently
-inherit a project-level default — so whether each one "uses Rust" is
-determined by *what it calls internally*, not by user intent. The
-table records each analysis' internal stepping path and the verdict
-for running it against a project that has had a
+.. _rust-engine-inheritance-contract:
+
+Inheritance contract
+~~~~~~~~~~~~~~~~~~~~
+
+The ``use_rust_engine=True`` kwarg on
+``proj.factory.simulation_manager(state, use_rust_engine=True)`` is a
+**per-call selector**. It is not stored on the project, the factory,
+or any thread-local state — every call to
+``proj.factory.simulation_manager(...)`` (or its ``factory.simgr``
+alias) makes an independent choice based solely on the kwarg passed
+in at that call site.
+
+Consequences:
+
+* **Default is Python.** Any call site that omits the kwarg gets a
+  plain ``SimulationManager``, even if the same caller previously
+  constructed a ``RustExplorationManager`` against the same project.
+* **No project-level toggle.** There is no
+  ``proj.use_rust_engine = True`` or equivalent. Attaching a
+  ``RustExplorationManager`` to a project does not change the default
+  for future ``factory.simulation_manager()`` calls.
+* **``factory.successors(state, ...)`` always dispatches to the
+  Python engine.** It calls ``self.default_engine.process(...)``,
+  which is wired to ``UberEngine`` / ``UberEnginePcode`` at factory
+  construction time and is not influenced by Rust manager
+  configuration.
+* **Internal analyses always use Python.** Every analysis under
+  ``angr/analyses/`` that constructs an internal SimulationManager
+  goes through ``proj.factory.simulation_manager(...)`` without
+  threading a ``use_rust_engine`` kwarg, and every analysis that
+  steps states directly does so via ``proj.factory.successors(...)``.
+  Both paths land on the Python engine regardless of how the user
+  invoked the surrounding analysis.
+
+This is a **safety default**: opting an internal analysis into Rust
+execution requires either an in-tree port (verdict marked
+"Works (Rust)" in the table below) or an out-of-tree monkey-patch
+that swaps ``AngrObjectFactory.simulation_manager`` for the duration
+of the analysis call (see ``tests/benchmarks/run_single.py`` for the
+precedent and ``tests/engines/test_callable_rust.py`` for a
+context-manager wrapper). The contract is enforced by
+``tests/engines/test_factory_rust_inheritance.py``.
+
+The table below records each analysis' internal stepping path and
+the verdict for running it against a project that has had a
 ``RustExplorationManager`` attached.
 
 .. list-table::
