@@ -11735,6 +11735,30 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_posix_fork_symbolic_flag_returns_both_branches(self, fauxware_project):
+        """angr-q6r1: posix.fork SimProcedure dispatches correctly under the
+        Rust manager and the symbolic-flag return value yields both the
+        parent pid (1338) and the child (0) branches.
+
+        Python angr's ``posix.fork`` is symbolic-flag-only: it returns
+        ``If(BoolS("fork_parent"), BVV(1338, sizeof[int]), BVV(0, sizeof[int]))``
+        without actually forking the SimState. Both engines share that
+        semantics; this test confirms the SimProcedure runs end-to-end under
+        the Rust engine (claripy ITE round-trips through the FFI boundary,
+        the return value lands in rax) and documents the v1.0 contract.
+        """
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['posix']['fork']())
+            s = self._run_one_step(proj, state)
+            # SimProcedure return value is an int (32-bit on amd64), which the
+            # calling convention zero-extends to 64-bit rax. Both branches of
+            # the symbolic-flag ITE must concretize.
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 1338
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFileDescriptorProcedures:

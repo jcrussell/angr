@@ -1016,6 +1016,35 @@ pub fn claripy_to_rustbv(
             Ok(RustBV::concrete(if value { 1 } else { 0 }, 1))
         }
 
+        // Symbolic boolean (angr-q6r1): claripy.BoolS("name") is a 1-bit
+        // Bool leaf with args=(name,) and no `.length`. Mirror the BVS
+        // identity-preservation path with a fixed width of 1 so an
+        // `If(BoolS, ...)` (e.g. posix.fork) survives the FFI boundary
+        // instead of failing AST conversion. The reverse-direction
+        // `rust_to_claripy` rebuilds Symbolic-width-1 values as a
+        // claripy `BVS` of width 1, which composes correctly when an
+        // outer claripy op (e.g. `If`) coerces the operand to Bool.
+        "BoolS" => {
+            let args_tuple = args
+                .cast::<PyTuple>()
+                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
+            let name: String = args_tuple.get_item(0)?.extract()?;
+            let width: u32 = 1;
+
+            if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
+                return Ok(RustBV::symbolic_with_id(existing_id, &name, width));
+            }
+            if let Some(info) = lookup_symbol_by_name_and_width(&name, width) {
+                return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
+            }
+
+            let bv = RustBV::symbolic(ctx, &name, width);
+            if let RustBV::Symbolic { id, .. } = &bv {
+                store_claripy_ast_with_info(ast_hash, *id, &name, width, ast.clone().unbind());
+            }
+            Ok(bv)
+        }
+
         // If-then-else
         "If" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
