@@ -12922,53 +12922,79 @@ class TestNativeResourceLimitSyscalls:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
-class TestNativeFilePathSyscalls:
-    """angr-0hif.1 (symbolic-return subset): native ``readlink`` /
-    ``readlinkat``. Neither has a Python ``SimProcedure``; the
-    unhandled-syscall path falls through to
-    ``procedures/stubs/syscall_stub.py::syscall`` which returns a
-    fresh ``Unconstrained`` BV. The native handlers mirror that via
-    ``SyscallOutcome::ContinueSymbolic``.
+class TestNativeReadlinkSyscall:
+    """angr-wv38: native ``readlink`` returns ``-1`` for every path
+    because the Rust ``FileSystem`` has no symlinks (EINVAL for known
+    paths, ENOENT for unknown). The buffer is left untouched.
 
-    ``faccessat`` was promoted to a real handler in angr-6009 and
-    ``lstat`` / ``newfstatat`` in angr-poao. All three now need a
-    mapped pathname so the all-zero-arg harness here no longer fits;
-    they are covered by ``TestNativeFaccessatSyscall`` /
-    ``TestNativeLstatSyscall`` / ``TestNativeNewfstatatSyscall`` below.
-
-    The FD-allocating sibling cohort (``open`` / ``openat`` / ``close``)
-    is now native via ``angr-k3ol.1`` and exercised by
-    ``TestNativeFdAllocatingSyscalls`` below.
-
-    The Rust cargo unit tests in ``native/angr/src/syscalls/file_path.rs``
-    pin the per-handler invariants; this is the cross-the-FFI dispatch
-    check (``syscall_python_fallback_count`` stays 0 for each one).
+    Rust cargo tests in ``native/angr/src/syscalls/file_path.rs`` pin
+    the per-handler semantics (unknown→-1, known→-1, empty→-1, buf
+    untouched, symbolic-pathname fallback, cross-arch). This Python
+    test pins cross-FFI dispatch (``syscall_python_fallback_count``
+    stays 0).
     """
 
-    @pytest.mark.parametrize(
-        "syscall_num,label",
-        [
-            (89, "readlink"),
-            (267, "readlinkat"),
-        ],
-    )
-    def test_file_path_syscall_dispatches_natively(self, syscall_num, label):
+    def test_readlink_unknown_path_dispatches_natively(self):
         import angr
         from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
-        state.regs.rax = syscall_num
-        for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 89  # readlink
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
+        state.regs.rdi = 0x4000  # pathname
+        state.regs.rsi = 0x5000  # buf (must not be touched)
+        state.regs.rdx = 256     # bufsiz
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            f"native {label}({syscall_num}) must take the Rust fast path "
+            "native readlink(89) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeReadlinkatSyscall:
+    """angr-wv38: native ``readlinkat`` also returns ``-1`` for every
+    path. The dirfd is validated (must be concrete) and the
+    absolute / ``AT_FDCWD`` / relative-with-arbitrary-dirfd branches
+    exist for symmetry with ``faccessat`` / ``openat`` — but the
+    result is always ``-1``.
+
+    Rust cargo tests pin per-handler semantics (unknown→-1, known→-1,
+    AT_FDCWD vs arbitrary dirfd vs relative path, empty→-1, symbolic
+    dirfd / pathname fallback, cross-arch). This Python test pins
+    cross-FFI dispatch (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_readlinkat_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 267  # readlinkat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD
+        state.regs.rsi = 0x4000              # pathname
+        state.regs.rdx = 0x5000              # buf (untouched)
+        state.regs.r10 = 256                 # bufsiz
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native readlinkat(267) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
 

@@ -222,18 +222,19 @@ impl NativeSyscallRegistry {
         //   angr is single-threaded symex so blocking is never modeled.
         //   epoll_ctl_old (214) / epoll_wait_old (215) intentionally NOT
         //   registered — pre-2.6 legacy that no current binary uses.
-        // lstat (6), readlink (89), newfstatat (262), readlinkat (267):
-        //   file-path syscalls without a Python SimProcedure
-        //   (angr-0hif.1, symbolic-return subset). Mirror syscall_stub.
-        //   Audit notes: see file_path.rs module doc — improving
-        //   lstat/newfstatat to mirror stat() and readlink* to return
-        //   -1 for unknown paths are deferred follow-ups (angr-6009).
+        // readlink (89), readlinkat (267): always return -1 (angr-wv38).
+        //   The Rust FileSystem has no symlinks, so EINVAL/ENOENT covers
+        //   every case; the buffer is left untouched. readlinkat reads
+        //   the dirfd for symmetry with openat/faccessat but the result
+        //   is -1 either way. See file_path.rs module doc.
         // faccessat (269): native FileSystem::is_path_known query
         //   (angr-6009). Clone of NativeAccessSyscall with dirfd
         //   handling. Absolute paths and AT_FDCWD return 0/-1 from
         //   the FileSystem; relative paths with non-AT_FDCWD dirfd
         //   return -1 (we do not model directory fds — matches
         //   NativeOpenatSyscall's policy).
+        // lstat (6), newfstatat (262): stat()-shaped clones promoted
+        //   from stubs in angr-poao. See file_path.rs module doc.
         // open (2), openat (257), close (3): FD-allocating syscalls
         //   (angr-k3ol.1). Mutate `RustSimState::file_system()` directly,
         //   mirroring the existing `procedures/fileops::NativeOpen` /
@@ -1493,15 +1494,14 @@ mod tests {
 
     #[test]
     fn file_path_stubs_registered_on_all_arches() {
-        // angr-0hif.1 symbolic-return subset: lstat / newfstatat /
-        // readlink / readlinkat. None have a Python SimProcedure; the
-        // unhandled-syscall path falls through to `syscall_stub`. The
-        // native handlers mirror that via SyscallOutcome::ContinueSymbolic.
-        //
-        // faccessat (also covered here) was promoted to a real handler
-        // in angr-6009 — it now mirrors NativeAccessSyscall against
-        // FileSystem::is_path_known with AT_FDCWD/absolute-path
-        // resolution. Behavior is exercised by dedicated tests in
+        // Originally angr-0hif.1 symbolic-return subset (lstat /
+        // newfstatat / readlink / readlinkat); every entry has since
+        // been promoted to a real handler:
+        //   * faccessat (angr-6009) — NativeAccessSyscall + dirfd.
+        //   * lstat / newfstatat (angr-poao) — stat()-shaped clones.
+        //   * readlink / readlinkat (angr-wv38) — always -1
+        //     (no-symlink FileSystem).
+        // Per-handler semantics are pinned by dedicated tests in
         // syscalls/file_path.rs; this test still asserts name + arity.
         //
         // Per-arch availability:

@@ -1,27 +1,36 @@
 //! File-path syscall handlers.
 //!
-//! Two cohorts live here:
+//! ## `readlink` / `readlinkat` (angr-wv38)
 //!
-//! ## Symbolic-return stubs (angr-0hif.1)
+//! `readlink(pathname, buf, bufsiz) → ssize_t` and
+//! `readlinkat(dirfd, pathname, buf, bufsiz) → ssize_t` always return
+//! `-1`. The Rust `FileSystem` model has no symlinks, so:
 //!
-//! `readlink`, `readlinkat` — neither has a dedicated Python
-//! `SimProcedure` in `angr/procedures/linux_kernel/`, so the Python
-//! path falls through to `procedures/stubs/syscall_stub.py::syscall`,
-//! which returns
-//! `state.solver.Unconstrained("syscall_stub_<name>", returnty.size, ...)`.
-//! The native stubs match: ignore args, emit a fresh `RustBV::symbolic`
-//! of width `arch().bits()`, routed through
-//! `SyscallOutcome::ContinueSymbolic`.
+//! * For any known path: `-1` with `errno = EINVAL` (not a symlink).
+//! * For any unknown path: `-1` with `errno = ENOENT` (no such file).
 //!
-//! ### Audit follow-up (angr-wv38)
+//! Either way the buffer is left untouched (real Linux only writes on a
+//! positive return). This is strictly more accurate than the previous
+//! fresh-symbolic stub return — the previous stub would let solver-
+//! permitted paths take the "positive return" branch and explore code
+//! reading non-existent symlink data. The known regression risk
+//! (binaries that branch on a positive return from `/proc/self/exe`-
+//! discovery code) was cleared by the angr-examples bench sweep.
 //!
-//! `readlink` / `readlinkat`: the FileSystem model has no symlinks,
-//! so the correct semantics for every known path are `-1` (EINVAL:
-//! not a symlink) and for every unknown path are `-1` (ENOENT). A
-//! blanket `-1` return is therefore more accurate than the current
-//! fresh-symbolic return — but it would regress binaries that branch
-//! on a positive return (e.g. `/proc/self/exe`-discovery code).
-//! Deferred to a follow-up bead (angr-wv38) pending bench sweep.
+//! The handlers still read `pathname` into a Rust `String` before
+//! returning, mirroring `NativeAccessSyscall` / `NativeFaccessatSyscall`:
+//! a symbolic path byte routes through `SyscallError::SymbolicArgument`
+//! and falls back to the Python `syscall_stub`. `readlinkat` also reads
+//! `dirfd` and applies the `openat` policy (absolute / `AT_FDCWD` →
+//! resolve; relative + other dirfd → `-1`) even though the dirfd
+//! ultimately does not affect the return — keeps the handler shape
+//! symmetric with `NativeFaccessatSyscall` / `NativeOpenatSyscall` and
+//! falls back on symbolic dirfd.
+//!
+//! Both work on every arch the syscalls are registered on:
+//! `readlink` (AMD64 89, X86 85, ARM EABI 85, MIPS32 4085, MIPS64 5087)
+//! and `readlinkat` (AMD64 267, X86 305, ARM EABI 332, ARM64 78,
+//! MIPS32 4298, MIPS64 5257). No arch-specific layout to write.
 //!
 //! ## `faccessat` (angr-6009)
 //!
@@ -132,16 +141,12 @@
 //! and `FileSystem::content_size_for_path` from `stat`. Arch-check
 //! happens FIRST (before any memory read), matching the `stat` policy.
 
-use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
-};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
-// readlink(path, buf, bufsiz) → long
-stub_syscall!(NativeReadlinkSyscall, "readlink", "syscall_stub_readlink", 3);
-// readlinkat(dfd, path, buf, bufsiz) → long
-stub_syscall!(NativeReadlinkatSyscall, "readlinkat", "syscall_stub_readlinkat", 4);
+// readlink(path, buf, bufsiz) → long — see NativeReadlinkSyscall impl below.
+// readlinkat(dfd, path, buf, bufsiz) → long — see NativeReadlinkatSyscall impl below.
 // faccessat(dfd, filename, mode) → long — see NativeFaccessatSyscall impl below.
 // lstat(pathname, statbuf) → long — see NativeLstatSyscall impl below.
 // newfstatat(dfd, filename, statbuf, flag) → long — see NativeNewfstatatSyscall impl below.
@@ -374,6 +379,82 @@ impl NativeSyscall for NativeFaccessatSyscall {
             NEG_ONE
         };
         Ok(SyscallOutcome::Continue { ret })
+    }
+}
+
+/// `readlink(pathname, buf, bufsiz) → -1` — always returns `-1` because
+/// the Rust `FileSystem` model has no symlinks (every path is "not a
+/// symlink" → `EINVAL`, every unknown path → `ENOENT`). The buffer is
+/// left untouched. `pathname` is still read into a Rust `String` so
+/// that a symbolic path byte routes through `SyscallError::SymbolicArgument`
+/// and falls back to the Python `syscall_stub` (matches the
+/// `NativeAccessSyscall` pattern). `buf` / `bufsiz` are not validated:
+/// they would only matter on a positive return, which never happens
+/// here.
+pub struct NativeReadlinkSyscall;
+
+impl NativeSyscall for NativeReadlinkSyscall {
+    fn name(&self) -> &'static str {
+        "readlink"
+    }
+
+    fn num_args(&self) -> usize {
+        3
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let pathname_addr = extract_concrete_arg(&args[0], "readlink pathname")?;
+        // args[1] = buf, args[2] = bufsiz — ignored (we return -1 and
+        // never write the buffer).
+        let _ = (args.get(1), args.get(2));
+
+        let _path = read_path(state, pathname_addr, "readlink")?;
+        Ok(SyscallOutcome::Continue { ret: NEG_ONE })
+    }
+}
+
+/// `readlinkat(dirfd, pathname, buf, bufsiz) → -1` — clone of
+/// `readlink` with `openat`-style dirfd handling. Absolute paths and
+/// `AT_FDCWD` resolve via `read_path`; relative paths with any other
+/// dirfd short-circuit to `-1` without touching the path (mirrors
+/// `NativeOpenatSyscall` / `NativeFaccessatSyscall`). The end result
+/// is `-1` either way — the dirfd branch only exists so the handler
+/// shape stays symmetric with the rest of the `*at` family and falls
+/// back to Python on symbolic dirfd.
+pub struct NativeReadlinkatSyscall;
+
+impl NativeSyscall for NativeReadlinkatSyscall {
+    fn name(&self) -> &'static str {
+        "readlinkat"
+    }
+
+    fn num_args(&self) -> usize {
+        4
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        let dirfd = extract_concrete_arg(&args[0], "readlinkat dirfd")?;
+        let pathname_addr = extract_concrete_arg(&args[1], "readlinkat pathname")?;
+        // args[2] = buf, args[3] = bufsiz — ignored (we return -1).
+        let _ = (args.get(2), args.get(3));
+
+        let path = read_path(state, pathname_addr, "readlinkat")?;
+        if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        let absolute = path.starts_with('/');
+        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        Ok(SyscallOutcome::Continue { ret: NEG_ONE })
     }
 }
 
@@ -713,71 +794,10 @@ mod tests {
             .expect("store NUL");
     }
 
-    /// Sweep all five stub handlers across every supported arch and
-    /// verify they return a fresh `RustBV::symbolic` of width
-    /// `arch().bits()`. Successive invocations must yield distinct
-    /// fresh symbols (different `RustBV::Symbolic.id`), matching
-    /// `syscall_stub.py::syscall` semantics where each call gets a
-    /// new `Unconstrained` BV.
-    #[test]
-    fn stub_handlers_return_fresh_symbolic_on_all_arches() {
-        // (handler, expected name, arity)
-        // faccessat dropped (angr-6009) — has a real handler now; covered
-        // by dedicated tests below mirroring the access() suite.
-        // lstat/newfstatat dropped (angr-poao) — promoted to stat()-shaped
-        // handlers; the all-zero-arg harness no longer fits (they read a
-        // pathname from the addr-0 page which is unmapped).
-        let cases: &[(&'static dyn NativeSyscall, &str, usize)] = &[
-            (&NativeReadlinkSyscall, "readlink", 3),
-            (&NativeReadlinkatSyscall, "readlinkat", 4),
-        ];
-
-        for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
-            let mut state = RustSimState::new(arch).expect("state");
-            let bits = state.arch().bits();
-
-            for &(handler, label, nargs) in cases {
-                assert_eq!(handler.name(), label);
-                assert_eq!(handler.num_args(), nargs, "{label} arity");
-
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
-                let outcome = handler
-                    .call(&mut state, &args)
-                    .unwrap_or_else(|e| panic!("{arch} {label} errored: {e:?}"));
-                let ret = match outcome {
-                    SyscallOutcome::ContinueSymbolic { ret } => ret,
-                    other => panic!(
-                        "{arch} {label} expected ContinueSymbolic, got {other:?}"
-                    ),
-                };
-                assert_eq!(ret.width(), bits, "{arch} {label} width");
-                assert!(!ret.is_concrete(), "{arch} {label} should be symbolic");
-
-                // Second call: must produce a *distinct* fresh symbol.
-                let outcome2 = handler
-                    .call(&mut state, &args)
-                    .unwrap_or_else(|e| panic!("{arch} {label} 2nd call errored: {e:?}"));
-                let ret2 = match outcome2 {
-                    SyscallOutcome::ContinueSymbolic { ret } => ret,
-                    other => panic!(
-                        "{arch} {label} 2nd: expected ContinueSymbolic, got {other:?}"
-                    ),
-                };
-                let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
-                    _ => panic!("{arch} {label} returns must be Symbolic"),
-                };
-                assert_ne!(
-                    id1, id2,
-                    "{arch} {label} successive calls must yield distinct fresh symbols",
-                );
-            }
-        }
-    }
+    // angr-0hif.1 stub-sweep deleted — every file_path stub has now
+    // been promoted: faccessat (angr-6009), lstat/newfstatat (angr-poao),
+    // readlink/readlinkat (angr-wv38). Per-handler semantics are pinned
+    // by the dedicated tests below.
 
     #[test]
     fn open_allocates_fresh_fd_and_records_name() {
@@ -1426,6 +1446,396 @@ mod tests {
                     assert_eq!(ret, 0, "{arch} post-register")
                 }
                 other => panic!("{arch} post-register: got {other:?}"),
+            }
+        }
+    }
+
+    // ---- readlink / readlinkat (angr-wv38) ----
+
+    #[test]
+    fn readlink_unknown_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/no/such/path");
+
+        let out = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64), // buf — must NOT be touched
+                    RustBV::concrete(256, 64),    // bufsiz
+                ],
+            )
+            .expect("readlink ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlink_known_path_still_returns_minus_one() {
+        // Even for paths the FileSystem knows about, readlink must return
+        // -1 (EINVAL — not a symlink). The FileSystem has no symlinks.
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/known");
+        state
+            .file_system()
+            .register_known_path("/tmp/known".to_string());
+
+        let out = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(256, 64),
+                ],
+            )
+            .expect("readlink ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlink_empty_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        state
+            .memory_store(0x2000, RustBV::concrete(0, 8))
+            .expect("store nul");
+
+        let out = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("readlink ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlink_buf_is_not_modified_on_failure() {
+        // The buffer must NOT be written: real Linux only fills it on a
+        // positive return, and we always return -1.
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/whatever");
+        // Pre-mark buf with a sentinel; after the call it must still be
+        // there (we never wrote to it).
+        state.map_memory(0x3000, 0x1000, Permission::RWX);
+        for i in 0..8 {
+            state
+                .memory_store(0x3000 + i, RustBV::concrete(0xAA, 8))
+                .expect("store sentinel");
+        }
+
+        let _ = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(8, 64),
+                ],
+            )
+            .expect("readlink ok");
+
+        for i in 0..8u64 {
+            let bv = state.memory_load(0x3000 + i, 1).expect("load");
+            assert_eq!(
+                bv.as_u64().unwrap(),
+                0xAA,
+                "buf byte {i} was touched (must be untouched on -1 return)"
+            );
+        }
+    }
+
+    #[test]
+    fn readlink_symbolic_path_byte_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        let sym_byte = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "first_path_byte", 8)
+        };
+        state.memory_store(0x2000, sym_byte).unwrap();
+
+        let err = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("readlink"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlink_symbolic_pathname_addr_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_ptr = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        };
+        let err = NativeReadlinkSyscall
+            .call(
+                &mut state,
+                &[sym_ptr, RustBV::concrete(0, 64), RustBV::concrete(0, 64)],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("pathname"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlink_round_trip_sweeps_supported_arches() {
+        // readlink is registered on every arch except ARM64; the handler
+        // itself has no arch-specific code. Sweep all arches it can be
+        // dispatched on to pin arch-independence.
+        for arch in ["amd64", "x86", "armel", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            stage_path(&mut state, 0x2000, b"/tmp/whatever");
+            let out = NativeReadlinkSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("readlink");
+            match out {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, NEG_ONE, "{arch} readlink ret")
+                }
+                other => panic!("{arch}: got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn readlinkat_at_fdcwd_unknown_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/no/such/path");
+
+        let out = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(256, 64),
+                ],
+            )
+            .expect("readlinkat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_known_path_still_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/tmp/known");
+        state
+            .file_system()
+            .register_known_path("/tmp/known".to_string());
+
+        let out = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(256, 64),
+                ],
+            )
+            .expect("readlinkat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_absolute_path_ignores_dirfd() {
+        // Absolute path: dirfd does not matter, still -1.
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"/abs/path");
+
+        let out = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(99, 64), // arbitrary dirfd
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(256, 64),
+                ],
+            )
+            .expect("readlinkat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_relative_path_non_atfdcwd_returns_minus_one() {
+        // Relative path with arbitrary dirfd: still -1 (would be -1
+        // anyway, but the short-circuit branch exists for symmetry with
+        // faccessat / openat).
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, b"relative/path");
+
+        let out = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(99, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(256, 64),
+                ],
+            )
+            .expect("readlinkat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_empty_path_returns_minus_one() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+        state
+            .memory_store(0x2000, RustBV::concrete(0, 8))
+            .expect("store nul");
+
+        let out = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect("readlinkat ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_symbolic_dirfd_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_dirfd = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "dirfd", 64)
+        };
+        let err = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    sym_dirfd,
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("dirfd"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_symbolic_pathname_addr_falls_back() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        let sym_ptr = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        };
+        let err = NativeReadlinkatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(TEST_AT_FDCWD as u128, 64),
+                    sym_ptr,
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("pathname"), "got {msg:?}");
+            }
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readlinkat_round_trip_sweeps_supported_arches() {
+        // readlinkat is registered on every arch including ARM64 (78).
+        for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {
+            let mut state = RustSimState::new(arch).expect("state");
+            let bits = state.arch().bits();
+            stage_path(&mut state, 0x2000, b"/tmp/whatever");
+            let atfdcwd = if bits == 64 {
+                TEST_AT_FDCWD as u128
+            } else {
+                (TEST_AT_FDCWD & ((1u64 << bits) - 1)) as u128
+            };
+            let out = NativeReadlinkatSyscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(atfdcwd, bits),
+                        RustBV::concrete(0x2000, bits),
+                        RustBV::concrete(0, bits),
+                        RustBV::concrete(0, bits),
+                    ],
+                )
+                .expect("readlinkat");
+            match out {
+                SyscallOutcome::Continue { ret } => {
+                    assert_eq!(ret, NEG_ONE, "{arch} readlinkat ret")
+                }
+                other => panic!("{arch}: got {other:?}"),
             }
         }
     }
