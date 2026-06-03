@@ -712,6 +712,86 @@ impl NativeSyscallRegistry {
             (4338, rlimit::NativePrlimit64Syscall),
         ]);
 
+        // Linux MIPS64 N64 (asm/unistd_n64.h). Numbers start at 5000.
+        // angr-smtv: mirrors the MIPS32 dispatch with N64 numbering from
+        // angr's `mips-n64` syscall table (linux_kernel.py). N64 uses 8
+        // register args (a0-a7), so the modern 6-arg `mmap` (5009) works
+        // directly — no `old_mmap` / `mmap2` needed. N64 omits the legacy
+        // 32-bit `time` syscall (use `gettimeofday` 5094) and lacks a
+        // distinct `fcntl64` since it is already 64-bit (`fcntl` 5070
+        // covers it). `newfstatat` (5252) exists here unlike MIPS32 O32
+        // which uses `fstatat64`.
+        register_syscalls!(r, "MIPS64", [
+            (5000, read::NativeReadSyscall),
+            (5001, write::NativeWriteSyscall),
+            (5002, file_path::NativeOpenSyscall),
+            (5003, file_path::NativeCloseSyscall),
+            (5006, file_path::NativeLstatSyscall),
+            (5009, mmap::NativeMmapSyscall),
+            (5010, mprotect::NativeMprotectSyscall),
+            (5011, munmap::NativeMunmapSyscall),
+            (5012, brk::NativeBrkSyscall),
+            (5013, sigaction::NativeRtSigactionSyscall),
+            (5015, file_descriptor::NativeIoctlSyscall),
+            (5020, file_path::NativeAccessSyscall),
+            (5021, file_descriptor::NativePipeSyscall),
+            (5024, memory_extras::NativeMremapSyscall),
+            (5025, memory_extras::NativeMsyncSyscall),
+            (5027, memory_extras::NativeMadviseSyscall),
+            (5031, file_descriptor::NativeDupSyscall),
+            (5032, file_descriptor::NativeDup2Syscall),
+            (5033, signals::NativePauseSyscall),
+            (5037, signals::NativeAlarmSyscall),
+            (5038, identity::NativeGetpidSyscall),
+            (5058, exit::NativeExitSyscall),
+            (5060, signals::NativeKillSyscall),
+            (5070, file_descriptor::NativeFcntlSyscall),
+            (5077, directory::NativeGetcwdSyscall),
+            (5078, directory::NativeChdirSyscall),
+            (5079, directory::NativeFchdirSyscall),
+            (5080, directory::NativeRenameSyscall),
+            (5081, directory::NativeMkdirSyscall),
+            (5082, directory::NativeRmdirSyscall),
+            (5085, directory::NativeUnlinkSyscall),
+            (5087, file_path::NativeReadlinkSyscall),
+            (5094, sim_time::NativeGettimeofdaySyscall),
+            (5095, rlimit::NativeGetrlimitSyscall),
+            (5100, identity::NativeGetuidSyscall),
+            (5102, identity::NativeGetgidSyscall),
+            (5103, identity::NativeSetuidSyscall),
+            (5104, identity::NativeSetgidSyscall),
+            (5105, identity::NativeGeteuidSyscall),
+            (5106, identity::NativeGetegidSyscall),
+            (5108, identity::NativeGetppidSyscall),
+            (5146, memory_extras::NativeMlockSyscall),
+            (5147, memory_extras::NativeMunlockSyscall),
+            (5148, memory_extras::NativeMlockallSyscall),
+            (5149, memory_extras::NativeMunlockallSyscall),
+            (5155, rlimit::NativeSetrlimitSyscall),
+            (5178, identity::NativeGettidSyscall),
+            (5194, concurrency::NativeFutexSyscall),
+            (5205, exit::NativeExitSyscall),
+            (5207, concurrency::NativeEpollCreateSyscall),
+            (5208, concurrency::NativeEpollCtlSyscall),
+            (5209, concurrency::NativeEpollWaitSyscall),
+            (5211, signals::NativeRtSigreturnSyscall),
+            (5222, sim_time::NativeClockGettimeSyscall),
+            (5225, signals::NativeTgkillSyscall),
+            (5247, file_path::NativeOpenatSyscall),
+            (5248, directory::NativeMkdiratSyscall),
+            (5252, file_path::NativeNewfstatatSyscall),
+            (5253, directory::NativeUnlinkatSyscall),
+            (5254, directory::NativeRenameatSyscall),
+            (5257, file_path::NativeReadlinkatSyscall),
+            (5259, file_path::NativeFaccessatSyscall),
+            (5278, concurrency::NativeEventfdSyscall),
+            (5284, concurrency::NativeEventfd2Syscall),
+            (5285, concurrency::NativeEpollCreate1Syscall),
+            (5286, file_descriptor::NativeDup3Syscall),
+            (5287, file_descriptor::NativePipe2Syscall),
+            (5297, rlimit::NativePrlimit64Syscall),
+        ]);
+
         r
     }
 
@@ -1004,6 +1084,56 @@ mod tests {
     }
 
     #[test]
+    fn mips64_syscall_numbers_route_to_handlers() {
+        // angr-smtv: MIPS64 N64 dispatch. Numbers from asm/unistd_n64.h
+        // (also mirrored in angr/procedures/definitions/linux_kernel.py
+        // `mips-n64` table).
+        let r = NativeSyscallRegistry::new();
+        for (num, label) in [
+            (5000, "read"),
+            (5001, "write"),
+            (5009, "mmap"),
+            (5010, "mprotect"),
+            (5011, "munmap"),
+            (5012, "brk"),
+            (5013, "rt_sigaction"),
+            (5038, "getpid"),
+            (5058, "exit"),
+            (5070, "fcntl"),
+            (5094, "gettimeofday"),
+            (5100, "getuid"),
+            (5102, "getgid"),
+            (5105, "geteuid"),
+            (5106, "getegid"),
+            (5108, "getppid"),
+            (5178, "gettid"),
+            (5205, "exit_group"),
+            (5222, "clock_gettime"),
+        ] {
+            assert!(
+                r.get("MIPS64", num).is_some(),
+                "MIPS64 syscall {num} ({label}) should be registered",
+            );
+        }
+        // N64 uses the modern 6-arg mmap (5009); old_mmap (90 on i386/arm
+        // or 4090 on MIPS32-O32) and mmap2 do not exist in the N64 table.
+        assert!(
+            r.get("MIPS64", 5009).is_some(),
+            "MIPS64 mmap (5009) should be registered"
+        );
+        // N64 has newfstatat (unlike MIPS32 O32 which uses fstatat64).
+        assert!(
+            r.get("MIPS64", 5252).is_some(),
+            "MIPS64 newfstatat (5252) should be registered"
+        );
+        // N64 is already 64-bit so it has no separate fcntl64.
+        assert!(
+            r.get("MIPS64", 5070).is_some(),
+            "MIPS64 fcntl (5070) should be registered"
+        );
+    }
+
+    #[test]
     fn arch_namespaces_are_isolated() {
         // Same numeric value must NOT collide across arches. e.g. X86 syscall
         // 1 = exit, ARM 1 = exit, but ARM64 1 is unassigned. Each lookup
@@ -1016,6 +1146,12 @@ mod tests {
         // 4001 = MIPS32 exit. Other arches should not see it.
         assert!(r.get("AMD64", 4001).is_none(), "AMD64 has no syscall 4001");
         assert!(r.get("X86", 4001).is_none(), "X86 has no syscall 4001");
+        // 5058 = MIPS64 exit. Other arches (including MIPS32) should not
+        // see it; the MIPS-O32 and MIPS-N64 numbering spaces are disjoint.
+        assert!(r.get("MIPS64", 5058).is_some(), "MIPS64 exit = 5058");
+        assert!(r.get("MIPS32", 5058).is_none(), "MIPS32 has no syscall 5058");
+        assert!(r.get("AMD64", 5058).is_none(), "AMD64 has no syscall 5058");
+        assert!(r.get("MIPS64", 4001).is_none(), "MIPS64 has no syscall 4001");
     }
 
     #[test]
@@ -1030,6 +1166,7 @@ mod tests {
             ("ARM", (20, 64, 224, 24, 49, 47, 50)),
             ("ARM64", (172, 173, 178, 174, 175, 176, 177)),
             ("MIPS32", (4020, 4064, 4222, 4024, 4049, 4047, 4050)),
+            ("MIPS64", (5038, 5108, 5178, 5100, 5105, 5102, 5106)),
         ] {
             let (pid, ppid, tid, uid, euid, gid, egid) = nums;
             for (num, label) in [
@@ -1072,6 +1209,7 @@ mod tests {
             ("ARM", 23, 46),
             ("ARM64", 146, 144),
             ("MIPS32", 4023, 4046),
+            ("MIPS64", 5103, 5104),
         ] {
             let u = r
                 .get(arch, setuid)
@@ -1113,6 +1251,7 @@ mod tests {
             ("ARM", [220, 163, 144, 150, 151, 152, 153]),
             ("ARM64", [233, 216, 227, 228, 229, 230, 231]),
             ("MIPS32", [4218, 4167, 4144, 4154, 4155, 4156, 4157]),
+            ("MIPS64", [5027, 5024, 5025, 5146, 5147, 5148, 5149]),
         ];
         let labels = [
             ("madvise", 3usize),
@@ -1159,6 +1298,7 @@ mod tests {
             ("ARM", 37, 268, 173, Some(29), Some(27)),
             ("ARM64", 129, 131, 139, None, None),
             ("MIPS32", 4037, 4266, 4193, Some(4029), Some(4027)),
+            ("MIPS64", 5060, 5225, 5211, Some(5033), Some(5037)),
         ];
 
         for &(arch, kill_n, tgkill_n, rtret_n, pause_n, alarm_n) in table {
@@ -1215,6 +1355,9 @@ mod tests {
             ("ARM", 76, 75, 369, Some(191)),
             ("ARM64", 163, 164, 261, None),
             ("MIPS32", 4076, 4075, 4338, None),
+            // N64 has no `ugetrlimit` alias — `getrlimit` is already
+            // 64-bit-clean at 5095.
+            ("MIPS64", 5095, 5155, 5297, None),
         ];
 
         for &(arch, get_n, set_n, pr_n, uget_n) in table {
@@ -1280,6 +1423,16 @@ mod tests {
                 4326,
                 4249,
                 Some(4250),
+            ),
+            (
+                "MIPS64",
+                5194,
+                Some(5278),
+                5284,
+                Some(5207),
+                5285,
+                5208,
+                Some(5209),
             ),
         ];
 
@@ -1353,6 +1506,8 @@ mod tests {
             ("ARM", Some(107), None, Some(85), 332, 334),
             ("ARM64", None, Some(79), None, 78, 48),
             ("MIPS32", Some(4107), None, Some(4085), 4298, 4300),
+            // N64 keeps lstat (5006) and adds newfstatat (5252).
+            ("MIPS64", Some(5006), Some(5252), Some(5087), 5257, 5259),
         ];
 
         for &(arch, lstat_n, nfstatat_n, readlink_n, readlinkat_n, faccessat_n) in table {
@@ -1420,6 +1575,8 @@ mod tests {
             ("ARM", 55, Some(221), 54, Some(42), 359),
             ("ARM64", 25, None, 29, None, 59),
             ("MIPS32", 4055, Some(4220), 4054, Some(4042), 4328),
+            // N64 is already 64-bit — no separate fcntl64.
+            ("MIPS64", 5070, None, 5015, Some(5021), 5287),
         ];
 
         for &(arch, fcntl_n, fcntl64_n, ioctl_n, pipe_n, pipe2_n) in table {
@@ -1466,6 +1623,7 @@ mod tests {
             ("ARM", 41, Some(63), 358),
             ("ARM64", 23, None, 24),
             ("MIPS32", 4041, Some(4063), 4327),
+            ("MIPS64", 5031, Some(5032), 5286),
         ];
         for &(arch, dup_n, dup2_n, dup3_n) in dup_table {
             let d = r
@@ -1575,6 +1733,20 @@ mod tests {
                 Some(4038),
                 None,
             ),
+            (
+                "MIPS64",
+                5077,
+                5078,
+                5079,
+                5248,
+                5253,
+                5254,
+                Some(5081),
+                Some(5082),
+                Some(5085),
+                Some(5080),
+                None,
+            ),
         ];
 
         for &(
@@ -1672,8 +1844,14 @@ mod tests {
         // accidental dropping of the exit registration during a refactor.
         let r = NativeSyscallRegistry::new();
         // arch_name, exit number
-        for (arch, num) in [("AMD64", 60), ("X86", 1), ("ARM", 1), ("ARM64", 93), ("MIPS32", 4001)]
-        {
+        for (arch, num) in [
+            ("AMD64", 60),
+            ("X86", 1),
+            ("ARM", 1),
+            ("ARM64", 93),
+            ("MIPS32", 4001),
+            ("MIPS64", 5058),
+        ] {
             let h = r
                 .get(arch, num)
                 .unwrap_or_else(|| panic!("{arch} exit ({num}) handler missing"));
