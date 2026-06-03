@@ -219,7 +219,28 @@ impl<'a> VEXInterpreter<'a> {
         addr_val: &RustBV,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
-        match &*self.concretize_cached_read(addr_val) {
+        // angr-vfst: address_concretization BP_BEFORE — dispatch before the
+        // concretizer runs so a user BP could (in a future iter) intervene.
+        // MVP: dispatch only; no override path. Gated on bit 17 inside.
+        self.dispatch_address_concretization_inspect(
+            py, callbacks, addr_val, "load", "before", None,
+        );
+        let conc = self.concretize_cached_read(addr_val);
+        // BP_AFTER carries the list of concrete addresses produced.
+        let result_addrs = match &*conc {
+            ConcretizationResult::Single(a) => Some(vec![*a]),
+            ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => Some((0..*count).map(|i| base + i * stride).collect()),
+            ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
+        };
+        self.dispatch_address_concretization_inspect(
+            py, callbacks, addr_val, "load", "after", result_addrs,
+        );
+        match &*conc {
             ConcretizationResult::Single(addr_concrete) => {
                 let addr_concrete = *addr_concrete;
                 if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
@@ -1048,6 +1069,81 @@ impl<'a> VEXInterpreter<'a> {
             self.current_state_id,
             "after",
             Some(&value_ast),
+        );
+    }
+
+    /// Fire an `address_concretization` inspect callback (angr-vfst).
+    ///
+    /// Gated on `inspect_event_enabled(17)`. The address AST is round-tripped
+    /// into a claripy reconstruction for the BP; `result` carries the list
+    /// of concrete addresses produced by the concretizer (`None` on
+    /// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
+    /// BEFORE/AFTER pattern; the strategy / memory / add_constraints attrs
+    /// are passed as None because the Rust engine doesn't expose those
+    /// objects to BPs (MVP gap, documented in `rust_engine.rst`).
+    pub(super) fn dispatch_address_concretization_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        action: &str,
+        when: &str,
+        result: Option<Vec<u64>>,
+    ) {
+        if !callbacks.inspect_event_enabled(17) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let addr_ast = match crate::claripy_bridge::rustbv_to_claripy(py, addr_val, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_address_concretization(
+            py,
+            self.current_state_id,
+            when,
+            action,
+            &addr_ast,
+            result,
+        );
+    }
+
+    /// Fire a `symbolic_variable` inspect callback (angr-vfst).
+    ///
+    /// Gated on `inspect_event_enabled(18)`. Fires `when="after"` when the
+    /// Rust engine mints a fresh BVS internally — the most common dispatch
+    /// site is `load_from_callback`'s fresh-symbol fallback when Python
+    /// returns `is_symbolic=True` with no AST. Mirrors
+    /// `solver.py:432-439`'s BP_AFTER signature.
+    pub(super) fn dispatch_symbolic_variable_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        name: &str,
+        size_bits: u32,
+        value: &RustBV,
+    ) {
+        if !callbacks.inspect_event_enabled(18) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let expr_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_symbolic_variable(
+            py,
+            self.current_state_id,
+            "after",
+            name,
+            size_bits,
+            &expr_ast,
         );
     }
 }

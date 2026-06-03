@@ -1206,6 +1206,46 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": "after",
     },
+    # angr-vfst: address_concretization dispatch fires from
+    # `interpreter/expressions.rs::load_symbolic_addr` (read path) and
+    # `interpreter/statements.rs::try_rust_memory_store` (write path) when
+    # the load/store address is symbolic. Fires both `before` (with the
+    # symbolic addr AST, `result=None`) and `after` (with the concretized
+    # `addr_concretization_result`). Strategy / memory / add_constraints
+    # attrs are passed as None — the Rust engine has no SimMemory instance
+    # or strategy stack to surface to the BP (MVP gap; user mutations to
+    # those attrs in BP_BEFORE are not honored, matching the wider Rust
+    # inspect MVP scope documented in `rust_engine.rst`).
+    "address_concretization": {
+        "bit": 17,
+        "attrs": (
+            "address_concretization_strategy",
+            "address_concretization_action",
+            "address_concretization_memory",
+            "address_concretization_expr",
+            "address_concretization_result",
+            "address_concretization_add_constraints",
+        ),
+        "when_fired": "before",
+    },
+    # angr-vfst: symbolic_variable dispatch fires from
+    # `interpreter/mod.rs::load_from_callback` when the engine mints a
+    # fresh BVS for an unconstrained memory load (Python returned
+    # `is_symbolic=True` with no AST). Fires `when='after'` with
+    # `symbolic_name`, `symbolic_size`, and `symbolic_expr` mirroring
+    # Python's `solver.py:432-439` BP_AFTER signature. The user-callable
+    # `state.solver.BVS()` path still fires the same event from Python
+    # natively, independent of this Rust dispatch — the Rust path covers
+    # only fresh-BVS minting that originates inside the engine.
+    "symbolic_variable": {
+        "bit": 18,
+        "attrs": (
+            "symbolic_name",
+            "symbolic_size",
+            "symbolic_expr",
+        ),
+        "when_fired": "after",
+    },
 }
 
 # Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.

@@ -945,8 +945,31 @@ impl<'a> VEXInterpreter<'a> {
         data_size: usize,
         store_start: Option<Instant>,
     ) -> Result<bool, CbExecutionError> {
+        // angr-vfst: address_concretization BP_BEFORE for the store path. Only
+        // dispatches when addr is symbolic (concrete-addr stores have nothing
+        // to concretize). Gated on bit 17 inside the helper.
+        if !addr_val.is_concrete() {
+            self.dispatch_address_concretization_inspect(
+                py, callbacks, addr_val, "store", "before", None,
+            );
+        }
         // Concretize for write with per-block cache (avoids redundant Z3 calls)
         let conc_result = self.concretize_cached_write(addr_val);
+        if !addr_val.is_concrete() {
+            let result_addrs = match &*conc_result {
+                ConcretizationResult::Single(a) => Some(vec![*a]),
+                ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
+                ConcretizationResult::Strided {
+                    base,
+                    stride,
+                    count,
+                } => Some((0..*count).map(|i| base + i * stride).collect()),
+                ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
+            };
+            self.dispatch_address_concretization_inspect(
+                py, callbacks, addr_val, "store", "after", result_addrs,
+            );
+        }
 
         // Attempt store using pre-computed concretization
         let first_result = match self.rust_memory.as_mut() {

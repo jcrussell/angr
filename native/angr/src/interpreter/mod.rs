@@ -1108,11 +1108,14 @@ impl<'a> VEXInterpreter<'a> {
                 }
             }
             // Fallback: create a fresh symbolic value
-            let bv = RustBV::symbolic(
-                self.ctx,
-                format!("mem_{:x}_{}", addr_concrete, size),
-                (size * 8) as u32,
-            );
+            let name = format!("mem_{:x}_{}", addr_concrete, size);
+            let bits = (size * 8) as u32;
+            let bv = RustBV::symbolic(self.ctx, &name, bits);
+            // angr-vfst: symbolic_variable BP_AFTER for engine-internal fresh
+            // BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
+            // signature. The user-callable `state.solver.BVS()` path still
+            // fires the same event from Python directly.
+            self.dispatch_symbolic_variable_inspect(py, callbacks, &name, bits, &bv);
             Ok(bv)
         } else {
             // Convert bytes to concrete value

@@ -2282,6 +2282,68 @@ class RustExplorationManager(
             # expr event is dropped (no breakpoint fired).
             l.warning("inspect expr dispatch failed: %s: %s", type(e).__name__, e)
 
+    def _cb_inspect_address_concretization(
+        self,
+        state_id: int,
+        when: str,
+        action: str,
+        addr_ast,
+        result,
+    ):
+        """PyO3 callback target for address_concretization events.
+
+        Fired BEFORE/AFTER around the Rust concretizer when a symbolic
+        address gets concretized for a load or store. `action` is 'load'
+        or 'store'; `addr_ast` is the claripy reconstruction of the
+        symbolic address; `result` is the list of concrete addresses
+        produced by the concretizer (None on BEFORE). The strategy,
+        memory and add_constraints attrs are passed as None — the Rust
+        engine doesn't surface those objects (MVP gap).
+        """
+        try:
+            self._dispatch_inspect_event(
+                "address_concretization", state_id, when,
+                address_concretization_strategy=None,
+                address_concretization_action=action,
+                address_concretization_memory=None,
+                address_concretization_expr=addr_ast,
+                address_concretization_result=result,
+                address_concretization_add_constraints=None,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # address_concretization event is dropped (no breakpoint fired).
+            l.warning("inspect address_concretization dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_symbolic_variable(
+        self,
+        state_id: int,
+        when: str,
+        name: str,
+        size: int,
+        expr_ast,
+    ):
+        """PyO3 callback target for symbolic_variable events.
+
+        Fired `when='after'` when the Rust engine mints a fresh BVS for
+        an unconstrained memory load (load_from_callback fresh-symbol
+        fallback). Attrs mirror Python `solver.py:432-439`:
+        `symbolic_name`, `symbolic_size`, `symbolic_expr`. The
+        user-callable `state.solver.BVS()` path still fires the same
+        event from Python natively, independent of this dispatch.
+        """
+        try:
+            self._dispatch_inspect_event(
+                "symbolic_variable", state_id, when,
+                symbolic_name=name,
+                symbolic_size=size,
+                symbolic_expr=expr_ast,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # symbolic_variable event is dropped (no breakpoint fired).
+            l.warning("inspect symbolic_variable dispatch failed: %s: %s", type(e).__name__, e)
+
     def _cb_inspect_simprocedure(
         self,
         state_id: int,

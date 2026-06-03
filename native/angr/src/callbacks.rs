@@ -530,6 +530,27 @@ pub struct PythonCallbacks {
     /// this dispatch site fires more often than any other (every VEX
     /// expression evaluation), so the bitmask short-circuit is critical.
     pub inspect_expr: Option<Py<PyAny>>,
+    /// Callback for state.inspect address_concretization events.
+    /// Signature: `fn(state_id: int, when: str, action: str,
+    ///                addr_ast: object, result: list[int] | None) -> None`.
+    /// `action` is "load" or "store"; `addr_ast` is the symbolic address
+    /// AST (claripy reconstruction); `result` is the list of concrete
+    /// addresses the concretizer produced (None on BEFORE). MVP gap: the
+    /// `address_concretization_strategy` / `_memory` / `_add_constraints`
+    /// attrs from the Python event are passed through as `None` — the
+    /// Rust engine doesn't expose strategy objects or the SimMemory
+    /// instance to the BP. Gated on `inspect_event_enabled(17)`.
+    pub inspect_address_concretization: Option<Py<PyAny>>,
+    /// Callback for state.inspect symbolic_variable events.
+    /// Signature: `fn(state_id: int, when: str, name: str, size: int,
+    ///                expr_ast: object) -> None`. Fires `when='after'`
+    /// when the Rust engine mints a fresh BVS for an unconstrained
+    /// memory load (`load_from_callback` fallback path). The user-visible
+    /// `state.solver.BVS()` path still fires the event from Python
+    /// natively; this Rust dispatch is for the BVS minted internally by
+    /// the engine when Python returned `is_symbolic=True` with no AST.
+    /// Gated on `inspect_event_enabled(18)`.
+    pub inspect_symbolic_variable: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -584,6 +605,8 @@ impl PythonCallbacks {
             inspect_tmp_write: None,
             inspect_statement: None,
             inspect_expr: None,
+            inspect_address_concretization: None,
+            inspect_symbolic_variable: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
@@ -864,6 +887,22 @@ impl PythonCallbacks {
         self.inspect_expr = Some(cb);
     }
 
+    /// Set the inspect address_concretization callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, action: str,
+    ///                addr_ast: object, result: list[int] | None) -> None`.
+    pub fn set_inspect_address_concretization(&mut self, cb: Py<PyAny>) {
+        self.inspect_address_concretization = Some(cb);
+    }
+
+    /// Set the inspect symbolic_variable callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, name: str, size: int,
+    ///                expr_ast: object) -> None`.
+    pub fn set_inspect_symbolic_variable(&mut self, cb: Py<PyAny>) {
+        self.inspect_symbolic_variable = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -873,7 +912,8 @@ impl PythonCallbacks {
     /// ample headroom; current layout: 0..=5 mirror `InspectEvent`,
     /// 6/7 custom for instruction/irsb, 8/9 call/return, 10..=12
     /// Python-dispatched (simprocedure/syscall/dirty), 13/14 tmp_read/
-    /// tmp_write, 15 statement, 16 expr.
+    /// tmp_write, 15 statement, 16 expr, 17 address_concretization,
+    /// 18 symbolic_variable.
     #[pyo3(name = "set_inspect_enabled")]
     pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
@@ -1069,6 +1109,36 @@ impl PythonCallbacks {
         self.call_inspect_expr(py, state_id, when, expr_result.as_ref())
     }
 
+    /// Test entry point: invoke the address_concretization callback directly.
+    #[pyo3(name = "call_inspect_address_concretization")]
+    #[pyo3(signature = (state_id, when, action, addr_ast, result))]
+    pub fn py_call_inspect_address_concretization(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        action: &str,
+        addr_ast: Py<PyAny>,
+        result: Option<Vec<u64>>,
+    ) -> PyResult<()> {
+        self.call_inspect_address_concretization(py, state_id, when, action, &addr_ast, result)
+    }
+
+    /// Test entry point: invoke the symbolic_variable callback directly.
+    #[pyo3(name = "call_inspect_symbolic_variable")]
+    #[pyo3(signature = (state_id, when, name, size, expr_ast))]
+    pub fn py_call_inspect_symbolic_variable(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        name: &str,
+        size: u32,
+        expr_ast: Py<PyAny>,
+    ) -> PyResult<()> {
+        self.call_inspect_symbolic_variable(py, state_id, when, name, size, &expr_ast)
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -1127,6 +1197,8 @@ impl PythonCallbacks {
             &self.inspect_tmp_write,
             &self.inspect_statement,
             &self.inspect_expr,
+            &self.inspect_address_concretization,
+            &self.inspect_symbolic_variable,
         ]
         .into_iter()
         .flatten()
@@ -1170,6 +1242,8 @@ impl PythonCallbacks {
         self.inspect_tmp_write = None;
         self.inspect_statement = None;
         self.inspect_expr = None;
+        self.inspect_address_concretization = None;
+        self.inspect_symbolic_variable = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1461,6 +1535,54 @@ impl PythonCallbacks {
             None => py.None(),
         };
         cb.call1(py, (state_id, when, value_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect address_concretization callback.
+    /// `addr_ast` is the symbolic address AST (claripy reconstruction);
+    /// `result` is the list of concrete addresses produced by the concretizer
+    /// (None on `when='before'`).
+    pub fn call_inspect_address_concretization(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        action: &str,
+        addr_ast: &Py<PyAny>,
+        result: Option<Vec<u64>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_address_concretization.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let addr_obj = addr_ast.clone_ref(py);
+        let result_obj: Py<PyAny> = match result {
+            Some(addrs) => pyo3::types::PyList::new(py, addrs)?.into_any().unbind(),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, action, addr_obj, result_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect symbolic_variable callback.
+    /// Fires `when='after'` when the Rust engine mints a fresh BVS for
+    /// an unconstrained memory load. `expr_ast` is the claripy reconstruction
+    /// of the freshly-minted BVS.
+    pub fn call_inspect_symbolic_variable(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        name: &str,
+        size: u32,
+        expr_ast: &Py<PyAny>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_symbolic_variable.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let expr_obj = expr_ast.clone_ref(py);
+        cb.call1(py, (state_id, when, name, size, expr_obj))?;
         Ok(())
     }
 

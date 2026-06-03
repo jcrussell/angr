@@ -2015,15 +2015,16 @@ class TestRustInspectMarshalling:
         supported set in angr-d46u; call/return moved in angr-4ai9;
         simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
         moved in angr-64pi; statement moved in angr-t8vf; expr moved in
-        angr-lge2. Events whose dispatchers are not yet wired
-        (fork, constraints, address_concretization, ...) must still raise.
+        angr-lge2; address_concretization/symbolic_variable moved in
+        angr-vfst. Events whose dispatchers are not yet wired
+        (fork, constraints, vex_lift, ...) must still raise.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("fork", "constraints", "address_concretization"):
+        for evt in ("fork", "constraints", "vex_lift"):
             with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
@@ -2890,6 +2891,121 @@ class TestRustInspectExtendedEvents:
         # IRSB (constants, RdTmp, register reads, etc.) — even three steps
         # of fauxware should produce dozens of events.
         assert fire_count[0] > 0, "no expr events captured"
+
+    # ---- angr-vfst: address_concretization ----
+
+    def test_address_concretization_callback_slot_exposed(self):
+        """PythonCallbacks gained set_inspect_address_concretization / call_*."""
+        cbs = PythonCallbacks()
+        for name in ('set_inspect_address_concretization',
+                     'call_inspect_address_concretization'):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_address_concretization_bit_matches_spec(self, fauxware_project):
+        """Registering an `address_concretization` BP flips bit 17."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('address_concretization', when='before', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 17) != 0
+
+    def test_dispatch_address_concretization_before_fires_bp(self, fauxware_project):
+        """_cb_inspect_address_concretization invokes the BP for BP_BEFORE."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_ac(s):
+            seen.append((
+                s.inspect.address_concretization_action,
+                s.inspect.address_concretization_expr,
+                s.inspect.address_concretization_result,
+                s.inspect.address_concretization_strategy,
+                s.inspect.address_concretization_memory,
+                s.inspect.address_concretization_add_constraints,
+            ))
+
+        mgr._get_inspect_proxy().b('address_concretization', when='before', action=on_ac)
+        addr_ast = claripy.BVS('sym_addr', 64)
+        mgr._cb_inspect_address_concretization(sid, 'before', 'load', addr_ast, None)
+        assert len(seen) == 1
+        action, expr_ast, result, strategy, memory, add_constraints = seen[0]
+        assert action == 'load'
+        assert expr_ast is addr_ast
+        assert result is None
+        # MVP gap: strategy/memory/add_constraints are not surfaced.
+        assert strategy is None
+        assert memory is None
+        assert add_constraints is None
+
+    def test_dispatch_address_concretization_after_carries_result(self, fauxware_project):
+        """_cb_inspect_address_concretization passes concretization result list on AFTER."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_ac(s):
+            seen.append((
+                s.inspect.address_concretization_action,
+                s.inspect.address_concretization_result,
+            ))
+
+        mgr._get_inspect_proxy().b('address_concretization', when='after', action=on_ac)
+        addr_ast = claripy.BVS('sym_addr', 64)
+        mgr._cb_inspect_address_concretization(
+            sid, 'after', 'store', addr_ast, [0x400000, 0x400004, 0x400008],
+        )
+        assert len(seen) == 1
+        action, result = seen[0]
+        assert action == 'store'
+        assert result == [0x400000, 0x400004, 0x400008]
+
+    # ---- angr-vfst: symbolic_variable ----
+
+    def test_symbolic_variable_callback_slot_exposed(self):
+        """PythonCallbacks gained set_inspect_symbolic_variable / call_*."""
+        cbs = PythonCallbacks()
+        for name in ('set_inspect_symbolic_variable',
+                     'call_inspect_symbolic_variable'):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_symbolic_variable_bit_matches_spec(self, fauxware_project):
+        """Registering a `symbolic_variable` BP flips bit 18."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        ins.b('symbolic_variable', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 18) != 0
+
+    def test_dispatch_symbolic_variable_fires_bp(self, fauxware_project):
+        """_cb_inspect_symbolic_variable invokes BP with name/size/expr attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_sv(s):
+            seen.append((
+                s.inspect.symbolic_name,
+                s.inspect.symbolic_size,
+                s.inspect.symbolic_expr,
+            ))
+
+        mgr._get_inspect_proxy().b('symbolic_variable', when='after', action=on_sv)
+        expr_ast = claripy.BVS('mem_400000_4', 32)
+        mgr._cb_inspect_symbolic_variable(sid, 'after', 'mem_400000_4', 32, expr_ast)
+        assert len(seen) == 1
+        name, size, expr = seen[0]
+        assert name == 'mem_400000_4'
+        assert size == 32
+        assert expr is expr_ast
 
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 
