@@ -2999,19 +2999,23 @@ impl PyRustSimState {
     }
 
     /// Configure address concretization with full strategy configuration.
-    #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false))]
+    #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false, avoid_multivalued_reads=false, avoid_multivalued_writes=false))]
     pub fn configure_concretization_strategies(
         &mut self,
         use_approximate: bool,
         read_range_limit: Option<u64>,
         write_range_limit: Option<u64>,
         symbolic_write_addresses: bool,
+        avoid_multivalued_reads: bool,
+        avoid_multivalued_writes: bool,
     ) {
         self.inner.concretizer.configure_strategies(
             use_approximate,
             read_range_limit,
             write_range_limit,
             symbolic_write_addresses,
+            avoid_multivalued_reads,
+            avoid_multivalued_writes,
         );
     }
 

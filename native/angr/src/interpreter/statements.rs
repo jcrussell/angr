@@ -945,6 +945,12 @@ impl<'a> VEXInterpreter<'a> {
         data_size: usize,
         store_start: Option<Instant>,
     ) -> Result<bool, CbExecutionError> {
+        // AVOID_MULTIVALUED_WRITES: silently drop symbolic-addr stores.
+        // Mirrors `address_concretization_mixin.py:327-329`.
+        if self.concretizer.should_avoid_multivalued_write(addr_val) {
+            profile_add!(store_start, self.stats.store_stmt_time_ns);
+            return Ok(true);
+        }
         // angr-vfst: address_concretization BP_BEFORE for the store path. Only
         // dispatches when addr is symbolic (concrete-addr stores have nothing
         // to concretize). Gated on bit 17 inside the helper.
@@ -1236,6 +1242,12 @@ impl<'a> VEXInterpreter<'a> {
         data_val: &RustBV,
         data_size: usize,
     ) -> Result<(), CbExecutionError> {
+        // AVOID_MULTIVALUED_WRITES: silently drop. Do not touch the prefetch
+        // cache or pending stores — the address was never resolved, so no
+        // mutation propagates.
+        if self.concretizer.should_avoid_multivalued_write(addr_val) {
+            return Ok(());
+        }
         // Touched addresses are unknown — drop the entire prefetch cache
         // and flush pending stores before Python sees the symbolic write.
         self.load_prefetch_cache.clear();

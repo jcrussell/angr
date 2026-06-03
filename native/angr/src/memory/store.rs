@@ -240,6 +240,12 @@ impl SymbolicMemory {
             return self.store_concrete_lazy(concrete_addr, value);
         }
 
+        // AVOID_MULTIVALUED_WRITES: silently drop the store. Mirrors the
+        // early `return` at `address_concretization_mixin.py:327-329`.
+        if concretizer.should_avoid_multivalued_write(&addr) {
+            return Ok(());
+        }
+
         // Try to concretize the address (write mode: falls back to Max solution)
         match concretizer.concretize_write(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
@@ -342,6 +348,11 @@ impl SymbolicMemory {
         if let Some(concrete_addr) = addr.as_u64() {
             self.store_concrete_automap(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
+        }
+
+        // AVOID_MULTIVALUED_WRITES: silently drop the store.
+        if concretizer.should_avoid_multivalued_write(&addr) {
+            return Ok(None);
         }
 
         // Try to concretize the address (write mode: falls back to Max solution)
@@ -650,6 +661,11 @@ impl SymbolicMemory {
         if let Some(concrete_addr) = addr.as_u64() {
             self.store_concrete_automap(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
+        }
+
+        // AVOID_MULTIVALUED_WRITES: silently drop the store.
+        if concretizer.should_avoid_multivalued_write(&addr) {
+            return Ok(None);
         }
 
         let result = concretizer.concretize_write(&addr, ctx);

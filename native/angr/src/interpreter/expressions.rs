@@ -219,6 +219,11 @@ impl<'a> VEXInterpreter<'a> {
         addr_val: &RustBV,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
+        // AVOID_MULTIVALUED_READS: skip concretization and return an
+        // unconstrained value even when use_rust_memory is false.
+        if self.concretizer.should_avoid_multivalued_read(addr_val) {
+            return Ok(self.fresh_unconstrained_read(size));
+        }
         // angr-vfst: address_concretization BP_BEFORE — dispatch before the
         // concretizer runs so a user BP could (in a future iter) intervene.
         // MVP: dispatch only; no override path. Gated on bit 17 inside.
@@ -832,6 +837,17 @@ impl<'a> VEXInterpreter<'a> {
         size: usize,
         load_start: Option<Instant>,
     ) -> Result<Option<RustBV>, CbExecutionError> {
+        // AVOID_MULTIVALUED_READS: bypass `load_symbolic_unified` (and its
+        // concretization) for symbolic addresses and return unconstrained.
+        // Matches Python's `address_concretization_mixin._load_one` early
+        // `return self._default_value(...)`.
+        if self.concretizer.should_avoid_multivalued_read(addr_val)
+            && let Some(rust_mem) = self.rust_memory.as_ref()
+        {
+            let value = rust_mem.unconstrained_read_value(size as u32, self.ctx);
+            profile_add!(load_start, self.stats.load_stmt_time_ns);
+            return Ok(Some(value));
+        }
         let first_result = match self.rust_memory.as_mut() {
             Some(rust_mem) => rust_mem.load_symbolic_unified(
                 addr_val.clone(),

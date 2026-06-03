@@ -752,6 +752,25 @@ impl<'a> VEXInterpreter<'a> {
         self.concretizer = concretizer;
     }
 
+    /// Mint an unconstrained read value for the AVOID_MULTIVALUED_READS
+    /// short-circuit. Delegates to `SymbolicMemory::unconstrained_read_value`
+    /// when Rust-side memory is attached so the result honors
+    /// `zero_fill_unconstrained`; otherwise falls back to a fresh
+    /// process-unique BVS named `symbolic_read_unconstrained_N`.
+    pub(super) fn fresh_unconstrained_read(&self, size: usize) -> RustBV {
+        if let Some(rust_mem) = self.rust_memory.as_ref() {
+            return rust_mem.unconstrained_read_value(size as u32, self.ctx);
+        }
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
+        let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
+        RustBV::symbolic(
+            self.ctx,
+            format!("symbolic_read_unconstrained_{}", id),
+            (size * 8) as u32,
+        )
+    }
+
     /// Concretize for read with per-block caching.
     /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
     ///

@@ -160,6 +160,15 @@ pub struct AddressConcretizer {
     /// Write fallback strategy: return maximum solution when range is too large.
     /// Matches Python's SimConcretizationStrategyMax.
     pub write_fallback_max: bool,
+    /// AVOID_MULTIVALUED_READS: when true, symbolic-address loads skip
+    /// concretization and return an unconstrained value. Mirrors
+    /// `angr.storage.memory_mixins.address_concretization_mixin._load_one`
+    /// branch at line 272 (`return self._default_value(...)`).
+    pub avoid_multivalued_reads: bool,
+    /// AVOID_MULTIVALUED_WRITES: when true, symbolic-address stores are
+    /// silently dropped (no-op). Mirrors the early `return` at
+    /// `address_concretization_mixin.py:327-329`.
+    pub avoid_multivalued_writes: bool,
 
     // Legacy field for backward compatibility with callers using .max_range
     // This is kept in sync with read_range_limit.
@@ -179,6 +188,8 @@ impl Default for AddressConcretizer {
             symbolic_write_addresses: false, // Python default
             read_fallback_any: true, // Match Python: Any() fallback for reads
             write_fallback_max: true, // Match Python: Max() fallback for writes
+            avoid_multivalued_reads: false, // Default: enumerate within strategy limits
+            avoid_multivalued_writes: false,
             max_range: 1024,        // Legacy, kept in sync with read_range_limit
         }
     }
@@ -220,6 +231,8 @@ impl AddressConcretizer {
             symbolic_write_addresses: false,
             read_fallback_any: true,
             write_fallback_max: true,
+            avoid_multivalued_reads: false,
+            avoid_multivalued_writes: false,
         }
     }
 
@@ -254,9 +267,13 @@ impl AddressConcretizer {
         read_range_limit: Option<u64>,
         write_range_limit: Option<u64>,
         symbolic_write_addresses: bool,
+        avoid_multivalued_reads: bool,
+        avoid_multivalued_writes: bool,
     ) {
         self.use_approximate = use_approximate;
         self.symbolic_write_addresses = symbolic_write_addresses;
+        self.avoid_multivalued_reads = avoid_multivalued_reads;
+        self.avoid_multivalued_writes = avoid_multivalued_writes;
 
         if let Some(limit) = read_range_limit {
             self.read_range_limit = limit;
@@ -276,6 +293,24 @@ impl AddressConcretizer {
                 self.write_range_limit = APPROXIMATE_MIN_RANGE;
             }
         }
+    }
+
+    /// Returns true when a load from `addr` should bypass concretization
+    /// and produce an unconstrained value. Mirrors Python's
+    /// `AVOID_MULTIVALUED_READS` short-circuit: only fires when the address
+    /// is symbolic and the option is on. Concrete addresses always read
+    /// through, even with the option set.
+    #[inline]
+    pub fn should_avoid_multivalued_read(&self, addr: &RustBV) -> bool {
+        self.avoid_multivalued_reads && addr.as_u64().is_none()
+    }
+
+    /// Returns true when a store to `addr` should be dropped entirely.
+    /// Mirrors Python's `AVOID_MULTIVALUED_WRITES` early-return: only fires
+    /// when the address is symbolic and the option is on.
+    #[inline]
+    pub fn should_avoid_multivalued_write(&self, addr: &RustBV) -> bool {
+        self.avoid_multivalued_writes && addr.as_u64().is_none()
     }
 
     /// Get the range limit for a given mode.
@@ -747,15 +782,22 @@ mod tests {
     fn test_configure_strategies() {
         let mut concretizer = AddressConcretizer::default();
 
-        concretizer.configure_strategies(false, Some(2048), Some(256), true);
+        concretizer.configure_strategies(false, Some(2048), Some(256), true, false, false);
         assert_eq!(concretizer.read_range_limit, 2048);
         assert_eq!(concretizer.write_range_limit, 256);
         assert!(concretizer.symbolic_write_addresses);
         assert!(!concretizer.use_approximate);
+        assert!(!concretizer.avoid_multivalued_reads);
+        assert!(!concretizer.avoid_multivalued_writes);
 
         // With approximate, limits should increase to at least 4096
-        concretizer.configure_strategies(true, Some(512), Some(128), false);
+        concretizer.configure_strategies(true, Some(512), Some(128), false, false, false);
         assert!(concretizer.read_range_limit >= 4096);
         assert!(concretizer.write_range_limit >= 4096);
+
+        // Avoid-multivalued flags pass through.
+        concretizer.configure_strategies(false, Some(1024), Some(128), false, true, true);
+        assert!(concretizer.avoid_multivalued_reads);
+        assert!(concretizer.avoid_multivalued_writes);
     }
 }

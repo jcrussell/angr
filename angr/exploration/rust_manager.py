@@ -1189,6 +1189,8 @@ class RustExplorationManager(
                         # Configure concretization strategies to match Python's
                         use_approx = o.APPROXIMATE_MEMORY_INDICES in state.options
                         sym_write = o.SYMBOLIC_WRITE_ADDRESSES in state.options
+                        avoid_multi_reads = o.AVOID_MULTIVALUED_READS in state.options
+                        avoid_multi_writes = o.AVOID_MULTIVALUED_WRITES in state.options
                         # Read Python's strategy limits from memory plugin
                         read_limit = 1024  # Python default
                         write_limit = 128  # Python default
@@ -1209,11 +1211,15 @@ class RustExplorationManager(
                             read_limit,
                             write_limit,
                             sym_write,
+                            avoid_multi_reads,
+                            avoid_multi_writes,
                         )
                         l.debug(
                             "Configured concretization: approx=%s, read_limit=%d, "
-                            "write_limit=%d, sym_write=%s",
+                            "write_limit=%d, sym_write=%s, avoid_reads=%s, "
+                            "avoid_writes=%s",
                             use_approx, read_limit, write_limit, sym_write,
+                            avoid_multi_reads, avoid_multi_writes,
                         )
                     except ImportError:
                         # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import.
