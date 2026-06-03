@@ -170,21 +170,6 @@ class RustStateCacheMixin:
         if hasattr(self, '_pending_handles') and handle_id in self._pending_handles:
             self._pending_handles.discard(handle_id)
 
-    @staticmethod
-    def _evict_oldest(cache: dict, max_size: int) -> list:
-        """Find oldest entries to remove from a dict-based cache.
-
-        Returns list of keys to evict so len(cache) - len(result) <= max_size.
-        """
-        if len(cache) <= max_size:
-            return []
-        to_remove = []
-        for key in list(cache.keys()):
-            to_remove.append(key)
-            if len(cache) - len(to_remove) <= max_size:
-                break
-        return to_remove
-
     def _cleanup_symbolic_pages_cache(self):
         """No-op shim retained for back-compat hooks.
 
@@ -409,22 +394,6 @@ class RustStateCacheMixin:
             # falls back to using a RustStateProxy.
             l.debug("Failed to create predicate state for %d: %s", state_id, e)
             return None
-
-    def _cleanup_state_cache(self):
-        """Enforce the state cache size limit."""
-        to_remove = self._evict_oldest(self._state_cache, self._max_state_cache_size)
-        for state_id in to_remove:
-            del self._state_cache[state_id]
-            try:
-                self._rust_mgr.clear_state_metadata(state_id)
-            except Exception as e:
-                # cat-(a) EXPECTED CONTROL FLOW: state may already be gone from
-                # Rust-side; cache eviction is best-effort.
-                l.debug("clear_state_metadata(sid=%d) failed in cache cleanup: %s: %s",
-                        state_id, type(e).__name__, e)
-            self._identity_tracker.mark_inactive(state_id)
-        if to_remove:
-            l.debug(f"Cleaned up {len(to_remove)} state cache entries")
 
     def _cleanup_state_refs(self, state_id: int):
         """Clean up references for a state that is no longer needed.

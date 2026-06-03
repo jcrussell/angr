@@ -72,19 +72,21 @@ I5. Register filter at the FFI boundary
     actually consumes them — it doesn't, and the slow path skips them too.
 
 I6. State-cache pinning + manager-vs-mixin override
-    `_cleanup_state_cache` (manager override; takes precedence over the
-    mixin version) runs three steps: (1) drop entries whose state is no
-    longer in active/found, (2) pin every root in `_state_roots`, plus
-    `_current_callback_state_id` (and its effective id via
+    `_cleanup_state_cache` runs three steps: (1) drop entries whose state
+    is no longer in active/found, (2) pin every root in `_state_roots`,
+    plus `_current_callback_state_id` (and its effective id via
     `_get_effective_state_id`) and `_current_stepping_state_id`, (3)
     LRU-evict non-pinned entries past `_max_state_cache_size`. Without
     those pins, a freshly-mutated state can race-evict between callbacks
     on the same state. Regression tests:
     `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
     `..._drops_dead_states`, `..._skips_pinned` (lines 2017, 2064, 2096).
-    Note: the manager path does NOT call `clear_state_metadata` on
-    eviction — it relies on `RustSimState`'s own drop. The mixin version
-    of `_cleanup_state_cache` (rust_state_cache.py) DOES clear metadata.
+    Metadata-clear contract: cache eviction does NOT call
+    `clear_state_metadata`. A state can be in `active`/`found` on Rust and
+    still LRU-evicted from the Python mirror; in that case the Rust-side
+    metadata must remain. Metadata is freed when (a) the state moves to
+    `deadended`/`errored` and `_cleanup_state_refs` runs (rust_state_cache.py),
+    or (b) the underlying `RustSimState` drops naturally.
 
 I7. Rust ↔ Python field sync uses max(), not overwrite
     Fields that both sides can mutate (`mmap_base`, `posix_brk`, ...) sync
@@ -3504,6 +3506,14 @@ class RustExplorationManager(
         ``_predicate_matched_ids``) of entries whose state no longer exists
         in *any* Rust stash. Rust state IDs are monotonically allocated and
         never reused, so a dropped entry can never become relevant again.
+
+        Metadata-clear contract: this path does NOT call
+        ``clear_state_metadata`` on evicted ids. A state can be live in a
+        Rust stash and still LRU-evicted from the Python mirror; freeing
+        Rust-side metadata in that case would corrupt subsequent stepping.
+        Metadata is dropped exclusively by ``_cleanup_state_refs`` (when the
+        state moves to ``deadended``/``errored``) or by ``RustSimState``'s
+        own ``Drop`` when the state leaves every stash.
         """
         try:
             active_set = set(self._rust_mgr.get_state_ids('active'))
