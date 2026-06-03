@@ -164,3 +164,57 @@ jobs:
           name: property-fuzzer-quick-report
           path: property_fuzzer_quick_report.json
           if-no-files-found: warn
+
+  rss_leak_check_smoke:
+    # PR-time smoke for tests/benchmarks/run_leak_check.py — the nightly
+    # gate (nightly-ci.yml::rss_leak_check) runs --iters 10 / --threshold 1.5
+    # under a 4 GB RLIMIT_AS, codifying the 9maq bisection method (the
+    # pre-293aa8163 Callable leak was ~6.6x in mma_howtouse). A PR that
+    # re-introduces that leak class would otherwise sit broken until the
+    # next nightly cron.
+    #
+    # N=3 is ~15s of bench-execution. The threshold is tighter than nightly
+    # (1.3x vs 1.5x) because warmup happens entirely in iter1; iters 2-3
+    # should be flat on healthy main. Steady-state variance still belongs
+    # to the nightly N=10 run. See bd memory `invariant-ci-gate-hygiene`
+    # rule (1) and CLAUDE.md "Nightly RSS leak check" for threshold notes.
+    name: RSS Leak Check (PR smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Rust build dominates (~5-7m cold); leak step capped at 5m below
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      - name: Run leak check (3 main() iters under 4 GB RLIMIT_AS)
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        run: |
+          uv run python tests/benchmarks/run_leak_check.py \
+            --iters 3 --threshold 1.3 \
+            --json > leak_check_smoke_report.json
+        timeout-minutes: 5
+      - name: Print leak check summary
+        if: always()
+        run: |
+          if [ -f leak_check_smoke_report.json ]; then
+            cat leak_check_smoke_report.json
+          fi
+      - name: Upload leak check report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: leak-check-smoke-report
+          path: leak_check_smoke_report.json
+          if-no-files-found: warn
