@@ -107,19 +107,32 @@ jobs:
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run Rust exploration tests
         run: uv run pytest tests/engines/test_rust_exploration.py -v --tb=short
-      - name: Run benchmark regression (fast tier)
+      - name: Run benchmark regression (fast + medium tier)
         env:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        # --full: covers FAST_SUITE (22) + MEDIUM_SUITE (10) benchmarks
+        # so the 7 non-bimodal MEDIUM benches (sym-write, flareon2015_5/10,
+        # ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird,
+        # mma_howtouse) actually gate at 15% threshold. Previously these
+        # were never auto-checked — angr-rbcf closed this gap. The 3
+        # bimodal MEDIUM members (securityfest_fairlight,
+        # ekopartyctf2016_sokohashv2, hackcon2016_angry-reverser) are
+        # included for drift signal (matches existing FAST behavior with
+        # bimodal google2016_unbreakable_1); --retry-failures 2 absorbs
+        # most bimodal noise.
         # --retry-failures 2: see ci.yml::benchmark_regression for rationale.
         # The retry only re-runs failures and does NOT overwrite the recorded
         # measurement in the history record, so the dashboard's time-series
         # signal still reflects the first measurement of each bench.
+        # timeout-minutes bumped 8 → 12 to absorb worst-case MEDIUM tier
+        # runtime (~96s baseline + 219s worst-case bimodal retries).
         run: |
           uv run python tests/benchmarks/run_regression.py \
+            --full \
             --rust-only \
             --retry-failures 2 \
             --history-record bench_history_record.json
-        timeout-minutes: 8
+        timeout-minutes: 12
       - name: Upload benchmark history record
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
