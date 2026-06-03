@@ -1,8 +1,8 @@
 //! Concurrency primitives and event-fd syscall handlers.
 //!
 //! Covers `futex`, `eventfd`, `eventfd2`, `epoll_create`,
-//! `epoll_create1`, `epoll_ctl`, and `epoll_wait`. Mirrors angr's
-//! Python behavior:
+//! `epoll_create1`, `epoll_ctl`, `epoll_wait`, and `epoll_pwait`.
+//! Mirrors angr's Python behavior:
 //!
 //! * `futex` has a dedicated `procedures/linux_kernel/futex.py`. It
 //!   evaluates `futex_op` concretely, returns `0` when `op & 1`
@@ -11,7 +11,7 @@
 //!   `futex_op` falls back to Python so the same `solver.eval` path
 //!   runs there.
 //! * `eventfd` / `eventfd2` / `epoll_create` / `epoll_create1` /
-//!   `epoll_ctl` / `epoll_wait` have no Python `SimProcedure` — they
+//!   `epoll_ctl` / `epoll_wait` / `epoll_pwait` have no Python `SimProcedure` — they
 //!   fall through to `procedures/stubs/syscall_stub.py::syscall`,
 //!   which emits `state.solver.Unconstrained("syscall_stub_<name>",
 //!   returnty.size, ...)`. The native handlers mirror that via
@@ -106,6 +106,15 @@ stub_syscall!(
     "syscall_stub_epoll_wait",
     4
 );
+// epoll_pwait(epfd, events*, maxevents, timeout, sigmask*, sigsetsize) → int
+// AArch64 asm-generic omits legacy `epoll_wait` (binaries call epoll_pwait
+// at syscall 22 instead). Registered on every supported arch.
+stub_syscall!(
+    NativeEpollPwaitSyscall,
+    "epoll_pwait",
+    "syscall_stub_epoll_pwait",
+    6
+);
 
 #[cfg(test)]
 mod tests {
@@ -177,7 +186,7 @@ mod tests {
 
     // ---- stub family -------------------------------------------------
 
-    /// All six stub handlers return a fresh symbolic of width
+    /// All seven stub handlers return a fresh symbolic of width
     /// `arch().bits()` on every supported arch, and successive calls
     /// produce distinct `RustBV::Symbolic.id`.
     #[test]
@@ -189,6 +198,7 @@ mod tests {
             (&NativeEpollCreate1Syscall, "epoll_create1", 1),
             (&NativeEpollCtlSyscall, "epoll_ctl", 4),
             (&NativeEpollWaitSyscall, "epoll_wait", 4),
+            (&NativeEpollPwaitSyscall, "epoll_pwait", 6),
         ];
 
         for arch in ["amd64", "x86", "armel", "aarch64", "mipsel"] {

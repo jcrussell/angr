@@ -351,6 +351,7 @@ impl NativeSyscallRegistry {
             (264, directory::NativeRenameatSyscall),
             (267, file_path::NativeReadlinkatSyscall),
             (269, file_path::NativeFaccessatSyscall),
+            (281, concurrency::NativeEpollPwaitSyscall),
             (284, concurrency::NativeEventfdSyscall),
             (290, concurrency::NativeEventfd2Syscall),
             (291, concurrency::NativeEpollCreate1Syscall),
@@ -464,6 +465,7 @@ impl NativeSyscallRegistry {
             // newfstatat absent on i386 — Linux 32-bit uses fstatat64 (327).
             (305, file_path::NativeReadlinkatSyscall),
             (307, file_path::NativeFaccessatSyscall),
+            (319, concurrency::NativeEpollPwaitSyscall),
             (323, concurrency::NativeEventfdSyscall),
             (328, concurrency::NativeEventfd2Syscall),
             (329, concurrency::NativeEpollCreate1Syscall),
@@ -553,6 +555,7 @@ impl NativeSyscallRegistry {
             // renameat2 absent in angr's ARM EABI table.
             (332, file_path::NativeReadlinkatSyscall),
             (334, file_path::NativeFaccessatSyscall),
+            (346, concurrency::NativeEpollPwaitSyscall),
             (351, concurrency::NativeEventfdSyscall),
             (356, concurrency::NativeEventfd2Syscall),
             (357, concurrency::NativeEpollCreate1Syscall),
@@ -570,14 +573,12 @@ impl NativeSyscallRegistry {
         // So only kill, tgkill, and rt_sigreturn from angr-0hif.6 land here.
         // ARM64 asm-generic note: epoll_create (legacy) and epoll_wait are
         //   absent; binaries use epoll_create1 (20) and epoll_pwait (22).
-        //   epoll_pwait is intentionally NOT registered here — bd-0hif.7
-        //   scoped epoll_wait specifically, and a stub for epoll_pwait is
-        //   a small follow-up. Likewise the legacy 1-arg eventfd is absent
-        //   (only eventfd2 at 19).
+        //   Likewise the legacy 1-arg eventfd is absent (only eventfd2 at 19).
         register_syscalls!(r, "ARM64", [
             (19, concurrency::NativeEventfd2Syscall),
             (20, concurrency::NativeEpollCreate1Syscall),
             (21, concurrency::NativeEpollCtlSyscall),
+            (22, concurrency::NativeEpollPwaitSyscall),
             // asm-generic ABI omits legacy `pipe` (only pipe2 at 59),
             // legacy `fcntl64` (unified fcntl at 25 since asm-generic
             // is 64-bit-oriented), and the older epoll/eventfd variants.
@@ -713,6 +714,7 @@ impl NativeSyscallRegistry {
             (4295, directory::NativeRenameatSyscall),
             (4298, file_path::NativeReadlinkatSyscall),
             (4300, file_path::NativeFaccessatSyscall),
+            (4313, concurrency::NativeEpollPwaitSyscall),
             (4319, concurrency::NativeEventfdSyscall),
             (4325, concurrency::NativeEventfd2Syscall),
             (4326, concurrency::NativeEpollCreate1Syscall),
@@ -793,6 +795,7 @@ impl NativeSyscallRegistry {
             (5254, directory::NativeRenameatSyscall),
             (5257, file_path::NativeReadlinkatSyscall),
             (5259, file_path::NativeFaccessatSyscall),
+            (5272, concurrency::NativeEpollPwaitSyscall),
             (5278, concurrency::NativeEventfdSyscall),
             (5284, concurrency::NativeEventfd2Syscall),
             (5285, concurrency::NativeEpollCreate1Syscall),
