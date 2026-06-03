@@ -12923,24 +12923,22 @@ class TestNativeResourceLimitSyscalls:
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFilePathSyscalls:
-    """angr-0hif.1 (symbolic-return subset): native ``lstat`` /
-    ``newfstatat`` / ``readlink`` / ``readlinkat``. None of these have
-    a Python ``SimProcedure``; the unhandled-syscall path falls through
-    to ``procedures/stubs/syscall_stub.py::syscall`` which returns a
+    """angr-0hif.1 (symbolic-return subset): native ``readlink`` /
+    ``readlinkat``. Neither has a Python ``SimProcedure``; the
+    unhandled-syscall path falls through to
+    ``procedures/stubs/syscall_stub.py::syscall`` which returns a
     fresh ``Unconstrained`` BV. The native handlers mirror that via
     ``SyscallOutcome::ContinueSymbolic``.
 
-    ``faccessat`` was promoted to a real handler in angr-6009 (it now
-    mirrors ``NativeAccessSyscall`` against
-    ``FileSystem::is_path_known``) and is covered by
-    ``TestNativeFaccessatSyscall`` below — it needs a mapped pathname
-    so the parametrize harness here would no longer fit.
+    ``faccessat`` was promoted to a real handler in angr-6009 and
+    ``lstat`` / ``newfstatat`` in angr-poao. All three now need a
+    mapped pathname so the all-zero-arg harness here no longer fits;
+    they are covered by ``TestNativeFaccessatSyscall`` /
+    ``TestNativeLstatSyscall`` / ``TestNativeNewfstatatSyscall`` below.
 
     The FD-allocating sibling cohort (``open`` / ``openat`` / ``close``)
     is now native via ``angr-k3ol.1`` and exercised by
-    ``TestNativeFdAllocatingSyscalls`` below. ``stat`` / ``fstat`` /
-    ``access`` still fall back to Python (separate subtasks under
-    angr-k3ol).
+    ``TestNativeFdAllocatingSyscalls`` below.
 
     The Rust cargo unit tests in ``native/angr/src/syscalls/file_path.rs``
     pin the per-handler invariants; this is the cross-the-FFI dispatch
@@ -12950,9 +12948,7 @@ class TestNativeFilePathSyscalls:
     @pytest.mark.parametrize(
         "syscall_num,label",
         [
-            (6, "lstat"),
             (89, "readlink"),
-            (262, "newfstatat"),
             (267, "readlinkat"),
         ],
     )
@@ -13196,6 +13192,88 @@ class TestNativeStatSyscall:
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
             "native stat(4) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeLstatSyscall:
+    """angr-poao: native ``lstat`` collapses to ``stat`` semantics
+    (the Rust ``FileSystem`` has no symlinks), reusing
+    ``write_amd64_stat`` against ``FileSystem::content_size_for_path``.
+    AMD64 only — ARM64's asm-generic ABI dropped legacy ``lstat``;
+    x86 / ARM EABI / MIPS32 carry the legacy 32-bit ``struct stat``
+    with no Python proc.
+
+    Rust cargo tests in ``native/angr/src/syscalls/file_path.rs`` pin
+    the per-handler semantics (unknown→-1, empty→-1, known→0,
+    unsupported-arch, symbolic-pathname fallback, unmapped-buf
+    MemoryError). This Python test pins cross-FFI dispatch
+    (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_lstat_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 6  # lstat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0x4000  # pathname
+        state.regs.rsi = 0x5000  # statbuf (unread on the failure path)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native lstat(6) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeNewfstatatSyscall:
+    """angr-poao: native ``newfstatat`` adds ``openat``-style dirfd
+    handling on top of ``stat`` semantics. Absolute paths and
+    ``AT_FDCWD`` resolve via ``FileSystem``; relative paths with any
+    other dirfd return ``-1``. ``AT_EMPTY_PATH`` is ignored (deferred
+    follow-up — would dispatch to ``fstat(dirfd)``). Per-arch struct
+    stat layout via ``write_amd64_stat`` / ``write_aarch64_stat``.
+
+    Rust cargo tests pin per-handler semantics (unknown→-1, known
+    AMD64/ARM64 layout, absolute path ignores dirfd, relative +
+    non-AT_FDCWD→-1, empty→-1, unsupported-arch, symbolic fallbacks,
+    unmapped-buf MemoryError). This Python test pins cross-FFI
+    dispatch on AMD64 (``syscall_python_fallback_count`` stays 0).
+    """
+
+    def test_newfstatat_unknown_path_dispatches_natively(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/no/such/path\x00")
+        state.regs.rax = 262  # newfstatat
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD
+        state.regs.rsi = 0x4000              # pathname
+        state.regs.rdx = 0x5000              # statbuf (unread on failure)
+        state.regs.r10 = 0                   # flag
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "native newfstatat(262) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
 
