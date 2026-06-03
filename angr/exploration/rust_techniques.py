@@ -8,10 +8,97 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from angr.misc.hookset import HookSet
+
 if TYPE_CHECKING:
     from angr.exploration.rust_manager import RustExplorationManager
 
 l = logging.getLogger(name=__name__)
+
+
+_NATIVE_STEP_TECH_NAMES = {
+    # Techniques whose step()/successors() effect is provided natively by
+    # the Rust manager. Their Python step() impls should NOT be dispatched
+    # again or we'd double-count effects.
+    "DFS", "DepthFirst", "BFS", "BreadthFirst",
+    "Explorer", "LengthLimiter", "Timeout", "CheckUniqueness",
+}
+
+
+def _has_dispatched_step_hook(tech) -> bool:
+    """Return True iff `tech` overrides step() AND isn't natively handled."""
+    tech_name = type(tech).__name__
+    if tech_name in _NATIVE_STEP_TECH_NAMES:
+        return False
+    return tech._is_overridden("step")
+
+
+def manager_has_step_hooks(mgr: "RustExplorationManager") -> bool:
+    """True iff any active technique has a non-native step() hook to dispatch."""
+    return any(_has_dispatched_step_hook(t) for t in mgr._active_techniques)
+
+
+def dispatch_step_with_hooks(mgr: "RustExplorationManager", batch_size, stash="active"):
+    """Run one step batch under ExplorationTechnique step() hook composition.
+
+    Builds a fresh RustSimulationManagerProxy per dispatch, hooks each
+    technique's overridden step() onto the proxy via HookSet (LIFO compose,
+    matching the Python SimulationManager), and lets the proxy dispatch into
+    the Rust engine through `_step_callback`.
+
+    Returns the ExplorationEvent produced by the innermost Rust run() call,
+    or None if no technique ever invoked simgr.step() (the technique consumed
+    the batch without delegating — a possibility for stash-only techniques
+    like StubStasher).
+    """
+    from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+    captured_event = []
+
+    proxy = RustSimulationManagerProxy(
+        mgr._rust_mgr,
+        project=mgr._project,
+        stdin_vars=getattr(mgr, "_stdin_vars", None),
+        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
+        python_mgr=mgr,
+    )
+
+    def base_step(stash="active", **kwargs):
+        event = mgr._rust_mgr.run(batch_size)
+        captured_event.append(event)
+
+    proxy._step_callback = base_step
+
+    # Install step hooks in registration order. HookSet.install_hooks
+    # appends to `pending`, and HookedMethod pops the LAST pending hook
+    # first — so the last-registered tech wraps the earlier ones (matches
+    # SimulationManager composition).
+    for tech in mgr._active_techniques:
+        if _has_dispatched_step_hook(tech):
+            try:
+                HookSet.install_hooks(proxy, step=tech.step)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: hook install failed; skip this
+                # tech's step() and continue with the others.
+                l.warning(
+                    "Failed to install step() hook for %s: %s",
+                    type(tech).__name__, e,
+                )
+
+    try:
+        proxy.step(stash=stash)
+    except Exception as e:
+        # cat-(b) FALLBACK WITH LOSS: a technique's step() raised. We still
+        # need to advance Rust so the run loop makes progress; fall back to a
+        # direct run unless the base impl already fired.
+        l.warning(
+            "Technique step() hook raised %s: %s; falling back to direct run.",
+            type(e).__name__, e,
+        )
+        if not captured_event:
+            captured_event.append(mgr._rust_mgr.run(batch_size))
+
+    return captured_event[0] if captured_event else None
 
 
 def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
@@ -192,6 +279,33 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
     # Other techniques
     else:
         l.debug(f"Technique {tech_name} registered (limited support)")
+
+    # Surface hook coverage at registration time:
+    #   step()       — now dispatched per-batch via dispatch_step_with_hooks()
+    #   successors() — still no-op (would require Python-side re-run; see
+    #                  RustSimulationManagerProxy.successors() docstring)
+    #   step_state() — still no-op (ditto)
+    if tech_name not in _NATIVE_STEP_TECH_NAMES:
+        if technique._is_overridden("step"):
+            l.debug(
+                "Technique %s overrides step() — will be dispatched via "
+                "RustSimulationManagerProxy.step() each batch.",
+                tech_name,
+            )
+        if technique._is_overridden("successors"):
+            l.warning(
+                "Technique %s overrides successors(), which is not dispatched by "
+                "the Rust manager. The per-successor hook will silently no-op. "
+                "Drop to use_rust_engine=False if you need it.",
+                tech_name,
+            )
+        if technique._is_overridden("step_state"):
+            l.warning(
+                "Technique %s overrides step_state(), which is not dispatched by "
+                "the Rust manager. The per-state hook will silently no-op. "
+                "Drop to use_rust_engine=False if you need it.",
+                tech_name,
+            )
 
     return technique
 

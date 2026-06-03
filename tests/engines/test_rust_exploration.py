@@ -9891,6 +9891,172 @@ class TestNativeTechniques:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestExplorationTechniqueStepHookDispatch:
+    """ExplorationTechnique.step() hook dispatch against RustStateProxy.
+
+    angr-rqvq: prior to this change the Rust manager only invoked filter()
+    and complete() hooks, so techniques whose effect lived in step() (e.g.
+    MemoryWatcher, Spiller, StochasticSearch, Director, DrillerCore) were
+    silently no-op'd. These tests pin down the new dispatch contract.
+    """
+
+    def _step_counting_tech(self):
+        """Build a tech that increments a counter inside step() and delegates."""
+        from angr.exploration_techniques import ExplorationTechnique
+
+        class _StepCounter(ExplorationTechnique):
+            def __init__(self):
+                super().__init__()
+                self.step_calls = 0
+                self.last_simgr = None
+
+            def step(self, simgr, stash="active", **kwargs):
+                self.step_calls += 1
+                self.last_simgr = simgr
+                simgr.step(stash=stash, **kwargs)
+
+        return _StepCounter()
+
+    def test_step_hook_dispatched_during_run(self, fauxware_project):
+        """step() runs at least once per Rust batch under run()."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        tech = self._step_counting_tech()
+        mgr.use_technique(tech)
+
+        mgr.run(max_steps=10)
+
+        assert tech.step_calls >= 1, \
+            "step() hook should have been invoked at least once"
+
+    def test_step_hook_simgr_is_proxy(self, fauxware_project):
+        """The simgr arg to step() is a RustSimulationManagerProxy."""
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        tech = self._step_counting_tech()
+        mgr.use_technique(tech)
+
+        mgr.run(max_steps=5)
+
+        assert isinstance(tech.last_simgr, RustSimulationManagerProxy)
+
+    def test_step_hook_dispatched_during_step(self, fauxware_project):
+        """step() dispatches through the explicit mgr.step(n) path too."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        tech = self._step_counting_tech()
+        mgr.use_technique(tech)
+
+        mgr.step(n=3)
+
+        assert tech.step_calls >= 1
+
+    def test_step_hooks_compose_lifo(self, fauxware_project):
+        """Multiple step() hooks compose in LIFO order (matches SimulationManager)."""
+        from angr.exploration_techniques import ExplorationTechnique
+
+        order = []
+
+        class _Recorder(ExplorationTechnique):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            def step(self, simgr, stash="active", **kwargs):
+                order.append(("enter", self.name))
+                simgr.step(stash=stash, **kwargs)
+                order.append(("exit", self.name))
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr.use_technique(_Recorder("first"))
+        mgr.use_technique(_Recorder("second"))
+
+        mgr.run(max_steps=2)
+
+        # The last-registered tech wraps the earlier one: outer = second,
+        # inner = first.
+        assert ("enter", "second") in order
+        assert ("enter", "first") in order
+        # second wraps first — second's enter precedes first's enter
+        enter_second = order.index(("enter", "second"))
+        enter_first = order.index(("enter", "first"))
+        assert enter_second < enter_first, f"Expected LIFO compose, got {order}"
+
+    def test_step_hook_exception_falls_back(self, fauxware_project):
+        """If a step() hook raises, run loop still advances via fallback."""
+        from angr.exploration_techniques import ExplorationTechnique
+
+        class _Raiser(ExplorationTechnique):
+            def step(self, simgr, stash="active", **kwargs):
+                raise RuntimeError("technique step intentionally raised")
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr.use_technique(_Raiser())
+
+        # No exception escapes; exploration completes.
+        mgr.run(max_steps=5)
+        # Active stash either advanced or drained; either way we didn't hang.
+        assert mgr._rust_mgr.stash_counts() is not None
+
+    def test_no_step_hook_means_no_dispatch_overhead(self, fauxware_project):
+        """Techniques without step() override should NOT trigger dispatch."""
+        from angr.exploration_techniques import ExplorationTechnique
+
+        class _FilterOnly(ExplorationTechnique):
+            def filter(self, simgr, state, **kwargs):
+                return None
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr.use_technique(_FilterOnly())
+
+        assert not mgr._has_technique_step_hooks()
+
+    def test_native_dfs_does_not_dispatch_step(self, fauxware_project):
+        """Native DFS handles stepping internally; its step() must NOT dispatch."""
+        from angr.exploration_techniques import DFS
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr.use_technique(DFS())
+
+        # DFS overrides step() in Python, but we shadow it natively in the
+        # Rust manager — _has_technique_step_hooks() must skip it to avoid
+        # double-dispatch (and double-stepping).
+        assert not mgr._has_technique_step_hooks(), \
+            "Native DFS step() must NOT be re-dispatched"
+
+    def test_proxy_step_without_callback_raises(self):
+        """Direct RustSimulationManagerProxy.step() with no callback raises."""
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        # No rust_mgr needed — we expect to fail before touching it.
+        proxy = RustSimulationManagerProxy(rust_mgr=None)
+        with pytest.raises(NotImplementedError):
+            proxy.step()
+
+    def test_proxy_successors_raises_not_implemented(self):
+        """Successors() must raise — silent no-op masks tech bugs."""
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        proxy = RustSimulationManagerProxy(rust_mgr=None)
+        with pytest.raises(NotImplementedError):
+            proxy.successors(state=None)
+
+    def test_proxy_step_state_raises_not_implemented(self):
+        """step_state() must raise — silent no-op masks tech bugs."""
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        proxy = RustSimulationManagerProxy(rust_mgr=None)
+        with pytest.raises(NotImplementedError):
+            proxy.step_state(state=None)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOptLevel:
     """Tests for VEX optimization level control."""
 

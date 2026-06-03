@@ -3323,7 +3323,10 @@ class RustExplorationManager(
             self._stats_ffi_crossings += 1
             remaining = batch_limit - (steps_taken - batch_steps_start)
             _t1 = time.perf_counter_ns()
-            event = self._rust_mgr.run(remaining)
+            if self._has_technique_step_hooks():
+                event = self._run_with_step_hooks(remaining)
+            else:
+                event = self._rust_mgr.run(remaining)
             _time_in_rust_run += time.perf_counter_ns() - _t1
             self._rust_mgr.sync_state_index()
 
@@ -3367,7 +3370,10 @@ class RustExplorationManager(
                 batch_size = 50
                 if max_steps is not None:
                     batch_size = min(batch_size, max_steps - steps_taken)
-                event = self._rust_mgr.run(batch_size)
+                if self._has_technique_step_hooks():
+                    event = self._run_with_step_hooks(batch_size)
+                else:
+                    event = self._rust_mgr.run(batch_size)
             else:
                 event = self._rust_mgr.run()
             self._rust_mgr.sync_state_index()
@@ -3631,7 +3637,10 @@ class RustExplorationManager(
         while steps_taken < n:
             self._sync_hooks_before_step()
             self._stats_ffi_crossings += 1
-            event = self._rust_mgr.run(1)
+            if self._has_technique_step_hooks():
+                event = self._run_with_step_hooks(1)
+            else:
+                event = self._rust_mgr.run(1)
             self._rust_mgr.sync_state_index()
 
             if event.event_type == 'need_callback':
@@ -4000,6 +4009,26 @@ class RustExplorationManager(
         """Check ExplorationTechnique complete() callbacks."""
         from angr.exploration.rust_techniques import check_technique_complete
         return check_technique_complete(self)
+
+    def _has_technique_step_hooks(self) -> bool:
+        """True iff an active technique has a non-native step() hook to dispatch."""
+        if not self._active_techniques:
+            return False
+        from angr.exploration.rust_techniques import manager_has_step_hooks
+        return manager_has_step_hooks(self)
+
+    def _run_with_step_hooks(self, batch_size):
+        """Run one batch under ExplorationTechnique step() hook composition.
+
+        Returns the captured ExplorationEvent. When the step-hook stack never
+        delegates to simgr.step() (e.g. a stash-only step hook), falls back to
+        a direct Rust run so the loop still makes progress.
+        """
+        from angr.exploration.rust_techniques import dispatch_step_with_hooks
+        event = dispatch_step_with_hooks(self, batch_size)
+        if event is None:
+            event = self._rust_mgr.run(batch_size)
+        return event
 
     def run(self, **kwargs) -> "RustExplorationManager":
         """Alias for explore() for SimulationManager compatibility.

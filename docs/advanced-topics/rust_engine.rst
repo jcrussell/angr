@@ -1954,16 +1954,39 @@ The Rust manager accepts ``mgr.use_technique(...)`` with the standard
 classes are wired natively, which run as Python fallback through
 ``RustStateProxy``, and which are known not to work.
 
-**Crucial dispatch limitation.** Of the four standard
-``ExplorationTechnique`` hooks (``setup``, ``filter``, ``successors``,
-``step``, ``complete``), only ``setup``, ``filter``, and ``complete`` are
-ever invoked by the Rust manager (see
-``apply_technique_filters`` / ``check_technique_complete`` in
-``rust_techniques.py``). The Rust engine drives stepping internally, so
-any technique whose effect lives in ``step()`` or ``successors()`` is
-**silently no-op'd** — registration and ``setup()`` run, but the
-per-step / per-successor logic never fires. Several rows below are
-marked "Silently no-op (step/successors hook)" for this reason.
+**Dispatch coverage.** Of the five standard ``ExplorationTechnique``
+hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
+``complete``), the Rust manager dispatches:
+
+* ``setup``, ``filter``, ``complete`` — invoked per the original
+  contract via ``apply_technique_filters`` /
+  ``check_technique_complete`` in ``rust_techniques.py``.
+* ``step`` — invoked once per Rust batch via
+  ``dispatch_step_with_hooks`` (``angr-rqvq``). Multiple step hooks
+  compose LIFO using ``HookSet`` from ``angr/misc/hookset.py``, matching
+  the standard ``SimulationManager``. The base ``simgr.step()`` call
+  inside the chain advances the Rust engine by exactly one batch.
+* ``step_state`` and ``successors`` — **not dispatched.** These hooks
+  expect a ``SimSuccessors`` object built by Python execution, which
+  the Rust engine deliberately bypasses. ``RustSimulationManagerProxy``
+  raises ``NotImplementedError`` from both methods so technique bugs
+  surface loudly instead of silently no-op'ing. Registration is still
+  permitted (no exception at ``use_technique`` time), but the
+  per-state hook never fires; ``use_technique()`` emits a
+  ``logging.WARNING`` flagging the overridden hook. Drop to
+  ``use_rust_engine=False`` if your workflow needs them.
+
+Caveats specific to ``step()`` dispatch:
+
+* Techniques that mutate stash contents via
+  ``simgr.stashes[name] = [...]`` will still not take effect — the
+  proxy's ``_StashDict`` is read-only. Use ``simgr.move(...)`` instead.
+* The proxy does not provide
+  :class:`~angr.SimSuccessors`-level introspection (``state.history``
+  is the limited :class:`RustHistoryProxy`).
+* Per-state mutations (``state.regs.X = ...``,
+  ``state.solver.add(...)``) still hit the read-only proxy until the
+  write-through epic (``angr-qj30`` / ``angr-8oiw``) lands.
 
 .. list-table::
    :widths: 22 16 62
@@ -2005,30 +2028,31 @@ marked "Silently no-op (step/successors hook)" for this reason.
      - **Partial (filter only)**
      - ``filter()`` runs against ``RustStateProxy`` (cuts states whose
        loops exceed the bound *if* the bound was already recorded), but
-       ``successors()`` — which actually populates the trip-count
-       map — is silently no-op'd. Without it the bound check almost
-       never fires, so a registered ``LoopSeer`` behaves as if disabled
-       on most workloads. No native loop bound or trip-count discount.
+       ``successors()`` — which actually populates the trip-count map
+       — is not dispatched (raises ``NotImplementedError`` if called).
+       Without it the bound check almost never fires; a registered
+       ``LoopSeer`` behaves as if disabled on most workloads. No native
+       loop bound or trip-count discount.
    * - ``LocalLoopSeer``
      - **Silently no-op (successors hook)**
-     - Bound-checking logic lives in ``successors()``; only ``filter()``
-       /``complete()`` are dispatched by the Rust manager so the bound
-       is never enforced. Registration succeeds (mis-leadingly).
-       Use ``use_rust_engine=False`` if you need loop bounding.
+     - Bound-checking logic lives in ``successors()`` which the Rust
+       manager does not dispatch (raises ``NotImplementedError`` if
+       called). Only ``filter()`` / ``complete()`` reach the technique,
+       so the bound is never enforced. Use ``use_rust_engine=False``
+       if you need loop bounding.
    * - ``MemoryWatcher``
-     - **Silently no-op (step hook)**
-     - Memory check is implemented in ``step()`` (calls
-       ``psutil.virtual_memory()`` and ``simgr.move``). The Rust
-       manager never invokes ``step()`` callbacks, so the safety valve
-       does not arm. Re-implement at the application level or drop to
-       the Python engine.
+     - **Step hook dispatched**
+     - Memory check runs in ``step()`` (``psutil.virtual_memory()`` +
+       ``simgr.move``). Since ``angr-rqvq``, ``step()`` is dispatched
+       per Rust batch and ``simgr.move(...)`` works against the proxy,
+       so the safety valve arms.
    * - ``Spiller``
-     - **Silently no-op (step hook) + would break on copy**
-     - Spilling is implemented in ``step()``, never invoked. Even if
-       reached, the technique calls ``state.copy()`` to snapshot —
-       :class:`RustStateProxy` raises ``NotImplementedError``
-       (``angr-2zwy``). Use ``use_rust_engine=False`` for spilling
-       workflows.
+     - **Step hook dispatched, would still break on copy**
+     - ``step()`` is dispatched (``angr-rqvq``), but the technique calls
+       ``state.copy()`` to snapshot — :class:`RustStateProxy` raises
+       ``NotImplementedError`` (``angr-2zwy``) until the proxy CoW fork
+       (``angr-d1dr``) lands. Use ``use_rust_engine=False`` for
+       spilling workflows.
    * - ``Veritesting``
      - **Unsupported (raises)**
      - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in
@@ -2050,64 +2074,67 @@ marked "Silently no-op (step/successors hook)" for this reason.
        siblings), which are *not* subclasses of ``SimError`` — the
        catch will miss them.
    * - ``Tracer``
-     - **Silently no-op + writes to read-only proxy**
-     - Trace-following lives in ``step()`` / ``step_state()``
-       (never invoked) and also writes to ``state.regs`` (e.g.
-       ``state.regs.ecx = 0``) — :class:`RustStateProxy` registers are
-       read-only until the write-through epic (``angr-qj30``) lands.
-       Use ``use_rust_engine=False`` for tracing.
+     - **Step hook dispatched, writes to read-only proxy**
+     - Trace-following hooks run (``angr-rqvq``), but ``step_state()``
+       is still not dispatched (raises ``NotImplementedError``) and
+       writes to ``state.regs`` hit the read-only proxy. Use
+       ``use_rust_engine=False`` until the write-through epic
+       (``angr-qj30``) lands.
    * - ``Director``
-     - **Silently no-op (step hook)**
-     - Goal-prioritisation logic is in ``step()`` and calls
-       ``simgr.step(stash=stash)`` / ``simgr.stash(...)`` — neither is
-       supported on :class:`RustSimulationManagerProxy`. Registration
-       succeeds; goals are never enforced.
+     - **Step hook dispatched, stash assignment lost**
+     - Goal-prioritisation ``step()`` runs (``angr-rqvq``), but the
+       technique also does ``simgr.stashes[stash] = [...]`` which the
+       proxy's ``_StashDict`` ignores. Goals influence flow only when
+       expressed via ``simgr.move(...)``.
    * - ``Slicecutor``
      - **Silently no-op (step_state/successors hooks)**
-     - ``filter()`` runs (cuts states off-slice if the relevant
-       successors hook already ran — it never does on Rust), but the
+     - ``filter()`` runs and ``step()`` would dispatch, but the
        slice-enforcement and successor pruning happen in
-       ``successors()`` / ``step_state()`` which are never dispatched.
+       ``successors()`` / ``step_state()`` which the Rust manager
+       does not dispatch (raises ``NotImplementedError`` if called).
    * - ``DrillerCore``
-     - **Silently no-op (step hook)**
-     - Drilling logic is in ``step()``. The ``setup()`` hook installs
-       hooks on the project, which still applies, but no driller
-       handoff happens.
+     - **Step hook dispatched**
+     - Drilling ``step()`` runs (``angr-rqvq``). Driller handoff and
+       ``setup()`` hook installation both fire; behaviour is now bounded
+       by whatever ``RustStateProxy`` exposes to driller's per-state
+       inspection.
    * - ``ManualMergepoint``
-     - **Silently no-op (step hook) + would break on copy**
-     - Merge-point handling runs in ``step()`` (never invoked) and
-       would in any case need ``state.copy()`` /
-       ``SimStateHistory`` mutation that the proxy does not provide.
+     - **Step hook dispatched, would still break on copy**
+     - Merge-point ``step()`` is dispatched, but the technique calls
+       ``state.copy()`` / mutates ``SimStateHistory`` — both raise
+       ``NotImplementedError`` on the proxy.
    * - ``StubStasher``
-     - **Silently no-op (step hook)**
-     - ``step()`` calls ``simgr.move("active", "stub", ...)`` after
-       ``simgr.step(...)``. The Rust manager never invokes ``step``
-       hooks, so the ``stub`` stash is never populated.
+     - **Step hook dispatched**
+     - ``step()`` runs (``angr-rqvq``) and ``simgr.move("active",
+       "stub", ...)`` is supported by the proxy, so the ``stub`` stash
+       populates as expected.
    * - ``Stochastic`` (``StochasticSearch``)
-     - **Silently no-op (step hook) + relies on stash mutation**
-     - Step hook assigns ``simgr.stashes[stash] = [...]``; the proxy's
-       ``_StashDict`` only forwards reads, and ``active.setter`` is a
-       no-op with a warning. Even if dispatched, the restart and
-       weighted-pick effects would be lost.
+     - **Step hook dispatched, relies on stash mutation**
+     - ``step()`` runs (``angr-rqvq``), but the technique sets
+       ``simgr.stashes[stash] = [...]`` to restart / re-weight — the
+       proxy's ``_StashDict`` is read-only, so the restart logic is
+       lost.
    * - ``Bucketizer``
      - **Silently no-op (successors hook)**
      - Transition tracking via ``state.globals["transition"]`` lives
-       inside ``successors()``; the Rust manager never dispatches it.
+       inside ``successors()``, which the Rust manager does not
+       dispatch (raises ``NotImplementedError`` if called).
    * - ``Suggestions``
-     - **Silently no-op (step hook) + heavy history access**
-     - ``step()`` (never invoked) reads ``state.history.events`` and
-       ``state.history.lineage`` — neither is exposed by
-       :class:`RustHistoryProxy` (only ``bbl_addrs`` /
+     - **Step hook dispatched, heavy history access**
+     - ``step()`` runs (``angr-rqvq``) but reads
+       ``state.history.events`` / ``state.history.lineage`` — neither
+       is exposed by :class:`RustHistoryProxy` (only ``bbl_addrs`` /
        ``recent_bbl_addrs`` / ``block_count``). Use the Python engine
        for the suggestions workflow.
 
 Anything not listed above will be accepted, tracked in
-``mgr._active_techniques``, and dispatched as ``filter`` / ``complete``
-over ``RustStateProxy`` only — ``step`` and ``successors`` hooks are
-silently dropped (see "Crucial dispatch limitation" above). The
-accept-everything default keeps construction non-fatal, but the
-techniques that read internal ``SimState`` plugins beyond the proxy's
-contract (``state.history.parent``, ``state.history.events``,
+``mgr._active_techniques``, and dispatched as ``setup`` / ``filter`` /
+``step`` / ``complete`` over ``RustStateProxy``; ``successors`` and
+``step_state`` hooks raise ``NotImplementedError`` from
+:class:`RustSimulationManagerProxy` (see "Dispatch coverage" above). The
+accept-everything default keeps construction non-fatal, but techniques
+that read internal ``SimState`` plugins beyond the proxy's contract
+(``state.history.parent``, ``state.history.events``,
 ``state.solver.constraints`` mutation) will silently misbehave rather
 than raise — vet each one against the proxy read-only invariant before
 counting on it in CI. ``state.copy()`` is the one exception: the

@@ -1491,6 +1491,11 @@ class RustSimulationManagerProxy:
         self._stdout_tracker = stdout_tracker or {}  # state_id -> bytes
         self._python_mgr = python_mgr
         self._errored = []
+        # Wired by RustExplorationManager when dispatching ExplorationTechnique
+        # step() hooks. The callback advances the Rust engine by one batch and
+        # records the resulting ExplorationEvent. When None, step()/successors()
+        # raise — they must not silently no-op once a tech overrides them.
+        self._step_callback = None
 
     def _wrap_state(self, state_id):
         """Wrap a Rust state ID in a RustStateProxy."""
@@ -1561,6 +1566,48 @@ class RustSimulationManagerProxy:
         if filter_func is not None:
             return filter_func(state)
         return None
+
+    def step(self, stash="active", **kwargs):
+        """Advance the Rust engine by one batch.
+
+        This is the base step impl that ExplorationTechnique.step() hooks
+        wrap. The RustExplorationManager installs `_step_callback` before
+        dispatching, so calling this directly without the callback set is a
+        programming error — raise rather than silently no-op.
+        """
+        if self._step_callback is None:
+            raise NotImplementedError(
+                "RustSimulationManagerProxy.step() can only be called from "
+                "inside an ExplorationTechnique step() dispatch (the owning "
+                "RustExplorationManager wires the callback)."
+            )
+        self._step_callback(stash=stash, **kwargs)
+        return self
+
+    def step_state(self, state, **kwargs):
+        """Categorise successors into stashes.
+
+        Not supported on the Rust manager: producing a SimSuccessors object
+        requires re-running the step from Python, which defeats the engine.
+        Techniques that override step_state() should fall back to the Python
+        engine (``use_rust_engine=False``).
+        """
+        raise NotImplementedError(
+            "step_state() is not supported by RustSimulationManagerProxy "
+            "(would require a Python-side re-run). Use use_rust_engine=False "
+            "if a registered ExplorationTechnique relies on step_state()."
+        )
+
+    def successors(self, state, **kwargs):
+        """Run one state forward, returning SimSuccessors.
+
+        Not supported on the Rust manager — see step_state() docstring.
+        """
+        raise NotImplementedError(
+            "successors() is not supported by RustSimulationManagerProxy "
+            "(would require a Python-side re-run). Use use_rust_engine=False "
+            "if a registered ExplorationTechnique relies on successors()."
+        )
 
     def move(self, from_stash="active", to_stash="stashed", filter_func=None):
         """Move states between stashes."""
