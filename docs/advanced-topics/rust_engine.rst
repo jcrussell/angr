@@ -1593,9 +1593,15 @@ vs. Python.
        ignore is dangerous.
    * - ``ZERO_FILL_UNCONSTRAINED_REGISTERS``
      - Default-zero registers instead of fresh symbols.
-     - (a) implement — pairs with the already-honored memory variant.
-       Currently Rust always picks one or the other depending on
-       init-state plumbing.
+     - **Matches by default.** Rust's ``RegisterFile``
+       (``native/angr/src/arch/mod.rs``) always returns concrete zero
+       from its ``vec![0; size]`` storage — i.e., zero-fill is Rust's
+       default for registers (the pair to
+       ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``, which raises because
+       Rust cannot produce symbolic register fill). The option is
+       silently accepted but has no effect because Rust was already
+       doing what it asks for. Documented as matches-by-default in
+       angr-rhe2 (2026-06-03).
    * - ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``
      - Force symbolic fill on uninitialized register reads.
      - **(c) raise NotImplementedError** at manager construction (see
