@@ -167,13 +167,25 @@ class RustCallbackDispatchMixin:
             # missing fields. Debug-logs.
             l.debug(f"Could not initialize callstack procedure_data: {e}")
 
-    def _install_rust_solver_on_callback_state(self, state: "angr.SimState"):
+    def _install_rust_solver_on_callback_state(self, state: "angr.SimState", rust_ctx):
         """Make the Rust solver the single source of truth for callback states.
 
         Instead of syncing constraints from Rust to Python (which can create
         UNSAT due to variable identity mismatches across the FFI boundary),
         this method monkey-patches the Python state's solver to delegate all
         solving operations to the forked Rust solver context.
+
+        Contract (angr-ye2n): the caller MUST pass a non-None ``rust_ctx``
+        AND attach the same context to ``state.scratch.rust_solver_ctx``
+        before calling. The installed closures re-read
+        ``state.scratch.rust_solver_ctx`` on every invocation so the manager
+        only needs to update that one attribute between callbacks; no
+        separate solver-handle scratchpad (formerly ``_rust_solver_ref``) is
+        required. If a fork path failed and no context is available, the
+        caller MUST skip the install rather than passing ``None`` —
+        previously this method silently no-op'd when scratch had no
+        ``rust_solver_ctx``, which let Python's solver diverge from Rust's
+        without raising.
 
         This covers:
         - state.solver.eval() — used by SimProcedures and concretization strategies
@@ -191,34 +203,26 @@ class RustCallbackDispatchMixin:
         ``callbacks.rs`` module invariant 5
         (``invariant-rust-solver-fallback-class``).
         """
-        rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
-        if rust_ctx is None:
-            # angr-bs71/h0dv: Path A miss — counter should stay at 0 across the
-            # benchmark suite. The legacy Rust→Python constraint-AST push was
-            # removed after a 20-bench soak proved it was dead code; non-zero
-            # readings here mean a callback site forgot to attach
-            # rust_solver_ctx and Python's solver may diverge from Rust's.
-            self._stats_rust_ctx_missing += 1
-            l.debug("rust_solver_ctx not attached to callback state; Python solver may diverge")
+        assert rust_ctx is not None, (
+            "_install_rust_solver_on_callback_state requires a non-None "
+            "rust_ctx; see angr-ye2n for the explicit-contract rationale"
+        )
+
+        # Idempotency: closures read state.scratch.rust_solver_ctx on every
+        # call, so a re-install would just rewrap our own closures as the
+        # "originals" — an infinite-recursion footgun. Guard with a per-
+        # state flag.
+        if getattr(state.scratch, '_rust_solver_installed', False):
             return
 
-        # Use a mutable container so closures see the latest rust_ctx
-        # without recreating closures on every callback.
-        ctx_ref = getattr(state.scratch, '_rust_solver_ref', None)
-        if ctx_ref is not None:
-            # Already installed — just update the solver reference
-            ctx_ref[0] = rust_ctx
-            return
-
-        # First time: save real originals and create closures once
+        # First time: save real originals and create closures once.
         original_eval = state.solver.eval
         original_satisfiable = state.solver.satisfiable
         original_min = state.solver.min
         original_max = state.solver.max
         original_eval_upto = state.solver.eval_upto
         original_add = state.solver.add
-        ctx_ref = [rust_ctx]
-        state.scratch._rust_solver_ref = ctx_ref
+        state.scratch._rust_solver_installed = True
 
         def _with_extra_constraints(_ctx, fn, *args, extra=()):
             """Run fn(*args) on _ctx, temporarily adding extra constraints via push/pop."""
@@ -233,7 +237,7 @@ class RustCallbackDispatchMixin:
             return fn(*args)
 
         def _rust_eval(expr, cast_to=None, **kwargs):
-            _ctx = ctx_ref[0]
+            _ctx = state.scratch.rust_solver_ctx
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
@@ -255,7 +259,7 @@ class RustCallbackDispatchMixin:
                 return original_eval(expr, cast_to=cast_to, **kwargs)
 
         def _rust_satisfiable(**kwargs):
-            _ctx = ctx_ref[0]
+            _ctx = state.scratch.rust_solver_ctx
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
@@ -271,7 +275,7 @@ class RustCallbackDispatchMixin:
             kwargs.pop('extra_constraints', None)
             kwargs.pop('signed', None)
             try:
-                return ctx_ref[0].min(expr, signed=False)
+                return state.scratch.rust_solver_ctx.min(expr, signed=False)
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver min() raised; fall back
                 # to Python claripy. Concretization strategies may pick a different
@@ -283,14 +287,14 @@ class RustCallbackDispatchMixin:
             kwargs.pop('extra_constraints', None)
             kwargs.pop('signed', None)
             try:
-                return ctx_ref[0].max(expr, signed=False)
+                return state.scratch.rust_solver_ctx.max(expr, signed=False)
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver max() raised; fall back
                 # to Python claripy. Same divergence risk as min().
                 return original_max(expr, **kwargs)
 
         def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
-            _ctx = ctx_ref[0]
+            _ctx = state.scratch.rust_solver_ctx
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
@@ -304,7 +308,7 @@ class RustCallbackDispatchMixin:
                 return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
 
         def _rust_add(*constraints):
-            _ctx = ctx_ref[0]
+            _ctx = state.scratch.rust_solver_ctx
             # Forward to both Rust and Python solvers
             for c in constraints:
                 try:
@@ -2003,7 +2007,29 @@ class RustCallbackDispatchMixin:
             # Instead of syncing constraints (which can create UNSAT due to
             # variable identity mismatches), delegate solver operations to the
             # forked Rust solver context.
-            self._install_rust_solver_on_callback_state(state)
+            # angr-ye2n: the implicit-contract check formerly hidden inside
+            # _install_rust_solver_on_callback_state is now explicit here.
+            # If every prior fork/borrow attempt failed (see warnings above),
+            # we have no Rust context to hand to the install — increment the
+            # defensive counter and skip the install. This leaves Python's
+            # solver untouched (no closures installed; the cached_state's
+            # prior closures, if any, still route to the latest
+            # state.scratch.rust_solver_ctx).
+            _cb_rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
+            if _cb_rust_ctx is None:
+                # angr-bs71/h0dv: counter should stay at 0 across the
+                # benchmark suite. Non-zero readings here mean every
+                # solver attach path (bundle, borrow, fork) failed for
+                # this callback state and Python's solver may diverge
+                # from Rust's.
+                self._stats_rust_ctx_missing += 1
+                l.warning(
+                    "rust_solver_ctx not attached to callback state at 0x%x; "
+                    "skipping solver install — Python solver may diverge from Rust",
+                    event.callback_addr or 0,
+                )
+            else:
+                self._install_rust_solver_on_callback_state(state, _cb_rust_ctx)
 
             # Phase 3 Fix: Ensure critical plugins are present
             # Some scripts assume posix/libc plugins exist - restore if missing
