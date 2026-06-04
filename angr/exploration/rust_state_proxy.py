@@ -1878,6 +1878,276 @@ class RustCallStackProxy:
         return f"<RustCallStackProxy depth={len(self)}>"
 
 
+class RustCallStackProxyPlugin:
+    """SimStatePlugin-shaped proxy that reads frames from Rust on demand.
+
+    Installed as ``state.callstack`` on SimProcedure callback states under
+    the ``use_callback_callstack_proxy`` gate on
+    ``RustExplorationManager`` (angr-6o9p, write-through .4). Mirrors the
+    angr-4scu (memory) / angr-qj30 (registers) / angr-8oiw (solver)
+    install pattern.
+
+    Read-through model:
+      * Iteration / indexing / ``len()`` route through
+        ``get_state_call_stack(state_id)`` — no Python-side mirror of the
+        Rust call frames.
+      * Top-frame attribute access (``func_addr`` / ``stack_ptr`` /
+        ``ret_addr`` / ``call_site_addr`` / ``current_function_address``
+        / ``current_stack_pointer`` / ``current_return_target``) reads
+        the most-recent Rust frame.
+      * ``next`` walks one frame down (returns
+        :class:`RustCallStackFrameProxy` or ``None`` at the bottom),
+        matching the linked-list shape Python code expects.
+
+    Per-frame Python-only metadata (``locals`` / ``block_counter`` /
+    ``procedure_data`` / ``invoke_return_variable``) lives on the
+    plugin itself — SimProcedures stash continuation data here.
+
+    ``push`` / ``pop`` / ``call`` / ``ret`` are gap stubs that log at
+    debug level and return ``self``. SimProcedures don't manually push
+    or pop call frames in practice (the engine drives that), so the
+    stub keeps any pathological caller alive without diverging the
+    Rust-side stack. Plugin protocol (``id`` / ``state`` /
+    ``set_state`` / ``copy`` / ``init_state`` / ``merge`` / ``widen``)
+    matches the existing proxy plugins: ``STRONGREF_STATE = False``,
+    ``copy()`` returns an unbound proxy bound to the same Rust state_id.
+    """
+
+    STRONGREF_STATE: bool = False
+
+    def __init__(self, rust_mgr, state_id):
+        import collections as _collections  # noqa: PLC0415
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        # SimStatePlugin protocol attrs.
+        self.id = "callstack"
+        self.state = None
+        # Per-frame Python-only metadata; SimProcedure continuations and
+        # block-counter / ``locals`` users read these even when they don't
+        # touch the Rust-side frames.
+        self.block_counter = _collections.Counter()
+        self.procedure_data = None
+        self.locals = {}
+        self.invoke_return_variable = None
+        self.jumpkind = "Ijk_Call"
+
+    @property
+    def category(self):
+        return "callstack"
+
+    # ---------------------------------------------------------------
+    # Plugin protocol
+    # ---------------------------------------------------------------
+
+    def set_state(self, state):
+        self.state = state
+
+    def set_strongref_state(self, _state):
+        pass
+
+    def init_state(self):
+        pass
+
+    def copy(self, _memo=None):
+        import collections as _collections  # noqa: PLC0415
+        clone = RustCallStackProxyPlugin(self._mgr, self._state_id)
+        clone.block_counter = _collections.Counter(self.block_counter)
+        clone.procedure_data = self.procedure_data
+        clone.locals = dict(self.locals)
+        clone.invoke_return_variable = self.invoke_return_variable
+        return clone
+
+    def merge(self, _others, _merge_conditions, _common_ancestor=None):
+        # Cross-state_id callstack merge is out of scope for the
+        # callback-install gate. Mirrors the solver / memory / register
+        # proxy stubs.
+        return False
+
+    def widen(self, _others):
+        return False
+
+    # ---------------------------------------------------------------
+    # Frame reads (no Python-side cache; each access re-reads from
+    # Rust so the plugin stays in sync with concurrent Rust-side
+    # pushes during the same callback).
+    # ---------------------------------------------------------------
+
+    @property
+    def _frames(self):
+        try:
+            raw = self._mgr.get_state_call_stack(self._state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: empty stack when FFI fails;
+            # distinguishable from a real empty stack only via the log.
+            l.debug(
+                "RustCallStackProxyPlugin.get_state_call_stack(sid=%d) "
+                "failed: %s: %s",
+                self._state_id, type(e).__name__, e,
+            )
+            return []
+        # Rust pushes onto the end (most recent last). Reverse so the
+        # top frame is first, matching angr's CallStack iteration order.
+        return list(reversed(raw))
+
+    def __iter__(self):
+        frames = self._frames
+        # Yield the plugin itself as the top "node" so callers that
+        # expect each iteration step to behave like a CallStack node
+        # (``frame.func_addr`` / ``frame.next``) get back something
+        # whose top attributes are populated. Frames below the top are
+        # ``RustCallStackFrameProxy`` instances.
+        if not frames:
+            return
+        yield self
+        owner = _StaticFrameOwner(frames)
+        for i in range(1, len(frames)):
+            yield RustCallStackFrameProxy(frames[i], i, owner)
+
+    def __len__(self):
+        return len(self._frames)
+
+    def __getitem__(self, k):
+        frames = self._frames
+        if k < 0:
+            k += len(frames)
+        if k < 0 or k >= len(frames):
+            raise IndexError(k)
+        if k == 0:
+            return self
+        return RustCallStackFrameProxy(
+            frames[k], k, _StaticFrameOwner(frames),
+        )
+
+    def __repr__(self):
+        return f"<RustCallStackProxyPlugin depth={len(self)}>"
+
+    @property
+    def top(self):
+        # CallStack.top returns ``self`` (the top frame IS the
+        # CallStack object). Mirror that shape.
+        return self
+
+    @property
+    def next(self):
+        """Walk one frame down toward the bottom of the stack.
+
+        Returns a :class:`RustCallStackFrameProxy` for frame[1] or
+        ``None`` if the stack has fewer than two frames. Matches the
+        linked-list ``CallStack.next`` accessor.
+        """
+        frames = self._frames
+        if len(frames) < 2:
+            return None
+        return RustCallStackFrameProxy(
+            frames[1], 1, _StaticFrameOwner(frames),
+        )
+
+    @property
+    def current_function_address(self):
+        frames = self._frames
+        if not frames:
+            return 0
+        return frames[0][1]  # callee_addr
+
+    @property
+    def current_return_target(self):
+        frames = self._frames
+        if not frames:
+            return 0
+        return frames[0][2]  # return_addr
+
+    @property
+    def current_stack_pointer(self):
+        frames = self._frames
+        if not frames:
+            return 0
+        return frames[0][3]  # stack_ptr
+
+    @property
+    def func_addr(self):
+        return self.current_function_address
+
+    @property
+    def ret_addr(self):
+        return self.current_return_target
+
+    @property
+    def stack_ptr(self):
+        return self.current_stack_pointer
+
+    @property
+    def call_site_addr(self):
+        frames = self._frames
+        if not frames:
+            return 0
+        return frames[0][0]
+
+    # ---------------------------------------------------------------
+    # push / pop / call / ret — gap stubs.
+    #
+    # SimProcedures don't manually push or pop call frames in
+    # practice; the Rust interpreter drives stack changes via call /
+    # return jumpkinds. Returning ``self`` lets any opportunistic
+    # caller continue without crashing while preventing a diverging
+    # Python-side mirror of the Rust frames.
+    # ---------------------------------------------------------------
+
+    def push(self, _cf):
+        l.debug("RustCallStackProxyPlugin.push() is a no-op stub")
+        return self
+
+    def pop(self):
+        l.debug("RustCallStackProxyPlugin.pop() is a no-op stub")
+        return self
+
+    def call(self, _callsite_addr, _addr, _retn_target=None,
+             _stack_pointer=None):
+        l.debug("RustCallStackProxyPlugin.call() is a no-op stub")
+        return self
+
+    def ret(self, _retn_target=None):
+        l.debug("RustCallStackProxyPlugin.ret() is a no-op stub")
+        return self
+
+    def _manage(self):
+        """No-op stub for ``CallStack._manage``.
+
+        Called by ``angr.engines.successors.add_successor`` to push /
+        pop frames based on the state's jumpkind. The Rust interpreter
+        already maintains the canonical call stack; mirroring the
+        push/pop on the Python proxy would diverge state, so this is
+        intentionally inert.
+        """
+        return None
+
+    def stack_suffix(self, context_sensitivity_level):
+        """Generate a tuple-form stack suffix from Rust frames.
+
+        Mirrors ``CallStack.stack_suffix``: returns a tuple of
+        ``(call_site_addr, func_addr)`` pairs (outer-first) of length
+        ``2 * context_sensitivity_level``, padded with ``None`` when
+        the stack is shorter.
+        """
+        ret: tuple = ()
+        for frame in self:
+            if len(ret) >= context_sensitivity_level * 2:
+                break
+            ret = (frame.call_site_addr, frame.func_addr, *ret)
+        while len(ret) < context_sensitivity_level * 2:
+            ret = (None, None, *ret)
+        return ret
+
+
+class _StaticFrameOwner:
+    """Tiny adapter so :class:`RustCallStackFrameProxy` can walk a
+    snapshot list captured at iteration / index time."""
+
+    __slots__ = ("_frames",)
+
+    def __init__(self, frames):
+        self._frames = frames
+
+
 _INSPECT_NOT_IMPLEMENTED_MSG = (
     "state.inspect breakpoints are not dispatched by the Rust symex engine. "
     "Registering a breakpoint here would silently never fire. "

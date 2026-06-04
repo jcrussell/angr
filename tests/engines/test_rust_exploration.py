@@ -4488,6 +4488,231 @@ class TestCallbackSolverProxyGate:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallbackCallStackProxyGate:
+    """angr-6o9p write-through .4: ``use_callback_callstack_proxy`` gate
+    controls whether ``RustCallStackProxyPlugin`` is installed as
+    ``state.callstack`` on SimProcedure callback states. Default off
+    leaves the cached state's CallStack plugin untouched; on routes
+    iteration / top-frame attribute access through Rust by ``state_id``
+    via ``get_state_call_stack``.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_callstack_proxy is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_callback_callstack_proxy=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        assert mgr._use_callback_callstack_proxy is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_callstack_proxy is True
+
+    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
+        """Explicit ``use_callback_callstack_proxy=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=False
+        )
+        assert mgr._use_callback_callstack_proxy is False
+
+    def test_install_swaps_state_callstack(self, fauxware_project):
+        """When the gate is on, ``_install_callback_callstack_proxy``
+        replaces ``state.callstack`` with a
+        ``RustCallStackProxyPlugin``."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        assert isinstance(cb_state.callstack, RustCallStackProxyPlugin)
+        assert cb_state.callstack.id == "callstack"
+        assert cb_state.callstack.category == "callstack"
+        assert cb_state.callstack.state is cb_state
+
+    def test_install_copy_returns_proxy(self, fauxware_project):
+        """``copy()`` returns a fresh ``RustCallStackProxyPlugin`` bound
+        to the same Rust state."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        cb_state.callstack.procedure_data = "marker"
+        cb_state.callstack.locals["k"] = 1
+        clone = cb_state.callstack.copy()
+        assert isinstance(clone, RustCallStackProxyPlugin)
+        assert clone._state_id == cb_state.callstack._state_id
+        assert clone.state is None
+        # Per-frame Python-only metadata copied verbatim.
+        assert clone.procedure_data == "marker"
+        assert clone.locals == {"k": 1}
+
+    def test_read_through_empty_stack(self, fauxware_project):
+        """Empty Rust call stack → proxy reports len 0 and 0-valued
+        top-frame attrs (matches the existing read-only
+        ``RustCallStackProxy`` shape)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        proxy = cb_state.callstack
+        assert len(proxy) == 0
+        assert list(proxy) == []
+        assert proxy.func_addr == 0
+        assert proxy.ret_addr == 0
+        assert proxy.stack_ptr == 0
+        assert proxy.call_site_addr == 0
+        assert proxy.next is None
+        # CallStack.top returns self by convention.
+        assert proxy.top is proxy
+
+    def test_read_through_after_explore(self, fauxware_project):
+        """After exploration, the proxy reflects Rust's current call
+        frames (matches the read-only ``RustCallStackProxy``'s
+        ``test_callstack_proxy_after_explore`` shape)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackFrameProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        mgr.explore(find=0x4006ed)
+        if not mgr.found:
+            pytest.skip("explore did not find target — nothing to verify")
+        sid = mgr._rust_mgr.get_state_ids("found")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, sid)
+        proxy = cb_state.callstack
+        raw = mgr._rust_mgr.get_state_call_stack(sid)
+        assert len(proxy) == len(raw)
+        if raw:
+            # Top frame attrs match raw[-1] (raw is push-order; top is last).
+            expected = raw[-1]
+            assert proxy.call_site_addr == expected[0]
+            assert proxy.func_addr == expected[1]
+            assert proxy.ret_addr == expected[2]
+            assert proxy.stack_ptr == expected[3]
+            # ``.next`` returns a frame proxy for frame 1 when there are
+            # >= 2 frames, else None.
+            if len(raw) >= 2:
+                assert isinstance(proxy.next, RustCallStackFrameProxy)
+            else:
+                assert proxy.next is None
+
+    def test_static_frame_walk_via_indexing(self):
+        """Direct unit test of indexing + ``.next`` walk semantics with
+        a synthetic frame list (no Rust runtime needed)."""
+        from angr.exploration.rust_state_proxy import (
+            RustCallStackFrameProxy,
+            RustCallStackProxyPlugin,
+        )
+
+        proxy = RustCallStackProxyPlugin.__new__(RustCallStackProxyPlugin)
+        proxy._mgr = None
+        proxy._state_id = None
+        # Pre-populate the read-through path: monkey-patch _frames to
+        # return a static list (mirrors the read-only proxy's existing
+        # _frames_cache pattern).
+        snapshot = [
+            (0x250, 0x300, 0x255, 0x7000),  # top
+            (0x150, 0x200, 0x155, 0x7100),
+            (0x050, 0x100, 0x055, 0x7200),  # bottom
+        ]
+        type(proxy)._frames = property(lambda self: snapshot)  # noqa: SLF001
+        try:
+            assert len(proxy) == 3
+            top = proxy[0]
+            assert top is proxy  # top-frame is the plugin itself
+            assert top.func_addr == 0x300
+            mid = proxy[1]
+            assert isinstance(mid, RustCallStackFrameProxy)
+            assert mid.func_addr == 0x200
+            # .next walks frame[0] -> frame[1] -> frame[2] -> None
+            assert proxy.next.func_addr == 0x200
+            assert proxy.next.next.func_addr == 0x100
+            assert proxy.next.next.next is None
+            assert proxy[-1].func_addr == 0x100
+            # iteration yields self then frame proxies in order.
+            walked = list(proxy)
+            assert walked[0] is proxy
+            assert [f.func_addr for f in walked] == [0x300, 0x200, 0x100]
+        finally:
+            # Restore the property so a later test that uses the real
+            # _frames doesn't read this stub.
+            del type(proxy)._frames
+
+    def test_merge_widen_return_false(self, fauxware_project):
+        """``merge`` / ``widen`` return False on the proxy plugin —
+        cross-state_id callstack merge is out of scope for the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        assert cb_state.callstack.merge([], [], None) is False
+        assert cb_state.callstack.widen([]) is False
+
+    def test_push_pop_are_noop_stubs(self, fauxware_project):
+        """``push`` / ``pop`` are gap stubs: return ``self`` and do not
+        crash. SimProcedures don't manually push or pop frames in
+        practice."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        proxy = cb_state.callstack
+        assert proxy.push(None) is proxy
+        assert proxy.pop() is proxy
+        assert proxy.call(0, 0) is proxy
+        assert proxy.ret() is proxy
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:
     """angr-j28e: RustStateProxy register and memory writes must write through
     to the Rust state (Rust is the single source of truth — no Python-side

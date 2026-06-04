@@ -1963,7 +1963,8 @@ class RustCallbackDispatchMixin:
             # affects this one callback frame.
             if (has_predicates
                     or getattr(self, '_use_callback_memory_proxy', False)
-                    or getattr(self, '_use_callback_register_proxy', False)):
+                    or getattr(self, '_use_callback_register_proxy', False)
+                    or getattr(self, '_use_callback_callstack_proxy', False)):
                 self._stats_state_creations += 1
                 state = cached_state.copy()
             else:
@@ -2165,6 +2166,17 @@ class RustCallbackDispatchMixin:
                     and event.callback_state_id is not None):
                 self._install_callback_register_proxy(state, event.callback_state_id)
 
+            # angr-6o9p (write-through .4): gated install of
+            # ``RustCallStackProxyPlugin`` as ``state.callstack``. When on,
+            # ``state.callstack`` iteration / top-frame attribute access
+            # reads frames live from Rust by ``state_id`` — replacing the
+            # cached-state's empty entry-state callstack with a live view
+            # of the Rust call frames. Off keeps the cached state's plugin
+            # untouched (callbacks see whatever was on the entry state).
+            if (getattr(self, '_use_callback_callstack_proxy', False)
+                    and event.callback_state_id is not None):
+                self._install_callback_callstack_proxy(state, event.callback_state_id)
+
         return state
 
     def _install_callback_memory_proxy(self, state, state_id):
@@ -2209,6 +2221,19 @@ class RustCallbackDispatchMixin:
         proxy = RustSolverProxyPlugin(self._rust_mgr, state_id)
         proxy.set_state(state)
         state.register_plugin("solver", proxy)
+
+    def _install_callback_callstack_proxy(self, state, state_id):
+        """Swap ``state.callstack`` for a ``RustCallStackProxyPlugin`` bound to ``state_id``.
+
+        angr-6o9p (write-through .4). Caller has already copied the cached
+        state, so replacing the plugin here only affects this callback
+        frame. The proxy reads frames live from Rust by ``state_id`` via
+        ``get_state_call_stack`` — no Python-side mirror.
+        """
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+        proxy = RustCallStackProxyPlugin(self._rust_mgr, state_id)
+        proxy.set_state(state)
+        state.register_plugin("callstack", proxy)
 
     def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
         """Ensure critical plugins are present on the state.

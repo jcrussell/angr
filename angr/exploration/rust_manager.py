@@ -841,6 +841,7 @@ class RustExplorationManager(
         use_callback_memory_proxy: Optional[bool] = None,
         use_callback_register_proxy: Optional[bool] = None,
         use_callback_solver_proxy: Optional[bool] = None,
+        use_callback_callstack_proxy: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -908,6 +909,16 @@ class RustExplorationManager(
                 otherwise off. Off keeps the existing
                 ``_install_rust_solver_on_callback_state`` monkey-patch path
                 live (which maintains a parallel Python claripy solver).
+            use_callback_callstack_proxy: If True, install
+                ``RustCallStackProxyPlugin`` as ``state.callstack`` on
+                SimProcedure callback states so iteration / top-frame
+                attribute access reads frames live from Rust by ``state_id``
+                via ``get_state_call_stack`` (angr-6o9p, write-through .4).
+                When ``None`` (default), the env var
+                ``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles it on;
+                otherwise off. Off leaves the cached state's (typically
+                entry-state) ``CallStack`` plugin untouched at callback
+                time.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -1023,6 +1034,21 @@ class RustExplorationManager(
             self._use_callback_solver_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_callback_solver_proxy = bool(use_callback_solver_proxy)
+
+        # angr-6o9p (write-through .4): gate for installing
+        # ``RustCallStackProxyPlugin`` as ``state.callstack`` on
+        # SimProcedure callback states. Default off leaves the cached
+        # state's CallStack plugin untouched at callback time. When on,
+        # ``_create_state_for_callback`` installs the proxy so iteration
+        # / top-frame attribute access reads frames live from Rust by
+        # ``state_id`` via ``get_state_call_stack``. Env var
+        # ``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles default-on
+        # when the kwarg is left at its default ``None``.
+        if use_callback_callstack_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "")
+            self._use_callback_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_callback_callstack_proxy = bool(use_callback_callstack_proxy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
