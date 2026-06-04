@@ -839,6 +839,7 @@ class RustExplorationManager(
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
         use_callback_memory_proxy: Optional[bool] = None,
+        use_callback_register_proxy: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -887,6 +888,14 @@ class RustExplorationManager(
                 diff-and-push (angr-4scu step 3). When ``None`` (default), the
                 env var ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles it
                 on; otherwise off. Off keeps the existing tracker path live.
+            use_callback_register_proxy: If True, install ``RustRegisterProxy``
+                as ``state.registers`` on SimProcedure callback states so
+                ``state.regs.<name>`` reads/writes route directly into Rust
+                instead of going through the bundle apply + post-callback
+                ``_extract_register_changes`` diff-and-push (angr-qj30, write-
+                through .2). When ``None`` (default), the env var
+                ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles it on;
+                otherwise off. Off keeps the existing diff-and-push path live.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -968,6 +977,23 @@ class RustExplorationManager(
             self._use_callback_memory_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_callback_memory_proxy = bool(use_callback_memory_proxy)
+
+        # angr-qj30 (write-through .2): gate for installing
+        # ``RustRegisterProxy`` as ``state.registers`` on SimProcedure
+        # callback states. Default off keeps the existing bundle-apply +
+        # ``_extract_register_changes`` diff-and-push path live. When on,
+        # ``_create_state_for_callback`` skips the bundle register apply
+        # and installs the proxy so every ``state.regs.<name>`` read/write
+        # routes directly into Rust by state_id, and the matching site in
+        # ``_handle_simprocedure_callback`` skips ``reg_changes``
+        # extraction (writes already landed in Rust). Env var
+        # ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles default-on
+        # when the kwarg is left at its default ``None``.
+        if use_callback_register_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_REGISTER_PROXY", "")
+            self._use_callback_register_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_callback_register_proxy = bool(use_callback_register_proxy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()

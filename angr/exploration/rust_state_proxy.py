@@ -243,7 +243,20 @@ class RustRegisterProxy:
 
     Register values are returned as claripy BVVs for compatibility
     with code that expects symbolic bitvectors.
+
+    Also implements the minimum ``SimMemory`` plugin protocol (``id``,
+    ``category``, ``state``, ``set_state``, ``copy``, ``init_state``,
+    ``merge``, ``widen``) so that the proxy can be installed as
+    ``state.registers`` on a real SimState (angr-qj30 write-through .2,
+    under the ``use_callback_register_proxy`` gate on
+    ``RustExplorationManager``).
     """
+
+    # SimMemory plugin protocol: registers never carry a strong ref back
+    # to the state. The proxy routes every op into Rust by ``state_id``
+    # and does not need ``self.state`` to be a live reference.
+    STRONGREF_STATE: bool = False
+    SUPPORTS_CONCRETE_LOAD: bool = False
 
     def __init__(self, rust_mgr, state_id, arch):
         # Use object.__setattr__ to bypass our own __setattr__ during init
@@ -254,6 +267,11 @@ class RustRegisterProxy:
         object.__setattr__(self, "_state_id", state_id)
         object.__setattr__(self, "_arch", arch)
         object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
+        # SimMemory plugin protocol surface — stored via object.__setattr__
+        # so our overridden __setattr__ does not route them through to Rust.
+        object.__setattr__(self, "id", "reg")
+        object.__setattr__(self, "endness", getattr(arch, "register_endness", "Iend_LE"))
+        object.__setattr__(self, "state", None)
 
     def prefetch(self, names):
         """Batch-fetch multiple registers in one FFI call and cache them."""
@@ -276,19 +294,20 @@ class RustRegisterProxy:
             raise AttributeError(name)
         if name in self._cache:
             return self._cache[name]
+        canonical = self._canonical_name(name)
         try:
-            val = self._mgr.get_state_register(self._state_id, name)
+            val = self._mgr.get_state_register(self._state_id, canonical)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: re-raise as AttributeError so callers
             # using hasattr()/getattr() see "no such register". Note: this
             # masks transient FFI errors as missing-attribute — log debug so
             # they're visible under --debug.
             l.debug("get_state_register(sid=%d, name=%r) failed; reporting as AttributeError",
-                    self._state_id, name)
+                    self._state_id, canonical)
             raise AttributeError(f"register '{name}' not found")
-        width = self._get_register_width(name)
+        width = self._get_register_width(canonical)
         if val is None:
-            result = self._recover_symbolic_register_ast(name, width)
+            result = self._recover_symbolic_register_ast(canonical, width)
         else:
             result = claripy.BVV(val, width)
         self._cache[name] = result
@@ -344,6 +363,34 @@ class RustRegisterProxy:
             return size_bytes * 8
         return self._arch.bits
 
+    def _canonical_name(self, name):
+        """Translate an angr register alias to Rust's canonical name.
+
+        angr exposes aliases like ``ip`` (and other ABI synonyms) that share
+        an ``(offset, size)`` with their canonical register
+        (e.g. ``ip`` ↔ ``rip`` on AMD64). Rust's register file is keyed by
+        the canonical name only; passing ``"ip"`` to
+        ``set_state_register_symbolic_ast`` would return "failed to set
+        register: ip". Look up the alias's ``(offset, size)`` in
+        ``arch.registers`` and translate via
+        ``arch.register_size_names[(offset, size)]`` to the canonical name.
+        Returns the input unchanged when no translation is required (e.g.
+        ``"rip"`` itself, or names not present in ``arch.registers``).
+        """
+        info = self._arch.registers.get(name)
+        if info is None:
+            return name
+        offset, size = info[0], info[1]
+        try:
+            return self._arch.register_size_names[(offset, size)]
+        except KeyError:
+            return name
+
+    # SimMemory plugin protocol surface attribute names that must NOT route
+    # through to Rust when assigned. ``state`` is set by ``set_state``,
+    # ``id`` / ``endness`` are stamped on the plugin instance, etc.
+    _PLUGIN_ATTRS = frozenset({"id", "endness", "state", "category"})
+
     def __setattr__(self, name, value):
         """Write-through register assignment (angr-j28e).
 
@@ -359,20 +406,25 @@ class RustRegisterProxy:
         value without an FFI round-trip.
 
         Underscore-prefixed names (``_mgr``, ``_state_id``, ``_cache``,
-        ``_arch``) and Python protocol attributes are stored as ordinary
-        Python attributes via ``object.__setattr__`` — only public register
-        names route to Rust.
+        ``_arch``) and SimMemory plugin protocol names (``id``, ``endness``,
+        ``state``, ``category``) are stored as ordinary Python attributes
+        via ``object.__setattr__`` — only public register names route to Rust.
         """
-        if name.startswith("_"):
+        if name.startswith("_") or name in self._PLUGIN_ATTRS:
             object.__setattr__(self, name, value)
             return
-        width = self._get_register_width(name)
+        canonical = self._canonical_name(name)
+        width = self._get_register_width(canonical)
         ast = self._coerce_to_ast(value, width)
-        self._mgr.set_state_register_symbolic_ast(self._state_id, name, ast)
+        self._mgr.set_state_register_symbolic_ast(self._state_id, canonical, ast)
         # Keep the cache coherent so a subsequent __getattr__ returns the
         # AST we just wrote (matches the post-write read invariant the
-        # caller would otherwise see if no cache existed).
+        # caller would otherwise see if no cache existed). Both alias and
+        # canonical entries point at the same AST so future reads on either
+        # name see the just-written value.
         self._cache[name] = ast
+        if canonical != name:
+            self._cache[canonical] = ast
 
     @staticmethod
     def _coerce_to_ast(value, width):
@@ -395,13 +447,17 @@ class RustRegisterProxy:
             f"got {type(value).__name__}"
         )
 
-    def load(self, reg_name_or_offset, size=None):
+    def load(self, reg_name_or_offset, size=None, **kwargs):
         """Load register by name or by ``(offset, size)`` tuple.
 
         Mirrors ``SimRegisters.load``: string names route through
         ``__getattr__``; integer offsets are resolved via the architecture's
         ``register_size_names[(offset, size)]`` map (size defaults to
         ``arch.bytes``, matching angr's SimMemory default).
+
+        ``inspect`` / ``disable_actions`` / ``events`` kwargs are accepted
+        but ignored — the proxy does not fire BPs (state.inspect raises
+        NotImplementedError per docs/advanced-topics/rust_engine.rst).
         """
         if isinstance(reg_name_or_offset, str):
             return getattr(self, reg_name_or_offset)
@@ -418,6 +474,97 @@ class RustRegisterProxy:
         raise TypeError(
             f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}"
         )
+
+    def store(self, addr, data, size=None, **kwargs):
+        """Store ``data`` into the register named/offset by ``addr``.
+
+        Mirrors ``SimRegisters.store``: string names route through the
+        write-through ``__setattr__``; integer offsets are resolved via
+        ``register_size_names[(offset, size)]``. ``inspect`` /
+        ``disable_actions`` / ``endness`` kwargs are accepted but ignored
+        (same as ``load``).
+        """
+        if isinstance(addr, str):
+            setattr(self, addr, data)
+            return
+        if isinstance(addr, int):
+            if size is None:
+                # When size is omitted, infer it from the data width
+                # (matches SimRegisters.store's behavior for concrete ints).
+                if hasattr(data, "size") and callable(data.size):
+                    size = data.size() // 8
+                elif isinstance(data, claripy.ast.Base):
+                    size = data.size() // 8
+                elif isinstance(data, (bytes, bytearray)):
+                    size = len(data)
+                else:
+                    size = self._arch.bytes
+            try:
+                name = self._arch.register_size_names[(addr, size)]
+            except KeyError as e:
+                raise NotImplementedError(
+                    f"no register for offset {addr} size {size} on {self._arch.name}"
+                ) from e
+            setattr(self, name, data)
+            return
+        raise TypeError(
+            f"register store expects str name or int offset, got {type(addr).__name__}"
+        )
+
+    # ---------------------------------------------------------------
+    # SimMemory plugin protocol surface (angr-qj30, write-through .2)
+    # ---------------------------------------------------------------
+
+    @property
+    def category(self):
+        return "reg"
+
+    def set_state(self, state):
+        """SimStatePlugin hook — invoked on plugin install / copy.
+
+        We don't keep a weakref like the base ``SimStatePlugin`` does
+        because the proxy never reads back through ``self.state``; it
+        routes every op directly into Rust by ``state_id``. We do stash
+        the reference so downstream code that inspects ``plugin.state``
+        doesn't see ``None``.
+        """
+        object.__setattr__(self, "state", state)
+
+    def set_strongref_state(self, _state):
+        # SimStatePlugin protocol: invoked when ``STRONGREF_STATE`` is True.
+        # We keep it ``False`` (no strong refs from the proxy back to the
+        # state) so this is dead code; defined only to match the surface.
+        pass
+
+    def init_state(self):
+        # SimStatePlugin protocol: called once after ``register_plugin``.
+        # Nothing to initialize on the Rust side — the underlying
+        # ``RustSimState`` register file is already populated by the
+        # engine.
+        pass
+
+    def copy(self, _memo=None):
+        """Return a new proxy bound to the same Rust state.
+
+        Mirrors ``SimMemoryMixin.copy``: returns an unbound plugin (no
+        ``state`` set) of the same type. The underlying Rust state is
+        shared by ``state_id`` — the proxy does not own a CoW copy;
+        ``copy()`` is only meaningful here as part of ``SimState.copy()``
+        plugin walk. True per-state CoW lives in angr-d1dr
+        (RustStateProxy.copy()).
+        """
+        return RustRegisterProxy(self._mgr, self._state_id, self._arch)
+
+    def merge(self, _others, _merge_conditions, _common_ancestor=None):
+        # angr-8dop.2-style gap: merge / widen / compare on the proxy
+        # are stubs that signal "no merge happened" (False), matching
+        # SimRegNameView.merge. Real merge would require coordinating
+        # the Rust register file across multiple state_ids — out of
+        # scope for the callback-install gate.
+        return False
+
+    def widen(self, _others):
+        return False
 
 
 class RustMemoryProxy:

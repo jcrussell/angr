@@ -44,9 +44,8 @@ impl RustExplorationManager {
     }
 
     /// Run a closure with a mutable borrow of a state by ID.
-    /// Note: unlike `with_state`, this does NOT check the pending callback —
-    /// it follows the existing `find_state_mut` semantics (stashes only).
-    /// Returns Err(PyValueError) when not found.
+    /// Matches `with_state`'s lookup order: pending callback first, then
+    /// stashes. Returns Err(PyValueError) when not found.
     #[inline]
     pub(crate) fn with_state_mut<T, F>(&mut self, state_id: u64, f: F) -> PyResult<T>
     where
@@ -112,7 +111,20 @@ impl RustExplorationManager {
 
     /// Find a mutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
+    ///
+    /// Mirrors `find_state`'s pending-first lookup: while a SimProcedure
+    /// callback (or find/avoid predicate) is in flight the state lives in
+    /// `pending_callback` and is NOT present in any stash. Without this
+    /// pending-aware fallback, write-through FFI shims (the proxy plugins
+    /// at angr-4scu memory / angr-qj30 registers) would fail with
+    /// "state N not found" any time a Python SimProc wrote to
+    /// `state.regs.<name>` or `state.memory.store(...)` during a callback.
     pub(crate) fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
+        if let Some(ref mut pending) = self.pending_callback
+            && pending.state.state_id() == state_id
+        {
+            return Some(&mut pending.state);
+        }
         self.sm.find_state_mut(state_id)
     }
 

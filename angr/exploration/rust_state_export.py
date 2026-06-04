@@ -530,6 +530,17 @@ class RustStateExportMixin:
         are only in Rust's state. This exports named registers and overwrites
         the Python state's values for registers that are concrete in Rust.
         """
+        # angr-qj30 (write-through .2): when ``state.registers`` is a
+        # ``RustRegisterProxy``, every read already routes live into Rust
+        # by state_id — pushing the snapshot's concrete values onto the
+        # proxy via setattr would overwrite any SYMBOLIC register the
+        # SimProcedure just wrote through the proxy (e.g. a symbolic
+        # return value), clobbering it with BVV(0) from
+        # ``get_registers_named()`` (which returns the concrete portion
+        # of Rust's register file only). Skip the sync entirely.
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+        if isinstance(getattr(state, "registers", None), RustRegisterProxy):
+            return
         try:
             snapshot = self._rust_mgr.export_state(state_id)
         except Exception as e:

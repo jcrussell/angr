@@ -1036,7 +1036,15 @@ class RustCallbackDispatchMixin:
 
         # Extract changes
         is_snapshot = isinstance(orig_state, dict)
-        reg_changes = self._extract_register_changes(orig_state, succ_state)
+        # angr-qj30 (write-through .2): when the register-proxy gate is on
+        # every ``state.regs.<name> = ...`` issued by the SimProc already
+        # landed in Rust via ``RustRegisterProxy.__setattr__`` →
+        # ``set_state_register_symbolic_ast``. Skip the diff so we don't
+        # double-write through ``resume_after_simprocedure``.
+        if getattr(self, '_use_callback_register_proxy', False):
+            reg_changes = []
+        else:
+            reg_changes = self._extract_register_changes(orig_state, succ_state)
 
         # Skip memory extraction when orig_state is a register snapshot
         # (non-memory-writing extern SimProcedures don't modify memory)
@@ -1193,9 +1201,14 @@ class RustCallbackDispatchMixin:
                 l.debug(f"Hook modified IP from 0x{addr:x} to 0x{new_pc:x}")
 
         # Extract register changes between original and modified state
-        # This syncs all register modifications made by the hook
+        # This syncs all register modifications made by the hook.
+        # angr-qj30 (write-through .2): with the register-proxy gate on,
+        # hook writes to ``state.regs.<name>`` already landed in Rust.
         is_snapshot = isinstance(orig_state, dict)
-        reg_changes = self._extract_register_changes(orig_state, state)
+        if getattr(self, '_use_callback_register_proxy', False):
+            reg_changes = []
+        else:
+            reg_changes = self._extract_register_changes(orig_state, state)
 
         # Skip memory extraction when orig_state is a register snapshot
         # (non-memory-writing extern SimProcedures don't modify memory)
@@ -1494,7 +1507,13 @@ class RustCallbackDispatchMixin:
                 else:
                     new_pc = succ_state.addr
 
-                reg_changes = self._extract_register_changes(state, succ_state)
+                # angr-qj30 (write-through .2): with the register-proxy
+                # gate on, syscall writes to ``state.regs.<name>`` already
+                # landed in Rust during the callback.
+                if getattr(self, '_use_callback_register_proxy', False):
+                    reg_changes = []
+                else:
+                    reg_changes = self._extract_register_changes(state, succ_state)
                 mem_changes = self._extract_memory_changes(state, succ_state)
                 new_constraints = self._extract_new_constraints(state, succ_state)
 
@@ -1942,7 +1961,9 @@ class RustCallbackDispatchMixin:
             # into the cached copy and break ordinary (non-callback) reads
             # against that cache entry. The copy ensures the swap only
             # affects this one callback frame.
-            if has_predicates or getattr(self, '_use_callback_memory_proxy', False):
+            if (has_predicates
+                    or getattr(self, '_use_callback_memory_proxy', False)
+                    or getattr(self, '_use_callback_register_proxy', False)):
                 self._stats_state_creations += 1
                 state = cached_state.copy()
             else:
@@ -1964,33 +1985,48 @@ class RustCallbackDispatchMixin:
 
                 # Apply registers from bundle using direct store (bypasses claripy BVV creation)
                 # Save bundle registers for snapshot reuse in _handle_simprocedure_callback
+                # angr-qj30 (write-through .2): when the register-proxy gate
+                # is on, skip the bundle register apply entirely. The proxy
+                # we install below at ``_install_callback_register_proxy``
+                # reads every register live from Rust by ``state_id`` — the
+                # cached state's register file will be replaced wholesale,
+                # so writing to it here would be wasted work.
                 registers = bundle['registers']
-                self._last_bundle_registers = registers
-                reg_map = self._get_register_offset_map(arch)
-                for reg_name, val in registers.items():
-                    try:
-                        if val is not None:
-                            offset_size = reg_map.get(reg_name)
-                            if offset_size is not None:
-                                offset, size = offset_size
-                                state.registers.store(offset, val, size=size)
+                if not getattr(self, '_use_callback_register_proxy', False):
+                    self._last_bundle_registers = registers
+                    reg_map = self._get_register_offset_map(arch)
+                    for reg_name, val in registers.items():
+                        try:
+                            if val is not None:
+                                offset_size = reg_map.get(reg_name)
+                                if offset_size is not None:
+                                    offset, size = offset_size
+                                    state.registers.store(offset, val, size=size)
+                                else:
+                                    setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
                             else:
-                                setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
-                        else:
-                            # Symbolic register — fetch AST individually
-                            try:
-                                ast = self._rust_mgr.get_pending_register_ast(reg_name)
-                                if ast is not None:
-                                    setattr(state.regs, reg_name, ast)
-                            except Exception:
-                                # cat-(b) FALLBACK WITH LOSS: symbolic register AST fetch failed;
-                                # the register stays at the blank-state default rather than the
-                                # pending Rust value.
-                                pass
-                    except Exception:
-                        # cat-(b) FALLBACK WITH LOSS: per-register apply failed; that
-                        # register may diverge from the pending Rust state.
-                        pass
+                                # Symbolic register — fetch AST individually
+                                try:
+                                    ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                                    if ast is not None:
+                                        setattr(state.regs, reg_name, ast)
+                                except Exception:
+                                    # cat-(b) FALLBACK WITH LOSS: symbolic register AST fetch failed;
+                                    # the register stays at the blank-state default rather than the
+                                    # pending Rust value.
+                                    pass
+                        except Exception:
+                            # cat-(b) FALLBACK WITH LOSS: per-register apply failed; that
+                            # register may diverge from the pending Rust state.
+                            pass
+                else:
+                    # Gate-on path: still null the bundle-snapshot field so
+                    # ``_snapshot_orig_state`` falls through to the
+                    # state-based snapshot (which then routes through the
+                    # proxy → live Rust read). No diff is run end-of-callback
+                    # so this snapshot is mostly inert, but keeping the
+                    # field tidy avoids stale data from a prior callback.
+                    self._last_bundle_registers = None
 
                 # Cache history and jumpkind from bundle for later use
                 state.scratch._rust_bundle_history = bundle.get('history', [])
@@ -2017,7 +2053,11 @@ class RustCallbackDispatchMixin:
                         # fall back to the (potentially out-of-date) Python solver.
                         # Already warns.
                         l.warning(f"Could not fork solver context: {e2}")
-                self._sync_registers_from_rust_pending(state)
+                # angr-qj30 (write-through .2): with the register-proxy gate
+                # on, the proxy will be installed below and reads route
+                # live to Rust — skip the pre-population sync path entirely.
+                if not getattr(self, '_use_callback_register_proxy', False):
+                    self._sync_registers_from_rust_pending(state)
 
             # Install memory proxy: wrap state.memory.load to check Rust
             # memory first for addresses that the Python state doesn't have
@@ -2104,6 +2144,18 @@ class RustCallbackDispatchMixin:
                     and event.callback_state_id is not None):
                 self._install_callback_memory_proxy(state, event.callback_state_id)
 
+            # angr-qj30 (write-through .2): gated install of
+            # ``RustRegisterProxy`` as ``state.registers``. When on, every
+            # ``state.regs.<name>`` read/write (and ``state.registers.{load,
+            # store}``) routes directly into Rust by state_id — eliminating
+            # the bundle register apply above and the post-callback
+            # ``_extract_register_changes`` diff-and-push. The matching site
+            # in ``_handle_simprocedure_callback`` forces ``reg_changes=[]``
+            # so the resume path skips the apply.
+            if (getattr(self, '_use_callback_register_proxy', False)
+                    and event.callback_state_id is not None):
+                self._install_callback_register_proxy(state, event.callback_state_id)
+
         return state
 
     def _install_callback_memory_proxy(self, state, state_id):
@@ -2119,6 +2171,21 @@ class RustCallbackDispatchMixin:
         # ``state.plugins`` bookkeeping; use it so removal / merge code that
         # walks ``state.plugins`` finds the proxy under the ``"memory"`` key.
         state.register_plugin("memory", proxy)
+
+    def _install_callback_register_proxy(self, state, state_id):
+        """Swap ``state.registers`` for a ``RustRegisterProxy`` bound to ``state_id``.
+
+        angr-qj30 (write-through .2). Caller has already copied the cached
+        state, so replacing the plugin here only affects this callback frame.
+        ``state.regs`` (the SimRegNameView) delegates to ``state.registers``
+        via ``load(name)`` / ``store(name, val)``, so installing the proxy
+        under the ``"registers"`` key is sufficient — no separate swap of
+        ``state.regs`` is needed.
+        """
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+        proxy = RustRegisterProxy(self._rust_mgr, state_id, self._project.arch)
+        proxy.set_state(state)
+        state.register_plugin("registers", proxy)
 
     def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
         """Ensure critical plugins are present on the state.
@@ -2264,7 +2331,13 @@ class RustCallbackDispatchMixin:
             new_pc = succ.addr
 
             # Extract register changes
-            reg_changes = self._extract_register_changes(state, succ)
+            # angr-qj30 (write-through .2): with the register-proxy gate
+            # on, VEX fallback writes to ``state.regs.<name>`` already
+            # landed in Rust during execution.
+            if getattr(self, '_use_callback_register_proxy', False):
+                reg_changes = []
+            else:
+                reg_changes = self._extract_register_changes(state, succ)
 
             # Extract memory changes (returns concrete_changes, symbolic_imports)
             mem_changes, symbolic_imports = self._extract_memory_changes(state, succ)
