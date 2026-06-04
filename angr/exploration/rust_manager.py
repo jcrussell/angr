@@ -843,6 +843,7 @@ class RustExplorationManager(
         use_callback_solver_proxy: Optional[bool] = None,
         use_callback_callstack_proxy: Optional[bool] = None,
         use_export_callstack_proxy: Optional[bool] = None,
+        use_export_memory_proxy: Optional[bool] = None,
         use_simproc_fork_via_rust: Optional[bool] = None,
         **kwargs,
     ):
@@ -931,6 +932,16 @@ class RustExplorationManager(
                 ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles it on;
                 otherwise off. Off keeps the eager
                 ``_sync_rust_callstack_to_state`` reconstruction path live.
+            use_export_memory_proxy: If True, install ``RustMemoryProxy``
+                as ``state.memory`` on materialized states returned from
+                Rust (stash exports / ``found`` / ``active`` / etc.)
+                instead of pulling Rust pages back into the SimState's
+                claripy memory via ``state.memory.store(...)`` at export
+                time (angr-ul4k, write-through boundary). When ``None``
+                (default), the env var
+                ``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles it on;
+                otherwise off. Off keeps the eager
+                ``_sync_rust_memory_to_state`` writeback path live.
             use_simproc_fork_via_rust: If True, route SimProcedure additional
                 successors through ``fork_state_to_stash(parent_id, 'active')``
                 (Rust-owned fork) instead of ``_add_rust_state('active', ...)``
@@ -1088,6 +1099,23 @@ class RustExplorationManager(
             self._use_export_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_export_callstack_proxy = bool(use_export_callstack_proxy)
+
+        # angr-ul4k (write-through boundary): gate for installing
+        # ``RustMemoryProxy`` as ``state.memory`` on every materialized
+        # state returned from a Rust stash (instead of writing Rust pages
+        # back into the SimState's claripy memory via
+        # ``state.memory.store(...)`` in ``_sync_rust_memory_to_state``).
+        # Default off keeps the eager writeback path live; when on, the
+        # export pipeline installs the proxy and ``state.memory.load(...)``
+        # reads bytes live from Rust by ``state_id`` via the existing
+        # ``get_state_memory_ast`` FFI. Env var
+        # ``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles default-on when
+        # the kwarg is left at its default ``None``.
+        if use_export_memory_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "")
+            self._use_export_memory_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_export_memory_proxy = bool(use_export_memory_proxy)
 
         # angr-t3mr (write-through boundary): gate for routing SimProcedure
         # additional successors through ``fork_state_to_stash(parent_id,

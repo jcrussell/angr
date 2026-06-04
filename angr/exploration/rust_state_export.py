@@ -698,11 +698,43 @@ class RustStateExportMixin:
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
         """Sync memory from Rust state to Python state.
 
-        After Rust executes code, memory modified during execution is only in
-        Rust's memory. This method exports the Rust state's memory pages and
-        symbolic expressions, and applies them to the Python state so that
-        state.memory.load() returns current values.
+        Two modes:
+
+        * **Eager writeback** (default). After Rust executes code, the
+          materialized SimState's claripy memory has whatever bytes were on
+          the template at fork time. This method exports the Rust state's
+          memory pages and symbolic expressions, and pushes them into
+          ``state.memory`` via ``store(...)`` so ``state.memory.load()``
+          returns current values.
+        * **Proxy install** (when ``self._use_export_memory_proxy`` is on,
+          angr-ul4k). Installs ``RustMemoryProxy`` bound to ``state_id`` as
+          ``state.memory`` instead — every ``load`` / ``store`` after that
+          routes directly into Rust by ``state_id`` (loads use
+          ``get_state_memory_ast`` for symbolic-AST round-trip). No FFI
+          page export and no writeback into the SimState. Matches the
+          write-through model used for callstack / registers / solver.
         """
+        if getattr(self, '_use_export_memory_proxy', False):
+            from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+            try:
+                proxy = RustMemoryProxy(self._rust_mgr, state_id, state.arch)
+                state.register_plugin("memory", proxy)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: proxy install failed; the
+                # state keeps its pre-Rust claripy memory. Downstream
+                # consumers that read addresses Rust wrote will see stale
+                # template bytes.
+                l.debug(
+                    "RustMemoryProxy install failed for %d: %s",
+                    state_id, e,
+                )
+            # Symbolic-AST sync (_sync_rust_symbolic_objects_to_state) is
+            # for pushing Rust-computed claripy ASTs into Python memory; the
+            # proxy reads them live via get_state_memory_ast so it would be
+            # a no-op duplicate at best. Skipped under the gate.
+            return
+
         try:
             # Use flushed export to materialize any pending symbolic writes
             # before exporting memory pages to Python.

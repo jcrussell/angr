@@ -4874,6 +4874,155 @@ class TestExportCallStackProxyGate:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestExportMemoryProxyGate:
+    """angr-ul4k write-through boundary: ``use_export_memory_proxy`` gate
+    controls whether ``_sync_rust_memory_to_state`` installs a
+    ``RustMemoryProxy`` as ``state.memory`` (read-through to Rust) on
+    materialized states, or pushes Rust pages back into the SimState's
+    claripy memory via ``state.memory.store(...)`` (eager writeback).
+    Default off keeps the eager path live; on routes ``state.memory.load``
+    through Rust by ``state_id`` — matching the write-through model used
+    for callstack / registers / solver.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_memory_proxy is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_export_memory_proxy=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_memory_proxy=True
+        )
+        assert mgr._use_export_memory_proxy is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_memory_proxy is True
+
+    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
+        """Explicit ``use_export_memory_proxy=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_memory_proxy=False
+        )
+        assert mgr._use_export_memory_proxy is False
+
+    def test_sync_off_uses_eager_writeback(self, fauxware_project):
+        """Gate off: ``_sync_rust_memory_to_state`` keeps the SimState's
+        original claripy memory plugin (no ``RustMemoryProxy`` install)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_memory_proxy is False
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        original_memory = target.memory
+        mgr._sync_rust_memory_to_state(target, seed_id)
+        # Eager path: no proxy install; the original claripy memory plugin
+        # stays in place (possibly mutated by store() calls, but identity
+        # is preserved).
+        assert target.memory is original_memory
+        assert not isinstance(target.memory, RustMemoryProxy)
+
+    def test_sync_on_installs_proxy(self, fauxware_project):
+        """Gate on: ``_sync_rust_memory_to_state`` installs a
+        ``RustMemoryProxy`` bound to ``state_id`` and skips the page-by-page
+        writeback entirely."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        mgr._sync_rust_memory_to_state(target, seed_id)
+        assert isinstance(target.memory, RustMemoryProxy)
+        assert target.memory._state_id == seed_id
+        assert target.memory.state is target
+        assert target.memory.id == "mem"
+        assert target.memory.category == "mem"
+
+    def test_sync_on_skips_symbolic_object_export(self, fauxware_project, monkeypatch):
+        """Gate on: the eager pull path is short-circuited — neither the
+        page export nor the follow-on
+        ``_sync_rust_symbolic_objects_to_state`` call runs. We monkey-patch
+        the Python-side symbolic-objects helper (the Rust FFI methods on
+        ``_rust_mgr`` are read-only PyO3 attributes) to assert it never
+        fires under the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        calls: list[int] = []
+
+        def _spy(self, _state, sid):
+            calls.append(sid)
+
+        monkeypatch.setattr(
+            type(mgr), "_sync_rust_symbolic_objects_to_state", _spy
+        )
+        mgr._sync_rust_memory_to_state(target, seed_id)
+        # Proxy install short-circuits before the symbolic-AST helper runs.
+        assert calls == []
+
+    def test_export_pipeline_uses_proxy_when_gated(self, fauxware_project):
+        """End-to-end: after explore(), materialized states from the
+        ``found`` stash carry a ``RustMemoryProxy`` instead of the original
+        claripy memory plugin when the gate is on."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_memory_proxy=True
+        )
+        mgr.explore(find=0x4006ed)
+        if not mgr.found:
+            pytest.skip("explore did not find target — nothing to verify")
+        found = mgr.found[0]
+        assert isinstance(found.memory, RustMemoryProxy)
+
+    def test_export_pipeline_uses_eager_when_off(self, fauxware_project):
+        """End-to-end: gate off keeps the eager page writeback on
+        materialized states from ``found`` (no ``RustMemoryProxy``)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_memory_proxy is False
+        mgr.explore(find=0x4006ed)
+        if not mgr.found:
+            pytest.skip("explore did not find target — nothing to verify")
+        found = mgr.found[0]
+        assert not isinstance(found.memory, RustMemoryProxy)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSimProcForkViaRustGate:
     """angr-t3mr write-through boundary: ``use_simproc_fork_via_rust`` gate
     controls how additional SimProcedure successors are added to the Rust
