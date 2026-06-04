@@ -4654,6 +4654,14 @@ class TestCallbackCallStackProxyGate:
             (0x150, 0x200, 0x155, 0x7100),
             (0x050, 0x100, 0x055, 0x7200),  # bottom
         ]
+        # Save the original class-level ``_frames`` property and restore
+        # it in ``finally`` — ``del type(proxy)._frames`` would remove
+        # the production property entirely (it's defined directly on
+        # the class, not a per-instance override), breaking subsequent
+        # tests in the same process. Caught by
+        # ``TestExportCallStackProxyGate::test_sync_on_empty_rust_stack_installs_proxy``
+        # when the export-gate tests ran after this one.
+        original_frames = RustCallStackProxyPlugin._frames
         type(proxy)._frames = property(lambda self: snapshot)  # noqa: SLF001
         try:
             assert len(proxy) == 3
@@ -4673,9 +4681,9 @@ class TestCallbackCallStackProxyGate:
             assert walked[0] is proxy
             assert [f.func_addr for f in walked] == [0x300, 0x200, 0x100]
         finally:
-            # Restore the property so a later test that uses the real
-            # _frames doesn't read this stub.
-            del type(proxy)._frames
+            # Restore the original class property so subsequent tests
+            # using the real FFI-backed ``_frames`` keep working.
+            RustCallStackProxyPlugin._frames = original_frames
 
     def test_merge_widen_return_false(self, fauxware_project):
         """``merge`` / ``widen`` return False on the proxy plugin —
@@ -4710,6 +4718,158 @@ class TestCallbackCallStackProxyGate:
         assert proxy.pop() is proxy
         assert proxy.call(0, 0) is proxy
         assert proxy.ret() is proxy
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestExportCallStackProxyGate:
+    """angr-yk2g write-through boundary: ``use_export_callstack_proxy``
+    gate controls whether ``_sync_rust_callstack_to_state`` installs a
+    ``RustCallStackProxyPlugin`` as ``state.callstack`` (read-through to
+    Rust) on materialized states, or rebuilds a ``CallStack`` linked-list
+    chain via ``register_plugin`` (eager reconstruction). Default off
+    keeps the eager path live; on routes ``state.callstack`` reads
+    through Rust by ``state_id`` via ``get_state_call_stack`` — matching
+    the write-through model used for memory / registers / solver.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_callstack_proxy is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_export_callstack_proxy=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_callstack_proxy=True
+        )
+        assert mgr._use_export_callstack_proxy is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_callstack_proxy is True
+
+    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
+        """Explicit ``use_export_callstack_proxy=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_callstack_proxy=False
+        )
+        assert mgr._use_export_callstack_proxy is False
+
+    def test_sync_off_empty_stack_no_op(self, fauxware_project):
+        """Gate off, empty Rust stack: ``_sync_rust_callstack_to_state``
+        early-returns and leaves ``state.callstack`` as the template
+        ``CallStack`` (not a proxy)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_callstack_proxy is False
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        assert mgr._rust_mgr.get_state_call_stack(seed_id) == []
+        target = fauxware_project.factory.entry_state()
+        original_callstack = target.callstack
+        mgr._sync_rust_callstack_to_state(target, seed_id)
+        # Eager path: empty frames → no register_plugin call.
+        assert target.callstack is original_callstack
+        assert not isinstance(target.callstack, RustCallStackProxyPlugin)
+
+    def test_sync_on_installs_proxy(self, fauxware_project):
+        """Gate on: ``_sync_rust_callstack_to_state`` installs a
+        ``RustCallStackProxyPlugin`` bound to ``state_id``."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        mgr._sync_rust_callstack_to_state(target, seed_id)
+        assert isinstance(target.callstack, RustCallStackProxyPlugin)
+        assert target.callstack._state_id == seed_id
+        assert target.callstack.state is target
+        assert target.callstack.id == "callstack"
+        assert target.callstack.category == "callstack"
+
+    def test_sync_on_empty_rust_stack_installs_proxy(self, fauxware_project):
+        """Gate on: empty Rust call stack still installs the proxy —
+        unlike the eager path which is a no-op on empty frames, the
+        proxy install short-circuits the FFI read entirely. The
+        installed proxy reports len 0."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_callstack_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        # Sanity: seed state has no Rust frames yet.
+        assert mgr._rust_mgr.get_state_call_stack(seed_id) == []
+        mgr._sync_rust_callstack_to_state(target, seed_id)
+        # Gate on: proxy is installed regardless of empty stack.
+        assert isinstance(target.callstack, RustCallStackProxyPlugin)
+        assert len(target.callstack) == 0
+
+    def test_export_pipeline_uses_proxy_when_gated(self, fauxware_project):
+        """End-to-end: after explore(), materialized states from the
+        ``found`` stash carry a ``RustCallStackProxyPlugin`` instead of
+        a ``CallStack`` linked-list when the gate is on."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_export_callstack_proxy=True
+        )
+        mgr.explore(find=0x4006ed)
+        if not mgr.found:
+            pytest.skip("explore did not find target — nothing to verify")
+        found = mgr.found[0]
+        assert isinstance(found.callstack, RustCallStackProxyPlugin)
+        # Top-frame attribute access reads frames live from Rust.
+        sid = mgr._rust_mgr.get_state_ids("found")[0]
+        raw = mgr._rust_mgr.get_state_call_stack(sid)
+        assert len(found.callstack) == len(raw)
+        if raw:
+            expected = raw[-1]
+            assert found.callstack.func_addr == expected[1]
+            assert found.callstack.ret_addr == expected[2]
+
+    def test_export_pipeline_uses_chain_when_off(self, fauxware_project):
+        """End-to-end: gate off keeps the eager ``CallStack`` chain
+        reconstruction on materialized states from ``found``."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+        from angr.state_plugins.callstack import CallStack
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_export_callstack_proxy is False
+        mgr.explore(find=0x4006ed)
+        if not mgr.found:
+            pytest.skip("explore did not find target — nothing to verify")
+        found = mgr.found[0]
+        assert isinstance(found.callstack, CallStack)
+        assert not isinstance(found.callstack, RustCallStackProxyPlugin)
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -627,14 +627,40 @@ class RustStateExportMixin:
         """Sync Rust-tracked call frames into state.callstack.
 
         Rust's call_stack (push order, outermost first) is the source of truth
-        for any call/ret that happened during Rust execution. The Python state
-        was forked from a template before exploration, so its CallStack plugin
-        does not reflect Rust-side push/pop. This rebuilds state.callstack as a
-        linked list (top = most recent Rust call) and replaces the plugin via
-        register_plugin. No-op if Rust has zero frames (preserves the
-        template's empty CallStack so we don't clobber pre-Rust call history
-        for forks made from non-entry states).
+        for any call/ret that happened during Rust execution.
+
+        Two modes:
+
+        * **Eager reconstruction** (default). The Python state was forked from
+          a template before exploration, so its CallStack plugin does not
+          reflect Rust-side push/pop. This rebuilds state.callstack as a
+          linked list (top = most recent Rust call) and replaces the plugin
+          via register_plugin. No-op if Rust has zero frames (preserves the
+          template's empty CallStack so we don't clobber pre-Rust call
+          history for forks made from non-entry states).
+        * **Proxy install** (when ``self._use_export_callstack_proxy`` is on,
+          angr-yk2g). Installs ``RustCallStackProxyPlugin`` bound to
+          ``state_id`` instead — iteration / top-frame attribute access reads
+          frames live from Rust via ``get_state_call_stack``. No eager FFI
+          read or chain reconstruction. Matches the write-through model used
+          for memory / registers / solver.
         """
+        if getattr(self, '_use_export_callstack_proxy', False):
+            from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
+            try:
+                proxy = RustCallStackProxyPlugin(self._rust_mgr, state_id)
+                proxy.set_state(state)
+                state.register_plugin("callstack", proxy)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: proxy install failed; state
+                # keeps its pre-Rust CallStack plugin.
+                l.debug(
+                    "RustCallStackProxyPlugin install failed for %d: %s",
+                    state_id, e,
+                )
+            return
+
         try:
             frames = self._rust_mgr.get_state_call_stack(state_id)
         except Exception as e:

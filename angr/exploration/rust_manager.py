@@ -842,6 +842,7 @@ class RustExplorationManager(
         use_callback_register_proxy: Optional[bool] = None,
         use_callback_solver_proxy: Optional[bool] = None,
         use_callback_callstack_proxy: Optional[bool] = None,
+        use_export_callstack_proxy: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -919,6 +920,16 @@ class RustExplorationManager(
                 otherwise off. Off leaves the cached state's (typically
                 entry-state) ``CallStack`` plugin untouched at callback
                 time.
+            use_export_callstack_proxy: If True, install
+                ``RustCallStackProxyPlugin`` as ``state.callstack`` on
+                materialized states returned from Rust (stash exports /
+                ``found`` / ``active`` / etc.) instead of reconstructing a
+                ``CallStack`` linked-list via ``register_plugin`` at export
+                time (angr-yk2g, write-through boundary). When ``None``
+                (default), the env var
+                ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles it on;
+                otherwise off. Off keeps the eager
+                ``_sync_rust_callstack_to_state`` reconstruction path live.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -1049,6 +1060,22 @@ class RustExplorationManager(
             self._use_callback_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_callback_callstack_proxy = bool(use_callback_callstack_proxy)
+
+        # angr-yk2g (write-through boundary): gate for installing
+        # ``RustCallStackProxyPlugin`` as ``state.callstack`` on every
+        # materialized state returned from a Rust stash (instead of
+        # rebuilding a ``CallStack`` linked-list via ``register_plugin`` in
+        # ``_sync_rust_callstack_to_state``). Default off keeps the eager
+        # reconstruction path live; when on, the export pipeline installs
+        # the proxy and ``state.callstack`` reads frames live from Rust by
+        # ``state_id`` via ``get_state_call_stack``. Env var
+        # ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles default-on
+        # when the kwarg is left at its default ``None``.
+        if use_export_callstack_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "")
+            self._use_export_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_export_callstack_proxy = bool(use_export_callstack_proxy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
