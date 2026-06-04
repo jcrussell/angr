@@ -1442,7 +1442,26 @@ class RustMemoryProxy:
             self._state_id, addr, haystack_size
         )
         if haystack_ast is None:
-            haystack_ast = claripy.BVV(0, haystack_size * 8)
+            # angr-ric3: the wide load fails on mixed symbolic+concrete or
+            # multi-page ranges (Rust ``state.memory_load`` returns Err when
+            # any byte in the requested range is in a lazy region or has a
+            # symbolic store interleaved with concrete bytes). Fall back to
+            # per-byte loads and Concat in LSB-first order so byte i lands at
+            # bits [i*8 : i*8+7] — matches the layout the eager wide load
+            # would have produced and what the sub-AST extractor below
+            # assumes. Without this fallback ``find()`` would otherwise scan
+            # an all-zero haystack and match the needle at offset 0 whenever
+            # the first byte equals 0, returning the wrong answer for
+            # symbolic-buffer strlen/strchr/memchr callers.
+            byte_asts = []
+            for i in range(haystack_size):
+                b = self._mgr.get_state_memory_ast(
+                    self._state_id, addr + i, 1
+                )
+                if b is None:
+                    b = claripy.BVV(0, 8)
+                byte_asts.append(b)
+            haystack_ast = claripy.Concat(*reversed(byte_asts))
 
         # Layout: Rust stores byte i at bit positions [i*8 : i*8+7] (LSB-first
         # — matches set_state_memory_concrete). Needle is matched MSB-first in

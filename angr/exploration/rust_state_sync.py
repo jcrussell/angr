@@ -635,8 +635,15 @@ class RustStateSyncMixin:
                     continue  # Loader page — handled by overlay
                 if page_addr == sp_page:
                     continue  # Stack page — already synced
-                if page_addr in symbolic_pages:
-                    continue  # Handled later via symbolic import
+                # angr-ric3: do NOT skip symbolic pages here. The page may
+                # contain concrete bytes interspersed with the symbolic
+                # store (e.g. a SimProc test that writes a 1-byte BVS at
+                # offset N and concrete bytes at offset N+M on the same
+                # page). Pushing concrete_load gives Rust the surrounding
+                # bytes at their actual values; the symbolic import in
+                # _add_rust_state then overlays the symbolic positions on
+                # top, so symbolic identity is preserved while concrete
+                # bytes become visible to the proxy/Rust-side read path.
                 page_obj = mem_pages.get(page_no)
                 if page_obj is None:
                     continue
