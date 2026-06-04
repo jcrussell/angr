@@ -840,6 +840,7 @@ class RustExplorationManager(
         deterministic: bool = False,
         use_callback_memory_proxy: Optional[bool] = None,
         use_callback_register_proxy: Optional[bool] = None,
+        use_callback_solver_proxy: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -896,6 +897,17 @@ class RustExplorationManager(
                 through .2). When ``None`` (default), the env var
                 ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles it on;
                 otherwise off. Off keeps the existing diff-and-push path live.
+            use_callback_solver_proxy: If True, install
+                ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
+                callback states so ``state.solver.add(constraint)`` routes
+                directly into the underlying Rust state's solver, and
+                ``constraints`` / ``eval`` / ``satisfiable`` / ``min`` /
+                ``max`` read through Rust (angr-8oiw, write-through .3). When
+                ``None`` (default), the env var
+                ``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles it on;
+                otherwise off. Off keeps the existing
+                ``_install_rust_solver_on_callback_state`` monkey-patch path
+                live (which maintains a parallel Python claripy solver).
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -994,6 +1006,23 @@ class RustExplorationManager(
             self._use_callback_register_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_callback_register_proxy = bool(use_callback_register_proxy)
+
+        # angr-8oiw (write-through .3): gate for installing
+        # ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
+        # callback states. Default off keeps the existing
+        # ``_install_rust_solver_on_callback_state`` monkey-patch path live
+        # (which mirrors constraints into a parallel Python claripy solver).
+        # When on, ``_create_state_for_callback`` skips the monkey-patch
+        # install and installs the proxy so every ``state.solver.add`` goes
+        # straight to Rust by state_id, and reads come from the Rust state
+        # directly (no parallel claripy solver). Env var
+        # ``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles default-on when
+        # the kwarg is left at its default ``None``.
+        if use_callback_solver_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "")
+            self._use_callback_solver_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_callback_solver_proxy = bool(use_callback_solver_proxy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()

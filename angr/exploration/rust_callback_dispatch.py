@@ -2113,21 +2113,30 @@ class RustCallbackDispatchMixin:
             # solver untouched (no closures installed; the cached_state's
             # prior closures, if any, still route to the latest
             # state.scratch.rust_solver_ctx).
-            _cb_rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
-            if _cb_rust_ctx is None:
-                # angr-bs71/h0dv: counter should stay at 0 across the
-                # benchmark suite. Non-zero readings here mean every
-                # solver attach path (bundle, borrow, fork) failed for
-                # this callback state and Python's solver may diverge
-                # from Rust's.
-                self._stats_rust_ctx_missing += 1
-                l.warning(
-                    "rust_solver_ctx not attached to callback state at 0x%x; "
-                    "skipping solver install — Python solver may diverge from Rust",
-                    event.callback_addr or 0,
-                )
+            # angr-8oiw (write-through .3): when the solver-proxy gate is
+            # on, install ``RustSolverProxyPlugin`` instead of the
+            # monkey-patched closure path. The proxy writes through to the
+            # Rust state's solver by state_id (no parallel Python claripy
+            # solver). Skip the closure install entirely in that mode.
+            if (getattr(self, '_use_callback_solver_proxy', False)
+                    and event.callback_state_id is not None):
+                self._install_callback_solver_proxy(state, event.callback_state_id)
             else:
-                self._install_rust_solver_on_callback_state(state, _cb_rust_ctx)
+                _cb_rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
+                if _cb_rust_ctx is None:
+                    # angr-bs71/h0dv: counter should stay at 0 across the
+                    # benchmark suite. Non-zero readings here mean every
+                    # solver attach path (bundle, borrow, fork) failed for
+                    # this callback state and Python's solver may diverge
+                    # from Rust's.
+                    self._stats_rust_ctx_missing += 1
+                    l.warning(
+                        "rust_solver_ctx not attached to callback state at 0x%x; "
+                        "skipping solver install — Python solver may diverge from Rust",
+                        event.callback_addr or 0,
+                    )
+                else:
+                    self._install_rust_solver_on_callback_state(state, _cb_rust_ctx)
 
             # Phase 3 Fix: Ensure critical plugins are present
             # Some scripts assume posix/libc plugins exist - restore if missing
@@ -2186,6 +2195,20 @@ class RustCallbackDispatchMixin:
         proxy = RustRegisterProxy(self._rust_mgr, state_id, self._project.arch)
         proxy.set_state(state)
         state.register_plugin("registers", proxy)
+
+    def _install_callback_solver_proxy(self, state, state_id):
+        """Swap ``state.solver`` for a ``RustSolverProxyPlugin`` bound to ``state_id``.
+
+        angr-8oiw (write-through .3). Caller has already copied the cached
+        state, so replacing the plugin here only affects this callback frame.
+        The proxy routes ``state.solver.add`` through to the underlying Rust
+        state's solver (no parallel Python claripy solver), and
+        ``constraints`` / ``eval`` / ``satisfiable`` read through Rust.
+        """
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+        proxy = RustSolverProxyPlugin(self._rust_mgr, state_id)
+        proxy.set_state(state)
+        state.register_plugin("solver", proxy)
 
     def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
         """Ensure critical plugins are present on the state.

@@ -237,6 +237,478 @@ class RustSolverProxy:
             self._solver_ctx.set_timeout(timeout_ms)
 
 
+class RustSolverProxyPlugin:
+    """SimSolver-shaped plugin that routes constraint ops through Rust.
+
+    Installed as ``state.solver`` on SimProcedure callback states under the
+    ``use_callback_solver_proxy`` gate on ``RustExplorationManager``
+    (angr-8oiw, write-through .3). Mirrors the angr-4scu (memory) /
+    angr-qj30 (registers) install pattern.
+
+    Write-through model:
+      * ``add(constraint)`` routes immediately into the underlying Rust
+        state's solver via ``add_constraints_to_state(state_id, [...])`` —
+        no parallel Python claripy solver.
+      * ``constraints`` reads through ``export_state_constraints(state_id)``.
+      * ``eval`` / ``eval_upto`` / ``satisfiable`` / ``min`` / ``max`` /
+        ``is_true`` / ``is_false`` / ``solution`` delegate to a lazily-forked
+        Rust context (avoids mutating the source state's solver).
+
+    Symbol creation methods (``BVS`` / ``BVV`` / ``Unconstrained``) and the
+    variable-tracking helpers (``register_variable`` / ``get_variables`` /
+    ``describe_variables``) delegate to ``claripy`` directly — those don't
+    touch the solver, so there's no divergence concern. ``all_variables`` /
+    ``eternal_tracked_variables`` / ``temporal_tracked_variables`` are
+    maintained on the plugin so SimProcedures that read them (e.g. file
+    backing for ``open()``) see consistent state.
+
+    Plugin protocol surface (``id`` / ``state`` / ``set_state`` / ``copy`` /
+    ``init_state`` / ``merge`` / ``widen``) matches the ``RustRegisterProxy`` /
+    ``RustMemoryProxy`` shape: ``STRONGREF_STATE = False``, ``copy()`` returns
+    an unbound proxy bound to the same Rust state_id.
+    """
+
+    STRONGREF_STATE: bool = False
+
+    def __init__(self, rust_mgr, state_id):
+        object.__setattr__(self, "_mgr", rust_mgr)
+        object.__setattr__(self, "_state_id", state_id)
+        # Lazy Rust solver fork — created on first eval/satisfiable/min/max.
+        # Invalidated on add() so the next solve picks up the new constraint.
+        object.__setattr__(self, "_rust_ctx_cache", None)
+        # SimSolver protocol attributes.
+        object.__setattr__(self, "id", "solver")
+        object.__setattr__(self, "state", None)
+        # Variable tracking — SimProcedures call ``register_variable`` and
+        # ``get_variables``; keep the bookkeeping on the plugin so they work.
+        object.__setattr__(self, "all_variables", [])
+        object.__setattr__(self, "temporal_tracked_variables", {})
+        object.__setattr__(self, "eternal_tracked_variables", {})
+        # ``SimSolver._stored_solver`` is read by ``solver._solver`` —
+        # callers occasionally poke at it; set to ``None`` so attribute
+        # access doesn't raise. The proxy never uses it.
+        object.__setattr__(self, "_stored_solver", None)
+
+    # ---------------------------------------------------------------
+    # Plugin protocol
+    # ---------------------------------------------------------------
+
+    @property
+    def category(self):
+        return "solver"
+
+    def set_state(self, state):
+        """SimStatePlugin hook — invoked on plugin install / copy."""
+        object.__setattr__(self, "state", state)
+
+    def set_strongref_state(self, _state):
+        # STRONGREF_STATE=False, so dead code; defined for protocol parity.
+        pass
+
+    def init_state(self):
+        # The underlying Rust state's solver is already populated by the
+        # engine — nothing to initialize on the Python side.
+        pass
+
+    def copy(self, _memo=None):
+        """Return a new proxy bound to the same Rust state."""
+        clone = RustSolverProxyPlugin(self._mgr, self._state_id)
+        # Carry over variable-tracking dicts — SimSolver.copy() does the
+        # same so SimProc state.copy() preserves register_variable refs.
+        clone.all_variables = list(self.all_variables)
+        clone.temporal_tracked_variables = dict(self.temporal_tracked_variables)
+        clone.eternal_tracked_variables = dict(self.eternal_tracked_variables)
+        return clone
+
+    def merge(self, _others, _merge_conditions, _common_ancestor=None):
+        # Mirrors the angr-8dop.2 gap stubs on the memory / register proxies:
+        # cross-state_id solver merge is out of scope for the callback gate.
+        return False
+
+    def widen(self, _others):
+        return False
+
+    def downsize(self):
+        # SimSolver.downsize clears Python claripy caches; the proxy has no
+        # Python solver state, so this is a no-op.
+        pass
+
+    def simplify(self, e=None):
+        """``state.solver.simplify(expr)`` — delegates to claripy.
+
+        SimSolver.simplify is a thin wrapper around ``claripy.simplify``
+        when handed an AST; for non-ASTs it returns the input unchanged.
+        Used by ``state.memory.store(...)``'s default-page logic and any
+        SimProc that simplifies its computed result.
+        """
+        if e is None:
+            return None
+        if isinstance(e, claripy.ast.Base):
+            return claripy.simplify(e)
+        return e
+
+    def reload_solver(self, constraints=None):
+        # Proxy has no _stored_solver to reload — constraints live in
+        # Rust. Accept the call so SimProcedures that call reload_solver
+        # after add() don't crash.
+        pass
+
+    def unsat_core(self, extra_constraints=()):
+        # Rust solver doesn't currently expose an unsat-core API; the
+        # caller path that needs it (claripy's MIN_DEPTH / explore-with-
+        # techniques) is rare. Return an empty list rather than raising
+        # so SimProcedures that opportunistically inspect the core don't
+        # crash. Matches the prior monkey-patch behavior, which left
+        # unsat_core untouched on Python's solver — equivalent to "the
+        # Python solver had no unsat core to report".
+        return []
+
+    def eval_to_ast(self, e, n, extra_constraints=(), exact=None):
+        """Return up to ``n`` concrete solutions as claripy BVVs."""
+        if hasattr(e, "concrete") and e.concrete:
+            return [e]
+        values = self.eval_upto(e, n, extra_constraints=extra_constraints, exact=exact)
+        return [claripy.BVV(v, len(e)) for v in values]
+
+    # ---------------------------------------------------------------
+    # Read-through: constraints
+    # ---------------------------------------------------------------
+
+    @property
+    def constraints(self):
+        """Return the underlying Rust state's constraints as claripy ASTs."""
+        return self._mgr.export_state_constraints(self._state_id)
+
+    # ---------------------------------------------------------------
+    # Write-through: add
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _unwrap_constraint(c):
+        """Strip ``SimActionObject`` wrappers and ``True``/``False`` no-ops.
+
+        SimProcedures often pass constraints wrapped in ``SimActionObject``
+        for action tracking. Stock SimSolver unwraps them via
+        ``_adjust_constraint``. Python ``True`` is a tautology (no-op);
+        ``False`` is UNSAT — both are returned as-is so the caller can
+        decide what to do.
+        """
+        # Avoid an import cycle / hot-path import: SimActionObject ships
+        # with angr but isn't on the import path for rust_state_proxy.
+        from angr.state_plugins.sim_action_object import SimActionObject  # noqa: PLC0415
+        if isinstance(c, SimActionObject):
+            return c.ast
+        return c
+
+    def add(self, *constraints):
+        """Add constraint(s) to the underlying Rust state's solver.
+
+        Write-through: each constraint lands on the Rust state by
+        ``state_id`` via ``add_constraints_to_state``. ``find_state_mut`` is
+        pending-aware (angr-qj30 fix), so this works during SimProc callbacks
+        where the state lives in pending_callback.
+        """
+        ast_list = []
+        for c in constraints:
+            if isinstance(c, (list, tuple)):
+                for cc in c:
+                    ast_list.append(self._unwrap_constraint(cc))
+            else:
+                ast_list.append(self._unwrap_constraint(c))
+        # Filter out Python-True tautologies; bail UNSAT on Python-False
+        # (matches SimSolver.add's concrete-bool shortcut).
+        filtered = []
+        for c in ast_list:
+            if c is True:
+                continue
+            if c is False:
+                raise claripy.errors.UnsatError("attempted to add False constraint")
+            filtered.append(c)
+        if not filtered:
+            return ast_list
+        try:
+            self._mgr.add_constraints_to_state(self._state_id, filtered)
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: write-through failed; the Rust
+            # state's solver did not get the constraint. Subsequent eval()
+            # may return values inconsistent with the caller's expectation.
+            # Re-raise so the failure is visible — silently swallowing
+            # would mask the divergence.
+            l.warning(
+                "RustSolverProxyPlugin.add: write-through failed for state %d: %s",
+                self._state_id, e,
+            )
+            raise
+        # Invalidate the cached fork so the next eval picks up the new
+        # constraint (the fork was cloned from the pre-add solver state).
+        object.__setattr__(self, "_rust_ctx_cache", None)
+        return ast_list
+
+    # ---------------------------------------------------------------
+    # Read-through: eval / satisfiable / min / max
+    # ---------------------------------------------------------------
+
+    def _get_rust_ctx(self):
+        if self._rust_ctx_cache is None:
+            object.__setattr__(
+                self, "_rust_ctx_cache",
+                self._mgr.fork_state_solver(self._state_id),
+            )
+        return self._rust_ctx_cache
+
+    @staticmethod
+    def _with_extra_constraints(ctx, fn, *args, extra=()):
+        if extra:
+            ctx.push()
+            try:
+                for c in extra:
+                    ctx.add_constraint_ast(c)
+                return fn(*args)
+            finally:
+                ctx.pop()
+        return fn(*args)
+
+    def satisfiable(self, extra_constraints=(), exact=None, **kwargs):
+        ctx = self._get_rust_ctx()
+        return self._with_extra_constraints(ctx, ctx.satisfiable, extra=extra_constraints)
+
+    def eval(self, expr, n_or_cast=None, cast_to=None, extra_constraints=(), exact=None, **kwargs):
+        """``state.solver.eval(expr[, cast_to=bytes])``.
+
+        Matches SimSolver.eval's (expr, cast_to=...) signature — returns a
+        single value, not a tuple. The second positional is interpreted as
+        ``cast_to`` (SimSolver doesn't support a positional ``n``).
+        """
+        if cast_to is None and n_or_cast is not None and not isinstance(n_or_cast, int):
+            cast_to = n_or_cast
+        if hasattr(expr, "concrete") and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
+            return self._cast_result(expr, val, cast_to)
+        ctx = self._get_rust_ctx()
+        result = self._with_extra_constraints(ctx, ctx.eval, expr, extra=extra_constraints)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return self._cast_result(expr, result, cast_to)
+
+    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), exact=None, **kwargs):
+        ctx = self._get_rust_ctx()
+        if hasattr(expr, "concrete") and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
+            return [self._cast_result(expr, val, cast_to)]
+        results = self._with_extra_constraints(ctx, ctx.eval_upto, expr, n, extra=extra_constraints)
+        if cast_to is not None:
+            results = [self._cast_result(expr, r, cast_to) for r in results]
+        return list(results)
+
+    def eval_one(self, expr, **kwargs):
+        results = self.eval_upto(expr, 2, **kwargs)
+        if len(results) != 1:
+            raise claripy.errors.ClaripyError(
+                f"expected 1 solution, got {len(results)}"
+            )
+        return results[0]
+
+    def eval_exact(self, expr, n, **kwargs):
+        results = self.eval_upto(expr, n + 1, **kwargs)
+        if len(results) != n:
+            raise claripy.errors.ClaripyError(
+                f"expected {n} solutions, got {len(results)}"
+            )
+        return results
+
+    def eval_atleast(self, expr, n, **kwargs):
+        results = self.eval_upto(expr, n, **kwargs)
+        if len(results) < n:
+            raise claripy.errors.ClaripyError(
+                f"expected at least {n} solutions, got {len(results)}"
+            )
+        return results
+
+    def min(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
+        ctx = self._get_rust_ctx()
+        if extra_constraints:
+            ctx.push()
+            try:
+                for c in extra_constraints:
+                    ctx.add_constraint_ast(c)
+                result = ctx.min(expr, signed=signed)
+            finally:
+                ctx.pop()
+        else:
+            result = ctx.min(expr, signed=signed)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return result
+
+    def max(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
+        ctx = self._get_rust_ctx()
+        if extra_constraints:
+            ctx.push()
+            try:
+                for c in extra_constraints:
+                    ctx.add_constraint_ast(c)
+                result = ctx.max(expr, signed=signed)
+            finally:
+                ctx.pop()
+        else:
+            result = ctx.max(expr, signed=signed)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return result
+
+    def is_true(self, expr, extra_constraints=(), **kwargs):
+        expr = self._unwrap_constraint(expr)
+        if isinstance(expr, bool):
+            return expr
+        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
+            return bool(expr.args[0])
+        ctx = self._get_rust_ctx()
+        return ctx.is_true(expr)
+
+    def is_false(self, expr, extra_constraints=(), **kwargs):
+        expr = self._unwrap_constraint(expr)
+        if isinstance(expr, bool):
+            return not expr
+        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
+            return not bool(expr.args[0])
+        ctx = self._get_rust_ctx()
+        return ctx.is_false(expr)
+
+    def solution(self, expr, value, extra_constraints=(), **kwargs):
+        expr = self._unwrap_constraint(expr)
+        ctx = self._get_rust_ctx()
+        return ctx.solution(expr, value)
+
+    def symbolic(self, expr):
+        if isinstance(expr, claripy.ast.Base):
+            return expr.symbolic
+        return False
+
+    def unique(self, expr, **kwargs):
+        results = self.eval_upto(expr, 2, **kwargs)
+        return len(results) == 1
+
+    def single_valued(self, e):
+        """``True`` if ``e`` is concrete or value-set has cardinality 1.
+
+        Mirrors SimSolver.single_valued in non-static mode: any symbolic
+        expression is reported as not single-valued (no solver query).
+        """
+        if isinstance(e, (int, bytes, float, bool)):
+            return True
+        return not self.symbolic(e)
+
+    # SimSolver exposes ``min_int`` / ``max_int`` as aliases for ``min`` /
+    # ``max``; SimProcedures (libc/memcmp.py) call them as the int-only
+    # convenience.
+    min_int = min
+    max_int = max
+
+    @staticmethod
+    def _cast_result(expr, result, cast_to):
+        if cast_to is None:
+            return result
+        if cast_to is bytes:
+            if hasattr(expr, "__len__"):
+                nbits = len(expr)
+            elif hasattr(expr, "size"):
+                nbits = expr.size()
+            else:
+                nbits = 64
+            if nbits == 0:
+                return b""
+            return result.to_bytes(nbits // 8, byteorder="big")
+        return cast_to(result)
+
+    # ---------------------------------------------------------------
+    # Symbol creation (delegate to claripy — no solver interaction)
+    # ---------------------------------------------------------------
+
+    def BVS(self, name, size, explicit_name=False, key=None, eternal=False, **kwargs):
+        """``state.solver.BVS(name, size)`` — mints a fresh claripy BVS."""
+        kwargs.pop("uninitialized", None)
+        kwargs.pop("inspect", None)
+        kwargs.pop("events", None)
+        kwargs.pop("min", None)
+        kwargs.pop("max", None)
+        kwargs.pop("stride", None)
+        sym = claripy.BVS(name, size, explicit_name=explicit_name, **kwargs)
+        if key is not None:
+            self.register_variable(sym, key, eternal=eternal)
+        self.all_variables.append(sym)
+        return sym
+
+    def BVV(self, value, size=None, **kwargs):
+        if size is None:
+            return claripy.BVV(value, **kwargs) if isinstance(value, int) else claripy.BVV(value)
+        return claripy.BVV(value, size)
+
+    def Unconstrained(self, name, bits, **kwargs):
+        """Match SimSolver.Unconstrained — return a fresh BVS by default."""
+        return self.BVS(name, bits, **kwargs)
+
+    # ---------------------------------------------------------------
+    # Variable tracking
+    # ---------------------------------------------------------------
+
+    def register_variable(self, v, key, eternal=True):
+        if type(key) is not tuple:
+            raise TypeError("Variable tracking key must be a tuple")
+        if eternal:
+            self.eternal_tracked_variables[key] = v
+        else:
+            self.temporal_tracked_variables = dict(self.temporal_tracked_variables)
+            ctrkey = (*key, None)
+            ctrval = self.temporal_tracked_variables.get(ctrkey, 0) + 1
+            self.temporal_tracked_variables[ctrkey] = ctrval
+            tempkey = (*key, ctrval)
+            self.temporal_tracked_variables[tempkey] = v
+
+    def get_variables(self, *keys):
+        for k, v in self.eternal_tracked_variables.items():
+            if len(k) >= len(keys) and all(x == y for x, y in zip(keys, k)):
+                yield k, v
+        for k, v in self.temporal_tracked_variables.items():
+            if k[-1] is None:
+                continue
+            if len(k) >= len(keys) and all(x == y for x, y in zip(keys, k)):
+                yield k, v
+
+    def describe_variables(self, v):
+        reverse_mapping = {
+            next(iter(var.variables)): k
+            for k, var in self.eternal_tracked_variables.items()
+        }
+        reverse_mapping.update(
+            {next(iter(var.variables)): k
+             for k, var in self.temporal_tracked_variables.items()
+             if k[-1] is not None}
+        )
+        for var in v.variables:
+            if var in reverse_mapping:
+                yield reverse_mapping[var]
+
+    # ---------------------------------------------------------------
+    # Solver timeout — forward to the underlying Rust state's context.
+    # ---------------------------------------------------------------
+
+    @property
+    def timeout(self):
+        try:
+            return self._mgr.get_state_solver_timeout(self._state_id)
+        except Exception:
+            return 0
+
+    @timeout.setter
+    def timeout(self, value):
+        if value is None:
+            return
+        timeout_ms = int(value)
+        self._mgr.set_state_solver_timeout(self._state_id, timeout_ms)
+        if self._rust_ctx_cache is not None:
+            self._rust_ctx_cache.set_timeout(timeout_ms)
+
+
 class RustRegisterProxy:
     """
     Provides `state.regs.rax`-style access by delegating to Rust.

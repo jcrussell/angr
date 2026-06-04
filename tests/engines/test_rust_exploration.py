@@ -4281,6 +4281,155 @@ class TestCallbackMemoryProxyGate:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallbackSolverProxyGate:
+    """angr-8oiw write-through .3: ``use_callback_solver_proxy`` gate controls
+    whether ``RustSolverProxyPlugin`` is installed as ``state.solver`` on
+    SimProcedure callback states. Default off keeps the
+    ``_install_rust_solver_on_callback_state`` monkey-patch path live (which
+    maintains a parallel Python claripy solver); on routes
+    ``state.solver.add`` directly to Rust by ``state_id`` and
+    ``state.solver.constraints`` reads through Rust.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_solver_proxy is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_callback_solver_proxy=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        assert mgr._use_callback_solver_proxy is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles the default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_solver_proxy is True
+
+    def test_gate_env_var_kwarg_wins(self, fauxware_project, monkeypatch):
+        """Explicit ``use_callback_solver_proxy=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=False
+        )
+        assert mgr._use_callback_solver_proxy is False
+
+    def test_proxy_install_swaps_state_solver(self, fauxware_project):
+        """When the gate is on, ``_install_callback_solver_proxy`` replaces
+        ``state.solver`` with a ``RustSolverProxyPlugin``."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+        assert isinstance(cb_state.solver, RustSolverProxyPlugin)
+        assert cb_state.solver.id == "solver"
+        assert cb_state.solver.category == "solver"
+        assert cb_state.solver.state is cb_state
+
+    def test_proxy_install_copy_returns_proxy(self, fauxware_project):
+        """``copy()`` returns a fresh ``RustSolverProxyPlugin`` bound to the
+        same Rust state."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+        clone = cb_state.solver.copy()
+        assert isinstance(clone, RustSolverProxyPlugin)
+        assert clone._state_id == cb_state.solver._state_id
+        assert clone.state is None
+
+    def test_proxy_add_write_through_to_rust(self, fauxware_project):
+        """``state.solver.add(c)`` routes the constraint into the underlying
+        Rust state's solver. ``state.solver.constraints`` reads it back."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        before = len(cb_state.solver.constraints)
+        sym = claripy.BVS("solver_proxy_test_byte", 8)
+        cb_state.solver.add(sym == 0x42)
+        after = len(cb_state.solver.constraints)
+        assert after > before, (
+            "RustSolverProxyPlugin.add must increase the underlying Rust "
+            "state's constraint count (write-through, not fork-only)"
+        )
+
+    def test_proxy_satisfiable_and_eval(self, fauxware_project):
+        """``state.solver.eval`` / ``satisfiable`` route through Rust."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        # Concrete fast path
+        assert cb_state.solver.eval(claripy.BVV(0xAA, 8)) == 0xAA
+        # Symbolic with extra_constraints
+        sym = claripy.BVS("solver_proxy_eval_byte", 8)
+        cb_state.solver.add(sym == 0x33)
+        assert cb_state.solver.satisfiable() is True
+        assert cb_state.solver.eval(sym) == 0x33
+
+    def test_proxy_bvs_delegates_to_claripy(self, fauxware_project):
+        """``BVS`` / ``BVV`` delegate to claripy and accept the tracking key."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_solver_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        sym = cb_state.solver.BVS("proxy_plugin_bvs", 32, key=("test", "k1"), eternal=True)
+        assert isinstance(sym, claripy.ast.Base)
+        assert sym.length == 32
+        assert dict(cb_state.solver.get_variables("test"))[("test", "k1")] is sym
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:
     """angr-j28e: RustStateProxy register and memory writes must write through
     to the Rust state (Rust is the single source of truth — no Python-side
