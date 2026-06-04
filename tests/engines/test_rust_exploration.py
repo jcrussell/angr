@@ -3967,9 +3967,13 @@ class TestProxyLiskovGaps:
 
         # AST forwarded verbatim: RustBV value 0xCAFEBABE is laid out
         # byte 0 of memory = LSB. Read with Iend_LE to recover the
-        # constrained value.
+        # constrained value. After angr-8dop.1 the proxy returns the
+        # symbolic AST, so we eval through the proxy solver to observe
+        # the constrained value (matches stock SimMemory semantics — a
+        # constrained BVS is not the same object as a BVV with that
+        # value).
         loaded = proxy.memory.load(target, 4, endness="Iend_LE")
-        assert loaded.concrete_value == 0xCAFEBABE
+        assert proxy.solver.eval(loaded) == 0xCAFEBABE
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
@@ -4190,6 +4194,90 @@ class TestCallbackMemoryProxyGate:
         mgr._install_callback_memory_proxy(cb_state, seed_id)
         result = cb_state.memory.load(fauxware_project.entry, 0)
         assert result.length == 0
+
+    def test_proxy_load_symbolic_returns_ast(self, fauxware_project):
+        """angr-8dop.1: a load of memory that holds a symbolic BVS must
+        return the symbolic AST, not a solver witness. Stock SimMemory
+        returns the BVS verbatim; the proxy used to concretize the value
+        via ``get_state_memory``, which caused
+        ``strlen``/``strcmp``/``strchr``/``memchr`` to build comparison
+        chains against a single witness instead of the actual symbolic
+        bytes.
+
+        We write through the proxy itself (which routes
+        ``set_state_memory_ast`` into the Rust state) to keep the test
+        independent of the Python→Rust symbolic-page import path.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+
+        addr = fauxware_project.entry
+        sym = claripy.BVS("proxy_sym_byte", 8)
+        cb_state.memory.store(addr, sym)
+
+        loaded = cb_state.memory.load(addr, 1)
+        assert loaded.symbolic, (
+            "proxy.load must return the symbolic AST, not a concretized "
+            "witness — strlen/strchr/memchr depend on this for symbolic "
+            "byte-by-byte ITE construction"
+        )
+
+    def test_proxy_find_symbolic_haystack_multi_match(self, fauxware_project):
+        """angr-8dop.1: when the haystack contains symbolic bytes, find()
+        must emit one ITE case per SAT-able candidate index. Stock
+        SmartFindMixin behaviour — strlen relies on the ``match_indices``
+        list reflecting every possible null position, not just the first
+        concrete one (which under concretization could be offset 0 even
+        when the symbolic byte is constrained non-zero).
+
+        Symbolic bytes are written via the proxy itself (write-through)
+        to bypass the Python→Rust symbolic-page import path, keeping
+        the test focused on the find() symbolic-haystack handling.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+
+        addr = fauxware_project.entry
+        # 3-byte symbolic store: two unconstrained bytes followed by a
+        # concrete null at offset 2. A single AST store keeps the
+        # underlying RustBV as one symbolic object (avoids the per-byte
+        # symbolic-merge path which is a separate limitation). The find
+        # iteration must emit cases for indices 0, 1, AND 2 — the
+        # concrete null is_true case is popped into the default per
+        # SmartFindMixin convention.
+        sym_b0 = claripy.BVS("hb0", 8)
+        sym_b1 = claripy.BVS("hb1", 8)
+        # Build a 24-bit AST: byte 0 of memory at LSB (Iend_LE layout),
+        # so concat MSB-first: [null, sym_b1, sym_b0] gives memory bytes
+        # 0 = sym_b0, 1 = sym_b1, 2 = null at addr+0, +1, +2.
+        triple = claripy.Concat(claripy.BVV(0, 8), sym_b1, sym_b0)
+        cb_state.memory.store(addr, triple, endness="Iend_LE")
+
+        _, _, indices = cb_state.memory.find(addr, claripy.BVV(0, 8), 3)
+        # The concrete null at offset 2 is is_true → break and pop into
+        # default. Indices 0 and 1 contribute symbolic == 0 cases.
+        assert indices == [0, 1, 2]
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

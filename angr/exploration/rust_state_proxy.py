@@ -496,6 +496,12 @@ class RustMemoryProxy:
         FFI load. Symbolic addresses are concretized to a single solution
         under the state's constraints by forking a Rust solver context.
         Unsat addresses raise ``claripy.errors.UnsatError``.
+
+        Routes through ``get_state_memory_ast`` (angr-8dop.1) so symbolic
+        memory bytes survive the round-trip — strlen/strchr/memchr/etc.
+        SimProcedures running under the callback-memory-proxy gate need
+        the actual symbolic AST to build their byte-by-byte ITE chains.
+        Returning a solver witness here would silently miss other matches.
         """
         if size is None:
             size = self._arch.bytes
@@ -520,19 +526,20 @@ class RustMemoryProxy:
                     )
                 addr = resolved
 
-        data = self._mgr.get_state_memory(self._state_id, addr, size)
-        if data is None:
+        ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
+        if ast is None:
             return claripy.BVV(0, size * 8)
 
-        # Convert bytes to BVV — angr's memory.load() defaults to big-endian
-        # regardless of architecture (caller must explicitly pass Iend_LE)
+        # The Rust AST is laid out LSB-first (byte i of memory at bits
+        # [i*8+7 : i*8]) — matches what ``set_state_memory_concrete`` /
+        # ``set_state_memory_ast`` write. angr's ``memory.load()`` default
+        # endness is BE (byte 0 at MSB); reverse to match. Iend_LE returns
+        # the raw layout verbatim.
         if endness is None:
             endness = "Iend_BE"
-        if endness == "Iend_LE":
-            val = int.from_bytes(data, "little")
-        else:
-            val = int.from_bytes(data, "big")
-        return claripy.BVV(val, size * 8)
+        if endness == "Iend_BE":
+            return ast.reversed
+        return ast
 
     def store(self, addr, data, endness=None, **kwargs):
         """Write-through memory store to the Rust state (angr-j28e, angr-4scu).
@@ -675,12 +682,13 @@ class RustMemoryProxy:
         """Search memory at ``addr`` for the byte pattern ``data``.
 
         Matches angr ``SimMemory.find()`` return shape:
-        ``(result_addr, constraints, match_indices)``. ``result_addr`` is the
-        address of the first match (BVV), or ``default`` (wrapped as BVV) if
-        no match was found.
+        ``(result_addr, constraints, match_indices)``. For a symbolic-byte
+        haystack the result is an ``ite_cases`` chain across every
+        SAT-able candidate index (mirrors ``SmartFindMixin.find`` —
+        strlen/strchr/memchr rely on multi-index ITE shape so their
+        ``max(i)`` / ``add_constraints(Or(...))`` calls do the right thing).
 
-        Step 1 of angr-4scu (write-through SimMemory proxy). The supported
-        surface is intentionally narrow:
+        Supported surface:
 
         * ``addr`` — concrete int or concrete claripy AST. Symbolic addrs are
           resolved via the forked solver context (one solution).
@@ -689,13 +697,11 @@ class RustMemoryProxy:
         * ``char_size`` — must be ``1`` (no wide-char search).
         * ``condition`` — must be ``None`` or syntactically true.
 
-        Concrete-only is sufficient for the SimProcs that drive
-        ``state.memory.find()`` against concrete needles (``memchr(s, 'X', n)``,
-        ``strstr`` against a literal). Symbolic-byte memory contents read
-        through ``proxy.load`` as zeros (the underlying ``get_state_memory``
-        only returns concretized bytes), so symbolic matches would silently
-        miss — we refuse loudly instead and direct callers to the SimProcedure
-        hook path.
+        Symbolic-byte handling (angr-8dop.1): when the haystack contains any
+        symbolic byte, each candidate position contributes an ITE case
+        ``(haystack[i:i+needle_len] == needle, addr+i)``. Concrete-only
+        haystacks short-circuit on the first equality and return a single
+        BVV result for parity with the pre-symbolic fast path.
         """
         if max_search is None or (isinstance(max_search, int) and max_search <= 0):
             zero = claripy.BVV(default or 0, self._arch.bits)
@@ -758,34 +764,63 @@ class RustMemoryProxy:
                 f"got {type(data).__name__}"
             )
 
-        # Load the haystack: max_search candidate starting positions plus
-        # the trailing needle bytes. ``get_state_memory`` returns concretized
-        # bytes (or None if entirely unmapped/uninitialized).
         needle_len = len(needle)
-        haystack_size = max_search + max(needle_len - 1, 0)
-        haystack = self._mgr.get_state_memory(self._state_id, addr, haystack_size)
-        if haystack is None:
-            haystack = b"\x00" * haystack_size
-
-        match_index = -1
         if needle_len == 0:
-            match_index = 0  # empty needle matches at offset 0 by convention
-        else:
-            for i in range(min(max_search, len(haystack) - needle_len + 1)):
-                if haystack[i:i + needle_len] == needle:
-                    match_index = i
-                    break
+            # Empty needle matches at offset 0 by convention.
+            return claripy.BVV(addr, self._arch.bits), [], [0]
 
-        if match_index < 0:
-            default_bv = (
-                claripy.BVV(default, self._arch.bits)
-                if isinstance(default, int)
-                else (default if default is not None else claripy.BVV(0, self._arch.bits))
-            )
+        haystack_size = max_search + needle_len - 1
+        haystack_ast = self._mgr.get_state_memory_ast(
+            self._state_id, addr, haystack_size
+        )
+        if haystack_ast is None:
+            haystack_ast = claripy.BVV(0, haystack_size * 8)
+
+        # Layout: Rust stores byte i at bit positions [i*8 : i*8+7] (LSB-first
+        # — matches set_state_memory_concrete). Needle is matched MSB-first in
+        # memory address order, so the candidate sub-AST at index i extracts
+        # bits [(i+needle_len)*8-1 : i*8] and we compare against the needle
+        # interpreted with int.from_bytes(needle, 'little'). For a concrete
+        # haystack this reduces to a byte-wise == check (the optimizer folds
+        # constants).
+        needle_val = int.from_bytes(needle, "little")
+        needle_ast = claripy.BVV(needle_val, needle_len * 8)
+
+        cases = []
+        match_indices = []
+        default_bv = (
+            claripy.BVV(default, self._arch.bits)
+            if isinstance(default, int)
+            else (default if default is not None else claripy.BVV(0, self._arch.bits))
+        )
+        max_iter = min(max_search, (haystack_ast.length // 8) - needle_len + 1)
+        for i in range(max_iter):
+            bit_hi = (i + needle_len) * 8 - 1
+            bit_lo = i * 8
+            sub_ast = haystack_ast[bit_hi:bit_lo]
+            eq = sub_ast == needle_ast
+            if hasattr(eq, "is_false") and eq.is_false():
+                continue
+            match_indices.append(i)
+            match_addr = claripy.BVV(addr + i, self._arch.bits)
+            cases.append((eq, match_addr))
+            if hasattr(eq, "is_true") and eq.is_true():
+                break
+
+        if not match_indices:
             return default_bv, [], []
 
-        result = claripy.BVV(addr + match_index, self._arch.bits)
-        return result, [], [match_index]
+        # Stock SmartFindMixin behaviour: if the last case is is_true, treat
+        # it as the unconditional default. Otherwise (no concrete match at the
+        # end, default=None) emit an Or(...) constraint so the caller adds it.
+        constraints = []
+        if cases and hasattr(cases[-1][0], "is_true") and cases[-1][0].is_true():
+            default_bv = cases.pop(-1)[1]
+        elif default is None:
+            constraints.append(claripy.Or(*(c for c, _ in cases)))
+
+        result = claripy.ite_cases(cases, default_bv)
+        return result, constraints, match_indices
 
 
 class RustHeapProxy:

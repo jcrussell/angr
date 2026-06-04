@@ -1305,8 +1305,11 @@ fn rustbv_to_claripy_memo(
                 claripy_mod
                     .call_method1("BVV", (*value as i64, *width))
                     .map(|obj| obj.into())
-            } else if *width % 8 == 0 {
-                // Byte-aligned: use bytes for exact representation
+            } else if *width % 8 == 0 && *width as usize / 8 <= 16 {
+                // Byte-aligned and fits in u128 (16 bytes): use bytes for
+                // exact representation. Wider Concrete widths cannot exceed
+                // u128 value but can declare a larger bit width — fall
+                // through to PyInt which pads correctly.
                 let byte_count = *width as usize / 8;
                 let bytes = value.to_be_bytes();
                 let start = bytes.len().saturating_sub(byte_count);
@@ -1315,8 +1318,9 @@ fn rustbv_to_claripy_memo(
                     .call_method1("BVV", (py_bytes, *width))
                     .map(|obj| obj.into())
             } else {
-                // Non-byte-aligned: use Python int to avoid string/size mismatch
-                // claripy.BVV(int_value, width) works for any width
+                // Non-byte-aligned OR width > 128: use Python int to avoid
+                // string/size mismatch. claripy.BVV(int_value, width) works
+                // for any width and zero-pads high bits.
                 let py_int = PyInt::new(py, *value);
                 claripy_mod
                     .call_method1("BVV", (py_int, *width))

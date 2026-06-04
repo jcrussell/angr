@@ -1889,6 +1889,22 @@ impl RustExplorationManager {
         self._get_state_memory(state_id, addr, size)
     }
 
+    /// Get memory from a state as a claripy AST (angr-8dop.1). Returns the
+    /// symbolic AST verbatim — never concretizes via the solver. Used by
+    /// `RustMemoryProxy.load` when the gate is on so symbolic libc
+    /// SimProcedures (strlen/strchr/memchr/...) see real symbolic bytes
+    /// instead of an arbitrary solver witness.
+    /// See [`state_api::_get_state_memory_ast`] for the body.
+    pub fn get_state_memory_ast(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self._get_state_memory_ast(py, state_id, addr, size)
+    }
+
     /// Set memory on a state from concrete bytes (angr-j28e write-through).
     /// See [`state_api::_set_state_memory_concrete`] for the body.
     pub fn set_state_memory_concrete(

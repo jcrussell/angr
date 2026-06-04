@@ -642,6 +642,41 @@ impl RustExplorationManager {
         })
     }
 
+    /// Return the claripy AST for `size` bytes of memory at `addr` on
+    /// `state_id` (angr-8dop.1). Unlike `_get_state_memory`, this never
+    /// concretizes — a symbolic load returns the symbolic AST verbatim so
+    /// downstream callers (SimProcedures via the `RustMemoryProxy` gate)
+    /// can build constraints on the actual symbolic bytes.
+    ///
+    /// Returns `None` when the memory load errors (typically unmapped /
+    /// missing permission) so the caller can fall back to a zero-fill.
+    ///
+    /// Byte-order convention: the returned AST has byte `i` of memory at
+    /// bit positions `[i*8+7 : i*8]` (LSB-first), matching how
+    /// `_set_state_memory_concrete` lays out concrete bytes. The proxy
+    /// reverses for `Iend_BE`, returns verbatim for `Iend_LE`.
+    pub(crate) fn _get_state_memory_ast(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.with_state(state_id, |state| match state.memory_load(addr, size) {
+            Ok(bv) => {
+                let claripy = py.import("claripy")?;
+                let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "memory AST conversion at addr 0x{:x} size {}: {}",
+                        addr, size, e
+                    ))
+                })?;
+                Ok(Some(ast))
+            }
+            Err(_) => Ok(None),
+        })
+    }
+
     /// Concrete-address concrete-value memory store on `state_id`
     /// (angr-j28e write-through). Mirrors `_set_pending_memory` for an
     /// arbitrary state. Used by the Python-side `RustMemoryProxy.store`
