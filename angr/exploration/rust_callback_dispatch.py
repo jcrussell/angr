@@ -540,9 +540,19 @@ class RustCallbackDispatchMixin:
             self._procedure_times[_proc_name]['count'] += 1
             self._procedure_times[_proc_name]['execute_ns'] += _sp_exec_elapsed
 
-            # Get tracked memory writes from callback execution
-            tracked_writes = memory_tracker.get_writes()
-            tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
+            # Get tracked memory writes from callback execution. When the
+            # angr-4scu step-3 gate is on, ``state.memory`` is a
+            # ``RustMemoryProxy`` and every store landed in Rust during the
+            # callback; the tracker still wrapped ``state.memory.store`` and
+            # accumulated entries (so any user code introspecting it sees a
+            # stable surface), but we discard the lists to avoid a
+            # double-write through ``resume_after_simprocedure``.
+            if getattr(self, '_use_callback_memory_proxy', False):
+                tracked_writes = None
+                tracked_symbolic_writes = None
+            else:
+                tracked_writes = memory_tracker.get_writes()
+                tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
             if _DBG:
                 if tracked_writes:
                     l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
@@ -1925,7 +1935,14 @@ class RustCallbackDispatchMixin:
             # Copy when callable predicates need stdout history, skip otherwise
             has_predicates = (getattr(self, '_find_predicate', None) is not None or
                              getattr(self, '_avoid_predicate', None) is not None)
-            if has_predicates:
+            # angr-4scu step 3: when the callback-memory-proxy gate is on we
+            # always copy the cached state. The gate swaps ``state.memory``
+            # to a ``RustMemoryProxy`` later in this function; mutating the
+            # cached state's memory plugin in place would leak the proxy
+            # into the cached copy and break ordinary (non-callback) reads
+            # against that cache entry. The copy ensures the swap only
+            # affects this one callback frame.
+            if has_predicates or getattr(self, '_use_callback_memory_proxy', False):
                 self._stats_state_creations += 1
                 state = cached_state.copy()
             else:
@@ -2076,7 +2093,32 @@ class RustCallbackDispatchMixin:
             # Some scripts assume posix/libc plugins exist - restore if missing
             self._ensure_critical_plugins(state, event.callback_state_id)
 
+            # angr-4scu step 3: gated install of RustMemoryProxy as
+            # ``state.memory``. When the flag is on, every load/store the
+            # SimProc issues routes directly into Rust by state_id —
+            # eliminating the cached-state shadow memory + the
+            # ``CallbackMemoryTracker`` diff-and-push at end-of-callback.
+            # The matching site in ``_handle_simprocedure_callback`` forces
+            # ``tracked_writes=None`` so the replay path is a no-op.
+            if (getattr(self, '_use_callback_memory_proxy', False)
+                    and event.callback_state_id is not None):
+                self._install_callback_memory_proxy(state, event.callback_state_id)
+
         return state
+
+    def _install_callback_memory_proxy(self, state, state_id):
+        """Swap ``state.memory`` for a ``RustMemoryProxy`` bound to ``state_id``.
+
+        angr-4scu step 3. Caller has already copied the cached state, so
+        replacing the plugin here only affects this callback frame.
+        """
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+        proxy = RustMemoryProxy(self._rust_mgr, state_id, self._project.arch)
+        proxy.set_state(state)
+        # ``SimState.register_plugin`` would re-run ``set_state`` and update
+        # ``state.plugins`` bookkeeping; use it so removal / merge code that
+        # walks ``state.plugins`` finds the proxy under the ``"memory"`` key.
+        state.register_plugin("memory", proxy)
 
     def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
         """Ensure critical plugins are present on the state.

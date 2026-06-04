@@ -838,6 +838,7 @@ class RustExplorationManager(
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
+        use_callback_memory_proxy: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -879,6 +880,13 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
+            use_callback_memory_proxy: If True, install ``RustMemoryProxy``
+                as ``state.memory`` on SimProcedure callback states so loads
+                / stores route directly into Rust instead of going through
+                the cached state's claripy SimMemory + ``CallbackMemoryTracker``
+                diff-and-push (angr-4scu step 3). When ``None`` (default), the
+                env var ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles it
+                on; otherwise off. Off keeps the existing tracker path live.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -944,6 +952,22 @@ class RustExplorationManager(
         # the v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental
         # baby-re regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
+
+        # angr-4scu step 3: gate for installing RustMemoryProxy as
+        # ``state.memory`` on SimProcedure callback states. Default off keeps
+        # the existing CallbackMemoryTracker diff-and-push path live. When
+        # on, ``_create_state_for_callback`` swaps ``state.memory`` with a
+        # ``RustMemoryProxy``, so loads/stores during the SimProc route
+        # directly into Rust and the post-callback tracked-writes replay is
+        # skipped (writes already landed in Rust). Env var
+        # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles default-on when
+        # the kwarg is left at its default ``None``. Multi-session epic
+        # (see bd memory boundary-4scu-simmem-spike).
+        if use_callback_memory_proxy is None:
+            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "")
+            self._use_callback_memory_proxy = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_callback_memory_proxy = bool(use_callback_memory_proxy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()

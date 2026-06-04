@@ -425,13 +425,65 @@ class RustMemoryProxy:
     Provides `state.memory.load(addr, size)`-style access via Rust.
 
     Returns bytes as claripy BVVs for compatibility.
+
+    Implements the minimum ``SimMemory`` plugin protocol (``id``, ``endness``,
+    ``category``, ``state``, ``set_state``, ``copy``) so that the proxy can be
+    installed as ``state.memory`` on a real SimState (angr-4scu step 3, under
+    the ``use_callback_memory_proxy`` gate on ``RustExplorationManager``).
     """
 
-    def __init__(self, rust_mgr, state_id, arch):
+    SUPPORTS_CONCRETE_LOAD: bool = False
+
+    def __init__(self, rust_mgr, state_id, arch, *, endness=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # SimMemory plugin protocol surface.
+        self.id = "mem"
+        self.endness = endness or getattr(arch, "memory_endness", "Iend_BE")
+        self.state = None
+
+    @property
+    def category(self):
+        return "mem"
+
+    STRONGREF_STATE = False
+
+    def set_state(self, state):
+        """SimStatePlugin hook — invoked on plugin install / copy.
+
+        We don't keep a weakref like the base ``SimStatePlugin`` does because
+        the proxy never reads back through ``self.state``; it routes every
+        op directly into Rust by ``state_id``. We do stash the reference so
+        downstream code that inspects ``plugin.state`` doesn't see ``None``.
+        """
+        self.state = state
+
+    def set_strongref_state(self, _state):
+        # SimStatePlugin protocol: invoked when ``STRONGREF_STATE`` is True.
+        # We keep it ``False`` (no strong refs from the proxy back to the
+        # state) so this is dead code; defined only to match the surface.
+        pass
+
+    def init_state(self):
+        # SimStatePlugin protocol: called once after ``register_plugin``.
+        # Nothing to initialize on the Rust side — the underlying
+        # ``RustSimState`` is already populated by the engine.
+        pass
+
+    def copy(self, _memo=None):
+        """Return a new proxy bound to the same Rust state.
+
+        Mirrors ``SimMemoryMixin.copy``: returns an unbound plugin (no
+        ``state`` set) of the same type. The underlying Rust state is shared
+        by ``state_id`` — the proxy does not own a CoW copy; ``copy()`` is
+        only meaningful here as part of ``SimState.copy()`` plugin walk.
+        True per-state CoW lives in angr-d1dr (RustStateProxy.copy()).
+        """
+        return RustMemoryProxy(
+            self._mgr, self._state_id, self._arch, endness=self.endness
+        )
 
     def _ensure_solver(self):
         if self._solver_ctx is None:

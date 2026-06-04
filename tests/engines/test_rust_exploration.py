@@ -4059,6 +4059,120 @@ class TestProxyMemoryFind:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallbackMemoryProxyGate:
+    """angr-4scu step 3: ``use_callback_memory_proxy`` gate controls whether
+    ``RustMemoryProxy`` is installed as ``state.memory`` on SimProcedure
+    callback states. Default off keeps the ``CallbackMemoryTracker``
+    diff-and-push path live; on routes loads/stores directly to Rust.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_memory_proxy is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_callback_memory_proxy=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        assert mgr._use_callback_memory_proxy is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles the default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_memory_proxy is True
+
+    def test_gate_env_var_kwarg_wins(self, fauxware_project, monkeypatch):
+        """Explicit ``use_callback_memory_proxy=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=False
+        )
+        assert mgr._use_callback_memory_proxy is False
+
+    def test_proxy_install_swaps_state_memory(self, fauxware_project):
+        """When the gate is on, ``_install_callback_memory_proxy`` replaces
+        ``state.memory`` with a ``RustMemoryProxy``. Drives the helper
+        directly to keep the test scope at the swap mechanism (the SimProc
+        callback wiring is exercised via separate fauxware tests)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        # Build a throwaway SimState matching what
+        # ``_create_state_for_callback`` would hand to the helper.
+        # Bind the proxy to the live seed state id so concrete-store / load
+        # FFI lands in an existing Rust state.
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+        assert isinstance(cb_state.memory, RustMemoryProxy)
+        assert cb_state.memory.id == "mem"
+        assert cb_state.memory.category == "mem"
+
+    def test_proxy_install_roundtrip(self, fauxware_project):
+        """A ``state.memory.store`` followed by ``state.memory.load`` on the
+        installed proxy lands in Rust and reads back via the same path.
+        Verifies the plugin shim doesn't break the existing concrete-store
+        / concrete-load fast path the proxy already supported."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+
+        addr = fauxware_project.entry
+        cb_state.memory.store(addr, b"\xaa\xbb\xcc\xdd")
+        loaded = cb_state.memory.load(addr, 4)
+        # Default endness Iend_BE — bytes survive without a byte-swap.
+        assert loaded.concrete_value == 0xAABBCCDD
+
+    def test_proxy_install_copy_returns_proxy(self, fauxware_project):
+        """The plugin shim's ``copy()`` returns a fresh ``RustMemoryProxy``
+        bound to the same Rust state — preserves ``SimState.copy()``
+        semantics on a callback frame that has the proxy installed."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+        clone = cb_state.memory.copy()
+        assert isinstance(clone, RustMemoryProxy)
+        assert clone.id == "mem"
+        assert clone._state_id == cb_state.memory._state_id
+        # Fresh proxy returned from ``copy()`` is unbound (per plugin
+        # protocol — ``set_state`` is invoked by the new state's
+        # ``register_plugin``).
+        assert clone.state is None
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:
     """angr-j28e: RustStateProxy register and memory writes must write through
     to the Rust state (Rust is the single source of truth — no Python-side
