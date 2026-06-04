@@ -1104,6 +1104,55 @@ class RustMemoryProxy:
             self._mgr, self._state_id, self._arch, endness=self.endness
         )
 
+    # ---------------------------------------------------------------
+    # SimMemoryMixin gap stubs (angr-8dop.2)
+    #
+    # Step 4 parity validation (2026-06-04) found three benches failing
+    # with AttributeError on ``state.memory.permissions(...)`` /
+    # ``.merge(...)`` and similar when the callback-install gate is on.
+    # These stubs let bench code that calls into mprotect / merge logic
+    # continue executing under the proxy. They are intentionally minimal:
+    # real permission tracking and cross-state_id merge are Rust-side
+    # concerns that the proxy doesn't model.
+    # ---------------------------------------------------------------
+
+    def permissions(self, addr, permissions=None, **_kwargs):
+        """``state.memory.permissions(addr [, permissions])`` stub.
+
+        Returns a fully-permissive 3-bit BVV (RWX = 7) for reads; silently
+        accepts writes. Permission bits are not tracked on the Python side
+        of the proxy — Rust's memory model owns enforcement. Returning the
+        permissive default keeps callers like ``mprotect`` /
+        ``is_bad_ptr`` / ``VirtualProtect`` from crashing; the actual page
+        permissions inside Rust are unaffected because no FFI is invoked
+        here.
+        """
+        del addr, permissions
+        return claripy.BVV(7, 3)
+
+    def merge(self, _others, _merge_conditions, _common_ancestor=None):
+        """SimMemory.merge stub.
+
+        Returns False ("no merge happened") matching the register / solver
+        proxy pattern. Cross-state_id memory merge would require Rust-side
+        coordination that isn't in scope for the callback-install gate.
+        """
+        return False
+
+    def widen(self, _others):
+        """SimMemory.widen stub — see ``merge``."""
+        return False
+
+    def compare(self, _other):
+        """SimMemory.compare stub.
+
+        Returns True ("memories considered equal"). The proxy holds no
+        Python-side state to diff against; comparing two proxies that
+        point at different Rust state_ids would need an FFI that walks
+        both states' pages, which is out of scope for the gate.
+        """
+        return True
+
     def _ensure_solver(self):
         if self._solver_ctx is None:
             self._solver_ctx = self._mgr.fork_state_solver(self._state_id)

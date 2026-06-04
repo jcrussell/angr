@@ -4281,6 +4281,64 @@ class TestCallbackMemoryProxyGate:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustMemoryProxyPluginGapStubs:
+    """angr-8dop.2: ``RustMemoryProxy`` exposes minimal stubs for the
+    SimMemory plugin methods ``permissions`` / ``merge`` / ``widen`` /
+    ``compare`` so callers like ``mprotect`` / ``is_bad_ptr`` /
+    ``VirtualProtect`` and the cross-state plugin walk don't AttributeError
+    when the callback-install gate is on.
+    """
+
+    def _install_proxy(self, fauxware_project):
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+        return cb_state
+
+    def test_permissions_read_returns_default_rwx(self, fauxware_project):
+        """``permissions(addr)`` (no second arg) returns a 3-bit BVV
+        encoding RWX. Lets ``is_bad_ptr`` / ``mprotect`` proceed without
+        crashing under the proxy."""
+        import claripy
+
+        cb_state = self._install_proxy(fauxware_project)
+        result = cb_state.memory.permissions(fauxware_project.entry)
+        assert isinstance(result, claripy.ast.Base)
+        assert result.length == 3
+        assert result.concrete_value == 7
+
+    def test_permissions_write_is_noop(self, fauxware_project):
+        """``permissions(addr, perms)`` accepts and returns the prior
+        permissive default. Permission bits are owned by Rust's memory
+        model; the proxy doesn't track them on the Python side."""
+        cb_state = self._install_proxy(fauxware_project)
+        result = cb_state.memory.permissions(fauxware_project.entry, 5)
+        assert result.concrete_value == 7
+
+    def test_merge_returns_false(self, fauxware_project):
+        """``merge`` reports 'no merge happened' (False) — matches the
+        register / solver proxy stubs."""
+        cb_state = self._install_proxy(fauxware_project)
+        assert cb_state.memory.merge([], [], None) is False
+
+    def test_widen_returns_false(self, fauxware_project):
+        cb_state = self._install_proxy(fauxware_project)
+        assert cb_state.memory.widen([]) is False
+
+    def test_compare_returns_true(self, fauxware_project):
+        """``compare`` is the 'memories equal' predicate; with no
+        Python-side state to diff the stub conservatively answers True."""
+        cb_state = self._install_proxy(fauxware_project)
+        assert cb_state.memory.compare(cb_state.memory) is True
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackSolverProxyGate:
     """angr-8oiw write-through .3: ``use_callback_solver_proxy`` gate controls
     whether ``RustSolverProxyPlugin`` is installed as ``state.solver`` on
