@@ -843,6 +843,7 @@ class RustExplorationManager(
         use_callback_solver_proxy: Optional[bool] = None,
         use_callback_callstack_proxy: Optional[bool] = None,
         use_export_callstack_proxy: Optional[bool] = None,
+        use_simproc_fork_via_rust: Optional[bool] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -930,6 +931,17 @@ class RustExplorationManager(
                 ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles it on;
                 otherwise off. Off keeps the eager
                 ``_sync_rust_callstack_to_state`` reconstruction path live.
+            use_simproc_fork_via_rust: If True, route SimProcedure additional
+                successors through ``fork_state_to_stash(parent_id, 'active')``
+                (Rust-owned fork) instead of ``_add_rust_state('active', ...)``
+                followed by ``add_constraints_to_pending(...)``. Default off
+                keeps the eager Python-state-push path live. When on,
+                ``_add_forked_state`` forks the parent Rust state directly
+                and applies any path-specific constraints via
+                ``add_constraints_to_state(new_id, ...)`` (angr-t3mr, write-
+                through boundary). When ``None`` (default), the env var
+                ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles it on;
+                otherwise off.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -1076,6 +1088,22 @@ class RustExplorationManager(
             self._use_export_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
         else:
             self._use_export_callstack_proxy = bool(use_export_callstack_proxy)
+
+        # angr-t3mr (write-through boundary): gate for routing SimProcedure
+        # additional successors through ``fork_state_to_stash(parent_id,
+        # 'active')`` (Rust-owned fork) instead of the legacy
+        # ``_add_rust_state`` + ``add_constraints_to_pending`` chain. Default
+        # off keeps the eager Python-state push live; when on,
+        # ``_add_forked_state`` (rust_callback_dispatch.py) forks the parent
+        # Rust state directly and applies any path-specific constraints via
+        # ``add_constraints_to_state(new_id, ...)``. Env var
+        # ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles default-on when
+        # the kwarg is left at its default ``None``.
+        if use_simproc_fork_via_rust is None:
+            env_val = os.environ.get("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "")
+            self._use_simproc_fork_via_rust = env_val.lower() in ("1", "true", "yes", "on")
+        else:
+            self._use_simproc_fork_via_rust = bool(use_simproc_fork_via_rust)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()

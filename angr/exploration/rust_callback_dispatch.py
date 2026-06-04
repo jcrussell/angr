@@ -1375,9 +1375,24 @@ class RustCallbackDispatchMixin:
         symbolic condition), additional states are added to Rust for
         continued exploration.
 
-        This method properly inherits the solver context from the pending
-        state to ensure constraints are preserved across forks.
+        Two paths controlled by the ``use_simproc_fork_via_rust`` gate
+        (angr-t3mr, write-through boundary):
+
+        - **Gate on** (write-through): fork the parent Rust state directly
+          via ``fork_state_to_stash(parent_id, 'active')`` and apply any
+          path-specific constraints via ``add_constraints_to_state(new_id,
+          ...)``. No Python-side ``_add_rust_state`` push and no
+          ``add_constraints_to_pending`` write to the parent.
+
+        - **Gate off** (legacy diff-and-push, default): re-push every
+          register / memory page / constraint from ``succ_state`` via
+          ``_add_rust_state('active', succ_state)``, then add the path
+          constraints back to the pending state.
         """
+        if getattr(self, '_use_simproc_fork_via_rust', False):
+            self._add_forked_state_via_rust(succ_state, event)
+            return
+
         # Try to fork the pending solver context for this state
         # This ensures the forked state inherits all constraints
         try:
@@ -1426,6 +1441,67 @@ class RustCallbackDispatchMixin:
 
         if _DBG:
             l.debug(f"Added forked state at PC 0x{succ_state.addr:x}")
+
+    def _add_forked_state_via_rust(
+        self, succ_state: "angr.SimState", event: "_ExplorationEvent"
+    ) -> None:
+        """Write-through fork: ask Rust to fork the parent state directly.
+
+        Used when ``use_simproc_fork_via_rust`` is on (angr-t3mr). The
+        parent state is the pending callback state (``event.callback_state_id``
+        — ``find_state`` looks through the pending callback when the ID is
+        not yet in a stash, so the fork sees the constraints/registers/
+        memory that the SimProcedure has just written via the proxy
+        plugins). Any path-specific constraints the SimProcedure added to
+        ``succ_state.solver`` are pushed onto the new fork via
+        ``add_constraints_to_state`` so per-fork branch conditions land on
+        the fork's own solver instead of the pending one.
+        """
+        parent_id = event.callback_state_id
+        if parent_id is None:
+            # cat-(b) FALLBACK WITH LOSS: no parent ID on the event — the
+            # callback was already torn down. Skip the fork.
+            if _DBG:
+                l.debug("_add_forked_state_via_rust: no callback_state_id, skipping fork")
+            return
+
+        try:
+            new_id = self._rust_mgr.fork_state_to_stash(parent_id, 'active')
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust-owned fork failed; this
+            # successor is silently dropped. Debug-logs.
+            if _DBG:
+                l.debug(f"fork_state_to_stash({parent_id}) failed: {e}")
+            return
+
+        # Path-specific constraints from succ_state. The fork already
+        # carries every constraint the parent had (Rust forked the parent
+        # state, including its solver), so add_constraints_to_state will
+        # mostly re-assert duplicates that Z3 dedups — but it also lands
+        # any branch conditions the SimProc added to this successor's
+        # claripy solver (when the callback solver proxy is off and the
+        # parallel claripy solver carries them).
+        try:
+            if hasattr(succ_state.solver, 'constraints'):
+                fork_constraints = list(succ_state.solver.constraints)
+                if fork_constraints:
+                    self._rust_mgr.add_constraints_to_state(new_id, fork_constraints)
+                    if _DBG:
+                        l.debug(
+                            f"fork_state_to_stash: added {len(fork_constraints)} "
+                            f"fork constraints to state {new_id}"
+                        )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: constraint sync onto the new fork
+            # failed; the fork inherits only the parent's constraints.
+            if _DBG:
+                l.debug(f"add_constraints_to_state({new_id}) failed: {e}")
+
+        if _DBG:
+            l.debug(
+                f"_add_forked_state_via_rust: forked parent {parent_id} -> "
+                f"state {new_id} at PC 0x{succ_state.addr:x}"
+            )
 
     def _handle_syscall_callback(self, event: "_ExplorationEvent"):
         """Handle syscall callback from Rust.

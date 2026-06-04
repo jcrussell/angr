@@ -4,6 +4,7 @@ This module tests the Rust-native exploration manager for symbolic execution.
 """
 import os
 import re
+import types
 import warnings
 
 import pytest
@@ -4870,6 +4871,199 @@ class TestExportCallStackProxyGate:
         found = mgr.found[0]
         assert isinstance(found.callstack, CallStack)
         assert not isinstance(found.callstack, RustCallStackProxyPlugin)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSimProcForkViaRustGate:
+    """angr-t3mr write-through boundary: ``use_simproc_fork_via_rust`` gate
+    controls how additional SimProcedure successors are added to the Rust
+    active stash. Default off keeps the eager
+    ``_add_rust_state('active', succ_state)`` push live (re-syncs every
+    register / memory page / constraint from the post-callback Python state);
+    on routes ``_add_forked_state`` through
+    ``fork_state_to_stash(parent_id, 'active')`` (Rust-owned fork of the
+    pending callback state) plus ``add_constraints_to_state(new_id, ...)``
+    for path-specific constraints — no Python-side state push.
+    """
+
+    def test_gate_default_off(self, fauxware_project):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_simproc_fork_via_rust is False
+
+    def test_gate_kwarg_on(self, fauxware_project):
+        """Explicit ``use_simproc_fork_via_rust=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_simproc_fork_via_rust=True
+        )
+        assert mgr._use_simproc_fork_via_rust is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_simproc_fork_via_rust is True
+
+    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
+        """Explicit ``use_simproc_fork_via_rust=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_simproc_fork_via_rust=False
+        )
+        assert mgr._use_simproc_fork_via_rust is False
+
+    def test_fork_state_to_stash_pending(self, fauxware_project):
+        """Rust API: ``fork_state_to_stash(parent_id, 'active')`` returns a
+        fresh state ID and lands a new entry in the active stash."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        before_count = len(mgr._rust_mgr.get_state_ids("active"))
+        new_id = mgr._rust_mgr.fork_state_to_stash(seed_id, "active")
+        # Fresh monotonic ID.
+        assert new_id != seed_id
+        # State count grew by one.
+        after_ids = mgr._rust_mgr.get_state_ids("active")
+        assert len(after_ids) == before_count + 1
+        assert new_id in after_ids
+
+    def test_fork_state_to_stash_inherits_pc(self, fauxware_project):
+        """The fork carries the parent's PC."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        parent_pc = mgr._rust_mgr.get_state_pc_by_id(seed_id)
+        new_id = mgr._rust_mgr.fork_state_to_stash(seed_id, "active")
+        assert mgr._rust_mgr.get_state_pc_by_id(new_id) == parent_pc
+
+    def test_fork_state_to_stash_unknown_state(self, fauxware_project):
+        """Unknown parent ID raises ValueError."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="state .* not found"):
+            mgr._rust_mgr.fork_state_to_stash(99999, "active")
+
+    def test_add_forked_state_dispatch_off(self, fauxware_project, monkeypatch):
+        """Gate off: ``_add_forked_state`` calls the legacy
+        ``_add_rust_state`` path (the only Python-patchable hook on the
+        manager — the Rust pyclass methods are read-only and not
+        monkey-patchable). Verifies that the routing IS the legacy path."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_simproc_fork_via_rust is False
+
+        calls = {"add_rust_state": 0}
+
+        orig_add = mgr._add_rust_state
+        def fake_add(stash, st):
+            calls["add_rust_state"] += 1
+            return orig_add(stash, st)
+        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
+
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        event = types.SimpleNamespace(callback_state_id=seed_id)
+        succ = fauxware_project.factory.entry_state()
+        mgr._add_forked_state(succ, event)
+        assert calls["add_rust_state"] == 1
+
+    def test_add_forked_state_dispatch_on(self, fauxware_project, monkeypatch):
+        """Gate on: ``_add_forked_state`` routes through the Rust fork API
+        (no ``_add_rust_state`` call). Stash count still grows by one
+        because the Rust-side fork lands a new state in 'active'."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_simproc_fork_via_rust=True
+        )
+        assert mgr._use_simproc_fork_via_rust is True
+
+        calls = {"add_rust_state": 0}
+
+        orig_add = mgr._add_rust_state
+        def fake_add(stash, st):
+            calls["add_rust_state"] += 1
+            return orig_add(stash, st)
+        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
+
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        before = len(mgr._rust_mgr.get_state_ids("active"))
+        event = types.SimpleNamespace(callback_state_id=seed_id)
+        succ = fauxware_project.factory.entry_state()
+        mgr._add_forked_state(succ, event)
+        after = len(mgr._rust_mgr.get_state_ids("active"))
+        assert calls["add_rust_state"] == 0
+        # Rust-owned fork lands a new state in 'active'.
+        assert after == before + 1
+
+    def test_add_forked_state_dispatch_on_none_state_id(
+        self, fauxware_project, monkeypatch
+    ):
+        """Gate on: ``callback_state_id is None`` is a no-op (the callback
+        is already torn down; the fork would have no parent). No
+        ``_add_rust_state`` call and stash count unchanged."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_simproc_fork_via_rust=True
+        )
+
+        calls = {"add_rust_state": 0}
+        orig_add = mgr._add_rust_state
+        def fake_add(stash, st):
+            calls["add_rust_state"] += 1
+            return orig_add(stash, st)
+        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
+
+        before = len(mgr._rust_mgr.get_state_ids("active"))
+        event = types.SimpleNamespace(callback_state_id=None)
+        succ = fauxware_project.factory.entry_state()
+        mgr._add_forked_state(succ, event)
+        after = len(mgr._rust_mgr.get_state_ids("active"))
+        assert calls["add_rust_state"] == 0
+        assert after == before
+
+    def test_explore_end_to_end_gate_on(self, fauxware_project):
+        """End-to-end smoke: ``explore`` completes with the same ``found``
+        outcome when the gate is on as with the default off path."""
+        from angr.exploration import RustExplorationManager
+
+        # Baseline: default off
+        s_off = fauxware_project.factory.entry_state()
+        mgr_off = RustExplorationManager(fauxware_project, [s_off])
+        mgr_off.explore(find=0x4006ed)
+        found_off = len(mgr_off.found)
+
+        # Gate on
+        s_on = fauxware_project.factory.entry_state()
+        mgr_on = RustExplorationManager(
+            fauxware_project, [s_on], use_simproc_fork_via_rust=True
+        )
+        mgr_on.explore(find=0x4006ed)
+        found_on = len(mgr_on.found)
+
+        assert found_on == found_off
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

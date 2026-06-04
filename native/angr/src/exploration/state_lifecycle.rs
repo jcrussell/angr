@@ -110,6 +110,55 @@ impl RustExplorationManager {
         self.sm.ensure_stash(stash).push_back(forked);
     }
 
+    /// Fork an existing state (looked up by ID, including the pending callback
+    /// state) into a new active stash entry and return the new state's ID.
+    ///
+    /// This is the write-through path for SimProcedure forks (angr-t3mr).
+    /// Previously `_add_forked_state` (`rust_callback_dispatch.py`) called the
+    /// Python-side `_add_rust_state` which eagerly re-pushed every register,
+    /// memory page, and constraint from the post-callback `succ_state`. Under
+    /// the write-through model the parent state already lives in Rust as the
+    /// pending callback, so a fresh `RustSimState::fork()` is both correct and
+    /// strictly cheaper than rebuilding from the Python `succ_state`.
+    ///
+    /// Path-specific constraints (e.g. branch conditions a SimProc added to
+    /// one successor but not the other) are NOT applied here; the caller
+    /// should follow up with `add_constraints_to_state(new_id, ...)`.
+    pub(crate) fn _fork_state_to_stash(
+        &mut self,
+        parent_id: u64,
+        stash: &str,
+    ) -> PyResult<u64> {
+        let forked = {
+            let parent = self.find_state(parent_id).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "fork_state_to_stash: state {} not found",
+                    parent_id
+                ))
+            })?;
+            parent.fork()
+        };
+        let new_id = forked.state_id();
+        // `state-id-never-reused`: fork() must mint a fresh monotonic ID.
+        debug_assert_ne!(
+            new_id, parent_id,
+            "fork() must mint a fresh state_id, got duplicate {}",
+            new_id
+        );
+
+        // Inherit the parent's lineage root so descendants of a SimProc fork
+        // stay grouped with their seed state. Falls back to the parent's own
+        // ID if the parent had no explicit root (matches the run_loop fork
+        // pattern in resume.rs / stepping.rs).
+        let root_state_id = self.sm.get_root(parent_id).unwrap_or(parent_id);
+        self.sm.set_root(new_id, root_state_id);
+
+        self.index_state(new_id, stash);
+        self.sm.ensure_stash(stash).push_back(forked);
+
+        Ok(new_id)
+    }
+
     pub(crate) fn _merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
         if state_ids.len() < 2 {
             return Err(PyValueError::new_err(

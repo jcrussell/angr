@@ -882,6 +882,17 @@ impl RustExplorationManager {
         self._merge_states(state_ids, dest_stash)
     }
 
+    /// Fork an existing state (including the pending callback state) and add
+    /// the fork to `stash`. Returns the new state's ID. Inherits the parent's
+    /// lineage root.
+    ///
+    /// Write-through SimProc fork API (angr-t3mr). See
+    /// [`state_lifecycle::_fork_state_to_stash`] for the body.
+    #[pyo3(signature = (parent_id, stash="active"))]
+    pub fn fork_state_to_stash(&mut self, parent_id: u64, stash: &str) -> PyResult<u64> {
+        self._fork_state_to_stash(parent_id, stash)
+    }
+
     /// Get the PC of a state in a stash by index.
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {
