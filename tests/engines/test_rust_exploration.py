@@ -4171,6 +4171,26 @@ class TestCallbackMemoryProxyGate:
         # ``register_plugin``).
         assert clone.state is None
 
+    def test_proxy_load_size_zero_returns_empty_bv(self, fauxware_project):
+        """``proxy.memory.load(addr, 0)`` mirrors stock SimMemory and returns
+        a 0-width BV without invoking the Rust FFI (a zero-width load would
+        panic inside Z3). Regression for the
+        ``posix/open.py`` crash discovered in step 4 parity validation when
+        ``strlen.max_null_index == 0`` (null at offset 0).
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+        result = cb_state.memory.load(fauxware_project.entry, 0)
+        assert result.length == 0
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:

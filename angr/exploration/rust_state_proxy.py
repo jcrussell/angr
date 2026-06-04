@@ -497,6 +497,17 @@ class RustMemoryProxy:
         under the state's constraints by forking a Rust solver context.
         Unsat addresses raise ``claripy.errors.UnsatError``.
         """
+        if size is None:
+            size = self._arch.bytes
+        if isinstance(size, claripy.ast.Base):
+            size = size.concrete_value
+        # angr-4scu step 4: stock SimMemory.load(addr, 0) returns a 0-width
+        # BV without touching memory; mirror that. Reaching the FFI with
+        # size=0 panics in Z3 because zero-width BVs are invalid (see
+        # ``z3-patched/src/ast/bv.rs``). ``posix/open.py`` triggers this on
+        # paths where ``strlen.max_null_index == 0`` (null at offset 0).
+        if size == 0:
+            return claripy.BVV(0, 0)
         if isinstance(addr, claripy.ast.Base):
             if addr.concrete:
                 addr = addr.concrete_value
@@ -508,10 +519,6 @@ class RustMemoryProxy:
                         "symbolic memory load addr is unsat"
                     )
                 addr = resolved
-        if size is None:
-            size = self._arch.bytes
-        if isinstance(size, claripy.ast.Base):
-            size = size.concrete_value
 
         data = self._mgr.get_state_memory(self._state_id, addr, size)
         if data is None:
