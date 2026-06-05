@@ -16,7 +16,14 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 # Pinned at >=3.10 (not upstream's 3.12) because we hold archinfo/claripy/cle/pyvex
-# at 9.2.209 — see bd bead `angr-3mkf` for the deps-bump investigation.
+# at 9.2.209. Upstream master moved them to 9.2.222.dev0 (not published to PyPI;
+# requires source builds) and bumped pypcode 3.x→4.x. The latest released claripy
+# (9.2.221) still pins `z3-solver==4.13.0.0` — same SONAME as 9.2.209, so the
+# original shared-Z3-context concern is not the current blocker. The current
+# blocker is that our venv is hand-assembled (cargo-direct-copy), so a pin bump
+# requires a venv rebuild rather than `pip install -U`. Re-evaluate when (a)
+# upstream cuts a stable 9.2.222+ release on PyPI or (b) we move to a pip-
+# managed venv. See bd bead `angr-3mkf` for the full audit.
 requires-python = ">=3.10"
 dependencies = [
     "cxxheaderparser",
