@@ -1,14 +1,15 @@
 # pylint:disable=too-many-boolean-expressions,unused-argument
 from __future__ import annotations
+
 import logging
 from collections import defaultdict
 
 from archinfo import Endness
 
 from angr.ailment import Block
+from angr.ailment.expression import BinaryOp, Const, Load, VirtualVariable
 from angr.ailment.statement import WeakAssignment
-from angr.ailment.expression import VirtualVariable, BinaryOp, Const, Load
-from angr.sim_type import SimType, SimTypePointer, SimTypeChar
+from angr.sim_type import SimType, SimTypeChar, SimTypePointer
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
 
@@ -149,8 +150,8 @@ class EagerStdStringConcatenationPass(OptimizationPass):
                 old_stmt.idx,
                 old_stmt.dst,
                 Load(
-                    None,
-                    Const(None, None, str_id, self.project.arch.bits, custom_string=True),
+                    self.manager.next_atom(),
+                    Const(self.manager.next_atom(), None, str_id, self.project.arch.bits, custom_string=True),
                     len(final_str),
                     Endness.BE,
                 ),

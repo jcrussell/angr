@@ -1,25 +1,28 @@
 # pylint:disable=no-self-use,arguments-renamed
 from __future__ import annotations
+
 import enum
-from typing import Any
 from collections import OrderedDict, defaultdict
+from typing import TYPE_CHECKING, Any
 
 import angr.ailment as ailment
 from angr.ailment import UnaryOp
 from angr.ailment.expression import negate
-
-from angr.utils.constants import SWITCH_MISSING_DEFAULT_NODE_ADDR
-from angr.analyses.decompiler.structuring.structurer_nodes import (
-    SwitchCaseNode,
-    ConditionNode,
-    SequenceNode,
-    MultiNode,
+from angr.analyses.decompiler.condition_processor import ConditionProcessor, EmptyBlockNotice
+from angr.analyses.decompiler.sequence_walker import SequenceWalker
+from angr.analyses.decompiler.structurer_nodes import (
     BaseNode,
     BreakNode,
+    ConditionNode,
+    MultiNode,
+    SequenceNode,
+    SwitchCaseNode,
 )
-from angr.analyses.decompiler.sequence_walker import SequenceWalker
-from angr.analyses.decompiler.condition_processor import ConditionProcessor, EmptyBlockNotice
 from angr.analyses.decompiler.utils import is_statement_terminating
+from angr.utils.constants import SWITCH_MISSING_DEFAULT_NODE_ADDR
+
+if TYPE_CHECKING:
+    from angr.ailment import Manager
 
 
 class CmpOp(enum.Enum):
@@ -492,7 +495,9 @@ def simplify_switch_clusters(
             continue
 
 
-def simplify_lowered_switches(region: SequenceNode, var2condnodes: dict[Any, list[ConditionalRegion]], functions):
+def simplify_lowered_switches(
+    region: SequenceNode, var2condnodes: dict[Any, list[ConditionalRegion]], functions, ail_manager: Manager
+):
     """
     Identify a lowered switch and simplify it into a switch-case if possible.
 
@@ -504,7 +509,7 @@ def simplify_lowered_switches(region: SequenceNode, var2condnodes: dict[Any, lis
     for var, condnodes in var2condnodes.items():
         # an arbitrary threshold of 8, and must have at least one > or <
         if len(condnodes) > 8 and any(condnode.op in {CmpOp.GT, CmpOp.LT} for condnode in condnodes):
-            simplify_lowered_switches_core(region, var, condnodes, functions)
+            simplify_lowered_switches_core(region, var, condnodes, functions, ail_manager)
 
 
 def simplify_lowered_switches_core(
@@ -512,6 +517,7 @@ def simplify_lowered_switches_core(
     var,
     condnodes,
     functions,  # pylint:disable=unused-argument
+    ail_manager: Manager,
 ) -> bool:
     node_to_condnode = {}
     parent_node_to_condnodes = defaultdict(list)
@@ -532,7 +538,7 @@ def simplify_lowered_switches_core(
         return False
     if isinstance(outermost_node.condition, UnaryOp) and outermost_node.condition.op == "Not":
         # attempt to flip any simple negated comparison for normalized operations
-        outermost_node.condition = negate(outermost_node.condition.operand)
+        outermost_node.condition = negate(outermost_node.condition.operand, ail_manager)
 
     caseno_to_node = {}
     default_node_candidates: list[tuple[BaseNode, BaseNode]] = []  # parent to default node candidate

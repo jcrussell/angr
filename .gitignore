@@ -34,9 +34,13 @@ dist
 *.dylib
 docs/_build
 docs/dashboard/data.json
+docs/api/
 uv.lock
 target/
 tests/benchmarks/debug_*.py
+.DS_Store
+*_angr_rtdb
+*_angr_rtdb_*
 
 # Autonomous-loop runtime artifacts (logs, pid, stdout/stderr captures).
 # .claude/loop-session.md IS intentionally tracked — it's the session
@@ -45,3 +49,4 @@ tests/benchmarks/debug_*.py
 .claude/loop-stderr.log
 .claude/loop-stdout.log
 .claude/loop.pid
+.claude/scheduled_tasks.lock

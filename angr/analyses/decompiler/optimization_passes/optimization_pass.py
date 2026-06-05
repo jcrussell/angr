@@ -1,29 +1,29 @@
 # pylint:disable=unused-argument
 from __future__ import annotations
+
 import logging
 from collections import namedtuple
 from collections.abc import Generator
-from typing import Any, TYPE_CHECKING
 from enum import Enum
+from typing import TYPE_CHECKING, Any
 
 import networkx
 
-import angr.ailment as ailment
-
+import angr
+from angr import ailment
 from angr.ailment.manager import Manager
-from angr.analyses.decompiler import RegionIdentifier
 from angr.analyses.decompiler.ailgraph_walker import AILGraphWalker
 from angr.analyses.decompiler.condition_processor import ConditionProcessor
+from angr.analyses.decompiler.counters import ControlFlowStructureCounter
 from angr.analyses.decompiler.goto_manager import Goto, GotoManager
 from angr.analyses.decompiler.structuring import RecursiveStructurer, SAILRStructurer
-from angr.analyses.decompiler.utils import add_labels, remove_edges_in_ailgraph, is_empty_node
-from angr.analyses.decompiler.counters import ControlFlowStructureCounter
-from angr.project import Project
+from angr.analyses.decompiler.utils import add_labels, is_empty_node, remove_edges_in_ailgraph
 
 if TYPE_CHECKING:
-    from angr.knowledge_plugins.functions import Function
-    from angr.sim_variable import SimVariable
     from angr.analyses.decompiler.stack_item import StackItem
+    from angr.knowledge_plugins.functions import Function
+    from angr.project import Project
+    from angr.sim_variable import SimVariable
 
 
 _l = logging.getLogger(__name__)
@@ -405,10 +405,11 @@ class OptimizationPass(BaseOptimizationPass):
         return graph
 
     def _recover_regions(self, graph: networkx.DiGraph, condition_processor=None, update_graph: bool = False):
-        return self.project.analyses[RegionIdentifier].prep(kb=self.kb)(
+        return self.project.analyses[angr.analyses.decompiler.RegionIdentifier].prep(kb=self.kb)(
             self._func,
             graph=graph,
-            cond_proc=condition_processor or ConditionProcessor(self.project.arch),
+            ail_manager=self.manager,
+            cond_proc=condition_processor or ConditionProcessor(self.project.arch, self.manager),
             update_graph=update_graph,
             force_loop_single_exit=self._force_loop_single_exit,
             refine_loops_with_single_successor=self._refine_loops_with_single_successor,
@@ -525,7 +526,7 @@ class StructuringOptimizationPass(OptimizationPass):
 
         # since all checks have completed, add labels back out here
         if self._readd_labels:
-            self.out_graph = add_labels(self.out_graph)
+            self.out_graph = add_labels(self.out_graph, self.manager)
 
         if (
             self._require_structurable_graph
@@ -595,13 +596,14 @@ class StructuringOptimizationPass(OptimizationPass):
         Consequently, a true return guarantees up-to-date goto information in the goto manager.
         """
         if readd_labels:
-            graph = add_labels(graph)
+            graph = add_labels(graph, self.manager)
 
         remove_edges_in_ailgraph(graph, self._edges_to_remove)
 
-        self._ri = self.project.analyses[RegionIdentifier].prep(kb=self.kb)(
+        self._ri = self.project.analyses[angr.analyses.decompiler.RegionIdentifier].prep(kb=self.kb)(
             self._func,
             graph=graph,
+            ail_manager=self.manager,
             # never update the graph in-place, we need to keep the original graph for later use
             update_graph=False,
             cond_proc=self._ri.cond_proc,
@@ -618,6 +620,7 @@ class StructuringOptimizationPass(OptimizationPass):
             rs = self.project.analyses[RecursiveStructurer].prep(kb=self.kb)(
                 self._ri.region,
                 cond_proc=self._ri.cond_proc,
+                ail_manager=self.manager,
                 func=self._func,
                 structurer_cls=SAILRStructurer,
             )
@@ -629,7 +632,9 @@ class StructuringOptimizationPass(OptimizationPass):
         if not rs or not rs.result or is_empty_node(rs.result) or rs.result_incomplete:
             return False
 
-        rs = self.project.analyses.RegionSimplifier(self._func, rs.result, arg_vvars=self._arg_vvars, kb=self.kb)
+        rs = self.project.analyses.RegionSimplifier(
+            self._func, rs.result, self.manager, arg_vvars=self._arg_vvars, kb=self.kb
+        )
         if not rs or rs.goto_manager is None or rs.result is None:
             return False
 

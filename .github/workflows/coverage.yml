@@ -23,11 +23,9 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
-      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
-        with:
-          python-version: "3.10"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v6
       - name: Restore test durations cache
         uses: actions/cache/restore@v5
         with:
@@ -35,11 +33,11 @@ jobs:
           key: cov-test-durations-${{ github.sha }}
           restore-keys: cov-test-durations-
       - name: Build
-        run: uv sync -v -p 3.10 --all-groups
+        run: uv sync --managed-python -v -p 3.12 --all-groups
       - name: Archive environment
         run: tar -cpf /tmp/env.tzst --absolute-names --zstd $PWD $UV_CACHE_DIR $UV_PYTHON_INSTALL_DIR
       - name: Upload environment artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: env
           path: /tmp/env.tzst
@@ -63,7 +61,7 @@ jobs:
           tar -xpf $PWD/env.tzst -C /
           rm env.tzst
       - name: Download test binaries
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
         with:
           repository: angr/binaries
           path: binaries
@@ -83,7 +81,7 @@ jobs:
         run: |
           [[ -e junit.xml && -e coverage.xml && -e coverage-native.xml && -e test_durations.json ]]
       - name: Upload results artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-${{ matrix.runner_id }}
           if-no-files-found: error
@@ -98,21 +96,21 @@ jobs:
     name: Test Rust packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
-      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
-      - uses: taiki-e/install-action@94cb46f8d6e437890146ffbd78a778b78e623fb2 # v2
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+      - uses: taiki-e/install-action@6887963ccf37a9ddcd8c5fa4baeb3e1e5fd61fa1 # v2
         with:
           tool: cargo-llvm-cov
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
       - name: Run tests
         run: |
           cargo test --release
           cargo llvm-cov --lcov --output-path lcov.info
       - name: Upload results artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-rust
           if-no-files-found: error
@@ -162,13 +160,13 @@ jobs:
           junit=$(find . -type f -name 'junit.xml' | paste -sd, -)
           echo "junit=$junit" >> "$GITHUB_OUTPUT"
       - name: Upload test coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v5
         with:
           use_oidc: true
           verbose: true
           files: ${{ steps.files.outputs.coverage }}
       - name: Upload test results to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v5
         with:
           use_oidc: true
           fail_ci_if_error: true
@@ -178,7 +176,7 @@ jobs:
       - name: Combine test durations
         run: jq -Ss 'add' results/**/test_durations.json > test_durations.json
       - name: Upload combined test durations artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test_durations
           path: ./test_durations.json

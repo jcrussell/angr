@@ -1,12 +1,14 @@
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any
 
 from .clinic import Clinic
-from .structured_codegen import BaseStructuredCodeGenerator
 
 if TYPE_CHECKING:
     from angr.analyses.decompiler.optimization_passes.expr_op_swapper import OpDescriptor
-    from angr.analyses.typehoon.typevars import TypeVariable, TypeConstraint
+    from angr.analyses.typehoon.typevars import TypeConstraint, TypeVariable
+
+    from .structured_codegen import BaseStructuredCodeGenerator
 
 
 class DecompilationCache:
@@ -24,6 +26,7 @@ class DecompilationCache:
         "func_typevar",
         "function_summary",
         "ite_exprs",
+        "max_tv_id",
         "notes",
         "parameters",
         "stack_offset_typevars",
@@ -48,6 +51,7 @@ class DecompilationCache:
         self.errors: list[str] = []
         self.function_summary: str | None = None
         self.notes: dict[str, str] = {}
+        self.max_tv_id: int = 0
 
     @property
     def local_types(self):

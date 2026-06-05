@@ -1,15 +1,17 @@
-# pylint:disable=isinstance-second-argument-not-valid-type,no-self-use,arguments-renamed,too-many-boolean-expressions
+# pylint:disable=isinstance-second-argument-not-valid-type,no-self-use,arguments-renamed,too-many-boolean-expressions,unused-import
 from __future__ import annotations
-from collections.abc import Iterable
+
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from typing import Self
 
 import claripy
-from typing_extensions import Self
 
 from angr import ailment
-from .utils import stable_hash, is_none_or_likeable, is_none_or_matchable
+
+from .expression import Atom, DirtyExpression, Expression
 from .tagged_object import TaggedObject
-from .expression import Atom, Expression, DirtyExpression
+from .utils import is_none_or_likeable, is_none_or_matchable, stable_hash
 
 
 class Statement(TaggedObject, ABC):
@@ -44,6 +46,11 @@ class Statement(TaggedObject, ABC):
     def matches(self, other) -> bool:  # pylint:disable=unused-argument,no-self-use
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def depth(self) -> int:  # pylint:disable=unused-argument,no-self-use
+        raise NotImplementedError
+
     def __eq__(self, other):
         if self is other:
             return True
@@ -62,7 +69,7 @@ class Assignment(Statement):
         "src",
     )
 
-    def __init__(self, idx: int | None, dst: Atom, src: Expression, **kwargs):
+    def __init__(self, idx: int, dst: Atom, src: Expression, **kwargs):
         super().__init__(idx, **kwargs)
 
         self.dst = dst
@@ -101,6 +108,10 @@ class Assignment(Statement):
             return True, Assignment(self.idx, replaced_dst, replaced_src, **self.tags)
         return False, self
 
+    @property
+    def depth(self):
+        return max(self.dst.depth, self.src.depth) + 1
+
     def copy(self) -> Assignment:
         return Assignment(self.idx, self.dst, self.src, **self.tags)
 
@@ -119,7 +130,7 @@ class WeakAssignment(Statement):
         "src",
     )
 
-    def __init__(self, idx: int | None, dst: Atom, src: Expression, **kwargs):
+    def __init__(self, idx: int, dst: Atom, src: Expression, **kwargs):
         super().__init__(idx, **kwargs)
 
         self.dst = dst
@@ -158,6 +169,10 @@ class WeakAssignment(Statement):
             return True, WeakAssignment(self.idx, replaced_dst, replaced_src, **self.tags)
         return False, self
 
+    @property
+    def depth(self):
+        return max(self.dst.depth, self.src.depth) + 1
+
     def copy(self) -> WeakAssignment:
         return WeakAssignment(self.idx, self.dst, self.src, **self.tags)
 
@@ -169,7 +184,7 @@ class WeakAssignment(Statement):
 
 class Store(Statement):
     """
-    Store statement: *addr = data
+    Store statement: ``*addr = data``
     """
 
     __slots__ = (
@@ -184,7 +199,7 @@ class Store(Statement):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         addr: Expression,
         data: Expression,
         size: int,
@@ -232,7 +247,10 @@ class Store(Statement):
 
     def __str__(self):
         if self.variable is None:
-            return f"STORE(addr={self.addr}, data={self.data!s}, size={self.size}, endness={self.endness}, guard={self.guard})"
+            return (
+                f"STORE(addr={self.addr}, data={self.data!s}, size={self.size},"
+                f" endness={self.endness}, guard={self.guard})"
+            )
         return f"{self.variable.name} ={'L' if self.endness == 'Iend_LE' else 'B'} {self.data}<{self.size}>" + (
             "" if self.guard is None else f"[{self.guard}]"
         )
@@ -271,6 +289,10 @@ class Store(Statement):
             )
         return False, self
 
+    @property
+    def depth(self):
+        return max(self.addr.depth, self.data.depth) + 1
+
     def copy(self) -> Store:
         return Store(
             self.idx,
@@ -308,7 +330,7 @@ class Jump(Statement):
         "target_idx",
     )
 
-    def __init__(self, idx: int | None, target: Expression, target_idx: int | None = None, **kwargs):
+    def __init__(self, idx: int, target: Expression, target_idx: int | None = None, **kwargs):
         super().__init__(idx, **kwargs)
 
         self.target = target
@@ -333,16 +355,16 @@ class Jump(Statement):
             return f"Goto({self.target}.{self.target_idx})"
         return f"Goto({self.target})"
 
-    @property
-    def depth(self):
-        return self.target.depth
-
     def replace(self, old_expr, new_expr):
         r, replaced_target = self.target.replace(old_expr, new_expr)
 
         if r:
             return True, Jump(self.idx, replaced_target, **self.tags)
         return False, self
+
+    @property
+    def depth(self):
+        return self.target.depth + 1
 
     def copy(self):
         return Jump(
@@ -374,7 +396,7 @@ class ConditionalJump(Statement):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         condition: Expression,
         true_target: Expression | None,
         false_target: Expression | None,
@@ -476,6 +498,17 @@ class ConditionalJump(Statement):
             )
         return False, self
 
+    @property
+    def depth(self):
+        return (
+            max(
+                self.condition.depth,
+                self.true_target.depth if self.true_target is not None else 0,
+                self.false_target.depth if self.false_target is not None else 0,
+            )
+            + 1
+        )
+
     def copy(self) -> ConditionalJump:
         return ConditionalJump(
             self.idx,
@@ -514,7 +547,7 @@ class SideEffectStatement(Statement):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         expr: ailment.expression.Call,
         ret_expr: Expression | None = None,
         fp_ret_expr: Expression | None = None,
@@ -600,6 +633,17 @@ class SideEffectStatement(Statement):
             )
         return False, self
 
+    @property
+    def depth(self):
+        return (
+            max(
+                self.expr.depth if self.expr is not None else 0,
+                self.ret_expr.depth if self.ret_expr is not None else 0,
+                self.fp_ret_expr.depth if self.fp_ret_expr is not None else 0,
+            )
+            + 1
+        )
+
     def copy(self) -> SideEffectStatement:
         return SideEffectStatement(
             self.idx,
@@ -626,7 +670,7 @@ class Return(Statement):
 
     __slots__ = ("ret_exprs",)
 
-    def __init__(self, idx: int | None, ret_exprs: Iterable[Expression], **kwargs):
+    def __init__(self, idx: int, ret_exprs: Iterable[Expression], **kwargs):
         super().__init__(idx, **kwargs)
         self.ret_exprs = ret_exprs if isinstance(ret_exprs, list) else list(ret_exprs)
 
@@ -673,6 +717,10 @@ class Return(Statement):
 
         return False, self
 
+    @property
+    def depth(self):
+        return max(ex.depth for ex in self.ret_exprs) + 1
+
     def copy(self):
         return Return(
             self.idx,
@@ -692,8 +740,8 @@ class CAS(Statement):
     """
     Atomic compare-and-swap.
 
-    *_lo and *_hi are used to represent the low and high parts of a 128-bit CAS operation; *_hi is None if the CAS
-    operation works on values that are less than or equal to 64 bits.
+    ``*_lo`` and ``*_hi`` are used to represent the low and high parts of a 128-bit CAS operation; ``*_hi`` is None if
+    the CAS operation works on values that are less than or equal to 64 bits.
 
     addr: The address to be compared and swapped.
     data: The value to be written if the comparison is successful.
@@ -705,7 +753,7 @@ class CAS(Statement):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         addr: Expression,
         data_lo: Expression,
         data_hi: Expression | None,
@@ -782,6 +830,21 @@ class CAS(Statement):
             )
         return False, self
 
+    @property
+    def depth(self) -> int:
+        return (
+            max(
+                self.addr.depth if self.addr is not None else 0,
+                self.data_lo.depth if self.data_lo is not None else 0,
+                self.data_hi.depth if self.data_hi is not None else 0,
+                self.expd_lo.depth if self.expd_lo is not None else 0,
+                self.expd_hi.depth if self.expd_hi is not None else 0,
+                self.old_lo.depth if self.old_lo is not None else 0,
+                self.old_hi.depth if self.old_hi is not None else 0,
+            )
+            + 1
+        )
+
     def copy(self) -> CAS:
         return CAS(
             self.idx,
@@ -852,7 +915,7 @@ class DirtyStatement(Statement):
 
     __slots__ = ("dirty",)
 
-    def __init__(self, idx: int | None, dirty: DirtyExpression, **kwargs):
+    def __init__(self, idx: int, dirty: DirtyExpression, **kwargs):
         super().__init__(idx, **kwargs)
         self.dirty = dirty
 
@@ -874,6 +937,10 @@ class DirtyStatement(Statement):
             return True, DirtyStatement(self.idx, new_dirty, **self.tags)
         return False, self
 
+    @property
+    def depth(self) -> int:
+        return self.dirty.depth + 1
+
     def copy(self) -> DirtyStatement:
         return DirtyStatement(self.idx, self.dirty, **self.tags)
 
@@ -894,7 +961,7 @@ class Label(Statement):
 
     __slots__ = ("name",)
 
-    def __init__(self, idx: int | None, name: str, **kwargs):
+    def __init__(self, idx: int, name: str, **kwargs):
         super().__init__(idx, **kwargs)
         self.name = name
 
@@ -903,6 +970,10 @@ class Label(Statement):
 
     def replace(self, old_expr, new_expr):
         return False, self
+
+    @property
+    def depth(self) -> int:
+        return 1
 
     matches = likes
 

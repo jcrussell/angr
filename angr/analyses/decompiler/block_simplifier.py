@@ -1,28 +1,30 @@
 # pylint:disable=too-many-boolean-expressions
 from __future__ import annotations
-import logging
-from typing import TYPE_CHECKING
-from collections.abc import Iterable, Mapping
 
-from angr.ailment.manager import Manager
-from angr.ailment.statement import Statement, Assignment, SideEffectStatement, Store, Jump
-from angr.ailment.expression import Call, Tmp, Load, Const, Register, Convert, Expression, VirtualVariable
+import logging
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING
+
 from angr.ailment import AILBlockViewer
+from angr.ailment.expression import Call, Const, Convert, Expression, Load, Register, Tmp, VirtualVariable
+from angr.ailment.manager import Manager
+from angr.ailment.statement import Assignment, Jump, SideEffectStatement, Statement, Store
+from angr.analyses.analysis import Analysis, register_analysis
+from angr.analyses.s_propagator import SPropagatorAnalysis
+from angr.analyses.s_reaching_definitions import SRDAModel, SReachingDefinitionsAnalysis
 from angr.code_location import AILCodeLocation
 from angr.knowledge_plugins.key_definitions import atoms
-from angr.analyses.s_propagator import SPropagatorAnalysis
-from angr.analyses.s_reaching_definitions import SReachingDefinitionsAnalysis, SRDAModel
-from angr.analyses import Analysis, register_analysis
 from angr.utils.ssa import has_reference_to_vvar
+
 from .peephole_optimizations import (
+    EXPR_OPTS,
     MULTI_STMT_OPTS,
     STMT_OPTS,
-    EXPR_OPTS,
-    PeepholeOptimizationStmtBase,
     PeepholeOptimizationExprBase,
     PeepholeOptimizationMultiStmtBase,
+    PeepholeOptimizationStmtBase,
 )
-from .utils import peephole_optimize_exprs, peephole_optimize_stmts, peephole_optimize_multistmts
+from .utils import peephole_optimize_exprs, peephole_optimize_multistmts, peephole_optimize_stmts
 
 if TYPE_CHECKING:
     from angr.ailment.block import Block
@@ -228,6 +230,7 @@ class BlockSimplifier(Analysis):
         replace_loads: bool = False,
         gp: int | None = None,
         replace_registers: bool = True,
+        max_expr_depth: int | None = 13,
     ) -> tuple[bool, Block]:
         new_statements = block.statements[::]
         replaced = False
@@ -275,10 +278,26 @@ class BlockSimplifier(Analysis):
                             new_src = new.copy()
                         else:
                             r, new_src = stmt.src.replace(old, new)
+                            if (
+                                r
+                                and max_expr_depth is not None
+                                and new_src.depth >= old.depth
+                                and new_src.depth > max_expr_depth
+                            ):
+                                # avoid replacing if the new expression is too deep, to prevent exponential blowup
+                                r = False
                         if r:
                             new_stmt = Assignment(stmt.idx, stmt.dst, new_src, **stmt.tags)
                     else:
                         r, new_stmt = stmt.replace(old, new)
+                        if (
+                            r
+                            and max_expr_depth is not None
+                            and new_stmt.depth >= stmt.depth
+                            and new_stmt.depth > max_expr_depth - 1
+                        ):
+                            # avoid replacing if the new statement is too deep, to prevent exponential blowup
+                            r = False
 
                 if r:
                     assert new_stmt is not None

@@ -1,12 +1,13 @@
 from __future__ import annotations
-from collections import defaultdict
+
+from collections import defaultdict, deque
 
 import networkx
-from angr.ailment import Block, Address
+
+from angr.ailment import Address, Block
 from angr.ailment.expression import Phi, VirtualVariable
 from angr.ailment.statement import Assignment, ConditionalJump, SideEffectStatement
-
-from angr.analyses import Analysis, register_analysis
+from angr.analyses.analysis import Analysis, register_analysis
 from angr.knowledge_plugins.functions.function import Function
 from angr.utils.ail import is_head_controlled_loop_block, is_phi_assignment
 from angr.utils.ssa import VVarUsesCollector, phi_assignment_get_src
@@ -65,11 +66,16 @@ class SLivenessAnalysis(Analysis):
 
         live_on_edges: dict[tuple[tuple[int, int | None], tuple[int, int | None]], set[int]] = {}
 
-        worklist = list(networkx.dfs_postorder_nodes(graph, source=entry))
+        worklist = deque(networkx.dfs_postorder_nodes(graph, source=entry))
         worklist_set = set(worklist)
+        single_exit_single_entry_nodes = {
+            node
+            for node in graph
+            if graph.in_degree[node] == 1 and graph.out_degree[node] == 1 and not graph.has_edge(node, node)
+        }
 
         while worklist:
-            block = worklist.pop(0)
+            block = worklist.popleft()
             worklist_set.remove(block)
 
             block_key = block.addr, block.idx
@@ -125,7 +131,8 @@ class SLivenessAnalysis(Analysis):
                             live_in_by_pred[src] = live.copy()
                         if vvar is not None:
                             live_in_by_pred[src].add(vvar.varid)
-                        live_in_by_pred[src].discard(stmt.dst.varid)
+                        if isinstance(stmt.dst, VirtualVariable):
+                            live_in_by_pred[src].discard(stmt.dst.varid)
 
                 # handle the statement: add used vvars to the live set
                 if head_controlled_loop and is_phi_assignment(stmt):
@@ -150,7 +157,7 @@ class SLivenessAnalysis(Analysis):
                     live_on_edges[key] = live
                     changed = True
 
-            if changed:
+            if changed and block not in single_exit_single_entry_nodes:
                 new_nodes = [
                     node for node in networkx.dfs_postorder_nodes(graph, source=block) if node not in worklist_set
                 ]

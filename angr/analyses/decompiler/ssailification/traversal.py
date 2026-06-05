@@ -1,16 +1,19 @@
 from __future__ import annotations
+
 import logging
-from typing import TYPE_CHECKING
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import angr.ailment as ailment
 from angr.analyses.decompiler.ailgraph_walker import traverse_in_order
 from angr.utils.ssa import get_reg_offset_base_and_size
+
 from .traversal_engine import SimEngineSSATraversal
 from .traversal_state import TraversalState
 
 if TYPE_CHECKING:
     import networkx
+
     from angr.knowledge_plugins.functions.function import Function
     from angr.project import Project
 
@@ -140,3 +143,7 @@ class TraversalAnalysis:
             if existing != succ_state:
                 self._pending.add(succ)
         self._engine_ail.hclb_side_exit_state = None
+
+        # memory optimization:
+        if self._ail_graph.in_degree[node] <= 1:
+            del self.input_states[node]

@@ -1,5 +1,6 @@
 from __future__ import annotations
-from angr.ailment.expression import UnaryOp, BinaryOp
+
+from angr.ailment.expression import BinaryOp, UnaryOp
 
 from .base import PeepholeOptimizationExprBase
 
@@ -18,8 +19,8 @@ class InvertNegatedLogicalConjunctionsAndDisjunctions(PeepholeOptimizationExprBa
         if expr.op == "Not" and isinstance(expr.operand, BinaryOp):
             if expr.operand.op == "LogicalAnd":
                 inner_operands = [
-                    UnaryOp(None, "Not", expr.operand.operands[0], **expr.operand.operands[0].tags),
-                    UnaryOp(None, "Not", expr.operand.operands[1], **expr.operand.operands[1].tags),
+                    UnaryOp(self.manager.next_atom(), "Not", expr.operand.operands[0], **expr.operand.operands[0].tags),
+                    UnaryOp(self.manager.next_atom(), "Not", expr.operand.operands[1], **expr.operand.operands[1].tags),
                 ]
                 return BinaryOp(
                     expr.operand.idx,
@@ -33,8 +34,8 @@ class InvertNegatedLogicalConjunctionsAndDisjunctions(PeepholeOptimizationExprBa
                 )
             if expr.operand.op == "LogicalOr":
                 inner_operands = [
-                    UnaryOp(None, "Not", expr.operand.operands[0], **expr.operand.operands[0].tags),
-                    UnaryOp(None, "Not", expr.operand.operands[1], **expr.operand.operands[1].tags),
+                    UnaryOp(self.manager.next_atom(), "Not", expr.operand.operands[0], **expr.operand.operands[0].tags),
+                    UnaryOp(self.manager.next_atom(), "Not", expr.operand.operands[1], **expr.operand.operands[1].tags),
                 ]
                 return BinaryOp(
                     expr.idx,

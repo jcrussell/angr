@@ -1,46 +1,45 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping
 from collections import defaultdict
+from collections.abc import Mapping
 
 import networkx
 
 from angr.ailment.block import Block
 from angr.ailment.expression import (
     Const,
-    Insert,
-    Phi,
-    VirtualVariable,
-    VirtualVariableCategory,
-    StackBaseOffset,
-    Load,
     Convert,
     Expression,
+    Insert,
+    Load,
+    Phi,
+    StackBaseOffset,
     Tmp,
+    VirtualVariable,
+    VirtualVariableCategory,
 )
 from angr.ailment.manager import Manager
-from angr.ailment.statement import Assignment, Store, Return, Jump, ConditionalJump
-
-from angr.knowledge_plugins.functions import Function
+from angr.ailment.statement import Assignment, ConditionalJump, Jump, Return, Store
+from angr.analyses.analysis import Analysis, register_analysis
 from angr.code_location import AILCodeLocation
-from angr.analyses import Analysis, register_analysis
+from angr.knowledge_plugins.functions import Function
 from angr.utils.ssa import (
-    get_vvar_uselocs,
+    get_tmp_deflocs,
+    get_tmp_uselocs,
     get_vvar_deflocs,
+    get_vvar_uselocs,
     has_ite_expr,
     has_ite_stmt,
+    has_store_stmt_in_between_stmts,
     has_tmp_expr,
-    is_phi_assignment,
-    is_const_assignment,
     is_const_and_vvar_assignment,
+    is_const_assignment,
     is_const_vvar_load_assignment,
     is_const_vvar_load_dirty_assignment,
     is_const_vvar_tmp_assignment,
+    is_phi_assignment,
     is_vvar_propagatable,
-    get_tmp_uselocs,
-    get_tmp_deflocs,
-    has_store_stmt_in_between_stmts,
 )
 
 
@@ -63,12 +62,13 @@ class SPropagatorAnalysis(Analysis):
     def __init__(  # pylint: disable=too-many-positional-arguments
         self,
         subject: Block | Function,
+        *,
+        ail_manager: Manager,
         func_graph: networkx.DiGraph | None = None,
         only_consts: bool = True,
         stack_pointer_tracker=None,
         func_args: set[VirtualVariable] | None = None,
         func_addr: int | None = None,
-        ail_manager: Manager | None = None,
         stack_arg_offsets: set[int] | None = None,
     ):
         if isinstance(subject, Block):
@@ -259,10 +259,16 @@ class SPropagatorAnalysis(Analysis):
 
                 block = blocks[(defloc.block_addr, defloc.block_idx)]
                 stmt = block.statements[defloc.stmt_idx]
+
+                if not (
+                    isinstance(stmt, Assignment) and isinstance(stmt.dst, VirtualVariable) and stmt.dst.varid == vvar_id
+                ):
+                    # come back later, this is not the def you're looking for
+                    continue
+
                 if (
                     (vvar.was_reg or vvar.was_parameter)
                     and sum(vvar_useloc_to_count.values()) <= 2
-                    and isinstance(stmt, Assignment)
                     and isinstance(stmt.src, Load)
                 ):
                     # do we want to propagate this Load expression if it's used for less than twice?
@@ -282,12 +288,7 @@ class SPropagatorAnalysis(Analysis):
                             self.replace(replacements, vvar_useloc, vvar_used, stmt.src)
                         continue
 
-                if (
-                    (vvar.was_reg or vvar.was_stack)
-                    and len(vvar_uselocs_set) == 2
-                    and isinstance(stmt, Assignment)
-                    and not is_phi_assignment(stmt)
-                ):
+                if (vvar.was_reg or vvar.was_stack) and len(vvar_uselocs_set) == 2 and not is_phi_assignment(stmt):
                     # a special case: in a typical switch-case construct, a variable may be used once for comparison
                     # for the default case and then used again for constructing the jump target. we can propagate this
                     # variable for such cases.
@@ -368,7 +369,7 @@ class SPropagatorAnalysis(Analysis):
 
                 # special logic for global variables: if it's used once or multiple times, and the variable is never
                 # updated before it's used, we will propagate the load
-                if (vvar.was_reg or vvar.was_parameter) and isinstance(stmt, Assignment) and not has_tmp_expr(stmt.src):
+                if (vvar.was_reg or vvar.was_parameter) and not has_tmp_expr(stmt.src):
                     stmt_src = stmt.src
                     # unpack conversions
                     while isinstance(stmt_src, Convert):
@@ -408,11 +409,10 @@ class SPropagatorAnalysis(Analysis):
                     for vvar_at_use, useloc in vvar_uselocs_set:
                         sb_offset = self._sp_tracker.offset_before(useloc.ins_addr, self.project.arch.sp_offset)
                         if sb_offset is not None:
-                            idx = None if self._ail_manager is None else self._ail_manager.next_atom()
-                            v = StackBaseOffset(idx, self.project.arch.bits, sb_offset)
+                            v = StackBaseOffset(self._ail_manager.next_atom(), self.project.arch.bits, sb_offset)
                             if sp_bits is not None and vvar.bits < sp_bits:
                                 # truncation needed
-                                v = Convert(None, sp_bits, vvar.bits, False, v)
+                                v = Convert(self._ail_manager.next_atom(), sp_bits, vvar.bits, False, v)
                             self.replace(replacements, useloc, vvar_at_use, v)
                     continue
                 if not self._bp_as_gpr and vvar.oident == self.project.arch.bp_offset:
@@ -424,11 +424,10 @@ class SPropagatorAnalysis(Analysis):
                     for vvar_at_use, useloc in vvar_uselocs_set:
                         sb_offset = self._sp_tracker.offset_before(useloc.ins_addr, self.project.arch.bp_offset)
                         if sb_offset is not None:
-                            idx = None if self._ail_manager is None else self._ail_manager.next_atom()
-                            v = StackBaseOffset(idx, self.project.arch.bits, sb_offset)
+                            v = StackBaseOffset(self._ail_manager.next_atom(), self.project.arch.bits, sb_offset)
                             if bp_bits is not None and vvar.bits < bp_bits:
                                 # truncation needed
-                                v = Convert(None, bp_bits, vvar.bits, False, v)
+                                v = Convert(self._ail_manager.next_atom(), bp_bits, vvar.bits, False, v)
                             self.replace(replacements, useloc, vvar_at_use, v)
                     continue
 

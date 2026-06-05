@@ -1,5 +1,6 @@
 # pylint:disable=line-too-long
 from __future__ import annotations
+
 import logging
 import math
 
@@ -15,6 +16,10 @@ class DivSimplifierAILEngine(SimplifierAILEngine):
     """
     An AIL pass for the div simplifier
     """
+
+    def __init__(self, project, manager):
+        super().__init__(project)
+        self.manager = manager
 
     @staticmethod
     def _check_divisor(a: int, b: int, ndigits: int = 6) -> int | None:
@@ -375,7 +380,7 @@ class DivSimplifierAILEngine(SimplifierAILEngine):
                 assert isinstance(C, int)
                 divisor = self._check_divisor(pow(2, V), C, ndigits)
                 if divisor is not None and X:
-                    new_const = Expr.Const(None, None, divisor, V)
+                    new_const = Expr.Const(self.manager.next_atom(), None, divisor, V)
                     new_expr = Expr.BinaryOp(inner.idx, "Div", [X, new_const], inner.signed, **inner.tags)
                     return True, new_expr
 
@@ -403,7 +408,7 @@ class DivSimplifier(OptimizationPass):
         super().__init__(*args, **kwargs)
 
         self.state = SimplifierAILState(self.project.arch)
-        self.engine = DivSimplifierAILEngine(self.project)
+        self.engine = DivSimplifierAILEngine(self.project, self.manager)
 
         self.analyze()
 

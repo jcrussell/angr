@@ -1,23 +1,21 @@
 from __future__ import annotations
-from collections import defaultdict
+
 import logging
-from typing import TypeVar
+from collections import defaultdict
 
 import networkx
 
-from angr.ailment import Block, Address
-from angr.ailment.statement import Assignment, ConditionalJump, Return, Jump
-from angr.ailment.expression import Call, Const, BinaryOp, VirtualVariable, VirtualVariableCategory
+from angr.ailment import Address, Block
+from angr.ailment.expression import BinaryOp, Call, Const, VirtualVariable, VirtualVariableCategory
+from angr.ailment.statement import Assignment, ConditionalJump, Jump, Return
+from angr.analyses.analysis import AnalysesHub, Analysis
 from angr.analyses.s_liveness import SLivenessAnalysis
-from angr.utils.ssa import is_phi_assignment
-from angr.analyses import Analysis, AnalysesHub
 from angr.analyses.s_reaching_definitions import SReachingDefinitionsAnalysis
 from angr.knowledge_plugins.functions import Function
-from angr.utils.graph import subgraph_between_nodes, Dominators, compute_dominance_frontier
+from angr.utils.graph import Dominators, compute_dominance_frontier, subgraph_between_nodes
+from angr.utils.ssa import is_phi_assignment
 
 _l = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 
 class Outliner(Analysis):
@@ -167,11 +165,12 @@ class Outliner(Analysis):
 
         # rewrite the callsite
         vvar_id = self._next_vvar_id()
+        callee_arg_vvars_copy = [arg_vvar.copy() for arg_vvar in callee_arg_vvars]
         call_expr = Call(
             None,
             f"outlined_func_{src_node.addr:x}",
             # Const(None, None, src_node.addr, 64),
-            args=callee_arg_vvars,
+            args=callee_arg_vvars_copy,
             bits=self.project.arch.bits,
             ins_addr=src_node.addr,
         )

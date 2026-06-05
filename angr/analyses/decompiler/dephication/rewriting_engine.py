@@ -1,36 +1,37 @@
 # pylint:disable=unused-argument,no-self-use,too-many-boolean-expressions
 from __future__ import annotations
-from typing import TYPE_CHECKING
+
 import logging
+from typing import TYPE_CHECKING
 
 from angr.ailment.block import Block
-from angr.ailment.statement import (
-    Statement,
-    Assignment,
-    Store,
-    SideEffectStatement,
-    CAS,
-    Return,
-    ConditionalJump,
-    DirtyStatement,
-    WeakAssignment,
-)
 from angr.ailment.expression import (
+    ITE,
     Atom,
+    BinaryOp,
     Call,
+    Convert,
+    DirtyExpression,
     Expression,
     Extract,
     Insert,
-    VirtualVariable,
     Load,
-    BinaryOp,
-    UnaryOp,
     Phi,
-    Convert,
-    ITE,
-    VEXCCallExpression,
-    DirtyExpression,
     Reinterpret,
+    UnaryOp,
+    VEXCCallExpression,
+    VirtualVariable,
+)
+from angr.ailment.statement import (
+    CAS,
+    Assignment,
+    ConditionalJump,
+    DirtyStatement,
+    Return,
+    SideEffectStatement,
+    Statement,
+    Store,
+    WeakAssignment,
 )
 from angr.engines.light import SimEngineNostmtAIL
 
@@ -318,7 +319,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 new_r = self._expr(r)
                 if new_r is not None:
                     updated = True
-                new_ret_exprs.append(new_r if new_r is not None else None)
+                new_ret_exprs.append(new_r if new_r is not None else r)
             if not updated:
                 new_ret_exprs = None
 
@@ -328,6 +329,34 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
 
     def _handle_stmt_IncompleteSwitchCaseHeadStatement(self, stmt):
         return None
+
+    def _handle_expr_String(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_StringLiteral(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_Struct(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_Array(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_RustEnum(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_Let(self, expr):
+        # TODO
+        pass
+
+    def _handle_expr_FunctionLikeMacro(self, expr):
+        # TODO
+        pass
 
     def _handle_expr_BinaryOp(self, expr):
         new_op0 = self._expr(expr.operands[0])

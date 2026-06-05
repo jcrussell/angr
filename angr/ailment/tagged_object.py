@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict, TYPE_CHECKING
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, Self, TypedDict
 
 from angr.ailment.manager import Manager
 
 if TYPE_CHECKING:
-    from typing_extensions import Unpack
+    from typing import Unpack
 
     from angr.sim_type import SimType
     from angr.sim_variable import SimVariable
@@ -49,7 +48,7 @@ class TaggedObject:
         "tags",
     )
 
-    def __init__(self, idx: int | None, **kwargs: Unpack[TagDict]):
+    def __init__(self, idx: int, **kwargs: Unpack[TagDict]):
         self.tags: TagDict = kwargs
         self.idx = idx
         self._hash = None

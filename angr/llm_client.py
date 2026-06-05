@@ -5,22 +5,29 @@ import json
 import logging
 import os
 import re
-from typing import TypeVar, TYPE_CHECKING, Any
+from enum import Enum
+from typing import TYPE_CHECKING, Any
 
 from angr.errors import AngrAIError
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
-    from pydantic_ai.settings import ModelSettings
     from pydantic_ai.providers import Provider
+    from pydantic_ai.settings import ModelSettings
 
-T = TypeVar("T")
 
 l = logging.getLogger(name=__name__)
 
 Agent = None
 OpenAIChatModel = None
 OpenAIProvider = None
+
+
+class AgentKind(Enum):
+    """The kind of pydantic-ai Agent to retrieve from the LLMClient cache."""
+
+    STRING = "string"
+    STRUCTURED = "structured"
 
 
 class LLMClient:
@@ -43,6 +50,36 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._pydantic_model: Model | str = self._build_model()
+        self._agent: Any | None = None
+        self._structured_agents: dict[type, Any] = {}
+
+    def _get_agent(self, kind: AgentKind, output_type: type = str) -> Any:
+        """Lazily build and cache a pydantic-ai Agent for the given kind and output_type.
+
+        For ``AgentKind.STRING``, a single string-output agent is cached on the instance.
+        For ``AgentKind.STRUCTURED``, agents are cached per ``output_type``.
+        """
+        global Agent
+
+        if Agent is None:
+            try:
+                from pydantic_ai import Agent  # type: ignore
+            except ImportError:
+                raise ImportError(
+                    "pydantic-ai is required for LLM support. You can install it with: pip install angr[llm] or "
+                    "pip install pydantic-ai"
+                ) from None
+
+        if kind is AgentKind.STRING:
+            if self._agent is None:
+                self._agent = Agent(self._pydantic_model, output_type=str)
+            return self._agent
+
+        agent = self._structured_agents.get(output_type)
+        if agent is None:
+            agent = Agent(self._pydantic_model, output_type=output_type)
+            self._structured_agents[output_type] = agent
+        return agent
 
     def infer_provider(self, provider: str) -> Provider[Any]:
         """Infer the provider from the provider name."""
@@ -108,23 +145,12 @@ class LLMClient:
         Call the LLM with the given messages and return the response text.
         """
 
-        global Agent
-
-        if Agent is None:
-            try:
-                from pydantic_ai import Agent  # type: ignore
-            except ImportError:
-                raise ImportError(
-                    "pydantic-ai is required for LLM support. You can install it with: pip install angr[llm] or "
-                    "pip install pydantic-ai"
-                ) from None
-
+        agent = self._get_agent(AgentKind.STRING)
         prompt = "\n\n".join(m["content"] for m in messages if m.get("content"))
-        agent = Agent(self._pydantic_model, output_type=str)
         result = agent.run_sync(prompt, model_settings=self._model_settings())
         return result.output
 
-    def completion_structured(
+    def completion_structured[T](
         self, messages: list[dict[str, str]], output_type: type[T], raise_exc: bool = False, **kwargs
     ) -> T | None:
         """
@@ -134,11 +160,7 @@ class LLMClient:
         :param raise_exc:   If True, exceptions are propagated to the caller instead of being caught.
         """
 
-        global Agent
-
         try:
-            if Agent is None:
-                from pydantic_ai import Agent  # type: ignore
             from pydantic_ai import UserError
         except ImportError:
             raise ImportError(
@@ -146,9 +168,9 @@ class LLMClient:
                 "pip install pydantic-ai"
             ) from None
 
+        agent = self._get_agent(AgentKind.STRUCTURED, output_type)
         prompt = "\n\n".join(m["content"] for m in messages if m.get("content"))
         try:
-            agent = Agent(self._pydantic_model, output_type=output_type)
             result = agent.run_sync(prompt, model_settings=self._model_settings())
             return result.output
         except UserError as ex:

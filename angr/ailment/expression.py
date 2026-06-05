@@ -1,20 +1,23 @@
 # pylint:disable=arguments-renamed,isinstance-second-argument-not-valid-type,missing-class-docstring,too-many-boolean-expressions
 from __future__ import annotations
-from typing import TYPE_CHECKING, cast
+
+from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Sequence
 from enum import Enum, IntEnum
-from abc import ABC, abstractmethod
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Self, cast
 
 import archinfo
 import claripy
 
 from .tagged_object import TaggedObject
-from .utils import get_bits, stable_hash, is_none_or_likeable, is_none_or_matchable
+from .utils import get_bits, is_none_or_likeable, is_none_or_matchable, stable_hash
 
 if TYPE_CHECKING:
     from angr.calling_conventions import SimCC
     from angr.sim_type import SimTypeFunction
+
+    from .manager import Manager
     from .statement import Statement
 
 
@@ -30,7 +33,7 @@ class Expression(TaggedObject, ABC):
         "depth",
     )
 
-    def __init__(self, idx, depth, **kwargs):
+    def __init__(self, idx: int, depth, **kwargs):
         super().__init__(idx, **kwargs)
         self.depth = depth
 
@@ -73,12 +76,6 @@ class Expression(TaggedObject, ABC):
 
         return r, replaced
 
-    def __add__(self, other):
-        return BinaryOp(None, "Add", [self, other], signed=False, **self.tags)
-
-    def __sub__(self, other):
-        return BinaryOp(None, "Sub", [self, other], signed=False, **self.tags)
-
 
 class Atom(Expression):
     __slots__ = (
@@ -86,7 +83,7 @@ class Atom(Expression):
         "variable_offset",
     )
 
-    def __init__(self, idx: int | None, variable=None, variable_offset=0, **kwargs):
+    def __init__(self, idx: int, variable=None, variable_offset=0, **kwargs):
         super().__init__(idx, 0, **kwargs)
         self.variable = variable
         self.variable_offset = variable_offset
@@ -98,7 +95,7 @@ class Atom(Expression):
 class Const(Atom):
     __slots__ = ("value",)
 
-    def __init__(self, idx: int | None, variable, value: int | float, bits: int, **kwargs):
+    def __init__(self, idx: int, variable, value: int | float, bits: int, **kwargs):
         super().__init__(idx, variable, **kwargs)
 
         self.value = value
@@ -160,7 +157,7 @@ class Const(Atom):
 class Tmp(Atom):
     __slots__ = ("tmp_idx",)
 
-    def __init__(self, idx: int | None, variable, tmp_idx: int, bits, **kwargs):
+    def __init__(self, idx: int, variable, tmp_idx: int, bits, **kwargs):
         super().__init__(idx, variable, **kwargs)
 
         self.tmp_idx = tmp_idx
@@ -190,7 +187,7 @@ class Tmp(Atom):
 class Register(Atom):
     __slots__ = ("reg_offset",)
 
-    def __init__(self, idx: int | None, variable, reg_offset: int, bits: int, **kwargs):
+    def __init__(self, idx: int, variable, reg_offset: int, bits: int, **kwargs):
         super().__init__(idx, variable, **kwargs)
 
         self.reg_offset = reg_offset
@@ -222,19 +219,54 @@ class Register(Atom):
         return Register(manager.next_atom(), self.variable, self.reg_offset, self.bits, **self.tags)
 
 
+class ComboRegister(Atom):
+    def __init__(self, idx, variable, registers: list[Register | VirtualVariable], **kwargs):
+        super().__init__(idx, variable, **kwargs)
+        self.registers = registers
+        self.bits = sum(reg.bits for reg in registers)
+
+    @property
+    def size(self):
+        return self.bits // 8
+
+    def likes(self, other):
+        return (
+            type(self) is type(other)
+            and len(self.registers) == len(other.registers)
+            and all(reg.likes(other_reg) for reg, other_reg in zip(self.registers, other.registers))
+        )
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return "ComboRegister(" + ", ".join(str(reg) for reg in self.registers) + ")"
+
+    matches = likes
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash(("combo_reg", tuple(self.registers), self.bits, self.idx))
+
+    def copy(self) -> ComboRegister:
+        return ComboRegister(self.idx, self.variable, self.registers, **self.tags)
+
+
 class VirtualVariableCategory(IntEnum):
     REGISTER = 0
     STACK = 1
     MEMORY = 2
     PARAMETER = 3
     TMP = 4
-    UNKNOWN = 5
+    COMBO_REGISTER = 5
+    UNKNOWN = 6
 
 
 class VirtualVariable(Atom):
     __slots__ = (
         "category",
         "oident",
+        "reg_vvars",
         "varid",
     )
 
@@ -254,6 +286,8 @@ class VirtualVariable(Atom):
         self.oident = oident
         self.bits = bits
 
+        self.reg_vvars = kwargs.get("reg_vvars", {})
+
     @property
     def was_reg(self) -> bool:
         return self.category == VirtualVariableCategory.REGISTER
@@ -271,6 +305,10 @@ class VirtualVariable(Atom):
         return self.category == VirtualVariableCategory.TMP
 
     @property
+    def was_combo_reg(self) -> bool:
+        return self.category == VirtualVariableCategory.COMBO_REGISTER
+
+    @property
     def reg_offset(self) -> int:
         if self.was_reg:
             assert isinstance(self.oident, int)
@@ -278,6 +316,17 @@ class VirtualVariable(Atom):
         if self.was_parameter and self.parameter_category == VirtualVariableCategory.REGISTER:
             return self.parameter_reg_offset  # type: ignore
         raise TypeError("Is not a register")
+
+    @property
+    def reg_offsets(self) -> tuple:
+        if self.was_combo_reg:
+            assert isinstance(self.oident, tuple)
+            return self.oident
+        if self.was_parameter and self.parameter_category == VirtualVariableCategory.COMBO_REGISTER:
+            assert isinstance(self.oident, tuple)
+            assert isinstance(self.oident[1], tuple)
+            return self.oident[1]
+        raise TypeError("Is not a combo register")
 
     @property
     def stack_offset(self) -> int:
@@ -340,6 +389,8 @@ class VirtualVariable(Atom):
                 ori_str = f"{{r{self.reg_offset}|{self.size}b}}"
             case VirtualVariableCategory.STACK:
                 ori_str = f"{{s{self.oident}|{self.size}b}}"
+            case VirtualVariableCategory.COMBO_REGISTER:
+                ori_str = f"{{combo_reg {self.oident}}}"
         return f"vvar_{self.varid}{ori_str}"
 
     def _hash_core(self):
@@ -501,7 +552,7 @@ class UnaryOp(Op):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         op: str,
         operand: Expression,
         variable=None,
@@ -604,7 +655,7 @@ class Convert(UnaryOp):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         from_bits: int,
         to_bits: int,
         is_signed: bool,
@@ -882,7 +933,7 @@ class BinaryOp(Op):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         op: str,
         operands: Sequence[Expression],
         signed: bool = False,
@@ -1084,7 +1135,7 @@ class Load(Expression):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         addr: Expression,
         size: int,
         endness: str,
@@ -1203,7 +1254,7 @@ class ITE(Expression):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         cond: Expression,
         iffalse: Expression,
         iftrue: Expression,
@@ -1453,7 +1504,7 @@ class VEXCCallExpression(Expression):
         "operands",
     )
 
-    def __init__(self, idx: int | None, callee: str, operands: tuple[Expression, ...], bits: int, **kwargs):
+    def __init__(self, idx: int, callee: str, operands: tuple[Expression, ...], bits: int, **kwargs):
         super().__init__(idx, max(operand.depth for operand in operands), **kwargs)
         self.callee = callee
         self.operands = operands
@@ -1537,7 +1588,7 @@ class MultiStatementExpression(Expression):
         "stmts",
     )
 
-    def __init__(self, idx: int | None, stmts: list[Statement], expr: Expression, **kwargs):
+    def __init__(self, idx: int, stmts: list[Statement], expr: Expression, **kwargs):
         super().__init__(idx, expr.depth + 1, **kwargs)
         self.stmts = stmts
         self.expr = expr
@@ -1620,7 +1671,7 @@ class BasePointerOffset(Expression):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         bits: int,
         base: Expression | str,
         offset: int,
@@ -1684,9 +1735,8 @@ class BasePointerOffset(Expression):
 class StackBaseOffset(BasePointerOffset):
     __slots__ = ()
 
-    def __init__(self, idx: int | None, bits: int, offset: int, **kwargs):
+    def __init__(self, idx: int, bits: int, offset: int, **kwargs):
         # stack base offset is always signed
-        assert idx is not None
         if offset >= (1 << (bits - 1)):
             offset -= 1 << bits
         super().__init__(idx, bits, "stack_base", offset, **kwargs)
@@ -1698,7 +1748,7 @@ class StackBaseOffset(BasePointerOffset):
         return StackBaseOffset(manager.next_atom(), self.bits, self.offset, **self.tags)
 
 
-def negate(expr: Expression) -> Expression:
+def negate(expr: Expression, manager: Manager) -> Expression:
     if isinstance(expr, UnaryOp) and expr.op == "Not":
         # unpack
         return expr.operand
@@ -1713,13 +1763,13 @@ def negate(expr: Expression) -> Expression:
             rounding_mode=expr.rounding_mode,
             **expr.tags,
         )
-    return UnaryOp(None, "Not", expr, **expr.tags)
+    return UnaryOp(manager.next_atom(), "Not", expr, **expr.tags)
 
 
 class Extract(Expression):
     __slots__ = ("base", "endness", "offset")
 
-    def __init__(self, idx: int | None, bits: int, base: Expression, offset: Expression, endness: str, **kwargs):
+    def __init__(self, idx: int, bits: int, base: Expression, offset: Expression, endness: str, **kwargs):
         super().__init__(idx, max(base.depth, offset.depth) + 1, **kwargs)
 
         self.bits = bits
@@ -1787,9 +1837,7 @@ class Extract(Expression):
 class Insert(Expression):
     __slots__ = ("base", "endness", "offset", "value")
 
-    def __init__(
-        self, idx: int | None, base: Expression, offset: Expression, value: Expression, endness: str, **kwargs
-    ):
+    def __init__(self, idx: int, base: Expression, offset: Expression, value: Expression, endness: str, **kwargs):
         super().__init__(idx, max(base.depth, offset.depth) + 1, **kwargs)
 
         assert value.bits <= base.bits
@@ -1877,7 +1925,7 @@ class Call(Expression):
 
     def __init__(
         self,
-        idx: int | None,
+        idx: int,
         target: Expression | str,
         calling_convention: SimCC | None = None,
         prototype: SimTypeFunction | None = None,
@@ -1937,11 +1985,11 @@ class Call(Expression):
         return f"Call({self.target}, {s})"
 
     @property
-    def verbose_op(self):
+    def verbose_op(self) -> str:
         return "call"
 
     @property
-    def op(self):
+    def op(self) -> str:
         return "call"
 
     def has_atom(self, atom, identity=True):
@@ -2012,3 +2060,372 @@ class Call(Expression):
             bits=self.bits,
             **self.tags,
         )
+
+
+#
+# Rust-specific expressions
+#
+
+
+class StringLiteral(Expression):
+    __slots__ = ("data",)
+
+    def __init__(self, idx, data, bits, **kwargs):
+        super().__init__(idx, 0, **kwargs)
+        self.data = data
+        self.bits = bits
+
+    @property
+    def size(self):
+        return self.bits // 8
+
+    def __repr__(self):
+        return f'"{repr(self.data)[1:-1]}"'
+
+    def __str__(self):
+        return f"StringLiteral({self!r})"
+
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash(self.data)
+
+    def likes(self, other):
+        return type(self) is type(other) and self.data == other.data
+
+    def copy(self):
+        return StringLiteral(self.idx, self.data, self.bits, **self.tags)
+
+    def deep_copy(self, manager):
+        return StringLiteral(manager.next_atom(), self.data, self.bits, **self.tags)
+
+    def replace(self, old_expr: Expression, new_expr: Expression) -> tuple[bool, Self]:
+        if old_expr.likes(self):
+            r, replaced = True, new_expr
+        else:
+            r, replaced = False, self
+
+        return r, replaced  # pyright: ignore[reportReturnType]
+
+    matches = likes
+
+
+class Struct(Expression):
+    __slots__ = ("field_names", "field_offsets", "fields", "name")
+
+    def __init__(self, idx, name, fields, field_offsets, bits, **kwargs):
+        super().__init__(idx, (max(field.depth for field in fields.values()) if len(fields) else 0) + 1, **kwargs)
+        self.name = name
+        self.fields = fields
+        self.field_offsets = field_offsets
+        self.field_names = OrderedDict([(v, k) for k, v in field_offsets.items()])
+        self.bits = bits
+
+    def get_field(self, name):
+        path = name.split(".")
+        offset = self.field_offsets.get(path[0], None)
+        field = self.fields.get(offset, None)
+        if len(path) == 1:
+            return field
+        if isinstance(field, Struct):
+            return field.get_field(".".join(path[1:]))
+        return None
+
+    @property
+    def size(self):
+        return self.bits // 8
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return self.name + " " + str(self.fields)
+
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash((self.name, tuple(self.fields.items()), tuple(self.field_offsets.items()), self.bits))
+
+    def likes(self, other):
+        return (
+            type(self) is type(other)
+            and self.name == other.name
+            and self.fields.keys() == other.fields.keys()
+            and all(self.fields[k].likes(other.fields[k]) for k in self.fields)
+            and self.field_offsets == other.field_offsets
+        )
+
+    def copy(self):
+        return Struct(self.idx, self.name, self.fields, self.field_offsets, self.bits)
+
+    def deep_copy(self, manager):
+        idx = manager.next_atom()
+        return Struct(
+            idx,
+            self.name,
+            OrderedDict((offset, field.deep_copy(manager)) for offset, field in self.fields.items()),
+            self.field_offsets.copy(),
+            self.bits,
+            **self.tags,
+        )
+
+    def replace(self, old_expr, new_expr):
+        new_fields = OrderedDict()
+        replaced = False
+        for offset, field in self.fields.items():
+            if field is old_expr:
+                new_fields[offset] = new_expr
+                replaced = True
+            else:
+                field_replaced, new_field = field.replace(old_expr, new_expr)
+                if field_replaced:
+                    new_fields[offset] = new_field
+                    replaced = True
+                else:
+                    new_fields[offset] = field
+
+        if replaced:
+            return True, Struct(self.idx, self.name, new_fields, self.field_offsets, self.bits, **self.tags)
+        return False, self
+
+    matches = likes
+
+
+class RustEnum(Expression):
+    def __init__(self, idx, name, fields, bits, **kwargs):
+        super().__init__(idx, (max(field.depth for field in fields) if len(fields) else 0) + 1, **kwargs)
+        self.name = name
+        self.fields = fields
+        self.bits = bits
+
+    @property
+    def size(self):
+        return self.bits // 8
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return f"{self.name}({self.fields!s})"
+
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash((self.name, tuple(self.fields), self.bits))
+
+    def likes(self, other):
+        return (
+            type(self) is type(other)
+            and self.name == other.name
+            and self.fields == other.fields
+            and self.bits == other.bits
+        )
+
+    def copy(self):
+        return RustEnum(self.idx, self.name, self.fields, self.bits)
+
+    def deep_copy(self, manager):
+        idx = manager.next_atom()
+        if isinstance(self.fields, tuple):
+            new_fields = tuple(field.deep_copy(manager) for field in self.fields)
+        else:
+            new_fields = [field.deep_copy(manager) for field in self.fields]
+        return RustEnum(idx, self.name, new_fields, self.bits, **self.tags)
+
+    def replace(self, old_expr, new_expr):
+        new_fields = []
+        replaced = False
+        for field in self.fields:
+            if field is old_expr:
+                new_fields.append(new_expr)
+                replaced = True
+            else:
+                field_replaced, new_field = field.replace(old_expr, new_expr)
+                if field_replaced:
+                    new_fields.append(new_field)
+                    replaced = True
+                else:
+                    new_fields.append(field)
+
+        if replaced:
+            return True, RustEnum(self.idx, self.name, new_fields, self.bits, **self.tags)
+        return False, self
+
+    matches = likes
+
+
+class Array(Expression):
+    def __init__(self, idx, elements, bits, **kwargs):
+        super().__init__(idx, (max(ele.depth for ele in elements) if len(elements) else 0) + 1, **kwargs)
+        self.elements = elements
+        self.bits = bits
+
+    @property
+    def size(self):
+        return self.bits // 8
+
+    @property
+    def length(self):
+        return len(self.elements)
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return str(self.elements)
+
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash((tuple(self.elements), self.bits))
+
+    def likes(self, other):
+        return type(self) is type(other) and self.elements == other.elements and self.bits == other.bits
+
+    def copy(self):
+        return Array(self.idx, self.elements, self.bits)
+
+    def deep_copy(self, manager):
+        idx = manager.next_atom()
+        if isinstance(self.elements, tuple):
+            new_elements = tuple(element.deep_copy(manager) for element in self.elements)
+        else:
+            new_elements = [element.deep_copy(manager) for element in self.elements]
+        return Array(idx, new_elements, self.bits, **self.tags)
+
+    def replace(self, old_expr, new_expr):
+        new_elements = []
+        replaced = False
+        for element in self.elements:
+            if element is old_expr:
+                new_elements.append(new_expr)
+                replaced = True
+            else:
+                element_replaced, new_element = element.replace(old_expr, new_expr)
+                if element_replaced:
+                    new_elements.append(new_element)
+                    replaced = True
+                else:
+                    new_elements.append(element)
+
+        if replaced:
+            return True, Array(self.idx, new_elements, self.bits, **self.tags)
+        return False, self
+
+    matches = likes
+
+
+class Let(Op):
+    __slots__ = ("defs", "src", "variant")
+
+    def __init__(self, idx, variant, defs, src, **kwargs):
+        super().__init__(idx, depth=src.depth + 1, op="let", **kwargs)
+        self.variant = variant
+        self.defs = defs
+        self.src = src
+
+        self.bits = src.bits
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return f"let {self.variant.name}(_) = {self.src}"
+
+    __hash__ = TaggedObject.__hash__
+
+    def _hash_core(self):
+        return stable_hash((self.variant, self.src))
+
+    def likes(self, other):
+        return type(self) is type(other) and self.variant == other.variant and self.src == other.src
+
+    matches = likes
+
+    def copy(self):
+        return Let(self.idx, self.variant, self.defs, self.src, **self.tags)
+
+    def deep_copy(self, manager):
+        idx = manager.next_atom()
+        return Let(
+            idx,
+            self.variant,
+            [def_.deep_copy(manager) for def_ in self.defs],
+            self.src.deep_copy(manager),
+            **self.tags,
+        )
+
+
+#
+# Rust-specific expressions
+#
+
+
+class Macro(Call, ABC):
+    __slots__ = ("delimiter", "name", "returnty")
+
+    def __init__(self, idx, name: str, delimiter="()", returnty=None, **kwargs):
+        # TODO: Update depth
+        super().__init__(idx, target=name, **kwargs)
+        self.name = name
+        self.delimiter = delimiter
+        self.returnty = returnty
+
+
+class FunctionLikeMacro(Macro):
+    __slots__ = ()
+
+    def __init__(self, idx, name: str, args, bits=None, delimiter="()", returnty=None, **kwargs):
+        super().__init__(idx, name, delimiter, returnty, bits=bits, **kwargs)
+        self.args = args
+
+    __hash__ = TaggedObject.__hash__
+
+    @property
+    def size(self) -> int:
+        if self.bits:
+            return self.bits // 8
+        return 0
+
+    def _hash_core(self):
+        return stable_hash((FunctionLikeMacro, self.idx, self.name))
+
+    def __str__(self):
+        return f"{self.name}!{self.delimiter[0]}{self.args}{self.delimiter[1]}"
+
+    def __repr__(self):
+        return f"Macro(name={self.name}, args={self.args})"
+
+    def likes(self, other):
+        return (
+            type(self) is type(other)
+            and self.name == other.name
+            and self.delimiter == other.delimiter
+            and self.bits == other.bits
+            and len(self.args) == len(other.args)
+            and all(arg.likes(other_arg) for arg, other_arg in zip(self.args, other.args))
+        )
+
+    matches = likes
+
+    def copy(self):
+        return FunctionLikeMacro(self.idx, self.name, self.args, self.bits, self.delimiter, self.returnty, **self.tags)
+
+    def deep_copy(self, manager):
+        return FunctionLikeMacro(
+            manager.next_atom(),
+            self.name,
+            [arg.deep_copy(manager) for arg in self.args] if self.args is not None else None,
+            self.bits,
+            self.delimiter,
+            self.returnty,
+            **self.tags,
+        )
+
+    @property
+    def verbose_op(self):
+        return "macro_call"
+
+    @property
+    def op(self):
+        return "macro_call"

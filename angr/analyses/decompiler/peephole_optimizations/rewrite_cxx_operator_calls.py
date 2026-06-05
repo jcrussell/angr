@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from archinfo import Endness
-from angr.ailment.constant import UNDETERMINED_SIZE
-from angr.ailment.expression import Const, VirtualVariable, BinaryOp, UnaryOp, Load
-from angr.ailment.statement import WeakAssignment, SideEffectStatement
 
-from angr.sim_type import SimTypeReference, SimCppClass
+from angr.ailment.constant import UNDETERMINED_SIZE
+from angr.ailment.expression import BinaryOp, Const, Load, UnaryOp, VirtualVariable
+from angr.ailment.statement import SideEffectStatement, WeakAssignment
 from angr.knowledge_plugins.key_definitions import atoms
+from angr.sim_type import SimCppClass, SimTypeReference
+
 from .base import PeepholeOptimizationStmtBase
 
 
@@ -54,7 +55,7 @@ class RewriteCxxOperatorCalls(PeepholeOptimizationStmtBase):
                     if type_hint is not None:
                         self.type_hints.append((atom, type_hint))
             arg1 = (
-                Load(None, stmt.expr.args[1], UNDETERMINED_SIZE, Endness.BE, **stmt.tags)
+                Load(self.manager.next_atom(), stmt.expr.args[1], UNDETERMINED_SIZE, Endness.BE, **stmt.tags)
                 if isinstance(stmt.expr.args[1], Const)
                 else stmt.expr.args[1]
             )
@@ -77,8 +78,8 @@ class RewriteCxxOperatorCalls(PeepholeOptimizationStmtBase):
             and isinstance(stmt.expr.args[2], Const)
             and isinstance(stmt.ret_expr, VirtualVariable)
         ):
-            arg2 = Load(None, stmt.expr.args[2], UNDETERMINED_SIZE, Endness.BE, **stmt.tags)
-            addition = BinaryOp(None, "Add", [stmt.expr.args[1].operand, arg2], **stmt.tags)
+            arg2 = Load(self.manager.next_atom(), stmt.expr.args[2], UNDETERMINED_SIZE, Endness.BE, **stmt.tags)
+            addition = BinaryOp(self.manager.next_atom(), "Add", [stmt.expr.args[1].operand, arg2], **stmt.tags)
             type_ = None
             if stmt.expr.prototype is not None:
                 dst_ty = stmt.expr.prototype.returnty

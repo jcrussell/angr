@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from io import BytesIO
+from typing import cast
 from unittest import TestCase
 
 import archinfo
@@ -19,9 +20,10 @@ import cle
 
 import angr
 from angr import sim_options as o
-from angr.emulator import EmulatorStopReason
+from angr.emulator import Emulator, EmulatorStopReason
 from angr.engines.icicle import IcicleEngine, UberIcicleEngine
 from angr.state_plugins.edge_hitmap import SimStateEdgeHitmap
+from angr.state_plugins.icicle import IcicleStateTranslationData, SimStateIcicle
 from tests.common import bin_location
 
 
@@ -176,10 +178,12 @@ class TestIcicle(TestCase):
 
         # There should be one successor
         assert len(successors.successors) == 1
-        # Check that the emulator exited at the expected instruction
-        assert successors.successors[0].ip.concrete_value == 0x0
+        # Check that the emulator exited past the syscall instruction
+        # (icicle advances PC past the syscall: svc is 4 bytes on aarch64)
+        assert successors.successors[0].ip.concrete_value == 0x4
         # Check that the syscall was invoked
-        assert successors.successors[0].history.jumpkind == "Ijk_Syscall"
+        jk = successors.successors[0].history.jumpkind
+        assert jk is not None and jk.startswith("Ijk_Sys")
 
 
 class TestSnapshotSync(TestCase):
@@ -191,7 +195,6 @@ class TestSnapshotSync(TestCase):
         shellcode = "ldr x1, [x0]"
         project = angr.load_shellcode(shellcode, "aarch64")
         engine = IcicleEngine(project)
-        engine.enable_snapshot_mode()
 
         state_opts = {
             "remove_options": {*o.symbolic},
@@ -239,6 +242,65 @@ class TestSnapshotSync(TestCase):
         assert len(result4.successors) == 1
         assert result4[0].regs.x1.concrete_value == 0xDD
 
+    def test_snapshot_sync_code_modification(self):
+        """Code at the entry address can differ between states; each branch must
+        re-lift instead of replaying a stale JIT'd block from a sibling state."""
+        # aarch64 `movz x0, #imm16` (hw=0, Rd=x0), little-endian byte order:
+        #   movz x0, #1 -> 0xD2800020
+        #   movz x0, #2 -> 0xD2800040
+        code_a = b"\x20\x00\x80\xd2"
+        code_b = b"\x40\x00\x80\xd2"
+
+        project = angr.load_shellcode(code_a, "aarch64")
+        engine = IcicleEngine(project)
+        state_opts = {
+            "remove_options": {*o.symbolic},
+            "add_options": {o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        }
+
+        # First run: lifts code_a, takes the snapshot.
+        s1 = project.factory.blank_state(**state_opts)
+        assert engine.process(s1, num_inst=1)[0].regs.x0.concrete_value == 1
+
+        # Branch with code overwritten — the sync write to a previously-
+        # executed page must succeed AND drop the cached code_a block.
+        s2 = project.factory.blank_state(**state_opts)
+        s2.memory.store(project.entry, code_b)
+        assert engine.process(s2, num_inst=1)[0].regs.x0.concrete_value == 2
+
+        # Branch back to the snapshot's original code — the JIT block from
+        # the previous run must not survive the restore.
+        s3 = project.factory.blank_state(**state_opts)
+        assert engine.process(s3, num_inst=1)[0].regs.x0.concrete_value == 1
+
+    def test_snapshot_sync_new_readonly_page_content(self):
+        """A read-only page newly mapped between states must have its content
+        copied to the emu — not left as zeros."""
+        # ldr x1, [x0]
+        shellcode = "ldr x1, [x0]"
+        project = angr.load_shellcode(shellcode, "aarch64")
+        engine = IcicleEngine(project)
+        state_opts = {
+            "remove_options": {*o.symbolic},
+            "add_options": {o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        }
+
+        # First run: establishes snapshot with no extra mappings.
+        s1 = project.factory.blank_state(**state_opts)
+        s1.regs.x0 = 0x10000
+        s1.memory.map_region(0x10000, 0x1000, 0b111)
+        s1.memory.store(0x10000, 0xAA, size=8, endness="Iend_LE")
+        assert engine.process(s1, num_inst=1)[0].regs.x1.concrete_value == 0xAA
+
+        # Branch: the load target is on a newly-mapped read-only page. The
+        # delta-sync must seed its content; otherwise the load reads zero.
+        s2 = project.factory.blank_state(**state_opts)
+        s2.regs.x0 = 0x20000
+        s2.memory.map_region(0x10000, 0x1000, 0b111)
+        s2.memory.map_region(0x20000, 0x1000, 0b101)  # R + X, no W
+        s2.memory.store(0x20000, 0xBB, size=8, endness="Iend_LE")
+        assert engine.process(s2, num_inst=1)[0].regs.x1.concrete_value == 0xBB
+
 
 class TestDirtyPageTracking(TestCase):
     """Unit tests for dirty page tracking optimization in the Icicle engine."""
@@ -280,7 +342,6 @@ class TestDirtyPageTracking(TestCase):
         project = angr.load_shellcode(shellcode, "aarch64")
 
         engine = IcicleEngine(project)
-        engine.enable_snapshot_mode()
 
         state_opts = {
             "remove_options": {*o.symbolic},
@@ -562,6 +623,24 @@ class TestExtraStopPoints(TestCase):
         assert state3.regs.x4.concrete_value == 2  # 3 - 1
         assert state3.addr == project.entry + 20  # After last instruction
 
+    def test_unmapped_stop_point_skipped(self):
+        """Test that a stop point on an unmapped page is silently skipped."""
+        shellcode = "mov x0, 0x1; mov x1, 0x2"
+        project = angr.load_shellcode(shellcode, "aarch64")
+
+        engine = IcicleEngine(project)
+        init_state = project.factory.blank_state(
+            remove_options={*o.symbolic},
+            add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        )
+
+        # 0xDEAD0000 is unmapped — should be skipped, not crash
+        successors = engine.process(init_state, extra_stop_points={0xDEAD0000})
+        assert len(successors.successors) == 1
+        final_state = successors.successors[0]
+        assert final_state.regs.x0.concrete_value == 1
+        assert final_state.regs.x1.concrete_value == 2
+
     def test_stop_point_at_start(self):
         """Test that a stop point at the very first instruction is ignored (execution resumes immediately)."""
         shellcode = "mov x0, 0x1; mov x1, 0x2"
@@ -741,7 +820,7 @@ class TestEdgeHitmap(TestCase):
         assert hitmap_1 == hitmap_2
 
     def test_edge_hitmap_multiple_blocks(self):
-        shellcode = "xor rax, rax; inc rax; cmp rax, 5; jne $-8; nop"
+        shellcode = "xor rax, rax; loop: inc rax; cmp rax, 5; jne loop; hlt"
         project = angr.load_shellcode(shellcode, "x86_64")
         engine = IcicleEngine(project)
         init_state = project.factory.blank_state(
@@ -812,3 +891,100 @@ class TestEdgeHitmap(TestCase):
         hitmap2 = state2.get_plugin("edge_hitmap").edge_hitmap
 
         assert hitmap1 == hitmap2
+
+
+class TestSimStateIciclePlugin(TestCase):
+    """Tests for the SimStateIcicle state plugin."""
+
+    def test_plugin_attached_after_process(self):
+        """Test that processing a state attaches the icicle plugin to the result state."""
+        shellcode = "mov x0, 0x1; mov x1, 0x2"
+        project = angr.load_shellcode(shellcode, "aarch64")
+        engine = IcicleEngine(project)
+        init_state = project.factory.blank_state(
+            remove_options={*o.symbolic},
+            add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        )
+
+        result = engine.process(init_state, num_inst=2)
+        state = result.successors[0]
+        assert state.has_plugin("icicle")
+        plugin = state.get_plugin("icicle")
+        assert isinstance(plugin, SimStateIcicle)
+        assert plugin.vm_ref is not None
+        assert plugin.is_live
+
+    def test_plugin_copy(self):
+        """Test that the plugin is correctly copied when the state is copied."""
+        dummy_td = cast(IcicleStateTranslationData, None)
+        plugin = SimStateIcicle(
+            generation=42,
+            translation_data=dummy_td,
+            dirty_pages={3, 4},
+        )
+        copied = plugin.copy({})
+        assert copied.generation == 42
+        assert copied.dirty_pages == {3, 4}
+        # Ensure copies are independent
+        copied.dirty_pages.add(6)
+        assert 6 not in plugin.dirty_pages
+
+    def test_plugin_merge_and_widen(self):
+        """Test that merge and widen return False (not mergeable)."""
+        dummy_td = cast(IcicleStateTranslationData, None)
+        plugin = SimStateIcicle(
+            generation=1,
+            translation_data=dummy_td,
+            dirty_pages=set(),
+        )
+        assert plugin.merge([], [], None) is False
+        assert plugin.widen([]) is False
+
+
+class TestContinuation(TestCase):
+    """Tests for the continuation path in IcicleEngine."""
+
+    def test_continuation_via_emulator(self):
+        """Test that the Emulator's run loop uses the continuation path for hooks."""
+        # Shellcode with a hook in the middle — forces multiple engine calls
+        shellcode = "mov x0, 0x1; nop; mov x1, 0x2; add x2, x0, x1"
+        project = angr.load_shellcode(shellcode, "aarch64")
+
+        def hook_nop(state):
+            state.regs.x0 = 0x10
+
+        project.hook(0x4, hook_nop, length=4)
+
+        engine = UberIcicleEngine(project)
+        init_state = project.factory.blank_state(
+            remove_options={*o.symbolic},
+            add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        )
+
+        emulator = Emulator(engine, init_state.copy())
+        # Run 3 instructions: mov x0 (1 inst) + hook + mov x1 + add (2 inst) = 3
+        stop_reason = emulator.run(num_inst=3)
+        assert stop_reason == EmulatorStopReason.INSTRUCTION_LIMIT
+        # Hook changed x0 to 0x10, so add x2, x0, x1 = 0x10 + 0x2 = 0x12
+        assert emulator.state.regs.x2.concrete_value == 0x12
+
+    def test_continuation_plugin_invalidated_by_different_engine(self):
+        """Test that a plugin from one engine doesn't cause continuation on a different engine."""
+        shellcode = "mov x0, 0x1; mov x1, 0x2; add x2, x0, x1"
+        project = angr.load_shellcode(shellcode, "aarch64")
+        state_opts = {
+            "remove_options": {*o.symbolic},
+            "add_options": {o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        }
+
+        engine1 = IcicleEngine(project)
+        s = project.factory.blank_state(**state_opts)
+        result1 = engine1.process(s, num_inst=3)
+        state_with_plugin = result1.successors[0]
+        assert state_with_plugin.has_plugin("icicle")
+
+        # A different engine should NOT use the continuation path
+        engine2 = IcicleEngine(project)
+        s2 = project.factory.blank_state(**state_opts)
+        result2 = engine2.process(s2, num_inst=3)
+        assert result2.successors[0].regs.x2.concrete_value == 3

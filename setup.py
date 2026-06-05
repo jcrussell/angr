@@ -1,5 +1,6 @@
 # pylint: disable=missing-class-docstring
 from __future__ import annotations
+
 import glob
 import importlib
 import importlib.resources
@@ -8,8 +9,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-from distutils.command.build import build as st_build
 
+from distutils.command.build import build as st_build
 from setuptools import Command, setup
 from setuptools.command.develop import develop as st_develop
 from setuptools.errors import LibError

@@ -1,39 +1,40 @@
 from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from itertools import chain
 from typing import TYPE_CHECKING, cast
-from dataclasses import dataclass
-from collections import defaultdict
-from collections.abc import Iterable, Callable
 
-from angr.ailment.statement import SideEffectStatement, Store, ConditionalJump, CAS
 from angr.ailment.expression import (
+    ITE,
     Const,
     Convert,
+    DirtyExpression,
+    Expression,
     Extract,
     Insert,
+    Load,
     Register,
     StackBaseOffset,
-    ITE,
-    VEXCCallExpression,
     Tmp,
-    DirtyExpression,
-    Load,
+    VEXCCallExpression,
     VirtualVariable,
-    Expression,
 )
-
+from angr.ailment.statement import CAS, ConditionalJump, SideEffectStatement, Store
+from angr.calling_conventions import default_cc
 from angr.code_location import AILCodeLocation
 from angr.engines.light import SimEngineLightAIL
 from angr.knowledge_plugins.functions.function import Function
-from angr.project import Project
 from angr.sim_type import PointerDisposition, SimTypePointer
 from angr.utils.ssa import get_reg_offset_base_and_size
-from angr.calling_conventions import default_cc
-from .traversal_state import TraversalState, Value, has_conflicting_value_types
+
 from .consts import MAX_STACK_VAR_SIZE
+from .traversal_state import TraversalState, Value, has_conflicting_value_types
 
 if TYPE_CHECKING:
     from angr.analyses.decompiler.ssailification.ssailification import Def, Kind
+    from angr.project import Project
 
 CUTOFF = 15  # arbitrary; be mindful of performance as various parts will be O(N^2)
 
@@ -152,23 +153,16 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             for suboffset in definfo.variable_range:
                 mapping[suboffset].add(def_)
 
-        current_extent = (0, 0)
-        current_defs = set()
-
-        def flush():
-            for def2 in current_defs:
-                definfo = self.def_info[def2]
-                size2 = current_extent[1] - current_extent[0]
-                definfo.variable_offset = current_extent[0]
-                definfo.variable_size = size2
-
         for mapping in [reg_mapping, stack_mapping]:
+            current_extent = (0, 0)
+            current_defs = set()
+
             for offset in sorted(mapping):
                 for def_ in mapping[offset]:
                     definfo = self.def_info[def_]
 
                     if definfo.variable_offset >= current_extent[1] or current_extent[0] == current_extent[1]:
-                        flush()
+                        self._flush(current_defs, current_extent)
                         current_defs.clear()
                         current_extent = definfo.variable_offset, definfo.variable_endoffset
 
@@ -177,7 +171,15 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
                         min(current_extent[0], definfo.variable_offset),
                         max(current_extent[1], definfo.variable_endoffset),
                     )
-        flush()
+
+            self._flush(current_defs, current_extent)
+
+    def _flush(self, current_defs: set[Def], current_extent: tuple[int, int]) -> None:
+        for def2 in current_defs:
+            definfo = self.def_info[def2]
+            size2 = current_extent[1] - current_extent[0]
+            definfo.variable_offset = current_extent[0]
+            definfo.variable_size = size2
 
     def _acodeloc(self):
         return AILCodeLocation(
@@ -242,13 +244,18 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
 
         lst = self.state.pending_ptr_defines.pop(base_offset, [])
         pending_def = cast("Def", lst[-1][1]) if lst else None
+        stackvar_defs_cleaned = False
 
+        self.state.stackvar_defs = self.state.stackvar_defs.clean()
         secret_stash: defaultdict[int, set[Def]] = defaultdict(set)
         while True:  # this loop should run until the UH OH is never reached
             for popped_offset in popped:
                 secret_stash[popped_offset].update(self.state.stackvar_defs.pop(popped_offset, set()))
                 for def2 in secret_stash[popped_offset]:
-                    self.state.stackvar_defs[full_offset].add(def2)
+                    if not stackvar_defs_cleaned:
+                        self.state.stackvar_defs = self.state.stackvar_defs.clean()
+                        stackvar_defs_cleaned = True
+                    self.state.stackvar_defs[full_offset] = self.state.stackvar_defs.get(full_offset, set()) | {def2}
                     definfo = self.def_info[def2]
                     if definfo.variable_offset < full_offset or definfo.variable_endoffset > full_offset + full_size:
                         # UH OH. We have information from a parallel timeline about how big this var actually is...
@@ -287,6 +294,9 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             def_as = defs
 
         if def_as is not None:
+            if not stackvar_defs_cleaned:
+                self.state.stackvar_defs = self.state.stackvar_defs.clean()
+                stackvar_defs_cleaned = True
             for suboff in range(full_offset, full_offset + full_size):
                 self.state.stackvar_defs[suboff] = def_as
 
@@ -311,7 +321,9 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         if base_offset in self.pending_ptr_defines_nonlocal:
             self.pending_ptr_defines_nonlocal[base_offset][2].add((offset, size))
 
+        self.state.live_stackvars = self.state.live_stackvars.clean()
         self.state.live_stackvars[offset] = value
+        stackvar_defs_cleaned = False
 
         other_defs: set[Def] = set()
         liveish_defs: set[Def] = set()
@@ -319,6 +331,10 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         reached_fixedpoint = False
         while not reached_fixedpoint:
             reached_fixedpoint = True
+            if not stackvar_defs_cleaned:
+                self.state.stackvar_defs = self.state.stackvar_defs.clean()
+                self.state.stackvar_bases = self.state.stackvar_bases.clean()
+                stackvar_defs_cleaned = True
             for suboff in range(offset, end_offset):
                 secret_stash[suboff].update(self.state.stackvar_defs.pop(suboff, set()))
                 old_defs = secret_stash[suboff]
@@ -356,6 +372,9 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             def_as = {def2} | liveish_defs
 
         if def_as is not None:
+            if not stackvar_defs_cleaned:
+                self.state.stackvar_defs = self.state.stackvar_defs.clean()
+                stackvar_defs_cleaned = True
             for suboff in range(offset, end_offset):
                 self.state.stackvar_defs[suboff] = def_as
 
@@ -432,6 +451,7 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         if isinstance(stmt.dst, Register):
             self.register_set(stmt.dst.reg_offset, stmt.dst.size, src, stmt.dst)
         elif isinstance(stmt.dst, VirtualVariable):
+            self.state.live_vvars = self.state.live_vvars.clean()
             self.state.live_vvars[stmt.dst.varid] = src
         elif isinstance(stmt.dst, Tmp):
             self.state.live_tmps[stmt.dst.tmp_idx] = src
@@ -649,6 +669,27 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
                 v -= 1 << expr.from_bits
             result.add((None, v))
         return result
+
+    def _handle_expr_Array(self, expr) -> Value:
+        for element in expr.elements:
+            self._expr(element)
+        return set()
+
+    def _handle_expr_Struct(self, expr) -> Value:
+        for field in expr.fields.values():
+            self._expr(field)
+        return set()
+
+    def _handle_expr_String(self, expr) -> Value:  # pylint:disable=unused-argument, no-self-use
+        return set()
+
+    def _handle_expr_Let(self, expr) -> Value:
+        return set()
+
+    def _handle_expr_FunctionLikeMacro(self, expr) -> Value:
+        for arg in expr.args:
+            self._expr(arg)
+        return set()
 
     def _handle_expr_Reinterpret(self, expr) -> Value:
         self._expr(expr.operand)
