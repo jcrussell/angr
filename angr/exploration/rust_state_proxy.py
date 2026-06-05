@@ -18,6 +18,39 @@ from angr.rustylib.vex_engine import register_size_for_arch
 l = logging.getLogger(__name__)
 
 
+_REGISTER_OVERLAP_CACHE: dict[str, dict[str, frozenset[str]]] = {}
+
+
+def _get_overlap_map(arch) -> dict[str, frozenset[str]]:
+    """Per-arch map of register name -> frozenset of names whose (offset, size) overlaps.
+
+    Cached per architecture. Used by ``RustRegisterProxy.__setattr__`` to
+    invalidate stale aliases on partial writes — e.g. writing ``eax`` must
+    invalidate cached ``rax`` / ``ax`` / ``al`` / ``ah`` so a subsequent
+    ``state.regs.rax`` read fetches the post-write value from Rust rather
+    than the pre-write cache entry.
+    """
+    cached = _REGISTER_OVERLAP_CACHE.get(arch.name)
+    if cached is not None:
+        return cached
+    by_range = []
+    for name, info in arch.registers.items():
+        if not info or len(info) < 2:
+            continue
+        off, sz = info[0], info[1]
+        by_range.append((name, off, sz))
+    overlap: dict[str, frozenset[str]] = {}
+    for name, off, sz in by_range:
+        end = off + sz
+        names = {name}
+        for other_name, other_off, other_sz in by_range:
+            if other_off < end and other_off + other_sz > off:
+                names.add(other_name)
+        overlap[name] = frozenset(names)
+    _REGISTER_OVERLAP_CACHE[arch.name] = overlap
+    return overlap
+
+
 class RustSolverProxy:
     """
     Wraps a RustSolverContext to present a claripy-compatible solver interface.
@@ -889,6 +922,20 @@ class RustRegisterProxy:
         width = self._get_register_width(canonical)
         ast = self._coerce_to_ast(value, width)
         self._mgr.set_state_register_symbolic_ast(self._state_id, canonical, ast)
+        # angr-yxar: invalidate cached aliases whose (offset, size) overlaps
+        # the write. A partial write like ``state.regs.eax = sym32`` must
+        # drop any cached ``rax`` / ``ax`` / ``al`` / ``ah`` entry so a later
+        # ``state.regs.rax`` read picks up the post-write value from Rust
+        # rather than the stale pre-write entry. Without this, the calling-
+        # convention return-value path (which clears rax then writes eax)
+        # leaves rax cached at BVV(0) even though Rust now holds the
+        # symbolic return value.
+        overlap = _get_overlap_map(self._arch).get(canonical)
+        if overlap:
+            for n in overlap:
+                self._cache.pop(n, None)
+        else:
+            self._cache.pop(canonical, None)
         # Keep the cache coherent so a subsequent __getattr__ returns the
         # AST we just wrote (matches the post-write read invariant the
         # caller would otherwise see if no cache existed). Both alias and
