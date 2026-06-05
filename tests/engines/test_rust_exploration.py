@@ -3271,14 +3271,14 @@ class TestRustInspectAllowlistConsistency:
         accepts."""
         from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
-        from angr.state_plugins.inspect import event_types
+        from angr.state_plugins.inspect import EventType
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
 
         unhandled = []
-        for evt in event_types:
+        for evt in EventType:
             if evt in _RUST_INSPECT_SUPPORTED_EVENTS:
                 continue
             try:
