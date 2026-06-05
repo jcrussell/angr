@@ -4,10 +4,11 @@
 
 Project memory lives in **bd**, not in Claude's per-project auto-memory
 markdown files. Run `bd memories | head -1` for the current count
-(987 as of 2026-05-31 and growing).
+(~414 as of 2026-06-05). Audit/cleanup tooling and pre-prune snapshots
+live at `~/angr-memories/` — see its README if you ever need to recover
+or re-run a prune.
 
-- **Recall** a specific memory: `bd recall <key>` (keys are kebab-case, e.g.
-  `core-goal-design-philosophy`, `constraint-export-no-pre-pin`).
+- **Recall** a specific memory: `bd recall <key>` (keys are kebab-case).
 - **Search** memories: `bd memories <keyword>` (no arg lists all).
 - **Save** a new memory: `bd remember "<insight>" --key <kebab-key>` — updates
   in place if `--key` already exists.
@@ -18,6 +19,42 @@ markdown files. Run `bd memories | head -1` for the current count
 This **overrides** the default Claude auto-memory instructions to
 write per-memory markdown files. Do not write those files for this
 project; they fragment across accounts and drift from bd.
+
+### Where context lives
+
+When you need background that isn't in CLAUDE.md, look here first, then
+fall back to `bd recall`. The docs are authoritative for stable topics;
+bd memories cover the per-decision detail.
+
+| Topic                          | Docs (authoritative)                                       | bd memory key (entry point)         |
+|--------------------------------|------------------------------------------------------------|-------------------------------------|
+| Engine architecture & usage    | docs/advanced-topics/rust_engine.rst                       | core-goal-design-philosophy         |
+| Z3 sharing & solver counters   | docs/advanced-topics/rust_z3_sharing.rst                   | constraint-export-no-pre-pin        |
+| Lazy memory design             | docs/advanced-topics/rust_lazy_memory_design.rst           | lazy-memory-sidecar-architecture    |
+| State proxy & exports          | docs/advanced-topics/rust_proxy_writes_design.rst          | rust-proxy-architecture-decision    |
+| Bimodal benchmark variance     | docs/advanced-topics/rust_bimodal_variance.rst             | benchmark-bimodal-variance-rules    |
+| Parallel/Send-Sync design      | docs/advanced-topics/rust_parallel_design.rst              | rust-python-boundary-audit          |
+| VEX op contribution            | docs/extending-angr/rust_vex_ops.rst                       | invariant-syscall-arg-extraction    |
+| Native SimProcedures           | docs/extending-angr/simprocedures.rst                      | —                                   |
+
+### Quick keys (durable entry points)
+
+These memories are mandatory-keep — anchors that other memories and
+docs reference:
+
+- `core-goal-design-philosophy` — Rust symex engine goal + design rules
+- `rust-proxy-architecture-decision` — RustStateProxy vs SimState sync
+- `rust-engine-claude-md-pointer` — what stays in memory vs CLAUDE.md vs docs
+- `rust-python-boundary-audit` — what bridge code must stay Python
+- `constraint-export-no-pre-pin` — pre-pinning is dangerous; use Rust solver eval fallback
+- `characterization-vs-fix-pattern` — separate char tasks from regression bisects
+- `benchmark-bimodal-variance-rules` — handling the 3 bimodal-Z3 benches
+- `env-venv-corruption` — venv recovery from corruption
+- `bd-update-notes-overwrites` — `bd update --notes` overwrites; never append-via-update
+- `avoid-bd-remember-without-key-flag` — `bd remember <text>` without `--key` silently clobbers
+- `9maq-bisect-method` — bisect pattern for memory-leak regressions
+- `venv-rebuild-cargo-direct-copy` — cargo-direct rebuild when venv pip is broken
+- `avoid-pip-install-deps` — never bump claripy past 9.2.209 — z3-solver SONAME risk
 
 ## Makefile Shortcuts
 
@@ -77,7 +114,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/engines/test_rust_exploration.py --tb=short -q
 ```
 
-**Note:** `pyproject.toml` pins the four angr-ecosystem deps (`archinfo`, `claripy`, `cle`, `pyvex`) to `==9.2.209`. The previous pin (`9.2.210.dev0`) was unobtainable on PyPI (which jumps 9.2.209 → 9.2.211), so fresh installs without cache failed. `9.2.209` is the latest available in the 9.2.20x range and is what existing working venvs already have installed. Bumping past `9.2.209` is risky because newer claripy releases may bundle a different `z3-solver` version that would break the Rust↔Python shared Z3 context — see bd memory `avoid-pip-install-deps`.
+**Note:** `pyproject.toml` pins the four angr-ecosystem deps (`archinfo`, `claripy`, `cle`, `pyvex`) to `==9.2.209`. Do not bump past `9.2.209` — newer claripy releases may bundle a different `z3-solver` version that breaks the Rust↔Python shared Z3 context. See bd memory `avoid-pip-install-deps`.
 
 ### Build Commands (incremental)
 
@@ -179,10 +216,8 @@ single process under a 4 GB `RLIMIT_AS`. Tracks `ru_maxrss` after each
 `main()` call and fails when
 `peak_rss(iterN) / peak_rss(iter1) > --threshold` (default **1.5x**).
 
-Codifies the `9maq-bisect-method` bd memory (used to find the 286 MB ->
-1888 MB Callable leak fixed in 293aa8163) into a gate. Current main holds
-the ratio at ~1.002 across 10 iters, so 1.5x has comfortable headroom while
-still catching a >=2x regression.
+Codifies the `9maq-bisect-method` bd memory into a gate — protects
+against future Callable / cache regressions.
 
 ```bash
 # Local invocation (~50s for N=10, ~15s for N=3)
@@ -192,9 +227,8 @@ python tests/benchmarks/run_leak_check.py --example flareon2015_10 --json
 ```
 
 **Threshold tuning notes:**
-- Healthy ratio with the post-293aa8163 cleanup is ~1.00-1.05x (Z3+claripy
-  caches warm up but don't grow unboundedly).
-- Pre-fix ratio was ~6.6x.
+- Healthy ratio is ~1.00-1.05x (Z3+claripy caches warm up but don't grow
+  unboundedly).
 - 1.5x is the recommended default: large enough to avoid false-positives
   from cache warmup, small enough to catch a ~2x regression on the first
   nightly after it lands.
@@ -293,7 +327,7 @@ Caveats:
 
 ## Branch: rust-symex
 
-Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via beads (`bd ready`).
+Active development branch. Work is tracked via beads (`bd ready`).
 
 ## Autonomous loop (`ralph`)
 
@@ -328,42 +362,22 @@ ralph hook run states/clean/gate  # standalone gate hook test
 
 ## Current Status
 
-**Tests:** 510 `def test_` functions, 521 after pytest parametrize expansion
-(`grep -c 'def test_' tests/engines/test_rust_exploration.py` for live count;
-`pytest --collect-only -q tests/engines/test_rust_exploration.py | tail -1`
-for the parametrize-expanded total).
-**Benchmarks:** 26 benchmarks tracked in `tests/benchmarks/baseline_timings.json` (22 angr-examples + 4 in-repo synthetics: ARM, MIPS32, MIPS64, AArch64)
-**Performance:** 15/22 faster than Python (≥1.0x; arm_le_branch, mips32_le_branch, mips64_le_branch and aarch64_le_branch are synthetic rust_only smoke benchmarks with no python_time)
-
-The table below is a curated snapshot — `baseline_timings.json` is the
-authoritative source for current numbers. Speedups are `python_time / rust_time`
-from that file. Refresh after any baseline bump; per-bench narrative columns
-should be preserved across refreshes.
-
-| Example | Speedup | Notes |
-|---------|---------|-------|
-| csaw_wyvern | 16.9x | Best case |
-| ekopartyctf2016_rev250 | 15.6x | |
-| flareon2015_5 | 10.3x | |
-| defcamp_r100__dfs | 3.2x | DFS variant |
-| defcamp_r100 | 3.1x | |
-| codegate_2017-angrybird | 2.4x | Was XFAIL, now passing |
-| sym-write | 2.3x | |
-| ais3_crackme | 2.2x | |
-| whitehatvn2015_re400 | 2.1x | |
-| defcon2016quals_baby-re | 2.0x | |
-| strcpy_find | 1.9x | Was 0.2x, fixed CFG interception |
-| csgames2018 | 1.6x | |
-| flareon2015_10 | 1.4x | Callable flow |
-| fauxware | 1.4x | Was 0.9x; flipped after NativeRead/NativeWrite enabled by default (angr-3tek.2) cut callbacks from 6 to 1 |
-| google2016_unbreakable_0 | 1.2x | |
-| unmapped_analysis | 0.9x | |
-| flareon2015_2 | 0.8x | 32-bit x86 |
-| securityfest_fairlight | 0.7x | Rust interpreter parity for symbolic-heavy blocks |
-| mma_howtouse | 0.7x | 45 isolated `Callable` invocations; AST-cache hypothesis invalidated 2026-05-17 (claripy `clear_all_caches()` removed; Rust-side cache hook delivered 0%). Residual gap unattributed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
-| hackcon2016_angry-reverser | 0.45x (bimodal) | angr-rbnk (2026-06-01) emitted BVOp::SignExt as z3-native sign_ext — AST size dropped 13.7x. Bench is now bimodal: 8-sample distribution 8.97-34.88s, median ~22.5s, fast tail ~9s matches Python solve time. Added to `BIMODAL_BENCHMARKS` (angr-bl0g, 2026-06-02). See [`docs/advanced-topics/rust_bimodal_variance.rst`](docs/advanced-topics/rust_bimodal_variance.rst). |
-| google2016_unbreakable_1 | 0.5x | Bimodal; fast mode 1.65x, slow tail 5s+. angr-pfy4 (2026-06-01) confirmed Z3 SAT-heuristic nondeterminism dominates (category c); covered by `BIMODAL_BENCHMARKS`. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
-| ekopartyctf2016_sokohashv2 | 0.4x | Z3 nondeterminism dominates (~8.7s of ~10s in z3_check + site_eval_upto, 2026-05-23 counters dump). Transcendentals are hooked out of the symbolic path by the test driver; angr-9l1y closed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
+- **Tests:** several hundred `def test_` functions in
+  `tests/engines/test_rust_exploration.py`. Run
+  `grep -c 'def test_' tests/engines/test_rust_exploration.py` for the
+  live count, or
+  `pytest --collect-only -q tests/engines/test_rust_exploration.py | tail -1`
+  for the parametrize-expanded total.
+- **Benchmarks:** `tests/benchmarks/baseline_timings.json` is the
+  authoritative list. Mix of angr-examples and in-repo synthetic arch
+  smoke benches (the `*_branch` entries have `python_time=null` by
+  design).
+- **Performance:** for the live `python_time / rust_time` ratios, read
+  `baseline_timings.json` directly. Known slow benches and their root
+  causes are documented in
+  [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst);
+  bimodal benches and their variance handling are in
+  [`docs/advanced-topics/rust_bimodal_variance.rst`](docs/advanced-topics/rust_bimodal_variance.rst).
 
 ## User-facing documentation
 
