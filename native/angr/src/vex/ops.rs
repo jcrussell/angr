@@ -5764,7 +5764,7 @@ mod tests {
         ];
 
         for (op, l, r, expected) in cases {
-            let result = VEXOps::binop(op.clone(), xmm0(l), xmm1(r), &ctx).unwrap();
+            let result = VEXOps::binop(op, xmm0(l), xmm1(r), &ctx).unwrap();
             let rv = result.as_u128().unwrap();
             let lane0 = f64::from_bits((rv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
             assert!(
