@@ -285,7 +285,7 @@ mod tests {
         let sym = RustBV::symbolic(&ctx, "c", 64);
         drop(ctx);
         let p = NativeIsDigit;
-        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
         // Result should be a 64-bit BV (arch.bits()) and *not* concrete.
         assert_eq!(result.width(), 64);
         assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
@@ -301,7 +301,7 @@ mod tests {
         let eq = sym.eq(&target, &ctx);
         drop(ctx);
         let p = NativeIsDigit;
-        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
         s.add_constraint(eq);
         let ctx = s.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(1));
@@ -317,7 +317,7 @@ mod tests {
         let eq = sym.eq(&target, &ctx);
         drop(ctx);
         let p = NativeToLower;
-        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
         assert_eq!(result.width(), 64);
         assert!(result.as_u64().is_none());
 
