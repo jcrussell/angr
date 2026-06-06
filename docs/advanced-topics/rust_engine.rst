@@ -2279,13 +2279,14 @@ Caveats specific to ``step()`` dispatch:
        per Rust batch and ``simgr.move(...)`` works against the proxy,
        so the safety valve arms.
    * - ``Spiller``
-     - **Step hook dispatched, copy() now supported**
+     - **Step hook dispatched, copy() now supported with GC**
      - ``step()`` is dispatched (``angr-rqvq``) and
        :meth:`RustStateProxy.copy` does a Rust-side CoW deep fork
        (``angr-d1dr``) — the spiller's snapshot path runs against
-       the proxy directly. Note that copies are parked in the
-       ``_copies`` stash with no automatic GC, so a long-running
-       spilling loop will grow that stash over time.
+       the proxy directly. Copies are parked in the ``_copies`` stash
+       and reclaimed when the proxy is GC'd by Python: ``__del__``
+       calls :meth:`RustExplorationManager.drop_copy` (``angr-yhe0``).
+       Callers that need eager cleanup can invoke ``drop_copy`` directly.
    * - ``Veritesting``
      - **Unsupported (raises)**
      - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in

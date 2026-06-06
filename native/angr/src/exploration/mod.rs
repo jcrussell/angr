@@ -1559,6 +1559,43 @@ impl RustExplorationManager {
         self.sm.clear(stash);
     }
 
+    /// Drop a single state from a specific stash by ID (angr-yhe0).
+    ///
+    /// Removes the state from the stash's `VecDeque`, drops the lineage-root
+    /// and state-index entries, and lets the `RustSimState` destructor free
+    /// the Z3 solver clone. No-op (returns `false`) when the state is not in
+    /// the named stash — the caller is responsible for picking the right
+    /// stash (today this is only ever `"_copies"`, the holding area for
+    /// `RustStateProxy.copy()` clones).
+    ///
+    /// Backs `RustStateProxy.__del__` — when a copy-proxy is GC'd by Python,
+    /// the Rust-side state can be reclaimed without waiting for the whole
+    /// manager to drop. Returns `true` when a state was actually dropped.
+    pub fn drop_state_from_stash(&mut self, state_id: u64, stash: &str) -> bool {
+        let removed = if let Some(s) = self.sm.get_mut(stash) {
+            let mut idx = None;
+            for (i, state) in s.iter().enumerate() {
+                if state.state_id() == state_id {
+                    idx = Some(i);
+                    break;
+                }
+            }
+            if let Some(i) = idx {
+                s.remove(i);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if removed {
+            self.sm.unindex(state_id);
+            self.sm.remove_root(state_id);
+        }
+        removed
+    }
+
     /// Prepare for a new exploration stage: move a specific found state
     /// to active and clear all other stashes. Returns the state ID of the
     /// moved state. This avoids constraint transfer between managers.

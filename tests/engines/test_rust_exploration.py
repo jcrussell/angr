@@ -3832,6 +3832,122 @@ class TestStateProxyCopySemantics:
             proxy.copy()
         assert "python_mgr" in str(excinfo.value)
 
+    def test_drop_copy_removes_state_from_copies_stash(self, fauxware_project):
+        """``RustExplorationManager.drop_copy`` removes the state from the
+        ``_copies`` stash and frees per-state metadata (angr-yhe0)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+        clone_id = clone._state_id
+
+        # Seed metadata so we can verify the manager cleared it.
+        clone.options.add("yhe0_marker")
+        clone.globals["yhe0_marker"] = 1
+
+        before = mgr._rust_mgr.stash_count("_copies")
+        assert before >= 1
+        assert mgr._rust_mgr.state_stash(clone_id) == "_copies"
+
+        assert mgr.drop_copy(clone_id) is True
+
+        # State is gone from _copies and the index.
+        assert mgr._rust_mgr.stash_count("_copies") == before - 1
+        assert mgr._rust_mgr.state_stash(clone_id) is None
+        # Python-side metadata cleared.
+        assert clone_id not in mgr._py_state_options
+        assert clone_id not in mgr._py_state_globals
+
+        # Second drop is a no-op (idempotent).
+        assert mgr.drop_copy(clone_id) is False
+
+    def test_drop_copy_refuses_non_copies_state(self, fauxware_project):
+        """``drop_copy`` only removes states that are *currently* in
+        ``_copies`` — it must refuse to delete the active root state, even
+        if the caller passes its id."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        # Active state id passed to drop_copy must NOT be honored.
+        assert mgr.drop_copy(proxy._state_id) is False
+        # And the active state is still there.
+        assert mgr._rust_mgr.state_stash(proxy._state_id) == "active"
+
+    def test_proxy_copy_del_drops_state_from_copies(self, fauxware_project):
+        """When the copy-proxy is GC'd, its ``__del__`` must drop the
+        underlying ``_copies`` entry so long-running spilling workflows
+        don't leak (angr-yhe0)."""
+        import gc
+
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+        clone_id = clone._state_id
+        assert clone._owns_copy is True
+
+        baseline = mgr._rust_mgr.stash_count("_copies")
+        assert baseline >= 1
+
+        # Drop the only reference and force a GC cycle.
+        del clone
+        gc.collect()
+
+        assert mgr._rust_mgr.stash_count("_copies") == baseline - 1
+        assert mgr._rust_mgr.state_stash(clone_id) is None
+
+    def test_proxy_for_active_state_does_not_drop_on_del(self, fauxware_project):
+        """Proxies for live exploration states (not copies) must never
+        auto-drop the underlying Rust state — only ``copy()``-minted proxies
+        do."""
+        import gc
+
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        assert proxy._owns_copy is False
+        active_id = proxy._state_id
+
+        del proxy
+        gc.collect()
+
+        # Active state is still there.
+        assert mgr._rust_mgr.state_stash(active_id) == "active"
+
+    def test_proxy_copy_chain_gc_releases_all_copies(self, fauxware_project):
+        """A chain of N copies — when all proxies are dropped, the
+        ``_copies`` stash returns to its pre-fork count. Validates the
+        full Spiller-style workload pattern (angr-yhe0)."""
+        import gc
+
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        baseline = mgr._rust_mgr.stash_count("_copies")
+
+        clones = [proxy.copy() for _ in range(5)]
+        assert mgr._rust_mgr.stash_count("_copies") == baseline + 5
+
+        del clones
+        gc.collect()
+
+        assert mgr._rust_mgr.stash_count("_copies") == baseline
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverProxyTimeout:

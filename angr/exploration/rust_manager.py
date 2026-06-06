@@ -4210,6 +4210,48 @@ class RustExplorationManager(
             tracker[new_id] = tracker[source_state_id]
         return new_id
 
+    def drop_copy(self, copy_state_id: int) -> bool:
+        """Drop a clone produced by ``fork_state_for_copy`` from ``_copies``
+        (angr-yhe0).
+
+        Removes the Rust-side state from the ``_copies`` stash, clears the
+        per-state Python metadata (options set, globals dict, stdout tracker
+        entry), and frees Rust-side per-state metadata via
+        ``clear_state_metadata``. Returns ``True`` when a state was actually
+        dropped, ``False`` when the id is not in ``_copies`` (e.g. it was
+        already dropped, moved to a different stash, or never a copy).
+
+        This is the manual cleanup primitive backing ``RustStateProxy.__del__``
+        for proxies returned by ``proxy.copy()``. The proxy invokes this in
+        its finalizer so long-running Spiller / ManualMergepoint workflows
+        don't leak copies until manager teardown. Callers can also invoke it
+        directly when they know a copy is no longer needed but still hold a
+        reference.
+        """
+        try:
+            dropped = self._rust_mgr.drop_state_from_stash(copy_state_id, "_copies")
+        except Exception as e:
+            # cat-(a) EXPECTED CONTROL FLOW: state may already be gone (e.g.
+            # double-drop) or the Rust manager torn down. drop_copy is
+            # best-effort.
+            l.debug("drop_state_from_stash(sid=%d) failed: %s: %s",
+                    copy_state_id, type(e).__name__, e)
+            return False
+        if not dropped:
+            return False
+        self._py_state_options.pop(copy_state_id, None)
+        self._py_state_globals.pop(copy_state_id, None)
+        tracker = getattr(self, "_stdout_tracker", None)
+        if tracker is not None:
+            tracker.pop(copy_state_id, None)
+        try:
+            self._rust_mgr.clear_state_metadata(copy_state_id)
+        except Exception as e:
+            # cat-(a) EXPECTED CONTROL FLOW: metadata clear is best-effort.
+            l.debug("clear_state_metadata(sid=%d) after drop_copy failed: %s: %s",
+                    copy_state_id, type(e).__name__, e)
+        return True
+
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
 

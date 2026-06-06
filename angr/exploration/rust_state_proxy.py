@@ -2726,7 +2726,7 @@ class RustStateProxy:
     """
 
     def __init__(self, rust_mgr, state_id, project=None, stdin_vars=None,
-                 stdout_data=None, python_mgr=None):
+                 stdout_data=None, python_mgr=None, owns_copy=False):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._project = project
@@ -2736,6 +2736,12 @@ class RustStateProxy:
         # None when constructed standalone (e.g., low-level unit tests); in
         # that case options/globals fall back to empty stand-ins.
         self._python_mgr = python_mgr
+        # angr-yhe0: True when this proxy was minted by ``.copy()`` and owns
+        # the lifetime of the underlying ``_copies`` stash entry. ``__del__``
+        # then asks the manager to drop the Rust-side state so long-running
+        # spilling/veritesting workflows don't leak copies until manager
+        # teardown. False for proxies that wrap a live exploration state.
+        self._owns_copy = owns_copy
         # Lazy-initialized sub-proxies
         self._solver_proxy = None
         self._regs_proxy = None
@@ -2951,6 +2957,7 @@ class RustStateProxy:
             stdin_vars=self._stdin_vars,
             stdout_data=self._stdout_data,
             python_mgr=self._python_mgr,
+            owns_copy=True,
         )
 
     def __repr__(self):
@@ -2972,6 +2979,28 @@ class RustStateProxy:
         if n_constraints is not None:
             parts.append(f"constraints={n_constraints}")
         return f"<RustStateProxy {' '.join(parts)}>"
+
+    def __del__(self):
+        """angr-yhe0: drop the Rust-side ``_copies`` entry when a copy-proxy
+        is GC'd by Python.
+
+        Only fires when ``_owns_copy`` is True (set by ``copy()``) — proxies
+        wrapping live exploration states never auto-drop. Everything is wrapped
+        in try/except because interpreter shutdown can already have torn down
+        ``sys.modules`` by the time ``__del__`` runs, and the underlying Rust
+        manager may have been dropped first.
+        """
+        try:
+            if not getattr(self, "_owns_copy", False):
+                return
+            python_mgr = getattr(self, "_python_mgr", None)
+            if python_mgr is None:
+                return
+            python_mgr.drop_copy(self._state_id)
+        except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: __del__ is best-effort; swallow
+            # everything to match the SimulationManagerProxy.__del__ pattern.
+            pass
 
 
 class RustSimulationManagerProxy:
