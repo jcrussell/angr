@@ -125,6 +125,16 @@ jobs:
           path: angr-examples
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Validate EXAMPLE_CATALOG tier metadata
+        # Stdlib-only sanity check (~50ms): compares the declared `tier`
+        # field in run_single.EXAMPLE_CATALOG against the measured
+        # `rust_time` in baseline_timings.json. Fails fast (before the
+        # ~5-7m Rust build) when a bench has crossed a tier boundary —
+        # see tests/benchmarks/validate_tier.py for the ±10% boundary
+        # tolerance and skip rules. The matching pytest gate
+        # (tests/benchmarks/test_validate_tier.py::test_real_catalog_zero_hard_drift)
+        # is not collected by any other CI job today.
+        run: python3 tests/benchmarks/validate_tier.py
       - name: Sync dependencies
         run: uv sync -p 3.10
       - name: Build Rust extension
