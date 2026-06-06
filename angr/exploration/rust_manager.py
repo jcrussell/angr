@@ -1178,6 +1178,15 @@ class RustExplorationManager(
         # rust_manager.py fallbacks above — runs at snapshot-export time,
         # not in the hot exploration loop.
         self._stats_orphan_bvs_snapshot_restore = 0
+        # angr-7jv5: per-FFI counters for the RustStateProxy write-through
+        # surfaces. These instrument SimProc-callback proxy traffic so we can
+        # decide whether a within-callback write buffer would pay off. Each
+        # counter increments on the Python side immediately before the PyO3
+        # call in `rust_state_proxy.py`. Aggregates across the whole run.
+        self._stats_proxy_mem_concrete_writes = 0
+        self._stats_proxy_mem_ast_writes = 0
+        self._stats_proxy_reg_writes = 0
+        self._stats_proxy_solver_adds = 0
         _init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -4566,6 +4575,11 @@ class RustExplorationManager(
         result['orphan_bvs_sym_load_full_fail'] = self._stats_orphan_bvs_sym_load_full_fail
         # angr-4o7d: snapshot-restore orphan-BVS counter
         result['orphan_bvs_snapshot_restore'] = self._stats_orphan_bvs_snapshot_restore
+        # angr-7jv5: proxy write-through FFI counters
+        result['proxy_mem_concrete_writes'] = self._stats_proxy_mem_concrete_writes
+        result['proxy_mem_ast_writes'] = self._stats_proxy_mem_ast_writes
+        result['proxy_reg_writes'] = self._stats_proxy_reg_writes
+        result['proxy_solver_adds'] = self._stats_proxy_solver_adds
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, '_time_in_rust_run_ns'):
             result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9

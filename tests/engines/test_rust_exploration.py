@@ -17518,5 +17518,128 @@ class TestCounterParity:
         )
 
 
+class TestProxyWriteCounters:
+    """angr-7jv5: instrumentation for SimProc callback proxy traffic.
+
+    The ``RustStateProxy`` sub-proxies (memory / registers / solver)
+    write through to the underlying Rust state via PyO3 on every store.
+    To decide whether a within-callback write buffer would pay off, we
+    need per-FFI counts surfaced in ``mgr.stats``. This test pins the
+    contract: each proxy write-through site increments the corresponding
+    counter on the Python wrapper, the four counter keys are surfaced
+    in ``stats``, and a no-op run leaves them at zero (so they only
+    move when real proxy traffic happens).
+    """
+
+    PROXY_COUNTER_KEYS = (
+        "proxy_mem_concrete_writes",
+        "proxy_mem_ast_writes",
+        "proxy_reg_writes",
+        "proxy_solver_adds",
+    )
+
+    def test_counters_present_and_zero_on_clean_run(self, fauxware_project):
+        """After construction (no exploration yet), all four proxy counters
+        must be present in ``mgr.stats`` and equal to zero. This is the
+        baseline a bench engineer reads when no proxy gate is on.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        stats = mgr.stats
+        for key in self.PROXY_COUNTER_KEYS:
+            assert key in stats, f"missing proxy counter: {key}"
+            assert stats[key] == 0, (
+                f"expected {key} == 0 on a clean manager, got {stats[key]}"
+            )
+
+    def test_register_proxy_write_bumps_counter(self, fauxware_project):
+        """``RustRegisterProxy.__setattr__`` increments ``_stats_proxy_reg_writes``
+        once per assigned register. Direct unit test against the proxy
+        avoids depending on which simprocedures fire during exploration.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Step once to materialize the Rust state. ``state_ids`` exposes the
+        # currently-active state ids so the proxy can bind to a live one.
+        mgr.run(max_steps=1)
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
+        assert state_ids, "expected at least one active state after one step"
+        proxy = RustRegisterProxy(
+            mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr
+        )
+        before = mgr._stats_proxy_reg_writes
+        proxy.rax = 0xDEADBEEF
+        proxy.rbx = 0xCAFEBABE
+        after = mgr._stats_proxy_reg_writes
+        assert after - before == 2, (
+            f"expected 2 register writes, got delta {after - before}"
+        )
+        assert mgr.stats["proxy_reg_writes"] == after
+
+    def test_memory_proxy_concrete_write_bumps_counter(self, fauxware_project):
+        """``RustMemoryProxy.store`` increments ``_stats_proxy_mem_concrete_writes``
+        on a concrete-payload path. Three concrete-payload branches
+        (concrete BVV, raw bytes, raw int) all bump the same counter.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
+        assert state_ids, "expected at least one active state after one step"
+        proxy = RustMemoryProxy(
+            mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr
+        )
+        # Pick an address inside the binary's loaded text region — angr maps
+        # those pages by default. The exact location does not matter; we
+        # just need a concrete-addr concrete-payload write to flow through
+        # ``set_state_memory_concrete``.
+        addr = fauxware_project.entry
+        before = mgr._stats_proxy_mem_concrete_writes
+        proxy.store(addr, b"abcd")           # bytes branch
+        proxy.store(addr + 8, 0x1234, size=2)  # int branch
+        after = mgr._stats_proxy_mem_concrete_writes
+        assert after - before == 2, (
+            f"expected 2 concrete-memory writes, got delta {after - before}"
+        )
+        assert mgr.stats["proxy_mem_concrete_writes"] == after
+
+    def test_solver_proxy_add_bumps_counter(self, fauxware_project):
+        """``RustSolverProxyPlugin.add`` increments ``_stats_proxy_solver_adds``
+        by the number of (non-tautology) constraints accepted. Tautologies
+        (Python ``True``) are filtered out by ``add`` itself so they
+        must not count.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
+        assert state_ids, "expected at least one active state after one step"
+        proxy = RustSolverProxyPlugin(
+            mgr._rust_mgr, state_ids[0], python_mgr=mgr
+        )
+        sym = claripy.BVS("x", 32)
+        before = mgr._stats_proxy_solver_adds
+        proxy.add(sym == 1, sym != 2)  # 2 real constraints
+        proxy.add(True)                 # tautology — must not bump
+        after = mgr._stats_proxy_solver_adds
+        assert after - before == 2, (
+            f"expected 2 solver adds (tautology filtered), got delta "
+            f"{after - before}"
+        )
+        assert mgr.stats["proxy_solver_adds"] == after
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

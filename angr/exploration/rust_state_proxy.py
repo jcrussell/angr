@@ -303,9 +303,13 @@ class RustSolverProxyPlugin:
 
     STRONGREF_STATE: bool = False
 
-    def __init__(self, rust_mgr, state_id):
+    def __init__(self, rust_mgr, state_id, python_mgr=None):
         object.__setattr__(self, "_mgr", rust_mgr)
         object.__setattr__(self, "_state_id", state_id)
+        # angr-7jv5: optional reference to the Python wrapper so write paths
+        # can bump ``_stats_proxy_*`` counters. ``rust_mgr`` is the PyO3
+        # builtin and has no Python attributes; only the wrapper does.
+        object.__setattr__(self, "_python_mgr", python_mgr)
         # Lazy Rust solver fork — created on first eval/satisfiable/min/max.
         # Invalidated on add() so the next solve picks up the new constraint.
         object.__setattr__(self, "_rust_ctx_cache", None)
@@ -345,7 +349,7 @@ class RustSolverProxyPlugin:
 
     def copy(self, _memo=None):
         """Return a new proxy bound to the same Rust state."""
-        clone = RustSolverProxyPlugin(self._mgr, self._state_id)
+        clone = RustSolverProxyPlugin(self._mgr, self._state_id, python_mgr=self._python_mgr)
         # Carry over variable-tracking dicts — SimSolver.copy() does the
         # same so SimProc state.copy() preserves register_variable refs.
         clone.all_variables = list(self.all_variables)
@@ -460,6 +464,8 @@ class RustSolverProxyPlugin:
         if not filtered:
             return ast_list
         try:
+            if self._python_mgr is not None:
+                self._python_mgr._stats_proxy_solver_adds += len(filtered)
             self._mgr.add_constraints_to_state(self._state_id, filtered)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: write-through failed; the Rust
@@ -763,7 +769,7 @@ class RustRegisterProxy:
     STRONGREF_STATE: bool = False
     SUPPORTS_CONCRETE_LOAD: bool = False
 
-    def __init__(self, rust_mgr, state_id, arch):
+    def __init__(self, rust_mgr, state_id, arch, python_mgr=None):
         # Use object.__setattr__ to bypass our own __setattr__ during init
         # (which routes name= writes through to Rust). Without this, the
         # first attribute assignment below would try to look up self._mgr
@@ -772,6 +778,8 @@ class RustRegisterProxy:
         object.__setattr__(self, "_state_id", state_id)
         object.__setattr__(self, "_arch", arch)
         object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
+        # angr-7jv5: optional Python-wrapper handle for counter bumps.
+        object.__setattr__(self, "_python_mgr", python_mgr)
         # SimMemory plugin protocol surface — stored via object.__setattr__
         # so our overridden __setattr__ does not route them through to Rust.
         object.__setattr__(self, "id", "reg")
@@ -921,6 +929,8 @@ class RustRegisterProxy:
         canonical = self._canonical_name(name)
         width = self._get_register_width(canonical)
         ast = self._coerce_to_ast(value, width)
+        if self._python_mgr is not None:
+            self._python_mgr._stats_proxy_reg_writes += 1
         self._mgr.set_state_register_symbolic_ast(self._state_id, canonical, ast)
         # angr-yxar: invalidate cached aliases whose (offset, size) overlaps
         # the write. A partial write like ``state.regs.eax = sym32`` must
@@ -1072,7 +1082,7 @@ class RustRegisterProxy:
         plugin walk. True per-state CoW lives in angr-d1dr
         (RustStateProxy.copy()).
         """
-        return RustRegisterProxy(self._mgr, self._state_id, self._arch)
+        return RustRegisterProxy(self._mgr, self._state_id, self._arch, python_mgr=self._python_mgr)
 
     def merge(self, _others, _merge_conditions, _common_ancestor=None):
         # angr-8dop.2-style gap: merge / widen / compare on the proxy
@@ -1100,11 +1110,13 @@ class RustMemoryProxy:
 
     SUPPORTS_CONCRETE_LOAD: bool = False
 
-    def __init__(self, rust_mgr, state_id, arch, *, endness=None):
+    def __init__(self, rust_mgr, state_id, arch, *, endness=None, python_mgr=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # angr-7jv5: optional Python-wrapper handle for counter bumps.
+        self._python_mgr = python_mgr
         # SimMemory plugin protocol surface.
         self.id = "mem"
         self.endness = endness or getattr(arch, "memory_endness", "Iend_BE")
@@ -1148,7 +1160,7 @@ class RustMemoryProxy:
         True per-state CoW lives in angr-d1dr (RustStateProxy.copy()).
         """
         return RustMemoryProxy(
-            self._mgr, self._state_id, self._arch, endness=self.endness
+            self._mgr, self._state_id, self._arch, endness=self.endness, python_mgr=self._python_mgr
         )
 
     # ---------------------------------------------------------------
@@ -1321,12 +1333,16 @@ class RustMemoryProxy:
                 nbytes = width_bits // 8
                 byteorder = "little" if endness == "Iend_LE" else "big"
                 payload = value.to_bytes(nbytes, byteorder)
+                if self._python_mgr is not None:
+                    self._python_mgr._stats_proxy_mem_concrete_writes += 1
                 self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
                 return
             # Symbolic AST — route through the AST FFI so the symbol is
             # registered in the shared cache. Endianness on a symbolic AST
             # is the caller's responsibility (claripy ASTs don't carry an
             # endianness flag); we forward verbatim.
+            if self._python_mgr is not None:
+                self._python_mgr._stats_proxy_mem_ast_writes += 1
             self._mgr.set_state_memory_ast(self._state_id, addr, data)
             return
 
@@ -1334,6 +1350,8 @@ class RustMemoryProxy:
             payload = bytes(data)
             if endness == "Iend_LE":
                 payload = payload[::-1]
+            if self._python_mgr is not None:
+                self._python_mgr._stats_proxy_mem_concrete_writes += 1
             self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
             return
 
@@ -1344,6 +1362,8 @@ class RustMemoryProxy:
                 )
             byteorder = "little" if endness == "Iend_LE" else "big"
             payload = data.to_bytes(size, byteorder)
+            if self._python_mgr is not None:
+                self._python_mgr._stats_proxy_mem_concrete_writes += 1
             self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
             return
 
@@ -2791,7 +2811,7 @@ class RustStateProxy:
         """Register proxy — reads registers from Rust state."""
         if self._regs_proxy is None:
             self._regs_proxy = RustRegisterProxy(
-                self._mgr, self._state_id, self.arch
+                self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr
             )
         return self._regs_proxy
 
@@ -2805,7 +2825,7 @@ class RustStateProxy:
         """Memory proxy — reads memory from Rust state."""
         if self._mem_proxy is None:
             self._mem_proxy = RustMemoryProxy(
-                self._mgr, self._state_id, self.arch
+                self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr
             )
         return self._mem_proxy
 

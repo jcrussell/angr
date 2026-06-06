@@ -2262,7 +2262,7 @@ class RustCallbackDispatchMixin:
         replacing the plugin here only affects this callback frame.
         """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
-        proxy = RustMemoryProxy(self._rust_mgr, state_id, self._project.arch)
+        proxy = RustMemoryProxy(self._rust_mgr, state_id, self._project.arch, python_mgr=self)
         proxy.set_state(state)
         # ``SimState.register_plugin`` would re-run ``set_state`` and update
         # ``state.plugins`` bookkeeping; use it so removal / merge code that
@@ -2280,7 +2280,7 @@ class RustCallbackDispatchMixin:
         ``state.regs`` is needed.
         """
         from angr.exploration.rust_state_proxy import RustRegisterProxy
-        proxy = RustRegisterProxy(self._rust_mgr, state_id, self._project.arch)
+        proxy = RustRegisterProxy(self._rust_mgr, state_id, self._project.arch, python_mgr=self)
         proxy.set_state(state)
         state.register_plugin("registers", proxy)
 
@@ -2294,7 +2294,7 @@ class RustCallbackDispatchMixin:
         ``constraints`` / ``eval`` / ``satisfiable`` read through Rust.
         """
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
-        proxy = RustSolverProxyPlugin(self._rust_mgr, state_id)
+        proxy = RustSolverProxyPlugin(self._rust_mgr, state_id, python_mgr=self)
         proxy.set_state(state)
         state.register_plugin("solver", proxy)
 
