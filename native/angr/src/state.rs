@@ -1083,6 +1083,18 @@ pub struct RustSimState {
     /// See module-level `apply-state-metadata-strips-options` — same caveat
     /// as `no_ip_concretization`.
     keep_ip_symbolic: bool,
+    /// CGC `state.cgc.allocation_base` — high-water bump pointer for the
+    /// CGC `allocate(2)` syscall. Pages grow downward from this address.
+    /// Default 0xB800_0000 (matches `state_plugins/cgc.py::allocation_base`).
+    /// Inert outside DECREE binaries. Cloned on fork.
+    cgc_allocation_base: u64,
+    /// CGC `state.cgc.sinkholes` — list of freed (addr, length) regions that
+    /// `allocate` re-uses via first-fit before bumping `allocation_base`.
+    /// Mirrors `state_plugins/cgc.py::sinkholes` (which is a `set`, but we
+    /// store an ordered `Vec` to match the Python "sorted by address
+    /// descending, first fit" semantics in `get_max_sinkhole`).
+    /// Cloned on fork.
+    cgc_sinkholes: Vec<(u64, u64)>,
 }
 
 impl RustSimState {
@@ -1137,6 +1149,8 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            cgc_allocation_base: 0xB800_0000,
+            cgc_sinkholes: Vec::new(),
         })
     }
 
@@ -1180,6 +1194,8 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            cgc_allocation_base: 0xB800_0000,
+            cgc_sinkholes: Vec::new(),
         }
     }
 
@@ -1233,6 +1249,8 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            cgc_allocation_base: 0xB800_0000,
+            cgc_sinkholes: Vec::new(),
         })
     }
 
@@ -1403,6 +1421,65 @@ impl RustSimState {
     /// `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`.
     pub fn set_mmap_base(&mut self, addr: u64) {
         self.mmap_base = addr;
+    }
+
+    /// CGC `state.cgc.allocation_base` — current high-water bump pointer
+    /// used by the native CGC `allocate(5)` syscall. Inert for non-CGC
+    /// binaries. Mirror of `state_plugins/cgc.py::allocation_base`.
+    pub fn cgc_allocation_base(&self) -> u64 {
+        self.cgc_allocation_base
+    }
+
+    /// Update the CGC bump-pointer high-water. Called from the native
+    /// `allocate` handler after a fresh bump and (in principle) from the
+    /// Python→Rust state sync path when a Python-side allocate ran.
+    pub fn set_cgc_allocation_base(&mut self, base: u64) {
+        self.cgc_allocation_base = base;
+    }
+
+    /// CGC `state.cgc.sinkholes` — `(addr, length)` freelist of
+    /// previously-deallocated regions, candidates for reuse by `allocate`.
+    pub fn cgc_sinkholes(&self) -> &[(u64, u64)] {
+        &self.cgc_sinkholes
+    }
+
+    /// Add a region to the CGC sinkhole freelist. Mirrors
+    /// `SimStateCGC.add_sinkhole`. Duplicate `(addr, length)` pairs are
+    /// silently merged into a single entry (the Python plugin uses a `set`).
+    pub fn cgc_add_sinkhole(&mut self, addr: u64, length: u64) {
+        if !self
+            .cgc_sinkholes
+            .iter()
+            .any(|&(a, l)| a == addr && l == length)
+        {
+            self.cgc_sinkholes.push((addr, length));
+        }
+    }
+
+    /// CGC first-fit allocator over the sinkhole freelist. Walks sinkholes
+    /// in descending-address order (matching `SimStateCGC.get_max_sinkhole`)
+    /// and returns the first one big enough to fit `length` bytes. The
+    /// chosen sinkhole is split if larger than `length`: the leftover at
+    /// the LOW end stays in the freelist, the HIGH end is returned.
+    /// Returns `None` if no sinkhole fits — caller bumps `allocation_base`.
+    pub fn cgc_take_max_sinkhole(&mut self, length: u64) -> Option<u64> {
+        // Find index of highest-address sinkhole that fits.
+        let mut best: Option<usize> = None;
+        let mut best_addr: u64 = 0;
+        for (i, &(addr, sz)) in self.cgc_sinkholes.iter().enumerate() {
+            if sz >= length && (best.is_none() || addr > best_addr) {
+                best = Some(i);
+                best_addr = addr;
+            }
+        }
+        let idx = best?;
+        let (addr, sz) = self.cgc_sinkholes.swap_remove(idx);
+        let remaining = sz - length;
+        let chosen = addr + remaining;
+        if remaining > 0 {
+            self.cgc_sinkholes.push((addr, remaining));
+        }
+        Some(chosen)
     }
 
     /// Most recent symbolic value returned by the time(2) syscall, used to
@@ -2059,6 +2136,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2098,6 +2177,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2137,6 +2218,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2184,6 +2267,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2279,6 +2364,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2448,6 +2535,20 @@ pub struct RustSimStateSnapshot {
     pub no_ip_concretization: bool,
     pub no_symbolic_jump_resolution: bool,
     pub keep_ip_symbolic: bool,
+    /// CGC `state.cgc.allocation_base` mirror. `#[serde(default)]` keeps
+    /// pre-CGC snapshots forward-compatible — restoration defaults to the
+    /// canonical 0xB800_0000 bump start used by fresh CGC states.
+    #[serde(default = "default_cgc_allocation_base")]
+    pub cgc_allocation_base: u64,
+    /// CGC `state.cgc.sinkholes` mirror. `#[serde(default)]` keeps pre-CGC
+    /// snapshots forward-compatible — restoration defaults to an empty
+    /// freelist.
+    #[serde(default)]
+    pub cgc_sinkholes: Vec<(u64, u64)>,
+}
+
+fn default_cgc_allocation_base() -> u64 {
+    0xB800_0000
 }
 
 impl RustSimState {
@@ -2492,6 +2593,8 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
     }
 
@@ -2539,6 +2642,8 @@ impl RustSimState {
             no_ip_concretization: snap.no_ip_concretization,
             no_symbolic_jump_resolution: snap.no_symbolic_jump_resolution,
             keep_ip_symbolic: snap.keep_ip_symbolic,
+            cgc_allocation_base: snap.cgc_allocation_base,
+            cgc_sinkholes: snap.cgc_sinkholes,
         })
     }
 

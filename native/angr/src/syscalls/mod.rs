@@ -805,23 +805,24 @@ impl NativeSyscallRegistry {
             (5297, rlimit::NativePrlimit64Syscall),
         ]);
 
-        // ===== DECREE CGC ABI (angr-krp1) =====
+        // ===== DECREE CGC ABI (angr-krp1, angr-rdgs) =====
         //
         // CGC binaries run on x86 but use a custom syscall ABI whose
         // numbers collide with Linux i386 (1=exit/_terminate,
         // 2=fork/transmit, ...). The dispatcher in `stepping.rs` selects
         // this table by checking `ExecutionEnvironment::os_name == "cgc"`
         // and using "CGC" as the registry key instead of the arch name.
-        // 5=allocate and 6=deallocate fall through to Python — they need
-        // the CGC state plugin (sinkholes, allocation_base, EINVAL/EFAULT)
-        // which RustSimState does not carry. The other five — _terminate,
-        // transmit, receive, fdwait, random — have simple Rust impls in
-        // `syscalls/cgc.rs` that mirror the Python procedures' happy paths.
+        // All seven CGC syscalls land natively in `syscalls/cgc.rs`;
+        // `allocate` / `deallocate` carry their own freelist / bump
+        // allocator on the new `RustSimState::cgc_*` fields (added in
+        // angr-rdgs).
         register_syscalls!(r, "CGC", [
             (1, cgc::NativeTerminateSyscall),
             (2, cgc::NativeTransmitSyscall),
             (3, cgc::NativeReceiveSyscall),
             (4, cgc::NativeFdwaitSyscall),
+            (5, cgc::NativeAllocateSyscall),
+            (6, cgc::NativeDeallocateSyscall),
             (7, cgc::NativeRandomSyscall),
         ]);
 

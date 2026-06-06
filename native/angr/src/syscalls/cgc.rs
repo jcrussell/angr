@@ -32,17 +32,42 @@
 //!   bytes into `[buf, ...)` (no fd) and stores `count` at `*rnd_bytes`.
 //!   Returns 0. Mirrors `random` SimProcedure for non-fastpath mode.
 //!
-//! Not implemented (fall through to Python):
-//! * `5 allocate` / `6 deallocate` — need the CGC state plugin
-//!   (sinkholes, allocation_base, EINVAL/EFAULT constants) which
-//!   `RustSimState` does not carry. Both syscalls deal with page-level
-//!   memory map/unmap; semantics live in `state_plugins/cgc.py`.
+//! * `5 allocate(length, is_x, addr)` — simple bump allocator that
+//!   mirrors `procedures/cgc/allocate.py`. Uses the state's
+//!   `cgc_allocation_base` high-water and `cgc_sinkholes` freelist;
+//!   error codes match the Python plugin (EINVAL=3, EFAULT=2). Falls
+//!   back to Python on symbolic args or when the bump would collide
+//!   with the loader/flag-page region (Rust syscall has no access to
+//!   `project.loader`, so the safe path is to defer).
+//! * `6 deallocate(addr, length)` — page-aligned unmap with sinkhole
+//!   bookkeeping, mirroring `procedures/cgc/deallocate.py`. Walks
+//!   consecutive mapped pages, unmaps them, and adds the run to the
+//!   sinkhole freelist on success.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, exit, extract_concrete_arg};
+use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+
+// CGC error codes — see `state_plugins/cgc.py::SimStateCGC`. The Python
+// plugin defines six error codes but only EINVAL and EFAULT are
+// reachable from the allocate / deallocate happy paths.
+const CGC_EFAULT: u64 = 2;
+const CGC_EINVAL: u64 = 3;
+
+/// Upper bound on a single `allocate` request (`state.cgc.max_allocation`,
+/// see `state_plugins/cgc.py`). Requests larger than this return EINVAL
+/// without touching the allocation base.
+const CGC_MAX_ALLOCATION: u64 = 0x1000_0000;
+
+/// CGC flag-page sentinel (`cgc_flag_page_start_addr` in
+/// `procedures/cgc/allocate.py`). The simple Rust bump allocator falls
+/// back to Python rather than risk landing on or straddling the flag
+/// page — the proper overlap-handling lives in the Python procedure.
+const CGC_FLAG_PAGE_START: u64 = 0x4347_C000;
+const CGC_FLAG_PAGE_END: u64 = CGC_FLAG_PAGE_START + 0x1000;
 
 /// Re-export so `syscalls::cgc::NativeTerminateSyscall` reads naturally
 /// alongside the other CGC handlers.
@@ -371,6 +396,176 @@ impl NativeSyscall for NativeRandomSyscall {
     }
 }
 
+// =====================================================================
+// 5: allocate(length, is_x, addr) -> int
+// =====================================================================
+//
+// Mirrors `procedures/cgc/allocate.py` for the concrete-arg happy path:
+// validate (length / is_x / addr), align length up to a page, try to
+// satisfy from the sinkhole freelist (first-fit, highest-address),
+// otherwise bump `cgc_allocation_base` down, map the region, and write
+// the chosen address back to `*addr` as a 32-bit LE word.
+//
+// Returns 0 on success. Returns EINVAL (3) for length == 0 or
+// length > max_allocation. Returns EFAULT (2) when `addr` is null.
+// Falls back to Python when the bump would touch the loader-owned
+// region (Rust has no access to `project.loader.max_addr` here) or the
+// CGC flag page — the Python procedure has the proper overlap-handling
+// path for both cases.
+pub struct NativeAllocateSyscall;
+
+impl NativeSyscall for NativeAllocateSyscall {
+    fn name(&self) -> &'static str {
+        "allocate"
+    }
+
+    fn num_args(&self) -> usize {
+        3
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.len() < 3 {
+            return Err(SyscallError::Other(format!(
+                "allocate expected 3 args, got {}",
+                args.len()
+            )));
+        }
+        let length = extract_concrete_arg(&args[0], "allocate length")?;
+        let is_x = extract_concrete_arg(&args[1], "allocate is_x")?;
+        let addr_ptr = extract_concrete_arg(&args[2], "allocate addr")?;
+
+        // Error preconditions — match `allocate.py`'s claripy.ite_cases
+        // chain in evaluation order: length, max_allocation, addr_ptr.
+        if length == 0 || length > CGC_MAX_ALLOCATION {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
+        }
+        if addr_ptr == 0 {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EFAULT });
+        }
+
+        let aligned_length = ((length + 0xFFF) / 0x1000) * 0x1000;
+
+        // First-fit over the sinkhole freelist; bump otherwise.
+        let chosen = if let Some(addr) = state.cgc_take_max_sinkhole(aligned_length) {
+            addr
+        } else {
+            let base = state.cgc_allocation_base();
+            // Reject obvious underflow before touching state.
+            let next_base = match base.checked_sub(aligned_length) {
+                Some(b) => b,
+                None => {
+                    return Err(SyscallError::Other(format!(
+                        "allocate length {aligned_length:#x} underflows allocation_base {base:#x}",
+                    )));
+                }
+            };
+            // Defer to Python if the bump would straddle the CGC flag
+            // page. The Python procedure splits the range and routes the
+            // request to a fresh region above the flag page; replicating
+            // that here would force us to mirror the project loader,
+            // which is out of scope for this slice.
+            let region_start = next_base;
+            let region_end = base;
+            if region_start < CGC_FLAG_PAGE_END && region_end > CGC_FLAG_PAGE_START {
+                return Err(SyscallError::Other(
+                    "allocate region overlaps CGC flag page; falling back to Python".into(),
+                ));
+            }
+            state.set_cgc_allocation_base(next_base);
+            next_base
+        };
+
+        // Map the region. Permissions match `allocate.py`: RW always,
+        // X conditional on the `is_x` arg.
+        let perm = Permission {
+            read: true,
+            write: true,
+            execute: is_x != 0,
+        };
+        state.map_memory(chosen, aligned_length, perm);
+
+        // Store the chosen address back into `*addr` as a 32-bit LE word.
+        store_u32_le(state, addr_ptr, chosen as u32)?;
+        Ok(SyscallOutcome::Continue { ret: 0 })
+    }
+}
+
+// =====================================================================
+// 6: deallocate(addr, length) -> int
+// =====================================================================
+//
+// Mirrors `procedures/cgc/deallocate.py`: validate alignment / length /
+// addr, walk the consecutive mapped page run starting at `addr`, unmap
+// what we can, and record the unmapped run as a sinkhole. Returns 0 on
+// success, EINVAL on validation failure. Matches the Python procedure's
+// quirk that a wholly-unmapped `addr` still returns 0 with no work.
+pub struct NativeDeallocateSyscall;
+
+impl NativeSyscall for NativeDeallocateSyscall {
+    fn name(&self) -> &'static str {
+        "deallocate"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.len() < 2 {
+            return Err(SyscallError::Other(format!(
+                "deallocate expected 2 args, got {}",
+                args.len()
+            )));
+        }
+        let addr = extract_concrete_arg(&args[0], "deallocate addr")?;
+        let length = extract_concrete_arg(&args[1], "deallocate length")?;
+
+        // Validation order matches deallocate.py's claripy.ite_cases:
+        // alignment, length, addr != 0, addr + length != 0.
+        if addr & 0xFFF != 0 || length == 0 || addr == 0 {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
+        }
+        let end_excl = match addr.checked_add(length) {
+            Some(v) => v,
+            None => return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL }),
+        };
+        if end_excl == 0 {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
+        }
+
+        let aligned_length = ((length + 0xFFF) / 0x1000) * 0x1000;
+
+        // Walk consecutive mapped pages starting at `addr` up to
+        // `aligned_length`. Python's procedure stops at the first
+        // unmapped page in the run and returns 0 with `allowed_pages == 0`
+        // as a no-op.
+        let mut allowed = 0u64;
+        while allowed < aligned_length {
+            let probe = addr + allowed;
+            if !state.memory().is_mapped(probe) {
+                break;
+            }
+            allowed += 0x1000;
+        }
+
+        if allowed == 0 {
+            return Ok(SyscallOutcome::Continue { ret: 0 });
+        }
+
+        state.cgc_add_sinkhole(addr, allowed);
+        state.memory_mut().unmap(addr, allowed);
+        Ok(SyscallOutcome::Continue { ret: 0 })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +838,333 @@ mod tests {
         }
         let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
         assert_eq!(stored, Some(8));
+    }
+
+    #[test]
+    fn allocate_zero_length_returns_einval() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+        ));
+    }
+
+    #[test]
+    fn allocate_oversize_length_returns_einval() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(CGC_MAX_ALLOCATION as u128 + 1, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+        ));
+    }
+
+    #[test]
+    fn allocate_null_addr_returns_efault() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EFAULT
+        ));
+    }
+
+    #[test]
+    fn allocate_bumps_and_maps_region() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let base_before = state.cgc_allocation_base();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        // allocation_base shrinks by one page.
+        assert_eq!(state.cgc_allocation_base(), base_before - 0x1000);
+        let chosen = base_before - 0x1000;
+        // The chosen address is written back to *addr.
+        let stored = state.memory_load(0x2000, 4).expect("load").as_u64();
+        assert_eq!(stored, Some(chosen));
+        // The chosen page is now mapped (sanity-check via a store).
+        state
+            .memory_store(chosen, RustBV::concrete(42, 8))
+            .expect("store on freshly allocated page");
+    }
+
+    #[test]
+    fn allocate_with_is_x_grants_execute() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        h.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 32),
+                RustBV::concrete(1, 32), // is_x = true
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect("ok");
+        let chosen = 0xB800_0000 - 0x1000;
+        let page_num = chosen >> 12;
+        let perm = state.memory().page_permissions(page_num).expect("mapped");
+        assert!(perm.execute);
+        assert!(perm.read);
+        assert!(perm.write);
+    }
+
+    #[test]
+    fn allocate_round_up_length_to_page() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let base_before = state.cgc_allocation_base();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(1, 32), // 1 byte → 1 page
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        assert_eq!(state.cgc_allocation_base(), base_before - 0x1000);
+    }
+
+    #[test]
+    fn allocate_reuses_sinkhole_first_fit() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        // Pre-seed two sinkholes; first-fit picks the highest-addr one.
+        state.cgc_add_sinkhole(0x9000_0000, 0x2000);
+        state.cgc_add_sinkhole(0xA000_0000, 0x2000);
+        let base_before = state.cgc_allocation_base();
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        // allocation_base unchanged (came from sinkhole).
+        assert_eq!(state.cgc_allocation_base(), base_before);
+        // chosen is HIGH end of highest-addr sinkhole: 0xA0000000 + 0x1000.
+        let chosen = state.memory_load(0x2000, 4).expect("load").as_u64();
+        assert_eq!(chosen, Some(0xA000_1000));
+        // The remaining 0x1000 of the 0xA000_0000 sinkhole stays in the list.
+        let sinks = state.cgc_sinkholes();
+        let has_lo_a = sinks.iter().any(|&(a, l)| a == 0xA000_0000 && l == 0x1000);
+        let has_lo_9 = sinks.iter().any(|&(a, l)| a == 0x9000_0000 && l == 0x2000);
+        assert!(has_lo_a, "remainder of A sinkhole should be retained");
+        assert!(has_lo_9, "untouched 9 sinkhole should be retained");
+    }
+
+    #[test]
+    fn allocate_symbolic_length_falls_back() {
+        let h = NativeAllocateSyscall;
+        let mut state = x86_state_with_buf();
+        let ctx = SymContext::new();
+        let sym = RustBV::symbolic(&ctx, "len", 32);
+        let err = h
+            .call(
+                &mut state,
+                &[sym, RustBV::concrete(0, 32), RustBV::concrete(0x2000, 32)],
+            )
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::SymbolicArgument(_)));
+    }
+
+    #[test]
+    fn deallocate_unaligned_addr_returns_einval() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1001, 32), RustBV::concrete(0x1000, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+        ));
+    }
+
+    #[test]
+    fn deallocate_zero_length_returns_einval() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 32), RustBV::concrete(0, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+        ));
+    }
+
+    #[test]
+    fn deallocate_null_addr_returns_einval() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0, 32), RustBV::concrete(0x1000, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(
+            outcome,
+            SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+        ));
+    }
+
+    #[test]
+    fn deallocate_unmaps_region_and_records_sinkhole() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        // x86_state_with_buf maps [0x2000, 0x3000) RWX; deallocate it.
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 32), RustBV::concrete(0x1000, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        // Page is gone.
+        assert!(!state.memory().is_mapped(0x2000u64));
+        // Sinkhole records the freed run.
+        let sinks = state.cgc_sinkholes();
+        assert!(sinks.iter().any(|&(a, l)| a == 0x2000 && l == 0x1000));
+    }
+
+    #[test]
+    fn deallocate_unmapped_region_is_noop_with_zero_ret() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        // 0x9000 is not mapped — Python procedure returns 0 with no work.
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x9000, 32), RustBV::concrete(0x1000, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        // No sinkhole entry added.
+        assert!(state.cgc_sinkholes().is_empty());
+    }
+
+    #[test]
+    fn deallocate_partial_run_unmaps_what_it_can() {
+        let h = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        // Map a single page at 0x4000, ask to deallocate two pages — the
+        // procedure should only free the one that's mapped.
+        state.map_memory(0x4000, 0x1000, Permission::RWX);
+        let outcome = h
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x4000, 32), RustBV::concrete(0x2000, 32)],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+        assert!(!state.memory().is_mapped(0x4000u64));
+        let sinks = state.cgc_sinkholes();
+        assert!(sinks.iter().any(|&(a, l)| a == 0x4000 && l == 0x1000));
+    }
+
+    #[test]
+    fn deallocate_then_allocate_reuses_freed_region() {
+        let alloc = NativeAllocateSyscall;
+        let dealloc = NativeDeallocateSyscall;
+        let mut state = x86_state_with_buf();
+        // First allocate to bump the high-water down by a page.
+        alloc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("alloc ok");
+        let first_chosen = state
+            .memory_load(0x2000, 4)
+            .expect("load")
+            .as_u64()
+            .expect("concrete");
+        // Deallocate that page.
+        dealloc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(first_chosen as u128, 32),
+                    RustBV::concrete(0x1000, 32),
+                ],
+            )
+            .expect("dealloc ok");
+        // Allocate again — should hand back the same page from the sinkhole.
+        alloc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 32),
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                ],
+            )
+            .expect("realloc ok");
+        let second_chosen = state
+            .memory_load(0x2000, 4)
+            .expect("load")
+            .as_u64()
+            .expect("concrete");
+        assert_eq!(first_chosen, second_chosen, "sinkhole should be reused");
     }
 
     #[test]
