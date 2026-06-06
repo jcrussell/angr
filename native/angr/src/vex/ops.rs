@@ -5060,6 +5060,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // explicit 4-lane layout reads better than the minimized form
     fn test_vector_cmp_eq() {
         let ctx = SymContext::new_mock();
 
@@ -7163,6 +7164,7 @@ mod tests {
     // ---- FCmpVecPacked (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}) ----
 
     /// Pack four f32 values into a single 128-bit vector (lane 0 first).
+    #[allow(clippy::identity_op)] // explicit lane shifts (incl. `<< 0`) keep the helper symmetric
     fn pack_4xf32(a: f32, b: f32, c: f32, d: f32) -> u128 {
         let mut r: u128 = 0;
         r |= (a.to_bits() as u128) << 0;
@@ -7179,6 +7181,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // explicit 4-lane mask layout reads better than the minimized form
     fn test_fcmp_packed_eq_32fx4_concrete() {
         // CMPEQPS lane-by-lane: lanes 0 and 2 equal, lanes 1 and 3 differ.
         let ctx = SymContext::new_mock();
@@ -7248,6 +7251,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // explicit 4-lane mask layout reads better than the minimized form
     fn test_fcmp_packed_ge_32fx4_concrete() {
         // CMPGEPS: 5.0>=2.0 T, 3.0>=3.0 T, 1.0>=2.0 F, 4.0>=4.0 T.
         let ctx = SymContext::new_mock();
@@ -7911,6 +7915,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // explicit 8-lane layout reads better than the minimized form
     fn test_vqnarrow_un_16uto8ux8_unsigned() {
         let ctx = SymContext::new_mock();
         // Unsigned source -> unsigned dst. Range [0, 255]. 256 saturates to 255.
