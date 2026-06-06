@@ -2241,16 +2241,12 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
     "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
-_COPY_NOT_IMPLEMENTED_MSG = (
-    "RustStateProxy.copy() is not supported in v1.0. The Rust engine owns "
-    "this state's solver/memory/registers, and a faithful CoW deep copy "
-    "requires a Rust-side fork plus per-state metadata duplication that "
-    "has not yet landed (tracked under bd angr-2zwy). The previous shallow "
-    "copy aliased _state_id with the source and silently corrupted the "
-    "parent on any mutation (see docs/advanced-topics/rust_engine.rst — "
-    "the Veritesting row under 'Analyses compatibility'). To work around: "
-    "drop to the Python engine (use_rust_engine=False) for code that needs "
-    "state.copy()."
+_COPY_NEEDS_MANAGER_MSG = (
+    "RustStateProxy.copy() requires the high-level RustExplorationManager "
+    "to provide the per-state metadata seeding helper. This proxy was "
+    "constructed without a python_mgr — typically only happens in low-level "
+    "unit tests that build a proxy directly against `_RustExplorationManager`. "
+    "Wire a RustExplorationManager (or pass python_mgr=) before calling copy()."
 )
 
 
@@ -2930,23 +2926,32 @@ class RustStateProxy:
         return self.solver.satisfiable(**kwargs)
 
     def copy(self):
-        """Forking a Rust-engine state via the proxy is unsupported in v1.0.
+        """Rust-side CoW deep fork (angr-d1dr).
 
-        The Python angr contract for ``SimState.copy()`` is a CoW deep fork:
-        mutations on the copy must not affect the source. The Rust engine
-        owns the per-state solver/memory/registers; producing a faithful
-        deep copy would require routing through ``RustSimState::fork`` and
-        plumbing the new state ID back through the manager's bookkeeping
-        (stash, options dict, globals dict, stdout tracker). That work is
-        tracked under bd ``angr-2zwy`` for a future iteration.
+        Mirrors the ``SimState.copy()`` contract: a fully independent state
+        whose mutations do not flow back to the source. The new state is
+        minted by ``RustSimState::fork`` and parked in the ``_copies`` stash
+        — outside the active/found/avoid loop so it won't be auto-stepped.
+        Returns a fresh ``RustStateProxy`` bound to the new state id, with
+        its own snapshot of the source's options / globals / stdout buffer.
 
-        Until then this method raises rather than silently returning the
-        original-aliased shallow proxy that previously caused state
-        corruption under ``Veritesting`` (see
-        ``docs/advanced-topics/rust_engine.rst`` — Analyses compatibility
-        row, item 1).
+        Raises ``NotImplementedError`` when the proxy was constructed
+        without a high-level manager (``python_mgr`` is None) — there is no
+        place to store Python-side options/globals snapshots in that case.
+        Low-level unit-test paths that need a plain Rust fork should call
+        ``rust_mgr.fork_state_to_stash(state_id, '_copies')`` directly.
         """
-        raise NotImplementedError(_COPY_NOT_IMPLEMENTED_MSG)
+        if self._python_mgr is None:
+            raise NotImplementedError(_COPY_NEEDS_MANAGER_MSG)
+        new_id = self._python_mgr.fork_state_for_copy(self._state_id)
+        return RustStateProxy(
+            self._mgr,
+            new_id,
+            project=self._project,
+            stdin_vars=self._stdin_vars,
+            stdout_data=self._stdout_data,
+            python_mgr=self._python_mgr,
+        )
 
     def __repr__(self):
         try:

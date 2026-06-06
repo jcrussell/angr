@@ -4178,6 +4178,38 @@ class RustExplorationManager(
         self._py_state_globals[state_id] = glb
         return glb
 
+    def fork_state_for_copy(self, source_state_id: int) -> int:
+        """Rust-side CoW fork backing ``RustStateProxy.copy()``.
+
+        Mints a new state by forking ``source_state_id`` into the dedicated
+        ``_copies`` stash. The new state's Python-side metadata (options set,
+        globals dict) is seeded from the source's current metadata — NOT the
+        lineage root — so a caller that has mutated the source between fork
+        time and copy time sees those mutations on the copy. The forked state
+        inherits the parent's lineage root so downstream lookups
+        (``get_state_options_py`` / ``get_state_globals_py``) still resolve.
+
+        The ``_copies`` stash is treated as a holding area: ``step()`` does
+        not advance it (StashManager only iterates ``active``), and
+        ``find_state`` resolves it like any other stash so proxy reads on
+        the returned id keep working.
+
+        Memory note: copies linger in ``_copies`` until the caller drops the
+        proxy. There is no automatic GC — that would require a back-reference
+        from the proxy to the manager, which today is intentionally weak.
+        """
+        new_id = self._rust_mgr.fork_state_to_stash(source_state_id, "_copies")
+        src_opts = self._py_state_options.get(source_state_id)
+        if src_opts is not None:
+            self._py_state_options[new_id] = set(src_opts)
+        src_glb = self._py_state_globals.get(source_state_id)
+        if src_glb is not None:
+            self._py_state_globals[new_id] = dict(src_glb)
+        tracker = getattr(self, "_stdout_tracker", None)
+        if tracker is not None and source_state_id in tracker:
+            tracker[new_id] = tracker[source_state_id]
+        return new_id
+
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
 

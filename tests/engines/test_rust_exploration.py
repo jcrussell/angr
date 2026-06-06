@@ -3689,55 +3689,148 @@ class TestStateProxyRepr:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
-class TestStateProxyCopyRaises:
-    """``RustStateProxy.copy()`` raises ``NotImplementedError`` in v1.0.
+class TestStateProxyCopySemantics:
+    """``RustStateProxy.copy()`` is a Rust-side CoW deep fork (angr-d1dr).
 
-    The previous shallow copy aliased ``_state_id`` with the source and
-    silently corrupted the parent on any mutation. That was the foot-gun
-    behind the Veritesting *analysis* incompatibility (``angr-dv24``):
-    Veritesting calls ``input_state.copy()`` at ``veritesting.py:214``
-    and then mutates the copy. Until a Rust-side CoW deep fork lands
-    (tracked under ``angr-2zwy``), the proxy refuses the operation and
-    points users at the documented limitation rather than risking
-    corruption.
+    Replaces the v1.0 ``NotImplementedError`` raise with a real fork via
+    ``RustSimState::fork`` + Python-side options/globals snapshot. The
+    contract mirrors angr ``SimState.copy()``: mutations on the copy must
+    not flow back into the source.
     """
 
-    def test_proxy_copy_raises_with_clear_message(self, fauxware_project):
+    def test_proxy_copy_returns_independent_state(self, fauxware_project):
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
         proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+
+        assert clone is not proxy
+        assert clone._state_id != proxy._state_id
+        assert clone.addr == proxy.addr
+
+    def test_proxy_copy_register_write_does_not_affect_source(self, fauxware_project):
+        """Writing a register on the copy leaves the source register intact."""
+        import claripy
+
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+
+        original_rax = proxy.regs.rax
+        clone.regs.rax = claripy.BVV(0xDEADBEEF, 64)
+
+        # Source is untouched
+        assert proxy.regs.rax is original_rax or (
+            proxy.regs.rax.concrete and original_rax.concrete
+            and proxy.regs.rax.concrete_value == original_rax.concrete_value
+        )
+        # Copy got the new value
+        assert clone.regs.rax.concrete
+        assert clone.regs.rax.concrete_value == 0xDEADBEEF
+
+    def test_proxy_copy_constraint_isolation(self, fauxware_project):
+        """A constraint pushed into the clone's underlying state solver must
+        not appear on the source's solver. Uses
+        ``add_constraints_to_state`` (the path that actually persists onto
+        the Rust state's solver) rather than ``proxy.add_constraints``
+        (which routes through a per-proxy forked solver context and never
+        touches the state's solver).
+        """
+        import claripy
+
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+
+        before_src = mgr._rust_mgr.state_constraint_count(proxy._state_id)
+        before_clone = mgr._rust_mgr.state_constraint_count(clone._state_id)
+
+        x = claripy.BVS("d1dr_isolation", 64)
+        mgr._rust_mgr.add_constraints_to_state(clone._state_id, [x == 7])
+
+        after_src = mgr._rust_mgr.state_constraint_count(proxy._state_id)
+        after_clone = mgr._rust_mgr.state_constraint_count(clone._state_id)
+
+        assert after_src == before_src
+        assert after_clone == before_clone + 1
+
+    def test_proxy_copy_options_isolation(self, fauxware_project):
+        """Mutating the copy's options set does not mutate the source's."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        # Seed a sentinel on the source first so the copy has something to
+        # inherit from.
+        proxy.options.add("d1dr_inherited")
+        clone = proxy.copy()
+
+        assert "d1dr_inherited" in clone.options
+
+        clone.options.add("d1dr_clone_only")
+        assert "d1dr_clone_only" in clone.options
+        assert "d1dr_clone_only" not in proxy.options
+
+    def test_proxy_copy_globals_isolation(self, fauxware_project):
+        """Mutating the copy's globals dict does not mutate the source's."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        proxy.globals["d1dr_inherited"] = "before-copy"
+        clone = proxy.copy()
+
+        assert clone.globals.get("d1dr_inherited") == "before-copy"
+
+        clone.globals["d1dr_clone_only"] = 42
+        assert proxy.globals.get("d1dr_clone_only") is None
+
+    def test_proxy_copy_lands_in_copies_stash(self, fauxware_project):
+        """The cloned state is placed in the dedicated ``_copies`` stash so
+        ``step()`` won't auto-advance it."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        clone = proxy.copy()
+
+        assert mgr._rust_mgr.state_stash(clone._state_id) == "_copies"
+        # And the active stash is unchanged.
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        assert clone._state_id not in active_ids
+        assert proxy._state_id in active_ids
+
+    def test_proxy_copy_without_manager_raises(self):
+        """Constructing a proxy bypassing the high-level manager (low-level
+        unit-test path) leaves nowhere to store options/globals snapshots;
+        ``copy()`` must surface that explicitly rather than silently
+        skipping the metadata mirror."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        proxy = RustStateProxy(mgr, sid)  # no python_mgr=
+
         with pytest.raises(NotImplementedError) as excinfo:
             proxy.copy()
-
-        msg = str(excinfo.value)
-        # Surface the actionable bits the message owes the caller.
-        assert "RustStateProxy.copy()" in msg
-        assert "angr-2zwy" in msg
-        assert "rust_engine.rst" in msg
-        assert "use_rust_engine=False" in msg
-
-    def test_proxy_copy_error_does_not_mutate_state(self, fauxware_project):
-        """A failed ``copy()`` must not leave the original Rust state in a
-        weird half-forked condition: the source remains usable for normal
-        proxy reads after the raise.
-        """
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-
-        proxy = mgr.proxy.active[0]
-        original_addr = proxy.addr
-        original_sid = proxy._state_id
-
-        with pytest.raises(NotImplementedError):
-            proxy.copy()
-
-        assert proxy.addr == original_addr
-        assert proxy._state_id == original_sid
+        assert "python_mgr" in str(excinfo.value)
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -2279,12 +2279,13 @@ Caveats specific to ``step()`` dispatch:
        per Rust batch and ``simgr.move(...)`` works against the proxy,
        so the safety valve arms.
    * - ``Spiller``
-     - **Step hook dispatched, would still break on copy**
-     - ``step()`` is dispatched (``angr-rqvq``), but the technique calls
-       ``state.copy()`` to snapshot — :class:`RustStateProxy` raises
-       ``NotImplementedError`` (``angr-2zwy``) until the proxy CoW fork
-       (``angr-d1dr``) lands. Use ``use_rust_engine=False`` for
-       spilling workflows.
+     - **Step hook dispatched, copy() now supported**
+     - ``step()`` is dispatched (``angr-rqvq``) and
+       :meth:`RustStateProxy.copy` does a Rust-side CoW deep fork
+       (``angr-d1dr``) — the spiller's snapshot path runs against
+       the proxy directly. Note that copies are parked in the
+       ``_copies`` stash with no automatic GC, so a long-running
+       spilling loop will grow that stash over time.
    * - ``Veritesting``
      - **Unsupported (raises)**
      - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in
@@ -2340,9 +2341,10 @@ Caveats specific to ``step()`` dispatch:
        by whatever ``RustStateProxy`` exposes to driller's per-state
        inspection.
    * - ``ManualMergepoint``
-     - **Step hook dispatched, would still break on copy**
-     - Merge-point ``step()`` is dispatched, but the technique calls
-       ``state.copy()`` / mutates ``SimStateHistory`` — both raise
+     - **Step hook dispatched, copy() works but history mutation raises**
+     - Merge-point ``step()`` is dispatched and ``state.copy()`` now does
+       a Rust-side CoW deep fork (``angr-d1dr``), but the technique also
+       mutates ``SimStateHistory``, which still raises
        ``NotImplementedError`` on the proxy.
    * - ``StubStasher``
      - **Step hook dispatched**
@@ -2378,9 +2380,9 @@ that read internal ``SimState`` plugins beyond the proxy's contract
 (``state.history.parent``, ``state.history.events``,
 ``state.solver.constraints`` mutation) will silently misbehave rather
 than raise — vet each one against the proxy read-only invariant before
-counting on it in CI. ``state.copy()`` is the one exception: the
-proxy raises ``NotImplementedError`` (see the Veritesting analysis row
-below).
+counting on it in CI. ``state.copy()`` is supported as of ``angr-d1dr``
+— it does a Rust-side CoW deep fork and parks the copy in a dedicated
+``_copies`` stash (see the Spiller / ManualMergepoint rows below).
 
 Hook contract
 -------------
