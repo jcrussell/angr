@@ -658,8 +658,8 @@ pub struct VEXInterpreter<'a> {
     pub vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
     /// Page numbers (addr >> 12) inside loaded binary regions that have
     /// been overwritten by a store. Used to invalidate cached IRSBs and
-    /// skip the native-lift fast path (which reads from immutable
-    /// `concrete_memory` and would otherwise use stale bytes).
+    /// to redirect the Python lift callback to read fresh bytes from
+    /// `rust_memory` instead of the original (now stale) binary image.
     dirtied_code_pages: FxHashSet<u64>,
     /// State id of the state currently being stepped. Forwarded to
     /// `PythonCallbacks::call_inspect_mem_*` so the Python dispatcher can

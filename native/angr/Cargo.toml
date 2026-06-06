@@ -12,7 +12,6 @@ crate-type = ["cdylib", "rlib"]
 default = ["vex-engine", "vex-engine-z3", "automaton"]
 vex-engine = ["im", "lru", "thiserror"]
 vex-engine-z3 = ["vex-engine", "z3", "z3-sys"]
-native-lift = ["vex-engine"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
 automaton = ["indexmap", "fixedbitset"]
 
