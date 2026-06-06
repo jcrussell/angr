@@ -131,12 +131,22 @@ jobs:
         # `rust_time` in baseline_timings.json. Fails fast (before the
         # ~5-7m Rust build) when a bench has crossed a tier boundary —
         # see tests/benchmarks/validate_tier.py for the ±10% boundary
-        # tolerance and skip rules. The matching pytest gate
-        # (tests/benchmarks/test_validate_tier.py::test_real_catalog_zero_hard_drift)
-        # is not collected by any other CI job today.
+        # tolerance and skip rules. Edge-case helper unit tests run
+        # separately as `Run validate_tier unit tests` (after uv sync).
         run: python3 tests/benchmarks/validate_tier.py
       - name: Sync dependencies
         run: uv sync -p 3.10
+      - name: Run validate_tier unit tests
+        # Edge-case unit tests for the helpers inside validate_tier.py
+        # (classify bucket boundaries, within_boundary ±10% slack math
+        # incl. fast's zero-lower-bound and very_slow's unbounded upper,
+        # audit source-field selection). ~30 ms wall, stdlib + pytest
+        # only — no `angr` import, no Rust extension required. Run here
+        # (after `uv sync`, before the ~5-7 m Rust build) so a helper
+        # regression fails fast. Complements the earlier
+        # `python3 tests/benchmarks/validate_tier.py` step, which only
+        # exercises the real catalog vs real baseline integration path.
+        run: uv run pytest tests/benchmarks/test_validate_tier.py -q --tb=short
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run fast-tier benchmark regression
