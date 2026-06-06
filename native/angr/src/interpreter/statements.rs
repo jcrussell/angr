@@ -1890,7 +1890,6 @@ mod tests {
             };
             let res = interp
                 .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
-                .ok()
                 .expect("imark");
             match res {
                 StmtResult::Exit { target, jumpkind } => {
@@ -2042,7 +2041,6 @@ mod tests {
         with_python(|py, cb| {
             let res = interp
                 .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
-                .ok()
                 .expect("exit");
             match res {
                 StmtResult::Exit { target, .. } => assert_eq!(target, 0x9000),
