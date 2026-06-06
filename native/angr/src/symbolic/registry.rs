@@ -335,7 +335,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let obj = py.None();
-            registry.register(12345, 1, "x", 32, obj.into());
+            registry.register(12345, 1, "x", 32, obj);
 
             // Lookup should succeed
             assert_eq!(registry.lookup_by_hash(12345), Some(1));
@@ -352,7 +352,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let obj = py.None();
-            registry.register(12345, 1, "x", 32, obj.into());
+            registry.register(12345, 1, "x", 32, obj);
 
             assert!(!registry.is_empty());
 
