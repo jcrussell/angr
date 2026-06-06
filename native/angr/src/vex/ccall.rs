@@ -2340,7 +2340,7 @@ mod tests {
 
     #[test]
     fn diff_fuzz_sym_flags_logic() {
-        let mut rng = Lcg::new(0x10c1c_aaaa);
+        let mut rng = Lcg::new(0x0001_0c1c_aaaa);
         for nbits in [8u32, 16, 32, 64] {
             let m = get_mask(nbits);
             for _ in 0..200 {

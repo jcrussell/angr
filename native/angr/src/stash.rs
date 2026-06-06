@@ -559,7 +559,7 @@ mod tests {
         let mgr = StashManager::new();
         let counts = mgr.counts();
         assert_eq!(counts.len(), 7);
-        for (_, &count) in &counts {
+        for &count in counts.values() {
             assert_eq!(count, 0);
         }
     }

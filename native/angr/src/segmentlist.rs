@@ -322,9 +322,8 @@ mod tests {
 
         let mut it = SegmentListIter::snapshot(&sl);
         let collected: Vec<_> = std::iter::from_fn(|| {
-            it.segments.get(it.idx).cloned().map(|seg| {
+            it.segments.get(it.idx).cloned().inspect(|_seg| {
                 it.idx += 1;
-                seg
             })
         })
         .collect();

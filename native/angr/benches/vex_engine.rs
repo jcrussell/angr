@@ -622,7 +622,7 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
     // before switching. The hot-cache fast path should fire on every
     // query after the first per state.
     let batched_order: Vec<usize> = (0..n_states)
-        .flat_map(|i| std::iter::repeat(i).take(n_queries / n_states))
+        .flat_map(|i| std::iter::repeat_n(i, n_queries / n_states))
         .collect();
 
     group.bench_function("push_pop_per_state_batched", |bench| {

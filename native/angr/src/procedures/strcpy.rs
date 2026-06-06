@@ -160,7 +160,7 @@ mod tests {
         // Source string
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
         // Destination buffer
-        state.map_memory_data(0x2000, &vec![0u8; 16], Permission::RWX);
+        state.map_memory_data(0x2000, &[0u8; 16], Permission::RWX);
 
         let proc = NativeStrcpy;
         let result = proc
