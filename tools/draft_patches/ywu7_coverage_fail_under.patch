@@ -1,0 +1,68 @@
+Subject: ci: enforce coverage minimum via tool.coverage.report.fail_under
+
+Adds a PR-blocking gate so coverage cannot silently drop below
+baseline. Drives `[tool.coverage.report].fail_under` from
+pyproject.toml so the value can be tuned without re-touching the
+workflow. Replaces the per-shard exit-code swallow workaround
+with an aggregate `coverage combine` + `coverage report
+--fail-under` check in the Report job — that placement is
+necessary because each individual shard only sees ~10% of the
+test corpus and would always fall under any non-trivial
+threshold on its own.
+
+Placeholder: `TBD-PY-FLOOR` — the chosen Python coverage gate.
+The recommended value is `floor(measured_baseline_pct - 2)` to
+allow 2pp of noise. See `tools/draft_patches/ywu7_coverage_fail_under_RUNBOOK.md`
+for the measurement workflow (depends on angr-439q landing first).
+
+Prepared against HEAD 878ae6b40 (rust-symex branch).
+
+bd: angr-ywu7 (parent), angr-zlzw (slice)
+
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -211,6 +211,7 @@
+ [tool.coverage.report]
+ show_missing = true
+ skip_covered = true
++fail_under = TBD-PY-FLOOR
+ exclude_lines = [
+   "if TYPE_CHECKING:",
+   "if __name__ == .__main__.:"
+diff --git a/.github/workflows/coverage.yml b/.github/workflows/coverage.yml
+--- a/.github/workflows/coverage.yml
++++ b/.github/workflows/coverage.yml
+@@ -72,7 +72,7 @@
+           source .venv/bin/activate
+           pytest -vv \
+             -n auto --forked --splits 10 --group ${{ matrix.runner_id }} --splitting-algorithm=least_duration \
+-            --cov=angr --cov=tests --cov-report=xml \
++            --cov=angr --cov=tests --cov-report=xml --cov-report= \
+             --junitxml=junit.xml -o junit_family=legacy \
+             --store-durations --clean-durations --durations-path=test_durations.json \
+             || [[ $? -lt 2 ]]  # Accept success and test failures, fail on infrastructure problems (exit codes >1)
+@@ -90,6 +90,7 @@
+             ./coverage.xml
+             ./coverage-native.xml
+             ./test_durations.json
++            ./.coverage*
+             ./*.profraw
+
+   test_rust:
+@@ -152,6 +152,15 @@
+           echo "Generating report..."
+           llvm-cov-20 report ./angr/rustylib*.so -instr-profile=default.profdata --sources $(find native -name "*.rs")
+           llvm-cov-20 export ./angr/rustylib*.so -instr-profile=default.profdata --sources $(find native -name "*.rs") --format=lcov > lcov-py.info
++      - name: Enforce Python coverage minimum
++        run: |
++          source .venv/bin/activate
++          # Combine the per-shard .coverage data files emitted by the test job.
++          # `coverage combine` consumes the inputs (deletes them after merge);
++          # the aggregate is written to ./.coverage.
++          python -m coverage combine $(find results -name '.coverage*' -print)
++          # fail_under is sourced from pyproject.toml [tool.coverage.report].
++          python -m coverage report
+       - name: Collect results
+         id: files
+         run: |
