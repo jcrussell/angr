@@ -15224,7 +15224,7 @@ class TestEdgeCases:
 
     @pytest.mark.parametrize("option_name", [
         "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
-        "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
+        "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS",
     ])
     def test_action_tracking_options_raise_at_construction(
         self, fauxware_project, option_name,
@@ -15233,7 +15233,10 @@ class TestEdgeCases:
         RustExplorationManager construction. Rust does not emit SimAction
         records, so silently honoring these would hand the user an empty
         ``state.history.actions`` stream — a hard-to-diagnose divergence.
-        Acceptance for angr-xghv.
+        Acceptance for angr-xghv. TRACK_ACTION_HISTORY was demoted
+        from this list in angr-fkvt (2026-06-06) — it is a metadata
+        flag consulted only by preconstrainer.py and does not by itself
+        gate action recording; see test_track_action_history_does_not_raise.
         """
         from angr.exploration import RustExplorationManager
 
@@ -15247,6 +15250,43 @@ class TestEdgeCases:
         assert "Python engine" in msg, (
             f"error must point users to the Python engine: {msg!r}"
         )
+
+    def test_track_action_history_does_not_raise(self, fauxware_project):
+        """TRACK_ACTION_HISTORY alone must not raise — it is a metadata
+        flag consulted by preconstrainer.py (and historically by
+        successors.py, now commented out) but does not gate action
+        recording itself. The TRACK_*_ACTIONS family is the actual
+        recording switch and remains raise-listed.
+
+        Acceptance for angr-fkvt: unblocks insomnihack_aeg (angr-86c4)
+        whose solve.py sets ``{REVERSE_MEMORY_NAME_MAP,
+        TRACK_ACTION_HISTORY}``. Both engines produce an empty
+        ``state.history.actions`` when only this option is set, so
+        downstream code that consults the flag (preconstrainer's
+        clear/restore pattern) behaves identically.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.TRACK_ACTION_HISTORY},
+        )
+        # Construction (and the entry-state copy that happens in
+        # _add_rust_state) must not raise.
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # The option must reach the proxy so preconstrainer's standard
+        # `o.X in self.state.options` check sees it. Use the initial
+        # active state — fauxware deadends quickly so we check before
+        # stepping rather than after.
+        proxy = mgr.active[0]
+        assert angr.sim_options.TRACK_ACTION_HISTORY in proxy.options, (
+            "option must be preserved on the proxy so preconstrainer can "
+            "see it via the standard `o.X in self.state.options` check"
+        )
+
+        # And a step doesn't raise either (the option has no Rust-side
+        # action-recording wiring; stepping is a no-op w.r.t. the option).
+        mgr.step()
 
     def test_action_tracking_options_raise_lists_all(self, fauxware_project):
         """When multiple TRACK_*_ACTIONS options are set, the error lists

@@ -320,9 +320,22 @@ _REJECTED_OPTION_NAMES = frozenset({
 # UNSUPPORTED_BYPASS_ZERO_DEFAULT and UNSUPPORTED_FORCE_CONCRETIZE only
 # affect what value Python substitutes when its bypass fires, so they
 # are also honored transparently through the same path.
+# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (demoted angr-fkvt,
+# 2026-06-06). Unlike its TRACK_*_ACTIONS siblings, it does not gate
+# action recording — angr's heavy/actions.py only consults
+# TRACK_REGISTER_ACTIONS / TRACK_MEMORY_ACTIONS to populate
+# state.history.recent_events. TRACK_ACTION_HISTORY's only consumer in
+# current angr is preconstrainer.py (state_plugins/preconstrainer.py:98)
+# which uses it as a metadata flag — temporarily clears it during
+# preconstraint to suppress action recording, then restores. Under Rust
+# that clear/restore is a vacuous no-op (Rust never records actions
+# regardless) so honoring the option silently is safe. Unblocks AEG
+# workloads (insomnihack_aeg, angr-86c4) which set the option but never
+# inspect state.history.actions directly. The TRACK_*_ACTIONS family
+# remains raise-listed because those DO gate action recording.
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
-    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
+    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS",
     "CONCRETIZE",
     "CONSERVATIVE_WRITE_STRATEGY",
     "DO_RET_EMULATION",
@@ -3174,7 +3187,7 @@ class RustExplorationManager(
                               dst_state: "angr.SimState") -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
         ENABLE_NX / NO_IP_CONCRETIZATION / NO_SYMBOLIC_JUMP_RESOLUTION /
-        KEEP_IP_SYMBOLIC options from src to dst.
+        KEEP_IP_SYMBOLIC / TRACK_ACTION_HISTORY options from src to dst.
 
         Options are mirrored — added when src has them, removed when src
         doesn't. The remove half matters for the in-memory init cache: a
@@ -3185,7 +3198,11 @@ class RustExplorationManager(
         ENABLE_NX → `set_enforce_nx(True)`, NO_IP_CONCRETIZATION →
         `set_no_ip_concretization(True)`, NO_SYMBOLIC_JUMP_RESOLUTION →
         `set_no_symbolic_jump_resolution(True)`, and KEEP_IP_SYMBOLIC →
-        `set_keep_ip_symbolic(True)`.
+        `set_keep_ip_symbolic(True)`. TRACK_ACTION_HISTORY is mirrored
+        for preconstrainer.py compatibility (angr-fkvt, 2026-06-06) — it
+        is a metadata flag consulted by preconstrainer's clear/restore
+        pattern and must survive the init cache round-trip so AEG
+        workloads see it on the seed state.
         """
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
@@ -3201,6 +3218,7 @@ class RustExplorationManager(
                 o.NO_IP_CONCRETIZATION,
                 o.NO_SYMBOLIC_JUMP_RESOLUTION,
                 o.KEEP_IP_SYMBOLIC,
+                o.TRACK_ACTION_HISTORY,
             ):
                 if opt in src_state.options:
                     dst_state.options.add(opt)
