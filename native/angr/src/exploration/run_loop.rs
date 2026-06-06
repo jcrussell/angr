@@ -627,6 +627,9 @@ impl RustExplorationManager {
                                     );
                                 }
                             }
+                            if reason.contains(VECRET_GSPTR_REASON) {
+                                self.vecret_gsptr_fallback_count += 1;
+                            }
                             ExplorationEvent::need_python_vex(
                                 state_id,
                                 *addr,

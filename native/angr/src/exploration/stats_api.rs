@@ -98,6 +98,10 @@ impl RustExplorationManager {
         dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
         dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
         dict.set_item(
+            "vecret_gsptr_fallback_count",
+            self.vecret_gsptr_fallback_count,
+        )?;
+        dict.set_item(
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,
         )?;
@@ -127,6 +131,10 @@ impl RustExplorationManager {
         }
         dict.set_item("addresses", addrs)?;
         dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
+        dict.set_item(
+            "vecret_gsptr_fallback_count",
+            self.vecret_gsptr_fallback_count,
+        )?;
         dict.set_item(
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,

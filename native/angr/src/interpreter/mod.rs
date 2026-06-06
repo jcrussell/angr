@@ -259,6 +259,15 @@ define_execution_stats! {
 /// `PythonVEXFallback` events and bump a dedicated visibility counter.
 pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 
+/// Reason marker used by the VECRET/GSPTR fallback site
+/// (`expressions.rs::eval_expr_with_callbacks`). The manager scans for this
+/// substring in `PythonVEXFallback` reasons and bumps
+/// `vecret_gsptr_fallback_count` so we can measure how often the corpus
+/// actually exercises these vector-call/global-state pointer holders.
+/// See bd `angr-2iow` — prevalence drives whether to implement natively or
+/// document as a corpus-absent limitation.
+pub const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
+
 /// How an error variant should be handled by the top-level interpreter loop.
 ///
 /// Every [`CbExecutionError`] variant maps to one of these via

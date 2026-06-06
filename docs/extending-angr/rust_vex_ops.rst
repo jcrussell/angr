@@ -594,6 +594,32 @@ lands, prefer routing AES / SHA through SimProcedure hooks over
 adding native dispatch arms (the per-round implementations are
 large and Z3-hostile).
 
+Special expressions: VECRET / GSPTR
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``IRExpr::VECRET`` (vector-call return-value holder) and
+``IRExpr::GSPTR`` (guest-state pointer used by helper functions)
+are emitted by VEX only on dirty-helper call edges. The Rust
+interpreter routes both to a Python VEX fallback via
+``CbExecutionError::NeedPythonFallback`` rather than implementing
+native handlers
+(``native/angr/src/interpreter/expressions.rs::eval_expr_with_callbacks``).
+The error reason carries the shared ``VECRET_GSPTR_REASON`` marker
+from ``native/angr/src/interpreter/mod.rs``; the manager scans
+fallback reasons in ``exploration::run_loop`` and bumps
+``vecret_gsptr_fallback_count`` so future regressions are
+visible via ``mgr.stats()`` / ``mgr.get_fallback_stats()``.
+
+Prevalence (angr-2iow, 2026-06-06): zero across all
+fast-tier benches plus ``mma_howtouse``, ``securityfest_fairlight``,
+``google2016_unbreakable_1`` — the entire corpus reports
+``vecret_gsptr_fallback_count == 0`` and ``vex_fallback_count ==
+0``. The path is reachable in principle but inert under our
+workloads, so it stays a documented fallback rather than a
+native handler. Watch the counter on any new
+SIMD-call-heavy or kernel-helper bench (e.g. NEON intrinsic
+code, ARM TLS helpers) — non-zero readings re-open this work.
+
 Catching new placeholders
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -611,8 +637,8 @@ on a new workload:
 
 .. note::
 
-   *Last verified against commit* ``4215fe99b`` *on 2026-06-03*
-   (angr-1cnv). When you touch ``native/angr/src/vex/opcode_map.rs``
+   *Last verified against commit* ``2d97a5c68`` *on 2026-06-06*
+   (angr-2iow). When you touch ``native/angr/src/vex/opcode_map.rs``
    or ``native/angr/src/vex/ops.rs``, re-read the *Pipeline overview*,
    *parse_\* family pattern*, and *Unsupported op coverage matrix*
    sections and bump this footer to the new commit hash.

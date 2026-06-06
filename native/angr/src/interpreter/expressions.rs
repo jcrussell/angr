@@ -96,9 +96,13 @@ impl<'a> VEXInterpreter<'a> {
 
             IRExpr::VECRET | IRExpr::GSPTR => {
                 // P7 fix: Request Python fallback instead of failing
-                // These special expressions require Python's VEX handling
+                // These special expressions require Python's VEX handling.
+                // Reason string carries `VECRET_GSPTR_REASON` so
+                // `exploration::run_loop` can bump a per-category counter
+                // (angr-2iow prevalence measurement).
                 Err(CbExecutionError::NeedPythonFallback(format!(
-                    "special expr {:?} requires Python",
+                    "{} (special expr {:?} requires Python)",
+                    crate::interpreter::VECRET_GSPTR_REASON,
                     expr
                 )))
             }

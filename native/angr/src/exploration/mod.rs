@@ -25,7 +25,9 @@ use pyo3::types::{PyBytes, PyDict};
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VEXInterpreter};
+use crate::interpreter::{
+    DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON, VEXInterpreter,
+};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
@@ -427,6 +429,12 @@ pub struct RustExplorationManager {
     /// `DCAS_UNSUPPORTED_REASON`. Surfaced via `stats()` and
     /// `get_fallback_stats()` so DCAS-driven deadends are diagnosable.
     pub(crate) dcas_unsupported_count: u64,
+    /// Visibility counter for `IRExpr::VECRET`/`IRExpr::GSPTR` Python
+    /// fallbacks. Incremented alongside `vex_fallback_count` whenever the
+    /// reason carries `VECRET_GSPTR_REASON`. angr-2iow: prevalence drives
+    /// whether to implement these natively (non-zero) or downgrade to a
+    /// documented limitation (corpus-wide zero).
+    pub(crate) vecret_gsptr_fallback_count: u64,
     /// Total count of SimProcedure invocations that were dispatched to the
     /// Python `_handle_simprocedure_callback` (rather than handled natively).
     /// This includes: native handler missing, native handler returned `Err`,
@@ -520,6 +528,7 @@ impl RustExplorationManager {
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
+            vecret_gsptr_fallback_count: 0,
             simprocedure_python_fallback_count: 0,
             simprocedure_fallback_by_name: HashMap::new(),
             syscall_python_fallback_count: 0,

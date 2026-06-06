@@ -121,6 +121,22 @@ class TestRustExplorationManagerUnit:
         assert "dcas_unsupported_count" in fb
         assert fb["dcas_unsupported_count"] == 0
 
+    def test_vecret_gsptr_fallback_counter_exposed(self):
+        """angr-2iow: VECRET/GSPTR Python-fallback counter is wired through
+        stats() and get_fallback_stats(). Starts at zero on a fresh manager
+        and the reason marker is the shared `VECRET_GSPTR_REASON` constant
+        in `native/angr/src/interpreter/mod.rs`.
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        stats = mgr.stats()
+        assert "vecret_gsptr_fallback_count" in stats
+        assert stats["vecret_gsptr_fallback_count"] == 0
+
+        fb = mgr.get_fallback_stats()
+        assert "vecret_gsptr_fallback_count" in fb
+        assert fb["vecret_gsptr_fallback_count"] == 0
+
     def test_per_category_fallback_counters_exposed(self):
         """Per-category fallback counters (angr-md0m) appear in stats() and
         get_fallback_stats(). All start at zero on a fresh manager.
