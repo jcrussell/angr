@@ -464,7 +464,7 @@ Push/pop frame discipline
 
 The Rust engine never uses ``Z3_solver_push`` / ``Z3_solver_pop`` to
 inherit a parent state's frames across a fork. ``SymContext::fork``
-(``native/angr/src/symbolic/context.rs:3432``) constructs a child with
+(``native/angr/src/symbolic/context.rs:3739``) constructs a child with
 ``solver: Mutex::new(None)`` and ``push_level: 0``. The Z3 solver is
 re-built **lazily** on the child's first solver query
 (``z3_materialize_count``); the parent's accumulated assertions
@@ -628,7 +628,7 @@ Stride override (``ANGR_Z3_SIMPLIFY_STRIDE``)
 ``ANGR_Z3_SIMPLIFY_STRIDE`` via a ``OnceLock`` on first sample (same
 pattern as ``ANGR_Z3_TACTIC`` / ``ANGR_Z3_QFBV_THRESHOLD``). The const
 default ``SIMPLIFY_SAMPLE_STRIDE_DEFAULT = 64``
-(``native/angr/src/symbolic/context.rs:317``) applies when the env var
+(``native/angr/src/symbolic/context.rs:360``) applies when the env var
 is unset, empty, unparseable, or ``0`` — so production runs and the
 benchmark gate see exactly the previous behavior. The override is
 write-once per process: changing the env var after the first
@@ -1764,7 +1764,8 @@ vs. Python.
        symbol/zero on unsupported ops/dirty helpers/ccalls/syscalls.
      - (a) honored transparently. Rust's interpreter routes unsupported
        VEX features through ``FallbackStrategy::PythonCallback``
-       (``native/angr/src/interpreter/mod.rs:268-278``); Python re-runs
+       (``native/angr/src/interpreter/mod.rs:277-287``, variant at
+       ``:281``); Python re-runs
        the block, sees the option, and substitutes. Syscalls fall back
        to Python's syscall engine via ``_handle_syscall_callback``,
        which also honors ``BYPASS_UNSUPPORTED_SYSCALL``.
@@ -2040,10 +2041,10 @@ Workaround for unsupported events
 
 Registering a BP for an unsupported event raises
 ``NotImplementedError`` from ``RustInspectProxy._check_event``
-(``angr/exploration/rust_state_proxy.py:1094-1098``). A
+(``angr/exploration/rust_state_proxy.py:2702-2706``). A
 ``RustStateProxy`` constructed without a manager routes
 ``state.inspect.b(...)`` to ``_NoOpInspectProxy``
-(``angr/exploration/rust_state_proxy.py:966-988``), which raises the
+(``angr/exploration/rust_state_proxy.py:2574-2596``), which raises the
 same error on any registration attempt. The error message points at
 this document so callers can find these workarounds in order:
 
@@ -2961,7 +2962,7 @@ The memory-sync slow path runs every Callable because
 def at ``:3154``) short-circuits
 when ``state.addr`` is inside a real (non-loader) binary, so
 ``_mem_cache`` is never populated and ``_try_fast_memory_sync``
-(``rust_state_sync.py:229``) returns ``False``. Each manager then
+(``rust_state_sync.py:235``) returns ``False``. Each manager then
 re-iterates ``loader.all_objects``, re-loads every page via
 ``loader.memory.load``, and re-issues the FFI ``map_memory_batch`` from
 scratch. The loader-pages output of ``_extract_loader_pages``
@@ -3285,10 +3286,10 @@ The audit found one place where a Python caller's input is treated as
 a raw pointer with no validation:
 
 * ``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
-  Vec<usize>)`` (``exploration/state_api.rs:102``) iterates ``ptrs``
+  Vec<usize>)`` (``exploration/state_api.rs:100``) iterates ``ptrs``
   and calls ``unsafe { ctx.add_constraint_raw(*ptr) }`` whenever
   ``*ptr != 0``. The ``add_constraint_raw`` SAFETY contract
-  (``symbolic/context.rs:1524``) requires each pointer to be a valid,
+  (``symbolic/context.rs:1784``) requires each pointer to be a valid,
   live ``Z3_ast Bool`` in the active thread-local Z3 context. The
   function calls ``NonNull::new_unchecked(ptr as *mut _)`` followed by
   ``z3::ast::Ast::wrap`` — both UB if the pointer is anything other
@@ -3522,7 +3523,7 @@ The ``RustBV`` tree
 ~~~~~~~~~~~~~~~~~~~
 
 Each symbolic register / memory / object is a ``RustBV`` enum at
-``native/angr/src/symbolic/value.rs:400``:
+``native/angr/src/symbolic/value.rs:415``:
 
 * ``Concrete { value, width }`` — ``u128`` + ``u32``, no Z3 ref.
 * ``Symbolic { id, width, name, ast }`` — Z3 AST cached in the
@@ -4085,11 +4086,11 @@ alone — fixing any one in isolation does not enable parallelism.
 Secondary considerations
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1239``)
+- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1325``)
   mostly uses ``Mutex`` and ``Arc`` for its shared state (constraint
   stacks, push counters, lineage), but has two ``!Sync`` interior cells:
-  ``sat_cache: Cell<Option<bool>>`` (line 1286) and
-  ``model_cache: RefCell<Option<z3::Model>>`` (line 1289). These would
+  ``sat_cache: Cell<Option<bool>>`` (line 1372) and
+  ``model_cache: RefCell<Option<z3::Model>>`` (line 1375). These would
   need ``Mutex`` wrappers if ``SymContext`` ever needs ``Sync``. The
   ``z3::Model`` inside is also thread-bound, so the cell-conversion
   alone does not lift the Z3 thread-locality constraint.
@@ -4222,8 +4223,8 @@ type level; duplication is explicit via ``clone_ref`` (which performs
 a fresh ``Z3_inc_ref``).
 
 ``z3::ast::BV`` / ``z3::ast::Bool`` values held inside
-``RustBV::Symbolic`` (``symbolic/value.rs:435``) and
-``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1339``)
+``RustBV::Symbolic`` (``symbolic/value.rs:425``) and
+``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1357``)
 bind to the **active thread-local Z3 context** at construction time.
 While the manager and its states are alive on the thread that created
 them, the TLS context outlives every AST it owns. Drop ordering inside
