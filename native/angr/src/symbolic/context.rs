@@ -2152,7 +2152,7 @@ impl SymContext {
         // v == 0: asserting False makes solver UNSAT — still add it
         Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
-        // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
+        // avoiding ITE(cmp, BV(1,1), BV(0,1)).eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
         // angr-1joc measurement: sampled simplify-skip check.
         sample_simplify_skip(&constraint);
@@ -4721,7 +4721,7 @@ mod tests {
             solver.push();
             solver.assert(&{
                 let bv_x = z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
-                bv_x._eq(&z3::ast::BV::from_u64(42, 8))
+                bv_x.eq(&z3::ast::BV::from_u64(42, 8))
             });
             let r = solver.check();
             solver.pop(1);
@@ -4841,7 +4841,7 @@ mod tests {
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_x", 8);
         let mk_frame = |is_true: bool, val: u64| {
-            ScopeFrame::new(is_true, bv_x._eq(&z3::ast::BV::from_u64(val, 8)))
+            ScopeFrame::new(is_true, bv_x.eq(&z3::ast::BV::from_u64(val, 8)))
         };
 
         // Add an initial frame (simulates a pre-existing per-state
@@ -4880,7 +4880,7 @@ mod tests {
         ctx.set_lineage_for_testing(Arc::clone(&lin));
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_nested_x", 8);
-        let mk_frame = |val: u64| ScopeFrame::new(true, bv_x._eq(&z3::ast::BV::from_u64(val, 8)));
+        let mk_frame = |val: u64| ScopeFrame::new(true, bv_x.eq(&z3::ast::BV::from_u64(val, 8)));
 
         // outer save (depth=0), add 1 frame, inner save (depth=1), add 2,
         // pop -> truncate to 1, pop -> truncate to 0.

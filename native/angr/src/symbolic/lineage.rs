@@ -515,7 +515,7 @@ mod tests {
     }
 
     fn eq_bv_const(bv: &z3::ast::BV, value: u64) -> Bool {
-        bv._eq(&z3::ast::BV::from_u64(value, bv.get_size()))
+        bv.eq(&z3::ast::BV::from_u64(value, bv.get_size()))
     }
 
     /// Frame ids are unique within a single run.

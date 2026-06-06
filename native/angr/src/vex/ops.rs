@@ -5182,7 +5182,7 @@ mod tests {
 
         // Constrain: sum's IEEE bits == bits(5.0).
         let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-        let eq = sum.to_z3_ast()._eq(&five.to_z3_ast());
+        let eq = sum.to_z3_ast().eq(&five.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after FAdd symbolic constraint");
 
@@ -5205,7 +5205,7 @@ mod tests {
         let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone(), &ctx).unwrap();
 
         let four = RustBV::concrete(4.0f64.to_bits() as u128, 64);
-        let eq = sqrt_x.to_z3_ast()._eq(&four.to_z3_ast());
+        let eq = sqrt_x.to_z3_ast().eq(&four.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after FSqrt symbolic constraint");
 
@@ -5263,7 +5263,7 @@ mod tests {
         // Constrain low 32 bits of result to bits(5.0).
         let res_lo = result.extract(31, 0, &ctx);
         let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-        let eq = res_lo.to_z3_ast()._eq(&five.to_z3_ast());
+        let eq = res_lo.to_z3_ast().eq(&five.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(
             ctx.is_sat(),
@@ -5281,7 +5281,7 @@ mod tests {
         // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
         let upper_in = xmm0.extract(127, 32, &ctx);
         let upper_out = result.extract(127, 32, &ctx);
-        let eq_upper = upper_in.to_z3_ast()._eq(&upper_out.to_z3_ast());
+        let eq_upper = upper_in.to_z3_ast().eq(&upper_out.to_z3_ast());
         ctx.add_constraint(eq_upper);
         assert!(ctx.is_sat(), "expected upper-bits passthrough to hold");
     }
@@ -5298,7 +5298,7 @@ mod tests {
 
         let res_lo = result.extract(31, 0, &ctx);
         let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
-        let eq = res_lo.to_z3_ast()._eq(&four.to_z3_ast());
+        let eq = res_lo.to_z3_ast().eq(&four.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(
             ctx.is_sat(),
@@ -5331,7 +5331,7 @@ mod tests {
 
         let res_lo = result.extract(31, 0, &ctx);
         let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-        let eq = res_lo.to_z3_ast()._eq(&five.to_z3_ast());
+        let eq = res_lo.to_z3_ast().eq(&five.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after VFMaxS == 5.0");
 
@@ -5359,7 +5359,7 @@ mod tests {
 
         let res_lo = result.extract(31, 0, &ctx);
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
-        let eq = res_lo.to_z3_ast()._eq(&one.to_z3_ast());
+        let eq = res_lo.to_z3_ast().eq(&one.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after VFMinS == 1.0");
 
@@ -5388,7 +5388,7 @@ mod tests {
 
         let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
         let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
-        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        let eq = result.to_z3_ast().eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT for round(-2.5)==-3.0");
 
@@ -5412,7 +5412,7 @@ mod tests {
 
         let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
         let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
-        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        let eq = result.to_z3_ast().eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT for round(2.5)==3.0");
 
@@ -5501,7 +5501,7 @@ mod tests {
         let result =
             VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm.clone(), one, ten, &ctx).unwrap();
         let target = RustBV::concrete(0x3DCCCCCC, 32);
-        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        let eq = result.to_z3_ast().eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT for div(1,10) == 0x3DCCCCCC");
 
@@ -5850,7 +5850,7 @@ mod tests {
 
         // Constrain shift == 4.
         let four = RustBV::concrete(4, 8);
-        let eq = shift.to_z3_ast()._eq(&four.to_z3_ast());
+        let eq = shift.to_z3_ast().eq(&four.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
 
@@ -5894,7 +5894,7 @@ mod tests {
         .unwrap();
 
         let eight = RustBV::concrete(8, 8);
-        let eq = shift.to_z3_ast()._eq(&eight.to_z3_ast());
+        let eq = shift.to_z3_ast().eq(&eight.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after constraining shift == 8");
 
@@ -5938,7 +5938,7 @@ mod tests {
         .unwrap();
 
         let four = RustBV::concrete(4, 8);
-        let eq = shift.to_z3_ast()._eq(&four.to_z3_ast());
+        let eq = shift.to_z3_ast().eq(&four.to_z3_ast());
         ctx.add_constraint(eq);
         assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
 
@@ -6230,7 +6230,7 @@ mod tests {
             let twice = VEXOps::unop(op, once, &ctx).unwrap();
             // Assert there is no satisfying assignment where twice != arg.
             ctx.push();
-            ctx.add_constraint(twice.to_z3_ast()._eq(&arg.to_z3_ast()).not());
+            ctx.add_constraint(twice.to_z3_ast().eq(&arg.to_z3_ast()).not());
             assert!(
                 !ctx.is_sat(),
                 "double-apply must equal identity for sub_width={} elem={:?} count={}",
@@ -6280,7 +6280,7 @@ mod tests {
         );
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VReverse 32sIn64_x2 must match the Python reference Concat pattern"
@@ -6320,7 +6320,7 @@ mod tests {
         // Constrain result == [7, 7, 7, 7]; this only requires l <= 7 per lane,
         // so the constraint must remain SAT.
         let exp = RustBV::concrete(rv, 128);
-        ctx.add_constraint(result.to_z3_ast()._eq(&exp.to_z3_ast()));
+        ctx.add_constraint(result.to_z3_ast().eq(&exp.to_z3_ast()));
         assert!(ctx.is_sat(), "expected SAT after constraining max == 7");
     }
 
@@ -6571,7 +6571,7 @@ mod tests {
         let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
         ctx.add_constraint(
             l.to_z3_ast()
-                ._eq(&RustBV::concrete(lv_target, 128).to_z3_ast()),
+                .eq(&RustBV::concrete(lv_target, 128).to_z3_ast()),
         );
 
         let result = VEXOps::binop(
@@ -7085,7 +7085,7 @@ mod tests {
         assert_eq!(res.width(), 128);
         let lo32 = res.extract(31, 0, &ctx);
         let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-        ctx.add_constraint(lo32.to_z3_ast()._eq(&true_mask.to_z3_ast()));
+        ctx.add_constraint(lo32.to_z3_ast().eq(&true_mask.to_z3_ast()));
         assert!(
             ctx.is_sat(),
             "expected SAT after FCmpScalarLane Eq mask=all1s"
@@ -7149,7 +7149,7 @@ mod tests {
         let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five, &ctx).unwrap();
         assert_eq!(res.width(), 32);
         let want = RustBV::concrete(0x01, 32);
-        ctx.add_constraint(res.to_z3_ast()._eq(&want.to_z3_ast()));
+        ctx.add_constraint(res.to_z3_ast().eq(&want.to_z3_ast()));
         assert!(ctx.is_sat(), "expected SAT for FComCC(x, 5.0) == LT");
         let model_x = ctx.eval(&x).expect("eval(x) None");
         let xf = f64::from_bits(model_x as u64);
@@ -7403,7 +7403,7 @@ mod tests {
         assert_eq!(res.width(), 128);
         let lane0_mask = res.extract(31, 0, &ctx);
         let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-        ctx.add_constraint(lane0_mask.to_z3_ast()._eq(&true_mask.to_z3_ast()));
+        ctx.add_constraint(lane0_mask.to_z3_ast().eq(&true_mask.to_z3_ast()));
         assert!(ctx.is_sat(), "expected SAT for lane0 LT");
         let model = ctx.eval(&l).expect("eval(l) None");
         let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
@@ -7991,7 +7991,7 @@ mod tests {
         )
         .unwrap();
         let target = RustBV::concrete(0x4242_4242_4242_4242u128, 64);
-        ctx.add_constraint(res.to_z3_ast()._eq(&target.to_z3_ast()));
+        ctx.add_constraint(res.to_z3_ast().eq(&target.to_z3_ast()));
         assert!(ctx.is_sat(), "expected SAT for dup to 0x42 broadcast");
         let model_arg = ctx.eval(&arg).expect("eval(arg) None");
         assert_eq!(model_arg, 0x42);
@@ -8020,13 +8020,13 @@ mod tests {
         ctx.add_constraint(
             out_lane0
                 .to_z3_ast()
-                ._eq(&RustBV::concrete(127, 8).to_z3_ast()),
+                .eq(&RustBV::concrete(127, 8).to_z3_ast()),
         );
         let src_lane0 = arg.extract(15, 0, &ctx);
         ctx.add_constraint(
             src_lane0
                 .to_z3_ast()
-                ._eq(&RustBV::concrete(200, 16).to_z3_ast()),
+                .eq(&RustBV::concrete(200, 16).to_z3_ast()),
         );
         assert!(
             ctx.is_sat(),
@@ -8055,7 +8055,7 @@ mod tests {
         assert_eq!(res.width(), 8);
         // Constrain result to 0x66 → solver must pick idx == 5.
         let target = RustBV::concrete(0x66, 8);
-        ctx.add_constraint(res.to_z3_ast()._eq(&target.to_z3_ast()));
+        ctx.add_constraint(res.to_z3_ast().eq(&target.to_z3_ast()));
         assert!(ctx.is_sat(), "expected SAT for lane==0x66");
         let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
         // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
@@ -8258,7 +8258,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VQAdd 8Sx8 must match the claripy QAdd reference for all 64-bit inputs"
@@ -8557,7 +8557,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VPwAdd 16x4 must match the spec-replay reference for all 64-bit inputs"
@@ -8595,7 +8595,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VPwAddL 16Sx4 must match the spec-replay sign-extend reference"
@@ -8637,7 +8637,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VPwMin 16Sx4 must match the spec-replay signed-min reference"
@@ -8906,7 +8906,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VAvg 16Ux4 must match the unsigned spec-replay reference"
@@ -8947,7 +8947,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VAvg 8Sx8 must match the signed spec-replay reference"
@@ -9245,7 +9245,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VCnt 8x8 must match the spec-replay reference"
@@ -9289,7 +9289,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VClz 8x8 must match the spec-replay reference"
@@ -9339,7 +9339,7 @@ mod tests {
         let py = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
             "VPolynomialMul 8x8 must match the spec-replay reference"
@@ -9630,7 +9630,7 @@ mod tests {
         }
         let py = VEXOps::concat_le_elements(lanes, &ctx);
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         let universal = !ctx.is_sat();
         ctx.pop();
         assert!(
@@ -9668,7 +9668,7 @@ mod tests {
         }
         let py = VEXOps::concat_le_elements(lanes, &ctx);
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         let universal = !ctx.is_sat();
         ctx.pop();
         assert!(
@@ -9989,7 +9989,7 @@ mod tests {
         }
         let py = VEXOps::concat_le_elements(lanes, &ctx);
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         let universal = !ctx.is_sat();
         ctx.pop();
         assert!(
@@ -10043,7 +10043,7 @@ mod tests {
         }
         let py = VEXOps::concat_le_elements(lanes, &ctx);
         ctx.push();
-        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        ctx.add_constraint(got.to_z3_ast().eq(&py.to_z3_ast()).not());
         let universal = !ctx.is_sat();
         ctx.pop();
         assert!(
