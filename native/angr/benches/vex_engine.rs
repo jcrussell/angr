@@ -581,13 +581,9 @@ fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
     let mut paths = Vec::with_capacity(n_leaves);
     for leaf in 0..n_leaves {
         let mut path = ancestor.clone();
-        for lvl in 0..depth {
+        for (lvl, (lf, rf)) in level_frames.iter().enumerate() {
             let side = (leaf >> (depth - 1 - lvl)) & 1;
-            let frame = if side == 0 {
-                &level_frames[lvl].0
-            } else {
-                &level_frames[lvl].1
-            };
+            let frame = if side == 0 { lf } else { rf };
             path.push(frame.clone());
         }
         paths.push(path);
@@ -717,8 +713,8 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                     s
                 })
                 .collect();
-            for idx in 0..chain_paths.len() {
-                black_box(solvers[idx].check());
+            for solver in &solvers {
+                black_box(solver.check());
             }
         })
     });
@@ -739,8 +735,7 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
         bench.iter(|| {
             let solver = z3::Solver::new();
             let mut lin = SharedLineageSolver::new(solver);
-            for idx in 0..dfs_order_n {
-                let path = &dfs_paths[idx];
+            for path in &dfs_paths[..dfs_order_n] {
                 lin.with_solver(path, |s| black_box(s.check()));
             }
         })
@@ -758,8 +753,8 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                     s
                 })
                 .collect();
-            for idx in 0..dfs_order_n {
-                black_box(solvers[idx].check());
+            for solver in &solvers {
+                black_box(solver.check());
             }
         })
     });
