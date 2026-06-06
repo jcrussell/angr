@@ -2690,8 +2690,9 @@ Behavior on exhaustion
 * **Rust ``alloc::handle_alloc_error``** — defaults to aborting the
   process (``cargo`` release profile). ``RustOomError`` exists in the
   exception hierarchy but is currently only raised by an explicit
-  test hook (``engine.rs:312``); real Rust allocation failures abort
-  rather than propagate.
+  test hook (``engine.rs::_raise_typed_test_error`` def ``:319``,
+  ``oom`` arm ``:342``); real Rust allocation failures abort rather
+  than propagate.
 
 Recovery contract
 ~~~~~~~~~~~~~~~~~
@@ -2757,16 +2758,18 @@ variant, this table is the first thing to update.
        block bounds).
      - ``errors.rs:75-77``; raised from
        ``CbExecutionError::InvalidIR(reason)`` mapped at
-       ``engine.rs:33``.
+       ``engine.rs::cb_execution_error_to_typed`` (def ``:31``,
+       InvalidIR arm ``:33``).
    * - ``RustUnsupportedSyscallError``
      - A syscall handler that ran in Rust hit a number / name / arch
        combination it does not implement. Reserved class — the
        syscall fast path currently routes unimplemented numbers
        through the Python fallback (``UnsupportedFeature``), so this
        class is exposed for forward-compatibility and exercised by
-       the ``inject_test_error_kind("unsupported_syscall", ...)``
-       hook (``engine.rs:301``). No production trigger in the
-       current code.
+       the ``_raise_typed_test_error("unsupported_syscall", ...)``
+       hook (``engine.rs::_raise_typed_test_error`` def ``:319``,
+       ``unsupported_syscall`` arm ``:331``). No production trigger
+       in the current code.
      - ``errors.rs:78-84``; production sites land here when an
        upcoming Rust syscall handler chooses to raise rather than
        fall back to Python.
@@ -2776,14 +2779,16 @@ variant, this table is the first thing to update.
        the message.
      - ``errors.rs:86-87``; populated from ``OpError::UnsupportedNeon``,
        ``OpError::UnsupportedVectorOp``, ``OpError::UnsupportedVexOp``
-       at ``engine.rs:54-68``.
+       at ``engine.rs::op_error_to_typed`` (def ``:53``, arms ``:55-68``).
    * - ``RustZ3Error``
      - Z3 returned an error status (not ``Unknown`` — that collapses
        to UNSAT inside ``SymContext::is_sat``). Reserved class —
        solver hangs are bounded by ``solver_timeout_ms`` and the
        ``Unknown`` collapse, so this class is exposed for
        forward-compatibility and exercised only via the
-       ``inject_test_error_kind("z3", ...)`` hook (``engine.rs:311``).
+       ``_raise_typed_test_error("z3", ...)`` hook
+       (``engine.rs::_raise_typed_test_error`` def ``:319``, ``z3``
+       arm ``:341``).
      - ``errors.rs:89-90``.
    * - ``RustOomError``
      - Rust allocator returned a failure that the engine can
@@ -2793,8 +2798,9 @@ variant, this table is the first thing to update.
        release profile rather than raising this. Production sites
        land here when a Rust allocator hook chooses to propagate
        instead of abort. Currently only the
-       ``inject_test_error_kind("oom", ...)`` hook
-       (``engine.rs:312``) raises it.
+       ``_raise_typed_test_error("oom", ...)`` hook
+       (``engine.rs::_raise_typed_test_error`` def ``:319``, ``oom``
+       arm ``:342``) raises it.
      - ``errors.rs:92-93``.
 
 The ``RustExecError`` Rust enum is ``#[non_exhaustive]``
@@ -4182,7 +4188,8 @@ the lock.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``clear_ast_cache()`` (declared at ``native/angr/src/claripy_bridge.rs:423``,
-exposed to Python via ``native/angr/src/engine.rs:273``) atomically clears
+exposed to Python via ``native/angr/src/engine.rs::clear_ast_cache``
+(def ``:303``, registered ``:379``)) atomically clears
 all four thread-local caches in the bridge:
 
 - ``AST_CACHE`` (LRU, ``claripy_bridge.rs:154``)
