@@ -2091,7 +2091,8 @@ this document so callers can find these workarounds in order:
 
 3. **Use a coarser manager-level hook** when per-statement granularity
    is not required. ``RustExplorationManager.set_progress_callback``
-   (``angr/exploration/rust_manager.py:3105``) fires every
+   (``angr/exploration/rust_manager.py::set_progress_callback``,
+   def at ``:3815``) fires every
    ``interval_steps`` steps with stash counts and elapsed time, and
    the post-exploration stashes (``mgr.found`` /
    ``mgr.found_proxies()``) expose every result for inspection
@@ -2950,15 +2951,16 @@ Per-Callable Rust extras therefore sum to ~58 ms, and 45 × 58 ms ≈
 2.6 s — consistent with the observed 3.0 s gap over Python.
 
 The memory-sync slow path runs every Callable because
-``_run_python_init_if_needed`` (``rust_manager.py:2317``) short-circuits
+``_run_python_init_if_needed`` (``rust_manager.py::_run_python_init_if_needed``,
+def at ``:3154``) short-circuits
 when ``state.addr`` is inside a real (non-loader) binary, so
 ``_mem_cache`` is never populated and ``_try_fast_memory_sync``
 (``rust_state_sync.py:229``) returns ``False``. Each manager then
 re-iterates ``loader.all_objects``, re-loads every page via
 ``loader.memory.load``, and re-issues the FFI ``map_memory_batch`` from
 scratch. The loader-pages output of ``_extract_loader_pages``
-(``rust_manager.py:441``) is a pure function of the loader state and is
-identical for all 45 Callables.
+(``rust_manager.py::_extract_loader_pages``, def at ``:510``) is a pure
+function of the loader state and is identical for all 45 Callables.
 
 **Resolution (angr-bzsc 2026-05-19, angr-b58a 2026-05-20).** Two
 follow-up fixes landed against the 36.7 ms per-Callable Memory sync:
@@ -3286,7 +3288,8 @@ a raw pointer with no validation:
   ``z3::ast::Ast::wrap`` — both UB if the pointer is anything other
   than a valid Z3 AST.
 
-  The intended caller (``rust_manager.py:2876``) always pairs
+  The intended caller (``rust_manager.py::_add_rust_state`` at
+  ``:3576``, def at ``:3452``) always pairs
   ``import_z3_constraint_ptrs`` with a prior
   ``export_z3_constraint_ptrs(old_state_id)`` on the same process and
   Z3 context, so the production trust model is sound. But the method
@@ -3649,7 +3652,7 @@ serialization speed matters (op trees with concrete-byte
 whenever any of the ``RustBV`` enum, ``MemoryPage`` layout, or
 ``RustSimState`` field set changes — same discipline as the disk
 init cache's ``_RUST_CACHE_VERSION`` (``angr/exploration/
-rust_manager.py:160``).
+rust_manager.py::_RUST_CACHE_VERSION``, currently at ``:176``).
 
 Cost estimates
 ~~~~~~~~~~~~~~
@@ -4221,7 +4224,8 @@ the manager is safe (manager → ``StashManager`` → ``RustSimState`` →
 ``SymContext`` → Z3 AST handles).
 
 Cross-process exit is handled by ``atexit.register(reset_shared_z3_context)``
-(registered in ``angr/exploration/rust_manager.py:311``), which swaps
+(registered in ``angr/exploration/rust_manager.py`` at module-import time,
+currently at ``:372``), which swaps
 the Rust TLS context to a fresh Rust-owned context **before** Python
 frees its shared Z3 context. This prevents the manager's surviving
 state from dec_ref'ing into a freed Python-owned context.
