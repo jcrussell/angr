@@ -1,0 +1,31 @@
+Subject: [archinfo] AArch64 BE: thread instruction_endness + add aarch64eb/aarch64be/arm64eb/arm64be aliases
+
+Prepared offline 2026-06-06 against archinfo 9.2.221; smoke-tested
+against the same release. See tools/upstream_patches/README.md in
+the angr repo for the apply-and-PR workflow.
+
+diff --git a/archinfo/arch_aarch64.py b/archinfo/arch_aarch64.py
+--- a/archinfo/arch_aarch64.py
++++ b/archinfo/arch_aarch64.py
+@@ -21,7 +21,8 @@
+ 
+ class ArchAArch64(Arch):
+     def __init__(self, endness=Endness.LE):
+-        super().__init__(endness)
++        instruction_endness = Endness.BE if endness == Endness.BE else Endness.LE
++        super().__init__(endness, instruction_endness=instruction_endness)
+         if endness == Endness.BE:
+             self.pcode_id = "AARCH64:BE:64:v8A"
+             self.ida_processor = "armb"
+@@ -554,4 +555,11 @@
+     ]
+ 
+ 
++# BE alias patterns must come first — arch_from_id iterates in
++# registration order and breaks on first match. With this ordering,
++# `aarch64eb` / `aarch64be` / `arm64eb` / `arm64be` route to the
++# BE constructor; `aarch64` / `arm64` continue to fall through to
++# the Endness.ANY pattern below. Mirrors the ARM precedent that
++# routes `armeb` / `armbe` to ArchARM(Endness.BE).
++register_arch([r".*aarch64eb|.*aarch64be|.*arm64eb|.*arm64be"], 64, Endness.BE, ArchAArch64)
+ register_arch([r".*arm64.*|.*aarch64*"], 64, Endness.ANY, ArchAArch64)
