@@ -39,24 +39,28 @@ def _resolve_examples_dir(example_name, examples_dir):
 
 # Catalog of tested examples with expected behavior
 # tier: "fast" (<5s), "medium" (5-30s), "slow" (30-120s), "very_slow" (>120s)
+# Thresholds are based on Rust engine time (the engine under optimization);
+# Python-only benches (rust_ok=None) are classified by Python time.
+# Tier is consumed by --suite filter (run_single.py) and by property_fuzzer.py
+# (which skips slow/very_slow); refresh when rust_time drifts across thresholds.
 EXAMPLE_CATALOG = {
     # === Core benchmark suite (fast, always correct) ===
     "fauxware":                {"tier": "fast",    "rust_ok": True,  "notes": "SimProcedure callbacks"},
     "defcamp_r100":            {"tier": "fast",    "rust_ok": True,  "notes": "Basic find/avoid"},
     "ais3_crackme":            {"tier": "fast",    "rust_ok": True,  "notes": "Symbolic argv, state forking"},
-    "sym-write":               {"tier": "medium",  "rust_ok": True,  "notes": "Symbolic writes, callable predicates"},
+    "sym-write":               {"tier": "fast",    "rust_ok": True,  "notes": "Symbolic writes, callable predicates (rust 0.44s post-perf-wave; was medium tier pre-2026)"},
     "securityfest_fairlight":  {"tier": "medium",  "rust_ok": True,  "notes": "Heavy VEX interpretation"},
     "flareon2015_5":           {"tier": "medium",   "rust_ok": True,  "notes": "Complex symbolic memory"},
     "flareon2015_10":          {"tier": "medium",  "rust_ok": True,  "notes": "Callable step_func, pruning"},
-    "ekopartyctf2016_rev250":  {"tier": "medium",  "rust_ok": True,  "notes": "Deep constraint solving"},
-    "csaw_wyvern":             {"tier": "medium",  "rust_ok": True,  "notes": "Linear constraints"},
+    "ekopartyctf2016_rev250":  {"tier": "fast",    "rust_ok": True,  "notes": "Deep constraint solving (rust 2.0s post-perf-wave; was medium tier pre-2026)"},
+    "csaw_wyvern":             {"tier": "fast",    "rust_ok": True,  "notes": "Linear constraints (rust 0.94s post-perf-wave; was medium tier pre-2026)"},
     # === Extended examples ===
-    "codegate_2017-angrybird": {"tier": "medium",  "rust_ok": True,  "notes": "LAZY_SOLVES, manual state init"},
+    "codegate_2017-angrybird": {"tier": "fast",    "rust_ok": True,  "notes": "LAZY_SOLVES, manual state init (rust 2.8s post-perf-wave; was medium tier pre-2026)"},
     "google2016_unbreakable_0":{"tier": "fast",    "rust_ok": True,  "notes": "Basic constraint solving"},
     "google2016_unbreakable_1":{"tier": "fast",    "rust_ok": True,  "notes": "Multi-step constraints"},
     # === New benchmark candidates (untested with Rust engine) ===
     "sharif7_rev50":           {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
-    "defcon2016quals_baby-re": {"tier": "medium",  "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult): scanf hooks, baseline_timings Py 1.455s Rust 0.722s (~2x faster than Python). Catalog previously claimed Rust 28s (slow) — pre-perf-wave note replaced."},
+    "defcon2016quals_baby-re": {"tier": "fast",    "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult, angr-24vr): scanf hooks, baseline_timings Py 1.455s Rust 0.722s (~2x faster than Python). Catalog previously claimed Rust 28s (slow, medium tier) — pre-perf-wave note + tier replaced."},
     "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "2026-06-06 refresh (angr-oh6a): TIMEOUT >60s (no longer the 'list index error' the catalog historically claimed; pre-iter-497 note replaced)"},
     "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
