@@ -1,0 +1,13 @@
+n,engine,strategy,max_steps_budget,wall_s,rss_kb,steps,max_depth,active_at_end,deadended,error
+4,rust,bfs,100,1.302,308860,100,11,4,42,None
+4,rust,dfs,100,1.036,309112,100,12,4,42,None
+4,rust,bfs,300,1.03,308996,107,12,0,46,None
+4,rust,dfs,300,1.055,309240,107,12,0,46,None
+8,rust,bfs,100,1.362,439036,100,9,65,20,None
+8,rust,dfs,100,1.099,339204,100,20,17,38,None
+8,rust,bfs,300,2.842,989688,300,12,187,63,None
+8,rust,dfs,300,1.881,619644,300,20,15,124,None
+14,rust,bfs,100,1.372,438908,100,9,65,20,None
+14,rust,dfs,100,1.219,379408,100,32,34,33,None
+14,rust,bfs,300,2.837,999424,300,11,191,62,None
+14,rust,dfs,300,2.004,660984,300,32,31,120,None
