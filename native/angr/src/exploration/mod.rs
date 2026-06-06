@@ -774,6 +774,20 @@ impl RustExplorationManager {
         self.environment.max_history
     }
 
+    /// Set the OS / SimOS name. Defaults to `"linux"`; pass `"cgc"` for
+    /// DECREE binaries so the syscall dispatcher routes to the CGC ABI
+    /// table instead of the per-arch Linux tables. Case-insensitive; the
+    /// value is lowercased before storage so callers can pass `"CGC"` or
+    /// `"Linux"` interchangeably.
+    pub fn set_os_name(&mut self, name: String) {
+        self.environment.os_name = name.to_lowercase();
+    }
+
+    /// Get the current OS / SimOS name (lowercase).
+    pub fn get_os_name(&self) -> &str {
+        &self.environment.os_name
+    }
+
     /// Get accumulated execution statistics as a dict.
     pub fn get_execution_stats(&self) -> HashMap<String, u64> {
         self.profiling.accumulated_stats.to_hashmap()

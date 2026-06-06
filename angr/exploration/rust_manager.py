@@ -1019,6 +1019,16 @@ class RustExplorationManager(
         is_le = project.arch.memory_endness == 'Iend_LE'
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
+        # angr-krp1: plumb the SimOS name to Rust so the syscall dispatcher
+        # can route DECREE CGC binaries (x86 syscall numbers 1-7) through
+        # the CGC table instead of the Linux i386 table. project.simos.name
+        # is "Linux"/"CGC"/"Windows"/"Java"/... — lowercased by the Rust
+        # setter so case differences don't matter. Default ("linux") covers
+        # the common case so most paths are unaffected.
+        simos_name = getattr(getattr(project, 'simos', None), 'name', None) or ''
+        if simos_name:
+            self._rust_mgr.set_os_name(simos_name)
+
         # Configure solver timeout
         if solver_timeout_ms != 30000:
             self._rust_mgr.set_solver_timeout(solver_timeout_ms)

@@ -215,8 +215,17 @@ impl RustExplorationManager {
                 // (NO_SYMBOLIC_SYSCALL_RESOLUTION). Dispatching to a native
                 // handler at concrete `0` would silently invoke `read` on
                 // amd64.
-                let arch_name = state.arch().name();
-                let native_handler = num.and_then(|n| self.native_syscalls.get(arch_name, n));
+                // CGC binaries use x86 syscall numbers 1-7 that collide with
+                // Linux i386 (1=exit/_terminate, 2=fork/transmit, ...). When
+                // os_name=="cgc", dispatch through the CGC table instead of
+                // the arch table so the DECREE ABI handlers fire. Other OSes
+                // (default "linux") fall through to per-arch dispatch.
+                let dispatch_key: &str = if self.environment.os_name == "cgc" {
+                    "CGC"
+                } else {
+                    state.arch().name()
+                };
+                let native_handler = num.and_then(|n| self.native_syscalls.get(dispatch_key, n));
                 if let Some(handler) = native_handler {
                     let n_args = handler.num_args();
                     let args = if n_args == 0 {
