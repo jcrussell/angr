@@ -71,7 +71,7 @@ EXAMPLE_CATALOG = {
     "ekopartyctf2015_rev100":  {"tier": "medium",  "rust_ok": False, "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout"},
     "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "Multi-stage explore+unstash, Rust list index error"},
     "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "save_unconstrained, Windows PE, Py 8.6s Rust 18.6s (0.46x)"},
-    "insomnihack_aeg":         {"tier": "slow",    "rust_ok": False, "notes": "Rust raises on TRACK_ACTION_HISTORY (_RAISE_OPTION); Py >90s (posix.dumps over symbolic stdin)", "argv": ["./demo_bin"]},
+    "insomnihack_aeg":         {"tier": "slow",    "rust_ok": False, "notes": "Post-fkvt: Rust OOMs at ~75s under 4GB cap (state explosion during AEG exploration); Py >180s (posix.dumps over symbolic stdin). Not viable for regression gate. See angr-86c4.", "argv": ["./demo_bin"]},
     "0ctf_trace":              {"tier": "medium",  "rust_ok": None,  "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s"},
     "simple_heap_overflow":    {"tier": "medium",  "rust_ok": False, "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)"},
     # === Slow/problematic examples ===
