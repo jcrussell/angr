@@ -169,10 +169,10 @@ fn test_big_endian_128bit_wide_symbolic_store() {
 ///
 /// Counterpart to `test_big_endian_128bit_wide_symbolic_store`. Hits
 /// both partial-extract paths in `load_concrete`: the exact-address
-/// path (load at 0x1000) and the symbolic_spans path (load at offsets
-/// > 0). Before the fix, the LE branch returned MSB-side bytes from
-/// the wide BV instead of LSB-side bytes, so single-byte and 4-byte
-/// loads at non-zero offsets gave wrong values.
+/// path (load at 0x1000) and the symbolic_spans path (load at
+/// non-zero offsets). Before the fix, the LE branch returned MSB-side
+/// bytes from the wide BV instead of LSB-side bytes, so single-byte
+/// and 4-byte loads at non-zero offsets gave wrong values.
 #[test]
 fn test_little_endian_128bit_wide_symbolic_store() {
     let ctx = SymContext::new_mock();
