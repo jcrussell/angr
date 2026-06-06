@@ -12,6 +12,10 @@ is unreachable; this one stages local changes when the data needed
 to finalize them is unavailable. Both follow the same offline-
 prepare slice pattern (`bd recall upstream-pr-offline-prepare-slice-pattern`).
 
+For the broader pattern family (this dir vs.
+`tools/upstream_patches/` vs. an aggregation-doc v1 stub) see
+[`../OFFLINE_WORKFLOWS.md`](../OFFLINE_WORKFLOWS.md).
+
 ## How to apply when the missing data is available
 
 For each `<topic>.patch` + `<topic>_RUNBOOK.md` pair:

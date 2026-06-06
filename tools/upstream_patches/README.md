@@ -6,6 +6,10 @@ slice of an upstream-PR bead (see `bd recall <key>`) that could
 not be filed directly because github.com was unreachable from the
 working environment.
 
+For the broader pattern family (when to use this vs.
+`tools/draft_patches/` vs. an aggregation-doc v1 stub) see
+[`../OFFLINE_WORKFLOWS.md`](../OFFLINE_WORKFLOWS.md).
+
 ## How to file when network is available
 
 For each `<topic>.patch` + `<topic>_PR.md` pair:
