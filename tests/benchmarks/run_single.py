@@ -206,17 +206,68 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             original_argv = sys.argv
             sys.argv = [solve_script, *argv_override]
 
+        def _collect_rust_diagnostics():
+            """Pull stats / perf_report / peak_rss off the Rust manager.
+
+            Safe to call from both the success path and the exception paths —
+            angr-qcsg lets a crashed-mid-run bench (e.g. CADET_00001 raising
+            IndexError after the buffer-overflow phase has already emitted
+            CGC syscall counters) still surface partial characterization
+            data instead of dropping it on the floor.
+            """
+            rusage_local = resource.getrusage(resource.RUSAGE_SELF)
+            peak_mb = round(rusage_local.ru_maxrss / 1024, 1)
+            stats_local = None
+            perf_local = None
+            if engine == "rust" and rust_mgr_instance is not None:
+                try:
+                    stats_local = dict(rust_mgr_instance.stats)
+                except Exception:
+                    pass
+                try:
+                    perf_local = rust_mgr_instance.perf_report()
+                except Exception:
+                    pass
+                # angr-zdho: walk every state's assumed-constraint RustBV
+                # graph and report pointer-vs-structural sharing. Negligible
+                # runtime cost (single pass at end-of-bench), surfaces what
+                # construction-time hash-cons would dedupe.
+                if stats_local is not None:
+                    try:
+                        sharing = rust_mgr_instance._rust_mgr.analyze_constraint_sharing()
+                        for k, v in sharing.items():
+                            stats_local[f"constraint_sharing_{k}"] = v
+                    except Exception:
+                        pass
+            return stats_local, perf_local, peak_mb
+
         start = time.perf_counter()
         try:
             spec.loader.exec_module(module)
         except MemoryError:
             sys.stdout = original_stdout
             elapsed = time.perf_counter() - start
-            return {"ok": False, "error": "MemoryError (hit memory limit)", "elapsed": elapsed}
+            stats, perf_report, peak_memory_mb = _collect_rust_diagnostics()
+            return {
+                "ok": False,
+                "error": "MemoryError (hit memory limit)",
+                "elapsed": elapsed,
+                "stats": stats,
+                "perf_report": perf_report,
+                "peak_memory_mb": peak_memory_mb,
+            }
         except Exception as e:
             sys.stdout = original_stdout
             elapsed = time.perf_counter() - start
-            return {"ok": False, "error": f"{type(e).__name__}: {e}", "elapsed": elapsed}
+            stats, perf_report, peak_memory_mb = _collect_rust_diagnostics()
+            return {
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "elapsed": elapsed,
+                "stats": stats,
+                "perf_report": perf_report,
+                "peak_memory_mb": peak_memory_mb,
+            }
         finally:
             sys.stdout = original_stdout
             if original_argv is not None:
@@ -225,33 +276,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
         elapsed = time.perf_counter() - start
         output = captured.getvalue()
 
-        # Collect peak memory usage (includes child processes)
-        rusage = resource.getrusage(resource.RUSAGE_SELF)
-        peak_memory_mb = rusage.ru_maxrss / 1024  # ru_maxrss is in KB on Linux
-
-        # Collect stats if available
-        stats = None
-        perf_report = None
-        if engine == "rust" and rust_mgr_instance is not None:
-            try:
-                stats = dict(rust_mgr_instance.stats)
-            except Exception:
-                pass
-            try:
-                perf_report = rust_mgr_instance.perf_report()
-            except Exception:
-                pass
-            # angr-zdho: walk every state's assumed-constraint RustBV graph
-            # and report pointer-vs-structural sharing. Negligible runtime
-            # cost (single pass at end-of-bench), surfaces what
-            # construction-time hash-cons would dedupe.
-            if stats is not None:
-                try:
-                    sharing = rust_mgr_instance._rust_mgr.analyze_constraint_sharing()
-                    for k, v in sharing.items():
-                        stats[f"constraint_sharing_{k}"] = v
-                except Exception:
-                    pass
+        stats, perf_report, peak_memory_mb = _collect_rust_diagnostics()
 
         return {
             "ok": True,
@@ -259,7 +284,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             "output": output,
             "stats": stats,
             "perf_report": perf_report,
-            "peak_memory_mb": round(peak_memory_mb, 1),
+            "peak_memory_mb": peak_memory_mb,
             "snapshots": snapshots if diff_state else None,
         }
 
@@ -431,6 +456,15 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         elapsed = result.get("elapsed")
         elapsed_str = f" {elapsed:.2f}s" if elapsed is not None else ""
         print(f"FAIL {engine} {example_name}{elapsed_str}: {result.get('error', 'unknown error')}")
+        # angr-qcsg: surface partial-run counters when a bench crashes
+        # mid-flight (e.g. CADET_00001's IndexError after buffer-overflow
+        # phase). Only fires for rust runs with stats actually populated.
+        fail_stats = result.get("stats")
+        if engine == "rust" and fail_stats:
+            if counters_json:
+                _dump_counters_json(fail_stats)
+            elif dump_counters:
+                _dump_counters_table(fail_stats)
         return result
 
     elapsed = result["elapsed"]
