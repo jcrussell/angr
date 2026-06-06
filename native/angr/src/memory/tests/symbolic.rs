@@ -13,16 +13,16 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
 
     // Symbolic addresses, each pinned to a specific value via a
     // constraint added to the solver up-front.
-    let addr1 = RustBV::symbolic(&ctx, "addr1".to_string(), 64);
-    let addr2 = RustBV::symbolic(&ctx, "addr2".to_string(), 64);
+    let addr1 = RustBV::symbolic(&ctx, "addr1", 64);
+    let addr2 = RustBV::symbolic(&ctx, "addr2", 64);
     ctx.assume_true(&addr1.eq(&RustBV::concrete(0x1000, 64), &ctx));
     ctx.assume_true(&addr2.eq(&RustBV::concrete(0x1004, 64), &ctx));
 
     // Two 64-bit symbolic values; sym1 carries an additional constraint
     // (a specific u128 value) so we can verify that this value-side
     // constraint also survives the partial overlap.
-    let sym1 = RustBV::symbolic(&ctx, "sym1".to_string(), 64);
-    let sym2 = RustBV::symbolic(&ctx, "sym2".to_string(), 64);
+    let sym1 = RustBV::symbolic(&ctx, "sym1", 64);
+    let sym2 = RustBV::symbolic(&ctx, "sym2", 64);
     let pinned_sym1: u128 = 0xDEAD_BEEF_F00D_BABE;
     ctx.assume_true(&sym1.eq(&RustBV::concrete(pinned_sym1, 64), &ctx));
 
@@ -92,7 +92,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     // 128-bit symbolic value pinned to a known constant so we can
     // predict every byte. MSB byte = 0x10, LSB byte = 0x1F.
     let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128".to_string(), 128);
+    let sym = RustBV::symbolic(&ctx, "wide128", 128);
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
 
     let addr = RustBV::concrete(0x1000, 64);
@@ -183,7 +183,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     // 128-bit symbolic value pinned to a known constant. For LE, the
     // byte at addr+0 is the LSB (0x1F here) and addr+15 is the MSB.
     let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128_le".to_string(), 128);
+    let sym = RustBV::symbolic(&ctx, "wide128_le", 128);
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
 
     let addr = RustBV::concrete(0x1000, 64);
@@ -329,7 +329,7 @@ fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128
     let mut mem = SymbolicMemory::new(endness);
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128_lin".to_string(), 128);
+    let sym = RustBV::symbolic(&ctx, "wide128_lin", 128);
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
     // Insert directly into symbolic_objects without populating
     // symbolic_spans, then mark each byte as symbolic on the page so
@@ -388,7 +388,7 @@ fn test_containing_wider_sym_spans_first() {
     let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
-    let wide = RustBV::symbolic(&ctx, "wide128_uwtj".to_string(), 128);
+    let wide = RustBV::symbolic(&ctx, "wide128_uwtj", 128);
     mem.import_symbolic_value(0x1000, wide, None);
 
     // Path 1: addr inside the wider sym → spans hit.
@@ -442,12 +442,12 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
-    let wide = RustBV::symbolic(&ctx, "wide128_slow_le".to_string(), 128);
+    let wide = RustBV::symbolic(&ctx, "wide128_slow_le", 128);
     ctx.assume_true(&wide.eq(&RustBV::concrete(pinned, 128), &ctx));
     mem.import_symbolic_value(0x1000, wide, None);
     // Insert an unrelated symbolic_objects entry inside the load
     // range to force has_inner_overlap=true on the load below.
-    let noise = RustBV::symbolic(&ctx, "noise8".to_string(), 8);
+    let noise = RustBV::symbolic(&ctx, "noise8", 8);
     mem.symbolic_objects.insert(Address(0x1006), noise);
     // Remove the spans entry at 0x1007 so try_byte_merge_load
     // returns None and we fall through to the slow path.
@@ -514,7 +514,7 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
     // Symbolic 64-bit address constrained to {0x1FFC, 0x2FFC} via
     // `(addr == a) | (addr == b)`. Sat solver enumeration in the
     // concretizer should expose both solutions.
-    let addr = RustBV::symbolic(&ctx, "load_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "load_addr", 64);
     let a = RustBV::concrete(0x1FFC, 64);
     let b = RustBV::concrete(0x2FFC, 64);
     let eq_a = addr.eq(&a, &ctx);
@@ -592,7 +592,7 @@ fn test_fork_symbolic_spans_isolation() {
 
     // Parent imports a 64-bit (8-byte) wide symbolic value at 0x1000.
     // import_symbolic_value populates symbolic_spans for bytes 1..8.
-    let parent_sym = RustBV::symbolic(&ctx, "parent_wide".to_string(), 64);
+    let parent_sym = RustBV::symbolic(&ctx, "parent_wide", 64);
     parent.import_symbolic_value(0x1000, parent_sym, None);
     // Sanity: spans for 0x1001..0x1008 exist on parent.
     for off in 1..8u64 {
@@ -607,7 +607,7 @@ fn test_fork_symbolic_spans_isolation() {
     // Fork; then write a fresh wide symbolic in the child at a different
     // base. This must NOT add 0x2001..0x2008 to the parent's spans.
     let mut child = parent.fork();
-    let child_sym = RustBV::symbolic(&ctx, "child_wide".to_string(), 64);
+    let child_sym = RustBV::symbolic(&ctx, "child_wide", 64);
     child.import_symbolic_value(0x2000, child_sym, None);
 
     // Parent's symbolic_spans is unchanged.
@@ -639,13 +639,13 @@ fn test_fork_imported_addrs_isolation() {
     parent.map(0x1000, 0x1000, Permission::RWX);
     parent.map(0x2000, 0x1000, Permission::RWX);
 
-    let parent_sym = RustBV::symbolic(&ctx, "parent_imp".to_string(), 32);
+    let parent_sym = RustBV::symbolic(&ctx, "parent_imp", 32);
     parent.import_symbolic_value(0x1000, parent_sym, None);
     assert!(parent.is_imported_addr(0x1000));
     assert!(!parent.is_imported_addr(0x2000));
 
     let mut child = parent.fork();
-    let child_sym = RustBV::symbolic(&ctx, "child_imp".to_string(), 32);
+    let child_sym = RustBV::symbolic(&ctx, "child_imp", 32);
     child.import_symbolic_value(0x2000, child_sym, None);
 
     // Child sees both; parent must only see its own.
@@ -700,7 +700,7 @@ fn test_fork_pending_writes_isolation() {
     parent.map(0x1000, 0x1000, Permission::RWX);
 
     // Parent records one pending write.
-    let p_addr = RustBV::symbolic(&ctx, "p_addr".to_string(), 64);
+    let p_addr = RustBV::symbolic(&ctx, "p_addr", 64);
     let p_val = RustBV::concrete(0xAAAA, 16);
     parent.add_pending_write(PendingWrite {
         addr: p_addr,
@@ -719,7 +719,7 @@ fn test_fork_pending_writes_isolation() {
         "child should inherit parent's pending writes at fork time"
     );
 
-    let c_addr = RustBV::symbolic(&ctx, "c_addr".to_string(), 64);
+    let c_addr = RustBV::symbolic(&ctx, "c_addr", 64);
     let c_val = RustBV::concrete(0xBBBB, 16);
     child.add_pending_write(PendingWrite {
         addr: c_addr,
@@ -828,8 +828,8 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     // predict every byte after the partial overwrite.
     let k1: u128 = 0x1122_3344_5566_7788;
     let k2: u128 = 0xAABB_CCDD_EEFF_0011;
-    let sym1 = RustBV::symbolic(&ctx, "sym1_3zhl".to_string(), 64);
-    let sym2 = RustBV::symbolic(&ctx, "sym2_3zhl".to_string(), 64);
+    let sym1 = RustBV::symbolic(&ctx, "sym1_3zhl", 64);
+    let sym2 = RustBV::symbolic(&ctx, "sym2_3zhl", 64);
     ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64), &ctx));
     ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64), &ctx));
 
@@ -1051,7 +1051,7 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Build a symbolic address constrained to {0x1000, 0x1004, 0x1008}.
-    let addr = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "addr", 64);
     let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let a1 = addr.eq(&RustBV::concrete(0x1004, 64), &ctx);
     let a2 = addr.eq(&RustBV::concrete(0x1008, 64), &ctx);
@@ -1137,7 +1137,7 @@ fn test_concretize_counters_fire_on_symbolic_store() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr = RustBV::symbolic(&ctx, "addr_2j5v".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "addr_2j5v", 64);
     let a0 = addr.eq(&RustBV::concrete(0x3000, 64), &ctx);
     let a1 = addr.eq(&RustBV::concrete(0x3004, 64), &ctx);
     let a2 = addr.eq(&RustBV::concrete(0x3008, 64), &ctx);
@@ -1214,7 +1214,7 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
 
     // Pin sym to a known constant so we can predict the bytes.
     let k: u128 = 0x1122_3344_5566_7788;
-    let sym = RustBV::symbolic(&ctx, "sym_jvjf_a".to_string(), 64);
+    let sym = RustBV::symbolic(&ctx, "sym_jvjf_a", 64);
     ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
 
     // Store the 64-bit sym at 0x1000 (covers 0x1000..0x1008).
@@ -1253,7 +1253,7 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     let k: u128 = 0x1122_3344_5566_7788;
-    let sym = RustBV::symbolic(&ctx, "sym_jvjf_b".to_string(), 64);
+    let sym = RustBV::symbolic(&ctx, "sym_jvjf_b", 64);
     ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
 
     // Wider sym at 0x1000 produces span entries at 0x1001..0x1008.
@@ -1292,7 +1292,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_byte_load_succeeds() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_a".to_string(), 16);
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_a", 16);
     mem.store_concrete(0x1000, sym).expect("store 16-bit sym");
 
     // Concrete 1-byte write at 0x1000 truncates the wider sym (covers
@@ -1325,7 +1325,7 @@ fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_b".to_string(), 64);
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_b", 64);
     mem.store_concrete(0x1000, sym).expect("store 64-bit sym");
 
     // Concrete 4-byte write at 0x1000 truncates the 64-bit sym, leaving
@@ -1364,7 +1364,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x2000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_c".to_string(), 16);
+    let sym = RustBV::symbolic(&ctx, "sym_7qon_c", 16);
     mem.store_concrete(0x1FFF, sym).expect("store cross-page sym");
 
     mem.store_concrete(0x1FFF, RustBV::concrete(0xAA, 8))

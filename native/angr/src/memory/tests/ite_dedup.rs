@@ -23,7 +23,7 @@ fn test_ite_dedup_zero_page_load() {
 
     // Symbolic 64-bit addr constrained to {0x1000, 0x1010, 0x1020, 0x1030}
     // — four candidates, all backed by the same zero content.
-    let addr = RustBV::symbolic(&ctx, "zp_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "zp_addr", 64);
     let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     for off in [0x10u64, 0x20, 0x30] {
         let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
@@ -62,7 +62,7 @@ fn test_ite_dedup_repeated_initializer_collapses() {
             .expect("store");
     }
 
-    let addr = RustBV::symbolic(&ctx, "ri_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "ri_addr", 64);
     let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     for off in [0x10u64, 0x20, 0x30] {
         let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
@@ -97,7 +97,7 @@ fn test_ite_dedup_distinct_values_keeps_ite() {
     mem.store_concrete(0x1010, RustBV::concrete(0x22, 64))
         .expect("store b");
 
-    let addr = RustBV::symbolic(&ctx, "dv_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "dv_addr", 64);
     let eq_a = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let eq_b = addr.eq(&RustBV::concrete(0x1010, 64), &ctx);
     ctx.assume_true(&eq_a.or(&eq_b, &ctx));
@@ -129,7 +129,7 @@ fn test_ite_dedup_strided_zero_collapses() {
 
     // Constrain addr to a regular stride of 8 across four candidates; the
     // concretizer should classify this as Strided.
-    let addr = RustBV::symbolic(&ctx, "st_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "st_addr", 64);
     let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     for off in [0x8u64, 0x10, 0x18] {
         let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
@@ -185,7 +185,7 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
     // Two non-strided candidates so the concretizer returns Multiple, not
     // Strided. 0x1000 and 0x1080 with a single anchor in between excludes
     // strided detection.
-    let addr = RustBV::symbolic(&ctx, "dj_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "dj_addr", 64);
     let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let a1 = addr.eq(&RustBV::concrete(0x1080, 64), &ctx);
     let a2 = addr.eq(&RustBV::concrete(0x1300, 64), &ctx);
@@ -227,7 +227,7 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
 #[test]
 fn test_assert_address_disjunction_empty_and_single_addr_lists_are_noops() {
     let ctx = SymContext::new_mock();
-    let addr = RustBV::symbolic(&ctx, "dj_helper_addr".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "dj_helper_addr", 64);
 
     // Empty addrs: early return, no constraint added.
     SymbolicMemory::assert_address_disjunction(&addr, &[], &ctx);
@@ -274,7 +274,7 @@ fn test_assert_address_disjunction_multiple_load_hoists() {
     mem.store_concrete(0x1300, RustBV::concrete(0xDE_AD_BE_EF, 32))
         .unwrap();
 
-    let addr = RustBV::symbolic(&ctx, "dj_load".to_string(), 64);
+    let addr = RustBV::symbolic(&ctx, "dj_load", 64);
     let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let a1 = addr.eq(&RustBV::concrete(0x1080, 64), &ctx);
     let a2 = addr.eq(&RustBV::concrete(0x1300, 64), &ctx);

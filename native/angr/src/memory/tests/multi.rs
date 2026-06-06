@@ -24,7 +24,7 @@ fn test_multi_payload_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
         make_alt(&ctx, &addr_var, 0x1000, 0xAA),
         make_alt(&ctx, &addr_var, 0x1004, 0xBB),
@@ -58,7 +58,7 @@ fn test_multi_payload_empty_clears_cell() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
     mem.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x11)]),
@@ -82,7 +82,7 @@ fn test_multi_fork_independence() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
     parent.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![
@@ -133,12 +133,12 @@ fn test_multi_supersedes_existing_symbolic() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Install a single-byte symbolic value at 0x1000.
-    let sym_byte = RustBV::symbolic(&ctx, "byte".to_string(), 8);
+    let sym_byte = RustBV::symbolic(&ctx, "byte", 8);
     mem.import_symbolic_value(0x1000, sym_byte, None);
     assert!(mem.get_symbolic_object(0x1000).is_some());
 
     // Now upgrade the same byte to Multi.
-    let addr_var = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
     mem.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x77)]),
@@ -174,7 +174,7 @@ fn test_multi_payload_records_ite_depth() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x2000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr_d".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr_d", 64);
 
     // Two installs: 3 alts then 2 alts = total delta of 5; max watermark must be >= 3.
     mem.set_multi_alternatives(
@@ -225,7 +225,7 @@ fn test_multi_cell_load_single_byte() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "load1_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "load1_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
         make_alt(&ctx, &addr_var, 0x1000, 0xAA),
         make_alt(&ctx, &addr_var, 0x2000, 0xBB),
@@ -292,7 +292,7 @@ fn test_multi_cell_load_mixed_concrete() {
     mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
         .unwrap();
 
-    let addr_var = RustBV::symbolic(&ctx, "load_mix_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "load_mix_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
         make_alt(&ctx, &addr_var, 0x4000, 0xAA),
         make_alt(&ctx, &addr_var, 0x5000, 0xBB),
@@ -332,7 +332,7 @@ fn test_multi_cell_load_big_endian() {
     mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
         .unwrap();
 
-    let addr_var = RustBV::symbolic(&ctx, "load_be_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "load_be_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
         make_alt(&ctx, &addr_var, 0x4000, 0xAA),
         make_alt(&ctx, &addr_var, 0x5000, 0xBB),
@@ -369,7 +369,7 @@ fn test_multi_cell_load_multiple_multi_bytes() {
         .unwrap();
     // Last byte (offset 3) is also concrete via no-op (default 0).
 
-    let addr_var = RustBV::symbolic(&ctx, "load_multi_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "load_multi_addr", 64);
     mem.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![
@@ -413,7 +413,7 @@ fn test_concrete_overwrite_clears_multi_bit() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
     mem.set_multi_alternatives(
         0x3000,
         MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
@@ -448,7 +448,7 @@ fn test_store_concrete_multi_le_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "smc_addr", 64);
     let value = RustBV::concrete(0xDEAD_BEEF, 32);
 
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
@@ -490,7 +490,7 @@ fn test_store_concrete_multi_be_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_be_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "smc_be_addr", 64);
     let value = RustBV::concrete(0xCAFE_BABE, 32);
 
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
@@ -514,7 +514,7 @@ fn test_store_concrete_multi_fork_independence() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_fork_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "smc_fork_addr", 64);
     let value = RustBV::concrete(0x11_22_33_44, 32);
     parent
         .store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
@@ -556,7 +556,7 @@ fn test_store_symbolic_unified_multi_multiple_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "ssm_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "ssm_addr", 64);
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
     ctx.assume_true(&eq_a.or(&eq_b, &ctx));
@@ -627,7 +627,7 @@ fn test_phase2_gate_on_installs_multi() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_on_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p2_on_addr", 64);
     ctx.assume_true(
         &addr_var
             .eq(&RustBV::concrete(0x1000, 64), &ctx)
@@ -660,7 +660,7 @@ fn test_phase2_safe_install_lazy_region_signals() {
     mem.map(0x1000, 0x1000, Permission::RWX);
     mem.add_lazy_region(0x2000, 0x1000);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_lazy_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p2_lazy_addr", 64);
     ctx.assume_true(
         &addr_var
             .eq(&RustBV::concrete(0x1000, 64), &ctx)
@@ -693,7 +693,7 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     // Only page 0x1000 is mapped. Page 0x2000 is unmapped and NOT lazy.
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_skip_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p2_skip_addr", 64);
     ctx.assume_true(
         &addr_var
             .eq(&RustBV::concrete(0x1000, 64), &ctx)
@@ -720,7 +720,7 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_flush_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p2_flush_addr", 64);
     let value = RustBV::concrete(0xAA, 8);
     mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
         .expect("test setup install must succeed");
@@ -758,7 +758,7 @@ fn test_phase2_fork_independence_via_safe_install() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr", 64);
     ctx.assume_true(
         &addr_var
             .eq(&RustBV::concrete(0x1000, 64), &ctx)
@@ -801,7 +801,7 @@ fn test_phase3_collapse_cache_hit_after_load() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p3_hit_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p3_hit_addr", 64);
     let value = RustBV::concrete(0x77, 8);
     mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
         .unwrap();
@@ -857,7 +857,7 @@ fn test_phase3_collapse_cache_invalidated_on_push() {
 fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
     let ctx = SymContext::new_mock();
     let payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
-        RustBV::symbolic(&ctx, "p3_default_change_cond".to_string(), 1),
+        RustBV::symbolic(&ctx, "p3_default_change_cond", 1),
         RustBV::concrete(0xAA, 8),
     )]);
 
@@ -931,7 +931,7 @@ fn test_phase4_wider_load_cache_hit() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_hit_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p41_hit_addr", 64);
     let value = RustBV::concrete(0xAA, 8);
     mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
         .unwrap();
@@ -957,7 +957,7 @@ fn test_phase4_wider_load_cache_skips_size_one() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_size1_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p41_size1_addr", 64);
     mem.store_concrete_multi(
         &addr_var,
         &RustBV::concrete(0x55, 8),
@@ -986,8 +986,8 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var1 = RustBV::symbolic(&ctx, "p41_inval_addr1".to_string(), 64);
-    let addr_var2 = RustBV::symbolic(&ctx, "p41_inval_addr2".to_string(), 64);
+    let addr_var1 = RustBV::symbolic(&ctx, "p41_inval_addr1", 64);
+    let addr_var2 = RustBV::symbolic(&ctx, "p41_inval_addr2", 64);
 
     // First install: byte 0x1000 gets alt (addr_var1 == 0x1000, 0xAA).
     mem.store_concrete_multi(
@@ -1045,7 +1045,7 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_sym_byte_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p41_sym_byte_addr", 64);
     // One Multi byte at 0x1000…
     mem.store_concrete_multi(
         &addr_var,
@@ -1057,7 +1057,7 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
 
     // …and a plain Symbolic byte at 0x1001 (via concrete store with a
     // symbolic value).
-    let sym_val = RustBV::symbolic(&ctx, "p41_sym_byte_val".to_string(), 8);
+    let sym_val = RustBV::symbolic(&ctx, "p41_sym_byte_val", 8);
     mem.store_concrete(0x1001, sym_val).unwrap();
 
     // A 4-byte load at 0x1000 covers both — must NOT cache.
@@ -1077,7 +1077,7 @@ fn test_phase4_wider_load_cache_fork_independence() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_fork_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p41_fork_addr", 64);
     parent
         .store_concrete_multi(
             &addr_var,
@@ -1128,7 +1128,7 @@ fn test_phase42_flush_coalesces_le_multi_byte_run() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_le_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p42_le_addr", 64);
     let value = RustBV::concrete(0xDEAD_BEEF, 32);
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
@@ -1190,7 +1190,7 @@ fn test_phase42_flush_coalesces_be_multi_byte_run() {
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_be_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p42_be_addr", 64);
     let value = RustBV::concrete(0xCAFE_BABE, 32);
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
     let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
@@ -1219,7 +1219,7 @@ fn test_phase42_flush_singleton_no_coalesce() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_single_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p42_single_addr", 64);
     let value = RustBV::concrete(0xAB, 8);
     mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
         .unwrap();
@@ -1247,7 +1247,7 @@ fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
 
     // First store: 4-byte value at two candidates → 4 Multi bytes per
     // candidate.
-    let addr1 = RustBV::symbolic(&ctx, "p42_addr1".to_string(), 64);
+    let addr1 = RustBV::symbolic(&ctx, "p42_addr1", 64);
     mem.store_concrete_multi(&addr1, &RustBV::concrete(0x1111_2222, 32), &[0x1000], &ctx)
         .unwrap();
     assert_eq!(mem.multi_cell_count(), 4);
@@ -1255,7 +1255,7 @@ fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
     // Second store: 1-byte value at byte 2 of the previous range. This
     // appends a second alternative to ONLY byte 0x1002, breaking its
     // fingerprint relative to its neighbours.
-    let addr2 = RustBV::symbolic(&ctx, "p42_addr2".to_string(), 64);
+    let addr2 = RustBV::symbolic(&ctx, "p42_addr2", 64);
     mem.store_concrete_multi(&addr2, &RustBV::concrete(0xFF, 8), &[0x1002], &ctx)
         .unwrap();
     assert_eq!(
@@ -1299,7 +1299,7 @@ fn test_phase42_flush_run_length_cap() {
     // 24-byte value at a single candidate → 24 adjacent Multi bytes
     // sharing one cond. The cap forces two coalesced runs: 16 bytes and
     // 8 bytes (instead of one wider run of 24).
-    let addr_var = RustBV::symbolic(&ctx, "p42_cap_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p42_cap_addr", 64);
     // RustBV::concrete masks the u128 to the declared width, so a
     // 24-byte (192-bit) value can be passed directly. But we only need
     // a sequence of 24 Multi bytes; the value content does not matter
@@ -1338,7 +1338,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_overwrite_addr".to_string(), 64);
+    let addr_var = RustBV::symbolic(&ctx, "p41_overwrite_addr", 64);
     // Install Multi at 0x1000..0x1004 (4 bytes) with one candidate (0x1000)
     // and value 0xAABBCCDD. Pre-fix this leaves an orphaned `multi_objects`
     // entry that survives the concrete store below.
