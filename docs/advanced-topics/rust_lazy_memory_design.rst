@@ -138,7 +138,7 @@ Two pieces in Python make the same workloads cheap:
    the bytes the load actually touches.
 
 3. ``MultiwriteAnnotation``
-   (``address_concretization_mixin.py:13``) is an opt-in annotation
+   (``address_concretization_mixin.py:14``) is an opt-in annotation
    used by a few SimProcedures (``libc/strchr.py``, ``libc/gets.py``,
    ``libc/fgets.py``) to upgrade Range concretization on writes even
    when ``SYMBOLIC_WRITE_ADDRESSES`` is off. The annotation is *not*

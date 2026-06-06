@@ -324,7 +324,7 @@ How
   push ``("reg", name, value)`` / ``("mem", addr, data)`` tuples
   into a per-callback list (already partially in place — see the
   ``tracked_writes`` / ``tracked_symbolic_writes`` channels at
-  ``rust_callback_dispatch.py:984-997``).
+  ``rust_callback_dispatch.py:989-997``).
 * At the boundary, walk the list once. No
   ``changed_bytes`` scan, no register loop.
 
@@ -392,7 +392,7 @@ Pros
   bench, ≤1 % wall on most benches.
 * **Symbolic correctness is paid in.** Edge cases like the
   ``new_state.regs._ip`` symbolic-PC handling at
-  ``rust_callback_dispatch.py:960-969`` are battle-tested.
+  ``rust_callback_dispatch.py:1025-1035`` are battle-tested.
 
 Cons
 ~~~~

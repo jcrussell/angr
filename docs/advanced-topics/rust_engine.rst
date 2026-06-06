@@ -119,7 +119,7 @@ keep using the Python engine or wait for a future major release.
   implements ``dumps(fd) -> bytes`` for stdin (fd=0), stdout (fd=1),
   and Rust-tracked file descriptors, mirroring
   ``SimSystemPosix.dumps(fd)`` in Python angr
-  (``angr/state_plugins/posix.py:683``). There is no companion
+  (``angr/state_plugins/posix.py:684``). There is no companion
   ``dump_fd(fd, target_fd)`` API that writes the concretized bytes
   back to a real OS file descriptor — and there is no such API in
   Python angr either, so this is a parity-preserving omission rather
@@ -1434,7 +1434,7 @@ Honored options
        from mapped non-X pages raise ``SimSegfaultError`` at
        ``VEXInterpreter::get_or_lift_block``. Matches Python: the X
        check fires only when ``ENABLE_NX`` AND ``STRICT_PAGE_ACCESS`` are
-       both set (``angr/engines/vex/heavy/heavy.py:115-124``).
+       both set (``angr/engines/vex/heavy/heavy.py:118-127``).
    * - ``NO_IP_CONCRETIZATION``
      - ``rust_manager.py::_add_rust_state`` (also propagated through
        ``_apply_state_metadata`` on cache reuse)
@@ -1443,7 +1443,7 @@ Honored options
        ``unconstrained`` stash silently instead of being enumerated. The
        check fires inside ``VEXInterpreter::eval_next_addr_concretized``
        (``native/angr/src/interpreter/exits.rs``). Matches Python's
-       ``engines/successors.py:292-296`` behavior
+       ``engines/successors.py:290-294`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
      - ``rust_manager.py::_add_rust_state`` (also propagated through
@@ -1452,7 +1452,7 @@ Honored options
        OR'd with ``no_ip_concretization`` at the
        ``eval_next_addr_concretized`` short-circuit, so a symbolic jump
        target routes to the ``unconstrained`` stash without enumeration.
-       Matches Python's ``engines/successors.py:234-239`` (early elif
+       Matches Python's ``engines/successors.py:232-237`` (early elif
        branch routing symbolic targets to ``unconstrained_successors``
        before ``AddressConcretizer`` is invoked).
    * - ``NO_SYMBOLIC_SYSCALL_RESOLUTION``
@@ -1481,7 +1481,7 @@ Honored options
        (``native/angr/src/exploration/stepping.rs``,
        ``native/angr/src/interpreter/exits.rs``). Multi-target forks are
        handled by ``handle_symbolic_jump_target``. Mirrors Python's
-       ``engines/successors.py:297-307,326-331``.
+       ``engines/successors.py:295-304,325-326``.
 
 Inherited (option works because the code path runs in Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1552,8 +1552,8 @@ vs. Python.
    ``angr/exploration/rust_manager.py``. Two entries from the (b)
    category — ``TRACK_CONSTRAINT_ACTIONS`` and ``TRACK_MEMORY_MAPPING`` —
    are intentionally *excluded* from the warn set because they ship in
-   the default ``symbolic`` mode bundle (``sim_options.py:391``,
-   ``:374``); warning every default-options ``entry_state()`` would
+   the default ``symbolic`` mode bundle (``sim_options.py:392``,
+   ``:375``); warning every default-options ``entry_state()`` would
    generate noise the user did not consent to. They remain
    divergence-risk in this matrix, just not warn-on-add.
 
@@ -1567,7 +1567,7 @@ vs. Python.
    any analysis driven off ``state.history.actions`` gets silently
    empty data — loud failure beats silent divergence. Note
    ``TRACK_OP_ACTIONS`` ships in the ``fastpath`` mode bundle
-   (``sim_options.py:411``); fastpath users must drop to the Python
+   (``sim_options.py:412``); fastpath users must drop to the Python
    engine.
 
    **Followup (angr-gmrc, 2026-05-16):** ``CONCRETIZE`` was promoted
@@ -2195,7 +2195,7 @@ Decision history
   ``process_deferred_forks_into`` — covers ``fork_from_snapshot``,
   ``fork_true``/``fork_false``, and the P15 conservative
   ``fork()`` fallback path). Mirrors Python
-  ``engines/successors.py:203`` where ``state._inspect("fork",
+  ``engines/successors.py:201`` where ``state._inspect("fork",
   BP_AFTER)`` fires on the newly-added successor; the Rust dispatch
   passes the FORKED state's id (not the parent) and fires BEFORE the
   satisfiability check so UNSAT-pruned forks still surface. The fork
@@ -2537,14 +2537,14 @@ the verdict for running it against a project that has had a
    * - ``CFGEmulated``
      - **Unsupported (v1.0)**
      - Builds internal ``SimulationManager`` instances at indirect-
-       jump resolution (``cfg_emulated.py:2611`` / ``:2743`` /
-       ``:2750``). Has no ``use_rust_engine`` plumbing — those
+       jump resolution (``cfg_emulated.py:2615`` / ``:2747`` /
+       ``:2754``). Has no ``use_rust_engine`` plumbing — those
        internal SMs always dispatch to the Python engine, so a
        ``RustExplorationManager`` attached to the project is unused.
        Beyond the SM bypass, the analysis also reads
        ``state.scratch.ins_addr``, ``state.scratch.exit_stmt_idx``
        and ``state.scratch.exit_ins_addr`` off successor states
-       (``cfg_emulated.py:1548-1550`` / ``:1756-1757``), which is
+       (``cfg_emulated.py:1552-1554`` / ``:1760-1761``), which is
        deep ``SimState`` machinery not modelled on
        :class:`RustStateProxy`. Workaround: feed it a fresh
        :class:`SimState` from a project that has *not* had a
@@ -2553,15 +2553,15 @@ the verdict for running it against a project that has had a
    * - ``Identifier``
      - **Unsupported (v1.0)**
      - Both the function-identification driver
-       (``identifier/identify.py:313``) and the per-call replay path
-       (``identifier/runner.py:70`` / ``:80``) build internal
+       (``identifier/identify.py:315``) and the per-call replay path
+       (``identifier/runner.py:72`` / ``:82``) build internal
        ``SimulationManager`` instances via
        ``project.factory.simulation_manager(...)``; the symbolic
        pre-amble walk uses ``project.factory.successors(...)``
-       repeatedly (``identifier/identify.py:480`` / ``:491`` / ``:498``
-       / ``:515`` / ``:531`` / ``:617`` / ``:726``) — both dispatch to
+       repeatedly (``identifier/identify.py:482`` / ``:493`` / ``:500``
+       / ``:517`` / ``:533`` / ``:619`` / ``:728``) — both dispatch to
        the Python engine. The analysis also resets and inspects
-       ``state.scratch`` directly (``runner.py:91``), which is deep
+       ``state.scratch`` directly (``runner.py:93``), which is deep
        ``SimState`` machinery not modelled on
        :class:`RustStateProxy`. Workaround: feed it a project that
        has *not* had a ``RustExplorationManager`` attached.
@@ -2571,12 +2571,12 @@ the verdict for running it against a project that has had a
        ``IndirectJumpResolver`` for x86/AMD64/ARM, used by
        ``CFGFast`` / ``CFGEmulated`` during indirect-jump
        discovery) builds an internal ``SimulationManager`` at
-       ``jumptable.py:1051`` with ``resilience=True`` and steps via
-       ``project.factory.successors(...)`` (``:1699`` / ``:2058``).
+       ``jumptable.py:1053`` with ``resilience=True`` and steps via
+       ``project.factory.successors(...)`` (``:1701`` / ``:2060``).
        Both paths dispatch to the Python engine regardless of any
        ``RustExplorationManager`` attached to the project. The
        resolver also reads ``state.scratch.temps[...]`` directly
-       (``:1744`` / ``:2070`` / ``:2357`` / ``:2361`` / ``:2367``) to
+       (``:1746`` / ``:2072`` / ``:2361`` / ``:2365`` / ``:2371``) to
        recover jump-base addresses and guard tmps, which is deep
        ``SimState`` machinery not modelled on
        :class:`RustStateProxy`. In practice the resolver runs as a
@@ -2587,13 +2587,13 @@ the verdict for running it against a project that has had a
    * - ``Veritesting``
      - **Unsupported (v1.0)**
      - Constructs ``SimulationManager`` directly
-       (``veritesting.py:255``) against the Python engine, so a
+       (``veritesting.py:256``) against the Python engine, so a
        ``RustExplorationManager`` attached to the project has no
        effect on the analysis itself. Two distinct failure modes:
 
        1. Passing a :class:`RustStateProxy` as ``input_state`` raises
           ``NotImplementedError`` at the first ``input_state.copy()``
-          call inside ``veritesting.py:214``. ``RustStateProxy.copy()``
+          call inside ``veritesting.py:215``. ``RustStateProxy.copy()``
           refuses the operation rather than returning a shallow proxy
           that aliases ``_state_id`` with the source (the previous
           behaviour silently corrupted the parent on any mutation). A
@@ -2601,7 +2601,7 @@ the verdict for running it against a project that has had a
        2. Veritesting needs ``EFFICIENT_STATE_MERGING`` for ancestor
           retention during plugin merging. The Veritesting
           *exploration technique*
-          (``exploration_techniques/veritesting.py:20-21``) auto-adds
+          (``exploration_techniques/veritesting.py:21-22``) auto-adds
           this option at ``step_state`` time; the option lives in
           ``_RAISE_OPTION_NAMES`` so attempting to seed a Rust
           manager with a state that already has
