@@ -17423,5 +17423,100 @@ class TestAvoidMultivaluedOptions:
         assert (len(mgr.active) + len(mgr.deadended) + len(mgr.errored)) >= 1
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCounterParity:
+    """angr-ah3s: contract between ``mgr.stats()`` and the bench-diff tooling.
+
+    ``tests/benchmarks/run_single.py`` categorizes counters via
+    ``_DUMP_EXPLICIT_GROUPS`` (literal names) and ``_DUMP_PREFIX_GROUPS``
+    (counter families); ``tests/benchmarks/bench_diff.py`` flattens the
+    same dict to drive the per-bench regression triage. A silent rename
+    on either side of the FFI boundary would drop a counter from the
+    surfaced dict until a bench engineer noticed by hand.
+
+    This test runs a single exploration step on a real binary so every
+    code path that lazily attaches a counter has fired, then asserts
+    that every name and every family expected by the bench tooling
+    is present in ``mgr.stats()``.
+    """
+
+    @staticmethod
+    def _load_dump_groups():
+        """Import ``_DUMP_EXPLICIT_GROUPS`` / ``_DUMP_PREFIX_GROUPS`` from
+        ``tests/benchmarks/run_single.py`` without making ``tests/benchmarks``
+        a package (it intentionally is not — it's a script directory).
+        """
+        import importlib.util
+
+        run_single_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "benchmarks",
+            "run_single.py",
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_bench_run_single", run_single_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module._DUMP_EXPLICIT_GROUPS, module._DUMP_PREFIX_GROUPS
+
+    def test_stats_dict_carries_all_expected_counter_names(self, fauxware_project):
+        """Every literal name in ``_DUMP_EXPLICIT_GROUPS`` (the curated
+        sections of ``run_single.py --dump-counters``) must appear in
+        ``mgr.stats`` after one step. Failure prints the missing keys.
+        """
+        from angr.exploration import RustExplorationManager
+
+        explicit_groups, _ = self._load_dump_groups()
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Route through the predicate path so ``_time_in_*_ns`` attrs are
+        # populated — passing a callable ``find`` flips the explore() router
+        # in rust_manager.py:3880 to ``_explore_with_predicates``. The
+        # address path doesn't attach those attrs and would drop the
+        # ``time_in_rust_run`` family from stats.
+        mgr.run(find=lambda s: False, max_steps=1)
+        stats = mgr.stats
+
+        expected = set().union(*explicit_groups.values())
+        missing = sorted(expected - set(stats))
+        assert not missing, (
+            f"mgr.stats() is missing {len(missing)} counter(s) expected by "
+            f"run_single.py --dump-counters curated sections:\n  "
+            + "\n  ".join(missing)
+            + f"\n(total expected: {len(expected)}, present: "
+            f"{len(expected) - len(missing)})"
+        )
+
+    def test_stats_dict_has_at_least_one_key_per_prefix_family(
+        self, fauxware_project
+    ):
+        """Each prefix family in ``_DUMP_PREFIX_GROUPS`` (``rust_*``,
+        ``z3_*``, ``vex_*``, ``mem_*``, ``concretize_*``, ``bvop_*``,
+        ``zext_*``) must contribute at least one key to ``mgr.stats()``.
+        A missing family means an entire counter group fell off the
+        Rust → Python bridge.
+        """
+        from angr.exploration import RustExplorationManager
+
+        _, prefix_groups = self._load_dump_groups()
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        stats = mgr.stats
+
+        missing_families = []
+        for label, prefix in prefix_groups:
+            if not any(k.startswith(prefix) for k in stats):
+                missing_families.append(f"{label!r} (prefix={prefix!r})")
+        assert not missing_families, (
+            "mgr.stats() is missing entire counter families expected by "
+            "run_single.py --dump-counters prefix groups:\n  "
+            + "\n  ".join(missing_families)
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
