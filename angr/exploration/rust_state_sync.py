@@ -1729,7 +1729,16 @@ class RustStateSyncMixin:
         Loads the SP page in a single bulk FFI call (pending_memory_load_page)
         then writes non-zero pointer-sized values to the Python state.
         This is ~30x faster than 64 individual pending_memory_load calls.
+
+        angr-ryf6: skip when the callback-memory-proxy gate is on and the
+        proxy is already installed on ``state.memory`` — the writes would
+        round-trip Rust → Python → Rust and overwrite symbolic pointer-slot
+        values with concrete witnesses (same loss as
+        ``_replay_rust_dirty_pages``).
         """
+        from angr.exploration.rust_manager import _is_rust_memory_proxy
+        if _is_rust_memory_proxy(state.memory):
+            return
         try:
             sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
             if not sp:
@@ -1799,7 +1808,21 @@ class RustStateSyncMixin:
         push into the symbolic-page snapshot consumed by
         `_restore_symbolic_pages`, so without this replay a later Python
         SimProc (e.g. strcmp) reads stale concrete-zero bytes.
+
+        angr-ryf6: when the callback-memory-proxy gate is on and the
+        cached state already has the proxy installed from a prior
+        callback, ``state.memory`` *is* the Rust state — replaying dirty
+        pages would round-trip Rust → Python → Rust through
+        ``set_state_memory_concrete``, which evaluates symbolic bytes to
+        concrete witnesses on the read side and overwrites the symbolic
+        objects on the write side (defcon2016quals_baby-re's flag_chars
+        symbols got clobbered to space (0x20) between scanf calls). The
+        proxy is already the single source of truth, so the replay is
+        both redundant and lossy — skip it.
         """
+        from angr.exploration.rust_manager import _is_rust_memory_proxy
+        if _is_rust_memory_proxy(state.memory):
+            return
         try:
             dirty_pages = self._rust_mgr.get_pending_dirty_pages()
         except Exception:
