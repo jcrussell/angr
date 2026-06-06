@@ -1527,6 +1527,16 @@ Inherited (option works because the code path runs in Python)
    * - ``OPTIMIZE_IR``, ``NO_CROSS_INSN_OPT``
      - pyvex still produces the IRSB on the Python side before handing
        bytes to the Rust interpreter.
+   * - ``CGC_NO_SYMBOLIC_RECEIVE_LENGTH``, ``CGC_ENFORCE_FD``
+     - DECREE (CGC) syscalls have native handlers in
+       ``native/angr/src/syscalls/cgc.rs`` for the concrete-fd happy
+       paths (transmit to stdout/stderr clones, receive on fd 0). The
+       Rust handlers fall back to Python on symbolic counts and on
+       non-standard fds, so the Python SimProcedure honors the option
+       on the fallback path. CGC SimProcedure coverage landed in
+       commits 0e3b480de (5 of 7 syscalls) and e16ca3bf3 (allocate /
+       deallocate); CADET_00001 buffer-overflow runs end-to-end under
+       Rust.
 
 Ignored — divergence-risk
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1831,6 +1841,18 @@ vs. Python.
    * - ``EXTENDED_IROP_SUPPORT``
      - pyvex extended ops; Rust may not handle every op.
      - (a) implement / audit per-op coverage.
+   * - ``CGC_NON_BLOCKING_FDS``
+     - When *not* set, Python's ``fdwait`` SimProcedure returns symbolic
+       1-bit ready flags for each fd; when set, it returns concrete 1.
+     - (a) honor option. Rust's ``NativeFdwaitSyscall``
+       (``native/angr/src/syscalls/cgc.rs:269``) always writes concrete
+       1-bits — i.e., it behaves as if the option were set. Matches
+       Python when the user opts in (the typical case for CGC analyses,
+       which import the option as part of the platform contract), but
+       diverges when unset: a CGC binary that branches on the symbolic
+       readiness flag would explore both branches under Python and only
+       the all-ready branch under Rust. None of the current benches
+       exercise this path.
 
 Ignored — no-op
 ~~~~~~~~~~~~~~~
@@ -1891,9 +1913,6 @@ in Rust mode.
        Functionally always-on.
    * - ``UNICORN``, ``UNICORN_*`` (~10 options)
      - Rust does not integrate with the unicorn engine.
-   * - ``CGC_NO_SYMBOLIC_RECEIVE_LENGTH``, ``CGC_ENFORCE_FD``,
-       ``CGC_NON_BLOCKING_FDS``
-     - CGC-only; Rust does not run CGC binaries today.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 
