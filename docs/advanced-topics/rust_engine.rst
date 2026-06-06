@@ -1403,27 +1403,27 @@ Honored options
      - Where Rust reads it
      - Effect
    * - ``LAZY_SOLVES``
-     - ``rust_manager.py:698``, ``:2322`` (re-checked at ``explore()`` time)
+     - ``rust_manager.py:1417``, ``:3895`` (re-checked at ``explore()`` time)
      - Calls ``set_lazy_solves(True)``; Rust skips per-block satisfiability
-       checks. Also propagated through ``_clone_state_metadata`` on
-       disk-cache reuse (``:1752``).
+       checks. Also propagated through ``_apply_state_metadata`` on
+       disk-cache reuse (``:3196``).
    * - ``ZERO_FILL_UNCONSTRAINED_MEMORY``
-     - ``rust_manager.py:701``
+     - ``rust_manager.py:1420``
      - Calls ``set_zero_fill_unconstrained(True)``; uninitialized memory
        reads return ``BVV(0, n)`` instead of fresh symbols.
    * - ``APPROXIMATE_MEMORY_INDICES``
-     - ``rust_manager.py:705``
+     - ``rust_manager.py:1424`` (consumed at ``:1443``)
      - Passed as ``use_approx`` to ``configure_concretization_strategies``;
        Rust adds an approximation strategy ahead of full Z3 enumeration
        on symbolic loads.
    * - ``SYMBOLIC_WRITE_ADDRESSES``
-     - ``rust_manager.py:706``
+     - ``rust_manager.py:1425`` (consumed at ``:1443``)
      - Passed as ``sym_write`` to ``configure_concretization_strategies``;
        Rust permits multi-valued symbolic write targets instead of
        forcing concretization.
    * - ``STRICT_PAGE_ACCESS``
-     - ``rust_manager.py:1963`` (per-state, also propagated through
-       ``_clone_state_metadata`` on disk-cache reuse)
+     - ``rust_manager.py:3516`` (per-state, also propagated through
+       ``_apply_state_metadata`` on disk-cache reuse)
      - Calls ``RustSimState::set_enforce_permissions(True)``; loads/stores
        violating per-page R/W bits raise ``SimSegfaultError``. Preserved
        across forks via ``SymbolicMemory::fork``.
@@ -1919,9 +1919,14 @@ in Rust mode.
 Provenance
 ~~~~~~~~~~
 
-Generated 2026-05-09 from ``angr/sim_options.py`` and the SimOption
-read sites in ``angr/exploration/rust_manager.py`` (lines 697–706,
-1751–1756, 1962–1966, 2320–2325). When new SimOptions land in
+Generated 2026-05-09 from ``angr/sim_options.py``; line refs refreshed
+2026-06-06 (angr-0jzb). SimOption read sites in
+``angr/exploration/rust_manager.py``: lines 1413–1449 (per-state
+detection in ``__init__``),
+3196–3290 (``_apply_state_metadata`` for cached/disk-loaded states),
+3516–3523 (``_add_rust_state`` ENABLE_NX / NO_IP_CONCRETIZATION /
+NO_SYMBOLIC_JUMP_RESOLUTION wiring), 3893–3896 (``explore()`` re-check
+for late-bound ``LAZY_SOLVES``). When new SimOptions land in
 ``sim_options.py``, add a row here and either wire detection into
 ``rust_manager.py`` (Honored) or classify the silent-ignore reason.
 
