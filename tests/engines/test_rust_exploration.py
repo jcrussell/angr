@@ -4282,6 +4282,95 @@ class TestCallbackMemoryProxyGate:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallbackMemoryProxyReentryGuards:
+    """angr-hcok: synchronous Rust→Python callbacks (`_cb_memory_load`,
+    `_cb_memory_store`, `_cb_fetch_page`, batch variants, symbolic-full
+    variants) fire from *inside* ``_rust_mgr.run()`` which holds
+    ``&mut self`` on the manager PyCell. If the per-fork state's
+    ``memory`` plugin is a ``RustMemoryProxy`` (proxy gate post-callback
+    cache pollution), naive ``state.memory.load/store`` would re-enter
+    the manager via FFI and raise "Already mutably borrowed". The
+    callbacks must detect this and short-circuit.
+    """
+
+    def _mgr_with_proxy_in_cache(self, fauxware_project):
+        """Construct a manager and seed the per-fork state cache with a
+        SimState whose ``memory`` plugin is a ``RustMemoryProxy``. Mimics
+        the post-callback cache state that triggers angr-hcok.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_memory_proxy=True
+        )
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_memory_proxy(cb_state, seed_id)
+        mgr._state_cache[seed_id] = cb_state
+        # Steer ``_get_per_fork_state`` to return ``cb_state``.
+        mgr._get_stepping_state_id = lambda sid=seed_id: sid
+        return mgr, cb_state, seed_id
+
+    def test_cb_memory_load_bypasses_proxy(self, fauxware_project):
+        """``_cb_memory_load`` must not call ``state.memory.load`` when the
+        plugin is the proxy. Returns a fresh BVS so Rust can store and
+        avoid re-entry. The handle must be registered for round-trip.
+        """
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        concrete, is_sym, ast = mgr._cb_memory_load(0x28, 8)
+        assert ast is not None
+        assert ast.symbolic
+        assert ast.length == 64
+        assert is_sym is True
+        # Filler — concrete bytes are zeros; downstream evaluator returns
+        # whatever the solver picks under no constraint.
+        assert concrete == bytes(8)
+        # Handle must be registered so Rust→Python AST round-trip works.
+        assert mgr._lookup_handle(id(ast)) is ast
+
+    def test_cb_memory_store_bypasses_proxy(self, fauxware_project):
+        """``_cb_memory_store`` is a no-op under the gate — Rust already
+        performed the store before invoking the callback."""
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        # Must not raise — the bypass returns early without calling proxy.
+        mgr._cb_memory_store(0x7ffffffefff0, b"\x01\x02\x03\x04")
+
+    def test_cb_memory_load_batch_bypasses_proxy(self, fauxware_project):
+        """Batch variant: one filler BVS per load entry."""
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        results = mgr._cb_memory_load_batch([(0x28, 8), (0x100, 4)])
+        assert len(results) == 2
+        for concrete, is_sym, ast in results:
+            assert is_sym is True
+            assert ast is not None and ast.symbolic
+
+    def test_cb_memory_store_batch_bypasses_proxy(self, fauxware_project):
+        """Batch store variant: no-op."""
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        mgr._cb_memory_store_batch([(0x100, b"\x01\x02"), (0x200, b"\x03\x04")])
+
+    def test_cb_fetch_page_bypasses_proxy(self, fauxware_project):
+        """``_cb_fetch_page`` returns empty/inaccessible under the gate so
+        Rust falls back to its own page source."""
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        page, perms, ok = mgr._cb_fetch_page(0x400000)
+        assert page == bytes(4096)
+        assert perms == 0
+        assert ok is False
+
+    def test_cb_batch_fetch_pages_bypasses_proxy(self, fauxware_project):
+        """Batch fetch_pages: per-page (empty, perms=0, mapped=False)."""
+        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        results = mgr._cb_batch_fetch_pages([0x400000, 0x401000])
+        assert len(results) == 2
+        for page, perms, mapped in results:
+            assert page == bytes(4096)
+            assert perms == 0
+            assert mapped is False
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustMemoryProxyPluginGapStubs:
     """angr-8dop.2: ``RustMemoryProxy`` exposes minimal stubs for the
     SimMemory plugin methods ``permissions`` / ``merge`` / ``widen`` /

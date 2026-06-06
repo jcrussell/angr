@@ -148,6 +148,20 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
+
+def _is_rust_memory_proxy(plugin) -> bool:
+    """True when ``plugin`` is a ``RustMemoryProxy`` (callback-memory-proxy gate).
+
+    Used by synchronous Rust→Python callbacks (``_cb_memory_load`` /
+    ``_cb_memory_store`` / ``_cb_fetch_page``) to detect re-entry into the
+    manager. Calling proxy methods would invoke FFI on the same
+    ``_RustExplorationManager`` PyCell that ``run()`` currently
+    ``&mut self`` borrows, raising "Already mutably borrowed" (angr-hcok).
+    Cheap class-name check avoids importing ``rust_state_proxy`` at module
+    top-level (would create a circular import).
+    """
+    return plugin is not None and type(plugin).__name__ == "RustMemoryProxy"
+
 # Disk cache versioning is split across two axes so each side can invalidate
 # without forcing a full cache rebuild on the other:
 #   _RUST_CACHE_VERSION:      bump when Rust engine changes affect serialized
@@ -1666,6 +1680,26 @@ class RustExplorationManager(
                                 self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
                                 return (concrete, True, extracted)
 
+                # angr-hcok: when the callback-memory-proxy gate is on, the
+                # cached state's ``memory`` plugin is a ``RustMemoryProxy``
+                # that re-enters ``_rust_mgr.get_state_memory_ast(...)`` —
+                # but ``_cb_memory_load`` fires from inside ``_rust_mgr.run()``
+                # which holds ``&mut self`` on the manager PyCell, so the
+                # re-entry raises "Already mutably borrowed". Synthesize a
+                # filler BVS instead (mirrors angr's filler_mixin default for
+                # unmapped memory). Rust stores the AST in its symbolic memory
+                # so subsequent loads at the same address don't re-enter this
+                # path. Skip the proxy round-trip — Rust already owns memory.
+                if _is_rust_memory_proxy(state.memory):
+                    ast = claripy.BVS(f"mem_filler_{addr:x}_{size}", size * 8)
+                    self._register_handle(id(ast), ast, addr=addr, size=size, state_id=state_id)
+                    if _DBG:
+                        l.debug(
+                            "Memory load 0x%x size=%d: proxy-gate filler BVS",
+                            addr, size,
+                        )
+                    return (bytes(size), True, ast)
+
                 val = state.memory.load(addr, size, endness=state.arch.memory_endness)
 
                 # Coerce thunks/callables to actual values
@@ -1715,6 +1749,15 @@ class RustExplorationManager(
         state = self._get_per_fork_state()
         if state is None:
             return
+        # angr-hcok: under the callback-memory-proxy gate, ``state.memory``
+        # is a ``RustMemoryProxy`` that routes ``store(...)`` back into
+        # ``_rust_mgr.set_state_memory_concrete(...)`` — but we're inside
+        # ``_rust_mgr.run()`` which holds ``&mut self``, so the re-entry
+        # raises "Already mutably borrowed". Rust already performed the
+        # store internally before invoking this callback, so the Python
+        # shadow is redundant under the gate; just acknowledge and return.
+        if _is_rust_memory_proxy(state.memory):
+            return
         try:
             val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
             state.memory.store(addr, val, endness=state.arch.memory_endness)
@@ -1752,6 +1795,13 @@ class RustExplorationManager(
         try:
             state = self._get_default_state()
             if state is None:
+                return (bytes(4096), 0, False)
+            # angr-hcok: under the callback-memory-proxy gate, ``state.memory``
+            # is a ``RustMemoryProxy`` that calls back into ``_rust_mgr`` —
+            # invalid while ``run()`` holds ``&mut self``. Decline the page;
+            # Rust will fall back to its own zero-fill / static-binary page
+            # source rather than asking Python for a copy.
+            if _is_rust_memory_proxy(state.memory):
                 return (bytes(4096), 0, False)
             try:
                 data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
@@ -1965,6 +2015,10 @@ class RustExplorationManager(
         state = self._get_per_fork_state()
         if state is None:
             return
+        # angr-hcok: proxy gate — Rust already performed every store before
+        # invoking the batch callback. Skip the redundant Python shadow.
+        if _is_rust_memory_proxy(state.memory):
+            return
         for addr, data in stores:
             try:
                 if isinstance(data, (bytes, list)):
@@ -1983,6 +2037,17 @@ class RustExplorationManager(
         state = self._get_per_fork_state()
         if state is None:
             return [(bytes(size), False, None) for _, size in loads]
+
+        # angr-hcok: proxy gate — generate filler BVSs per entry rather
+        # than re-entering Rust through the proxy.
+        if _is_rust_memory_proxy(state.memory):
+            state_id = self._current_callback_state_id
+            results = []
+            for addr, size in loads:
+                ast = claripy.BVS(f"mem_filler_{addr:x}_{size}", size * 8)
+                self._register_handle(id(ast), ast, addr=addr, size=size, state_id=state_id)
+                results.append((bytes(size), True, ast))
+            return results
 
         results = []
         for addr, size in loads:
@@ -2008,6 +2073,11 @@ class RustExplorationManager(
         if state is None:
             return [(bytes(4096), 0, True) for _ in page_addrs]
 
+        # angr-hcok: proxy gate — decline; Rust falls back to its own
+        # zero-fill / static-binary page source.
+        if _is_rust_memory_proxy(state.memory):
+            return [(bytes(4096), 0, False) for _ in page_addrs]
+
         results = []
         for page_addr in page_addrs:
             try:
@@ -2029,6 +2099,12 @@ class RustExplorationManager(
         """Store a symbolic value (claripy AST) to Python state memory."""
         state = self._get_per_fork_state()
         if state is None or ast is None:
+            return
+        # angr-hcok: proxy gate — Rust already holds the symbolic AST in
+        # its own memory; skip the Python shadow write.
+        if _is_rust_memory_proxy(state.memory):
+            if hasattr(ast, 'length') and ast.length:
+                self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8)
             return
         try:
             if hasattr(ast, 'length') and ast.length:
@@ -2063,6 +2139,12 @@ class RustExplorationManager(
         if state is None or addr_ast is None or data_ast is None:
             return
         if self._try_multi_cell_store(addr_ast, data_ast):
+            return
+        # angr-hcok: proxy gate — the Multi-cell fast path above already
+        # handled the write directly in Rust; if it declined, skip the
+        # Python shadow store to avoid the &mut self re-entry.
+        if _is_rust_memory_proxy(state.memory):
+            self._register_handle(id(data_ast), data_ast)
             return
         try:
             state.memory.store(addr_ast, data_ast, endness=state.arch.memory_endness,
@@ -2131,6 +2213,12 @@ class RustExplorationManager(
         state = self._get_per_fork_state()
         if state is None or addr_ast is None:
             return claripy.BVV(0, size * 8)
+        # angr-hcok: proxy gate — synthesize a fresh BVS rather than
+        # re-entering Rust via the proxy mid-run().
+        if _is_rust_memory_proxy(state.memory):
+            ast = claripy.BVS(f"sym_addr_load_{size}", size * 8, explicit_name=False)
+            self._register_handle(id(ast), ast, size=size)
+            return ast
         try:
             ast = state.memory.load(addr_ast, size, endness=state.arch.memory_endness,
                                     inspect=False, disable_actions=True)
