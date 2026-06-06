@@ -12621,6 +12621,51 @@ class TestExplorationStrategy:
             "explore() must succeed with the opt-in enabled (flag is inert today)"
         )
 
+    def test_deep_loop_recipe_dfs_plus_length_limiter(self, fauxware_project):
+        """Recipe for deep-input-loop binaries (angr-smxp / angr-xel4 spike):
+        ``exploration_strategy='dfs'`` combined with the ``LengthLimiter``
+        technique. Both knobs route through native Rust setters
+        (``set_state_selection_lifo`` + ``register_length_limiter``) and must
+        coexist without one overriding the other.
+
+        This smoke-tests the documented recipe in
+        ``docs/advanced-topics/rust_engine.rst`` ("Deep-input-loop binaries
+        (grub-class)" subsection). fauxware is not a deep-loop binary, so we
+        cannot assert the depth-limited regression that motivates the recipe
+        — only that the combination constructs, runs, and respects the
+        ``max_length`` bound on the active stash at the end of exploration.
+        """
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state],
+            exploration_strategy='dfs',
+            max_active_states=64,
+        )
+        max_length = 32
+        mgr.use_technique(
+            angr.exploration_techniques.LengthLimiter(
+                max_length=max_length, drop=True,
+            )
+        )
+
+        mgr.explore(find=find_addr, max_steps=200)
+        assert len(mgr.found) > 0, (
+            "DFS + LengthLimiter recipe must still reach fauxware's find"
+        )
+
+        # No state in the active stash should exceed max_length blocks.
+        # Use the lightweight proxy iterator so we don't pay the cost of
+        # a full SimState export to read history length.
+        for proxy in mgr.active_proxies():
+            depth = len(proxy.history.bbl_addrs)
+            assert depth <= max_length, (
+                f"LengthLimiter should drop states past {max_length} blocks, "
+                f"observed depth={depth}"
+            )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOperationCoverage:

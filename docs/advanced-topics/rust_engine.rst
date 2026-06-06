@@ -2722,6 +2722,93 @@ Recommended posture for adversarial / long-running workloads:
    interesting bits out from ``find`` / ``avoid`` callbacks, not at
    the end.
 
+Deep-input-loop binaries (grub-class)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Binaries that read input in a tight loop and only commit to interesting
+behaviour near the loop's end (grub-style: 13 backspaces + carriage
+return ≈ depth 14) are a known failure mode for the default BFS state
+selection. The BFS frontier expands wide at shallow depth and exhausts
+the step budget before reaching the target depth, OOM-ing the host
+under a typical 4 GB ``RLIMIT_AS``.
+
+The ``angr-xel4`` characterisation (see
+``tests/benchmarks/characterization/deep_loop_search/README.md``)
+measured this on a synthetic grub-proxy. BFS plateaus at depth 9–12
+regardless of step budget; DFS reaches the iteration cap with lower
+RSS and a smaller active stash:
+
+.. list-table:: Deep-loop proxy: BFS vs DFS depth/RSS at N=14
+   :header-rows: 1
+   :widths: 12 10 10 12 16 12
+
+   * - iter cap N
+     - steps
+     - strategy
+     - max depth
+     - active states
+     - peak RSS
+   * - 14
+     - 100
+     - BFS
+     - 9
+     - 65
+     - 429 MB
+   * - 14
+     - 100
+     - DFS
+     - 32
+     - 34
+     - 371 MB
+   * - 14
+     - 300
+     - BFS
+     - 11
+     - 191
+     - 976 MB
+   * - 14
+     - 300
+     - DFS
+     - 32
+     - 31
+     - 645 MB
+
+Recommended recipe::
+
+    from angr.exploration import RustExplorationManager
+    from angr.exploration_techniques import LengthLimiter
+
+    mgr = RustExplorationManager(
+        project, [state],
+        exploration_strategy="dfs",     # LIFO state selection
+        max_active_states=64,           # belt-and-braces fork cap
+    )
+    # Drop states past the expected vulnerability depth.
+    mgr.use_technique(LengthLimiter(max_length=32, drop=True))
+    mgr.explore(find=vuln_addr)
+
+Both ``exploration_strategy="dfs"`` (FFI:
+``set_state_selection_lifo``) and ``LengthLimiter`` (FFI:
+``register_length_limiter``) route through native Rust setters and
+compose without overriding each other. See
+``TestExplorationStrategy.test_deep_loop_recipe_dfs_plus_length_limiter``
+in ``tests/engines/test_rust_exploration.py`` for the regression that
+pins this composition.
+
+When to apply this recipe:
+
+* The binary contains an input-driven loop with bound ≥ 10 basic
+  blocks to the target.
+* Default BFS exploration runs out of step budget or RSS before
+  reaching the target.
+* The active stash grows to hundreds of low-depth states while no
+  state advances past the BFS plateau depth (≈ 9–12).
+
+DFS narrows the frontier but is **not free**: workloads that
+legitimately need broad coverage (CTF crackmes, multi-path inputs)
+regress under DFS. Keep BFS as the default and opt into DFS per-run
+when the workload matches the deep-input-loop shape.
+
 User-facing error taxonomy
 --------------------------
 
