@@ -26,8 +26,9 @@ RUST_TESTS := tests/engines/test_rust_exploration.py
 
 # Curated subset of vanilla angr tests that exercise the Python engine's
 # hot paths (loading, VEX lifter, hooks, sim-procedures, solver, posix,
-# Callable). Intent: catch regressions in vanilla Python angr caused by
-# rust-symex changes BEFORE the full nightly test suite runs.
+# Callable, SimState merge/pickle/global-condition). Intent: catch
+# regressions in vanilla Python angr caused by rust-symex changes BEFORE
+# the full nightly test suite runs.
 # Sized to finish under ~5 minutes on the GitHub Actions ubuntu-latest
 # runner — see `make test-python-baseline` and the `python_baseline` CI
 # job in .github/workflows/ci.yml. Requires angr/binaries cloned at
@@ -44,7 +45,8 @@ PYTHON_BASELINE_TESTS := \
     tests/state_plugins/solver/test_symbolic.py \
     tests/state_plugins/posix/test_files.py \
     tests/procedures/test_sim_procedure.py \
-    tests/factory/test_callable.py
+    tests/factory/test_callable.py \
+    tests/sim/test_state.py
 
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
