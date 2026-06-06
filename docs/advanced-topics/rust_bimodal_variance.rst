@@ -1,3 +1,5 @@
+.. _rust-bimodal-variance:
+
 Rust engine bimodal Z3 variance
 ===============================
 
