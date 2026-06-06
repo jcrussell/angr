@@ -1102,11 +1102,11 @@ fn test_memory_volume_counters_fire_on_load_store() {
 
     let post = get_solver_stats();
     assert!(
-        post.get("mem_load_count").copied().unwrap() >= pre_load + 1,
+        post.get("mem_load_count").copied().unwrap() > pre_load,
         "mem_load_count must climb"
     );
     assert!(
-        post.get("mem_store_count").copied().unwrap() >= pre_store + 1,
+        post.get("mem_store_count").copied().unwrap() > pre_store,
         "mem_store_count must climb"
     );
     assert!(
@@ -1151,7 +1151,7 @@ fn test_concretize_counters_fire_on_symbolic_store() {
 
     let post = get_solver_stats();
     assert!(
-        post.get("concretize_write_count").copied().unwrap() >= pre_write + 1,
+        post.get("concretize_write_count").copied().unwrap() > pre_write,
         "concretize_write_count must climb"
     );
     assert!(

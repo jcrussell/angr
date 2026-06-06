@@ -5928,13 +5928,13 @@ mod tests {
         record_vex_qop(VexOpFamily::Fp);
 
         let stats = get_solver_stats();
-        assert!(stats.get("vex_unop_total").copied().unwrap() >= base_unop + 1);
+        assert!(stats.get("vex_unop_total").copied().unwrap() > base_unop);
         assert!(stats.get("vex_binop_total").copied().unwrap() >= base_binop + 2);
-        assert!(stats.get("vex_triop_total").copied().unwrap() >= base_triop + 1);
-        assert!(stats.get("vex_qop_total").copied().unwrap() >= base_qop + 1);
+        assert!(stats.get("vex_triop_total").copied().unwrap() > base_triop);
+        assert!(stats.get("vex_qop_total").copied().unwrap() > base_qop);
         // Each *_op_<family> got bumped once per record_vex_* call.
         assert!(stats.get("vex_op_arith").copied().unwrap() >= base_arith + 2);
-        assert!(stats.get("vex_op_logic").copied().unwrap() >= base_logic + 1);
+        assert!(stats.get("vex_op_logic").copied().unwrap() > base_logic);
         assert!(stats.get("vex_op_fp").copied().unwrap() >= base_fp + 2);
     }
 
@@ -5964,12 +5964,12 @@ mod tests {
 
         let stats = get_solver_stats();
         assert!(stats.get("mem_load_count").copied().unwrap() >= base_load + 2);
-        assert!(stats.get("mem_store_count").copied().unwrap() >= base_store + 1);
+        assert!(stats.get("mem_store_count").copied().unwrap() > base_store);
         assert!(stats.get("mem_load_bytes").copied().unwrap() >= base_load_bytes + 12);
         assert!(stats.get("mem_store_bytes").copied().unwrap() >= base_store_bytes + 16);
-        assert!(stats.get("mem_load_symbolic_addr").copied().unwrap() >= base_lsym + 1);
-        assert!(stats.get("mem_store_symbolic_addr").copied().unwrap() >= base_ssym + 1);
-        assert!(stats.get("mem_lazy_page_fault_count").copied().unwrap() >= base_fault + 1);
+        assert!(stats.get("mem_load_symbolic_addr").copied().unwrap() > base_lsym);
+        assert!(stats.get("mem_store_symbolic_addr").copied().unwrap() > base_ssym);
+        assert!(stats.get("mem_lazy_page_fault_count").copied().unwrap() > base_fault);
     }
 
     #[test]
@@ -5992,7 +5992,7 @@ mod tests {
 
         let stats = get_solver_stats();
         assert!(stats.get("concretize_read_count").copied().unwrap() >= base_read + 2);
-        assert!(stats.get("concretize_write_count").copied().unwrap() >= base_write + 1);
+        assert!(stats.get("concretize_write_count").copied().unwrap() > base_write);
         // Total candidates: 3 + 7 + 1 = 11.
         assert!(
             stats.get("concretize_total_candidates").copied().unwrap() >= base_total + 11,
@@ -6017,7 +6017,7 @@ mod tests {
         record_bvop_extract();
 
         let stats = get_solver_stats();
-        assert!(stats.get("bvop_reverse_count").copied().unwrap() >= base_rev + 1);
+        assert!(stats.get("bvop_reverse_count").copied().unwrap() > base_rev);
         assert!(stats.get("bvop_concat_count").copied().unwrap() >= base_cat + 2);
         assert!(stats.get("bvop_extract_count").copied().unwrap() >= base_ext + 3);
     }
@@ -6040,9 +6040,9 @@ mod tests {
         let _e = s.extract(15, 0, &ctx);
 
         let stats = get_solver_stats();
-        assert!(stats.get("bvop_reverse_count").copied().unwrap() >= base_rev + 1);
-        assert!(stats.get("bvop_concat_count").copied().unwrap() >= base_cat + 1);
-        assert!(stats.get("bvop_extract_count").copied().unwrap() >= base_ext + 1);
+        assert!(stats.get("bvop_reverse_count").copied().unwrap() > base_rev);
+        assert!(stats.get("bvop_concat_count").copied().unwrap() > base_cat);
+        assert!(stats.get("bvop_extract_count").copied().unwrap() > base_ext);
     }
 
     // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /

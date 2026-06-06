@@ -203,7 +203,7 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
         .copied()
         .unwrap();
     assert!(
-        post_count >= pre_count + 1,
+        post_count > pre_count,
         "expected concretize_disjunction_count to increment (pre={pre_count}, post={post_count})"
     );
     assert!(
@@ -287,7 +287,7 @@ fn test_assert_address_disjunction_multiple_load_hoists() {
     let post = get_solver_stats();
     let post_count = post.get("concretize_disjunction_count").copied().unwrap();
     assert!(
-        post_count >= pre_count + 1,
+        post_count > pre_count,
         "expected concretize_disjunction_count to increment (pre={pre_count}, post={post_count})"
     );
 }
