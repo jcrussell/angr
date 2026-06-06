@@ -447,7 +447,7 @@ impl NativeSyscall for NativeAllocateSyscall {
             return Ok(SyscallOutcome::Continue { ret: CGC_EFAULT });
         }
 
-        let aligned_length = ((length + 0xFFF) / 0x1000) * 0x1000;
+        let aligned_length = length.div_ceil(0x1000) * 0x1000;
 
         // First-fit over the sinkhole freelist; bump otherwise.
         let chosen = if let Some(addr) = state.cgc_take_max_sinkhole(aligned_length) {
@@ -541,7 +541,7 @@ impl NativeSyscall for NativeDeallocateSyscall {
             return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
         }
 
-        let aligned_length = ((length + 0xFFF) / 0x1000) * 0x1000;
+        let aligned_length = length.div_ceil(0x1000) * 0x1000;
 
         // Walk consecutive mapped pages starting at `addr` up to
         // `aligned_length`. Python's procedure stops at the first
