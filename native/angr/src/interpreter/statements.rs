@@ -1838,7 +1838,7 @@ mod tests {
     where
         F: FnOnce(Python<'_>, &PythonCallbacks) -> R,
     {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let callbacks = PythonCallbacks::new();
         Python::attach(|py| f(py, &callbacks))
     }

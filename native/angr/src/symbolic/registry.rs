@@ -332,7 +332,7 @@ mod tests {
         let registry = SymbolicIdentityRegistry::new();
 
         // Register a symbol
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             let obj = py.None();
             registry.register(12345, 1, "x", 32, obj.into());
@@ -349,7 +349,7 @@ mod tests {
     fn test_registry_clear() {
         let registry = SymbolicIdentityRegistry::new();
 
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             let obj = py.None();
             registry.register(12345, 1, "x", 32, obj.into());

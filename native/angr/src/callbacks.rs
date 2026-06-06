@@ -2741,7 +2741,7 @@ mod tests {
 
     #[test]
     fn test_callbacks_creation() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let callbacks = PythonCallbacks::new();
         assert!(!callbacks.is_ready());
     }

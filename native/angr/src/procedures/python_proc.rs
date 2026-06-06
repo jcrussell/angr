@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_register_python_procedure() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             // Build a Python lambda that returns 42.
             let locals = pyo3::types::PyDict::new(py);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_python_procedure_symbolic_falls_back() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_python_procedure_returns_none() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_register_with_registry() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(

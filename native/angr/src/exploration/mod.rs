@@ -2356,7 +2356,7 @@ mod tests {
 
     #[test]
     fn test_exploration_manager_creation() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|_py| {
             let mgr = RustExplorationManager::new("amd64", None).unwrap();
             assert_eq!(mgr.arch(), "amd64");
@@ -2367,7 +2367,7 @@ mod tests {
 
     #[test]
     fn test_stash_management() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
@@ -2386,7 +2386,7 @@ mod tests {
 
     #[test]
     fn test_find_avoid_addresses() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
@@ -2406,7 +2406,7 @@ mod tests {
     /// `profiling` respectively.
     #[test]
     fn test_orchestrator_delegation() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
@@ -2448,7 +2448,7 @@ mod tests {
     /// remains the canonical state-storage and the index is kept in sync.
     #[test]
     fn test_state_lifecycle_orchestration() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
