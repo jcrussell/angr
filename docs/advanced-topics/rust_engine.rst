@@ -3103,7 +3103,10 @@ slowdown is purely CPU time.
 cProfile reading of mma_howtouse and sym-write under both engines —
 identifies Python-side page-init as the dominant cost under both
 engines on callback-heavy benches and confirms the per-callback Rust
-resume overhead is a real but smaller secondary cost.
+resume overhead is a real but smaller secondary cost. The full
+``angr-kvn0`` characterization suite — CoW fork scaling, fleet-level
+resource profile, plus the flame comparison above — is summarized in
+:doc:`rust_engine_characterization`.
 
 ekopartyctf2016_sokohashv2 — 0.36x (Py 5.83s / Rust 16.0s baseline; ~9.5s typical)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
