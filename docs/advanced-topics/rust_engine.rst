@@ -478,12 +478,12 @@ it).
 In-flight push/pop on a single state's solver is balanced inside a
 ``with_z3_solver(|solver| { ... })`` closure at every call site:
 
-* ``check_branch_feasibility`` (``context.rs:2164–2215``) — outer
+* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
   closure holds the lock; each direction does ``push → assert →
   timed_check → pop(1)``. The two pushes (one per direction) are
   serial, not nested, and dispatched from the cached-model fast path
   when available (skipping the predicted direction).
-* ``eval_upto`` / ``eval_upto_wide`` (``2391``, ``2464``) — one outer
+* ``eval_upto`` / ``eval_upto_wide`` (``2539``, ``2601``) — one outer
   ``push`` brackets up to *n* SAT-and-exclude iterations; one outer
   ``pop(1)`` discards every exclusion assertion in O(1).
 * ``min`` / ``max`` / ``range_seeded`` (``2592``, ``2714``, ``2853``)
@@ -548,9 +548,9 @@ Soft asserts and ``assert_and_track``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The engine has exactly **one** call site for ``assert_and_track``
-(``context.rs:1924``) reached only via
+(``context.rs:2073``) reached only via
 ``SymContext::add_constraint_tracked_indexed`` →
-``RustSolverContext::add_constraint_tracked_ast`` (``solver.rs:233``).
+``RustSolverContext::add_constraint_tracked_ast`` (``solver.rs:239``).
 That path is the explicit "I want ``solver.get_unsat_core()`` to name
 this constraint" entry point; the Python wrapper
 (``angr/exploration/rust_manager.py``) never calls it during
@@ -584,14 +584,14 @@ Z3 simplification touches the engine in three places:
 1. **No call to ``Bool::simplify`` on the assertion hot path.** The
    only ``.simplify()`` invocation in ``native/angr/src/`` is the
    sampled measurement helper ``sample_simplify_skip``
-   (``context.rs:907``), which runs every 64th call across
+   (``context.rs:989``), which runs every 64th call across
    ``assume_true`` / ``assume_false`` / ``add_constraint_raw`` and
    only records whether the simplification would have produced a
    distinct AST pointer. The simplified Bool is dropped — the
    un-simplified ``z3::ast::Bool`` is what reaches the solver. The
    sample rate keeps measurement overhead at ~1.5%.
 2. **Solver-internal preprocessing.** ``build_solver_params``
-   (``context.rs:975``) sets ``bv_extract_prop=true`` and
+   (``context.rs:1058``) sets ``bv_extract_prop=true`` and
    ``mul2concat=true``; the rest of preprocessing
    (``simplify:propagate-values:solve-eqs:bit-blast:sat``) runs on the
    first ``check()`` call after each assertion batch
@@ -1403,7 +1403,7 @@ Honored options
      - Where Rust reads it
      - Effect
    * - ``LAZY_SOLVES``
-     - ``rust_manager.py:1417``, ``:3895`` (re-checked at ``explore()`` time)
+     - ``rust_manager.py:1417``, ``:3896`` (re-checked at ``explore()`` time)
      - Calls ``set_lazy_solves(True)``; Rust skips per-block satisfiability
        checks. Also propagated through ``_apply_state_metadata`` on
        disk-cache reuse (``:3196``).
@@ -1422,7 +1422,7 @@ Honored options
        Rust permits multi-valued symbolic write targets instead of
        forcing concretization.
    * - ``STRICT_PAGE_ACCESS``
-     - ``rust_manager.py:3516`` (per-state, also propagated through
+     - ``rust_manager.py:3517`` (per-state, also propagated through
        ``_apply_state_metadata`` on disk-cache reuse)
      - Calls ``RustSimState::set_enforce_permissions(True)``; loads/stores
        violating per-page R/W bits raise ``SimSegfaultError``. Preserved
@@ -1635,7 +1635,7 @@ vs. Python.
    driven by unconstrained initial register values would simply not be
    explored. The MEMORY variant ``SYMBOL_FILL_UNCONSTRAINED_MEMORY`` is
    NOT promoted because Rust's ``load_concrete_lazy``
-   (``native/angr/src/memory/load.rs:333-339``) already falls back to a
+   (``native/angr/src/memory/load.rs:384-394``) already falls back to a
    fresh ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
    unset — i.e., symbolic-fill is Rust's default for memory.
 
@@ -1728,7 +1728,7 @@ vs. Python.
    * - ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``
      - Force symbolic fill on uninitialized memory reads.
      - **Matches by default.** Rust's ``load_concrete_lazy``
-       (``native/angr/src/memory/load.rs:333-339``) returns a fresh
+       (``native/angr/src/memory/load.rs:384-394``) returns a fresh
        ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
        unset — i.e., symbolic-fill is already Rust's default for memory.
        The option is silently accepted but has no effect because Rust
@@ -2751,13 +2751,13 @@ variant, this table is the first thing to update.
        error, or generic ``Unsupported`` — anything not promoted to
        a specialized subclass). Useful as a single-clause catch for
        "anything the Rust engine threw".
-     - ``errors.rs:95-108``; populated via the catch-all arms in
+     - ``errors.rs:99-115``; populated via the catch-all arms in
        ``engine.rs:cb_execution_error_to_typed`` / ``op_error_to_typed``.
    * - ``RustMalformedIRSBError``
      - The pyvex lifter produced an IRSB the interpreter could not
        execute (bad/missing statements, malformed exits, invalid
        block bounds).
-     - ``errors.rs:75-77``; raised from
+     - ``errors.rs:79-80``; raised from
        ``CbExecutionError::InvalidIR(reason)`` mapped at
        ``engine.rs::cb_execution_error_to_typed`` (def ``:31``,
        InvalidIR arm ``:33``).
@@ -2771,14 +2771,14 @@ variant, this table is the first thing to update.
        hook (``engine.rs::_raise_typed_test_error`` def ``:319``,
        ``unsupported_syscall`` arm ``:331``). No production trigger
        in the current code.
-     - ``errors.rs:78-84``; production sites land here when an
+     - ``errors.rs:82-88``; production sites land here when an
        upcoming Rust syscall handler chooses to raise rather than
        fall back to Python.
    * - ``RustUnsupportedVexOpError``
      - A VEX op (NEON / vector / unmapped opcode) is not implemented
        by the Rust interpreter. The op name and arch are baked into
        the message.
-     - ``errors.rs:86-87``; populated from ``OpError::UnsupportedNeon``,
+     - ``errors.rs:90-91``; populated from ``OpError::UnsupportedNeon``,
        ``OpError::UnsupportedVectorOp``, ``OpError::UnsupportedVexOp``
        at ``engine.rs::op_error_to_typed`` (def ``:53``, arms ``:55-68``).
    * - ``RustZ3Error``
@@ -2790,7 +2790,7 @@ variant, this table is the first thing to update.
        ``_raise_typed_test_error("z3", ...)`` hook
        (``engine.rs::_raise_typed_test_error`` def ``:319``, ``z3``
        arm ``:341``).
-     - ``errors.rs:89-90``.
+     - ``errors.rs:93-94``.
    * - ``RustOomError``
      - Rust allocator returned a failure that the engine can
        propagate (as opposed to ``alloc::handle_alloc_error`` aborting
@@ -2802,10 +2802,10 @@ variant, this table is the first thing to update.
        ``_raise_typed_test_error("oom", ...)`` hook
        (``engine.rs::_raise_typed_test_error`` def ``:319``, ``oom``
        arm ``:342``) raises it.
-     - ``errors.rs:92-93``.
+     - ``errors.rs:96-97``.
 
 The ``RustExecError`` Rust enum is ``#[non_exhaustive]``
-(``errors.rs:72``) so new variants can land in minor versions
+(``errors.rs:76``) so new variants can land in minor versions
 without breaking downstream code that matches on it.
 
 NotImplementedError at manager construction
@@ -3197,7 +3197,7 @@ State ID handling
 
 Every public method that accepts a ``state_id: u64`` routes through
 ``RustExplorationManager::find_state`` /
-``find_state_mut`` (``exploration/helpers.rs:103``). Misses become one
+``find_state_mut`` (``exploration/helpers.rs:122``). Misses become one
 of two surfaces depending on the call site:
 
 * **Optional reads** — ``get_state_pc_by_id``,
@@ -3222,7 +3222,7 @@ that need an assertion should check the return value
 Callback registration
 ~~~~~~~~~~~~~~~~~~~~~
 
-``PythonCallbacks`` (``callbacks.rs:303``) holds 24 ``Option<Py<PyAny>>``
+``PythonCallbacks`` (``callbacks.rs:398``) holds 24 ``Option<Py<PyAny>>``
 slots, one per dispatch site (memory load/store, hooks, syscall,
 lift_block, dirty_call, page fetch, six ``state.inspect`` slots,
 etc.). ``Py<PyAny>`` is an owning Python refcount, so a callback
@@ -3240,7 +3240,7 @@ keeps it alive.
   field raises ``TypeError``. The engine surfaces these as
   ``PyErr`` rather than misinterpreting bytes.
 * **GC cycle break**. ``PythonCallbacks::__traverse__`` /
-  ``__clear__`` (``callbacks.rs:809``) walk every ``Py<PyAny>`` slot
+  ``__clear__`` (``callbacks.rs:1184``) walk every ``Py<PyAny>`` slot
   so Python GC can collect the ``mgr → _callbacks → bound-method →
   mgr`` cycle. Without this, ``RustExplorationManager`` (and its
   ``_state_cache`` of ~4030 angr pages on ``mma_howtouse``) would
@@ -3305,7 +3305,7 @@ a raw pointer with no validation:
   on ``RustSolverContext`` is **not** Python-callable directly — it
   is only reachable through ``add_constraint_ast`` /
   ``add_constraint_tracked_ast``, which extract the pointer from
-  claripy's z3 backend (``solver.rs:26``) and so are safe by
+  claripy's z3 backend (``solver.rs:38``) and so are safe by
   construction.
 
   **Hardening landed (angr-33t9, 2026-06-01).**
@@ -3368,7 +3368,7 @@ PyRustSimState lifetime
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 ``add_state(&mut self, stash, state: &PyRustSimState)``
-(``exploration/state_lifecycle.rs:53``) forks the incoming state via
+(``exploration/state_lifecycle.rs:71``) forks the incoming state via
 ``state.inner().fork()``, so the engine ends up owning an isolated
 copy. Subsequent Python-side mutations of the original
 ``PyRustSimState`` do not affect the engine's state. The ``state``
@@ -3481,7 +3481,7 @@ binary entry — slow, and (for nondeterministic Z3 paths, see
 What ``RustSimState`` owns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Defined at ``native/angr/src/state.rs:689``. Roughly four buckets:
+Defined at ``native/angr/src/state.rs:948``. Roughly four buckets:
 
 * **Concrete, plain-data fields** — ``pc``, ``state_id``, ``parent_id``,
   ``history`` (``Vec<u64>``), ``detailed_history`` (``Vec<HistoryEntry>``),
@@ -3578,7 +3578,7 @@ What lives OUTSIDE ``RustSimState``
 For a "load and continue exploration" experience (vs. "load and
 inspect a single state"), the snapshot would also need:
 
-* ``StashManager`` (``native/angr/src/stash.rs:36``) — straightforward:
+* ``StashManager`` (``native/angr/src/stash.rs:51``) — straightforward:
   ``HashMap<String, VecDeque<RustSimState>>`` plus a few counters and
   the state_index ``HashMap<u64, String>`` mirror. Reuse the same
   per-state codec.
@@ -3983,7 +3983,7 @@ state-graph data structures are intentionally ``!Send`` so the compiler
 prevents accidental cross-thread sharing. The PyO3 ``unsendable`` markers
 on the load-bearing types are not stylistic — they encode a deep
 architectural constraint rooted in z3-rs's thread-local Z3 context model
-(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:81``).
+(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
 
 Pyclass inventory
 ~~~~~~~~~~~~~~~~~
@@ -3992,25 +3992,25 @@ Six ``#[pyclass(unsendable)]`` types — cannot be shared across OS
 threads even with a ``Mutex``, because they hold ``!Send`` interior
 state:
 
-- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:371``)
+- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:386``)
   — coordinator; transitively owns the StashManager (which holds the
   per-state ``Rc<RefCell<SymContext>>``) plus thread-bound Z3 solver
   handles. The unsendable marker is correct.
-- ``PyRustSimState`` (``native/angr/src/state.rs:2265``) — wraps
+- ``PyRustSimState`` (``native/angr/src/state.rs:2703``) — wraps
   ``RustSimState`` which holds ``solver: Rc<RefCell<SymContext>>``
-  (``state.rs:851``). ``Rc`` is the binding constraint; replacing it with
+  (``state.rs:960``). ``Rc`` is the binding constraint; replacing it with
   ``Arc<Mutex<SymContext>>`` is necessary but **not sufficient** (see
   Z3 constraints below).
-- ``RustSolverContext`` (``native/angr/src/solver.rs:83``) — holds
+- ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
   ``SolverCtxStorage`` which is either ``SymContext`` directly or
   ``Rc<RefCell<SymContext>>`` shared with a parent state. Same blocker
   as ``PyRustSimState``.
-- ``Fuzzer`` (``native/angr/src/fuzzer.rs:58``) — libafl state machine;
+- ``Fuzzer`` (``native/angr/src/fuzzer.rs:59``) — libafl state machine;
   ``unsendable`` for libafl-internal reasons (Python callbacks held as
   closures). Out of scope for the symex engine's parallel story.
-- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:139``) — libafl
+- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
   on-disk handle; same scope as ``Fuzzer``.
-- ``Icicle`` (``native/angr/src/icicle.rs:229``) — icicle VM owns
+- ``Icicle`` (``native/angr/src/icicle.rs:230``) — icicle VM owns
   thread-local JIT state; ``unsendable`` is correct.
 
 The plain ``#[pyclass]`` types (without ``unsendable``) are all
@@ -4022,20 +4022,20 @@ GIL controls actual dereference). No refactor needed for these:
   ``PythonCallbacks``, ``LoopExecutionEvent``
   (``native/angr/src/callbacks.rs``) — value types, plus ``Py<PyAny>``
   callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.
-- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:110``) —
+- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —
   value type built from primitives + ``Py<PyAny>``.
-- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:26``) — three
+- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
   POD fields (``id: u64``, ``width: u32``, ``concrete: Option<u128>``).
   Cheap to ship across threads but useless without the matching
   symbol-table entry, which lives inside the ``unsendable``
   ``RustSolverContext``.
-- ``ExplorationStateSnapshot`` (``native/angr/src/state.rs:2769``) —
+- ``ExplorationStateSnapshot`` (``native/angr/src/state.rs:3228``) —
   the serializable snapshot type added by ``angr-zidj`` is already
   ``Send + Sync``. **This is the recommended cross-thread transport
   type** (see Recommendation below).
 - ``Segment``, ``SegmentList``, ``SegmentListIter``
   (``native/angr/src/segmentlist.rs``) — pure value types, Send+Sync.
-- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:45,94``) —
+- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:47,97``) —
   C-like enums.
 - ``PyState``, ``PySymbol``, ``PyEpsilon``, ``PyEpsilonNFA``, ``PyDFA``
   (``native/angr/src/automaton/python_bindings.rs``) — automaton API;
@@ -4051,7 +4051,7 @@ Three architectural constraints must be relaxed before a worker thread
 can step a state in parallel with the main thread. Each blocker stands
 alone — fixing any one in isolation does not enable parallelism.
 
-**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:851).**
+**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
    Used at 7 mutation sites including all four fork variants
    (``fork``, ``fork_true``, ``fork_false``, plus the snapshot-restore
    fork). Pattern is "share parent solver on fork, fork-on-mutate" — a
@@ -4099,7 +4099,7 @@ Secondary considerations
   hold a Python reference to the ``unsendable`` Rust manager. They are
   not directly subject to a Rust ``Send`` / ``Sync`` audit, but inherit
   the same single-thread constraint via the Rust handle they wrap.
-- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:58``) is
+- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:63``) is
   fine — each worker would get its own.
 
 Recommendation: ship snapshots, not states
