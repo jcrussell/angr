@@ -558,19 +558,31 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+        // angr-5aj8: split into 16-byte chunks. RustBV::Concrete is u128-backed;
+        // packing more than 16 bytes (the prior implementation silently truncated
+        // and constructed an oversized concrete BV) leaves store_concrete to emit
+        // a 16-byte-cycle pattern across the entire claimed width. Use the safe
+        // pattern from RustSimState::apply_changes.
         self.with_pending_mut(|pending| {
-            let mut value: u128 = 0;
-            for (i, &byte) in data.iter().enumerate() {
-                if i < 16 {
-                    value |= (byte as u128) << (i * 8);
+            let mut offset = 0usize;
+            while offset < data.len() {
+                let remaining = data.len() - offset;
+                let chunk_size = remaining.min(16);
+                let chunk = &data[offset..offset + chunk_size];
+                let width = (chunk_size * 8) as u32;
+                let mut value: u128 = 0;
+                for (i, &b) in chunk.iter().enumerate() {
+                    value |= (b as u128) << (i * 8);
                 }
+                let bv = RustBV::concrete(value, width);
+                pending
+                    .state
+                    .memory_mut()
+                    .store_concrete(addr + offset as u64, bv)
+                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))?;
+                offset += chunk_size;
             }
-            let bv = RustBV::concrete(value, (data.len() * 8) as u32);
-            pending
-                .state
-                .memory_mut()
-                .store_concrete(addr, bv)
-                .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+            Ok(())
         })
     }
 

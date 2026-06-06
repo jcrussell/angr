@@ -688,16 +688,30 @@ impl RustExplorationManager {
         addr: u64,
         data: &[u8],
     ) -> PyResult<()> {
+        // angr-5aj8: split into 16-byte chunks because RustBV::Concrete is
+        // backed by a u128. A single packed value would shift-overflow for
+        // byte indices >= 16, and the downstream store_concrete page-fill
+        // loop would emit a 16-byte-cycle pattern across the entire
+        // data.len() range — corrupting memory wholesale. Mirrors the safe
+        // pattern in RustSimState::apply_changes (state.rs).
         self.with_state_mut(state_id, |state| {
-            let width = (data.len() * 8) as u32;
-            let mut value: u128 = 0;
-            for (i, &b) in data.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
+            let mut offset = 0usize;
+            while offset < data.len() {
+                let remaining = data.len() - offset;
+                let chunk_size = remaining.min(16);
+                let chunk = &data[offset..offset + chunk_size];
+                let width = (chunk_size * 8) as u32;
+                let mut value: u128 = 0;
+                for (i, &b) in chunk.iter().enumerate() {
+                    value |= (b as u128) << (i * 8);
+                }
+                let bv = crate::symbolic::RustBV::concrete(value, width);
+                state
+                    .memory_store(addr + offset as u64, bv)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                offset += chunk_size;
             }
-            let bv = crate::symbolic::RustBV::concrete(value, width);
-            state
-                .memory_store(addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            Ok(())
         })
     }
 
