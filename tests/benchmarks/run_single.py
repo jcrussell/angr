@@ -57,7 +57,7 @@ EXAMPLE_CATALOG = {
     # === New benchmark candidates (untested with Rust engine) ===
     "sharif7_rev50":           {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
     "defcon2016quals_baby-re": {"tier": "medium",  "rust_ok": True,  "notes": "scanf hooks, Py 1.5s Rust 28s (slow)"},
-    "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "Rust list index error"},
+    "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "2026-06-06 refresh (angr-oh6a): TIMEOUT >60s (no longer the 'list index error' the catalog historically claimed; pre-iter-497 note replaced)"},
     "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
     "unmapped_analysis":       {"tier": "fast",    "rust_ok": True,  "notes": "STRICT_PAGE_ACCESS, DivModU128to64 fix"},
@@ -69,7 +69,7 @@ EXAMPLE_CATALOG = {
     "defcamp_r200":            {"tier": "medium",  "rust_ok": None,  "notes": "BROKEN: Python fails too (ManualMergepoint)"},
     "CADET_00001":             {"tier": "medium",  "rust_ok": False, "notes": "CGC challenge: Py 22s (buffer-overflow + 2x easter-egg explore). Rust post-angr-rdgs (e16ca3bf3) has all 7 CGC syscalls native + buffer-overflow phase passes in ~0.1s; but easter-egg phase (sm.explore find=0x804833E) does not converge inside the default step budget, so solve.py raises IndexError at sm.found[0] in ~4.3s. Tracked python-only in baseline_timings.json; see angr-zgk6 and bd memory benchmark-cadet-cgc-partial-unblock for full unblock plan."},
     "ekopartyctf2015_rev100":  {"tier": "medium",  "rust_ok": False, "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout"},
-    "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "Multi-stage explore+unstash, Rust list index error"},
+    "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "2026-06-06 refresh (angr-oh6a): FAIL 0.08s NotImplementedError SYMBOL_FILL_UNCONSTRAINED_REGISTERS (matches simple_heap_overflow pattern; SimOption guard short-circuits before exploration begins). Catalog previously claimed 'list index error'; the guard supersedes that path entirely now."},
     "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "save_unconstrained, Windows PE, Py 8.6s Rust 18.6s (0.46x)"},
     "insomnihack_aeg":         {"tier": "slow",    "rust_ok": False, "notes": "Post-fkvt: Rust OOMs at ~75s under 4GB cap (state explosion during AEG exploration); Py >180s (posix.dumps over symbolic stdin). Not viable for regression gate. See angr-86c4.", "argv": ["./demo_bin"]},
     "0ctf_trace":              {"tier": "medium",  "rust_ok": None,  "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s"},
