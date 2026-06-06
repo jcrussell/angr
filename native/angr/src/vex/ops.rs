@@ -8214,7 +8214,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vqadd_8sx8_symbolic_matches_python_ref() {
-        use z3::ast::Ast;
 
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "vqadd_a", 64);
@@ -9951,7 +9950,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vqshl_16x4_symbolic_universal_unsigned() {
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "qshl_a_16x4", 64);
         let b = RustBV::symbolic(&ctx, "qshl_b_16x4", 64);
@@ -10003,7 +10001,6 @@ mod tests {
     #[cfg(feature = "vex-engine-z3")]
     #[test]
     fn test_vqsal_16x4_symbolic_universal_signed() {
-        use z3::ast::Ast;
         let ctx = SymContext::new_mock();
         let a = RustBV::symbolic(&ctx, "qsal_a_16x4", 64);
         let b = RustBV::symbolic(&ctx, "qsal_b_16x4", 64);

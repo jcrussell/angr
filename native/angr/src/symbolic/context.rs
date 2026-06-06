@@ -5500,7 +5500,6 @@ mod tests {
     fn test_z3_same_name_different_create() {
         // Test that creating variables with the same name but different calls
         // still references the same Z3 variable
-        use z3::ast::Ast;
 
         let ctx = SymContext::new();
 
@@ -6052,7 +6051,6 @@ mod tests {
     #[test]
     fn test_smtlib2_constraint_round_trip() {
         use std::time::Instant;
-        use z3::ast::Ast;
 
         // Build a non-trivial constraint set: 32-bit BVs + Extract + Concat +
         // multiple assertions. Names are uniquified so we don't collide with
@@ -6161,7 +6159,6 @@ mod tests {
     #[test]
     fn test_smtlib2_constraint_round_trip_scaled() {
         use std::time::Instant;
-        use z3::ast::Ast;
 
         let ctx = SymContext::new();
         const NVARS: usize = 32;
