@@ -297,7 +297,7 @@ below "Supported" as experimental.
      - Supported (gs_const at archinfo offset 1032; sseround at 216)
    * - x86 (32-bit)
      - 4
-     - 1 (Cdecl ret reg)
+     - 2 (Cdecl ret reg, LE blob)
      - 8 (3 FAST + 5 MEDIUM)
      - Cdecl
      - Supported (selectors: CS/DS/ES/FS/GS/SS; bases: LDT/GDT + FS_CONST/GS_CONST placeholders)
@@ -353,8 +353,10 @@ integration test that loads a real binary, runs ``mgr.run(...)``, and
 verifies a found state. To promote Experimental → Supported: add a
 benchmark and ensure it stays green in regression runs. The Cdecl x86
 return-register bug (commit ``5329d8222``) was latent for months
-precisely because no end-to-end x86 test ran — assume the same risk
-for any new arch added without coverage.
+precisely because no end-to-end x86 test ran — that gap is now closed
+by ``test_x86_explore_blob`` (i386 ``cmp``/``je``/``jmp`` round-trip
+asserting ``eax == 42`` solves ``2*eax + 16 == 100``). Assume the same
+risk for any new arch added without coverage.
 
 x86 (32-bit) single-CC note
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

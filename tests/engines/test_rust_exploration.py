@@ -8373,6 +8373,77 @@ class TestMultiArchSupport:
         with pytest.raises(Exception):
             RustSimState("pdp11")
 
+    def test_x86_explore_blob(self, tmp_path):
+        """End-to-end x86 (32-bit) exploration on a hand-assembled blob.
+
+        x86 register/CC plumbing in ``arch/x86.rs`` is exercised by unit
+        tests (state creation, segment selectors, segment bases) but no
+        end-to-end Rust-engine test ran on a real x86 instruction stream
+        — exactly the gap that let the Cdecl return-register bug
+        (5329d8222) hide for months on amd64. This test ships a small
+        i386 program as raw bytes, loads it via cle's Blob backend, and
+        drives ``eax`` through ``RustExplorationManager.explore`` to
+        confirm VEX interpretation, register sync, conditional branch
+        resolution, and solver evaluation all work on x86.
+
+        The program computes ``2*eax + 16`` and branches to ``found`` if
+        the result equals 100; ``eax == 42`` is the canonical solution.
+        Promotes x86 (32-bit) from Skeleton (no e2e coverage) to
+        Experimental — tested in the arch support matrix.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # i386 little-endian:
+        #   0x00: 01 C0       add eax, eax           ; eax = 2*eax
+        #   0x02: 83 C0 10    add eax, 0x10          ; eax = 2*eax + 16
+        #   0x05: 83 F8 64    cmp eax, 0x64          ; cmp eax, 100
+        #   0x08: 74 06       je  +6  -> 0x10        ; found
+        #   0x0a: EB 0C       jmp +12 -> 0x18        ; avoid
+        #   0x0c: 90 90 90 90 (pad to 0x10)
+        #   0x10: 90 90 90 90 90 90 90 90  (found region)
+        #   0x18: 90          (avoid)
+        code = bytes.fromhex(
+            "01C0"            # add eax, eax
+            "83C010"          # add eax, 0x10
+            "83F864"          # cmp eax, 0x64
+            "7406"            # je  +6  -> 0x10
+            "EB0C"            # jmp +12 -> 0x18
+            "90909090"        # pad 0x0c..0x0f
+            "9090909090909090"  # found region 0x10..0x17
+            "90"              # avoid 0x18
+        )
+        assert len(code) == 0x19
+        blob_path = tmp_path / "x86_branch.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "x86", "base_addr": 0x400000},
+            auto_load_libs=False,
+        )
+        assert proj.arch.name == "X86"
+        assert proj.arch.bits == 32
+
+        state = proj.factory.blank_state(addr=0x400000)
+        eax = claripy.BVS("eax", 32)
+        state.regs.eax = eax
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=100)
+
+        assert len(mgr.found) >= 1, (
+            f"x86 exploration did not reach 0x400010; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        # 2*eax + 16 == 100  ⇒  eax == 42.
+        assert found.solver.eval(eax) == 42, (
+            f"Expected eax==42 to reach found, got {found.solver.eval(eax)}"
+        )
+
     def test_arm32_explore_real_binary(self):
         """End-to-end ARM32 (ARMEL) exploration on a real binary.
 
