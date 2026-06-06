@@ -6010,9 +6010,9 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..8 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16 as i16;
-            assert_eq!(lane, exp[i], "lane {} expected {}, got {}", i, exp[i], lane);
+            assert_eq!(lane, expected, "lane {} expected {}, got {}", i, expected, lane);
         }
     }
 
@@ -6048,12 +6048,12 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..16 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = ((got >> (i as u32 * 8)) & 0xFF) as u8;
             assert_eq!(
-                lane, exp[i],
+                lane, expected,
                 "lane {} expected {:#x}, got {:#x}",
-                i, exp[i], lane
+                i, expected, lane
             );
         }
     }
@@ -6081,12 +6081,12 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..8 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16;
             assert_eq!(
-                lane, exp[i],
+                lane, expected,
                 "lane {} expected {:#x}, got {:#x}",
-                i, exp[i], lane
+                i, expected, lane
             );
         }
     }
@@ -6355,13 +6355,13 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..4 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
             assert!(
-                (lane - exp[i]).abs() < 1e-6,
+                (lane - expected).abs() < 1e-6,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6393,13 +6393,13 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..2 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
             assert!(
-                (lane - exp[i]).abs() < 1e-12,
+                (lane - expected).abs() < 1e-12,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6427,13 +6427,13 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..4 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
             assert!(
-                (lane - exp[i]).abs() < 1e-6,
+                (lane - expected).abs() < 1e-6,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6461,14 +6461,14 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..4 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
             assert_eq!(
                 lane.to_bits(),
-                exp[i].to_bits(),
+                expected.to_bits(),
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6500,13 +6500,13 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..4 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
             assert!(
-                (lane - exp[i]).abs() < 1e-6,
+                (lane - expected).abs() < 1e-6,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6538,13 +6538,13 @@ mod tests {
         )
         .unwrap();
         let got = result.as_u128().unwrap();
-        for i in 0..2 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
             assert!(
-                (lane - exp[i]).abs() < 1e-12,
+                (lane - expected).abs() < 1e-12,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
@@ -6590,13 +6590,13 @@ mod tests {
 
         let model = ctx.eval(&result).expect("eval(result) returned None");
         let exp = [3.0f32, 4.0, 5.0, 6.0];
-        for i in 0..4 {
+        for (i, &expected) in exp.iter().enumerate() {
             let lane = f32::from_bits(((model >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
             assert!(
-                (lane - exp[i]).abs() < 1e-6,
+                (lane - expected).abs() < 1e-6,
                 "lane {} expected {}, got {}",
                 i,
-                exp[i],
+                expected,
                 lane
             );
         }
