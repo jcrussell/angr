@@ -1,0 +1,120 @@
+# cProfile cumulative time, top 50
+         13226302 function calls (13134336 primitive calls) in 8.181 seconds
+
+   Ordered by: cumulative time
+   List reduced from 9431 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    8.185    8.185 /home/ubuntu/repos/angr/tests/benchmarks/profile_python_bench.py:80(_run_solve)
+   2081/1    0.004    0.000    8.185    8.185 <frozen importlib._bootstrap_external>:989(exec_module)
+   4555/1    0.002    0.000    8.185    8.185 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+   2359/1    0.032    0.000    8.185    8.185 {built-in method builtins.exec}
+        1    0.000    0.000    8.185    8.185 /home/ubuntu/repos/angr-examples/examples/mma_howtouse/solve.py:1(<module>)
+        1    0.000    0.000    7.104    7.104 /home/ubuntu/repos/angr-examples/examples/mma_howtouse/solve.py:16(main)
+19361/19271    0.005    0.000    7.044    0.000 {method 'join' of 'str' objects}
+       46    0.000    0.000    7.038    0.153 /home/ubuntu/repos/angr-examples/examples/mma_howtouse/solve.py:30(<genexpr>)
+       45    0.000    0.000    7.038    0.156 /home/ubuntu/repos/angr-examples/examples/mma_howtouse/solve.py:27(<lambda>)
+       45    0.001    0.000    7.038    0.156 /home/ubuntu/repos/angr/angr/callable.py:88(__call__)
+       45    0.001    0.000    6.935    0.154 /home/ubuntu/repos/angr/angr/callable.py:98(perform_call)
+       45    0.000    0.000    5.300    0.118 /home/ubuntu/repos/angr/angr/factory.py:164(call_state)
+       45    0.001    0.000    5.300    0.118 /home/ubuntu/repos/angr/angr/simos/simos.py:249(state_call)
+       45    0.008    0.000    5.237    0.116 /home/ubuntu/repos/angr/angr/simos/windows.py:188(state_blank)
+2430/2340    0.002    0.000    4.474    0.002 /home/ubuntu/repos/angr/angr/sim_state.py:460(_set_plugin_state)
+      405    0.000    0.000    4.463    0.011 /home/ubuntu/repos/angr/angr/misc/plugins.py:72(__getattr__)
+      405    0.000    0.000    4.463    0.011 /home/ubuntu/repos/angr/angr/sim_state.py:436(get_plugin)
+      405    0.001    0.000    4.463    0.011 /home/ubuntu/repos/angr/angr/misc/plugins.py:148(get_plugin)
+      135    0.000    0.000    4.462    0.033 /home/ubuntu/repos/angr/angr/storage/memory_mixins/address_concretization_mixin.py:366(map_region)
+      135    0.058    0.000    4.462    0.033 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:347(map_region)
+      405    0.001    0.000    4.457    0.011 /home/ubuntu/repos/angr/angr/sim_state.py:455(_init_plugin)
+      225    0.001    0.000    4.453    0.020 /home/ubuntu/repos/angr/angr/state_plugins/heap/heap_base.py:119(init_state)
+    92565    0.152    0.000    4.404    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:374(_map_page)
+   105862    0.079    0.000    2.590    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/privileged_mixin.py:23(_get_page)
+   105862    0.086    0.000    2.506    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:66(_get_page)
+    92763    0.066    0.000    2.331    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/stack_allocation_mixin.py:72(_initialize_page)
+    92763    0.104    0.000    2.265    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:187(_initialize_page)
+    92763    0.102    0.000    2.113    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:52(_initialize_page)
+    92700    1.654    0.000    1.971    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:240(_initialize_page)
+    92565    0.265    0.000    1.790    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:85(_initialize_default_page)
+       45    0.000    0.000    1.609    0.036 /home/ubuntu/repos/angr/angr/sim_manager.py:348(run)
+  270/135    0.001    0.000    1.608    0.012 /home/ubuntu/repos/angr/angr/misc/hookset.py:93(__call__)
+      135    0.000    0.000    1.608    0.012 /home/ubuntu/repos/angr/angr/exploration_techniques/suggestions.py:46(step)
+      135    0.002    0.000    1.607    0.012 /home/ubuntu/repos/angr/angr/sim_manager.py:380(step)
+      135    0.000    0.000    1.598    0.012 /home/ubuntu/repos/angr/angr/sim_manager.py:508(step_state)
+      135    0.000    0.000    1.597    0.012 /home/ubuntu/repos/angr/angr/sim_manager.py:558(successors)
+      135    0.000    0.000    1.597    0.012 /home/ubuntu/repos/angr/angr/factory.py:98(successors)
+      135    0.000    0.000    1.596    0.012 /home/ubuntu/repos/angr/angr/engines/vex/light/slicing.py:17(process)
+      135    0.004    0.000    1.596    0.012 /home/ubuntu/repos/angr/angr/engines/successors.py:517(process)
+   185265    0.109    0.000    1.536    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:91(_initialize_page)
+    92718    0.283    0.000    1.398    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:27(__init__)
+      135    0.000    0.000    1.171    0.009 /home/ubuntu/repos/angr/angr/engines/failure.py:15(process_successors)
+      135    0.000    0.000    1.170    0.009 /home/ubuntu/repos/angr/angr/engines/syscall.py:21(process_successors)
+      135    0.000    0.000    1.170    0.009 /home/ubuntu/repos/angr/angr/engines/hook.py:77(process_successors)
+       90    0.000    0.000    1.140    0.013 /home/ubuntu/repos/angr/angr/engines/unicorn.py:398(process_successors)
+       90    0.000    0.000    1.139    0.013 /home/ubuntu/repos/angr/angr/engines/soot/engine.py:69(process_successors)
+       90    0.000    0.000    1.135    0.013 /home/ubuntu/repos/angr/angr/engines/ail/engine_successors.py:13(process_successors)
+       90    0.001    0.000    1.135    0.013 /home/ubuntu/repos/angr/angr/engines/vex/heavy/heavy.py:85(process_successors)
+       90    0.000    0.000    1.122    0.012 /home/ubuntu/repos/angr/angr/engines/vex/heavy/super_fastpath.py:16(handle_vex_block)
+       90    0.000    0.000    1.122    0.012 /home/ubuntu/repos/angr/angr/engines/vex/light/slicing.py:23(handle_vex_block)
+
+
+
+
+# cProfile tottime (self), top 50
+         13226302 function calls (13134336 primitive calls) in 8.181 seconds
+
+   Ordered by: internal time
+   List reduced from 9431 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    92700    1.654    0.000    1.971    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:240(_initialize_page)
+    92718    0.283    0.000    1.398    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:27(__init__)
+    92565    0.265    0.000    1.790    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:85(_initialize_default_page)
+    92899    0.209    0.000    0.688    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/sortedcontainers/sorteddict.py:113(__init__)
+    92899    0.205    0.000    0.334    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/sortedcontainers/sortedlist.py:323(update)
+25047/22795    0.160    0.000    0.507    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/base.py:133(__new__)
+    92565    0.152    0.000    4.404    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:374(_map_page)
+     2081    0.132    0.000    0.132    0.000 {built-in method marshal.loads}
+   362595    0.118    0.000    0.301    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:47(release_shared)
+   120083    0.117    0.000    0.610    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/bv.py:235(BVV)
+   185265    0.109    0.000    1.536    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:91(_initialize_page)
+   652279    0.108    0.000    0.196    0.000 /home/ubuntu/repos/angr/angr/misc/picklable_lock.py:17(__enter__)
+  1035289    0.105    0.000    0.113    0.000 {built-in method builtins.isinstance}
+    92763    0.104    0.000    2.265    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:187(_initialize_page)
+    92763    0.102    0.000    2.113    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:52(_initialize_page)
+    92700    0.102    0.000    0.177    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/privileged_mixin.py:33(_initialize_page)
+   278119    0.091    0.000    0.235    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:39(acquire_shared)
+   652144    0.088    0.000    0.088    0.000 {method '__enter__' of '_thread.lock' objects}
+   105862    0.086    0.000    2.506    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:66(_get_page)
+   652279    0.084    0.000    0.142    0.000 /home/ubuntu/repos/angr/angr/misc/picklable_lock.py:20(__exit__)
+    92718    0.083    0.000    0.240    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/permissions_mixin.py:14(__init__)
+    92899    0.081    0.000    0.428    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/sortedcontainers/sorteddict.py:545(update)
+   105862    0.079    0.000    2.590    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/privileged_mixin.py:23(_get_page)
+    92763    0.066    0.000    2.331    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/stack_allocation_mixin.py:72(_initialize_page)
+   188430    0.066    0.000    0.081    0.000 {method 'extend' of 'list' objects}
+    92718    0.064    0.000    0.369    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:12(__init__)
+    92718    0.060    0.000    0.430    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/history_tracking_mixin.py:18(__init__)
+   200826    0.059    0.000    0.120    0.000 {built-in method builtins.next}
+      135    0.058    0.000    4.462    0.033 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:347(map_region)
+   653621    0.058    0.000    0.058    0.000 {method '__exit__' of '_thread.lock' objects}
+    10575    0.056    0.000    0.321    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:177(store)
+    10575    0.052    0.000    0.091    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:137(store)
+     3344    0.048    0.000    0.062    0.000 <frozen importlib._bootstrap>:162(__enter__)
+4583/4561    0.048    0.000    0.133    0.000 {built-in method builtins.__build_class__}
+   184384    0.044    0.000    0.044    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:25(__getitem__)
+53922/53292    0.043    0.000    0.067    0.000 /home/ubuntu/repos/angr/angr/state_plugins/sim_action_object.py:21(_raw_ast)
+      352    0.040    0.000    0.341    0.001 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:59(__del__)
+332176/330617    0.039    0.000    0.051    0.000 {built-in method builtins.len}
+   120303    0.036    0.000    0.036    0.000 /usr/lib/python3.12/weakref.py:133(__getitem__)
+173028/172199    0.036    0.000    0.047    0.000 {built-in method __new__ of type object at 0xa43b40}
+      270    0.035    0.000    0.271    0.001 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:42(copy)
+    92808    0.035    0.000    0.062    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/memory_mixin.py:26(__init__)
+   134620    0.034    0.000    0.044    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/memory_mixin.py:38(category)
+     9707    0.033    0.000    0.033    0.000 {built-in method builtins.dir}
+   2359/1    0.032    0.000    8.185    8.185 {built-in method builtins.exec}
+    44694    0.031    0.000    0.051    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/base.py:406(_arg_serialize)
+    92718    0.031    0.000    0.031    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:97(_page_kwargs)
+    92898    0.030    0.000    0.066    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:16(_init)
+185918/185792    0.029    0.000    0.030    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/cle/memory.py:366(backers)
+    22303    0.029    0.000    0.133    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/base.py:384(_ast_serialize)
+
+

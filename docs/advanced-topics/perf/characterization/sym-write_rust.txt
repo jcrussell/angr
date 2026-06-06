@@ -1,0 +1,120 @@
+# cProfile cumulative time, top 50
+         2573752 function calls (2517252 primitive calls) in 1.854 seconds
+
+   Ordered by: cumulative time
+   List reduced from 10026 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    1.856    1.856 /home/ubuntu/repos/angr/tests/benchmarks/profile_python_bench.py:80(_run_solve)
+   2082/2    0.003    0.000    1.856    0.928 <frozen importlib._bootstrap_external>:989(exec_module)
+   4557/3    0.002    0.000    1.856    0.619 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+   2360/2    0.032    0.000    1.856    0.928 {built-in method builtins.exec}
+   2228/2    0.009    0.000    1.067    0.533 <frozen importlib._bootstrap>:1349(_find_and_load)
+   2203/2    0.007    0.000    1.067    0.533 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+   2127/2    0.005    0.000    1.066    0.533 <frozen importlib._bootstrap>:911(_load_unlocked)
+        1    0.000    0.000    1.066    1.066 /home/ubuntu/repos/angr/tests/benchmarks/profile_python_bench.py:54(_install_rust_engine_patch)
+        1    0.000    0.000    1.065    1.065 /home/ubuntu/repos/angr/angr/__init__.py:1(<module>)
+    245/5    0.001    0.000    1.058    0.212 {built-in method builtins.__import__}
+  1547/44    0.002    0.000    1.053    0.024 <frozen importlib._bootstrap>:1390(_handle_fromlist)
+        1    0.000    0.000    0.790    0.790 /home/ubuntu/repos/angr-examples/examples/sym-write/solve.py:1(<module>)
+        1    0.000    0.000    0.790    0.790 /home/ubuntu/repos/angr-examples/examples/sym-write/solve.py:15(main)
+        1    0.000    0.000    0.527    0.527 /home/ubuntu/repos/angr/angr/state_plugins/__init__.py:1(<module>)
+        1    0.000    0.000    0.361    0.361 /home/ubuntu/repos/angr/tests/benchmarks/profile_python_bench.py:62(patched_simulation_manager)
+        1    0.000    0.000    0.361    0.361 /home/ubuntu/repos/angr/angr/exploration/rust_manager.py:843(__init__)
+        1    0.000    0.000    0.345    0.345 /home/ubuntu/repos/angr/angr/analyses/__init__.py:1(<module>)
+        1    0.000    0.000    0.341    0.341 /home/ubuntu/repos/angr/angr/state_plugins/callstack.py:1(<module>)
+        1    0.000    0.000    0.319    0.319 /home/ubuntu/repos/angr/angr/exploration/rust_manager.py:3131(_run_python_init_if_needed)
+        1    0.000    0.000    0.317    0.317 /home/ubuntu/repos/angr/angr/exploration/rust_manager.py:3311(_step_python_to_main)
+    38/19    0.000    0.000    0.315    0.017 /home/ubuntu/repos/angr/angr/misc/hookset.py:93(__call__)
+       19    0.000    0.000    0.315    0.017 /home/ubuntu/repos/angr/angr/exploration_techniques/suggestions.py:46(step)
+       19    0.000    0.000    0.315    0.017 /home/ubuntu/repos/angr/angr/sim_manager.py:380(step)
+       19    0.000    0.000    0.314    0.017 /home/ubuntu/repos/angr/angr/sim_manager.py:508(step_state)
+       19    0.000    0.000    0.314    0.017 /home/ubuntu/repos/angr/angr/sim_manager.py:558(successors)
+       19    0.000    0.000    0.314    0.017 /home/ubuntu/repos/angr/angr/factory.py:98(successors)
+       19    0.000    0.000    0.313    0.016 /home/ubuntu/repos/angr/angr/engines/vex/light/slicing.py:17(process)
+       19    0.001    0.000    0.313    0.016 /home/ubuntu/repos/angr/angr/engines/successors.py:517(process)
+        1    0.000    0.000    0.313    0.313 /home/ubuntu/repos/angr/angr/analyses/deobfuscator/__init__.py:1(<module>)
+        1    0.000    0.000    0.306    0.306 /home/ubuntu/repos/angr/angr/analyses/deobfuscator/api_obf_finder.py:1(<module>)
+        1    0.000    0.000    0.285    0.285 /home/ubuntu/repos/angr/angr/sim_state.py:1(<module>)
+        1    0.000    0.000    0.267    0.267 /home/ubuntu/repos/angr/angr/analyses/decompiler/__init__.py:1(<module>)
+       19    0.000    0.000    0.237    0.012 /home/ubuntu/repos/angr/angr/engines/failure.py:15(process_successors)
+       19    0.000    0.000    0.237    0.012 /home/ubuntu/repos/angr/angr/engines/syscall.py:21(process_successors)
+       19    0.000    0.000    0.237    0.012 /home/ubuntu/repos/angr/angr/engines/hook.py:77(process_successors)
+        1    0.000    0.000    0.203    0.203 /home/ubuntu/repos/angr/angr/exploration/rust_state_export.py:215(eval_upto)
+        1    0.203    0.203    0.203    0.203 {method 'eval_upto' of 'builtins.RustSolverContext' objects}
+        1    0.000    0.000    0.179    0.179 /home/ubuntu/repos/angr/angr/utils/__init__.py:1(<module>)
+        1    0.000    0.000    0.174    0.174 /home/ubuntu/repos/angr/angr/analyses/decompiler/optimization_passes/__init__.py:1(<module>)
+        2    0.000    0.000    0.165    0.083 /home/ubuntu/repos/angr/angr/engines/procedure.py:21(process_procedure)
+      9/2    0.000    0.000    0.165    0.083 /home/ubuntu/repos/angr/angr/sim_procedure.py:199(execute)
+     1435    0.002    0.000    0.163    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/unwrapper_mixin.py:12(store)
+        1    0.000    0.000    0.158    0.158 /home/ubuntu/repos/angr/angr/procedures/glibc/__libc_start_main.py:134(run)
+        1    0.000    0.000    0.156    0.156 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/archinfo/__init__.py:1(<module>)
+     1435    0.002    0.000    0.153    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/name_resolution_mixin.py:55(store)
+     1435    0.003    0.000    0.151    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/bvv_conversion_mixin.py:18(store)
+        1    0.000    0.000    0.151    0.151 /home/ubuntu/repos/angr/angr/analyses/decompiler/optimization_passes/base_ptr_save_simplifier.py:1(<module>)
+        1    0.000    0.000    0.150    0.150 /home/ubuntu/repos/angr/angr/procedures/glibc/__libc_start_main.py:118(_initialize_ctype_table)
+        1    0.000    0.000    0.150    0.150 /home/ubuntu/repos/angr/angr/analyses/decompiler/optimization_passes/optimization_pass.py:1(<module>)
+     2082    0.017    0.000    0.150    0.000 <frozen importlib._bootstrap_external>:751(_compile_bytecode)
+
+
+
+
+# cProfile tottime (self), top 50
+         2573752 function calls (2517252 primitive calls) in 1.854 seconds
+
+   Ordered by: internal time
+   List reduced from 10026 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.203    0.203    0.203    0.203 {method 'eval_upto' of 'builtins.RustSolverContext' objects}
+     2082    0.132    0.000    0.132    0.000 {built-in method marshal.loads}
+       21    0.051    0.002    0.056    0.003 {method 'run' of 'builtins.RustExplorationManager' objects}
+4600/4578    0.047    0.000    0.130    0.000 {built-in method builtins.__build_class__}
+     3345    0.042    0.000    0.056    0.000 <frozen importlib._bootstrap>:162(__enter__)
+   2360/2    0.032    0.000    1.856    0.928 {built-in method builtins.exec}
+     1007    0.029    0.000    0.051    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/pyvex/expr.py:921(op_arg_types)
+     7374    0.028    0.000    0.028    0.000 {built-in method posix.stat}
+    86037    0.020    0.000    0.020    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/page_backer_mixins.py:25(__getitem__)
+   179993    0.020    0.000    0.021    0.000 {built-in method builtins.isinstance}
+2958/2881    0.020    0.000    0.059    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/base.py:133(__new__)
+     1438    0.019    0.000    0.023    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:137(store)
+     2721    0.017    0.000    0.078    0.000 <frozen importlib._bootstrap_external>:1593(find_spec)
+        3    0.017    0.006    0.017    0.006 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/cffi/api.py:879(update_accessors)
+     2082    0.017    0.000    0.150    0.000 <frozen importlib._bootstrap_external>:751(_compile_bytecode)
+    50114    0.016    0.000    0.041    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:39(acquire_shared)
+  896/235    0.013    0.000    0.032    0.000 /usr/lib/python3.12/re/_parser.py:512(_parse)
+    91267    0.013    0.000    0.024    0.000 /home/ubuntu/repos/angr/angr/misc/picklable_lock.py:17(__enter__)
+    39660    0.013    0.000    0.031    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/refcount_mixin.py:47(release_shared)
+     2106    0.013    0.000    0.038    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:27(__init__)
+21648/196    0.012    0.000    0.027    0.000 /usr/lib/python3.12/copy.py:118(deepcopy)
+     1265    0.012    0.000    0.012    0.000 {built-in method _io.open_code}
+    91267    0.012    0.000    0.020    0.000 /home/ubuntu/repos/angr/angr/misc/picklable_lock.py:20(__exit__)
+    91248    0.011    0.000    0.011    0.000 {method '__enter__' of '_thread.lock' objects}
+    15037    0.011    0.000    0.019    0.000 <frozen importlib._bootstrap_external>:126(_path_join)
+     3345    0.011    0.000    0.073    0.000 <frozen importlib._bootstrap>:304(acquire)
+   2277/6    0.011    0.000    0.052    0.009 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/backends/backend_z3.py:545(_abstract_internal)
+17546/16717    0.011    0.000    0.021    0.000 {built-in method __new__ of type object at 0xa43b40}
+      817    0.010    0.000    0.010    0.000 {method 'read' of '_io.FileIO' objects}
+     6163    0.010    0.000    0.010    0.000 {method 'read' of '_io.BufferedReader' objects}
+99245/97686    0.010    0.000    0.012    0.000 {built-in method builtins.len}
+     2169    0.010    0.000    0.110    0.000 <frozen importlib._bootstrap>:1240(_find_spec)
+     2082    0.010    0.000    0.047    0.000 <frozen importlib._bootstrap_external>:1183(get_data)
+     1007    0.009    0.000    0.067    0.000 /home/ubuntu/repos/angr/angr/engines/vex/claripy/irop.py:255(__init__)
+   2228/2    0.009    0.000    1.067    0.533 <frozen importlib._bootstrap>:1349(_find_and_load)
+57815/57781    0.009    0.000    0.012    0.000 {built-in method builtins.getattr}
+    93329    0.009    0.000    0.009    0.000 {method '__exit__' of '_thread.lock' objects}
+     1329    0.009    0.000    0.020    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/networkx/utils/backends.py:218(__new__)
+    71208    0.008    0.000    0.008    0.000 {method 'get' of 'dict' objects}
+     4334    0.008    0.000    0.008    0.000 {method 'match' of 're.Pattern' objects}
+     6004    0.008    0.000    0.012    0.000 {built-in method builtins.max}
+       60    0.008    0.000    0.030    0.000 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/pages/ultra_page.py:50(copy)
+       19    0.008    0.000    0.010    0.001 {built-in method _imp.create_dynamic}
+     4863    0.007    0.000    0.046    0.000 /home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/claripy/ast/bv.py:235(BVV)
+        1    0.007    0.007    0.007    0.007 {built-in method vex_engine.set_shared_z3_context}
+     1263    0.007    0.000    0.007    0.000 {method 'update' of 'set' objects}
+   2203/2    0.007    0.000    1.067    0.533 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+ 1499/177    0.007    0.000    0.016    0.000 /usr/lib/python3.12/re/_compiler.py:37(_compile)
+    50794    0.007    0.000    0.007    0.000 {method 'append' of 'list' objects}
+       54    0.007    0.000    0.048    0.001 /home/ubuntu/repos/angr/angr/storage/memory_mixins/paged_memory/paged_memory_mixin.py:42(copy)
+
+

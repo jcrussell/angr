@@ -10,6 +10,7 @@ Advanced Topics
    speed
    rust_engine
    rust_bimodal_variance
+   rust_engine_flame_comparison
    rust_lazy_memory_design
    rust_parallel_design
    rust_proxy_writes_design
