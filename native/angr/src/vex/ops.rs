@@ -7506,8 +7506,8 @@ mod tests {
         let ctx = SymContext::new_mock();
         // V128 with 8 lanes of 16 bits. Lane 3 = 0xDEAD.
         let mut payload: u128 = 0;
-        payload |= (0xDEAD as u128) << (3 * 16);
-        payload |= (0xBEEF as u128) << (7 * 16);
+        payload |= 0xDEAD_u128 << (3 * 16);
+        payload |= 0xBEEF_u128 << (7 * 16);
         let vec = RustBV::concrete(payload, 128);
         let res = VEXOps::binop(
             IROp::VGetElem {
@@ -7602,7 +7602,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res.width(), 128);
-        assert_eq!(res.as_u128().unwrap(), (0xCAFE as u128) << (5 * 16));
+        assert_eq!(res.as_u128().unwrap(), 0xCAFE_u128 << (5 * 16));
     }
 
     #[test]
@@ -7690,7 +7690,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res.width(), 128);
-        let expected: u128 = (0..8).fold(0u128, |acc, i| acc | ((0xCAFE as u128) << (i * 16)));
+        let expected: u128 = (0..8).fold(0u128, |acc, i| acc | (0xCAFE_u128 << (i * 16)));
         assert_eq!(res.as_u128().unwrap(), expected);
     }
 
@@ -7708,7 +7708,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res.width(), 128);
-        let expected: u128 = (0..4).fold(0u128, |acc, i| acc | ((0xDEAD_BEEF as u128) << (i * 32)));
+        let expected: u128 = (0..4).fold(0u128, |acc, i| acc | (0xDEAD_BEEF_u128 << (i * 32)));
         assert_eq!(res.as_u128().unwrap(), expected);
     }
 
