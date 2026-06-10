@@ -1326,7 +1326,8 @@ mod tests {
         let r = NativeSyscallRegistry::new();
 
         // (arch, kill, tgkill, rt_sigreturn, pause-or-None, alarm-or-None)
-        let table: &[(&str, u64, u64, u64, Option<u64>, Option<u64>)] = &[
+        type SignalRow = (&'static str, u64, u64, u64, Option<u64>, Option<u64>);
+        let table: &[SignalRow] = &[
             ("AMD64", 62, 234, 15, Some(34), Some(37)),
             ("X86", 37, 270, 173, Some(29), Some(27)),
             ("ARM", 37, 268, 173, Some(29), Some(27)),
@@ -1538,7 +1539,8 @@ mod tests {
 
         // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
         //  readlinkat, faccessat)
-        let table: &[(&str, Option<u64>, Option<u64>, Option<u64>, u64, u64)] = &[
+        type FilePathRow = (&'static str, Option<u64>, Option<u64>, Option<u64>, u64, u64);
+        let table: &[FilePathRow] = &[
             ("AMD64", Some(6), Some(262), Some(89), 267, 269),
             ("X86", Some(107), None, Some(85), 305, 307),
             ("ARM", Some(107), None, Some(85), 332, 334),
@@ -1609,7 +1611,8 @@ mod tests {
         let r = NativeSyscallRegistry::new();
 
         // (arch, fcntl, fcntl64-or-None, ioctl, pipe-or-None, pipe2)
-        let table: &[(&str, u64, Option<u64>, u64, Option<u64>, u64)] = &[
+        type FcntlRow = (&'static str, u64, Option<u64>, u64, Option<u64>, u64);
+        let table: &[FcntlRow] = &[
             ("AMD64", 72, None, 16, Some(22), 293),
             ("X86", 55, Some(221), 54, Some(42), 331),
             ("ARM", 55, Some(221), 54, Some(42), 359),

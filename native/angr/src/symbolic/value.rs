@@ -4557,7 +4557,8 @@ mod tests {
         }
 
         // Same property for mul / and / or / xor / eq / ne.
-        let cases: &[(&str, fn(RustBV, RustBV, &SymContext) -> RustBV)] = &[
+        type BinOp = fn(RustBV, RustBV, &SymContext) -> RustBV;
+        let cases: &[(&str, BinOp)] = &[
             ("mul", |a, b, c| a.mul_into(b, c)),
             ("and", |a, b, c| a.and_into(b, c)),
             ("or",  |a, b, c| a.or_into(b, c)),

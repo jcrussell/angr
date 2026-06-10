@@ -785,6 +785,7 @@ mod tests {
 
     /// Write six little-endian 32-bit fields into memory at `ptr`,
     /// matching the layout `mmap_arg_struct` reads.
+    #[allow(clippy::too_many_arguments)]
     fn write_struct_le(
         state: &mut RustSimState,
         ptr: u64,
