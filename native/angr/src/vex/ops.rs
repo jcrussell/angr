@@ -6068,8 +6068,8 @@ mod tests {
         let exp: [u16; 8] = [5, 100, 0, 0x8000 /* INT_MIN stays */, 1, 1, 32767, 200];
 
         let mut bits: u128 = 0;
-        for i in 0..8 {
-            bits |= ((v[i] as u16) as u128) << (i as u32 * 16);
+        for (i, &lane) in v.iter().enumerate() {
+            bits |= ((lane as u16) as u128) << (i as u32 * 16);
         }
         let result = VEXOps::unop(
             IROp::VAbs {
@@ -7830,9 +7830,11 @@ mod tests {
         ];
         let mut l: u128 = 0;
         let mut r: u128 = 0;
-        for i in 0..8 {
-            l |= (lanes_l[i] as u128) << (i * 16);
-            r |= (lanes_r[i] as u128) << (i * 16);
+        for (i, &lane) in lanes_l.iter().enumerate() {
+            l |= (lane as u128) << (i * 16);
+        }
+        for (i, &lane) in lanes_r.iter().enumerate() {
+            r |= (lane as u128) << (i * 16);
         }
         let res = VEXOps::binop(
             IROp::VNarrowBin {
@@ -7846,13 +7848,13 @@ mod tests {
         .unwrap();
         assert_eq!(res.width(), 128);
         let out = res.as_u128().unwrap();
-        for i in 0..8 {
+        for (i, &lane) in lanes_l.iter().enumerate() {
             let got = (out >> (i * 8)) & 0xFF;
-            assert_eq!(got, (lanes_l[i] & 0xFF) as u128, "left lane {}", i);
+            assert_eq!(got, (lane & 0xFF) as u128, "left lane {}", i);
         }
-        for i in 0..8 {
+        for (i, &lane) in lanes_r.iter().enumerate() {
             let got = (out >> ((8 + i) * 8)) & 0xFF;
-            assert_eq!(got, (lanes_r[i] & 0xFF) as u128, "right lane {}", i);
+            assert_eq!(got, (lane & 0xFF) as u128, "right lane {}", i);
         }
     }
 
@@ -8409,11 +8411,11 @@ mod tests {
         let e_lanes: [i16; 4] = [-200, 200, -2, 2];
         let mut a: u128 = 0;
         let mut e: u128 = 0;
-        for i in 0..8 {
-            a |= ((a_lanes[i] as u8) as u128) << (i * 8);
+        for (i, &lane) in a_lanes.iter().enumerate() {
+            a |= ((lane as u8) as u128) << (i * 8);
         }
-        for i in 0..4 {
-            e |= ((e_lanes[i] as u16) as u128) << (i * 16);
+        for (i, &lane) in e_lanes.iter().enumerate() {
+            e |= ((lane as u16) as u128) << (i * 16);
         }
         let result = VEXOps::unop(
             IROp::VPwAddL {
@@ -8440,11 +8442,11 @@ mod tests {
         let e_lanes: [u16; 8] = [0x01FE, 0x0100, 0x0003, 0, 150, 300, 0, 0];
         let mut a: u128 = 0;
         let mut e: u128 = 0;
-        for i in 0..16 {
-            a |= (a_lanes[i] as u128) << (i * 8);
+        for (i, &lane) in a_lanes.iter().enumerate() {
+            a |= (lane as u128) << (i * 8);
         }
-        for i in 0..8 {
-            e |= (e_lanes[i] as u128) << (i * 16);
+        for (i, &lane) in e_lanes.iter().enumerate() {
+            e |= (lane as u128) << (i * 16);
         }
         let result = VEXOps::unop(
             IROp::VPwAddL {
