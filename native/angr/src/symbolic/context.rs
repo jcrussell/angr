@@ -4565,6 +4565,12 @@ impl Default for SymContext {
 
 #[cfg(test)]
 mod tests {
+    // Tests construct `Arc<Mutex<SharedLineageSolver>>` to match the
+    // production `lineage_arc()` type. `SharedLineageSolver` wraps a
+    // thread-local Z3 solver and is intentionally non-Send/Sync;
+    // switching tests to `Rc` would diverge from production usage.
+    #![allow(clippy::arc_with_non_send_sync)]
+
     use super::*;
     #[cfg(feature = "vex-engine-z3")]
     use crate::symbolic::Z3AstPtr;
