@@ -515,7 +515,7 @@ mod tests {
     }
 
     fn eq_bv_const(bv: &z3::ast::BV, value: u64) -> Bool {
-        bv.eq(&z3::ast::BV::from_u64(value, bv.get_size()))
+        bv.eq(z3::ast::BV::from_u64(value, bv.get_size()))
     }
 
     /// Frame ids are unique within a single run.
@@ -548,7 +548,7 @@ mod tests {
 
         let path = vec![
             ScopeFrame::new(true, eq_bv_const(&x, 5)),
-            ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(0, 8))),
+            ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 8))),
         ];
 
         let (pops, pushes) = lin.switch_to(&path);
@@ -599,10 +599,7 @@ mod tests {
         let post = lineage_stats();
         let delta = |name: &str| {
             let pre_v = pre.iter().find(|(n, _)| *n == name).map_or(0, |(_, v)| *v);
-            let post_v = post
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map_or(0, |(_, v)| *v);
+            let post_v = post.iter().find(|(n, _)| *n == name).map_or(0, |(_, v)| *v);
             post_v.saturating_sub(pre_v)
         };
         // Lower bounds: other parallel tests can only ADD to these
@@ -645,8 +642,8 @@ mod tests {
         // Shared prefix: two frames the siblings would have inherited
         // from a common ancestor.
         let prefix = [
-            ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(0, 8))),
-            ScopeFrame::new(true, x.bvult(&z3::ast::BV::from_u64(100, 8))),
+            ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 8))),
+            ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(100, 8))),
         ];
 
         let mut sibling_a = prefix.to_vec();
@@ -701,13 +698,10 @@ mod tests {
         let x = bvconst("test_base_assertions_persist_x", 8);
 
         // x > 10 at scope 0
-        lin.assert_base(&x.bvugt(&z3::ast::BV::from_u64(10, 8)));
+        lin.assert_base(&x.bvugt(z3::ast::BV::from_u64(10, 8)));
 
         // Push a frame constraining x < 20, query, then pop back.
-        let scoped = vec![ScopeFrame::new(
-            true,
-            x.bvult(&z3::ast::BV::from_u64(20, 8)),
-        )];
+        let scoped = vec![ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(20, 8)))];
         lin.switch_to(&scoped);
         lin.switch_to(&ScopePath::new());
 
@@ -716,7 +710,7 @@ mod tests {
             // Add a temporary constraint forcing x == 5 (violates base),
             // verify the solver reports UNSAT.
             solver.push();
-            solver.assert(&eq_bv_const(&x, 5));
+            solver.assert(eq_bv_const(&x, 5));
             let r = solver.check();
             solver.pop(1);
             r
@@ -735,11 +729,11 @@ mod tests {
         let mut lin = SharedLineageSolver::new(make_solver());
         let x = bvconst("test_switch_three_deep_siblings_x", 16);
 
-        let a = ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(0, 16)));
-        let b = ScopeFrame::new(true, x.bvult(&z3::ast::BV::from_u64(1000, 16)));
+        let a = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 16)));
+        let b = ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(1000, 16)));
         let c = ScopeFrame::new(true, eq_bv_const(&x, 5));
         let d = ScopeFrame::new(true, eq_bv_const(&x, 7));
-        let e = ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(500, 16)));
+        let e = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(500, 16)));
 
         let path_abc = vec![a.clone(), b.clone(), c];
         let path_abd = vec![a.clone(), b, d];
@@ -818,12 +812,7 @@ mod tests {
         // 10-frame deep path representing many accumulated constraints
         // (e.g., from a long-running state).
         let path: ScopePath = (0..10)
-            .map(|i| {
-                ScopeFrame::new(
-                    true,
-                    x.bvugt(&z3::ast::BV::from_u64(i as u64, 32)),
-                )
-            })
+            .map(|i| ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(i as u64, 32))))
             .collect();
 
         // Initial switch into the deep path.
@@ -997,7 +986,10 @@ mod tests {
             .iter()
             .find(|(n, _)| *n == "lineage_dismantle_count")
             .map_or(0, |(_, v)| *v);
-        assert_eq!(count, 0, "dismantle_count must not increment on no-op calls");
+        assert_eq!(
+            count, 0,
+            "dismantle_count must not increment on no-op calls"
+        );
     }
 
     /// `reset_dismantle_state_for_test()` clears the dismantle flag so
@@ -1113,7 +1105,7 @@ mod tests {
 
         // Two paths of identical length 2, sharing the first frame `a`
         // but diverging in the tail (`c` vs `d`).
-        let a = ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(0, 16)));
+        let a = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 16)));
         let c = ScopeFrame::new(true, eq_bv_const(&x, 5));
         let d = ScopeFrame::new(true, eq_bv_const(&x, 42));
 

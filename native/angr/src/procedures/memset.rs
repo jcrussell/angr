@@ -67,17 +67,13 @@ impl NativeSimProcedure for NativeMemset {
         let mut offset: u64 = 0;
         while offset + 8 <= size {
             let bv = RustBV::concrete(fill_8, 64);
-            state
-                .memory_store(dest.wrapping_add(offset), bv)
-                ?;
+            state.memory_store(dest.wrapping_add(offset), bv)?;
             offset += 8;
         }
         // Handle remaining bytes
         while offset < size {
             let bv = RustBV::concrete(byte_val as u128, 8);
-            state
-                .memory_store(dest.wrapping_add(offset), bv)
-                ?;
+            state.memory_store(dest.wrapping_add(offset), bv)?;
             offset += 1;
         }
 

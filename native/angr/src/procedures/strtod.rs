@@ -35,7 +35,10 @@ const AMD64_XMM0_OFFSET: u32 = 224;
 /// stopping at the first null. Returns `None` if any byte before the null
 /// is symbolic — strtod has no useful symbolic-FP story without a real
 /// floating-point solver, so we let Python handle that case.
-fn read_concrete_cstring(state: &mut RustSimState, addr: u64) -> Result<Option<Vec<u8>>, ProcedureError> {
+fn read_concrete_cstring(
+    state: &mut RustSimState,
+    addr: u64,
+) -> Result<Option<Vec<u8>>, ProcedureError> {
     let mut bytes = Vec::with_capacity(32);
     for i in 0..MAX_LEN {
         let byte = state.memory_load(addr.wrapping_add(i as u64), 1)?;

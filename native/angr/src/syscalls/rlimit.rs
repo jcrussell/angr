@@ -28,7 +28,9 @@
 //! `"getrlimit"` (same as the Python subclass would inherit if
 //! introspected via `mro()`); per-arch tests assert this alias holds.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
+use super::{
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -145,10 +147,7 @@ mod tests {
 
         // rlim_max = fresh symbolic
         let max = state.memory_load(0x4008, 8).expect("loadable");
-        assert!(
-            max.is_symbolic(),
-            "rlim_max should be symbolic (fresh BVS)"
-        );
+        assert!(max.is_symbolic(), "rlim_max should be symbolic (fresh BVS)");
     }
 
     #[test]

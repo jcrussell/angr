@@ -975,7 +975,12 @@ impl<'a> VEXInterpreter<'a> {
                 ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
             };
             self.dispatch_address_concretization_inspect(
-                py, callbacks, addr_val, "store", "after", result_addrs,
+                py,
+                callbacks,
+                addr_val,
+                "store",
+                "after",
+                result_addrs,
             );
         }
 

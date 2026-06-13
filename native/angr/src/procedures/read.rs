@@ -93,10 +93,7 @@ impl NativeSimProcedure for NativeRead {
         let bytes = state.file_system().read(fd_u32, count as usize);
         let n = bytes.len();
         for (i, b) in bytes.iter().enumerate() {
-            state.memory_store(
-                buf.wrapping_add(i as u64),
-                RustBV::concrete(*b as u128, 8),
-            )?;
+            state.memory_store(buf.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
         }
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(n as u128, bits)))
@@ -256,9 +253,11 @@ mod tests {
     fn test_read_user_fd_eof_returns_zero() {
         // Read past the end of the content returns 0 (Linux EOF semantics).
         let mut state = RustSimState::new("amd64").unwrap();
-        state
-            .file_system()
-            .open_with_content("in.bin".to_string(), crate::state::FdFlags::ReadOnly, b"ab".to_vec());
+        state.file_system().open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"ab".to_vec(),
+        );
         state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
 
         // Drain 2 bytes.
@@ -290,7 +289,9 @@ mod tests {
     fn test_read_empty_content_fd_falls_back() {
         // fd open but no content → defer to Python (symbolic-file model).
         let mut state = RustSimState::new("amd64").unwrap();
-        state.file_system().open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
+        state
+            .file_system()
+            .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
         state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
         let result = NativeRead.call(
             &mut state,

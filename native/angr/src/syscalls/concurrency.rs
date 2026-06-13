@@ -29,7 +29,9 @@
 //! that limitation is upstream of these handlers and applies equally
 //! to the Python `syscall_stub` fallback.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
+use super::{
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -77,7 +79,12 @@ impl NativeSyscall for NativeFutexSyscall {
 // eventfd(count) → int
 stub_syscall!(NativeEventfdSyscall, "eventfd", "syscall_stub_eventfd", 1);
 // eventfd2(count, flags) → int
-stub_syscall!(NativeEventfd2Syscall, "eventfd2", "syscall_stub_eventfd2", 2);
+stub_syscall!(
+    NativeEventfd2Syscall,
+    "eventfd2",
+    "syscall_stub_eventfd2",
+    2
+);
 // epoll_create(size) → int
 stub_syscall!(
     NativeEpollCreateSyscall,
@@ -207,16 +214,13 @@ mod tests {
             for &(handler, label, nargs) in cases {
                 assert_eq!(handler.name(), label);
                 assert_eq!(handler.num_args(), nargs, "{label} arity");
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
+                let args: Vec<RustBV> = (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
                 let outcome = handler
                     .call(&mut state, &args)
                     .unwrap_or_else(|e| panic!("{arch} {label}: {e:?}"));
                 let ret = match outcome {
                     SyscallOutcome::ContinueSymbolic { ret } => ret,
-                    other => panic!(
-                        "{arch} {label} expected ContinueSymbolic, got {other:?}"
-                    ),
+                    other => panic!("{arch} {label} expected ContinueSymbolic, got {other:?}"),
                 };
                 assert_eq!(ret.width(), bits);
                 assert!(ret.as_u64().is_none(), "{arch} {label} must be symbolic");
@@ -227,10 +231,7 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {label}: expected Symbolic"),
                 };
                 assert_ne!(
@@ -244,9 +245,9 @@ mod tests {
                 // `new_const`, making `ret1 != ret2` unsatisfiable even though
                 // the RustBV ids differ. fresh_symbolic appends symbol_counter
                 // so each mint is a distinct Z3 term.
-                use z3::ast::Ast as _;
+
                 let solver = z3::Solver::new();
-                solver.assert(&ret.to_z3_ast()._eq(&ret2.to_z3_ast()).not());
+                solver.assert(ret.to_z3_ast().eq(ret2.to_z3_ast()).not());
                 assert_eq!(
                     solver.check(),
                     z3::SatResult::Sat,

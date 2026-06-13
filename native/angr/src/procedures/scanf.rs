@@ -211,15 +211,11 @@ fn do_scanf(
             }
 
             for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
-                state
-                    .memory_store(ptr.wrapping_add(j as u64), sym_byte)
-                    ?;
+                state.memory_store(ptr.wrapping_add(j as u64), sym_byte)?;
             }
 
             // NUL terminator
-            state
-                .memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))
-                ?;
+            state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
             let name = format!("stdin_scanf_{}_{}", scan_id, spec_idx);
@@ -231,9 +227,7 @@ fn do_scanf(
             state.record_stdin_symbol(name, spec.bits);
 
             // Store to pointer — write spec.bits/8 bytes
-            state
-                .memory_store(ptr, sym_val)
-                ?;
+            state.memory_store(ptr, sym_val)?;
         }
 
         conversions += 1;

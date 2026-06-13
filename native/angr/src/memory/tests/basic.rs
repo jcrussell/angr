@@ -1,6 +1,5 @@
 use super::super::*;
 
-
 #[test]
 fn test_memory_concrete() {
     let ctx = SymContext::new_mock();

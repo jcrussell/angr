@@ -71,8 +71,7 @@ impl NativeSimProcedure for NativeStrncat {
         let max_copy = n.min(MAX_STRLEN as u64);
 
         // Copy at most `max_copy` non-null bytes from src.
-        let (buf, _null_found) =
-            scan_concrete_bounded(state, src, max_copy as usize, "src")?;
+        let (buf, _null_found) = scan_concrete_bounded(state, src, max_copy as usize, "src")?;
         for (i, &byte) in buf.iter().enumerate() {
             state.memory_store(
                 dest_end.wrapping_add(i as u64),

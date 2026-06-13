@@ -65,11 +65,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         let proc = NativeLibcStartMain;
         let args = vec![
-            RustBV::concrete(0x400000, 64), // main
-            RustBV::concrete(1, 64),        // argc
+            RustBV::concrete(0x400000, 64),   // main
+            RustBV::concrete(1, 64),          // argc
             RustBV::concrete(0x7fff0000, 64), // argv
-            RustBV::concrete(0, 64),        // init
-            RustBV::concrete(0, 64),        // fini
+            RustBV::concrete(0, 64),          // init
+            RustBV::concrete(0, 64),          // fini
         ];
         let result = proc.call(&mut state, &args).unwrap();
         assert!(result.is_none());

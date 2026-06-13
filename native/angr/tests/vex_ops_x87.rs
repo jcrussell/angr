@@ -10,9 +10,9 @@
 
 use rustylib::symbolic::{RustBV, SymContext};
 use rustylib::vex::transcendentals::{
-    IOP_2XM1_F64, IOP_ATAN_F64, IOP_COS_F64, IOP_SCALE_F64, IOP_SIN_F64, IOP_TAN_F64,
-    IOP_YL2X_F64, IOP_YL2XP1_F64, try_concrete_binop_rm, try_concrete_triop_rm,
-    try_concretize_binop_rm, try_concretize_triop_rm,
+    IOP_2XM1_F64, IOP_ATAN_F64, IOP_COS_F64, IOP_SCALE_F64, IOP_SIN_F64, IOP_TAN_F64, IOP_YL2X_F64,
+    IOP_YL2XP1_F64, try_concrete_binop_rm, try_concrete_triop_rm, try_concretize_binop_rm,
+    try_concretize_triop_rm,
 };
 
 fn bv64(f: f64) -> RustBV {

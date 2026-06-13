@@ -60,7 +60,9 @@ pub fn parse_width_digits(fmt: &[u8], start: usize) -> (usize, usize) {
     let mut width: usize = 0;
     let mut i = start;
     while i < fmt.len() && fmt[i].is_ascii_digit() {
-        width = width.saturating_mul(10).saturating_add((fmt[i] - b'0') as usize);
+        width = width
+            .saturating_mul(10)
+            .saturating_add((fmt[i] - b'0') as usize);
         i += 1;
     }
     (width, i - start)
@@ -140,7 +142,10 @@ mod tests {
     #[test]
     fn length_l_variants() {
         assert_eq!(parse_length_modifier(b"ld", 0), (LengthModifier::Long, 1));
-        assert_eq!(parse_length_modifier(b"lld", 0), (LengthModifier::LongLong, 2));
+        assert_eq!(
+            parse_length_modifier(b"lld", 0),
+            (LengthModifier::LongLong, 2)
+        );
         // `l` at end of buffer is just Long (1 byte consumed)
         assert_eq!(parse_length_modifier(b"l", 0), (LengthModifier::Long, 1));
     }
@@ -156,7 +161,10 @@ mod tests {
     fn length_zjt() {
         assert_eq!(parse_length_modifier(b"zd", 0), (LengthModifier::SizeT, 1));
         assert_eq!(parse_length_modifier(b"jd", 0), (LengthModifier::IntMax, 1));
-        assert_eq!(parse_length_modifier(b"td", 0), (LengthModifier::PtrDiff, 1));
+        assert_eq!(
+            parse_length_modifier(b"td", 0),
+            (LengthModifier::PtrDiff, 1)
+        );
     }
 
     #[test]

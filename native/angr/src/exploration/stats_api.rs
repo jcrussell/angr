@@ -59,10 +59,7 @@ impl RustExplorationManager {
             symbolic_by_name.set_item(name, *count)?;
             symbolic_total += *count;
         }
-        dict.set_item(
-            "native_proc_symbolic_fallbacks_by_name",
-            symbolic_by_name,
-        )?;
+        dict.set_item("native_proc_symbolic_fallbacks_by_name", symbolic_by_name)?;
         dict.set_item("native_proc_symbolic_fallbacks", symbolic_total)?;
 
         let not_impl_by_name = PyDict::new(py);

@@ -1694,10 +1694,11 @@ impl RustSimState {
             .map(|off| off == self.arch.ip_offset())
             .unwrap_or(false);
         let ok = self.registers.put_reg(name, value);
-        if ok && is_ip {
-            if let Some(v) = self.registers.get_ip(&self.solver.borrow()).as_u64() {
-                self.pc = v;
-            }
+        if ok
+            && is_ip
+            && let Some(v) = self.registers.get_ip(&self.solver.borrow()).as_u64()
+        {
+            self.pc = v;
         }
         ok
     }

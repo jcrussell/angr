@@ -55,10 +55,19 @@ fn translate_correctness() {
 
     // Recover a model from ctx_b's solver and check sum bits match target.
     let model = solver.get_model().expect("model");
-    let xv = model.eval(&x_b, true).and_then(|bv| bv.as_u64()).expect("x eval");
-    let yv = model.eval(&y_b, true).and_then(|bv| bv.as_u64()).expect("y eval");
+    let xv = model
+        .eval(&x_b, true)
+        .and_then(|bv| bv.as_u64())
+        .expect("x eval");
+    let yv = model
+        .eval(&y_b, true)
+        .and_then(|bv| bv.as_u64())
+        .expect("y eval");
     let recombined = ((xv as u32 & 0xFFFF) << 16) | (yv as u32 & 0xFFFF);
-    assert_eq!(recombined, 0xDEAD_BEEF, "x and y low-halves must form 0xDEADBEEF");
+    assert_eq!(
+        recombined, 0xDEAD_BEEF,
+        "x and y low-halves must form 0xDEADBEEF"
+    );
 }
 
 /// Build a chain of ~4000 BV nodes in ctx_a, translate to ctx_b, report

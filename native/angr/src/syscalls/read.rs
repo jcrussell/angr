@@ -97,10 +97,7 @@ impl NativeSyscall for NativeReadSyscall {
         let bytes = state.file_system().read(fd_u32, count as usize);
         let n = bytes.len();
         for (i, b) in bytes.iter().enumerate() {
-            state.memory_store(
-                buf.wrapping_add(i as u64),
-                RustBV::concrete(*b as u128, 8),
-            )?;
+            state.memory_store(buf.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
         }
         Ok(SyscallOutcome::Continue { ret: n as u64 })
     }
@@ -298,10 +295,9 @@ mod tests {
         // can supply bytes.
         let h = NativeReadSyscall;
         let mut state = fresh_state_with_buf();
-        state.file_system().open(
-            "in.bin".to_string(),
-            crate::state::FdFlags::ReadOnly,
-        );
+        state
+            .file_system()
+            .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
         let err = h
             .call(
                 &mut state,

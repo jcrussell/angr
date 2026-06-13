@@ -32,9 +32,9 @@ use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
-use crate::symbolic::{RustBV, SymContext};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
+use crate::symbolic::{RustBV, SymContext};
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 
 use std::cell::Cell;
@@ -1770,10 +1770,7 @@ impl RustExplorationManager {
         self.native_techniques
             .push(NativeTechnique::LengthLimiter { max_length, drop });
         if !drop {
-            self.sm
-                .stashes_mut()
-                .entry("cut".to_string())
-                .or_default();
+            self.sm.stashes_mut().entry("cut".to_string()).or_default();
         }
     }
 

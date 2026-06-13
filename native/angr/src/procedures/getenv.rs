@@ -67,20 +67,16 @@ impl NativeSimProcedure for NativeGetenv {
                 let buf_addr = state.heap_alloc(value.len() as u64 + 1);
                 // Write value bytes
                 for (i, &byte) in value.iter().enumerate() {
-                    state
-                        .memory_store(
-                            buf_addr.wrapping_add(i as u64),
-                            RustBV::concrete(byte as u128, 8),
-                        )
-                        ?;
+                    state.memory_store(
+                        buf_addr.wrapping_add(i as u64),
+                        RustBV::concrete(byte as u128, 8),
+                    )?;
                 }
                 // NUL terminator
-                state
-                    .memory_store(
-                        buf_addr.wrapping_add(value.len() as u64),
-                        RustBV::concrete(0, 8),
-                    )
-                    ?;
+                state.memory_store(
+                    buf_addr.wrapping_add(value.len() as u64),
+                    RustBV::concrete(0, 8),
+                )?;
 
                 Ok(Some(RustBV::concrete(buf_addr as u128, bits)))
             }

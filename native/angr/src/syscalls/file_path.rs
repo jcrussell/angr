@@ -476,11 +476,7 @@ const ST_BLKSIZE: u64 = 0x400;
 /// `gid` u32, pad u32, `rdev` u64, `size` u64, `blksize` u64,
 /// `blocks` u64, `atime+nsec` u64×2, `mtime+nsec` u64×2,
 /// `ctime+nsec` u64×2, pad u64×3.
-fn write_amd64_stat(
-    state: &mut RustSimState,
-    buf: u64,
-    size: u64,
-) -> Result<(), SyscallError> {
+fn write_amd64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
     let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
         state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
         Ok(())
@@ -516,11 +512,7 @@ fn write_amd64_stat(
 /// AArch64 `struct stat` layout — total 0x80 bytes. Mirrors
 /// `_store_aarch64` (note: `nlink` is u32 here, `blksize` is u32, and
 /// the field order around mode/nlink/uid/gid differs from AMD64).
-fn write_aarch64_stat(
-    state: &mut RustSimState,
-    buf: u64,
-    size: u64,
-) -> Result<(), SyscallError> {
+fn write_aarch64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
     let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
         state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
         Ok(())
@@ -977,9 +969,7 @@ mod tests {
     fn close_open_fd_returns_zero_and_marks_closed() {
         let mut state = RustSimState::new("amd64").expect("state");
         // Allocate a fresh fd via the file system directly.
-        let fd = state
-            .file_system()
-            .open("/tmp/x".into(), FdFlags::ReadOnly);
+        let fd = state.file_system().open("/tmp/x".into(), FdFlags::ReadOnly);
         assert!(state.file_system_ref().is_open(fd));
 
         let outcome = NativeCloseSyscall
@@ -1170,10 +1160,7 @@ mod tests {
             let out = NativeAccessSyscall
                 .call(
                     &mut state,
-                    &[
-                        RustBV::concrete(0x2000, bits),
-                        RustBV::concrete(0, bits),
-                    ],
+                    &[RustBV::concrete(0x2000, bits), RustBV::concrete(0, bits)],
                 )
                 .expect("access");
             match out {
@@ -1190,10 +1177,7 @@ mod tests {
             let out2 = NativeAccessSyscall
                 .call(
                     &mut state,
-                    &[
-                        RustBV::concrete(0x2000, bits),
-                        RustBV::concrete(0, bits),
-                    ],
+                    &[RustBV::concrete(0x2000, bits), RustBV::concrete(0, bits)],
                 )
                 .expect("access");
             match out2 {
@@ -1877,9 +1861,11 @@ mod tests {
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         // Seed a file with concrete content so content_len = 13.
-        let fd = state
-            .file_system()
-            .open_with_content("/tmp/hello".into(), FdFlags::ReadOnly, b"hello, world!".to_vec());
+        let fd = state.file_system().open_with_content(
+            "/tmp/hello".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        );
 
         let out = NativeFstatSyscall
             .call(
@@ -1912,9 +1898,11 @@ mod tests {
         let mut state = RustSimState::new("aarch64").expect("state");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
-        let fd = state
-            .file_system()
-            .open_with_content("/tmp/arm".into(), FdFlags::ReadOnly, vec![0u8; 4096]);
+        let fd = state.file_system().open_with_content(
+            "/tmp/arm".into(),
+            FdFlags::ReadOnly,
+            vec![0u8; 4096],
+        );
 
         let out = NativeFstatSyscall
             .call(
@@ -1965,10 +1953,9 @@ mod tests {
                 )
                 .expect_err("{arch}: must surface as Other");
             match err {
-                SyscallError::Other(msg) => assert!(
-                    msg.contains("unsupported arch"),
-                    "{arch}: got {msg:?}",
-                ),
+                SyscallError::Other(msg) => {
+                    assert!(msg.contains("unsupported arch"), "{arch}: got {msg:?}",)
+                }
                 other => panic!("{arch}: expected Other, got {other:?}"),
             }
         }
@@ -2079,9 +2066,11 @@ mod tests {
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         // Seed an fd with 13 bytes so content_size_for_path returns Some(13).
-        let _fd = state
-            .file_system()
-            .open_with_content("/tmp/sized".into(), FdFlags::ReadOnly, b"hello, world!".to_vec());
+        let _fd = state.file_system().open_with_content(
+            "/tmp/sized".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        );
 
         let out = NativeStatSyscall
             .call(
@@ -2152,10 +2141,9 @@ mod tests {
                 )
                 .expect_err("must surface as Other");
             match err {
-                SyscallError::Other(msg) => assert!(
-                    msg.contains("unsupported arch"),
-                    "{arch}: got {msg:?}",
-                ),
+                SyscallError::Other(msg) => {
+                    assert!(msg.contains("unsupported arch"), "{arch}: got {msg:?}",)
+                }
                 other => panic!("{arch}: expected Other, got {other:?}"),
             }
         }
@@ -2351,10 +2339,9 @@ mod tests {
                 )
                 .expect_err("must surface as Other");
             match err {
-                SyscallError::Other(msg) => assert!(
-                    msg.contains("unsupported arch"),
-                    "{arch}: got {msg:?}",
-                ),
+                SyscallError::Other(msg) => {
+                    assert!(msg.contains("unsupported arch"), "{arch}: got {msg:?}",)
+                }
                 other => panic!("{arch}: expected Other, got {other:?}"),
             }
         }
@@ -2608,10 +2595,9 @@ mod tests {
                 )
                 .expect_err("must surface as Other");
             match err {
-                SyscallError::Other(msg) => assert!(
-                    msg.contains("unsupported arch"),
-                    "{arch}: got {msg:?}",
-                ),
+                SyscallError::Other(msg) => {
+                    assert!(msg.contains("unsupported arch"), "{arch}: got {msg:?}",)
+                }
                 other => panic!("{arch}: expected Other, got {other:?}"),
             }
         }

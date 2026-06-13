@@ -355,7 +355,10 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
 
     // ---- Iop_GetElem8x16 (V128 → byte lane): concrete idx hits the
     // bit-slice fast path; symbolic idx walks the ITE chain over 16 lanes.
-    let lane_vec = RustBV::concrete(0xFEDC_BA98_7654_3210u128 | (0x0011_2233_4455_6677u128 << 64), 128);
+    let lane_vec = RustBV::concrete(
+        0xFEDC_BA98_7654_3210u128 | (0x0011_2233_4455_6677u128 << 64),
+        128,
+    );
     let lane_idx_concrete = RustBV::concrete(7, 8);
     group.bench_function("get_elem8x16_concrete_idx", |bench| {
         bench.iter(|| {
@@ -466,8 +469,8 @@ fn build_workload(n_states: usize, k_per_state: usize) -> Vec<ScopePath> {
             // (always SAT in isolation, gives each frame a distinct AST
             // so Z3 doesn't fold them into a single hash-consed assertion).
             let offset = ((i * 100) + (j * 7)) as u64;
-            let term = x.bvadd(&BV::from_u64(offset, 32));
-            let cstr = term.eq(&BV::from_u64(0, 32)).not();
+            let term = x.bvadd(BV::from_u64(offset, 32));
+            let cstr = term.eq(BV::from_u64(0, 32)).not();
             pp.push(ScopeFrame::new(true, cstr));
         }
         pp_paths.push(pp);
@@ -516,8 +519,8 @@ fn build_lifo_chain_workload(n_chain: usize) -> Vec<ScopePath> {
     let chain_frames: Vec<ScopeFrame> = (0..n_chain)
         .map(|i| {
             let offset = ((i * 7) + 13) as u64;
-            let term = x.bvadd(&BV::from_u64(offset, 32));
-            let cstr = term.eq(&BV::from_u64(0, 32)).not();
+            let term = x.bvadd(BV::from_u64(offset, 32));
+            let cstr = term.eq(BV::from_u64(0, 32)).not();
             ScopeFrame::new(true, cstr)
         })
         .collect();
@@ -563,14 +566,14 @@ fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
             let r_off = ((lvl * 11) + 503) as u64;
             let lf = ScopeFrame::new(
                 true,
-                x.bvadd(&BV::from_u64(l_off, 32))
-                    .eq(&BV::from_u64(0, 32))
+                x.bvadd(BV::from_u64(l_off, 32))
+                    .eq(BV::from_u64(0, 32))
                     .not(),
             );
             let rf = ScopeFrame::new(
                 true,
-                x.bvadd(&BV::from_u64(r_off, 32))
-                    .eq(&BV::from_u64(0, 32))
+                x.bvadd(BV::from_u64(r_off, 32))
+                    .eq(BV::from_u64(0, 32))
                     .not(),
             );
             (lf, rf)

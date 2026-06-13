@@ -39,8 +39,7 @@ pub fn scan_concrete_until_null(
     let mut buf = Vec::with_capacity(256.min(max));
     for i in 0..max as u64 {
         let byte_val = state.memory_load(addr.wrapping_add(i), 1)?;
-        let byte =
-            extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
         if byte == 0 {
             return Ok(buf);
         }
@@ -66,8 +65,7 @@ pub fn scan_concrete_bounded(
     let mut buf = Vec::with_capacity(max);
     for i in 0..max as u64 {
         let byte_val = state.memory_load(addr.wrapping_add(i), 1)?;
-        let byte =
-            extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
         if byte == 0 {
             return Ok((buf, true));
         }
@@ -90,8 +88,7 @@ pub fn find_null_addr(
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state.memory_load(byte_addr, 1)?;
         let byte =
-            extract_concrete_arg(&byte_val, &format!("{} at 0x{:x}", addr_label, byte_addr))?
-                as u8;
+            extract_concrete_arg(&byte_val, &format!("{} at 0x{:x}", addr_label, byte_addr))? as u8;
         if byte == 0 {
             return Ok(byte_addr);
         }
@@ -237,14 +234,20 @@ mod tests {
     fn test_find_null_addr_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-        assert_eq!(find_null_addr(&mut state, 0x1000, 4096, "p").unwrap(), 0x1003);
+        assert_eq!(
+            find_null_addr(&mut state, 0x1000, 4096, "p").unwrap(),
+            0x1003
+        );
     }
 
     #[test]
     fn test_find_null_addr_at_start() {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"\x00rest", Permission::RWX);
-        assert_eq!(find_null_addr(&mut state, 0x1000, 4096, "p").unwrap(), 0x1000);
+        assert_eq!(
+            find_null_addr(&mut state, 0x1000, 4096, "p").unwrap(),
+            0x1000
+        );
     }
 
     #[test]

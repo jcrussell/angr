@@ -403,9 +403,9 @@ mod tests {
             SyscallOutcome::ContinueSymbolic { ret } => ret,
             _ => panic!("expected ContinueSymbolic"),
         };
-        use z3::ast::Ast as _;
+
         let solver = z3::Solver::new();
-        solver.assert(&r1.to_z3_ast()._eq(&r2.to_z3_ast()).not());
+        solver.assert(r1.to_z3_ast().eq(r2.to_z3_ast()).not());
         assert_eq!(
             solver.check(),
             z3::SatResult::Sat,

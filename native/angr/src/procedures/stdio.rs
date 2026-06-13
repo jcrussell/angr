@@ -67,11 +67,11 @@ impl NativeSimProcedure for NativeFwrite {
         // Resolve fd from the FILE struct.
         let arch_name = state.arch().name();
         let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
-            ProcedureError::Other(format!("fwrite: no _IO_FILE fd offset for arch {arch_name}"))
+            ProcedureError::Other(format!(
+                "fwrite: no _IO_FILE fd offset for arch {arch_name}"
+            ))
         })?;
-        let fd_bv = state
-            .memory_load(file_ptr.wrapping_add(fd_off), 4)
-            ?;
+        let fd_bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
         let fd_raw = fd_bv
             .as_u64()
             .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
@@ -167,10 +167,7 @@ impl NativeSimProcedure for NativeSetvbuf {
 /// Read a 32-bit fd from a FILE struct on the given arch. Returns the signed
 /// fd (so -1 sentinels are preserved). Mirrors fileops.rs::read_fileno so the
 /// stdio shims don't need to depend on private helpers there.
-fn read_fileno_for_stream(
-    state: &RustSimState,
-    file_ptr: u64,
-) -> Result<i32, ProcedureError> {
+fn read_fileno_for_stream(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureError> {
     let arch_name = state.arch().name();
     let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
         ProcedureError::Other(format!("no _IO_FILE fd offset for arch {arch_name}"))

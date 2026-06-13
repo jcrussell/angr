@@ -37,7 +37,12 @@ use crate::symbolic::RustBV;
 // kill(pid, sig) → long
 stub_syscall!(NativeKillSyscall, "kill", "syscall_stub_kill", 2);
 // rt_sigreturn() → long
-stub_syscall!(NativeRtSigreturnSyscall, "rt_sigreturn", "syscall_stub_rt_sigreturn", 0);
+stub_syscall!(
+    NativeRtSigreturnSyscall,
+    "rt_sigreturn",
+    "syscall_stub_rt_sigreturn",
+    0
+);
 // pause() → long
 stub_syscall!(NativePauseSyscall, "pause", "syscall_stub_pause", 0);
 // alarm(seconds) → long
@@ -94,22 +99,16 @@ mod tests {
                 assert_eq!(handler.name(), label);
                 assert_eq!(handler.num_args(), nargs, "{label} arity");
 
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
+                let args: Vec<RustBV> = (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
                 let outcome = handler
                     .call(&mut state, &args)
                     .unwrap_or_else(|e| panic!("{arch} {label} errored: {e:?}"));
                 let ret = match outcome {
                     SyscallOutcome::ContinueSymbolic { ret } => ret,
-                    other => panic!(
-                        "{arch} {label} expected ContinueSymbolic, got {other:?}"
-                    ),
+                    other => panic!("{arch} {label} expected ContinueSymbolic, got {other:?}"),
                 };
                 assert_eq!(ret.width(), bits, "{arch} {label} width");
-                assert!(
-                    !ret.is_concrete(),
-                    "{arch} {label} should be symbolic"
-                );
+                assert!(!ret.is_concrete(), "{arch} {label} should be symbolic");
 
                 // Second call: must produce a *distinct* fresh symbol.
                 let outcome2 = handler
@@ -120,10 +119,7 @@ mod tests {
                     other => panic!("{arch} {label} 2nd: expected ContinueSymbolic, got {other:?}"),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {label} returns must be Symbolic"),
                 };
                 assert_ne!(

@@ -247,7 +247,12 @@ impl<'a> VEXInterpreter<'a> {
             ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
         };
         self.dispatch_address_concretization_inspect(
-            py, callbacks, addr_val, "load", "after", result_addrs,
+            py,
+            callbacks,
+            addr_val,
+            "load",
+            "after",
+            result_addrs,
         );
         match &*conc {
             ConcretizationResult::Single(addr_concrete) => {
@@ -1069,12 +1074,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `expr_result`. The original `IRExpr` is intentionally NOT passed
     /// (Rust IRExpr doesn't round-trip cleanly into a `pyvex.IRExpr`);
     /// the BP receives `expr=None` and only the computed value.
-    fn dispatch_expr_inspect(
-        &self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
-        value: &RustBV,
-    ) {
+    fn dispatch_expr_inspect(&self, py: Python<'_>, callbacks: &PythonCallbacks, value: &RustBV) {
         if !callbacks.inspect_event_enabled(16) {
             return;
         }
@@ -1086,12 +1086,7 @@ impl<'a> VEXInterpreter<'a> {
             Ok(v) => v,
             Err(_) => return,
         };
-        let _ = callbacks.call_inspect_expr(
-            py,
-            self.current_state_id,
-            "after",
-            Some(&value_ast),
-        );
+        let _ = callbacks.call_inspect_expr(py, self.current_state_id, "after", Some(&value_ast));
     }
 
     /// Fire an `address_concretization` inspect callback (angr-vfst).

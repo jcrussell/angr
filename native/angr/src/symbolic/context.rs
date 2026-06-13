@@ -4727,7 +4727,7 @@ mod tests {
             solver.push();
             solver.assert(&{
                 let bv_x = z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
-                bv_x.eq(&z3::ast::BV::from_u64(42, 8))
+                bv_x.eq(z3::ast::BV::from_u64(42, 8))
             });
             let r = solver.check();
             solver.pop(1);
@@ -4847,7 +4847,7 @@ mod tests {
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_x", 8);
         let mk_frame = |is_true: bool, val: u64| {
-            ScopeFrame::new(is_true, bv_x.eq(&z3::ast::BV::from_u64(val, 8)))
+            ScopeFrame::new(is_true, bv_x.eq(z3::ast::BV::from_u64(val, 8)))
         };
 
         // Add an initial frame (simulates a pre-existing per-state
@@ -4886,7 +4886,7 @@ mod tests {
         ctx.set_lineage_for_testing(Arc::clone(&lin));
 
         let bv_x = z3::ast::BV::new_const("test_scope_savepoint_nested_x", 8);
-        let mk_frame = |val: u64| ScopeFrame::new(true, bv_x.eq(&z3::ast::BV::from_u64(val, 8)));
+        let mk_frame = |val: u64| ScopeFrame::new(true, bv_x.eq(z3::ast::BV::from_u64(val, 8)));
 
         // outer save (depth=0), add 1 frame, inner save (depth=1), add 2,
         // pop -> truncate to 1, pop -> truncate to 0.
@@ -6169,7 +6169,7 @@ mod tests {
         let ctx = SymContext::new();
         const NVARS: usize = 32;
         let vars: Vec<RustBV> = (0..NVARS)
-            .map(|i| RustBV::symbolic(&ctx, &format!("rt_scaled_x{}_9o4n", i), 32))
+            .map(|i| RustBV::symbolic(&ctx, format!("rt_scaled_x{}_9o4n", i), 32))
             .collect();
 
         // For each var: low(x) > i, low(x) < i+100 — gives a range constraint.

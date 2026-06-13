@@ -1,6 +1,5 @@
 use super::super::*;
 
-
 // ============================================================================
 // Phase 1.1 (angr-me3z): MultiPayload data structure + sidecar storage tests.
 // These cover only the data structure and storage. Load-side collapse is in
@@ -1356,7 +1355,8 @@ fn test_concrete_overwrite_clears_multi_cell() {
     assert_eq!(mem.wider_load_cache_len(), 1);
 
     // Concrete overwrite of byte 0x1000.
-    mem.store_concrete(0x1000, RustBV::concrete(0x11, 8)).unwrap();
+    mem.store_concrete(0x1000, RustBV::concrete(0x11, 8))
+        .unwrap();
 
     // The Multi cell at 0x1000 must be gone — both the sidecar map AND the
     // page bit. The cache entry may remain (eviction is lazy) but a refetch
@@ -1383,4 +1383,3 @@ fn test_concrete_overwrite_clears_multi_cell() {
          not the orphaned Multi alternative"
     );
 }
-

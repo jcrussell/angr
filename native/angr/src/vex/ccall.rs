@@ -445,7 +445,11 @@ fn symbolic_eflags_logic(nbits: u32, dep1: &RustBV, ctx: &SymContext, ret_bits: 
 fn calc_parity(val: u64) -> u8 {
     let byte = val as u8;
     // Count 1 bits in the byte, return 1 if even (even parity)
-    if byte.count_ones().is_multiple_of(2) { 1 } else { 0 }
+    if byte.count_ones().is_multiple_of(2) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).
@@ -1194,7 +1198,9 @@ fn arm_sym_flag_n(
     let d2 = arm_extract32(dep2, ctx);
     let nd = arm_extract32(ndep, ctx);
     let res = match cc_op {
-        ARMG_CC_OP_COPY => return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N, ctx)),
+        ARMG_CC_OP_COPY => {
+            return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N, ctx));
+        }
         ARMG_CC_OP_ADD => d1.add(&d2, ctx),
         ARMG_CC_OP_SUB => d1.sub(&d2, ctx),
         ARMG_CC_OP_ADC => d1.add(&d2, ctx).add(&nd, ctx),
@@ -1223,7 +1229,9 @@ fn arm_sym_flag_z(
     let nd = arm_extract32(ndep, ctx);
     let zero = RustBV::concrete(0, 32);
     let res = match cc_op {
-        ARMG_CC_OP_COPY => return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z, ctx)),
+        ARMG_CC_OP_COPY => {
+            return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z, ctx));
+        }
         ARMG_CC_OP_ADD => d1.add(&d2, ctx),
         ARMG_CC_OP_SUB => d1.sub(&d2, ctx),
         ARMG_CC_OP_ADC => d1.add(&d2, ctx).add(&nd, ctx),
@@ -1681,7 +1689,11 @@ fn arm64g_calc_flag_c(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
             if res < a { 1 } else { 0 }
         }
         Arm64Op::Sub => {
-            if a >= b { 1 } else { 0 }
+            if a >= b {
+                1
+            } else {
+                0
+            }
         }
         Arm64Op::Adc => {
             let res = a.wrapping_add(b).wrapping_add(d3) & mask;
@@ -2770,7 +2782,10 @@ mod tests {
             Lcg(seed.wrapping_mul(0x9E3779B97F4A7C15) ^ 0x6A09E667F3BCC908)
         }
         fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0
         }
     }
@@ -2961,14 +2976,13 @@ mod tests {
                 RustBV::concrete(d2 as u128, 64),
                 RustBV::concrete(nd as u128, 64),
             ];
-            let dispatched = handle_ccall_with_ctx(
-                "amd64g_calculate_condition",
-                &args,
-                64,
-                Some(&ctx),
-            )
-            .and_then(|bv| bv.as_u64());
-            assert_eq!(dispatched, conc, "concrete-path mismatch cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}");
+            let dispatched =
+                handle_ccall_with_ctx("amd64g_calculate_condition", &args, 64, Some(&ctx))
+                    .and_then(|bv| bv.as_u64());
+            assert_eq!(
+                dispatched, conc,
+                "concrete-path mismatch cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
+            );
         }
     }
 
@@ -2980,9 +2994,20 @@ mod tests {
         use arm_cc_op::*;
         use arm_cond::*;
         let conds = [
-            ARM_COND_EQ, ARM_COND_NE, ARM_COND_HS, ARM_COND_LO, ARM_COND_MI, ARM_COND_PL,
-            ARM_COND_VS, ARM_COND_VC, ARM_COND_HI, ARM_COND_LS, ARM_COND_GE, ARM_COND_LT,
-            ARM_COND_GT, ARM_COND_LE,
+            ARM_COND_EQ,
+            ARM_COND_NE,
+            ARM_COND_HS,
+            ARM_COND_LO,
+            ARM_COND_MI,
+            ARM_COND_PL,
+            ARM_COND_VS,
+            ARM_COND_VC,
+            ARM_COND_HI,
+            ARM_COND_LS,
+            ARM_COND_GE,
+            ARM_COND_LT,
+            ARM_COND_GT,
+            ARM_COND_LE,
         ];
         let cc_ops = [
             ARMG_CC_OP_COPY,
@@ -3030,8 +3055,8 @@ mod tests {
 
     #[test]
     fn test_arm64_cond_sub64_eq() {
-        use arm64_cc_op::*;
         use arm_cond::*;
+        use arm64_cc_op::*;
         // 5 - 5 == 0 → Z set → EQ true, NE false.
         let n = (ARM_COND_EQ << 4) | ARM64G_CC_OP_SUB64;
         assert_eq!(arm64g_calculate_condition(n, 5, 5, 0), Some(1));
@@ -3041,8 +3066,8 @@ mod tests {
 
     #[test]
     fn test_arm64_cond_sub32_signed() {
-        use arm64_cc_op::*;
         use arm_cond::*;
+        use arm64_cc_op::*;
         // 32-bit: 3 - 5 → negative, N set, V clear → LT (N!=V) true, GE false.
         let lt = (ARM_COND_LT << 4) | ARM64G_CC_OP_SUB32;
         assert_eq!(arm64g_calculate_condition(lt, 3, 5, 0), Some(1));
@@ -3052,8 +3077,8 @@ mod tests {
 
     #[test]
     fn test_arm64_cond_al() {
-        use arm64_cc_op::*;
         use arm_cond::*;
+        use arm64_cc_op::*;
         let al = (ARM_COND_AL << 4) | ARM64G_CC_OP_SUB64;
         assert_eq!(arm64g_calculate_condition(al, 1, 2, 0), Some(1));
         // NV is unconditional-true on AArch64 too.
@@ -3063,8 +3088,8 @@ mod tests {
 
     #[test]
     fn test_arm64_handle_ccall_dispatch() {
-        use arm64_cc_op::*;
         use arm_cond::*;
+        use arm64_cc_op::*;
         let n = (ARM_COND_EQ << 4) | ARM64G_CC_OP_SUB64;
         let args = vec![
             RustBV::concrete(n as u128, 64),
@@ -3082,12 +3107,23 @@ mod tests {
     fn diff_fuzz_arm64_sym_calculate_condition() {
         let ctx = crate::symbolic::SymContext::new_mock();
         let mut rng = Lcg::new(0xa64_e2e);
-        use arm64_cc_op::*;
         use arm_cond::*;
+        use arm64_cc_op::*;
         let conds = [
-            ARM_COND_EQ, ARM_COND_NE, ARM_COND_HS, ARM_COND_LO, ARM_COND_MI, ARM_COND_PL,
-            ARM_COND_VS, ARM_COND_VC, ARM_COND_HI, ARM_COND_LS, ARM_COND_GE, ARM_COND_LT,
-            ARM_COND_GT, ARM_COND_LE,
+            ARM_COND_EQ,
+            ARM_COND_NE,
+            ARM_COND_HS,
+            ARM_COND_LO,
+            ARM_COND_MI,
+            ARM_COND_PL,
+            ARM_COND_VS,
+            ARM_COND_VC,
+            ARM_COND_HI,
+            ARM_COND_LS,
+            ARM_COND_GE,
+            ARM_COND_LT,
+            ARM_COND_GT,
+            ARM_COND_LE,
         ];
         let cc_ops = [
             ARM64G_CC_OP_COPY,
@@ -3134,7 +3170,7 @@ mod tests {
     #[test]
     fn diff_fuzz_arm64_sym_flags() {
         let ctx = crate::symbolic::SymContext::new_mock();
-        let mut rng = Lcg::new(0xf1a_64);
+        let mut rng = Lcg::new(0xf1a64);
         use arm64_cc_op::*;
         let cc_ops = [
             ARM64G_CC_OP_COPY,

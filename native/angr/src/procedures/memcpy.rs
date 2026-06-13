@@ -27,23 +27,15 @@ fn copy_forward(
 
     // Copy in 8-byte chunks where possible
     while offset + 8 <= size {
-        let value = state
-            .memory_load(src.wrapping_add(offset as u64), 8)
-            ?;
-        state
-            .memory_store(dst.wrapping_add(offset as u64), value)
-            ?;
+        let value = state.memory_load(src.wrapping_add(offset as u64), 8)?;
+        state.memory_store(dst.wrapping_add(offset as u64), value)?;
         offset += 8;
     }
 
     // Copy remaining bytes
     while offset < size {
-        let value = state
-            .memory_load(src.wrapping_add(offset as u64), 1)
-            ?;
-        state
-            .memory_store(dst.wrapping_add(offset as u64), value)
-            ?;
+        let value = state.memory_load(src.wrapping_add(offset as u64), 1)?;
+        state.memory_store(dst.wrapping_add(offset as u64), value)?;
         offset += 1;
     }
     Ok(())
@@ -136,13 +128,9 @@ impl NativeSimProcedure for NativeMemmove {
                 let src_addr = src.wrapping_add(i as u64);
                 let dst_addr = dst.wrapping_add(i as u64);
 
-                let value = state
-                    .memory_load(src_addr, 1)
-                    ?;
+                let value = state.memory_load(src_addr, 1)?;
 
-                state
-                    .memory_store(dst_addr, value)
-                    ?;
+                state.memory_store(dst_addr, value)?;
             }
         } else {
             // Non-overlapping or dst < src: copy forwards

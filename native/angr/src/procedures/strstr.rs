@@ -50,9 +50,7 @@ impl NativeSimProcedure for NativeStrstr {
             let h_addr = haystack_addr.wrapping_add(i);
 
             // Check first byte of haystack at this position
-            let first_val = state
-                .memory_load(h_addr, 1)
-                ?;
+            let first_val = state.memory_load(h_addr, 1)?;
             let first = extract_concrete_arg(&first_val, &format!("haystack[{}]", i))? as u8;
 
             // End of haystack
@@ -65,9 +63,7 @@ impl NativeSimProcedure for NativeStrstr {
                 let mut matched = true;
                 for (j, needle_byte) in needle.iter().enumerate().skip(1) {
                     let h_byte_addr = h_addr.wrapping_add(j as u64);
-                    let val = state
-                        .memory_load(h_byte_addr, 1)
-                        ?;
+                    let val = state.memory_load(h_byte_addr, 1)?;
                     let byte =
                         extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
                     if byte != *needle_byte {

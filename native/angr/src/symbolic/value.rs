@@ -204,10 +204,7 @@ impl FloatOpKind {
     pub fn is_compare(&self) -> bool {
         matches!(
             self,
-            FloatOpKind::CmpEq
-                | FloatOpKind::CmpLt
-                | FloatOpKind::CmpLe
-                | FloatOpKind::IsNaN
+            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe | FloatOpKind::IsNaN
         )
     }
 
@@ -218,10 +215,7 @@ impl FloatOpKind {
     #[inline]
     pub fn result_bits(&self, prec: FloatPrec) -> u32 {
         match self {
-            FloatOpKind::CmpEq
-            | FloatOpKind::CmpLt
-            | FloatOpKind::CmpLe
-            | FloatOpKind::IsNaN => 1,
+            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe | FloatOpKind::IsNaN => 1,
             FloatOpKind::ConvertFtoI { dst_bits, .. }
             | FloatOpKind::ConvertFtoIRm { dst_bits, .. } => *dst_bits as u32,
             _ => prec.bits(),
@@ -541,11 +535,9 @@ impl From<RustBV> for RustBVData {
                 width,
                 name: name.to_string(),
             },
-            RustBV::Constrained { id, value, width } => RustBVData::Constrained {
-                id,
-                value,
-                width,
-            },
+            RustBV::Constrained { id, value, width } => {
+                RustBVData::Constrained { id, value, width }
+            }
             RustBV::Expression {
                 id,
                 width,
@@ -587,11 +579,9 @@ impl From<RustBVData> for RustBV {
                     }
                 }
             }
-            RustBVData::Constrained { id, value, width } => RustBV::Constrained {
-                id,
-                value,
-                width,
-            },
+            RustBVData::Constrained { id, value, width } => {
+                RustBV::Constrained { id, value, width }
+            }
             RustBVData::Expression {
                 id,
                 width,
@@ -1816,7 +1806,9 @@ impl RustBV {
                 //
                 // The previous form dropped the byte-shuffle for the multi-byte
                 // case, which is silently wrong on a Z3 round-trip.
-                BVOp::Reverse if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) => {
+                BVOp::Reverse
+                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
+                {
                     let w = operands[0].width();
                     let inner = operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
                     if high - low + 1 == 8 {
@@ -2551,7 +2543,12 @@ impl RustBV {
                             if w == 8 {
                                 p.to_z3_ast_cached(cache)
                             } else {
-                                Self::build_z3_ast_cached(&BVOp::Reverse, std::slice::from_ref(p), w, cache)
+                                Self::build_z3_ast_cached(
+                                    &BVOp::Reverse,
+                                    std::slice::from_ref(p),
+                                    w,
+                                    cache,
+                                )
                             }
                         })
                         .collect();
@@ -3312,7 +3309,11 @@ fn try_zext_const_cmp_fold(
     ctx: &SymContext,
 ) -> Option<RustBV> {
     let (extend_bits, inner) = match zext_side {
-        RustBV::Expression { op: BVOp::ZeroExt(k), operands, .. } => (*k, &operands[0]),
+        RustBV::Expression {
+            op: BVOp::ZeroExt(k),
+            operands,
+            ..
+        } => (*k, &operands[0]),
         _ => return None,
     };
     // ZeroExt(0, x) → x; the wrapping caller hands us a normal width
@@ -3374,7 +3375,11 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(0, 1));
             }
             record_zext_cmp_collapse();
-            Some(inner.clone().ult_into(RustBV::concrete(c_low, inner_width), ctx))
+            Some(
+                inner
+                    .clone()
+                    .ult_into(RustBV::concrete(c_low, inner_width), ctx),
+            )
         }
         ZExtCmp::UltSwapped => {
             // `c < ZeroExt(k, x)`. ZeroExt ∈ [0, 2^(W-k)).
@@ -3394,7 +3399,11 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(1, 1));
             }
             record_zext_cmp_collapse();
-            Some(inner.clone().ule_into(RustBV::concrete(c_low, inner_width), ctx))
+            Some(
+                inner
+                    .clone()
+                    .ule_into(RustBV::concrete(c_low, inner_width), ctx),
+            )
         }
         ZExtCmp::UleSwapped => {
             // `c <= ZeroExt(k, x)`.
@@ -4013,7 +4022,7 @@ mod tests {
         let rev = x.reverse(&ctx); // Expression { Reverse, [x] }
         // Pin x = 0x11223344; expect Reverse(x) = 0x44332211
         let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         assert_eq!(ctx.eval(&rev), Some(0x44332211));
     }
 
@@ -4024,7 +4033,7 @@ mod tests {
         let x = RustBV::symbolic(&ctx, "x", 64);
         let rev = x.reverse(&ctx);
         let pinned = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         assert_eq!(ctx.eval(&rev), Some(0xEFCDAB8967452301));
     }
 
@@ -4035,7 +4044,7 @@ mod tests {
         let x = RustBV::symbolic(&ctx, "x", 16);
         let rev = x.reverse(&ctx);
         let pinned = x.eq(&RustBV::concrete(0xAABB, 16), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         assert_eq!(ctx.eval(&rev), Some(0xBBAA));
     }
 
@@ -4047,7 +4056,7 @@ mod tests {
         // be Concat(b7, b6, ..., b0) — the byte-reversed value.
         let ctx = SymContext::new_mock();
         let bytes: Vec<RustBV> = (0..8u32)
-            .map(|i| RustBV::symbolic(&ctx, &format!("b{}", i), 8))
+            .map(|i| RustBV::symbolic(&ctx, format!("b{}", i), 8))
             .collect();
         // Build claripy-style Concat(b0, b1, ..., b7) with b0 as high.
         let mut concat = bytes[0].clone();
@@ -4059,7 +4068,7 @@ mod tests {
         let vals: [u64; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         for (b, v) in bytes.iter().zip(vals.iter()) {
             let pin = b.eq(&RustBV::concrete(*v as u128, 8), &ctx);
-            ctx.add_constraint(pin.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+            ctx.add_constraint(pin.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         }
         // concat = 0x1122334455667788; reverse → 0x8877665544332211
         assert_eq!(ctx.eval(&rev), Some(0x8877665544332211));
@@ -4095,7 +4104,7 @@ mod tests {
         // Reverse(x) byte 0 ([7:0]) is byte 3 ([31:24]) of x.
         let lo_byte = raw_extract_node(rev, 7, 0);
         let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         assert_eq!(ctx.eval(&lo_byte), Some(0x11));
     }
 
@@ -4110,7 +4119,7 @@ mod tests {
         // Reverse(x)[15:0] = bytes 0,1 of reverse = bytes 3,2 of x = top half reversed.
         let lower16 = raw_extract_node(rev, 15, 0);
         let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         // Reverse(0x11223344) = 0x44332211; low 16 bits = 0x2211
         assert_eq!(ctx.eval(&lower16), Some(0x2211));
     }
@@ -4129,12 +4138,12 @@ mod tests {
         ctx.add_constraint(
             a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         ctx.add_constraint(
             b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&lo), Some(0xBBBB));
     }
@@ -4151,12 +4160,12 @@ mod tests {
         ctx.add_constraint(
             a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         ctx.add_constraint(
             b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&hi), Some(0xAAAA));
     }
@@ -4174,12 +4183,12 @@ mod tests {
         ctx.add_constraint(
             a.eq(&RustBV::concrete(0x1234, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         ctx.add_constraint(
             b.eq(&RustBV::concrete(0x5678, 16), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         // cat = 0x12345678; extract [23:8] = 0x3456
         assert_eq!(ctx.eval(&mid), Some(0x3456));
@@ -4196,7 +4205,7 @@ mod tests {
         ctx.add_constraint(
             x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         // x bytes (LSB→MSB): 0x77 0x66 0x55 0x44 0x33 0x22 0x11 0x00.
         // bits [39:24] of x = byte indices 3..=4 = 0x33:0x44 (high:low) = 0x3344.
@@ -4214,7 +4223,7 @@ mod tests {
         ctx.add_constraint(
             x.eq(&RustBV::concrete(0xAB, 8), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&lo), Some(0xAB));
     }
@@ -4230,7 +4239,7 @@ mod tests {
         ctx.add_constraint(
             x.eq(&RustBV::concrete(0xFF, 8), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&top), Some(0));
     }
@@ -4249,7 +4258,7 @@ mod tests {
         // Use the normal extract (which now goes through the fixed Rule 3).
         let lower16 = rev.extract(15, 0, &ctx);
         let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         // Reverse(0x11223344) = 0x44332211; low 16 = 0x2211.
         assert_eq!(ctx.eval(&lower16), Some(0x2211));
     }
@@ -4266,7 +4275,7 @@ mod tests {
         ctx.add_constraint(
             x.eq(&RustBV::concrete(0x11223344, 32), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&b0), Some(0x11));
     }
@@ -4281,7 +4290,7 @@ mod tests {
         ctx.add_constraint(
             x.eq(&RustBV::concrete(0x80, 8), &ctx)
                 .to_z3_ast()
-                .eq(&z3::ast::BV::from_u64(1, 1)),
+                .eq(z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&lo), Some(0x80));
     }
@@ -4325,7 +4334,12 @@ mod tests {
         let r = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
         // Result is a width-1 Eq expression over width-8 operands.
         match &r {
-            RustBV::Expression { op, operands, width, .. } => {
+            RustBV::Expression {
+                op,
+                operands,
+                width,
+                ..
+            } => {
                 assert_eq!(*op, BVOp::Eq);
                 assert_eq!(*width, 1);
                 assert_eq!(operands.len(), 2);
@@ -4344,7 +4358,7 @@ mod tests {
         let x = RustBV::symbolic(&ctx, "x", 8);
         let zx = x.zero_extend(16, &ctx);
         let eq = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
-        ctx.add_constraint(eq.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(eq.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
         assert_eq!(ctx.eval(&x), Some(0x42));
         // Also verify the wider zext expression evaluates to the constant.
         assert_eq!(ctx.eval(&zx), Some(0x42));
@@ -4471,7 +4485,12 @@ mod tests {
         let zx32 = zx16.zero_extend(32, &ctx);
         let r = zx32.eq(&RustBV::concrete(0xFF, 32), &ctx);
         match &r {
-            RustBV::Expression { op, operands, width, .. } => {
+            RustBV::Expression {
+                op,
+                operands,
+                width,
+                ..
+            } => {
                 assert_eq!(*op, BVOp::Eq);
                 assert_eq!(*width, 1);
                 // Should have narrowed to width-8 operands.
@@ -4550,8 +4569,10 @@ mod tests {
         // Verify concrete is in operand[1] after canonicalization.
         match &r3 {
             RustBV::Expression { operands, .. } => {
-                assert!(matches!(operands[1], RustBV::Concrete { .. }),
-                        "concrete should sort to the right of symbolic");
+                assert!(
+                    matches!(operands[1], RustBV::Concrete { .. }),
+                    "concrete should sort to the right of symbolic"
+                );
             }
             _ => panic!("expected Expression for add(x, c)"),
         }
@@ -4561,10 +4582,10 @@ mod tests {
         let cases: &[(&str, BinOp)] = &[
             ("mul", |a, b, c| a.mul_into(b, c)),
             ("and", |a, b, c| a.and_into(b, c)),
-            ("or",  |a, b, c| a.or_into(b, c)),
+            ("or", |a, b, c| a.or_into(b, c)),
             ("xor", |a, b, c| a.xor_into(b, c)),
-            ("eq",  |a, b, c| a.eq_into(b, c)),
-            ("ne",  |a, b, c| a.ne_into(b, c)),
+            ("eq", |a, b, c| a.eq_into(b, c)),
+            ("ne", |a, b, c| a.ne_into(b, c)),
         ];
         for (name, build) in cases {
             let lhs = build(x.clone(), y.clone(), &ctx);
@@ -4573,7 +4594,8 @@ mod tests {
                 lhs.to_z3_ast().get_z3_ast().as_ptr(),
                 rhs.to_z3_ast().get_z3_ast().as_ptr(),
                 "{}(x,y) and {}(y,x) should canonicalize to the same Z3 AST",
-                name, name
+                name,
+                name
             );
         }
     }
@@ -4684,7 +4706,10 @@ mod tests {
                 assert!(matches!(operands[0], RustBV::Symbolic { .. }));
                 assert!(matches!(
                     operands[1],
-                    RustBV::Concrete { value: 7, width: 32 }
+                    RustBV::Concrete {
+                        value: 7,
+                        width: 32
+                    }
                 ));
             }
             _ => panic!("variant changed across round-trip"),

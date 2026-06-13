@@ -123,11 +123,8 @@ impl<'a> VEXInterpreter<'a> {
                                 // callee_addr (what we are about to return
                                 // FROM). Snapshot before pop so the BEFORE
                                 // callback sees a valid frame.
-                                let popped_func_addr = self
-                                    .call_stack
-                                    .last()
-                                    .map(|f| f.callee_addr)
-                                    .unwrap_or(0);
+                                let popped_func_addr =
+                                    self.call_stack.last().map(|f| f.callee_addr).unwrap_or(0);
                                 self.dispatch_return_inspect(
                                     py,
                                     callbacks,
@@ -411,11 +408,7 @@ impl<'a> VEXInterpreter<'a> {
         // Cache it - Arc allows O(1) cloning. Post-miss: any returned Some
         // is an eviction (key was just confirmed not present).
         let arc_irsb = Arc::new(irsb);
-        if self
-            .block_cache
-            .put(addr, Arc::clone(&arc_irsb))
-            .is_some()
-        {
+        if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
             self.stats.cache_eviction_count += 1;
         }
 

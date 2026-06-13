@@ -1,6 +1,5 @@
 use super::super::*;
 
-
 /// angr-wyxb: when two symbolic stores partially overlap, the address
 /// constraint on each store's address expression and any value
 /// constraints must remain in the solver after the stores complete.
@@ -1365,7 +1364,8 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
     mem.map(0x1000, 0x2000, Permission::RWX);
 
     let sym = RustBV::symbolic(&ctx, "sym_7qon_c", 16);
-    mem.store_concrete(0x1FFF, sym).expect("store cross-page sym");
+    mem.store_concrete(0x1FFF, sym)
+        .expect("store cross-page sym");
 
     mem.store_concrete(0x1FFF, RustBV::concrete(0xAA, 8))
         .expect("store concrete byte at base");

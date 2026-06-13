@@ -99,13 +99,28 @@ stub_syscall!(NativeRmdirSyscall, "rmdir", "syscall_stub_rmdir", 1);
 // stub for now (see module doc).
 stub_syscall!(NativeUnlinkSyscall, "unlink", "syscall_stub_unlink", 1);
 // unlinkat(dfd, path, flag) → int — Python lacks a dedicated proc.
-stub_syscall!(NativeUnlinkatSyscall, "unlinkat", "syscall_stub_unlinkat", 3);
+stub_syscall!(
+    NativeUnlinkatSyscall,
+    "unlinkat",
+    "syscall_stub_unlinkat",
+    3
+);
 // rename(oldpath, newpath) → int — no Python SimProcedure.
 stub_syscall!(NativeRenameSyscall, "rename", "syscall_stub_rename", 2);
 // renameat(olddfd, oldpath, newdfd, newpath) → int — no Python proc.
-stub_syscall!(NativeRenameatSyscall, "renameat", "syscall_stub_renameat", 4);
+stub_syscall!(
+    NativeRenameatSyscall,
+    "renameat",
+    "syscall_stub_renameat",
+    4
+);
 // renameat2(olddfd, oldpath, newdfd, newpath, flags) → int.
-stub_syscall!(NativeRenameat2Syscall, "renameat2", "syscall_stub_renameat2", 5);
+stub_syscall!(
+    NativeRenameat2Syscall,
+    "renameat2",
+    "syscall_stub_renameat2",
+    5
+);
 
 /// `chdir(path) → 0` — set the per-state cwd to the concrete C-string
 /// at `path`. Mirrors `procedures/linux_kernel/cwd.py::chdir`:
@@ -220,8 +235,7 @@ mod tests {
                 assert_eq!(handler.name(), label);
                 assert_eq!(handler.num_args(), nargs, "{label} arity");
 
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
+                let args: Vec<RustBV> = (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
                 let outcome = handler
                     .call(&mut state, &args)
                     .unwrap_or_else(|e| panic!("{arch} {label}: {e:?}"));
@@ -240,10 +254,7 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {label}: expected Symbolic variant"),
                 };
                 assert_ne!(

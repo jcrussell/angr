@@ -80,7 +80,9 @@
 //! invalid `oldfd` and on out-of-range `newfd` for `dup2`/`dup3`
 //! (matches Python's 4096-fd ulimits ceiling).
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
+use super::{
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -361,8 +363,7 @@ mod tests {
             for &(handler, label, nargs) in cases {
                 assert_eq!(handler.name(), label);
                 assert_eq!(handler.num_args(), nargs, "{label} arity");
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
+                let args: Vec<RustBV> = (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
                 let outcome = handler
                     .call(&mut state, &args)
                     .unwrap_or_else(|e| panic!("{arch} {label}: {e:?}"));
@@ -379,10 +380,7 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {label}: expected Symbolic variant"),
                 };
                 assert_ne!(
@@ -446,7 +444,9 @@ mod tests {
                     let outcome = handler.call(&mut state, &[bv(0), bv(cmd), bv(0)]).unwrap();
                     match outcome {
                         SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-                        other => panic!("{arch} {label} cmd={cmd} expected Continue, got {other:?}"),
+                        other => {
+                            panic!("{arch} {label} cmd={cmd} expected Continue, got {other:?}")
+                        }
                     }
                 }
 
@@ -457,7 +457,9 @@ mod tests {
                         assert_eq!(ret.width(), bits);
                         assert!(ret.as_u64().is_none());
                     }
-                    other => panic!("{arch} {label} cmd=F_DUPFD expected ContinueSymbolic, got {other:?}"),
+                    other => panic!(
+                        "{arch} {label} cmd=F_DUPFD expected ContinueSymbolic, got {other:?}"
+                    ),
                 }
             }
         }
@@ -597,7 +599,10 @@ mod tests {
 
         // dup2(0, 5) — newfd=5 was not open; should return 5.
         let outcome = NativeDup2Syscall
-            .call(&mut state, &[RustBV::concrete(0, 64), RustBV::concrete(5, 64)])
+            .call(
+                &mut state,
+                &[RustBV::concrete(0, 64), RustBV::concrete(5, 64)],
+            )
             .unwrap();
         match outcome {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, 5),
@@ -607,7 +612,10 @@ mod tests {
 
         // dup2(0, 0) — same fd, open; returns newfd unchanged.
         let same = NativeDup2Syscall
-            .call(&mut state, &[RustBV::concrete(0, 64), RustBV::concrete(0, 64)])
+            .call(
+                &mut state,
+                &[RustBV::concrete(0, 64), RustBV::concrete(0, 64)],
+            )
             .unwrap();
         match same {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
@@ -616,7 +624,10 @@ mod tests {
 
         // dup2(99, 6) — oldfd never opened; returns -EBADF.
         let bad_old = NativeDup2Syscall
-            .call(&mut state, &[RustBV::concrete(99, 64), RustBV::concrete(6, 64)])
+            .call(
+                &mut state,
+                &[RustBV::concrete(99, 64), RustBV::concrete(6, 64)],
+            )
             .unwrap();
         match bad_old {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),

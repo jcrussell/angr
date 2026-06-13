@@ -88,12 +88,8 @@ pub(super) fn compare_bytes(
     for i in 0..max_len {
         let c1_addr = s1_addr.wrapping_add(i);
         let c2_addr = s2_addr.wrapping_add(i);
-        let c1_val = state
-            .memory_load(c1_addr, 1)
-            ?;
-        let c2_val = state
-            .memory_load(c2_addr, 1)
-            ?;
+        let c1_val = state.memory_load(c1_addr, 1)?;
+        let c2_val = state.memory_load(c2_addr, 1)?;
 
         if !symbolic_seen {
             match (c1_val.as_u64(), c2_val.as_u64()) {

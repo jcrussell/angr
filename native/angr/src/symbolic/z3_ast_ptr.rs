@@ -23,7 +23,7 @@
 use std::ptr::NonNull;
 
 use z3::Context;
-use z3_sys::{Z3_ast, Z3_dec_ref, Z3_inc_ref, _Z3_ast};
+use z3_sys::{_Z3_ast, Z3_ast, Z3_dec_ref, Z3_inc_ref};
 
 /// Owned reference to a `Z3_ast` belonging to some [`Context`].
 ///
@@ -124,8 +124,7 @@ mod tests {
         let raw_ptr = original.get_z3_ast().as_ptr() as usize;
 
         // SAFETY: `original` keeps the AST alive; raw_ptr is its Z3_ast.
-        let wrapped =
-            unsafe { Z3AstPtr::from_borrowed_raw(&ctx, raw_ptr) }.expect("non-null ptr");
+        let wrapped = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, raw_ptr) }.expect("non-null ptr");
 
         assert_eq!(wrapped.as_usize(), raw_ptr);
         drop(wrapped);

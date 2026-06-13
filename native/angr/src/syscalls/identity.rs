@@ -168,14 +168,12 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {} both returns should be Symbolic", handler.name()),
                 };
                 assert_ne!(
-                    id1, id2,
+                    id1,
+                    id2,
                     "{arch} {} successive calls must yield distinct fresh symbols",
                     handler.name(),
                 );
@@ -187,10 +185,7 @@ mod tests {
     fn uid_gid_getters_return_1000() {
         let mut state = RustSimState::new("amd64").expect("amd64 state");
         for (h, label) in [
-            (
-                &NativeGetuidSyscall as &dyn NativeSyscall,
-                "getuid",
-            ),
+            (&NativeGetuidSyscall as &dyn NativeSyscall, "getuid"),
             (&NativeGeteuidSyscall as &dyn NativeSyscall, "geteuid"),
             (&NativeGetgidSyscall as &dyn NativeSyscall, "getgid"),
             (&NativeGetegidSyscall as &dyn NativeSyscall, "getegid"),

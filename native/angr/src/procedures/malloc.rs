@@ -106,16 +106,12 @@ impl NativeSimProcedure for NativeCalloc {
             let mut offset = 0u64;
             while offset + 8 <= total {
                 let bv = RustBV::concrete(0, 64);
-                state
-                    .memory_store(addr.wrapping_add(offset), bv)
-                    ?;
+                state.memory_store(addr.wrapping_add(offset), bv)?;
                 offset += 8;
             }
             while offset < total {
                 let bv = RustBV::concrete(0, 8);
-                state
-                    .memory_store(addr.wrapping_add(offset), bv)
-                    ?;
+                state.memory_store(addr.wrapping_add(offset), bv)?;
                 offset += 1;
             }
         }
@@ -267,10 +263,7 @@ impl NativeSimProcedure for NativePosixMemalign {
         let ptr_bytes = (bits / 8) as u64;
 
         let einval = 22u64;
-        if alignment < ptr_bytes
-            || !alignment.is_power_of_two()
-            || alignment % ptr_bytes != 0
-        {
+        if alignment < ptr_bytes || !alignment.is_power_of_two() || alignment % ptr_bytes != 0 {
             return Ok(Some(RustBV::concrete(einval as u128, 32)));
         }
         if size > 1024 * 1024 {
@@ -543,8 +536,7 @@ mod tests {
         let ctx = state.solver().borrow();
         let sym = RustBV::symbolic(&ctx, "size", 64);
         drop(ctx);
-        let result = NativeMemalign
-            .call(&mut state, &[RustBV::concrete(32, 64), sym]);
+        let result = NativeMemalign.call(&mut state, &[RustBV::concrete(32, 64), sym]);
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 

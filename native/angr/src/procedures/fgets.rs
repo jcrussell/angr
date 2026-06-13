@@ -82,15 +82,11 @@ impl NativeSimProcedure for NativeFgets {
 
         // Store symbolic bytes to buffer
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state
-                .memory_store(buf.wrapping_add(i as u64), sym_byte)
-                ?;
+            state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
         }
 
         // Store NUL terminator
-        state
-            .memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))
-            ?;
+        state.memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))?;
 
         // Return buffer address
         let bits = state.arch().bits();

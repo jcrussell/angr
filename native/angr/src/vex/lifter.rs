@@ -292,7 +292,11 @@ mod tests {
         );
 
         match expr {
-            IRExpr::Binop { op, left: _, right: _ } => {
+            IRExpr::Binop {
+                op,
+                left: _,
+                right: _,
+            } => {
                 assert!(matches!(op, IROp::Add(IRType::I64)));
             }
             _ => panic!("expected Binop"),

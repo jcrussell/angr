@@ -585,7 +585,14 @@ mod tests {
         let outcome = h
             .call(
                 &mut state,
-                &args(base, 0x3000, 0x7 /* RWX */, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+                &args(
+                    base,
+                    0x3000,
+                    0x7, /* RWX */
+                    ANON_PRIVATE | MAP_FIXED,
+                    ANON_FD,
+                    0,
+                ),
             )
             .expect("MAP_FIXED multi-page collision must succeed natively");
         match outcome {
@@ -814,12 +821,12 @@ mod tests {
         write_struct_le(
             &mut state,
             ptr,
-            0,        // addr
-            0x1000,   // length
-            0x3,      // prot RW
+            0,      // addr
+            0x1000, // length
+            0x3,    // prot RW
             ANON_PRIVATE as u32,
             ANON_FD as u32,
-            0,        // offset
+            0, // offset
         );
 
         let outcome = h
@@ -869,16 +876,7 @@ mod tests {
         let ptr: u64 = 0x4000;
         state.map_memory(ptr, 0x1000, Permission::RW);
         // fd=3 + no MAP_ANONYMOUS → Python.
-        write_struct_le(
-            &mut state,
-            ptr,
-            0,
-            0x1000,
-            0x3,
-            MAP_PRIVATE as u32,
-            3,
-            0,
-        );
+        write_struct_le(&mut state, ptr, 0, 0x1000, 0x3, MAP_PRIVATE as u32, 3, 0);
         let err = h
             .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
             .expect_err("fall back");
@@ -949,7 +947,10 @@ mod tests {
         let h = NativeMmap2Syscall;
         let mut state = fresh_state();
         let outcome = h
-            .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0x20))
+            .call(
+                &mut state,
+                &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0x20),
+            )
             .expect("ok");
         assert!(matches!(outcome, SyscallOutcome::Continue { .. }));
     }

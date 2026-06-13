@@ -182,10 +182,9 @@ mod tests {
         // Open fd=3 via NativeOpen path; native write should append into the
         // file's content buffer without entering Python.
         let mut state = RustSimState::new("amd64").unwrap();
-        state.file_system().open(
-            "out.bin".to_string(),
-            crate::state::FdFlags::WriteOnly,
-        );
+        state
+            .file_system()
+            .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
         state.map_memory_data(0x1000, b"hello", Permission::RWX);
 
         let result = NativeWrite
@@ -209,10 +208,9 @@ mod tests {
     fn test_write_closed_fd_falls_back() {
         // open + close → is_open false → fall back.
         let mut state = RustSimState::new("amd64").unwrap();
-        state.file_system().open(
-            "out.bin".to_string(),
-            crate::state::FdFlags::WriteOnly,
-        );
+        state
+            .file_system()
+            .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
         assert!(state.file_system().close(3));
         state.map_memory_data(0x1000, b"x", Permission::RWX);
 

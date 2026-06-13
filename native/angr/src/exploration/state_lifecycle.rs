@@ -124,11 +124,7 @@ impl RustExplorationManager {
     /// Path-specific constraints (e.g. branch conditions a SimProc added to
     /// one successor but not the other) are NOT applied here; the caller
     /// should follow up with `add_constraints_to_state(new_id, ...)`.
-    pub(crate) fn _fork_state_to_stash(
-        &mut self,
-        parent_id: u64,
-        stash: &str,
-    ) -> PyResult<u64> {
+    pub(crate) fn _fork_state_to_stash(&mut self, parent_id: u64, stash: &str) -> PyResult<u64> {
         let forked = {
             let parent = self.find_state(parent_id).ok_or_else(|| {
                 PyValueError::new_err(format!(

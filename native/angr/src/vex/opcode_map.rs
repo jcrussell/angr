@@ -552,27 +552,123 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     // UQSHL / SQSHL.
     if let Some(rest) = op_str.strip_prefix("Iop_QShl") {
         match rest {
-            "8x8" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 8, signed: false }),
-            "16x4" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 4, signed: false }),
-            "32x2" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 2, signed: false }),
-            "64x1" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 1, signed: false }),
-            "8x16" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 16, signed: false }),
-            "16x8" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 8, signed: false }),
-            "32x4" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 4, signed: false }),
-            "64x2" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 2, signed: false }),
+            "8x8" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I8,
+                    count: 8,
+                    signed: false,
+                });
+            }
+            "16x4" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I16,
+                    count: 4,
+                    signed: false,
+                });
+            }
+            "32x2" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I32,
+                    count: 2,
+                    signed: false,
+                });
+            }
+            "64x1" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I64,
+                    count: 1,
+                    signed: false,
+                });
+            }
+            "8x16" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I8,
+                    count: 16,
+                    signed: false,
+                });
+            }
+            "16x8" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I16,
+                    count: 8,
+                    signed: false,
+                });
+            }
+            "32x4" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I32,
+                    count: 4,
+                    signed: false,
+                });
+            }
+            "64x2" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I64,
+                    count: 2,
+                    signed: false,
+                });
+            }
             _ => {}
         }
     }
     if let Some(rest) = op_str.strip_prefix("Iop_QSal") {
         match rest {
-            "8x8" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 8, signed: true }),
-            "16x4" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 4, signed: true }),
-            "32x2" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 2, signed: true }),
-            "64x1" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 1, signed: true }),
-            "8x16" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 16, signed: true }),
-            "16x8" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 8, signed: true }),
-            "32x4" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 4, signed: true }),
-            "64x2" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 2, signed: true }),
+            "8x8" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I8,
+                    count: 8,
+                    signed: true,
+                });
+            }
+            "16x4" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I16,
+                    count: 4,
+                    signed: true,
+                });
+            }
+            "32x2" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I32,
+                    count: 2,
+                    signed: true,
+                });
+            }
+            "64x1" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I64,
+                    count: 1,
+                    signed: true,
+                });
+            }
+            "8x16" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I8,
+                    count: 16,
+                    signed: true,
+                });
+            }
+            "16x8" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I16,
+                    count: 8,
+                    signed: true,
+                });
+            }
+            "32x4" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I32,
+                    count: 4,
+                    signed: true,
+                });
+            }
+            "64x2" => {
+                return Some(IROp::VQShlSat {
+                    elem: IRType::I64,
+                    count: 2,
+                    signed: true,
+                });
+            }
             _ => {}
         }
     }
@@ -939,7 +1035,6 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // NOTE: Iop_QShl{N}x{M} / Iop_QSal{N}x{M} (NEON saturating shift-left
         // by vector) implemented in angr-tukg.8 — routed through parse_vector
         // to IROp::VQShlSat. QShlN (shift-by-immediate) is still unimplemented.
-
         _ => return None,
     };
     Some(IROp::NeonUnimplemented(op))

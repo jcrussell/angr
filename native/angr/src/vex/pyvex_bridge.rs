@@ -688,15 +688,39 @@ mod tests {
         assert_eq!(parse_loadg_op("ILGop_Ident64"), IRLoadGOp::Identity);
         assert_eq!(parse_loadg_op("ILGop_IdentV128"), IRLoadGOp::Identity);
         // The four canonical VEX widening ops (all widen to 32 bits).
-        assert_eq!(parse_loadg_op("ILGop_8Uto32"), IRLoadGOp::WidenZ { src_bits: 8 });
-        assert_eq!(parse_loadg_op("ILGop_8Sto32"), IRLoadGOp::WidenS { src_bits: 8 });
-        assert_eq!(parse_loadg_op("ILGop_16Uto32"), IRLoadGOp::WidenZ { src_bits: 16 });
-        assert_eq!(parse_loadg_op("ILGop_16Sto32"), IRLoadGOp::WidenS { src_bits: 16 });
+        assert_eq!(
+            parse_loadg_op("ILGop_8Uto32"),
+            IRLoadGOp::WidenZ { src_bits: 8 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_8Sto32"),
+            IRLoadGOp::WidenS { src_bits: 8 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_16Uto32"),
+            IRLoadGOp::WidenZ { src_bits: 16 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_16Sto32"),
+            IRLoadGOp::WidenS { src_bits: 16 }
+        );
         // Defensive *to64 forms.
-        assert_eq!(parse_loadg_op("ILGop_16Uto64"), IRLoadGOp::WidenZ { src_bits: 16 });
-        assert_eq!(parse_loadg_op("ILGop_16Sto64"), IRLoadGOp::WidenS { src_bits: 16 });
-        assert_eq!(parse_loadg_op("ILGop_32Uto64"), IRLoadGOp::WidenZ { src_bits: 32 });
-        assert_eq!(parse_loadg_op("ILGop_32Sto64"), IRLoadGOp::WidenS { src_bits: 32 });
+        assert_eq!(
+            parse_loadg_op("ILGop_16Uto64"),
+            IRLoadGOp::WidenZ { src_bits: 16 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_16Sto64"),
+            IRLoadGOp::WidenS { src_bits: 16 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_32Uto64"),
+            IRLoadGOp::WidenZ { src_bits: 32 }
+        );
+        assert_eq!(
+            parse_loadg_op("ILGop_32Sto64"),
+            IRLoadGOp::WidenS { src_bits: 32 }
+        );
         // Unknown strings are flagged, not silently treated as Identity.
         assert_eq!(parse_loadg_op("ILGop_INVALID"), IRLoadGOp::Unknown);
         assert_eq!(parse_loadg_op("nonsense"), IRLoadGOp::Unknown);
@@ -810,7 +834,12 @@ mod tests {
         // Check that the binop is VFAddS
         if let IRStmt::WrTmp { tmp, data } = &irsb.statements[3] {
             assert_eq!(*tmp, 0);
-            if let IRExpr::Binop { op, left: _, right: _ } = data {
+            if let IRExpr::Binop {
+                op,
+                left: _,
+                right: _,
+            } = data
+            {
                 println!("Parsed opcode: {:?}", op);
                 assert!(
                     matches!(op, IROp::VFAddS { elem: IRType::F32 }),

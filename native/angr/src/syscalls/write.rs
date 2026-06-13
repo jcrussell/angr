@@ -191,10 +191,9 @@ mod tests {
     fn write_user_fd_appends_to_filesystem() {
         let h = NativeWriteSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
-        state.file_system().open(
-            "out.bin".to_string(),
-            crate::state::FdFlags::WriteOnly,
-        );
+        state
+            .file_system()
+            .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
         state.map_memory_data(0x1000, b"hello", Permission::RWX);
 
         let outcome = h
@@ -220,10 +219,9 @@ mod tests {
     fn write_closed_user_fd_falls_back() {
         let h = NativeWriteSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
-        state.file_system().open(
-            "out.bin".to_string(),
-            crate::state::FdFlags::WriteOnly,
-        );
+        state
+            .file_system()
+            .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
         assert!(state.file_system().close(3));
         state.map_memory_data(0x1000, b"x", Permission::RWX);
 

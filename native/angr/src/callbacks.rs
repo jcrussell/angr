@@ -1163,12 +1163,7 @@ impl PythonCallbacks {
 
     /// Test entry point: invoke the registered fork callback directly.
     #[pyo3(name = "call_inspect_fork")]
-    pub fn py_call_inspect_fork(
-        &self,
-        py: Python<'_>,
-        state_id: i64,
-        when: &str,
-    ) -> PyResult<()> {
+    pub fn py_call_inspect_fork(&self, py: Python<'_>, state_id: i64, when: &str) -> PyResult<()> {
         self.call_inspect_fork(py, state_id, when)
     }
 
@@ -1625,12 +1620,7 @@ impl PythonCallbacks {
     /// Fires `when='after'` for each forked state created by the
     /// deferred-fork processing in `exploration/stepping.rs`.
     /// No attrs — the BP just sees the forked state's id.
-    pub fn call_inspect_fork(
-        &self,
-        py: Python<'_>,
-        state_id: i64,
-        when: &str,
-    ) -> PyResult<()> {
+    pub fn call_inspect_fork(&self, py: Python<'_>, state_id: i64, when: &str) -> PyResult<()> {
         let cb = match self.inspect_fork.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),

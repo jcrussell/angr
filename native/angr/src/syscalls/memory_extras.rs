@@ -35,9 +35,19 @@ stub_syscall!(NativeMlockSyscall, "mlock", "syscall_stub_mlock", 2);
 // munlock(start, len) → long
 stub_syscall!(NativeMunlockSyscall, "munlock", "syscall_stub_munlock", 2);
 // mlockall(flags) → long
-stub_syscall!(NativeMlockallSyscall, "mlockall", "syscall_stub_mlockall", 1);
+stub_syscall!(
+    NativeMlockallSyscall,
+    "mlockall",
+    "syscall_stub_mlockall",
+    1
+);
 // munlockall() → long
-stub_syscall!(NativeMunlockallSyscall, "munlockall", "syscall_stub_munlockall", 0);
+stub_syscall!(
+    NativeMunlockallSyscall,
+    "munlockall",
+    "syscall_stub_munlockall",
+    0
+);
 
 #[cfg(test)]
 mod tests {
@@ -73,16 +83,13 @@ mod tests {
                 assert_eq!(handler.name(), label);
                 assert_eq!(handler.num_args(), nargs, "{label} arity");
 
-                let args: Vec<RustBV> =
-                    (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
+                let args: Vec<RustBV> = (0..nargs).map(|_| RustBV::concrete(0, bits)).collect();
                 let outcome = handler
                     .call(&mut state, &args)
                     .unwrap_or_else(|e| panic!("{arch} {label} errored: {e:?}"));
                 let ret = match outcome {
                     SyscallOutcome::ContinueSymbolic { ret } => ret,
-                    other => panic!(
-                        "{arch} {label} expected ContinueSymbolic, got {other:?}"
-                    ),
+                    other => panic!("{arch} {label} expected ContinueSymbolic, got {other:?}"),
                 };
                 assert_eq!(
                     ret.width(),
@@ -101,10 +108,7 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let (id1, id2) = match (&ret, &ret2) {
-                    (
-                        RustBV::Symbolic { id: a, .. },
-                        RustBV::Symbolic { id: b, .. },
-                    ) => (*a, *b),
+                    (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
                     _ => panic!("{arch} {label} returns should be Symbolic"),
                 };
                 assert_ne!(

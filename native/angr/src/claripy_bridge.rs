@@ -1403,12 +1403,8 @@ fn rustbv_to_claripy_memo(
                     Ok(bv.unbind())
                 };
                 let (args, w0, w1) = match (w0, w1) {
-                    (None, Some(w)) => {
-                        (vec![bool_to_bv1(&args[0])?, args[1].clone()], 1u32, w)
-                    }
-                    (Some(w), None) => {
-                        (vec![args[0].clone(), bool_to_bv1(&args[1])?], w, 1u32)
-                    }
+                    (None, Some(w)) => (vec![bool_to_bv1(&args[0])?, args[1].clone()], 1u32, w),
+                    (Some(w), None) => (vec![args[0].clone(), bool_to_bv1(&args[1])?], w, 1u32),
                     (None, None) => (
                         vec![bool_to_bv1(&args[0])?, bool_to_bv1(&args[1])?],
                         1u32,
@@ -1964,8 +1960,7 @@ mod tests {
                 "And(Eq,Eq) export must reference both operands' variables"
             );
             // And of two 1-bit BVs is itself a 1-bit BV.
-            let length: Option<u32> =
-                ast.getattr("length").ok().and_then(|l| l.extract().ok());
+            let length: Option<u32> = ast.getattr("length").ok().and_then(|l| l.extract().ok());
             assert_eq!(length, Some(1), "And of two Bool->BV(1) is a 1-bit BV");
         });
     }
@@ -1991,8 +1986,7 @@ mod tests {
             let ast = ast.bind(py);
 
             // A Bool has length None; an erroneous __add__ rebuild would be BV(1).
-            let length: Option<u32> =
-                ast.getattr("length").ok().and_then(|l| l.extract().ok());
+            let length: Option<u32> = ast.getattr("length").ok().and_then(|l| l.extract().ok());
             assert_eq!(
                 length, None,
                 "Eq with a Bool operand must export as a Bool (__eq__), not a BV (__add__)"

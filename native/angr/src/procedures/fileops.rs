@@ -39,9 +39,7 @@ fn read_cstring(
 ) -> Result<Vec<u8>, ProcedureError> {
     let mut out = Vec::new();
     for i in 0..max_len {
-        let bv = state
-            .memory_load(addr.wrapping_add(i), 1)
-            ?;
+        let bv = state.memory_load(addr.wrapping_add(i), 1)?;
         let v = bv
             .as_u64()
             .ok_or_else(|| ProcedureError::SymbolicArgument(format!("symbolic byte in {name}")))?;
@@ -80,9 +78,7 @@ fn read_fileno(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureErro
     let arch_name = state.arch().name();
     let (fd_off, _) = io_file_for_arch(arch_name)
         .ok_or_else(|| ProcedureError::Other(format!("no _IO_FILE layout for arch {arch_name}")))?;
-    let bv = state
-        .memory_load(file_ptr.wrapping_add(fd_off), 4)
-        ?;
+    let bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
     let raw = bv
         .as_u64()
         .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
@@ -398,12 +394,10 @@ impl NativeSimProcedure for NativeFopen {
         let fd = state.file_system().open(path_str, flags);
 
         let file_ptr = state.heap_alloc(struct_size);
-        state
-            .memory_store(
-                file_ptr.wrapping_add(fd_off),
-                RustBV::concrete(fd as u128, 32),
-            )
-            ?;
+        state.memory_store(
+            file_ptr.wrapping_add(fd_off),
+            RustBV::concrete(fd as u128, 32),
+        )?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
@@ -457,12 +451,10 @@ impl NativeSimProcedure for NativeFdopen {
         })?;
 
         let file_ptr = state.heap_alloc(struct_size);
-        state
-            .memory_store(
-                file_ptr.wrapping_add(fd_off),
-                RustBV::concrete(fd as u32 as u128, 32),
-            )
-            ?;
+        state.memory_store(
+            file_ptr.wrapping_add(fd_off),
+            RustBV::concrete(fd as u32 as u128, 32),
+        )?;
 
         Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
     }
@@ -1298,7 +1290,9 @@ mod tests {
     fn test_fdopen_existing_fd() {
         let mut state = setup_amd64_state();
         // Open via FileSystem directly so fd 3 is known to be open.
-        state.file_system().open("foo".to_string(), FdFlags::ReadOnly);
+        state
+            .file_system()
+            .open("foo".to_string(), FdFlags::ReadOnly);
         state.map_memory_data(0x2000, b"r\0", Permission::RWX);
 
         let fp = NativeFdopen

@@ -42,8 +42,10 @@ impl NativeSimProcedure for NativeStrcpy {
 
         // Write to destination byte-by-byte, then the null terminator.
         for (i, &byte) in buf.iter().enumerate() {
-            state
-                .memory_store(dest.wrapping_add(i as u64), RustBV::concrete(byte as u128, 8))?;
+            state.memory_store(
+                dest.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
         state.memory_store(
             dest.wrapping_add(buf.len() as u64),
@@ -92,8 +94,10 @@ impl NativeSimProcedure for NativeStrncpy {
         }
 
         for (i, &byte) in buf.iter().enumerate() {
-            state
-                .memory_store(dest.wrapping_add(i as u64), RustBV::concrete(byte as u128, 8))?;
+            state.memory_store(
+                dest.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
 
         Ok(Some(args[0].clone()))

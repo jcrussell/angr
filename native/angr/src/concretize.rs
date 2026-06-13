@@ -190,7 +190,7 @@ impl Default for AddressConcretizer {
             write_fallback_max: true, // Match Python: Max() fallback for writes
             avoid_multivalued_reads: false, // Default: enumerate within strategy limits
             avoid_multivalued_writes: false,
-            max_range: 1024,        // Legacy, kept in sync with read_range_limit
+            max_range: 1024, // Legacy, kept in sync with read_range_limit
         }
     }
 }
