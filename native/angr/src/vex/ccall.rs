@@ -1580,6 +1580,400 @@ pub fn armg_calculate_flags_nzcv(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) ->
     )
 }
 
+// ============================================================
+// AArch64 (arm64g) condition code support
+// ============================================================
+//
+// Mirrors angr's Python `arm64g_calculate_*` (engines/vex/claripy/ccall.py).
+// The condition encoding is identical to 32-bit ARM (ARM64Cond* == ARMCond*),
+// so we reuse `arm_cond` and `arm_flag_shift`. The cc_op set differs: each
+// arithmetic op has explicit 32- and 64-bit variants.
+//
+// NOTE: where the Python reference and VEX hardware semantics diverge (the
+// ADC/SBC carry-in is keyed off `cc_dep2 != 0` in Python rather than the
+// carry dep), we follow Python so the diff-fuzz against the Python engine
+// matches.
+
+/// AArch64 CC_OP values (from VEX's libvex_guest_arm64.h / angr ccall.py).
+pub mod arm64_cc_op {
+    pub const ARM64G_CC_OP_COPY: u64 = 0;
+    pub const ARM64G_CC_OP_ADD32: u64 = 1;
+    pub const ARM64G_CC_OP_ADD64: u64 = 2;
+    pub const ARM64G_CC_OP_SUB32: u64 = 3;
+    pub const ARM64G_CC_OP_SUB64: u64 = 4;
+    pub const ARM64G_CC_OP_ADC32: u64 = 5;
+    pub const ARM64G_CC_OP_ADC64: u64 = 6;
+    pub const ARM64G_CC_OP_SBC32: u64 = 7;
+    pub const ARM64G_CC_OP_SBC64: u64 = 8;
+    pub const ARM64G_CC_OP_LOGIC32: u64 = 9;
+    pub const ARM64G_CC_OP_LOGIC64: u64 = 10;
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Arm64Op {
+    Add,
+    Sub,
+    Adc,
+    Sbc,
+    Logic,
+}
+
+/// Decode an arm64 cc_op (other than COPY) into (operation, operand width).
+fn arm64_decode(cc_op: u64) -> Option<(Arm64Op, u32)> {
+    use arm64_cc_op::*;
+    Some(match cc_op {
+        ARM64G_CC_OP_ADD32 => (Arm64Op::Add, 32),
+        ARM64G_CC_OP_ADD64 => (Arm64Op::Add, 64),
+        ARM64G_CC_OP_SUB32 => (Arm64Op::Sub, 32),
+        ARM64G_CC_OP_SUB64 => (Arm64Op::Sub, 64),
+        ARM64G_CC_OP_ADC32 => (Arm64Op::Adc, 32),
+        ARM64G_CC_OP_ADC64 => (Arm64Op::Adc, 64),
+        ARM64G_CC_OP_SBC32 => (Arm64Op::Sbc, 32),
+        ARM64G_CC_OP_SBC64 => (Arm64Op::Sbc, 64),
+        ARM64G_CC_OP_LOGIC32 => (Arm64Op::Logic, 32),
+        ARM64G_CC_OP_LOGIC64 => (Arm64Op::Logic, 64),
+        _ => return None,
+    })
+}
+
+/// Concrete arm64 arithmetic result, masked to `nb` bits.
+fn arm64_res(op: Arm64Op, nb: u32, d1: u64, d2: u64, d3: u64) -> u64 {
+    let mask = if nb == 64 { u64::MAX } else { (1u64 << nb) - 1 };
+    let r = match op {
+        Arm64Op::Add => d1.wrapping_add(d2),
+        Arm64Op::Sub => d1.wrapping_sub(d2),
+        Arm64Op::Adc => d1.wrapping_add(d2).wrapping_add(d3),
+        Arm64Op::Sbc => d1.wrapping_sub(d2).wrapping_sub(d3 ^ 1),
+        Arm64Op::Logic => d1,
+    };
+    r & mask
+}
+
+fn arm64g_calc_flag_n(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        return Some((d1 >> arm_flag_shift::SHIFT_N) & 1);
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let res = arm64_res(op, nb, d1, d2, d3);
+    Some((res >> (nb - 1)) & 1)
+}
+
+fn arm64g_calc_flag_z(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        return Some((d1 >> arm_flag_shift::SHIFT_Z) & 1);
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let res = arm64_res(op, nb, d1, d2, d3);
+    Some(if res == 0 { 1 } else { 0 })
+}
+
+fn arm64g_calc_flag_c(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        return Some((d1 >> arm_flag_shift::SHIFT_C) & 1);
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let mask = if nb == 64 { u64::MAX } else { (1u64 << nb) - 1 };
+    let a = d1 & mask;
+    let b = d2 & mask;
+    Some(match op {
+        Arm64Op::Add => {
+            let res = a.wrapping_add(b) & mask;
+            if res < a { 1 } else { 0 }
+        }
+        Arm64Op::Sub => {
+            if a >= b { 1 } else { 0 }
+        }
+        Arm64Op::Adc => {
+            let res = a.wrapping_add(b).wrapping_add(d3) & mask;
+            // Python keys the comparison off cc_dep2 (b), not the carry-in.
+            if b != 0 {
+                if res <= a { 1 } else { 0 }
+            } else if res < a {
+                1
+            } else {
+                0
+            }
+        }
+        Arm64Op::Sbc => {
+            if b != 0 {
+                if a >= b { 1 } else { 0 }
+            } else if a > b {
+                1
+            } else {
+                0
+            }
+        }
+        Arm64Op::Logic => 0,
+    })
+}
+
+fn arm64g_calc_flag_v(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        return Some((d1 >> arm_flag_shift::SHIFT_V) & 1);
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let mask = if nb == 64 { u64::MAX } else { (1u64 << nb) - 1 };
+    let top = nb - 1;
+    let a = d1 & mask;
+    let b = d2 & mask;
+    Some(match op {
+        Arm64Op::Add => {
+            let res = a.wrapping_add(b) & mask;
+            ((res ^ a) & (res ^ b)) >> top
+        }
+        Arm64Op::Sub => {
+            let res = a.wrapping_sub(b) & mask;
+            ((a ^ b) & (a ^ res)) >> top
+        }
+        Arm64Op::Adc => {
+            let res = a.wrapping_add(b).wrapping_add(d3) & mask;
+            ((res ^ a) & (res ^ b)) >> top
+        }
+        Arm64Op::Sbc => {
+            let res = a.wrapping_sub(b).wrapping_sub(d3 ^ 1) & mask;
+            ((a ^ b) & (a ^ res)) >> top
+        }
+        Arm64Op::Logic => 0,
+    })
+}
+
+/// Concrete arm64 condition evaluation.
+/// `cond_n_op` encodes cond in bits [7:4], cc_op in bits [3:0].
+pub fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    let cond = (cond_n_op >> 4) & 0xF;
+    let cc_op = cond_n_op & 0xF;
+    let inv = cond & 1;
+
+    use arm_cond::*;
+    let flag = match cond & !1 {
+        ARM_COND_EQ => arm64g_calc_flag_z(cc_op, d1, d2, d3)?,
+        ARM_COND_HS => arm64g_calc_flag_c(cc_op, d1, d2, d3)?,
+        ARM_COND_MI => arm64g_calc_flag_n(cc_op, d1, d2, d3)?,
+        ARM_COND_VS => arm64g_calc_flag_v(cc_op, d1, d2, d3)?,
+        ARM_COND_HI => {
+            let cf = arm64g_calc_flag_c(cc_op, d1, d2, d3)?;
+            let zf = arm64g_calc_flag_z(cc_op, d1, d2, d3)?;
+            cf & (!zf & 1)
+        }
+        ARM_COND_GE => {
+            let nf = arm64g_calc_flag_n(cc_op, d1, d2, d3)?;
+            let vf = arm64g_calc_flag_v(cc_op, d1, d2, d3)?;
+            1 & !(nf ^ vf)
+        }
+        ARM_COND_GT => {
+            let nf = arm64g_calc_flag_n(cc_op, d1, d2, d3)?;
+            let vf = arm64g_calc_flag_v(cc_op, d1, d2, d3)?;
+            let zf = arm64g_calc_flag_z(cc_op, d1, d2, d3)?;
+            1 & !(zf | (nf ^ vf))
+        }
+        // AL (14) and NV (15) are both unconditional on AArch64.
+        ARM_COND_AL => return Some(1),
+        _ => return None,
+    };
+    Some(inv ^ (flag & 1))
+}
+
+/// Pack arm64 NZCV into bits [31:28].
+pub fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+    let n = arm64g_calc_flag_n(cc_op, d1, d2, d3)?;
+    let z = arm64g_calc_flag_z(cc_op, d1, d2, d3)?;
+    let c = arm64g_calc_flag_c(cc_op, d1, d2, d3)?;
+    let v = arm64g_calc_flag_v(cc_op, d1, d2, d3)?;
+    Some(
+        ((n & 1) << arm_flag_shift::SHIFT_N)
+            | ((z & 1) << arm_flag_shift::SHIFT_Z)
+            | ((c & 1) << arm_flag_shift::SHIFT_C)
+            | ((v & 1) << arm_flag_shift::SHIFT_V),
+    )
+}
+
+/// Symbolic arm64 arithmetic result. `d1`/`d2`/`d3` must already be `nb`-wide.
+fn arm64_sym_res(op: Arm64Op, d1: &RustBV, d2: &RustBV, d3: &RustBV, ctx: &SymContext) -> RustBV {
+    match op {
+        Arm64Op::Add => d1.add(d2, ctx),
+        Arm64Op::Sub => d1.sub(d2, ctx),
+        Arm64Op::Adc => d1.add(d2, ctx).add(d3, ctx),
+        Arm64Op::Sbc => {
+            let one = RustBV::concrete(1, d1.width());
+            d1.sub(d2, ctx).sub(&d3.xor(&one, ctx), ctx)
+        }
+        Arm64Op::Logic => d1.clone(),
+    }
+}
+
+fn arm64_sym_flag_n(
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    dep3: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        let d1 = extract_to_nbits(dep1, 64, ctx);
+        return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N, ctx));
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let d1 = extract_to_nbits(dep1, nb, ctx);
+    let d2 = extract_to_nbits(dep2, nb, ctx);
+    let d3 = extract_to_nbits(dep3, nb, ctx);
+    let res = arm64_sym_res(op, &d1, &d2, &d3, ctx);
+    Some(res.extract(nb - 1, nb - 1, ctx))
+}
+
+fn arm64_sym_flag_z(
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    dep3: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        let d1 = extract_to_nbits(dep1, 64, ctx);
+        return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z, ctx));
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let d1 = extract_to_nbits(dep1, nb, ctx);
+    let d2 = extract_to_nbits(dep2, nb, ctx);
+    let d3 = extract_to_nbits(dep3, nb, ctx);
+    let res = arm64_sym_res(op, &d1, &d2, &d3, ctx);
+    let zero = RustBV::concrete(0, nb);
+    Some(res.eq(&zero, ctx))
+}
+
+fn arm64_sym_flag_c(
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    dep3: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        let d1 = extract_to_nbits(dep1, 64, ctx);
+        return Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C, ctx));
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let d1 = extract_to_nbits(dep1, nb, ctx);
+    let d2 = extract_to_nbits(dep2, nb, ctx);
+    let zero = RustBV::concrete(0, nb);
+    Some(match op {
+        Arm64Op::Add => {
+            let res = d1.add(&d2, ctx);
+            res.ult(&d1, ctx)
+        }
+        Arm64Op::Sub => d1.uge(&d2, ctx),
+        Arm64Op::Adc => {
+            let d3 = extract_to_nbits(dep3, nb, ctx);
+            let res = d1.add(&d2, ctx).add(&d3, ctx);
+            // Python keys this off cc_dep2 (d2), not the carry-in.
+            let d2_nz = d2.eq(&zero, ctx).not(ctx);
+            let when_nz = res.ule(&d1, ctx);
+            let when_z = res.ult(&d1, ctx);
+            d2_nz
+                .and(&when_nz, ctx)
+                .or(&d2_nz.not(ctx).and(&when_z, ctx), ctx)
+        }
+        Arm64Op::Sbc => {
+            let d2_nz = d2.eq(&zero, ctx).not(ctx);
+            let when_nz = d1.uge(&d2, ctx);
+            let when_z = d1.ugt(&d2, ctx);
+            d2_nz
+                .and(&when_nz, ctx)
+                .or(&d2_nz.not(ctx).and(&when_z, ctx), ctx)
+        }
+        Arm64Op::Logic => RustBV::concrete(0, 1),
+    })
+}
+
+fn arm64_sym_flag_v(
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    dep3: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
+        let d1 = extract_to_nbits(dep1, 64, ctx);
+        return Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V, ctx));
+    }
+    let (op, nb) = arm64_decode(cc_op)?;
+    let d1 = extract_to_nbits(dep1, nb, ctx);
+    let d2 = extract_to_nbits(dep2, nb, ctx);
+    let top = nb - 1;
+    Some(match op {
+        Arm64Op::Add => {
+            let res = d1.add(&d2, ctx);
+            res.xor(&d1, ctx)
+                .and(&res.xor(&d2, ctx), ctx)
+                .extract(top, top, ctx)
+        }
+        Arm64Op::Sub => {
+            let res = d1.sub(&d2, ctx);
+            d1.xor(&d2, ctx)
+                .and(&d1.xor(&res, ctx), ctx)
+                .extract(top, top, ctx)
+        }
+        Arm64Op::Adc => {
+            let d3 = extract_to_nbits(dep3, nb, ctx);
+            let res = d1.add(&d2, ctx).add(&d3, ctx);
+            res.xor(&d1, ctx)
+                .and(&res.xor(&d2, ctx), ctx)
+                .extract(top, top, ctx)
+        }
+        Arm64Op::Sbc => {
+            let one = RustBV::concrete(1, nb);
+            let d3 = extract_to_nbits(dep3, nb, ctx);
+            let res = d1.sub(&d2, ctx).sub(&d3.xor(&one, ctx), ctx);
+            d1.xor(&d2, ctx)
+                .and(&d1.xor(&res, ctx), ctx)
+                .extract(top, top, ctx)
+        }
+        Arm64Op::Logic => RustBV::concrete(0, 1),
+    })
+}
+
+/// Symbolic arm64 condition evaluation. Returns a 1-bit BV.
+fn arm64_sym_calculate_condition(
+    cond: u64,
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    dep3: &RustBV,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    use arm_cond::*;
+    let inv = (cond & 1) != 0;
+
+    // AL (14) and NV (15) are both unconditional-true on AArch64.
+    if cond & !1 == ARM_COND_AL {
+        return Some(RustBV::concrete(1, 1));
+    }
+
+    let flag = match cond & !1 {
+        ARM_COND_EQ => arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?,
+        ARM_COND_HS => arm64_sym_flag_c(cc_op, dep1, dep2, dep3, ctx)?,
+        ARM_COND_MI => arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?,
+        ARM_COND_VS => arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?,
+        ARM_COND_HI => {
+            let cf = arm64_sym_flag_c(cc_op, dep1, dep2, dep3, ctx)?;
+            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?;
+            cf.and(&zf.not(ctx), ctx)
+        }
+        ARM_COND_GE => {
+            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?;
+            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?;
+            nf.xor(&vf, ctx).not(ctx)
+        }
+        ARM_COND_GT => {
+            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?;
+            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?;
+            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?;
+            zf.or(&nf.xor(&vf, ctx), ctx).not(ctx)
+        }
+        _ => return None,
+    };
+    Some(if inv { flag.not(ctx) } else { flag })
+}
+
 /// Handle a CCall expression.
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
@@ -1907,6 +2301,107 @@ pub fn handle_ccall_with_ctx(
                 _ => return None,
             };
             return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        return None;
+    }
+
+    // AArch64: arm64g_calculate_condition
+    // Args: cond_n_op, cc_dep1, cc_dep2, cc_dep3
+    if name == "arm64g_calculate_condition" {
+        if args.len() < 4 {
+            return None;
+        }
+
+        // Concrete path
+        if let (Some(cond_n_op), Some(d1), Some(d2), Some(d3)) = (
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
+        ) {
+            let result = arm64g_calculate_condition(cond_n_op, d1, d2, d3)?;
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        // Symbolic path: concrete cond_n_op with (possibly) symbolic deps.
+        if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            let cond = (cond_n_op >> 4) & 0xF;
+            let cc_op = cond_n_op & 0xF;
+            if let Some(bit) =
+                arm64_sym_calculate_condition(cond, cc_op, &args[1], &args[2], &args[3], sym_ctx)
+            {
+                return Some(bit.zero_extend(ret_bits, sym_ctx));
+            }
+        }
+
+        return None;
+    }
+
+    // AArch64: arm64g_calculate_flags_nzcv
+    if name == "arm64g_calculate_flags_nzcv" {
+        if args.len() < 4 {
+            return None;
+        }
+        if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
+        ) {
+            let result = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)?;
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+        return None;
+    }
+
+    // AArch64: individual flag calculations
+    if name == "arm64g_calculate_flag_n"
+        || name == "arm64g_calculate_flag_z"
+        || name == "arm64g_calculate_flag_c"
+        || name == "arm64g_calculate_flag_v"
+    {
+        if args.len() < 4 {
+            return None;
+        }
+
+        // Concrete path
+        if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
+        ) {
+            let result = match name {
+                "arm64g_calculate_flag_n" => arm64g_calc_flag_n(cc_op, d1, d2, d3)?,
+                "arm64g_calculate_flag_z" => arm64g_calc_flag_z(cc_op, d1, d2, d3)?,
+                "arm64g_calculate_flag_c" => arm64g_calc_flag_c(cc_op, d1, d2, d3)?,
+                "arm64g_calculate_flag_v" => arm64g_calc_flag_v(cc_op, d1, d2, d3)?,
+                _ => return None,
+            };
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        // Symbolic path: concrete cc_op with (possibly) symbolic deps.
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            let bit = match name {
+                "arm64g_calculate_flag_n" => {
+                    arm64_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "arm64g_calculate_flag_z" => {
+                    arm64_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "arm64g_calculate_flag_c" => {
+                    arm64_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "arm64g_calculate_flag_v" => {
+                    arm64_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                _ => None,
+            };
+            if let Some(bit) = bit {
+                return Some(bit.zero_extend(ret_bits, sym_ctx));
+            }
         }
 
         return None;
@@ -2526,6 +3021,168 @@ mod tests {
                 sym_val, conc_val,
                 "cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
             );
+        }
+    }
+
+    // ============================================================
+    // AArch64 (arm64g) condition code tests
+    // ============================================================
+
+    #[test]
+    fn test_arm64_cond_sub64_eq() {
+        use arm64_cc_op::*;
+        use arm_cond::*;
+        // 5 - 5 == 0 → Z set → EQ true, NE false.
+        let n = (ARM_COND_EQ << 4) | ARM64G_CC_OP_SUB64;
+        assert_eq!(arm64g_calculate_condition(n, 5, 5, 0), Some(1));
+        let n = (ARM_COND_NE << 4) | ARM64G_CC_OP_SUB64;
+        assert_eq!(arm64g_calculate_condition(n, 5, 5, 0), Some(0));
+    }
+
+    #[test]
+    fn test_arm64_cond_sub32_signed() {
+        use arm64_cc_op::*;
+        use arm_cond::*;
+        // 32-bit: 3 - 5 → negative, N set, V clear → LT (N!=V) true, GE false.
+        let lt = (ARM_COND_LT << 4) | ARM64G_CC_OP_SUB32;
+        assert_eq!(arm64g_calculate_condition(lt, 3, 5, 0), Some(1));
+        let ge = (ARM_COND_GE << 4) | ARM64G_CC_OP_SUB32;
+        assert_eq!(arm64g_calculate_condition(ge, 3, 5, 0), Some(0));
+    }
+
+    #[test]
+    fn test_arm64_cond_al() {
+        use arm64_cc_op::*;
+        use arm_cond::*;
+        let al = (ARM_COND_AL << 4) | ARM64G_CC_OP_SUB64;
+        assert_eq!(arm64g_calculate_condition(al, 1, 2, 0), Some(1));
+        // NV is unconditional-true on AArch64 too.
+        let nv = (ARM_COND_NV << 4) | ARM64G_CC_OP_SUB64;
+        assert_eq!(arm64g_calculate_condition(nv, 1, 2, 0), Some(1));
+    }
+
+    #[test]
+    fn test_arm64_handle_ccall_dispatch() {
+        use arm64_cc_op::*;
+        use arm_cond::*;
+        let n = (ARM_COND_EQ << 4) | ARM64G_CC_OP_SUB64;
+        let args = vec![
+            RustBV::concrete(n as u128, 64),
+            RustBV::concrete(7, 64),
+            RustBV::concrete(7, 64),
+            RustBV::concrete(0, 64),
+        ];
+        let result = handle_ccall("arm64g_calculate_condition", &args, 64);
+        assert_eq!(result.and_then(|r| r.as_u64()), Some(1));
+    }
+
+    /// Diff-fuzz the symbolic arm64 condition builders against the concrete
+    /// path across the full (cond × cc_op × deps) cross-product. N>=1000.
+    #[test]
+    fn diff_fuzz_arm64_sym_calculate_condition() {
+        let ctx = crate::symbolic::SymContext::new_mock();
+        let mut rng = Lcg::new(0xa64_e2e);
+        use arm64_cc_op::*;
+        use arm_cond::*;
+        let conds = [
+            ARM_COND_EQ, ARM_COND_NE, ARM_COND_HS, ARM_COND_LO, ARM_COND_MI, ARM_COND_PL,
+            ARM_COND_VS, ARM_COND_VC, ARM_COND_HI, ARM_COND_LS, ARM_COND_GE, ARM_COND_LT,
+            ARM_COND_GT, ARM_COND_LE,
+        ];
+        let cc_ops = [
+            ARM64G_CC_OP_COPY,
+            ARM64G_CC_OP_ADD32,
+            ARM64G_CC_OP_ADD64,
+            ARM64G_CC_OP_SUB32,
+            ARM64G_CC_OP_SUB64,
+            ARM64G_CC_OP_ADC32,
+            ARM64G_CC_OP_ADC64,
+            ARM64G_CC_OP_SBC32,
+            ARM64G_CC_OP_SBC64,
+            ARM64G_CC_OP_LOGIC32,
+            ARM64G_CC_OP_LOGIC64,
+        ];
+        for _ in 0..1500 {
+            let cond = conds[(rng.next() as usize) % conds.len()];
+            let cc_op = cc_ops[(rng.next() as usize) % cc_ops.len()];
+            let d1 = rng.next();
+            let d2 = rng.next();
+            // carry dep is logically a single bit
+            let d3 = rng.next() & 1;
+            let Some(conc_val) = arm64g_calculate_condition((cond << 4) | cc_op, d1, d2, d3) else {
+                continue;
+            };
+            let sym = arm64_sym_calculate_condition(
+                cond,
+                cc_op,
+                &RustBV::concrete(d1 as u128, 64),
+                &RustBV::concrete(d2 as u128, 64),
+                &RustBV::concrete(d3 as u128, 64),
+                &ctx,
+            )
+            .expect("symbolic path should handle this cond/cc_op pair");
+            let sym_val = sym.as_u64().expect("concrete");
+            assert_eq!(
+                sym_val, conc_val,
+                "cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}"
+            );
+        }
+    }
+
+    /// Diff-fuzz each individual symbolic flag builder against its concrete
+    /// counterpart across all cc_ops.
+    #[test]
+    fn diff_fuzz_arm64_sym_flags() {
+        let ctx = crate::symbolic::SymContext::new_mock();
+        let mut rng = Lcg::new(0xf1a_64);
+        use arm64_cc_op::*;
+        let cc_ops = [
+            ARM64G_CC_OP_COPY,
+            ARM64G_CC_OP_ADD32,
+            ARM64G_CC_OP_ADD64,
+            ARM64G_CC_OP_SUB32,
+            ARM64G_CC_OP_SUB64,
+            ARM64G_CC_OP_ADC32,
+            ARM64G_CC_OP_ADC64,
+            ARM64G_CC_OP_SBC32,
+            ARM64G_CC_OP_SBC64,
+            ARM64G_CC_OP_LOGIC32,
+            ARM64G_CC_OP_LOGIC64,
+        ];
+        for &cc_op in &cc_ops {
+            for _ in 0..150 {
+                let d1 = rng.next();
+                let d2 = rng.next();
+                let d3 = rng.next() & 1;
+                let bv1 = RustBV::concrete(d1 as u128, 64);
+                let bv2 = RustBV::concrete(d2 as u128, 64);
+                let bv3 = RustBV::concrete(d3 as u128, 64);
+                let check = |sym: Option<RustBV>, conc: Option<u64>, name: &str| {
+                    let s = sym.expect("sym").as_u64().expect("concrete") & 1;
+                    let c = conc.expect("conc") & 1;
+                    assert_eq!(s, c, "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}");
+                };
+                check(
+                    arm64_sym_flag_n(cc_op, &bv1, &bv2, &bv3, &ctx),
+                    arm64g_calc_flag_n(cc_op, d1, d2, d3),
+                    "n",
+                );
+                check(
+                    arm64_sym_flag_z(cc_op, &bv1, &bv2, &bv3, &ctx),
+                    arm64g_calc_flag_z(cc_op, d1, d2, d3),
+                    "z",
+                );
+                check(
+                    arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3, &ctx),
+                    arm64g_calc_flag_c(cc_op, d1, d2, d3),
+                    "c",
+                );
+                check(
+                    arm64_sym_flag_v(cc_op, &bv1, &bv2, &bv3, &ctx),
+                    arm64g_calc_flag_v(cc_op, d1, d2, d3),
+                    "v",
+                );
+            }
         }
     }
 }

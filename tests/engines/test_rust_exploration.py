@@ -9026,6 +9026,53 @@ class TestMultiArchSupport:
             f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
         )
 
+    def test_aarch64_concrete_branch_no_spurious_fork(self, tmp_path):
+        """arm64g_calculate_condition must not fork on concrete flags (angr-37d4).
+
+        Before arm64g ccalls were implemented, the ``is_cond_ccall``
+        catch-all returned a *fresh unconstrained* symbolic for every
+        ``arm64g_calculate_condition``, so a B.EQ whose flags are fully
+        concrete still produced two successors — the infeasible ``avoid``
+        path got explored, diverging from the Python engine.
+
+        Here ``w0`` is *concrete* (42), so CMP w0,#42 sets Z=1 concretely
+        and B.EQ is concretely taken. With the ccall computed properly the
+        false branch (0x400018) is infeasible and never created, so the
+        ``avoid`` stash stays empty.
+        """
+        import struct
+        from angr.exploration import RustExplorationManager
+
+        # Same blob as test_aarch64_explore_blob.
+        code = struct.pack(
+            "<IIIIIII",
+            0x52800541, 0x6B01001F, 0x54000040, 0x14000003,
+            0xD503201F, 0xD503201F, 0xD503201F,
+        )
+        blob_path = tmp_path / "aarch64_concrete_branch.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "aarch64", "base_addr": 0x400000},
+        )
+
+        state = proj.factory.blank_state(addr=0x400000)
+        state.regs.x0 = 42  # concrete -> B.EQ concretely taken
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
+
+        assert len(mgr.found) >= 1, (
+            f"concrete x0==42 did not reach found; counts={mgr.stash_counts()}"
+        )
+        # The key assertion: the concretely-infeasible avoid branch must not
+        # have been forked into existence.
+        assert len(mgr.avoided) == 0, (
+            f"spurious fork: concrete-flag B.EQ created the infeasible avoid "
+            f"branch; counts={mgr.stash_counts()}"
+        )
+
     def test_aarch64_neon_mla_blob(self, tmp_path):
         """End-to-end AArch64 NEON exploration on a hand-assembled blob.
 
