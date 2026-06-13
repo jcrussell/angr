@@ -1606,6 +1606,37 @@ class TestRustEdgeCases:
         val = ctx.eval(x)
         assert 10 <= val <= 20
 
+    def test_floordiv_mod_unsigned_semantics(self):
+        """claripy // and % are UNSIGNED; the Rust import must agree (angr-p05r).
+
+        For x == 0xFFFFFFFE (sign bit set), unsigned x//3 == 0x55555554 and
+        x % 3 == 2.  A signed sdiv/srem import would produce different models,
+        so this round-trips the dunder ASTs through the slow path and checks
+        the Rust solver matches claripy's unsigned semantics.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        x = claripy.BVS("x", 32)
+
+        # // (unsigned floordiv)
+        ctx = RustSolverContext()
+        ctx.add_constraint_ast(x == 0xFFFFFFFE)
+        assert ctx.eval(x // 3) == 0x55555554
+        # signed sdiv would give -2 // 3 == 0 (0x00000000), so guard against it
+        assert ctx.eval(x // 3) != 0
+
+        # % (unsigned mod)
+        ctx2 = RustSolverContext()
+        ctx2.add_constraint_ast(x == 0xFFFFFFFE)
+        assert ctx2.eval(x % 3) == 2
+
+        # SDiv / SMod must stay signed: SDiv(-2, 3) == 0, SMod(-2, 3) == -2.
+        ctx3 = RustSolverContext()
+        ctx3.add_constraint_ast(x == 0xFFFFFFFE)
+        assert ctx3.eval(claripy.SDiv(x, 3)) == 0
+        assert ctx3.eval(claripy.SMod(x, 3)) == 0xFFFFFFFE
+
     def test_deep_fork_chain(self):
         """Fork a state 20 levels deep and verify independence."""
         state = RustSimState("amd64")

@@ -692,7 +692,7 @@ pub fn claripy_to_rustbv(
             Ok(left.mul(&right, ctx))
         }
 
-        "__floordiv__" | "SDiv" => {
+        "SDiv" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("div requires 2 args".into()));
@@ -702,7 +702,9 @@ pub fn claripy_to_rustbv(
             Ok(left.sdiv(&right, ctx))
         }
 
-        "UDiv" => {
+        // claripy BV.__floordiv__ is UNSIGNED division (verified: BVV(0xFFFFFFFE,32)//3
+        // == 0x55555554). Only the SDiv op-name maps to signed sdiv.
+        "__floordiv__" | "UDiv" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("UDiv requires 2 args".into()));
@@ -712,7 +714,7 @@ pub fn claripy_to_rustbv(
             Ok(left.udiv(&right, ctx))
         }
 
-        "__mod__" | "SMod" => {
+        "SMod" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("mod requires 2 args".into()));
@@ -722,7 +724,9 @@ pub fn claripy_to_rustbv(
             Ok(left.srem(&right, ctx))
         }
 
-        "URem" => {
+        // claripy BV.__mod__ is UNSIGNED remainder (verified: BVV(0xFFFFFFFE,32)%3 == 2).
+        // Only the SMod op-name maps to signed srem (claripy SMod == z3 bvsrem).
+        "__mod__" | "URem" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("URem requires 2 args".into()));
