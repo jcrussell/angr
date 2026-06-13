@@ -802,6 +802,39 @@ class RustExplorationManager(
                 *close* run-to-run model variation. Default False
                 preserves the current non-deterministic behavior.
         """
+        # Init pipeline sequenced into four named phases (angr-wqao.4).
+        # boot:       construct the Rust manager + apply basic config.
+        # config:     resolve gate flags, init counters/caches, register
+        #             callbacks + simprocedures.
+        # link_state: multi-stage-reuse short-circuit (Python SimState↔Rust id).
+        # activate:   add initial states to the Rust 'active' stash.
+        self._phase_boot(
+            project, save_unconstrained, clear_caches_on_cleanup,
+            solver_timeout_ms, max_active_states, max_history,
+            exploration_strategy, deterministic,
+        )
+        self._phase_config(
+            use_shared_lineage_solver, use_callback_memory_proxy,
+            use_callback_register_proxy, use_callback_solver_proxy,
+            use_callback_callstack_proxy, use_export_callstack_proxy,
+            use_export_memory_proxy, use_simproc_fork_via_rust,
+        )
+        if self._phase_link_state(active_states):
+            return
+        self._phase_activate(active_states)
+
+    def _phase_boot(
+        self,
+        project,
+        save_unconstrained,
+        clear_caches_on_cleanup,
+        solver_timeout_ms,
+        max_active_states,
+        max_history,
+        exploration_strategy,
+        deterministic,
+    ):
+        """Phase 1 (boot): construct the Rust manager and apply basic config."""
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
         _apply_rust_log_env()
@@ -859,6 +892,18 @@ class RustExplorationManager(
         # default-bfs path is cheap (one FFI hop into the Rust setter).
         self.set_exploration_strategy(exploration_strategy)
 
+    def _phase_config(
+        self,
+        use_shared_lineage_solver,
+        use_callback_memory_proxy,
+        use_callback_register_proxy,
+        use_callback_solver_proxy,
+        use_callback_callstack_proxy,
+        use_export_callstack_proxy,
+        use_export_memory_proxy,
+        use_simproc_fork_via_rust,
+    ):
+        """Phase 2 (config): gate flags, counters/caches, callbacks + simprocedures."""
         # angr-3ms1 step 1b: opt-in flag for fork-time
         # SharedLineageSolver materialization. Stashed here so
         # _add_rust_state can push the value onto every seed state's
@@ -1021,7 +1066,7 @@ class RustExplorationManager(
         self._stats_proxy_mem_ast_writes = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
-        _init_start = time.perf_counter_ns()
+        self._init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
         # SimProcedures can create continuation hooks via self.call() which
@@ -1171,6 +1216,12 @@ class RustExplorationManager(
         # Used to restore stdin content on found states that were forked purely in Rust.
         self._stdin_content: list = []
 
+    def _phase_link_state(self, active_states):
+        """Phase 3 (link_state): multi-stage-reuse short-circuit.
+
+        Returns True when an existing Rust manager was reused (init should
+        stop here), False when a fresh manager must add its initial states.
+        """
         # Multi-stage explore reuse: if the initial state came from a previous
         # RustExplorationManager for the same project, reuse the old Rust manager
         # instead of creating a new one. This avoids lossy constraint transfer
@@ -1192,14 +1243,18 @@ class RustExplorationManager(
                     l.debug(f"Multi-stage reuse: reset manager for state {old_state_id}")
                     # Skip ALL remaining init — callbacks, binary, simprocedures
                     # are already set up on the old manager
-                    self._perf_stats.set_init_phase('total', time.perf_counter_ns() - _init_start)
-                    return
+                    self._perf_stats.set_init_phase('total', time.perf_counter_ns() - self._init_start)
+                    return True
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;
                     # falls back to building a fresh Rust manager from this state.
                     # Already debug-logs the cause.
                     l.debug(f"Multi-stage reuse failed, falling back to normal init: {e}")
 
+        return False
+
+    def _phase_activate(self, active_states):
+        """Phase 4 (activate): add initial states to the Rust 'active' stash."""
         # Add initial states
         if active_states:
             # Handle single state or list of states
@@ -1276,7 +1331,7 @@ class RustExplorationManager(
                 self._add_rust_state('active', state)
                 self._perf_stats.add_init_phase('add_rust_state', time.perf_counter_ns() - _t0)
 
-        self._perf_stats.set_init_phase('total', time.perf_counter_ns() - _init_start)
+        self._perf_stats.set_init_phase('total', time.perf_counter_ns() - self._init_start)
 
     def perf_report(self) -> str:
         """Return a formatted performance report."""
