@@ -4383,6 +4383,72 @@ class TestProxyMemoryFind:
             )
 
 
+# Gate-toggle parametrization table (angr-evu3): each SimProc-callback /
+# export-pipeline proxy gate shares the same 4-way precedence contract —
+# default off, kwarg on, env var on, explicit kwarg beats env var. Adding a
+# gate is a one-line entry here; per-gate behavioral tests live in the
+# matching Test*Gate class below.
+_GATE_TOGGLES = [
+    ("use_callback_memory_proxy", "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "_use_callback_memory_proxy"),
+    ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
+    ("use_callback_callstack_proxy", "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "_use_callback_callstack_proxy"),
+    ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
+    ("use_export_memory_proxy", "ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "_use_export_memory_proxy"),
+    ("use_simproc_fork_via_rust", "ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "_use_simproc_fork_via_rust"),
+]
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+@pytest.mark.parametrize(
+    ("kwarg", "env_var", "attr"),
+    _GATE_TOGGLES,
+    ids=[g[0] for g in _GATE_TOGGLES],
+)
+class TestProxyGateToggles:
+    """angr-evu3: the SimProc-callback and export-pipeline proxy gates share
+    an identical 4-way precedence contract — default off, ``kwarg=True`` on,
+    ``ANGR_RUST_USE_*=1`` env var on, and an explicit ``kwarg=False`` beating
+    the env var. This consolidates the former 6 gates × 4 toggle tests (once
+    duplicated verbatim across the Test*Gate classes) into one parametrized
+    table; the per-gate behavioral tests stay in their own classes. The
+    ``ids`` name each gate so a failure reads ``...[use_export_memory_proxy]``.
+    """
+
+    def test_gate_default_off(self, fauxware_project, kwarg, env_var, attr):
+        """Without the kwarg or env var, the gate is off."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert getattr(mgr, attr) is False
+
+    def test_gate_kwarg_on(self, fauxware_project, kwarg, env_var, attr):
+        """Explicit ``kwarg=True`` enables the gate."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], **{kwarg: True})
+        assert getattr(mgr, attr) is True
+
+    def test_gate_env_var_on(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
+        """``ANGR_RUST_USE_*=1`` toggles the default on."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv(env_var, "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert getattr(mgr, attr) is True
+
+    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
+        """An explicit ``kwarg=False`` beats the env var."""
+        from angr.exploration import RustExplorationManager
+
+        monkeypatch.setenv(env_var, "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], **{kwarg: False})
+        assert getattr(mgr, attr) is False
+
+
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackMemoryProxyGate:
     """angr-4scu step 3: ``use_callback_memory_proxy`` gate controls whether
@@ -4390,44 +4456,6 @@ class TestCallbackMemoryProxyGate:
     callback states. Default off keeps the ``CallbackMemoryTracker``
     diff-and-push path live; on routes loads/stores directly to Rust.
     """
-
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_memory_proxy is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_callback_memory_proxy=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
-        assert mgr._use_callback_memory_proxy is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles the default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_memory_proxy is True
-
-    def test_gate_env_var_kwarg_wins(self, fauxware_project, monkeypatch):
-        """Explicit ``use_callback_memory_proxy=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=False
-        )
-        assert mgr._use_callback_memory_proxy is False
 
     def test_proxy_install_swaps_state_memory(self, fauxware_project):
         """When the gate is on, ``_install_callback_memory_proxy`` replaces
@@ -4764,44 +4792,6 @@ class TestCallbackSolverProxyGate:
     ``state.solver.constraints`` reads through Rust.
     """
 
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_solver_proxy is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_callback_solver_proxy=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
-        assert mgr._use_callback_solver_proxy is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles the default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_solver_proxy is True
-
-    def test_gate_env_var_kwarg_wins(self, fauxware_project, monkeypatch):
-        """Explicit ``use_callback_solver_proxy=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=False
-        )
-        assert mgr._use_callback_solver_proxy is False
-
     def test_proxy_install_swaps_state_solver(self, fauxware_project):
         """When the gate is on, ``_install_callback_solver_proxy`` replaces
         ``state.solver`` with a ``RustSolverProxyPlugin``."""
@@ -4911,44 +4901,6 @@ class TestCallbackCallStackProxyGate:
     iteration / top-frame attribute access through Rust by ``state_id``
     via ``get_state_call_stack``.
     """
-
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_callstack_proxy is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_callback_callstack_proxy=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
-        assert mgr._use_callback_callstack_proxy is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_callstack_proxy is True
-
-    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
-        """Explicit ``use_callback_callstack_proxy=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=False
-        )
-        assert mgr._use_callback_callstack_proxy is False
 
     def test_install_swaps_state_callstack(self, fauxware_project):
         """When the gate is on, ``_install_callback_callstack_proxy``
@@ -5149,44 +5101,6 @@ class TestExportCallStackProxyGate:
     the write-through model used for memory / registers / solver.
     """
 
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_export_callstack_proxy is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_export_callstack_proxy=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_callstack_proxy=True
-        )
-        assert mgr._use_export_callstack_proxy is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_export_callstack_proxy is True
-
-    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
-        """Explicit ``use_export_callstack_proxy=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_callstack_proxy=False
-        )
-        assert mgr._use_export_callstack_proxy is False
-
     def test_sync_off_empty_stack_no_op(self, fauxware_project):
         """Gate off, empty Rust stack: ``_sync_rust_callstack_to_state``
         early-returns and leaves ``state.callstack`` as the template
@@ -5301,44 +5215,6 @@ class TestExportMemoryProxyGate:
     for callstack / registers / solver.
     """
 
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_export_memory_proxy is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_export_memory_proxy=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_memory_proxy=True
-        )
-        assert mgr._use_export_memory_proxy is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_export_memory_proxy is True
-
-    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
-        """Explicit ``use_export_memory_proxy=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_memory_proxy=False
-        )
-        assert mgr._use_export_memory_proxy is False
-
     def test_sync_off_uses_eager_writeback(self, fauxware_project):
         """Gate off: ``_sync_rust_memory_to_state`` keeps the SimState's
         original claripy memory plugin (no ``RustMemoryProxy`` install)."""
@@ -5448,44 +5324,6 @@ class TestSimProcForkViaRustGate:
     pending callback state) plus ``add_constraints_to_state(new_id, ...)``
     for path-specific constraints — no Python-side state push.
     """
-
-    def test_gate_default_off(self, fauxware_project):
-        """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_simproc_fork_via_rust is False
-
-    def test_gate_kwarg_on(self, fauxware_project):
-        """Explicit ``use_simproc_fork_via_rust=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_simproc_fork_via_rust=True
-        )
-        assert mgr._use_simproc_fork_via_rust is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles default on."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_simproc_fork_via_rust is True
-
-    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch):
-        """Explicit ``use_simproc_fork_via_rust=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
-
-        monkeypatch.setenv("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_simproc_fork_via_rust=False
-        )
-        assert mgr._use_simproc_fork_via_rust is False
 
     def test_fork_state_to_stash_pending(self, fauxware_project):
         """Rust API: ``fork_state_to_stash(parent_id, 'active')`` returns a
