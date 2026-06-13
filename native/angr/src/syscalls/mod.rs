@@ -74,6 +74,21 @@ pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallErro
         .ok_or_else(|| SyscallError::SymbolicArgument(name.to_string()))
 }
 
+/// Mint a fresh symbolic bitvector with a per-invocation unique name.
+///
+/// Native syscall handlers that return (or store) symbolic values must not
+/// reuse a fixed name. `RustBV::symbolic` calls
+/// `z3::ast::BV::new_const(name, sort)`, and two `new_const` calls with the
+/// same name+sort alias to the **same** Z3 constant. That would make two
+/// invocations of e.g. `time()` solver-equal (`ret1 == ret2` unsatisfiable),
+/// unlike claripy's unique-suffixed `BVS`. Appending
+/// `procedures::symbol_counter(prefix)` gives each mint a distinct name and
+/// therefore a distinct Z3 term — mirroring the fgets/scanf/rand procedures.
+pub fn fresh_symbolic(ctx: &crate::symbolic::SymContext, prefix: &'static str, width: u32) -> RustBV {
+    let id = crate::procedures::symbol_counter(prefix);
+    RustBV::symbolic(ctx, format!("{prefix}_{id}"), width)
+}
+
 /// What the dispatcher should do after a syscall handler runs.
 #[derive(Debug)]
 pub enum SyscallOutcome {
@@ -154,7 +169,7 @@ macro_rules! stub_syscall {
                 let bits = state.arch().bits();
                 let ret = {
                     let ctx = state.solver().borrow();
-                    $crate::symbolic::RustBV::symbolic(&ctx, $sym_name, bits)
+                    $crate::syscalls::fresh_symbolic(&ctx, $sym_name, bits)
                 };
                 Ok($crate::syscalls::SyscallOutcome::ContinueSymbolic { ret })
             }

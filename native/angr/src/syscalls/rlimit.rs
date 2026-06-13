@@ -28,7 +28,7 @@
 //! `"getrlimit"` (same as the Python subclass would inherit if
 //! introspected via `mro()`); per-arch tests assert this alias holds.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -69,7 +69,7 @@ impl NativeSyscall for NativeGetrlimitSyscall {
             let cur = RustBV::concrete(RLIMIT_STACK_CUR, 64);
             let max = {
                 let ctx = state.solver().borrow();
-                RustBV::symbolic(&ctx, "rlim_max", 64)
+                fresh_symbolic(&ctx, "rlim_max", 64)
             };
             state.memory_store(rlim, cur)?;
             state.memory_store(rlim + 8, max)?;
@@ -82,7 +82,7 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         let bits = state.arch().bits();
         let ret = {
             let ctx = state.solver().borrow();
-            RustBV::symbolic(&ctx, "rlimit", bits)
+            fresh_symbolic(&ctx, "rlimit", bits)
         };
         Ok(SyscallOutcome::ContinueSymbolic { ret })
     }

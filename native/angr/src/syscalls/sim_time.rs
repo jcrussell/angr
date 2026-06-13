@@ -32,7 +32,7 @@
 //!   which we propagate as `SyscallError::Other` so Python (which
 //!   auto-faults pages via the default plugin) can handle the store.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -76,8 +76,8 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         let (tv_sec, tv_usec) = {
             let ctx = state.solver().borrow();
             (
-                RustBV::symbolic(&ctx, "tv_sec", bits),
-                RustBV::symbolic(&ctx, "tv_usec", bits),
+                fresh_symbolic(&ctx, "tv_sec", bits),
+                fresh_symbolic(&ctx, "tv_usec", bits),
             )
         };
         let stride = (bits / 8) as u64;
@@ -126,7 +126,7 @@ impl NativeSyscall for NativeTimeSyscall {
         let bits = state.arch().bits();
         let (sys_time, monotonic_constraint) = {
             let ctx = state.solver().borrow();
-            let sys_time = RustBV::symbolic(&ctx, "sys_time", bits);
+            let sys_time = fresh_symbolic(&ctx, "sys_time", bits);
             let zero = RustBV::concrete(0, bits);
             // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
             let lower = state.last_time().cloned().unwrap_or(zero);
@@ -183,8 +183,8 @@ impl NativeSyscall for NativeClockGettimeSyscall {
         let (tv_sec, tv_nsec) = {
             let ctx = state.solver().borrow();
             (
-                RustBV::symbolic(&ctx, "tv_sec", bits),
-                RustBV::symbolic(&ctx, "tv_nsec", bits),
+                fresh_symbolic(&ctx, "tv_sec", bits),
+                fresh_symbolic(&ctx, "tv_nsec", bits),
             )
         };
         let stride = (bits / 8) as u64;
@@ -385,6 +385,32 @@ mod tests {
         }
         // last_time updated.
         assert!(state.last_time().is_some());
+    }
+
+    #[test]
+    fn time_two_calls_are_solver_distinct() {
+        // Regression guard for angr-8o7w: two time() returns on one path must
+        // be satisfiably unequal. A fixed Z3 name would alias both to the same
+        // `new_const`, making `ret1 != ret2` unsatisfiable — fresh_symbolic
+        // appends symbol_counter so each return is a distinct Z3 term.
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let r1 = match h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok") {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        let r2 = match h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok") {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        use z3::ast::Ast as _;
+        let solver = z3::Solver::new();
+        solver.assert(&r1.to_z3_ast()._eq(&r2.to_z3_ast()).not());
+        assert_eq!(
+            solver.check(),
+            z3::SatResult::Sat,
+            "two time() returns must be solver-distinct"
+        );
     }
 
     #[test]

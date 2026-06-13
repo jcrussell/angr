@@ -80,7 +80,7 @@
 //! invalid `oldfd` and on out-of-range `newfd` for `dup2`/`dup3`
 //! (matches Python's 4096-fd ulimits ceiling).
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -130,7 +130,7 @@ fn symbolic_return(state: &mut RustSimState, name: &'static str) -> SyscallOutco
     let bits = state.arch().bits();
     let ret = {
         let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, name, bits)
+        fresh_symbolic(&ctx, name, bits)
     };
     SyscallOutcome::ContinueSymbolic { ret }
 }

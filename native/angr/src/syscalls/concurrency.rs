@@ -29,7 +29,7 @@
 //! that limitation is upstream of these handlers and applies equally
 //! to the Python `syscall_stub` fallback.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -68,7 +68,7 @@ impl NativeSyscall for NativeFutexSyscall {
         let bits = state.arch().bits();
         let ret = {
             let ctx = state.solver().borrow();
-            RustBV::symbolic(&ctx, "futex", bits)
+            fresh_symbolic(&ctx, "futex", bits)
         };
         Ok(SyscallOutcome::ContinueSymbolic { ret })
     }
@@ -236,6 +236,21 @@ mod tests {
                 assert_ne!(
                     id1, id2,
                     "{arch} {label} successive calls must yield distinct symbols"
+                );
+
+                // Solver-distinctness (regression guard for angr-8o7w): the two
+                // returns must be *satisfiably unequal*, not merely distinct
+                // RustBV ids. A fixed Z3 name minted twice aliases to the same
+                // `new_const`, making `ret1 != ret2` unsatisfiable even though
+                // the RustBV ids differ. fresh_symbolic appends symbol_counter
+                // so each mint is a distinct Z3 term.
+                use z3::ast::Ast as _;
+                let solver = z3::Solver::new();
+                solver.assert(&ret.to_z3_ast()._eq(&ret2.to_z3_ast()).not());
+                assert_eq!(
+                    solver.check(),
+                    z3::SatResult::Sat,
+                    "{arch} {label}: successive returns must be solver-distinct"
                 );
             }
         }
