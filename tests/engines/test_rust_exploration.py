@@ -4665,8 +4665,6 @@ class TestCallbackMemoryProxyReentryGuards:
         # Filler — concrete bytes are zeros; downstream evaluator returns
         # whatever the solver picks under no constraint.
         assert concrete == bytes(8)
-        # Handle must be registered so Rust→Python AST round-trip works.
-        assert mgr._lookup_handle(id(ast)) is ast
 
     def test_cb_memory_store_bypasses_proxy(self, fauxware_project):
         """``_cb_memory_store`` is a no-op under the gate — Rust already
@@ -6217,11 +6215,9 @@ class TestStateMetadataStorage:
         mgr.clear_state_metadata(424242)
 
     def test_explicit_clear_after_state_drop_is_safe(self):
-        """``RustExplorationManager._cleanup_state_refs`` calls
-        ``clear_state_metadata`` on every state it evicts from
-        ``_state_cache``. The PyO3 method must tolerate the state ID no
-        longer matching any stash entry — a stale ID from a state that was
-        already moved/dropped should be a no-op, not a panic.
+        """``clear_state_metadata`` must tolerate a state ID that no longer
+        matches any stash entry — a stale ID from a state that was already
+        moved/dropped should be a no-op, not a panic.
         """
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -6269,55 +6265,35 @@ class TestStateMetadataStorage:
     # as a leak (or silent staleness) rather than a generic crash.
     # ------------------------------------------------------------------
 
-    def test_cleanup_state_refs_drops_metadata_and_cache(self, fauxware_project):
-        """RustStateCacheMixin._cleanup_state_refs must (a) pop the entry
-        from `_state_cache`, (b) call `clear_state_metadata` on the Rust
-        manager so the per-state maps drop, and (c) remove the state id
-        from the identity tracker. A leak in any of these components shows
-        up as memory growth on long explorations.
-        """
-        import claripy
-        from angr.exploration import RustExplorationManager
-
-        proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
-
-        # The manager pre-populates _state_cache with the entry state.
-        sids = mgr._rust_mgr.get_state_ids("active")
-        assert len(sids) >= 1
-        sid = sids[0]
-        # Force the cache to contain it (populate path runs lazily otherwise).
-        mgr._state_cache[sid] = state
-
-        ast = claripy.BVS("cleanup_meta", 32)
-        mgr._rust_mgr.set_state_addr_to_ast(sid, 0x4000, ast, 4)
-        assert 0x4000 in dict(mgr._rust_mgr.get_state_addr_to_ast(sid))
-        # Plant an entry in _predicate_eval_cache too so we can verify it drops.
-        mgr._predicate_eval_cache = {sid: (0xDEAD, 0)}
-
-        mgr._cleanup_state_refs(sid)
-
-        assert sid not in mgr._state_cache, "_state_cache entry must be popped"
-        assert dict(mgr._rust_mgr.get_state_addr_to_ast(sid)) == {}, (
-            "Rust-side metadata must be cleared via clear_state_metadata"
-        )
-        assert sid not in mgr._predicate_eval_cache, (
-            "predicate eval cache must be popped to prevent stale (addr,len) "
-            "tuples leaking into the next exploration"
-        )
-
-    def test_cleanup_state_refs_unknown_state_is_safe(self, fauxware_project):
-        """Calling _cleanup_state_refs on an id that was never registered
-        must succeed silently — the manager invokes it from defensive code
-        paths where the state may already have been dropped elsewhere.
+    def test_cleanup_state_cache_prunes_predicate_eval_cache(self, fauxware_project):
+        """`_cleanup_state_cache` must drop `_predicate_eval_cache` entries
+        whose state no longer exists in any Rust stash (angr-iu40). This
+        change-detection cache was formerly pruned per-state by the removed
+        `_cleanup_state_refs`; folding it into the cache-cleanup path keeps
+        the (addr, stdout_len) map bounded over long explorations instead of
+        growing one entry per dead state.
         """
         from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-        # Should not raise.
-        mgr._cleanup_state_refs(0xDEAD_BEEF_DEAD_BEEF)
+
+        live_ids = mgr._rust_mgr.get_state_ids("active")
+        assert len(live_ids) >= 1
+        live_sid = live_ids[0]
+
+        # A live state's eval-cache entry must survive; a phantom id's must go.
+        dead_sid = 0xDEAD_BEEF_DEAD_BEEF
+        mgr._predicate_eval_cache = {live_sid: (0x1000, 0), dead_sid: (0x2000, 5)}
+
+        mgr._cleanup_state_cache()
+
+        assert dead_sid not in mgr._predicate_eval_cache, (
+            "stale predicate-eval entry for a non-stash state must be pruned"
+        )
+        assert live_sid in mgr._predicate_eval_cache, (
+            "predicate-eval entry for a live active state must be preserved"
+        )
 
     def test_cleanup_state_cache_evicts_oldest_first(self, fauxware_project):
         """When `_state_cache` grows beyond `_max_state_cache_size`,
@@ -6326,9 +6302,9 @@ class TestStateMetadataStorage:
         first while the newest stay. Pinned state ids (roots, current
         callback, stepping target) are skipped.
 
-        Note: metadata is NOT scrubbed here — that's the
-        ``_cleanup_state_refs`` contract. The manager's cache-cleanup path
-        relies on metadata being freed when ``RustSimState`` itself drops.
+        Note: metadata is NOT scrubbed here — per-state Rust metadata is
+        freed when ``RustSimState`` itself drops (once the state leaves
+        every stash).
         """
         from angr.exploration import RustExplorationManager
 

@@ -36,139 +36,37 @@ class RustStateCacheMixin:
         """Set the current callback state for memory access."""
         self._callback_state = state
 
-    def _lookup_handle(self, handle_id: int) -> Optional[object]:
-        """Look up a claripy AST by its handle ID.
-
-        When claripy ASTs are passed to Rust, they get assigned handle IDs
-        that allow us to look them up later for constraint reconstruction.
-
-        Checks both the handle cache and the identity tracker to ensure
-        proper symbol identity preservation across FFI boundary.
-
-        Args:
-            handle_id: The handle ID assigned by Rust.
-
-        Returns:
-            The claripy AST if found, None otherwise.
-        """
-        # Check handle cache first (fast path)
-        result = self._ast_handle_cache.get(handle_id)
-        if result is not None:
-            return result
-
-        # Fall back to identity tracker (may have been evicted from handle cache)
-        return self._identity_tracker.get_original_ast(handle_id)
-
     def _register_handle(self, handle_id: int, ast: object, addr: int = None, size: int = None, state_id: int = None):
-        """Register a claripy AST with its handle ID for later lookup.
+        """Pin a claripy AST to a state address for export recovery.
 
-        Uses an LRU eviction strategy that preserves actively referenced handles.
-        Handles marked as active (via _mark_handle_active) are never evicted.
+        When an AST is stored at a concrete address (``addr`` + ``state_id``
+        given), it is recorded in the Rust-side per-state ``addr_to_ast`` map
+        via ``set_state_addr_to_ast``. Rust holds its own strong ``PyObject``
+        ref, so the AST survives until the owning ``RustSimState`` drops — this
+        is the path ``_get_stash_states`` uses to recover symbolic memory on
+        export (rust_state_export.py).
 
-        This also registers the AST with the identity tracker to ensure
-        that the same AST is returned when exported from Rust.
-
-        Args:
-            handle_id: The handle ID assigned by Rust.
-            ast: The claripy AST to cache.
-            addr: Optional memory address where this AST is stored.
-            size: Optional size in bytes of the AST.
-            state_id: Optional state ID for address tracking.
+        Calls without ``addr``/``state_id`` are no-ops: there is no Python-side
+        handle cache to populate. The ``handle_id`` argument is retained only
+        for call-site compatibility.
         """
-        self._ast_handle_cache[handle_id] = ast
-
-        # Also register with identity tracker for bidirectional lookup
-        self._identity_tracker.register(ast, handle_id)
+        if addr is None or state_id is None:
+            return
 
         # Track address -> AST mapping for state export recovery.
         # Use effective state ID so forked states share parent's data.
-        if addr is not None and state_id is not None:
-            effective_id = self._get_effective_state_id(state_id)
-            if effective_id is not None:
-                actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
-                try:
-                    self._rust_mgr.set_state_addr_to_ast(effective_id, addr, ast, actual_size)
-                except Exception as e:
-                    # cat-(a) EXPECTED CONTROL FLOW: state may have been dropped
-                    # from Rust between fork and registration; the addr->AST
-                    # link is best-effort and missing it is fine.
-                    l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s",
-                            effective_id, addr, type(e).__name__, e)
-
-        # Limit cache size to prevent memory issues
-        # Use smarter eviction that preserves active handles
-        if len(self._ast_handle_cache) > 10000:
-            # Get set of active handles (those referenced by current states)
-            active_handles = self._get_active_handles()
-
-            # Remove oldest entries that are not active
-            eviction_count = 0
-            max_evict = 5000
-            to_remove = []
-
-            for k in list(self._ast_handle_cache.keys()):
-                if eviction_count >= max_evict:
-                    break
-                if k not in active_handles:
-                    to_remove.append(k)
-                    eviction_count += 1
-
-            for k in to_remove:
-                del self._ast_handle_cache[k]
-
-            l.debug(f"Evicted {len(to_remove)} handles from cache "
-                    f"(preserved {len(active_handles)} active)")
-
-    def _get_active_handles(self) -> set:
-        """Get the set of handle IDs that are actively in use.
-
-        Returns handle IDs referenced by:
-        - Rust pending state (stored conditions, deferred forks)
-        - Pending callback state
-        - Cached states in state_cache
-        - Any constraints in current exploration
-
-        Returns:
-            Set of handle IDs that should not be evicted.
-        """
-        active = set()
-
-        # Query Rust for actively referenced handles
-        # These are condition IDs and deferred fork handles that must not be evicted
-        if hasattr(self._rust_mgr, 'get_active_handle_ids'):
-            try:
-                rust_handles = self._rust_mgr.get_active_handle_ids()
-                active.update(rust_handles)
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: missing Rust active set means we
-                # may evict a handle that's still referenced; the recent-2000
-                # LRU below is the safety net.
-                l.debug(f"Could not get active handles from Rust: {e}")
-
-        # Add handles from pending state constraints
-        if hasattr(self, '_pending_handles') and self._pending_handles:
-            active.update(self._pending_handles)
-
-        # Don't evict recently used handles (LRU protection)
-        # Keep the most recent 2000 handles regardless
-        recent_handles = list(self._ast_handle_cache.keys())[-2000:]
-        active.update(recent_handles)
-
-        return active
-
-    def _mark_handle_active(self, handle_id: int):
-        """Mark a handle as actively in use to prevent eviction.
-
-        Called when a handle is being used in an active computation.
-        """
-        if not hasattr(self, '_pending_handles'):
-            self._pending_handles = set()
-        self._pending_handles.add(handle_id)
-
-    def _unmark_handle_active(self, handle_id: int):
-        """Remove active mark from a handle, allowing eviction."""
-        if hasattr(self, '_pending_handles') and handle_id in self._pending_handles:
-            self._pending_handles.discard(handle_id)
+        effective_id = self._get_effective_state_id(state_id)
+        if effective_id is None:
+            return
+        actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
+        try:
+            self._rust_mgr.set_state_addr_to_ast(effective_id, addr, ast, actual_size)
+        except Exception as e:
+            # cat-(a) EXPECTED CONTROL FLOW: state may have been dropped
+            # from Rust between fork and registration; the addr->AST
+            # link is best-effort and missing it is fine.
+            l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s",
+                    effective_id, addr, type(e).__name__, e)
 
     def _cleanup_symbolic_pages_cache(self):
         """No-op shim retained for back-compat hooks.
@@ -395,24 +293,4 @@ class RustStateCacheMixin:
             l.debug("Failed to create predicate state for %d: %s", state_id, e)
             return None
 
-    def _cleanup_state_refs(self, state_id: int):
-        """Clean up references for a state that is no longer needed.
-
-        Call this when a state is moved to deadended/errored stash.
-        """
-        # Remove from state cache
-        self._state_cache.pop(state_id, None)
-        # Drop per-state metadata held on the Rust side.
-        try:
-            self._rust_mgr.clear_state_metadata(state_id)
-        except Exception as e:
-            # cat-(a) EXPECTED CONTROL FLOW: state may already be gone from
-            # Rust-side; ref cleanup is best-effort.
-            l.debug("clear_state_metadata(sid=%d) failed in ref cleanup: %s: %s",
-                    state_id, type(e).__name__, e)
-        # Remove from predicate evaluation cache
-        if hasattr(self, '_predicate_eval_cache'):
-            self._predicate_eval_cache.pop(state_id, None)
-        # Mark symbols as inactive
-        self._identity_tracker.mark_inactive(state_id)
 

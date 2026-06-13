@@ -84,9 +84,9 @@ I6. State-cache pinning + manager-vs-mixin override
     Metadata-clear contract: cache eviction does NOT call
     `clear_state_metadata`. A state can be in `active`/`found` on Rust and
     still LRU-evicted from the Python mirror; in that case the Rust-side
-    metadata must remain. Metadata is freed when (a) the state moves to
-    `deadended`/`errored` and `_cleanup_state_refs` runs (rust_state_cache.py),
-    or (b) the underlying `RustSimState` drops naturally.
+    metadata must remain. Per-state Rust metadata is freed when the
+    underlying `RustSimState` drops naturally (i.e. once the state leaves
+    every Rust stash).
 
 I7. Rust ↔ Python field sync uses max(), not overwrite
     Fields that both sides can mutate (`mmap_base`, `posix_brk`, ...) sync
@@ -455,7 +455,7 @@ def _apply_rust_log_env() -> None:
         l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 
-from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemoryTracker
+from angr.exploration.rust_identity import CallbackMemoryTracker
 
 
 from angr.exploration.rust_state_export import RustStateExportMixin
@@ -1233,9 +1233,6 @@ class RustExplorationManager(
         self._register_simprocedures()
         self._perf_stats.set_init_phase('register_simprocedures', time.perf_counter_ns() - _t0)
 
-        # Symbolic identity tracker for preserving AST identity across FFI
-        # This is critical: BVS("x", 32) must stay the same object after round-trip
-        self._identity_tracker = SymbolicIdentityTracker()
 
         # Track angr state mappings for callbacks
         # Using regular dict with periodic cleanup to prevent memory leaks
@@ -1256,10 +1253,6 @@ class RustExplorationManager(
         # 500 and the cache tracked O(active_states), making it the dominant
         # driver of Python-side memory growth.
         self._max_state_cache_size = 8
-
-        # Track claripy AST handles for constraint sync
-        # Maps handle_id -> claripy AST
-        self._ast_handle_cache: Dict[int, object] = {}
 
         # Cache claripy AST -> Z3 AST pointer for register sync.
         # Skips redundant z3_backend.convert(reg_val) + .as_ast().value lookups
@@ -4272,8 +4265,7 @@ class RustExplorationManager(
         ``clear_state_metadata`` on evicted ids. A state can be live in a
         Rust stash and still LRU-evicted from the Python mirror; freeing
         Rust-side metadata in that case would corrupt subsequent stepping.
-        Metadata is dropped exclusively by ``_cleanup_state_refs`` (when the
-        state moves to ``deadended``/``errored``) or by ``RustSimState``'s
+        Per-state Rust metadata is dropped exclusively by ``RustSimState``'s
         own ``Drop`` when the state leaves every stash.
         """
         try:
@@ -4338,6 +4330,16 @@ class RustExplorationManager(
         matched = getattr(self, '_predicate_matched_ids', None)
         if matched is not None:
             matched.intersection_update(any_stash)
+
+        # Prune _predicate_eval_cache: drop change-detection entries for states
+        # no longer in any Rust stash. Formerly pruned per-state by the removed
+        # `_cleanup_state_refs`; folded here so the (addr, stdout_len) cache
+        # stays bounded by live stash size across long explorations.
+        eval_cache = getattr(self, '_predicate_eval_cache', None)
+        if eval_cache is not None:
+            for sid in list(eval_cache.keys()):
+                if sid not in any_stash:
+                    del eval_cache[sid]
 
         # Drop _LazySimStateRef wrappers for state ids that no longer exist
         # in any Rust stash. The wrappers are cheap (two slots) but pruning

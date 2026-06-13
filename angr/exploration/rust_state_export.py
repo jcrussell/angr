@@ -329,7 +329,6 @@ class RustStateExportMixin:
     - self._state_cache: Dict[int, SimState]
     - self._state_roots: Dict[int, int]
     - self._lazy_state_refs: Dict[int, _LazySimStateRef]
-    - self._identity_tracker: SymbolicIdentityTracker
     """
 
     def _invalidate_state_export_cache(self) -> None:

@@ -1,105 +1,24 @@
 """Identity tracking utilities for the Rust-Python symbolic execution boundary.
 
-These classes preserve symbolic identity across FFI and track memory writes
-during SimProcedure callbacks.
+Tracks memory writes during SimProcedure callbacks.
+
+Note: symbolic-identity preservation across the FFI boundary is handled
+entirely on the Rust side. ASTs that must round-trip are pinned via the
+manager's ``set_state_addr_to_ast`` (Rust holds its own strong ``PyObject``
+ref), so a Python-side identity map is unnecessary. The former
+``SymbolicIdentityTracker`` was write-only in production (its only reader,
+``_lookup_handle``, had no production callers) and leaked strong refs without
+bound — it was removed in angr-iu40.
 """
 from __future__ import annotations
 
 import logging
-import weakref
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import angr
 
 l = logging.getLogger(name=__name__)
-
-
-class SymbolicIdentityTracker:
-    """Tracks symbolic identity across Python<->Rust boundary.
-
-    This ensures that when a claripy AST (e.g., BVS("x", 32)) is passed
-    to Rust and then returned, we get back the same Python object.
-    This is critical for constraint consistency - constraints added to
-    the original `x` must apply to the exported value.
-
-    The tracker maintains bidirectional mappings:
-    - py_to_rust_id: Maps Python AST id() to Rust symbol ID
-    - rust_id_to_py: Maps Rust symbol ID to original Python AST
-
-    Uses WeakValueDictionary to allow garbage collection of unreferenced ASTs.
-    """
-
-    def __init__(self):
-        # Map Python AST id() to Rust symbol ID
-        self._py_to_rust_id: Dict[int, int] = {}
-        # Map Rust symbol ID to original Python AST (weak refs for GC)
-        self._rust_id_to_py: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
-        # Strong refs for active symbols (prevent premature GC)
-        self._active_symbols: Dict[int, object] = {}
-        # Map Python hash to AST for hash-based lookup
-        self._hash_to_py: Dict[int, object] = {}
-
-    def register(self, py_ast: object, rust_id: int) -> None:
-        """Register a Python AST with its Rust symbol ID.
-
-        Args:
-            py_ast: The Python claripy AST (BVS, etc.)
-            rust_id: The Rust symbol ID assigned to this AST
-        """
-        py_id = id(py_ast)
-        self._py_to_rust_id[py_id] = rust_id
-        self._rust_id_to_py[rust_id] = py_ast
-        self._active_symbols[rust_id] = py_ast  # Keep strong ref
-
-        # Also store by hash for hash-based lookup
-        try:
-            py_hash = hash(py_ast)
-            self._hash_to_py[py_hash] = py_ast
-        except (TypeError, AttributeError):
-            # cat-(a) EXPECTED CONTROL FLOW: hash-based lookup is an optional
-            # optimization; an unhashable AST falls through to id()-keyed maps.
-            pass
-
-    def get_rust_id(self, py_ast: object) -> Optional[int]:
-        """Get the Rust symbol ID for a Python AST.
-
-        Returns None if the AST hasn't been registered.
-        """
-        return self._py_to_rust_id.get(id(py_ast))
-
-    def get_original_ast(self, rust_id: int) -> Optional[object]:
-        """Get the original Python AST for a Rust symbol ID.
-
-        This is the critical method for identity preservation on export.
-        Returns None if the symbol was created in Rust.
-        """
-        return self._rust_id_to_py.get(rust_id)
-
-    def get_by_hash(self, py_hash: int) -> Optional[object]:
-        """Get a Python AST by its hash value.
-
-        This is used when we have a hash from Rust and need the original AST.
-        """
-        return self._hash_to_py.get(py_hash)
-
-    def mark_inactive(self, rust_id: int) -> None:
-        """Mark a symbol as inactive, allowing it to be GC'd.
-
-        Call this when a state is moved to deadended/errored stash.
-        """
-        self._active_symbols.pop(rust_id, None)
-
-    def clear(self) -> None:
-        """Clear all mappings. Call at start of new exploration."""
-        self._py_to_rust_id.clear()
-        self._rust_id_to_py.clear()
-        self._active_symbols.clear()
-        self._hash_to_py.clear()
-
-    def __len__(self) -> int:
-        """Return number of registered symbols."""
-        return len(self._active_symbols)
 
 
 class CallbackMemoryTracker:
