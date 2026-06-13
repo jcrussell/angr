@@ -33,7 +33,8 @@ I1. Disk-cache key axes
 I2. Init pipeline phases (post angr-khth split)
     `_run_python_init_if_needed` is the single orchestrator:
     in-memory cache → disk cache → full Python init. The disk-load path
-    is split so each phase owns a single concern:
+    (now in the RustDiskCacheManager mixin, `rust_disk_cache.py`, alongside
+    the save path) is split so each phase owns a single concern:
       * `_load_init_pickle`        — pure I/O.
       * `_deserialize_init_state`  — pure SimState construction; no
                                      manager-owned mutation.
@@ -129,7 +130,6 @@ from __future__ import annotations
 
 import logging
 import os
-import pickle
 import time
 import warnings
 import weakref
@@ -142,7 +142,6 @@ from pyvex.errors import PyVEXError
 from angr.errors import SimEngineError, SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker
-from angr.exploration._constants import PAGE_SIZE, PAGE_MASK
 
 if TYPE_CHECKING:
     import angr
@@ -2637,84 +2636,15 @@ class RustExplorationManager(
     # =========================================================================
     # Persistent disk cache for Python init results
     #
-    # The save path (``_disk_cache_dir`` / ``_disk_cache_key`` /
-    # ``_save_init_to_disk_cache`` plus the module-level ``_extract_*``
-    # snapshot helpers) lives in the RustDiskCacheManager mixin
-    # (``rust_disk_cache.py``). The load/decision helpers below still live
-    # here pending bd angr-wqao.2.
+    # The full disk-cache subsystem — both the save path (``_disk_cache_dir``
+    # / ``_disk_cache_key`` / ``_save_init_to_disk_cache`` + module-level
+    # ``_extract_*`` helpers) and the load path (``_load_init_from_disk_cache``
+    # / ``_load_init_pickle`` / ``_deserialize_init_state`` /
+    # ``_apply_init_side_effects`` + the ``_state_has_user_symbolic`` guard) —
+    # lives in the RustDiskCacheManager mixin (``rust_disk_cache.py``).
+    # ``_get_cached_blank_state`` stays here because it owns the host-class
+    # ``_blank_state_cache`` pool; the mixin reaches it via ``self``.
     # =========================================================================
-
-    @staticmethod
-    def _state_has_user_symbolic(state) -> bool:
-        """Check if state has user-created symbolic data in memory or registers.
-
-        Detects symbolic argv, symbolic input buffers, ``state.regs.a0 =
-        BVS(...)``-style register mutations, etc. by scanning:
-        1. The stack page near SP for BVS variables that aren't unconstrained fill.
-        2. All memory pages with symbolic_data for user-created variables
-           (e.g., state.memory.store(addr, BVS(...))).
-        3. Architectural registers for user-set symbolic values
-           (e.g., state.regs.a0 = BVS(...)). Without this, the disk init
-           cache silently replaces the user's state with a cached blank_state,
-           losing the user's symbolic register mutations — see angr-g9hy.
-        """
-        _user_prefixes = ('mem_', 'reg_', 'unconstrained')
-        try:
-            sp = state.solver.eval(state.regs.sp)
-            sp_page = sp & ~PAGE_MASK
-            page_data = state.memory.load(
-                sp_page, PAGE_SIZE, endness='Iend_BE',
-                inspect=False, disable_actions=True)
-            if page_data.symbolic:
-                for name in page_data.variables:
-                    if not name.startswith(_user_prefixes):
-                        return True
-        except (AttributeError, KeyError, TypeError):
-            # cat-(a) EXPECTED CONTROL FLOW: stack-page probe for user symbolic
-            # data failed; fall through to the per-page bitmap scan below.
-            pass
-        # Also check non-stack pages with symbolic_data (e.g., user stores
-        # a BVS into .data/.bss segment via state.memory.store()).
-        try:
-            mem = state.memory
-            for page_num, page in mem._pages.items():
-                sd = getattr(page, 'symbolic_data', None)
-                if not sd:
-                    continue
-                # Page has symbolic data — check if any variable is user-created
-                for offset, bv in sd.items():
-                    if hasattr(bv, 'variables'):
-                        for name in bv.variables:
-                            if not name.startswith(_user_prefixes):
-                                return True
-        except (AttributeError, KeyError, TypeError):
-            # cat-(a) EXPECTED CONTROL FLOW: per-page symbolic-data scan hit
-            # missing attribute; conclude no user symbolic data, return False.
-            pass
-        # Check the register file for user-set symbolic values. blank_state's
-        # default symbol-fill is lazy (BVS allocated only on first read), so
-        # uninitialized registers do NOT appear in `symbolic_data`. The
-        # values that DO appear are either initialization writes or user
-        # mutations like `state.regs.a0 = BVS(...)`. A non-default variable
-        # prefix on any of these is treated as user-supplied — the cache
-        # can't round-trip it.
-        try:
-            regs_mem = state.registers
-            for _page_num, page in regs_mem._pages.items():
-                sd = getattr(page, 'symbolic_data', None)
-                if not sd:
-                    continue
-                for _offset, bv in sd.items():
-                    if hasattr(bv, 'variables'):
-                        for name in bv.variables:
-                            if not name.startswith(_user_prefixes):
-                                return True
-        except (AttributeError, KeyError, TypeError):
-            # cat-(a) EXPECTED CONTROL FLOW: registers storage lacks _pages
-            # (non-DefaultMemory plugin?); skip — caller treats False as "no
-            # user symbolic registers detected".
-            pass
-        return False
 
     def _get_cached_blank_state(self, addr: int) -> "angr.SimState":
         """Get a blank state, using class-level cache when possible.
@@ -2731,123 +2661,6 @@ class RustExplorationManager(
         if binary_path and len(RustExplorationManager._blank_state_cache) < RustExplorationManager._blank_state_cache_max:
             RustExplorationManager._blank_state_cache[cache_key] = state.copy()
         return state
-
-    def _load_init_pickle(self, cache_key: str):
-        """Read and unpickle the disk cache file. Returns the raw data dict
-        on hit, None on miss or read failure. Pure I/O — no state mutation."""
-        try:
-            cache_path = os.path.join(self._disk_cache_dir(), f"{cache_key}.pkl")
-            if not os.path.exists(cache_path):
-                return None
-            with open(cache_path, 'rb') as f:
-                return pickle.load(f)
-        except (OSError, pickle.UnpicklingError, EOFError) as e:
-            # cat-(b) FALLBACK WITH LOSS: disk cache read failed / corrupt;
-            # treated as a cache miss. Caller pays full Python init.
-            l.debug(f"Disk cache read failed: {e}")
-            return None
-
-    def _deserialize_init_state(self, data: dict):
-        """Build a SimState + memory_cache from a cache data dict. Pure
-        function over `self._project` and the cached blank-state pool — no
-        mutation of manager-owned metadata dicts (those happen in
-        `_apply_init_side_effects`)."""
-        state = self._get_cached_blank_state(data['addr'])
-        for reg_name, val in data['registers'].items():
-            try:
-                setattr(state.regs, reg_name, val)
-            except (AttributeError, TypeError, ValueError):
-                # cat-(b) FALLBACK WITH LOSS: per-register restore failed; that
-                # register stays at the blank-state default — may diverge from the
-                # pre-cached value.
-                pass
-        if data.get('stack_page'):
-            sp_page, page_bytes = data['stack_page']
-            state.memory.store(
-                sp_page, claripy.BVV(page_bytes), endness='Iend_BE',
-                inspect=False, disable_actions=True)
-
-        # Restore extra memory pages created during init
-        # (e.g., ctype tables at 0xc0000000 written by SimProcedures)
-        for page_addr, page_bytes in data.get('extra_pages', []):
-            try:
-                state.memory.store(
-                    page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
-                    inspect=False, disable_actions=True)
-            except (TypeError, ValueError):
-                # cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page
-                # stays blank and Rust sees concrete zeros there.
-                pass
-
-        # Restore callstack frames
-        callstack_frames = data.get('callstack_frames', [])
-        if callstack_frames and len(callstack_frames) > 1:
-            # The first frame is the top of the callstack (main's frame).
-            # We need to push frames from bottom to top.
-            try:
-                from angr.state_plugins.callstack import CallStack
-                cs = state.callstack
-                for frame_data in reversed(callstack_frames[:-1]):
-                    # Skip the bottom sentinel frame (all zeros)
-                    if frame_data['call_site_addr'] == 0 and frame_data['func_addr'] == 0:
-                        continue
-                    cs.call(
-                        frame_data['call_site_addr'],
-                        frame_data['func_addr'],
-                        return_address=frame_data['ret_addr'],
-                        stack_pointer=frame_data['stack_ptr'],
-                    )
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: callstack restoration failed; the
-                # state has a top-of-stack frame but ret-chain may be incomplete.
-                # Debug-logs.
-                l.debug(f"Failed to restore callstack: {e}")
-
-        mem_cache = None
-        if data.get('batch_pages') is not None:
-            mem_cache = {
-                'batch_pages': data['batch_pages'],
-                'lazy_regions': data.get('lazy_regions', []),
-                'section_patches': data.get('section_patches', []),
-                'stack_page': data.get('stack_page'),
-            }
-        return state, mem_cache
-
-    def _apply_init_side_effects(self, data: dict) -> None:
-        """Populate manager-owned metadata from a cache data dict:
-        `_pending_procedure_data` (continuation slots) and `_precomputed_regs`
-        (fast Rust register sync). Separated from deserialization so the
-        SimState construction can be tested in isolation."""
-        for cont_addr in data.get('continuation_addrs', []):
-            if cont_addr > 0:
-                self._pending_procedure_data.setdefault(cont_addr, None)
-        self._precomputed_regs = data.get('registers', {})
-
-    def _load_init_from_disk_cache(self, cache_key: str):
-        """Load post-init state from disk cache.
-
-        Returns (SimState, memory_cache_data) on hit, (None, None) on miss.
-        memory_cache_data contains pre-computed loader pages and lazy regions
-        for fast memory sync.
-
-        Phases (each independently testable):
-        1. `_load_init_pickle` — pure I/O.
-        2. `_deserialize_init_state` — pure SimState construction.
-        3. `_apply_init_side_effects` — manager-owned metadata mutation.
-        """
-        data = self._load_init_pickle(cache_key)
-        if data is None:
-            return None, None
-        try:
-            state, mem_cache = self._deserialize_init_state(data)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: pickle deserialization succeeded but
-            # state construction failed; treat as cache miss. Debug-logs.
-            l.debug(f"Disk cache deserialization failed: {e}")
-            return None, None
-        self._apply_init_side_effects(data)
-        l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
-        return state, mem_cache
 
     def _extract_continuation_data(self, state: "angr.SimState"):
         """Extract SimProcedure continuation data from a state's callstack.
