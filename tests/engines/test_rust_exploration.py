@@ -6801,12 +6801,24 @@ class TestSolverOperations:
         )
 
     def test_model_stability_constraint_order(self):
-        """Adding the same constraints in two orders yields the same eval(x).
+        """Adding the same constraints in two orders yields identical
+        deterministic bounds (``min``/``max``) and per-solver-valid ``eval``.
 
-        Z3 is deterministic given the same constraint set; if our bridge
-        re-orders or de-duplicates inconsistently across solver instances,
-        eval(x) may diverge. Lock down stability to catch any future change
-        that introduces order-dependent behaviour.
+        Z3 makes NO guarantee about *which* satisfying model ``eval`` returns,
+        so asserting ``eval(x_a) == eval(x_b)`` across two independently
+        constructed solvers is fragile: Z3's heuristics legitimately pick
+        different valid models depending on process-internal state that other
+        tests perturb. That fragility is the whole story behind angr-4st5 —
+        the original ``v_a == v_b`` assertion flaked ~1-in-4 under the
+        register-proxy gate, but it is NOT gate-specific (it also flakes
+        gate-off given the right ``PYTHONHASHSEED``); it is inherent
+        eval-model non-determinism, not cross-test solver pollution.
+
+        What our bridge *must* keep order-stable is the constraint SET: a
+        reorder or dedup bug would change the satisfiable range. ``min`` and
+        ``max`` are unique by construction, so they are the correct
+        order-independence witnesses — they catch a dropped/duplicated
+        constraint while staying immune to Z3's model-choice latitude.
         """
         from angr.rustylib.vex_engine import RustSolverContext
         import claripy
@@ -6826,15 +6838,19 @@ class TestSolverOperations:
         ctx_b.add_constraint_ast(c2)
         ctx_b.add_constraint_ast(c1)
 
+        # Deterministic order-independence witnesses. A reorder or dedup bug
+        # in the bridge would change the satisfiable range, which min/max
+        # capture exactly (unlike eval, whose model choice Z3 leaves free).
+        assert ctx_a.min(x, signed=False) == ctx_b.min(x, signed=False) == 100
+        assert ctx_a.max(x, signed=False) == ctx_b.max(x, signed=False) == 200
+
+        # eval must still return a *valid* model from each solver (in range,
+        # != 150) — but we deliberately do NOT assert the two models are
+        # equal, because Z3 does not guarantee cross-instance model identity.
         v_a = ctx_a.eval(x)
         v_b = ctx_b.eval(x)
-
-        assert v_a is not None and v_b is not None
-        assert 100 <= v_a <= 200 and v_a != 150
-        assert 100 <= v_b <= 200 and v_b != 150
-        assert v_a == v_b, (
-            f"eval(x) should be order-stable; got {v_a} vs {v_b}"
-        )
+        assert v_a is not None and 100 <= v_a <= 200 and v_a != 150
+        assert v_b is not None and 100 <= v_b <= 200 and v_b != 150
 
     def test_solver_contradictory_find_avoid(self):
         """Same address in find and avoid should avoid (avoid takes priority)."""
