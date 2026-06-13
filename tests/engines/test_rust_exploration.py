@@ -17,14 +17,21 @@ import angr
 from tests.engines.conftest import (  # noqa: F401
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
+    RustExplorationManager,
     _RustExplorationManager,
     ExplorationEvent,
     PythonCallbacks,
     RustSimState,
 )
 
+# All tests in this module require the Rust extension; skip the whole module
+# when it is unavailable (matches tests/engines/test_rust_public_api.py).
+pytestmark = pytest.mark.skipif(
+    not RUST_EXPLORATION_AVAILABLE,
+    reason="Rust exploration not available",
+)
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+
 class TestRustExplorationManagerUnit:
     """Unit tests for RustExplorationManager Rust class."""
 
@@ -255,7 +262,6 @@ class TestRustExplorationManagerUnit:
         dispatcher reaches that address, it should call the native (Python)
         implementation and capture the return value.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -742,7 +748,6 @@ class TestRustExplorationManagerUnit:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustSimStateIntegration:
     """Tests for RustSimState functionality used by exploration."""
 
@@ -797,14 +802,12 @@ class TestRustSimStateIntegration:
         assert state2.memory_load(0x1000, 2) == bytes([0xCC, 0xDD])
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustExplorationPython:
     """Tests for Python RustExplorationManager wrapper."""
 
 
     def test_python_wrapper_creation(self, fauxware_project):
         """Test creating Python wrapper."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -814,7 +817,6 @@ class TestRustExplorationPython:
     def test_strict_page_access_propagates_to_rust(self, fauxware_project):
         """A SimState with STRICT_PAGE_ACCESS option should flip the Rust
         memory model's enforce_permissions flag automatically (mirrors angr)."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # No option → flag stays off (default behavior).
@@ -909,7 +911,6 @@ class TestRustExplorationPython:
     def test_enable_nx_propagates_to_rust(self, fauxware_project):
         """A SimState with ENABLE_NX option should flip the Rust memory
         model's enforce_nx flag automatically (mirrors angr)."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # No option → flag stays off.
@@ -931,7 +932,6 @@ class TestRustExplorationPython:
     def test_no_ip_concretization_propagates_to_rust(self, fauxware_project):
         """A SimState with NO_IP_CONCRETIZATION option should flip the
         Rust state's no_ip_concretization flag automatically."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # No option → flag stays off.
@@ -956,7 +956,6 @@ class TestRustExplorationPython:
         matches engines/successors.py:292-296 (max_targets=0, no warning)."""
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -986,7 +985,6 @@ class TestRustExplorationPython:
         """A SimState with NO_SYMBOLIC_JUMP_RESOLUTION option should flip the
         Rust state's no_symbolic_jump_resolution flag automatically. Mirrors
         the propagation pattern used for NO_IP_CONCRETIZATION (angr-yl5n)."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # No option → flag stays off.
@@ -1012,7 +1010,6 @@ class TestRustExplorationPython:
         unconstrained_successors before AddressConcretizer is invoked)."""
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -1052,7 +1049,6 @@ class TestRustExplorationPython:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # AMD64: `0f 05` = syscall. Pad so PC+2 stays mapped.
@@ -1088,7 +1084,6 @@ class TestRustExplorationPython:
         on amd64) must dispatch through ``NativeExitSyscall`` without bumping
         the Python fallback counter."""
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -1122,7 +1117,6 @@ class TestRustExplorationPython:
         mirroring ``SimCCO32LinuxSyscall.linux_syscall_update_error_reg``.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         # MIPS32 little-endian `syscall` = 0x0000000c -> bytes 0c 00 00 00.
         # Only the syscall is mapped so the successor deadends immediately and
@@ -1158,7 +1152,6 @@ class TestRustExplorationPython:
         $v0=1.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         # Only the 4-byte `syscall` is mapped: the successor at 0x1004 lifts
         # into unmapped memory and deadends *immediately*, freezing $v0/$a3 at
@@ -1196,7 +1189,6 @@ class TestRustExplorationPython:
         """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
         state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's
         propagation test for NO_IP_CONCRETIZATION."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # No option → flag stays off.
@@ -1228,7 +1220,6 @@ class TestRustExplorationPython:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. Two concrete jump targets are mapped so
@@ -1294,7 +1285,6 @@ class TestRustExplorationPython:
         counters (sat/unsat/timeout, total time, per-site breakdown) reach
         Python via the instance method.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1326,7 +1316,6 @@ class TestRustExplorationPython:
     def test_z3_ast_cache_counters(self, fauxware_project):
         """angr-zdho: `z3_ast_cache_hit` + `z3_ast_cache_miss` are exposed via
         `get_solver_stats()` and at least one is non-zero after exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1377,7 +1366,6 @@ class TestRustExplorationPython:
         specific count (count is a property of the binary's symbolic
         branch geometry, not the counter wiring).
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1401,7 +1389,6 @@ class TestRustExplorationPython:
           - `structural_duplicates == unique_pointers - unique_shapes`
           - keys are present and integer-valued
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1428,7 +1415,6 @@ class TestRustExplorationPython:
 
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
-        from angr.exploration import RustExplorationManager
 
         # Find the "Welcome" message address
         # In fauxware, this is typically around 0x4006ed
@@ -1455,7 +1441,6 @@ class TestRustExplorationPython:
         re-syncs the cached SimState, so post-step sentinel state has to be
         observed via ``_state_cache`` directly to avoid the re-sync.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1498,7 +1483,6 @@ class TestRustExplorationPython:
 
     def test_stash_access(self, fauxware_project):
         """Test accessing stashes."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1516,7 +1500,6 @@ class TestRustExplorationPython:
 
     def test_max_active_states_python(self, fauxware_project):
         """Test max_active_states limit via Python wrapper."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], max_active_states=2)
@@ -1536,7 +1519,6 @@ class TestRustExplorationPython:
         least one pruned state — otherwise the limit is being silently
         ignored (the bug fixed by angr-jmiz).
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], max_active_states=1)
@@ -1550,7 +1532,6 @@ class TestRustExplorationPython:
 
     def test_progress_callback(self, fauxware_project):
         """Test that progress callback fires during exploration."""
-        from angr.exploration import RustExplorationManager
 
         progress_reports = []
 
@@ -1572,7 +1553,6 @@ class TestRustExplorationPython:
         assert 'elapsed_seconds' in report
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExplorationEvent:
     """Tests for ExplorationEvent class."""
 
@@ -1597,7 +1577,6 @@ class TestExplorationEvent:
         assert hasattr(event, 'steps_taken')
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustEdgeCases:
     """Edge-case tests for Rust state and solver."""
 
@@ -1721,14 +1700,12 @@ class TestRustEdgeCases:
                 assert s.memory_load(0x1000, 1) == bytes([i])
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallablePredicates:
     """Tests for callable find/avoid predicates with RustStateProxy."""
 
 
     def test_find_lambda_by_address(self, fauxware_project):
         """Callable find predicate matching by address works."""
-        from angr.exploration import RustExplorationManager
 
         ACCEPTED = 0x4006ed
         REJECTED = 0x4006fd
@@ -1744,7 +1721,6 @@ class TestCallablePredicates:
 
     def test_avoid_lambda_by_address(self, fauxware_project):
         """Callable avoid predicate matching by address works."""
-        from angr.exploration import RustExplorationManager
 
         ACCEPTED = 0x4006ed
         REJECTED = 0x4006fd
@@ -1819,7 +1795,6 @@ class TestCallablePredicates:
         assert result == b"ABCD"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallStackProxy:
     """Tests for RustCallStackProxy on RustStateProxy."""
 
@@ -1839,7 +1814,6 @@ class TestCallStackProxy:
     def test_callstack_proxy_after_explore(self, fauxware_project):
         """After exploration, found-state callstack frames match the
         snapshot exposed by the underlying Rust manager."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import (
             RustCallStackProxy,
             RustCallStackFrameProxy,
@@ -1895,7 +1869,6 @@ class TestCallStackProxy:
         """The angr SimState returned from mgr.found has its CallStack
         plugin populated from Rust's call_stack — not just the empty
         sentinel from the entry-state template."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2050,7 +2023,6 @@ class TestCallStackProxy:
         assert proxy_b[-1].func_addr == 0x20
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestInspectProxy:
     """Tests for the loud inspect proxy on RustStateProxy (no-manager case)."""
 
@@ -2076,7 +2048,6 @@ class TestInspectProxy:
             ins.action("call", lambda s: None)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectMarshalling:
     """Tests for the state.inspect mem_read / mem_write marshalling layer.
 
@@ -2101,7 +2072,6 @@ class TestRustInspectMarshalling:
 
     def test_inspect_proxy_registers_mem_read_bp(self, fauxware_project):
         """Registering a mem_read BP via state.inspect.b flips the bitmask."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2131,7 +2101,6 @@ class TestRustInspectMarshalling:
         angr-vfst; fork moved in angr-ysml. Events whose dispatchers are
         not yet wired (constraints, vex_lift, ...) must still raise.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2142,7 +2111,6 @@ class TestRustInspectMarshalling:
 
     def _make_mgr_with_state_id(self, project):
         """Helper: build a manager and return (mgr, valid_state_id) for dispatch tests."""
-        from angr.exploration import RustExplorationManager
         state = project.factory.entry_state()
         mgr = RustExplorationManager(project, [state])
         state_ids = list(mgr._rust_mgr.get_state_ids('active'))
@@ -2250,7 +2218,6 @@ class TestRustInspectMarshalling:
 
     def test_state_proxy_inspect_routes_to_manager(self, fauxware_project):
         """RustStateProxy.inspect returns the manager-wide proxy when bound."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustStateProxy, RustInspectProxy
 
         state = fauxware_project.factory.entry_state()
@@ -2268,7 +2235,6 @@ class TestRustInspectMarshalling:
         assert proxy2.inspect is ins
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectMemReadDispatch:
     """Integration tests for mem_read inspect dispatch from IRExpr::Load
     in the Rust VEX interpreter (angr-uq4n.3).
@@ -2285,7 +2251,6 @@ class TestRustInspectMemReadDispatch:
         reading the saved RBP and ELF rodata — the BP must fire on
         those concrete-address reads.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2314,7 +2279,6 @@ class TestRustInspectMemReadDispatch:
     def test_mem_read_skipped_when_no_bp(self, fauxware_project):
         """Without any mem_read BP, the bitmask gate keeps dispatch off
         and exploration still progresses normally."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2332,7 +2296,6 @@ class TestRustInspectMemReadDispatch:
         dispatcher catches and logs that — the contract is that
         exploration continues without deadlock or wrong-answer.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2352,7 +2315,6 @@ class TestRustInspectMemReadDispatch:
         assert fire_count[0] > 0, "BP must fire at least once"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectMemWriteDispatch:
     """Integration tests for mem_write inspect dispatch from IRStmt::Store
     in the Rust VEX interpreter (angr-uq4n.4).
@@ -2369,7 +2331,6 @@ class TestRustInspectMemWriteDispatch:
         stack via VEX Store ops — the BP must fire on those concrete-
         address writes.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2404,7 +2365,6 @@ class TestRustInspectMemWriteDispatch:
         Regression for the zero-overhead common case: a manager with no
         breakpoints must not trigger the Python dispatcher even once.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2426,7 +2386,6 @@ class TestRustInspectMemWriteDispatch:
         dispatcher catches and logs that — the test's contract is that
         exploration continues without deadlock or wrong-answer.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2452,7 +2411,6 @@ class TestRustInspectMemWriteDispatch:
         assert fire_count[0] > 0, "BP must fire at least once"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectExtendedEvents:
     """Integration tests for the inspect events added in angr-d46u:
     reg_read, reg_write, instruction, irsb, exit.
@@ -2463,7 +2421,6 @@ class TestRustInspectExtendedEvents:
     """
 
     def _make_mgr_with_state_id(self, project):
-        from angr.exploration import RustExplorationManager
         state = project.factory.entry_state()
         mgr = RustExplorationManager(project, [state])
         state_ids = list(mgr._rust_mgr.get_state_ids('active'))
@@ -2489,7 +2446,6 @@ class TestRustInspectExtendedEvents:
 
     def test_bitmask_per_event(self, fauxware_project):
         """Registering a BP for each extended event flips its assigned bit."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2600,7 +2556,6 @@ class TestRustInspectExtendedEvents:
 
     def test_instruction_fires_during_exploration(self, fauxware_project):
         """instruction BP receives events for every IMark during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2617,7 +2572,6 @@ class TestRustInspectExtendedEvents:
 
     def test_irsb_fires_during_exploration(self, fauxware_project):
         """irsb BP receives at least one event per stepped block."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2637,7 +2591,6 @@ class TestRustInspectExtendedEvents:
 
     def test_reg_read_fires_during_exploration(self, fauxware_project):
         """reg_read BP fires on VEX IRExpr::Get during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2654,7 +2607,6 @@ class TestRustInspectExtendedEvents:
 
     def test_reg_write_fires_during_exploration(self, fauxware_project):
         """reg_write BP fires on VEX IRStmt::Put during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2672,7 +2624,6 @@ class TestRustInspectExtendedEvents:
     def test_extended_events_skipped_when_no_bp(self, fauxware_project):
         """With no BPs for the extended events, exploration runs normally
         and the bitmask stays clear."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2692,7 +2643,6 @@ class TestRustInspectExtendedEvents:
 
     def test_call_return_bits_match_spec(self, fauxware_project):
         """Registering a `call`/`return` BP flips the expected bit (8/9)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2759,7 +2709,6 @@ class TestRustInspectExtendedEvents:
 
     def test_call_fires_during_exploration(self, fauxware_project):
         """call BP fires during exploration (fauxware has internal calls)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2784,7 +2733,6 @@ class TestRustInspectExtendedEvents:
 
     def test_return_fires_during_exploration(self, fauxware_project):
         """return BP fires once Rust pops a frame (sym execution drives this)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2813,7 +2761,6 @@ class TestRustInspectExtendedEvents:
 
     def test_tmp_bits_match_spec(self, fauxware_project):
         """Registering a `tmp_read`/`tmp_write` BP flips bits 13/14."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2861,7 +2808,6 @@ class TestRustInspectExtendedEvents:
 
     def test_tmp_read_fires_during_exploration(self, fauxware_project):
         """tmp_read BP fires on VEX RdTmp during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2879,7 +2825,6 @@ class TestRustInspectExtendedEvents:
 
     def test_tmp_write_fires_during_exploration(self, fauxware_project):
         """tmp_write BP fires on VEX WrTmp during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2904,7 +2849,6 @@ class TestRustInspectExtendedEvents:
 
     def test_statement_bit_matches_spec(self, fauxware_project):
         """Registering a `statement` BP flips bit 15."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2928,7 +2872,6 @@ class TestRustInspectExtendedEvents:
 
     def test_statement_fires_during_exploration(self, fauxware_project):
         """statement BP fires per VEX IR statement during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2957,7 +2900,6 @@ class TestRustInspectExtendedEvents:
 
     def test_expr_bit_matches_spec(self, fauxware_project):
         """Registering an `expr` BP flips bit 16 (u16→u32 widening)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2986,7 +2928,6 @@ class TestRustInspectExtendedEvents:
 
     def test_expr_fires_during_exploration(self, fauxware_project):
         """expr BP fires per IR expression eval during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3015,7 +2956,6 @@ class TestRustInspectExtendedEvents:
 
     def test_address_concretization_bit_matches_spec(self, fauxware_project):
         """Registering an `address_concretization` BP flips bit 17."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3087,7 +3027,6 @@ class TestRustInspectExtendedEvents:
 
     def test_symbolic_variable_bit_matches_spec(self, fauxware_project):
         """Registering a `symbolic_variable` BP flips bit 18."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3141,7 +3080,6 @@ class TestRustInspectExtendedEvents:
         """Registering a `simprocedure`/`syscall`/`dirty` BP flips the
         expected bits (10/11/12). The Rust engine does not read these
         bits, but the bitmask stays consistent with the spec."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3222,7 +3160,6 @@ class TestRustInspectExtendedEvents:
 
     def test_simprocedure_fires_during_exploration(self, fauxware_project):
         """simprocedure BP fires while running fauxware (libc procs hit)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3250,7 +3187,6 @@ class TestRustInspectExtendedEvents:
 
     def test_fork_bit_matches_spec(self, fauxware_project):
         """Registering a `fork` BP flips bit 4 (previously reserved)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3283,7 +3219,6 @@ class TestRustInspectExtendedEvents:
         sibling state per resolved branch, and the dispatch must fire on
         each one.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3301,7 +3236,6 @@ class TestRustInspectExtendedEvents:
         assert fork_count[0] > 0, "no fork events captured during exploration"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectAllowlistConsistency:
     """CI-style guard tests that the inspect dispatch allowlist is a single
     source of truth, and that every event angr's SimInspector exposes
@@ -3339,7 +3273,6 @@ class TestRustInspectAllowlistConsistency:
         """A supported event without a `_cb_inspect_<event>` method on
         RustExplorationManager would silently be enabled in the bitmask
         but never fire — assert one exists per event."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
         for evt in _INSPECT_EVENT_SPECS:
             attr = f"_cb_inspect_{evt}"
@@ -3380,7 +3313,6 @@ class TestRustInspectAllowlistConsistency:
         either the Rust engine dispatches it (in _INSPECT_EVENT_SPECS),
         or registering a BP for it raises NotImplementedError. No silent
         accepts."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
         from angr.state_plugins.inspect import EventType
 
@@ -3425,7 +3357,6 @@ class TestRustInspectAllowlistConsistency:
         """The manager-wide BP registry uses exactly the supported event
         keys. Adding a key here without a corresponding spec entry, or
         vice versa, breaks _update_inspect_bitmask."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
 
         state = fauxware_project.factory.entry_state()
@@ -3434,7 +3365,6 @@ class TestRustInspectAllowlistConsistency:
         assert set(mgr._INSPECT_EVENT_BITS) == set(_RUST_INSPECT_SUPPORTED_EVENTS)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStatePluginsProxy:
     """Tests for state.options, state.globals, and state.heap on RustStateProxy.
 
@@ -3446,7 +3376,6 @@ class TestStatePluginsProxy:
     def test_options_seeded_from_source_state(self, fauxware_project):
         """options copied from the SimState passed to RustExplorationManager
         are visible through the proxy."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         state = fauxware_project.factory.entry_state()
@@ -3464,7 +3393,6 @@ class TestStatePluginsProxy:
         The Rust engine doesn't honor most SimOptions, but Python user code
         treats state.options as a live set; writes must round-trip.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3477,7 +3405,6 @@ class TestStatePluginsProxy:
 
     def test_globals_seeded_and_mutable(self, fauxware_project):
         """state.globals copied from the source SimState; writes persist."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         state.globals['init_key'] = 'init_value'
@@ -3493,7 +3420,6 @@ class TestStatePluginsProxy:
     def test_options_inherited_by_forked_states(self, fauxware_project):
         """Children forked in Rust inherit options from their root state on
         first access."""
-        from angr.exploration import RustExplorationManager
         from angr import sim_options as o
 
         state = fauxware_project.factory.entry_state()
@@ -3512,7 +3438,6 @@ class TestStatePluginsProxy:
 
     def test_heap_mmap_base_exposed(self, fauxware_project):
         """state.heap.mmap_base reads/writes through to the Rust state."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3528,7 +3453,6 @@ class TestStatePluginsProxy:
     def test_heap_allocations_and_freed_lists(self, fauxware_project):
         """state.heap.allocations / .freed return lists of (addr, size) and
         addresses respectively. Empty for a fresh state."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3552,7 +3476,6 @@ class TestStatePluginsProxy:
     def test_scratch_bbl_addr_mirrors_pc(self, fauxware_project):
         """proxy.scratch.bbl_addr matches state.pc (most recently entered
         block)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3562,7 +3485,6 @@ class TestStatePluginsProxy:
 
     def test_scratch_jumpkind_after_step(self, fauxware_project):
         """proxy.scratch.jumpkind reflects the last detailed-history entry."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3578,7 +3500,6 @@ class TestStatePluginsProxy:
     def test_scratch_unsupported_attrs_are_none(self, fauxware_project):
         """SimStateScratch attributes the Rust engine doesn't persist
         (irsb, stmt_idx, tyenv, sim_procedure) read as None / empty."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3593,7 +3514,6 @@ class TestStatePluginsProxy:
     def test_scratch_proxy_cached_on_state_proxy(self, fauxware_project):
         """proxy.scratch returns the same RustScratchProxy on repeated reads
         (consistent with other lazy sub-proxies)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3614,7 +3534,6 @@ class TestStatePluginsProxy:
         assert proxy.scratch.ins_addr == 0
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRegisterProxySymbolicRecovery:
     """angr-4pm1: RustRegisterProxy must recover Rust's claripy AST for symbolic
     registers via ``get_state_register_ast`` instead of minting an orphan
@@ -3714,7 +3633,6 @@ class TestRegisterProxySymbolicRecovery:
         assert proxy.solver.eval(ast) == 0x42
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateProxyRepr:
     """Tests for the enriched RustStateProxy.__repr__ (angr-4c20).
 
@@ -3723,7 +3641,6 @@ class TestStateProxyRepr:
     """
 
     def test_repr_includes_stash_and_constraints(self, fauxware_project):
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3739,7 +3656,6 @@ class TestStateProxyRepr:
     def test_repr_reflects_seeded_constraint(self, fauxware_project):
         """A state seeded into the manager with N constraints already attached
         should show constraints=N through repr."""
-        from angr.exploration import RustExplorationManager
         import claripy
 
         state = fauxware_project.factory.entry_state()
@@ -3783,7 +3699,6 @@ class TestStateProxyRepr:
         assert "constraints=" not in text
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateProxyCopySemantics:
     """``RustStateProxy.copy()`` is a Rust-side CoW deep fork (angr-d1dr).
 
@@ -3794,7 +3709,6 @@ class TestStateProxyCopySemantics:
     """
 
     def test_proxy_copy_returns_independent_state(self, fauxware_project):
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3810,7 +3724,6 @@ class TestStateProxyCopySemantics:
         """Writing a register on the copy leaves the source register intact."""
         import claripy
 
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3840,7 +3753,6 @@ class TestStateProxyCopySemantics:
         """
         import claripy
 
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3862,7 +3774,6 @@ class TestStateProxyCopySemantics:
 
     def test_proxy_copy_options_isolation(self, fauxware_project):
         """Mutating the copy's options set does not mutate the source's."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3881,7 +3792,6 @@ class TestStateProxyCopySemantics:
 
     def test_proxy_copy_globals_isolation(self, fauxware_project):
         """Mutating the copy's globals dict does not mutate the source's."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3898,7 +3808,6 @@ class TestStateProxyCopySemantics:
     def test_proxy_copy_lands_in_copies_stash(self, fauxware_project):
         """The cloned state is placed in the dedicated ``_copies`` stash so
         ``step()`` won't auto-advance it."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3930,7 +3839,6 @@ class TestStateProxyCopySemantics:
     def test_drop_copy_removes_state_from_copies_stash(self, fauxware_project):
         """``RustExplorationManager.drop_copy`` removes the state from the
         ``_copies`` stash and frees per-state metadata (angr-yhe0)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3963,7 +3871,6 @@ class TestStateProxyCopySemantics:
         """``drop_copy`` only removes states that are *currently* in
         ``_copies`` — it must refuse to delete the active root state, even
         if the caller passes its id."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3980,7 +3887,6 @@ class TestStateProxyCopySemantics:
         don't leak (angr-yhe0)."""
         import gc
 
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4006,7 +3912,6 @@ class TestStateProxyCopySemantics:
         do."""
         import gc
 
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4027,7 +3932,6 @@ class TestStateProxyCopySemantics:
         full Spiller-style workload pattern (angr-yhe0)."""
         import gc
 
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4044,7 +3948,6 @@ class TestStateProxyCopySemantics:
         assert mgr._rust_mgr.stash_count("_copies") == baseline
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverProxyTimeout:
     """Tests that state.solver.timeout = N propagates to the Rust solver.
 
@@ -4101,7 +4004,6 @@ class TestSolverProxyTimeout:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyLiskovGaps:
     """Tests for previously-unimplemented load shapes on RustStateProxy
     (angr-1w75): register load by integer offset and memory load with a
@@ -4112,7 +4014,6 @@ class TestProxyLiskovGaps:
     def test_register_load_by_offset_amd64(self, fauxware_project):
         """``regs.load(offset)`` resolves through ``arch.register_size_names``
         and returns the same value as the named accessor."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4135,7 +4036,6 @@ class TestProxyLiskovGaps:
     def test_register_load_subreg_via_size(self, fauxware_project):
         """``regs.load(offset, size=4)`` resolves to ``eax`` for AMD64 and
         returns a 32-bit value (the low half of rax)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4153,7 +4053,6 @@ class TestProxyLiskovGaps:
         """Unknown (offset, size) pairs raise NotImplementedError with a
         message that identifies the arch — easier to diagnose than a bare
         KeyError."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4164,7 +4063,6 @@ class TestProxyLiskovGaps:
 
     def test_register_load_wrong_type(self, fauxware_project):
         """A float/None arg is a programming error, not an offset miss."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4177,7 +4075,6 @@ class TestProxyLiskovGaps:
         """``memory.load(sym_addr)`` evaluates the address under the state's
         constraints and falls through to the concrete read path."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         # Constrain a symbolic addr to a concrete location inside the loaded
@@ -4199,7 +4096,6 @@ class TestProxyLiskovGaps:
         """An unsatisfiable symbolic addr raises UnsatError rather than
         silently reading zero bytes."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         addr_sym = claripy.BVS("addr_unsat", 64)
@@ -4221,7 +4117,6 @@ class TestProxyLiskovGaps:
         to the eager concrete store — verify the round-trip.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -4245,7 +4140,6 @@ class TestProxyLiskovGaps:
         before handing them to the Multi-cell entry point.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -4273,7 +4167,6 @@ class TestProxyLiskovGaps:
         produces the constrained value byte-for-byte.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -4297,7 +4190,6 @@ class TestProxyLiskovGaps:
         assert proxy.solver.eval(loaded) == 0xCAFEBABE
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyMemoryFind:
     """angr-4scu step 1: RustMemoryProxy.find() supports the concrete-needle
     search surface used by libc SimProcs (memchr / strstr against literals).
@@ -4307,7 +4199,6 @@ class TestProxyMemoryFind:
 
     def test_find_concrete_byte_in_concrete_buffer(self, fauxware_project):
         """Write a concrete buffer through the proxy, then find a byte in it."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4324,7 +4215,6 @@ class TestProxyMemoryFind:
     def test_find_no_match_returns_default(self, fauxware_project):
         """When the needle is absent the default address (BVV) is returned
         and indices is empty."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4341,7 +4231,6 @@ class TestProxyMemoryFind:
     def test_find_int_needle_treated_as_single_byte(self, fauxware_project):
         """memchr-style: passing an ``int`` needle treats it as a single byte
         (low 8 bits), matching what SimProcs pass after ``c[7:0]``."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4358,7 +4247,6 @@ class TestProxyMemoryFind:
         """Symbolic needles are out of scope for this proxy step and must
         raise NotImplementedError with a route to the SimProcedure hook."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4371,7 +4259,6 @@ class TestProxyMemoryFind:
     def test_find_wide_char_raises(self, fauxware_project):
         """``char_size > 1`` (wide-char) belongs in SimMemory.find(); the
         proxy refuses with a clear pointer."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4398,7 +4285,6 @@ _GATE_TOGGLES = [
 ]
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 @pytest.mark.parametrize(
     ("kwarg", "env_var", "attr"),
     _GATE_TOGGLES,
@@ -4416,7 +4302,6 @@ class TestProxyGateToggles:
 
     def test_gate_default_off(self, fauxware_project, kwarg, env_var, attr):
         """Without the kwarg or env var, the gate is off."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4424,7 +4309,6 @@ class TestProxyGateToggles:
 
     def test_gate_kwarg_on(self, fauxware_project, kwarg, env_var, attr):
         """Explicit ``kwarg=True`` enables the gate."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], **{kwarg: True})
@@ -4432,7 +4316,6 @@ class TestProxyGateToggles:
 
     def test_gate_env_var_on(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
         """``ANGR_RUST_USE_*=1`` toggles the default on."""
-        from angr.exploration import RustExplorationManager
 
         monkeypatch.setenv(env_var, "1")
         state = fauxware_project.factory.entry_state()
@@ -4441,7 +4324,6 @@ class TestProxyGateToggles:
 
     def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
         """An explicit ``kwarg=False`` beats the env var."""
-        from angr.exploration import RustExplorationManager
 
         monkeypatch.setenv(env_var, "1")
         state = fauxware_project.factory.entry_state()
@@ -4449,7 +4331,6 @@ class TestProxyGateToggles:
         assert getattr(mgr, attr) is False
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackMemoryProxyGate:
     """angr-4scu step 3: ``use_callback_memory_proxy`` gate controls whether
     ``RustMemoryProxy`` is installed as ``state.memory`` on SimProcedure
@@ -4462,7 +4343,6 @@ class TestCallbackMemoryProxyGate:
         ``state.memory`` with a ``RustMemoryProxy``. Drives the helper
         directly to keep the test scope at the swap mechanism (the SimProc
         callback wiring is exercised via separate fauxware tests)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -4485,7 +4365,6 @@ class TestCallbackMemoryProxyGate:
         installed proxy lands in Rust and reads back via the same path.
         Verifies the plugin shim doesn't break the existing concrete-store
         / concrete-load fast path the proxy already supported."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4505,7 +4384,6 @@ class TestCallbackMemoryProxyGate:
         """The plugin shim's ``copy()`` returns a fresh ``RustMemoryProxy``
         bound to the same Rust state — preserves ``SimState.copy()``
         semantics on a callback frame that has the proxy installed."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -4531,7 +4409,6 @@ class TestCallbackMemoryProxyGate:
         ``posix/open.py`` crash discovered in step 4 parity validation when
         ``strlen.max_null_index == 0`` (null at offset 0).
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -4558,7 +4435,6 @@ class TestCallbackMemoryProxyGate:
         independent of the Python→Rust symbolic-page import path.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4592,7 +4468,6 @@ class TestCallbackMemoryProxyGate:
         the test focused on the find() symbolic-haystack handling.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={
@@ -4629,7 +4504,6 @@ class TestCallbackMemoryProxyGate:
         assert indices == [0, 1, 2]
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackMemoryProxyReentryGuards:
     """angr-hcok: synchronous Rust→Python callbacks (`_cb_memory_load`,
     `_cb_memory_store`, `_cb_fetch_page`, batch variants, symbolic-full
@@ -4646,7 +4520,6 @@ class TestCallbackMemoryProxyReentryGuards:
         SimState whose ``memory`` plugin is a ``RustMemoryProxy``. Mimics
         the post-callback cache state that triggers angr-hcok.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4723,7 +4596,6 @@ class TestCallbackMemoryProxyReentryGuards:
             assert mapped is False
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustMemoryProxyPluginGapStubs:
     """angr-8dop.2: ``RustMemoryProxy`` exposes minimal stubs for the
     SimMemory plugin methods ``permissions`` / ``merge`` / ``widen`` /
@@ -4733,7 +4605,6 @@ class TestRustMemoryProxyPluginGapStubs:
     """
 
     def _install_proxy(self, fauxware_project):
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4781,7 +4652,6 @@ class TestRustMemoryProxyPluginGapStubs:
         assert cb_state.memory.compare(cb_state.memory) is True
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackSolverProxyGate:
     """angr-8oiw write-through .3: ``use_callback_solver_proxy`` gate controls
     whether ``RustSolverProxyPlugin`` is installed as ``state.solver`` on
@@ -4795,7 +4665,6 @@ class TestCallbackSolverProxyGate:
     def test_proxy_install_swaps_state_solver(self, fauxware_project):
         """When the gate is on, ``_install_callback_solver_proxy`` replaces
         ``state.solver`` with a ``RustSolverProxyPlugin``."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -4813,7 +4682,6 @@ class TestCallbackSolverProxyGate:
     def test_proxy_install_copy_returns_proxy(self, fauxware_project):
         """``copy()`` returns a fresh ``RustSolverProxyPlugin`` bound to the
         same Rust state."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -4832,7 +4700,6 @@ class TestCallbackSolverProxyGate:
         """``state.solver.add(c)`` routes the constraint into the underlying
         Rust state's solver. ``state.solver.constraints`` reads it back."""
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -4855,7 +4722,6 @@ class TestCallbackSolverProxyGate:
     def test_proxy_satisfiable_and_eval(self, fauxware_project):
         """``state.solver.eval`` / ``satisfiable`` route through Rust."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4876,7 +4742,6 @@ class TestCallbackSolverProxyGate:
     def test_proxy_bvs_delegates_to_claripy(self, fauxware_project):
         """``BVS`` / ``BVV`` delegate to claripy and accept the tracking key."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4892,7 +4757,6 @@ class TestCallbackSolverProxyGate:
         assert dict(cb_state.solver.get_variables("test"))[("test", "k1")] is sym
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallbackCallStackProxyGate:
     """angr-6o9p write-through .4: ``use_callback_callstack_proxy`` gate
     controls whether ``RustCallStackProxyPlugin`` is installed as
@@ -4906,7 +4770,6 @@ class TestCallbackCallStackProxyGate:
         """When the gate is on, ``_install_callback_callstack_proxy``
         replaces ``state.callstack`` with a
         ``RustCallStackProxyPlugin``."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -4924,7 +4787,6 @@ class TestCallbackCallStackProxyGate:
     def test_install_copy_returns_proxy(self, fauxware_project):
         """``copy()`` returns a fresh ``RustCallStackProxyPlugin`` bound
         to the same Rust state."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -4948,7 +4810,6 @@ class TestCallbackCallStackProxyGate:
         """Empty Rust call stack → proxy reports len 0 and 0-valued
         top-frame attrs (matches the existing read-only
         ``RustCallStackProxy`` shape)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -4972,7 +4833,6 @@ class TestCallbackCallStackProxyGate:
         """After exploration, the proxy reflects Rust's current call
         frames (matches the read-only ``RustCallStackProxy``'s
         ``test_callstack_proxy_after_explore`` shape)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackFrameProxy
 
         state = fauxware_project.factory.entry_state()
@@ -5057,7 +4917,6 @@ class TestCallbackCallStackProxyGate:
     def test_merge_widen_return_false(self, fauxware_project):
         """``merge`` / ``widen`` return False on the proxy plugin —
         cross-state_id callstack merge is out of scope for the gate."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -5073,7 +4932,6 @@ class TestCallbackCallStackProxyGate:
         """``push`` / ``pop`` are gap stubs: return ``self`` and do not
         crash. SimProcedures don't manually push or pop frames in
         practice."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -5089,7 +4947,6 @@ class TestCallbackCallStackProxyGate:
         assert proxy.ret() is proxy
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExportCallStackProxyGate:
     """angr-yk2g write-through boundary: ``use_export_callstack_proxy``
     gate controls whether ``_sync_rust_callstack_to_state`` installs a
@@ -5105,7 +4962,6 @@ class TestExportCallStackProxyGate:
         """Gate off, empty Rust stack: ``_sync_rust_callstack_to_state``
         early-returns and leaves ``state.callstack`` as the template
         ``CallStack`` (not a proxy)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -5123,7 +4979,6 @@ class TestExportCallStackProxyGate:
     def test_sync_on_installs_proxy(self, fauxware_project):
         """Gate on: ``_sync_rust_callstack_to_state`` installs a
         ``RustCallStackProxyPlugin`` bound to ``state_id``."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -5144,7 +4999,6 @@ class TestExportCallStackProxyGate:
         unlike the eager path which is a no-op on empty frames, the
         proxy install short-circuits the FFI read entirely. The
         installed proxy reports len 0."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -5164,7 +5018,6 @@ class TestExportCallStackProxyGate:
         """End-to-end: after explore(), materialized states from the
         ``found`` stash carry a ``RustCallStackProxyPlugin`` instead of
         a ``CallStack`` linked-list when the gate is on."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -5189,7 +5042,6 @@ class TestExportCallStackProxyGate:
     def test_export_pipeline_uses_chain_when_off(self, fauxware_project):
         """End-to-end: gate off keeps the eager ``CallStack`` chain
         reconstruction on materialized states from ``found``."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
         from angr.state_plugins.callstack import CallStack
 
@@ -5203,7 +5055,6 @@ class TestExportCallStackProxyGate:
         assert not isinstance(found.callstack, RustCallStackProxyPlugin)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExportMemoryProxyGate:
     """angr-ul4k write-through boundary: ``use_export_memory_proxy`` gate
     controls whether ``_sync_rust_memory_to_state`` installs a
@@ -5218,7 +5069,6 @@ class TestExportMemoryProxyGate:
     def test_sync_off_uses_eager_writeback(self, fauxware_project):
         """Gate off: ``_sync_rust_memory_to_state`` keeps the SimState's
         original claripy memory plugin (no ``RustMemoryProxy`` install)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -5238,7 +5088,6 @@ class TestExportMemoryProxyGate:
         """Gate on: ``_sync_rust_memory_to_state`` installs a
         ``RustMemoryProxy`` bound to ``state_id`` and skips the page-by-page
         writeback entirely."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -5261,7 +5110,6 @@ class TestExportMemoryProxyGate:
         the Python-side symbolic-objects helper (the Rust FFI methods on
         ``_rust_mgr`` are read-only PyO3 attributes) to assert it never
         fires under the gate."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -5285,7 +5133,6 @@ class TestExportMemoryProxyGate:
         """End-to-end: after explore(), materialized states from the
         ``found`` stash carry a ``RustMemoryProxy`` instead of the original
         claripy memory plugin when the gate is on."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -5300,7 +5147,6 @@ class TestExportMemoryProxyGate:
     def test_export_pipeline_uses_eager_when_off(self, fauxware_project):
         """End-to-end: gate off keeps the eager page writeback on
         materialized states from ``found`` (no ``RustMemoryProxy``)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -5312,7 +5158,6 @@ class TestExportMemoryProxyGate:
         assert not isinstance(found.memory, RustMemoryProxy)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSimProcForkViaRustGate:
     """angr-t3mr write-through boundary: ``use_simproc_fork_via_rust`` gate
     controls how additional SimProcedure successors are added to the Rust
@@ -5328,7 +5173,6 @@ class TestSimProcForkViaRustGate:
     def test_fork_state_to_stash_pending(self, fauxware_project):
         """Rust API: ``fork_state_to_stash(parent_id, 'active')`` returns a
         fresh state ID and lands a new entry in the active stash."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5344,7 +5188,6 @@ class TestSimProcForkViaRustGate:
 
     def test_fork_state_to_stash_inherits_pc(self, fauxware_project):
         """The fork carries the parent's PC."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5355,7 +5198,6 @@ class TestSimProcForkViaRustGate:
 
     def test_fork_state_to_stash_unknown_state(self, fauxware_project):
         """Unknown parent ID raises ValueError."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5367,7 +5209,6 @@ class TestSimProcForkViaRustGate:
         ``_add_rust_state`` path (the only Python-patchable hook on the
         manager — the Rust pyclass methods are read-only and not
         monkey-patchable). Verifies that the routing IS the legacy path."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5391,7 +5232,6 @@ class TestSimProcForkViaRustGate:
         """Gate on: ``_add_forked_state`` routes through the Rust fork API
         (no ``_add_rust_state`` call). Stash count still grows by one
         because the Rust-side fork lands a new state in 'active'."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -5423,7 +5263,6 @@ class TestSimProcForkViaRustGate:
         """Gate on: ``callback_state_id is None`` is a no-op (the callback
         is already torn down; the fork would have no parent). No
         ``_add_rust_state`` call and stash count unchanged."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -5448,7 +5287,6 @@ class TestSimProcForkViaRustGate:
     def test_explore_end_to_end_gate_on(self, fauxware_project):
         """End-to-end smoke: ``explore`` completes with the same ``found``
         outcome when the gate is on as with the default off path."""
-        from angr.exploration import RustExplorationManager
 
         # Baseline: default off
         s_off = fauxware_project.factory.entry_state()
@@ -5467,7 +5305,6 @@ class TestSimProcForkViaRustGate:
         assert found_on == found_off
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestProxyWriteThrough:
     """angr-j28e: RustStateProxy register and memory writes must write through
     to the Rust state (Rust is the single source of truth — no Python-side
@@ -5488,7 +5325,6 @@ class TestProxyWriteThrough:
     def test_register_write_concrete_int(self, fauxware_project):
         """proxy.regs.<name> = <int> writes through to Rust and re-reads
         return the BVV-wrapped value."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5507,7 +5343,6 @@ class TestProxyWriteThrough:
     def test_register_write_concrete_bvv(self, fauxware_project):
         """proxy.regs.<name> = <BVV> writes through (BVV path, no int wrap)."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5524,7 +5359,6 @@ class TestProxyWriteThrough:
         cache so the subsequent constraint-add path narrows the live
         symbol (angr-4pm1 invariant carried over for the write path)."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5542,7 +5376,6 @@ class TestProxyWriteThrough:
     def test_memory_write_concrete_bytes_round_trips(self, fauxware_project):
         """proxy.memory.store(int_addr, bytes) writes through and the next
         proxy.memory.load returns the same bytes."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5560,7 +5393,6 @@ class TestProxyWriteThrough:
         """proxy.memory.store(addr, 0xCAFE) without size= is a programmer
         error — store mirrors angr's API where ``state.memory.store(a, int)``
         always carries an explicit size."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5572,7 +5404,6 @@ class TestProxyWriteThrough:
     def test_memory_write_int_value_with_size(self, fauxware_project):
         """proxy.memory.store(addr, int, size=N) writes N bytes big-endian
         by default; little-endian via endness='Iend_LE'."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -5588,7 +5419,6 @@ class TestProxyWriteThrough:
         assert proxy.memory.load(addr, 4).concrete_value == 0x78563412
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestMmapBaseSync:
     """Tests that the Rust per-state mmap_base mirrors back to Python's
     state.heap.mmap_base on stash export.
@@ -5629,7 +5459,6 @@ class TestMmapBaseSync:
         0xC1000000 even though Rust bumped its internal counter, leading to
         the silent-corruption scenario in the bead description.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5670,7 +5499,6 @@ class TestMmapBaseSync:
         On stash export we must keep the Python value, not overwrite it with
         the smaller Rust value.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5689,7 +5517,6 @@ class TestMmapBaseSync:
         assert states[0].heap.mmap_base == 0xC100_8000
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestMmapMapFixedNative:
     """End-to-end: mmap(addr, len, prot, MAP_FIXED|..., -1, 0) on a
     range that collides with an existing mapping succeeds natively,
@@ -5732,7 +5559,6 @@ class TestMmapMapFixedNative:
         The Rust unit tests in ``syscalls/mmap.rs`` cover the unmap +
         remap behavior comprehensively; this Python-level test exists
         to lock in the integration contract (no fallback)."""
-        from angr.exploration import RustExplorationManager
 
         target = 0x4000_0000
         length = 0x1000
@@ -5758,7 +5584,6 @@ class TestMmapMapFixedNative:
     def test_map_fixed_clean_addr_no_python_fallback(self):
         """MAP_FIXED on a non-colliding addr also takes the native
         path (regression guard for the is_fixed shortcut)."""
-        from angr.exploration import RustExplorationManager
 
         target = 0x4000_0000
         length = 0x1000
@@ -5776,7 +5601,6 @@ class TestMmapMapFixedNative:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestPosixBrkSync:
     """Tests that the Rust per-state posix_brk mirrors back to Python's
     state.posix.brk on stash export.
@@ -5816,7 +5640,6 @@ class TestPosixBrkSync:
         pushes Python's brk into Rust so subsequent NativeBrkSyscall calls
         compare against the correct base.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5838,7 +5661,6 @@ class TestPosixBrkSync:
         even though Rust bumped its internal counter, leading to the silent
         heap-collision scenario in the bead description.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5875,7 +5697,6 @@ class TestPosixBrkSync:
         """The sync takes max(rust, python) — a Python-side advance that
         outpaced Rust must not be reverted.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5903,7 +5724,6 @@ class TestPosixBrkSync:
         would break downstream Python code that expects a BV.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -5924,7 +5744,6 @@ class TestPosixBrkSync:
         assert states[0].posix.brk is cached.posix.brk
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict
     into Rust ``RustSimState`` (angr-p8o3).
@@ -6092,7 +5911,6 @@ class TestStateMetadataStorage:
         the (addr, stdout_len) map bounded over long explorations instead of
         growing one entry per dead state.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6125,7 +5943,6 @@ class TestStateMetadataStorage:
         freed when ``RustSimState`` itself drops (once the state leaves
         every stash).
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6169,7 +5986,6 @@ class TestStateMetadataStorage:
         deadended/errored — a Python-side leak the per-state metadata
         refactor was meant to eliminate.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6199,7 +6015,6 @@ class TestStateMetadataStorage:
         when the cache is over cap. This is what keeps the in-flight
         callback state alive across cache pressure.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6231,7 +6046,6 @@ class TestStateMetadataStorage:
         grows monotonically across `explore()` calls and root pinning bloats
         `_state_cache` indirectly (every dead root pinned into the live set).
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6258,7 +6072,6 @@ class TestStateMetadataStorage:
         grows monotonically over the manager's lifetime — fine for a one-
         shot script, leaky for orchestrators that drive many explore()s.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -6282,7 +6095,6 @@ class TestStateMetadataStorage:
         invariants pinned upstream.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -6325,7 +6137,6 @@ class TestStateMetadataStorage:
             )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashOperations:
     """Tests for stash management operations."""
 
@@ -6404,7 +6215,6 @@ class TestStashOperations:
         assert ids == []
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestHooksAndProcedures:
     """Tests for hook and SimProcedure registration."""
 
@@ -6476,7 +6286,6 @@ class TestHooksAndProcedures:
         (so e.g. native ``setenv`` stays dormant). Capture the tuples handed
         to Rust and assert the stub address went over as "setenv".
         """
-        from angr.exploration import RustExplorationManager
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
         proj = fauxware_project
@@ -6512,7 +6321,6 @@ class TestHooksAndProcedures:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateManagement:
     """Tests for state creation and management."""
 
@@ -6555,7 +6363,6 @@ class TestStateManagement:
         assert mgr.stats()["drop_terminal_states"] is False
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverOperations:
     """Tests for solver constraint operations."""
 
@@ -6981,7 +6788,6 @@ class TestSolverOperations:
         assert mgr.active_count() == 1
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestDeterministicMode:
     """``RustExplorationManager(deterministic=True)`` — angr-iaol.2.
 
@@ -7005,7 +6811,6 @@ class TestDeterministicMode:
 
     def test_deterministic_kwarg_accepted(self, fauxware_project):
         """``deterministic=True`` constructs cleanly + records flag on self."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
@@ -7029,7 +6834,6 @@ class TestDeterministicMode:
         (the canonical residual from defcamp_r100) rather than disable
         the test. See rust_engine.rst "Deterministic mode" for context.
         """
-        from angr.exploration import RustExplorationManager
 
         def _run() -> tuple[int, bytes]:
             state = fauxware_project.factory.entry_state()
@@ -7050,7 +6854,6 @@ class TestDeterministicMode:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustStateRegisters:
     """Tests for register operations on RustSimState."""
 
@@ -7091,7 +6894,6 @@ class TestRustStateRegisters:
         assert len(ids) == 3, "State IDs should be unique"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSerializeIRSB:
     """Tests for IRSB serialization (used in lift callbacks)."""
 
@@ -7099,7 +6901,6 @@ class TestSerializeIRSB:
     def test_serialize_basic_block(self, fauxware_project):
         """Serializing a basic block produces valid JSON."""
         import json
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7121,7 +6922,6 @@ class TestSerializeIRSB:
 
     def test_serialize_roundtrip_consistency(self, fauxware_project):
         """Serializing the same block twice produces identical output."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7134,14 +6934,12 @@ class TestSerializeIRSB:
         assert result1 == result2
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExplorationIntegration:
     """Integration tests with real binaries."""
 
 
     def test_explore_with_max_steps(self, fauxware_project):
         """Exploration respects max_steps limit."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7154,7 +6952,6 @@ class TestExplorationIntegration:
 
     def test_explore_finds_correct_state(self, fauxware_project):
         """Full exploration finds the expected state."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7171,7 +6968,6 @@ class TestExplorationIntegration:
         bounded by the exploration's wall-clock time.
         """
         import time
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7222,7 +7018,6 @@ class TestExplorationIntegration:
         asserts (a) counters are non-zero post-exploration and (b) bytes
         scale with count (≥ size of a single 1-byte op).
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -7256,7 +7051,6 @@ class TestExplorationIntegration:
 
     def test_explore_with_timeout_technique(self, fauxware_project):
         """Timeout technique stops exploration before max_steps and finds nothing."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration_techniques import Timeout
 
         state = fauxware_project.factory.entry_state()
@@ -7278,7 +7072,6 @@ class TestExplorationIntegration:
         Z3 assertion count against an unhooked baseline run; the hooked run
         must produce strictly more assertions per state.
         """
-        from angr.exploration import RustExplorationManager
         import claripy
 
         proj = fauxware_project
@@ -7340,7 +7133,6 @@ class TestExplorationIntegration:
         constraints back via resume_after_simprocedure. If that round-trip drops
         the constraint, the Rust state's solver itself will be missing it.
         """
-        from angr.exploration import RustExplorationManager
         import claripy
 
         proj = fauxware_project
@@ -7419,7 +7211,6 @@ class TestExplorationIntegration:
         """
         import claripy
         import angr
-        from angr.exploration import RustExplorationManager
 
         # 0x1000: nop                (hooked, length=1)
         # 0x1001: mov rax, [rdi]     ; 48 8b 07 — Rust VEX load
@@ -7500,7 +7291,6 @@ class TestExplorationIntegration:
         Python↔Rust round trip.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         # 0x1000: mov al, [rdi+5]    ; 8a 47 05
         # 0x1003: ret                ; c3
@@ -7565,7 +7355,6 @@ class TestExplorationIntegration:
         The Python engine (concrete guard) is used as a direct oracle.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         # 0x1000: ldrneh r0, [r1]   ; bytes b0 00 d1 11 (ARMEL, little-endian)
         shellcode = bytes.fromhex("b000d111")
@@ -7619,7 +7408,6 @@ class TestExplorationIntegration:
         somehow stayed at hook_addr the hook would re-fire and the
         test would see an unbounded number of fires.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         main_sym = proj.loader.find_symbol("main")
@@ -7671,7 +7459,6 @@ class TestExplorationIntegration:
         one, exploration would spin forever. The handler must call
         _add_forked_state for every extra successor.
         """
-        from angr.exploration import RustExplorationManager
         from types import SimpleNamespace
 
         proj = fauxware_project
@@ -7746,7 +7533,6 @@ class TestExplorationIntegration:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestPluginMutationAcrossCallbacks:
     """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
 
@@ -7780,7 +7566,6 @@ class TestPluginMutationAcrossCallbacks:
         sequentially on the same state because no symbolic branching happens
         between them.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         main_sym = proj.loader.find_symbol("main")
@@ -7821,7 +7606,6 @@ class TestPluginMutationAcrossCallbacks:
         nested SimPacketsStream weakrefs and is the more dangerous failure
         mode if the plugin chain breaks.
         """
-        from angr.exploration import RustExplorationManager
         from angr.storage import SimFile
 
         proj = fauxware_project
@@ -7861,7 +7645,6 @@ class TestPluginMutationAcrossCallbacks:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateCacheSizeBound:
     """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
 
@@ -7880,7 +7663,6 @@ class TestStateCacheSizeBound:
         per-fork copy, so the cache size should track ``# root states +
         # in-flight callbacks``.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -7904,7 +7686,6 @@ class TestStateCacheSizeBound:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestPluginTemplateSelection:
     """Regressions for angr-2k64: ``_restore_plugins_to_state`` must never
     pick a plugin template from an arbitrary cached state.
@@ -7937,7 +7718,6 @@ class TestPluginTemplateSelection:
     def test_returns_state_itself_when_cached(self, fauxware_project):
         """If ``state_id`` is in ``_state_cache``, that state must be the
         template — its own plugins are by definition correct."""
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -7956,7 +7736,6 @@ class TestPluginTemplateSelection:
     def test_falls_back_to_parent_id_when_state_not_cached(self, fauxware_project):
         """When ``state_id`` is uncached but its snapshot parent IS cached,
         the parent must be the template."""
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -7981,7 +7760,6 @@ class TestPluginTemplateSelection:
         last-resort fallback to *root* states only — non-root descendants
         in the cache must never be returned as a template.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         root_state = proj.factory.entry_state()
@@ -8017,7 +7795,6 @@ class TestPluginTemplateSelection:
     def test_falls_back_to_root_when_descendant_id_is_unknown(self, fauxware_project):
         """If the orphan state's tracked root is cached, return it; the
         empty-baseline root plugins are the safe default."""
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         root_state = proj.factory.entry_state()
@@ -8040,7 +7817,6 @@ class TestPluginTemplateSelection:
         restore rather than guess). Better to leave the state with angr's
         default plugins than to leak mutations from an unrelated branch.
         """
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         root_state = proj.factory.entry_state()
@@ -8057,7 +7833,6 @@ class TestPluginTemplateSelection:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 
@@ -8256,13 +8031,11 @@ class TestAdversarial:
 
     def test_python_wrapper_no_states(self, fauxware_project):
         """Python wrapper with empty state list."""
-        from angr.exploration import RustExplorationManager
         mgr = RustExplorationManager(fauxware_project, [])
         assert len(mgr.active) == 0
 
     def test_python_wrapper_explore_no_find(self, fauxware_project):
         """Explore with no find addresses should terminate on active_empty."""
-        from angr.exploration import RustExplorationManager
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(max_steps=10)
@@ -8270,7 +8043,6 @@ class TestAdversarial:
 
     def test_python_wrapper_double_explore(self, fauxware_project):
         """Calling explore() twice should not crash."""
-        from angr.exploration import RustExplorationManager
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(find=0x4006ed, max_steps=5)
@@ -8278,7 +8050,6 @@ class TestAdversarial:
         mgr.explore(find=0x4006ed, max_steps=5)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestMultiArchSupport:
     """Tests for MIPS, ARM, and big-endian architecture support."""
 
@@ -8601,7 +8372,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # i386 little-endian:
         #   0x00: 01 C0       add eax, eax           ; eax = 2*eax
@@ -8665,7 +8435,6 @@ class TestMultiArchSupport:
         (load address 0x401760, find=0x401840, avoid=0x401854).
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         binary_path = os.path.expanduser(
             "~/repos/angr-examples/examples/android_arm_license_validation/validate"
@@ -8715,7 +8484,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # ARM (AL condition = 0xE), packed big-endian for ARMEB BE32:
         #   0x00: ADD  r0, r0, r0      0xE0800000  ; r0 = 2*r0
@@ -8780,7 +8548,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # AArch64 little-endian:
         #   0x00: MOV w1, #42         52800541
@@ -8836,7 +8603,6 @@ class TestMultiArchSupport:
         ``avoid`` stash stays empty.
         """
         import struct
-        from angr.exploration import RustExplorationManager
 
         # Same blob as test_aarch64_explore_blob.
         code = struct.pack(
@@ -8885,7 +8651,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # AArch64 little-endian — verified individually via pyvex:
         #   0x400000: FMOV S0, W0       1E270000  ; q0 = [0,0,0, w0_low32]
@@ -8961,7 +8726,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # AArch64 little-endian instructions (verified against ARMv8 ARM):
         #   double_it (at 0x400078):
@@ -9084,7 +8848,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # MIPS32 big-endian, with delay slots:
         #   0x00: ADDIU t0, zero, 42     2408002A
@@ -9147,7 +8910,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # MIPS32 instruction encodings are endian-agnostic at decode time;
         # the storage byte order changes with EI_DATA. Same opcodes as the
@@ -9269,7 +9031,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         def addiu(rt, rs, imm):
             return 0x24000000 | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
@@ -9366,7 +9127,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # MIPS64 instruction encodings — same as MIPS32 for these opcodes
         # since registers are still 5 bits. ADDIU sign-extends the 16-bit
@@ -9497,7 +9257,6 @@ class TestMultiArchSupport:
         """
         import struct
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # MIPS64 instruction encodings — same as MIPS32 for these opcodes
         # since registers are still 5 bits. ADDIU sign-extends the 16-bit
@@ -9840,13 +9599,12 @@ class TestMultiArchSupport:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not available")
 class TestErroredStash:
     """Tests for the errored stash and RustErrorRecord."""
 
     def test_errored_returns_error_records(self, fauxware_project):
         """errored property returns RustErrorRecord objects with error details."""
-        from angr.exploration import RustExplorationManager, RustErrorRecord
+        from angr.exploration import RustErrorRecord
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -9937,7 +9695,6 @@ class TestErroredStash:
         assert record.last_statements == []
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestErrorRecovery:
     """Tests that the engine degrades gracefully instead of panicking."""
 
@@ -9973,7 +9730,6 @@ class TestErrorRecovery:
         import angr
         import claripy
         from angr import sim_options as o
-        from angr.exploration import RustExplorationManager
 
         # mov rax, [rdi]   -> 48 8b 07
         # ret              -> c3
@@ -10016,7 +9772,6 @@ class TestErrorRecovery:
         stays at zero with no PythonVEXFallback recorded for the block.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         # cmpxchg16b [rdi]   -> 48 0f c7 0f
         # ret                -> c3
@@ -10068,7 +9823,6 @@ class TestErrorRecovery:
         branch of `execute_cas_stmt`.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = bytes.fromhex("480fc70fc3")
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -10125,7 +9879,6 @@ class TestErrorRecovery:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # lock cmpxchg qword ptr [rdi], rcx  -> f0 48 0f b1 0f
         # ret                                -> c3
@@ -10169,7 +9922,6 @@ class TestErrorRecovery:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
 
         shellcode = bytes.fromhex("f0480fb10fc3")
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -10216,7 +9968,6 @@ class TestErrorRecovery:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # ldrex r0, [r1]: 0xE1910F9F -> bytes LE: 9F 0F 91 E1
         # bx lr        : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -10252,7 +10003,6 @@ class TestErrorRecovery:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # strex r0, r2, [r1]: 0xE1810F92 -> bytes LE: 92 0F 81 E1
         # bx lr             : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -10290,7 +10040,6 @@ class TestErrorRecovery:
         """
         import angr
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # mov rax, 1     -> 48 c7 c0 01 00 00 00
         # cmp rax, 0     -> 48 83 f8 00
@@ -10482,7 +10231,6 @@ class TestErrorRecovery:
 
     def _build_load_store_manager(self):
         import angr
-        from angr.exploration import RustExplorationManager
         shellcode = bytes.fromhex("c3")  # ret
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -10602,7 +10350,6 @@ class TestErrorRecovery:
         """dirty_bytes lifts the supplied buffer, not the project's static binary."""
         import json
         import angr
-        from angr.exploration import RustExplorationManager
         # Project's static binary at 0x1000 is "ret" (0xc3, 1 byte).
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -10623,7 +10370,6 @@ class TestErrorRecovery:
         """Without dirty_bytes the lift comes from the project's static binary."""
         import json
         import angr
-        from angr.exploration import RustExplorationManager
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         mgr = RustExplorationManager(proj, [state])
@@ -10647,7 +10393,6 @@ class TestErrorRecovery:
         """
         import angr
         import angr.sim_options as o
-        from angr.exploration import RustExplorationManager
 
         # Layout at 0x1000:
         #   0x1000: 48 b8 10 10 00 00 00 00 00 00  mov rax, 0x1010
@@ -11369,7 +11114,6 @@ class TestErrorRecovery:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestZ3TacticEnvVar:
     """The ANGR_Z3_TACTIC env var selects the Z3 solver construction strategy.
 
@@ -11490,7 +11234,6 @@ class TestZ3TacticEnvVar:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverOutputCorrectness:
     """Tests verifying solver eval() returns correct values for known constraint systems.
 
@@ -11653,7 +11396,6 @@ class TestCallableStepFunc:
 
     def test_step_func_called_per_step(self, fauxware_project):
         """step_func is called after each execution step."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11668,7 +11410,6 @@ class TestCallableStepFunc:
 
     def test_step_func_stops_when_no_active(self, fauxware_project):
         """run(step_func=...) stops when active stash is empty."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11685,7 +11426,6 @@ class TestCallableStepFunc:
 
     def test_prune_removes_unsat_states(self, fauxware_project):
         """prune() removes unsatisfiable states from active stash."""
-        from angr.exploration import RustExplorationManager
         import claripy
 
         state = fauxware_project.factory.entry_state()
@@ -11703,7 +11443,6 @@ class TestCallableStepFunc:
 
     def test_step_func_with_prune(self, fauxware_project):
         """step_func that prunes works correctly (Callable pattern)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11722,7 +11461,6 @@ class TestCallableStepFunc:
 
     def test_unstash_from_deadended(self, fauxware_project):
         """unstash(from_stash='deadended') moves states to active (Callable pattern)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11741,7 +11479,6 @@ class TestCallableStepFunc:
 
     def test_prune_with_filter_func(self, fauxware_project):
         """prune(filter_func=...) keeps only matching states."""
-        from angr.exploration import RustExplorationManager
 
         ACCEPTED = 0x4006ed
 
@@ -11771,7 +11508,6 @@ class TestCallableStepFunc:
         lightweight RustStateProxy rather than a fully reconstructed SimState
         when the predicate only touches proxy-supported attributes (e.g., addr).
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state = fauxware_project.factory.entry_state()
@@ -11795,7 +11531,6 @@ class TestCallableStepFunc:
 
     def test_drop_filter_func_sees_rust_state_proxy(self, fauxware_project):
         """drop(filter_func=...) passes a RustStateProxy when the predicate stays read-only."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state = fauxware_project.factory.entry_state()
@@ -11831,7 +11566,6 @@ class TestCallableStepFunc:
         def rust_sm(thing=None, **kwargs):
             kwargs.pop('use_rust_engine', None)
             kwargs.pop('techniques', None)  # RustExplorationManager doesn't take techniques
-            from angr.exploration import RustExplorationManager
             if thing is None:
                 thing = [fauxware_project.factory.entry_state()]
             elif isinstance(thing, angr.SimState):
@@ -11856,7 +11590,6 @@ class TestCallableStepFunc:
 
     def test_run_until_predicate(self, fauxware_project):
         """run(step_func=..., until=...) stops when until returns True."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11872,7 +11605,6 @@ class TestCallableStepFunc:
 
     def test_drop_terminal_states_false_during_step_func(self, fauxware_project):
         """run(step_func=...) sets drop_terminal_states=False so deadended states survive."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11890,13 +11622,11 @@ class TestCallableStepFunc:
             "Deadended states should be preserved during step_func execution"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallStackTracking:
     """Tests for call stack tracking in the Rust engine."""
 
     def test_call_stack_on_state_snapshot(self, fauxware_project):
         """Test that call stack is available on exported state snapshots."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11924,7 +11654,6 @@ class TestCallStackTracking:
 
     def test_call_stack_on_found_states(self, fauxware_project):
         """Test that found state snapshots contain call stack data."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11953,7 +11682,6 @@ class TestCallStackTracking:
         assert snapshot.get_call_stack_depth() == 0
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestDetailedHistory:
     """Tests for detailed execution history tracking."""
 
@@ -11965,7 +11693,6 @@ class TestDetailedHistory:
 
     def test_detailed_history_on_found_states(self, fauxware_project):
         """Test that found states have non-empty detailed history."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11988,7 +11715,6 @@ class TestDetailedHistory:
 
     def test_detailed_history_str(self, fauxware_project):
         """Test get_detailed_history_str returns human-readable jumpkinds."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -12005,7 +11731,6 @@ class TestDetailedHistory:
 
     def test_detailed_history_has_calls(self, fauxware_project):
         """Test that fauxware's history contains Ijk_Call entries."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -12040,7 +11765,6 @@ class TestDetailedHistory:
 
     def test_max_history_caps_recorded_history(self, fauxware_project):
         """A tight max_history cap bounds detailed_history during exploration."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], max_history=5)
@@ -12059,7 +11783,6 @@ class TestDetailedHistory:
 
     def test_max_history_default_bounds_long_run(self, fauxware_project):
         """Default cap (1000) keeps detailed_history bounded on a real run."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -12159,7 +11882,6 @@ class TestDetailedHistory:
         ]
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeTechniques:
     """Tests for native exploration technique hooks in Rust."""
 
@@ -12237,7 +11959,6 @@ class TestNativeTechniques:
         assert mgr.native_technique_count() == 3
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExplorationTechniqueStepHookDispatch:
     """ExplorationTechnique.step() hook dispatch against RustStateProxy.
 
@@ -12403,7 +12124,6 @@ class TestExplorationTechniqueStepHookDispatch:
             proxy.step_state(state=None)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOptLevel:
     """Tests for VEX optimization level control."""
 
@@ -12452,7 +12172,6 @@ class TestVexOptLevel:
         assert len(mgr.found) > 0, "Should find target with opt_level=0"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateMerging:
     """Tests for state merging with symbolic merge conditions."""
 
@@ -12505,13 +12224,11 @@ class TestStateMerging:
         assert merged_id in active_ids
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExplorationStrategy:
     """Tests for DFS/BFS exploration strategy."""
 
     def test_set_exploration_strategy_dfs(self, fauxware_project):
         """Test setting DFS strategy finds the same result."""
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         state = fauxware_project.factory.entry_state()
@@ -12522,7 +12239,6 @@ class TestExplorationStrategy:
 
     def test_set_exploration_strategy_bfs(self, fauxware_project):
         """Test BFS strategy (default) works."""
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         state = fauxware_project.factory.entry_state()
@@ -12533,7 +12249,6 @@ class TestExplorationStrategy:
 
     def test_set_exploration_strategy_invalid(self, fauxware_project):
         """Test invalid strategy raises ValueError."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -12542,7 +12257,6 @@ class TestExplorationStrategy:
 
     def test_dfs_technique_auto_detection(self, fauxware_project):
         """Test that angr DFS technique is auto-detected."""
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         state = fauxware_project.factory.entry_state()
@@ -12558,7 +12272,6 @@ class TestExplorationStrategy:
         applied during __init__ so the first step already sees the chosen
         order. Regression for the angr-3ms1 Flavor-1 wiring step.
         """
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         state = fauxware_project.factory.entry_state()
@@ -12570,7 +12283,6 @@ class TestExplorationStrategy:
 
     def test_init_kwarg_strategy_bfs_default(self, fauxware_project):
         """Default exploration_strategy is 'bfs' and explicit 'bfs' both work."""
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         # Default — no kwarg.
@@ -12589,7 +12301,6 @@ class TestExplorationStrategy:
 
     def test_init_kwarg_strategy_invalid(self, fauxware_project):
         """Invalid exploration_strategy at construction time raises ValueError."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
@@ -12606,7 +12317,6 @@ class TestExplorationStrategy:
         place (default value stored, explicit False round-trips) without
         depending on any observable engine behavior change.
         """
-        from angr.exploration import RustExplorationManager
 
         state_default = fauxware_project.factory.entry_state()
         mgr_default = RustExplorationManager(fauxware_project, [state_default])
@@ -12636,7 +12346,6 @@ class TestExplorationStrategy:
         the read alone — easy to introduce by mistake while wiring
         slice-1c later.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
@@ -12665,7 +12374,6 @@ class TestExplorationStrategy:
         — only that the combination constructs, runs, and respects the
         ``max_length`` bound on the active stash at the end of exploration.
         """
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
         state = fauxware_project.factory.entry_state()
@@ -12697,7 +12405,6 @@ class TestExplorationStrategy:
             )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOperationCoverage:
     """Systematic tests for BV operations through the Rust solver.
 
@@ -13242,7 +12949,6 @@ class TestVexOperationCoverage:
         assert ctx.eval(x) == 0xDEADBEEFCAFEBABE
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSymbolicLibcProcedures:
     """Integration tests for symbolic libc SimProcedures via RustExplorationManager.
 
@@ -13282,7 +12988,6 @@ class TestSymbolicLibcProcedures:
         return state
 
     def _run_one_step(self, proj, state):
-        from angr.exploration import RustExplorationManager
         mgr = RustExplorationManager(proj, [state])
         mgr.run(max_steps=1)
         states = mgr.active + mgr.deadended + mgr.errored
@@ -13513,7 +13218,6 @@ class TestSymbolicLibcProcedures:
             proj.unhook(self.HOOK_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFileDescriptorProcedures:
     """Integration test for native pipe/dup/dup2 dispatched through the Rust manager.
 
@@ -13578,7 +13282,6 @@ class TestNativeFileDescriptorProcedures:
 
         proj.hook(self.PIPE_ADDR, pipe(), replace=True)
         try:
-            from angr.exploration import RustExplorationManager
             state = proj.factory.blank_state(
                 addr=self.PIPE_ADDR,
                 add_options={
@@ -13621,7 +13324,6 @@ class TestNativeFileDescriptorProcedures:
 
         proj.hook(self.DUP2_ADDR, dup2(), replace=True)
         try:
-            from angr.exploration import RustExplorationManager
             state = proj.factory.blank_state(
                 addr=self.DUP2_ADDR,
                 add_options={
@@ -13650,7 +13352,6 @@ class TestNativeFileDescriptorProcedures:
             proj.unhook(self.DUP2_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFileDescriptorErrorReturns:
     """Error-return contract for native fileops procedures (angr-95up.3).
 
@@ -13712,7 +13413,6 @@ class TestNativeFileDescriptorErrorReturns:
         stub_cls = self._make_stub(proc_name, num_args)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
-            from angr.exploration import RustExplorationManager
 
             state = proj.factory.blank_state(
                 addr=self.HOOK_ADDR,
@@ -13772,7 +13472,6 @@ class TestNativeFileDescriptorErrorReturns:
             proj.unhook(self.HOOK_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeMemoryAlignedAllocators:
     """Integration tests for NativeMemalign / NativePosixMemalign (angr-f16h.2).
 
@@ -13814,7 +13513,6 @@ class TestNativeMemoryAlignedAllocators:
         stub_cls = self._make_stub("memalign", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
-            from angr.exploration import RustExplorationManager
             state = proj.factory.blank_state(
                 addr=self.HOOK_ADDR,
                 add_options={
@@ -13859,7 +13557,6 @@ class TestNativeMemoryAlignedAllocators:
         stub_cls = self._make_stub("posix_memalign", 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
-            from angr.exploration import RustExplorationManager
             state = proj.factory.blank_state(
                 addr=self.HOOK_ADDR,
                 add_options={
@@ -13907,7 +13604,6 @@ class TestNativeMemoryAlignedAllocators:
             proj.unhook(self.HOOK_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeStringToNumericProcedures:
     """Integration tests for NativeStrtoll / NativeStrtoull / NativeStrtod
     (angr-f16h.3).
@@ -13966,7 +13662,6 @@ class TestNativeStringToNumericProcedures:
     def test_strtoll_64bit_concrete_value(self, fauxware_project):
         """strtoll on a value beyond i32 range must produce the i64 result
         in rax via native dispatch."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("strtoll", 3)
@@ -13993,7 +13688,6 @@ class TestNativeStringToNumericProcedures:
 
     def test_strtoull_value_above_i64_max(self, fauxware_project):
         """strtoull must accept values above i64::MAX (interpreted as u64)."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("strtoull", 3)
@@ -14020,7 +13714,6 @@ class TestNativeStringToNumericProcedures:
 
     def test_strtoll_writes_endptr_past_parsed_prefix(self, fauxware_project):
         """strtoll with a non-null endptr must store nptr + consumed bytes."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("strtoll", 3)
@@ -14049,7 +13742,6 @@ class TestNativeStringToNumericProcedures:
     def test_strtod_writes_xmm0_concrete_double(self, fauxware_project):
         """strtod must dispatch natively, write the IEEE-754 bit pattern of
         the parsed double to xmm0's low 64 bits, and leave rax untouched."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("strtod", 2)
@@ -14078,7 +13770,6 @@ class TestNativeStringToNumericProcedures:
             proj.unhook(self.HOOK_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeStdioStatusAndWrite:
     """Integration tests for NativeFeof / NativeFerror / NativeFputs
     (angr-f16h.1).
@@ -14144,7 +13835,6 @@ class TestNativeStdioStatusAndWrite:
 
     def test_feof_returns_one_on_empty_fd(self, fauxware_project):
         """fd=1 (stdout) starts empty: position 0 >= content_len 0 → EOF."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("feof", 1)
@@ -14169,7 +13859,6 @@ class TestNativeStdioStatusAndWrite:
 
     def test_ferror_always_returns_zero(self, fauxware_project):
         """ferror has no Python proc — the native entry returns 0 (no error)."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("ferror", 1)
@@ -14195,7 +13884,6 @@ class TestNativeStdioStatusAndWrite:
     def test_fputs_writes_to_stdout_and_returns_one(self, fauxware_project):
         """fputs on stdout must append the NUL-terminated string to fd 1's
         buffer and return 1."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("fputs", 2)
@@ -14226,7 +13914,6 @@ class TestNativeStdioStatusAndWrite:
 
     def test_fputs_negative_fileno_returns_minus_one(self, fauxware_project):
         """fputs with a closed/sentinel fd (-1) must return -1 without writing."""
-        from angr.exploration import RustExplorationManager
         proj = fauxware_project
 
         stub_cls = self._make_stub("fputs", 2)
@@ -14254,7 +13941,6 @@ class TestNativeStdioStatusAndWrite:
             proj.unhook(self.HOOK_ADDR)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
     requires the cached Python SimState to be invalidate-and-replayed per
@@ -14269,7 +13955,6 @@ class TestNativeReadCacheSync:
         (find=0x4006ed) must remain reachable end-to-end — this exercises
         the read+strcmp interaction that previously broke when NativeRead
         was first attempted."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -14286,7 +13971,6 @@ class TestNativeReadCacheSync:
         exposed and callable (a no-pending-callback error is acceptable
         outside a callback; what we're guarding against is a missing
         wrapper, which would surface as AttributeError)."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -14302,7 +13986,6 @@ class TestNativeReadCacheSync:
             assert "no pending" in str(e), f"unexpected error: {e}"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeExtendedStringProcedures:
     """Integration tests for NativeStrrchr / NativeStrpbrk / NativeStrspn /
     NativeStrcspn (angr-f16h.5).
@@ -14355,7 +14038,6 @@ class TestNativeExtendedStringProcedures:
 
     def _run_one(self, proj, name, s_bytes, set_bytes, c_or_set_addr):
         """Hook, single-step, return (call_count, rax)."""
-        from angr.exploration import RustExplorationManager
 
         stub_cls = self._make_stub(name)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
@@ -14414,7 +14096,6 @@ class TestNativeExtendedStringProcedures:
         assert rax == 3, f"rax={rax}"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeIdentitySyscalls:
     """angr-0hif.3: native ``getpid`` / ``getppid`` / ``gettid`` / ``getuid``
     / ``geteuid`` / ``getgid`` / ``getegid`` handlers must short-circuit the
@@ -14439,7 +14120,6 @@ class TestNativeIdentitySyscalls:
     )
     def test_identity_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14456,7 +14136,6 @@ class TestNativeIdentitySyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeSetuidSetgidSyscalls:
     """angr-pqgu: native ``setuid`` / ``setgid`` handlers mirror the
     Python ``syscall_stub`` ReturnUnconstrained fallback. The Rust
@@ -14476,7 +14155,6 @@ class TestNativeSetuidSetgidSyscalls:
     )
     def test_set_id_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14494,7 +14172,6 @@ class TestNativeSetuidSetgidSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeMemoryExtraSyscalls:
     """angr-0hif.4: native ``madvise`` / ``mremap`` / ``msync`` / ``mlock``
     / ``munlock`` / ``mlockall`` / ``munlockall`` handlers mirror the
@@ -14520,7 +14197,6 @@ class TestNativeMemoryExtraSyscalls:
     )
     def test_memory_extra_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14540,7 +14216,6 @@ class TestNativeMemoryExtraSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeSignalSyscalls:
     """angr-0hif.6: native ``kill`` / ``tgkill`` / ``rt_sigreturn`` /
     ``pause`` / ``alarm`` handlers. ``kill``, ``rt_sigreturn``, ``pause``,
@@ -14569,7 +14244,6 @@ class TestNativeSignalSyscalls:
     )
     def test_signal_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14588,7 +14262,6 @@ class TestNativeSignalSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeResourceLimitSyscalls:
     """angr-0hif.7: native ``getrlimit`` / ``setrlimit`` / ``prlimit64``
     handlers. ``getrlimit`` mirrors ``procedures/linux_kernel/getrlimit.py``
@@ -14610,7 +14283,6 @@ class TestNativeResourceLimitSyscalls:
     )
     def test_rlimit_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14642,7 +14314,6 @@ class TestNativeResourceLimitSyscalls:
         with ``rdi=3, rsi=<page>``, and read back ``state.memory[page:8]``.
         """
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14674,7 +14345,6 @@ class TestNativeResourceLimitSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadlinkSyscall:
     """angr-wv38: native ``readlink`` returns ``-1`` for every path
     because the Rust ``FileSystem`` has no symlinks (EINVAL for known
@@ -14689,7 +14359,6 @@ class TestNativeReadlinkSyscall:
 
     def test_readlink_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14712,7 +14381,6 @@ class TestNativeReadlinkSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadlinkatSyscall:
     """angr-wv38: native ``readlinkat`` also returns ``-1`` for every
     path. The dirfd is validated (must be concrete) and the
@@ -14728,7 +14396,6 @@ class TestNativeReadlinkatSyscall:
 
     def test_readlinkat_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14752,7 +14419,6 @@ class TestNativeReadlinkatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFaccessatSyscall:
     """angr-6009: native ``faccessat`` mirrors ``NativeAccessSyscall``
     with dirfd handling. Absolute paths and ``AT_FDCWD`` query
@@ -14769,7 +14435,6 @@ class TestNativeFaccessatSyscall:
 
     def test_faccessat_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14792,7 +14457,6 @@ class TestNativeFaccessatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFdAllocatingSyscalls:
     """angr-k3ol.1: native ``open`` / ``openat`` / ``close`` allocate /
     release FDs in ``RustSimState::file_system()``. They mirror the
@@ -14825,7 +14489,6 @@ class TestNativeFdAllocatingSyscalls:
     )
     def test_fd_alloc_syscall_dispatches_natively(self, syscall_num, label, setup_args):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14848,7 +14511,6 @@ class TestNativeFdAllocatingSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeAccessSyscall:
     """angr-k3ol.2: native ``access`` looks up the path in the Rust
     ``FileSystem::known_paths`` set (populated by ``open`` / ``openat``
@@ -14868,7 +14530,6 @@ class TestNativeAccessSyscall:
 
     def test_access_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14890,7 +14551,6 @@ class TestNativeAccessSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFstatSyscall:
     """angr-k3ol.3: native ``fstat`` looks up ``content_len`` via the
     Rust ``FileSystem::fd_info(fd)`` and writes a per-arch
@@ -14910,7 +14570,6 @@ class TestNativeFstatSyscall:
 
     def test_fstat_unknown_fd_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14934,7 +14593,6 @@ class TestNativeFstatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeStatSyscall:
     """angr-k3ol.4: native ``stat`` resolves ``pathname`` via
     ``read_path``, queries ``FileSystem::is_path_known`` (returning
@@ -14953,7 +14611,6 @@ class TestNativeStatSyscall:
 
     def test_stat_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -14975,7 +14632,6 @@ class TestNativeStatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeLstatSyscall:
     """angr-poao: native ``lstat`` collapses to ``stat`` semantics
     (the Rust ``FileSystem`` has no symlinks), reusing
@@ -14993,7 +14649,6 @@ class TestNativeLstatSyscall:
 
     def test_lstat_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -15015,7 +14670,6 @@ class TestNativeLstatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeNewfstatatSyscall:
     """angr-poao: native ``newfstatat`` adds ``openat``-style dirfd
     handling on top of ``stat`` semantics. Absolute paths and
@@ -15033,7 +14687,6 @@ class TestNativeNewfstatatSyscall:
 
     def test_newfstatat_unknown_path_dispatches_natively(self):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -15057,7 +14710,6 @@ class TestNativeNewfstatatSyscall:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeConcurrencySyscalls:
     """angr-0hif.7: native ``futex`` / ``eventfd`` / ``eventfd2`` /
     ``epoll_create`` / ``epoll_create1`` / ``epoll_ctl`` / ``epoll_wait``
@@ -15084,7 +14736,6 @@ class TestNativeConcurrencySyscalls:
         self, syscall_num, label, futex_op
     ):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -15107,7 +14758,6 @@ class TestNativeConcurrencySyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeFileDescriptorSyscalls:
     """angr-0hif.5 stub-fallthrough subset: ``fcntl`` / ``ioctl`` /
     ``pipe`` / ``pipe2`` handlers. None of these have a Python
@@ -15139,7 +14789,6 @@ class TestNativeFileDescriptorSyscalls:
     )
     def test_fd_control_syscall_dispatches_natively(self, syscall_num, label):
         import angr
-        from angr.exploration import RustExplorationManager
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -15158,7 +14807,6 @@ class TestNativeFileDescriptorSyscalls:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""
@@ -15168,7 +14816,6 @@ class TestClaripyAnnotationRoundtrip:
         must still be present after a full RustExplorationManager run."""
         import claripy
         from claripy.annotation import UninitializedAnnotation
-        from angr.exploration import RustExplorationManager
 
         # SYMBOL_FILL_UNCONSTRAINED_REGISTERS is raised under Rust
         # (angr-apre) — RegisterFile always returns zero so symbolic-fill
@@ -15203,7 +14850,6 @@ class TestClaripyAnnotationRoundtrip:
         attached at the Expression level. The Arc-keyed expression cache in
         claripy_bridge.rs preserves them."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         class _ExprTaint(claripy.Annotation):
             def __init__(self, tag):
@@ -15268,7 +14914,6 @@ class TestClaripyAnnotationRoundtrip:
                 )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestEdgeCases:
     """End-to-end edge-case tests for RustExplorationManager (angr-32ky).
 
@@ -15296,7 +14941,6 @@ class TestEdgeCases:
         loading it back must roundtrip correctly without forking, even when
         the executing block has no conditional branches."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         x = claripy.BVS("nobranch_expr_x", 32)
@@ -15324,7 +14968,6 @@ class TestEdgeCases:
         """A 256-bit symbolic value stored in memory survives the
         manager-init export/import roundtrip."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         wide = claripy.BVS("wide_sym_256", 256)
@@ -15348,7 +14991,6 @@ class TestEdgeCases:
         """A 512-bit symbolic value stored in memory survives the
         manager-init export/import roundtrip."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         wide = claripy.BVS("wide_sym_512", 512)
@@ -15370,7 +15012,6 @@ class TestEdgeCases:
     def test_explore_with_zero_find_addresses(self, fauxware_project):
         """explore() with find=None must drain all active states without
         crashing; nothing ends up in found."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -15388,7 +15029,6 @@ class TestEdgeCases:
     def test_only_avoid_addresses_no_find(self, fauxware_project):
         """An exploration configured with avoid (no find) routes states that
         hit avoid into the avoid stash; remaining states deadend."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -15407,7 +15047,6 @@ class TestEdgeCases:
         """Exploration with LAZY_SOLVES enabled completes and finds the
         target state. LAZY_SOLVES defers the per-branch satisfiability check;
         the Rust engine must still produce a satisfiable found state."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.LAZY_SOLVES},
@@ -15427,7 +15066,6 @@ class TestEdgeCases:
         """Re-entrant exploration: calling explore() twice on the same
         manager continues from where the previous call left off without
         resetting found/active stashes."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -15455,7 +15093,6 @@ class TestEdgeCases:
         the same address must roundtrip — solver eval under a unique
         assignment yields the assigned value."""
         import claripy
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         addr = 0x500500
@@ -15482,7 +15119,6 @@ class TestEdgeCases:
         state-add time. Without this signal, users silently get divergent
         behavior from the Python engine.
         """
-        from angr.exploration import RustExplorationManager
 
         # Pick two options that stay in _REJECTED_OPTION_NAMES (warn-only).
         # CALLLESS and DO_RET_EMULATION were promoted to raise in angr-cf9h,
@@ -15522,7 +15158,6 @@ class TestEdgeCases:
         flag consulted only by preconstrainer.py and does not by itself
         gate action recording; see test_track_action_history_does_not_raise.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={getattr(angr.sim_options, option_name)},
@@ -15549,7 +15184,6 @@ class TestEdgeCases:
         downstream code that consults the flag (preconstrainer's
         clear/restore pattern) behaves identically.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.TRACK_ACTION_HISTORY},
@@ -15576,7 +15210,6 @@ class TestEdgeCases:
         """When multiple TRACK_*_ACTIONS options are set, the error lists
         all of them so the user can disable them in one pass.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={
@@ -15597,7 +15230,6 @@ class TestEdgeCases:
         symbolically instead of eagerly concretizing — a hard-to-diagnose
         semantic divergence. Acceptance for angr-gmrc.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.CONCRETIZE},
@@ -15620,7 +15252,6 @@ class TestEdgeCases:
         silently accepting it would mask the user's intent to keep the
         analysis conservative. Acceptance for angr-csmm.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.CONSERVATIVE_WRITE_STRATEGY},
@@ -15644,7 +15275,6 @@ class TestEdgeCases:
         set silently differs. Callable workflows are the typical caller and
         would lose the emulated successor. Acceptance for angr-cf9h.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.DO_RET_EMULATION},
@@ -15664,7 +15294,6 @@ class TestEdgeCases:
         has no equivalent path and would step into the callee, structurally
         diverging from the Callable contract. Acceptance for angr-cf9h.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.CALLLESS},
@@ -15690,7 +15319,6 @@ class TestEdgeCases:
         Veritesting attempts run without ancestor refs and produce
         weak-ref merges. Acceptance for angr-n129.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.EFFICIENT_STATE_MERGING},
@@ -15719,7 +15347,6 @@ class TestEdgeCases:
         because Rust's load_concrete_lazy already defaults to symbolic-fill
         when zero_fill_unconstrained is unset. Acceptance for angr-apre.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS},
@@ -15743,7 +15370,6 @@ class TestEdgeCases:
         memory variant matches Python's symbolic-fill behavior. Only the
         REGISTERS variant is a silent divergence. Acceptance for angr-apre.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.SYMBOL_FILL_UNCONSTRAINED_MEMORY},
@@ -15769,7 +15395,6 @@ class TestEdgeCases:
         bypass never fires. Silent divergence from the Python engine.
         Acceptance for angr-6rz8.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={getattr(angr.sim_options, option_name)},
@@ -15806,7 +15431,6 @@ class TestEdgeCases:
         vestigial (defined but not consulted anywhere); they pass
         through vacuously. Acceptance for angr-6rz8.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={getattr(angr.sim_options, option_name)},
@@ -15832,7 +15456,6 @@ class TestEdgeCases:
         raise) keeps resilience-bundle users alive while still signaling
         the divergence. Acceptance for angr-6rz8.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.BYPASS_VERITESTING_EXCEPTIONS},
@@ -15848,7 +15471,6 @@ class TestEdgeCases:
 
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
-        from angr.exploration import RustExplorationManager
 
         # CALLLESS was promoted to raise in angr-cf9h; use a still-warn-only
         # option so the test exercises the warn-once latch.
@@ -15878,7 +15500,6 @@ class TestEdgeCases:
         and ARE intentionally in the rejected set — those will warn — but no
         unrelated option should trigger.
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_manager import _REJECTED_OPTION_NAMES
 
         state = fauxware_project.factory.entry_state()
@@ -15905,7 +15526,6 @@ class TestEdgeCases:
         state must emit a UserWarning so users see a signal the empty stream
         is a Rust-engine limitation, not an actually-empty history.
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
 
         # Reset the process-wide warn-once latch so the test is order-independent
@@ -15934,7 +15554,6 @@ class TestEdgeCases:
 
     def test_history_events_read_warns_under_rust(self, fauxware_project):
         """Sibling of the actions test for state.history.events."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
 
         _RustOwnedSimStateHistory._WARNED = False
@@ -15964,7 +15583,6 @@ class TestEdgeCases:
         ``state.history.actions`` read (on any state, in any manager) re-warns.
         Default-bundle users who never read .actions get zero warnings; those
         who do, get exactly one."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
 
         _RustOwnedSimStateHistory._WARNED = False
@@ -15997,7 +15615,6 @@ class TestEdgeCases:
         state.history.actions/.events must see zero history-related warnings,
         even though TRACK_CONSTRAINT_ACTIONS is in the default `symbolic`
         bundle (the whole reason this strategy exists)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
 
         _RustOwnedSimStateHistory._WARNED = False
@@ -16029,7 +15646,6 @@ class TestEdgeCases:
         the tail of history, (2) the proxy delegates to the tail accessor
         and NOT export_state.
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustHistoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -16091,7 +15707,6 @@ class TestEdgeCases:
           4. ``mgr.active[0] is mgr.active[0]`` (wrapper identity preserved
              across repeated stash reads).
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_export import _LazySimStateRef
 
         state = fauxware_project.factory.entry_state()
@@ -16148,7 +15763,6 @@ class TestEdgeCases:
             mgr._materialize_single_state = orig_materialize
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestUnconstrainedRet:
     """angr-3uye: `ret` from a blank state with no prior call must route the
     state to the `unconstrained` stash (matching Python), not be silently
@@ -16166,7 +15780,6 @@ class TestUnconstrainedRet:
         """Single-instruction `ret` on a blank state lands in the
         unconstrained stash, not deadended."""
         import angr
-        from angr.exploration import RustExplorationManager
 
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -16185,7 +15798,6 @@ class TestUnconstrainedRet:
         )
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustConcreteMemoryStoreRoundTrip:
     """angr-7vcx: A concrete store at an absolute non-stack address inside
     the Rust engine must propagate back to Python state.memory.load() after
@@ -16196,7 +15808,6 @@ class TestRustConcreteMemoryStoreRoundTrip:
     def test_concrete_store_to_absolute_addr_propagates(self):
         import angr
         import angr.sim_options as o
-        from angr.exploration import RustExplorationManager
 
         # AMD64:
         #   c7 04 25 c0 16 42 00  78 56 34 12   mov dword [0x4216c0], 0x12345678
@@ -16250,7 +15861,6 @@ class TestRustManagerCleanup:
         """cleanup() can be called multiple times and on a manager that
         never ran exploration; must not raise."""
         import angr
-        from angr.exploration import RustExplorationManager
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
@@ -16262,7 +15872,6 @@ class TestRustManagerCleanup:
         """Run a tiny exploration, then call cleanup() — must not raise
         and the manager must remain usable for inspecting stash counts."""
         import angr
-        from angr.exploration import RustExplorationManager
 
         # nop; ret — predictable deadend after one step.
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
@@ -16279,7 +15888,6 @@ class TestRustManagerCleanup:
         """Default constructor leaves the flag off — single-long-exploration
         users see no behavior change."""
         import angr
-        from angr.exploration import RustExplorationManager
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
@@ -16291,7 +15899,6 @@ class TestRustManagerCleanup:
         cleanup(); explicit drop triggers the cache flush without raising."""
         import gc
         import angr
-        from angr.exploration import RustExplorationManager
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
@@ -16513,14 +16120,12 @@ class TestSyncExtraPagesFastPath:
                                            (0x4200_1000, 0x1000)])
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashProxyAccessors:
     """angr-kwpi.3: opt-in ``mgr.<stash>_proxies()`` direct accessors that
     return ``list[RustStateProxy]`` without materializing full SimStates.
     """
 
     def test_all_five_methods_exposed(self, fauxware_project):
-        from angr.exploration import RustExplorationManager
         mgr = RustExplorationManager(
             fauxware_project, [fauxware_project.factory.entry_state()]
         )
@@ -16533,7 +16138,6 @@ class TestStashProxyAccessors:
     def test_active_proxies_returns_rust_state_proxy(self, fauxware_project):
         """active_proxies() returns RustStateProxy objects whose attrs
         round-trip from the Rust state (not full SimStates)."""
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state = fauxware_project.factory.entry_state()
@@ -16555,7 +16159,6 @@ class TestStashProxyAccessors:
         and ``mgr.found_proxies()`` (RustStateProxy) side by side and
         confirms they agree on cardinality and on per-state addr.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -16591,7 +16194,6 @@ class TestStashProxyAccessors:
         that any accidental fall-through to the full export path fails
         loudly; the proxy accessor must remain green.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -16612,7 +16214,6 @@ class TestStashProxyAccessors:
             mgr._get_stash_states = original
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustExecutionErrorHierarchy:
     """Typed exception classes surfaced by the Rust engine (angr-tkbr.3).
 
@@ -17187,7 +16788,6 @@ class TestRustUnsupportedErrorParametrized:
         assert total >= 50, f"only {total} parametrized cases; need >=50"
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestImportZ3ConstraintPtrsValidation:
     """angr-33t9: validate import_z3_constraint_ptrs rejects malformed input.
 
@@ -17199,7 +16799,6 @@ class TestImportZ3ConstraintPtrsValidation:
 
     def test_null_pointer_rejected(self, fauxware_project):
         """A null (0) pointer in the ptrs list yields PyValueError."""
-        from angr.exploration import RustExplorationManager
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -17213,7 +16812,6 @@ class TestImportZ3ConstraintPtrsValidation:
         """A null partway through the list rejects the whole batch — validation
         runs before any constraint is added, so the state's solver is
         unmutated on failure."""
-        from angr.exploration import RustExplorationManager
         import claripy
 
         proj = fauxware_project
@@ -17240,7 +16838,6 @@ class TestImportZ3ConstraintPtrsValidation:
     def test_bv_sort_pointer_rejected(self, fauxware_project):
         """A Z3 AST with non-Bool sort (e.g. a BV) is rejected as the wrong
         sort kind, not silently asserted (which would corrupt the solver)."""
-        from angr.exploration import RustExplorationManager
         import claripy
 
         proj = fauxware_project
@@ -17262,7 +16859,6 @@ class TestImportZ3ConstraintPtrsValidation:
         """Sanity: a real Bool ptr is accepted and the constraint becomes
         visible to subsequent export. Guards against the validation
         accidentally rejecting valid input."""
-        from angr.exploration import RustExplorationManager
         import claripy
 
         proj = fauxware_project
@@ -17433,7 +17029,6 @@ class TestStashNameValidation:
             set_rust_log_level("off")
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSnapshotRoundTrip:
     """Snapshot dump/load via the Python wrapper (angr-x04s.1.4).
 
@@ -17465,7 +17060,6 @@ class TestSnapshotRoundTrip:
         still terminates at ``find=0x4006ed`` (i.e. exploration is
         functional after restore, not stuck).
         """
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
 
@@ -17547,7 +17141,6 @@ class TestSnapshotRoundTrip:
         Symmetric to the Rust-side ``test_stash_manager_load_snapshot_errors``
         in ``native/angr/src/stash.rs``.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -17568,7 +17161,6 @@ class TestSnapshotRoundTrip:
     def test_load_snapshot_rejects_empty_envelope(self, fauxware_project, tmp_path):
         """Empty snapshot file routes through the typed ``SnapshotError::EmptyEnvelope``
         variant and surfaces as a ``ValueError`` on the Python side."""
-        from angr.exploration import RustExplorationManager
 
         empty_path = tmp_path / "empty.snap"
         empty_path.write_bytes(b"")
@@ -17592,7 +17184,6 @@ class TestSnapshotRoundTrip:
         into a fresh one via the classmethod, exploration continues to
         ``find`` and produces a non-empty stdin model.
         """
-        from angr.exploration import RustExplorationManager
 
         find_addr = 0x4006ed
 
@@ -17623,7 +17214,6 @@ class TestSnapshotRoundTrip:
         Smoke-checks that ``exploration_strategy='dfs'`` and a custom
         ``solver_timeout_ms`` flow through without raising and the
         resumed manager remains functional."""
-        from angr.exploration import RustExplorationManager
 
         run_state = fauxware_project.factory.entry_state()
         run_mgr = RustExplorationManager(fauxware_project, [run_state])
@@ -17645,7 +17235,6 @@ class TestSnapshotRoundTrip:
         resumed.step(n=1)
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAvoidMultivaluedOptions:
     """angr-tfic: AVOID_MULTIVALUED_READS / AVOID_MULTIVALUED_WRITES SimOptions.
 
@@ -17682,7 +17271,6 @@ class TestAvoidMultivaluedOptions:
         """Exploration with AVOID_MULTIVALUED_READS completes without
         crashing. fauxware contains symbolic-addr loads via the password
         comparison loop, so the gate is exercised at least once per state."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.AVOID_MULTIVALUED_READS},
@@ -17702,7 +17290,6 @@ class TestAvoidMultivaluedOptions:
         """Exploration with AVOID_MULTIVALUED_WRITES completes without
         crashing. Symbolic-addr writes silently no-op, which can affect
         reachability but must not error the engine."""
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.AVOID_MULTIVALUED_WRITES},
@@ -17727,7 +17314,6 @@ class TestAvoidMultivaluedOptions:
         data (or fails with SymbolicAddress).
         """
         import claripy
-        from angr.exploration import RustExplorationManager
 
         # Pre-place a known concrete pattern at a target address so a
         # successful concretization would clearly resolve to it.
@@ -17763,7 +17349,6 @@ class TestAvoidMultivaluedOptions:
         assert (len(mgr.active) + len(mgr.deadended) + len(mgr.errored)) >= 1
 
 
-@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCounterParity:
     """angr-ah3s: contract between ``mgr.stats()`` and the bench-diff tooling.
 
@@ -17805,7 +17390,6 @@ class TestCounterParity:
         sections of ``run_single.py --dump-counters``) must appear in
         ``mgr.stats`` after one step. Failure prints the missing keys.
         """
-        from angr.exploration import RustExplorationManager
 
         explicit_groups, _ = self._load_dump_groups()
 
@@ -17838,7 +17422,6 @@ class TestCounterParity:
         A missing family means an entire counter group fell off the
         Rust → Python bridge.
         """
-        from angr.exploration import RustExplorationManager
 
         _, prefix_groups = self._load_dump_groups()
 
@@ -17883,7 +17466,6 @@ class TestProxyWriteCounters:
         must be present in ``mgr.stats`` and equal to zero. This is the
         baseline a bench engineer reads when no proxy gate is on.
         """
-        from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -17899,7 +17481,6 @@ class TestProxyWriteCounters:
         once per assigned register. Direct unit test against the proxy
         avoids depending on which simprocedures fire during exploration.
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustRegisterProxy
 
         state = fauxware_project.factory.entry_state()
@@ -17926,7 +17507,6 @@ class TestProxyWriteCounters:
         on a concrete-payload path. Three concrete-payload branches
         (concrete BVV, raw bytes, raw int) all bump the same counter.
         """
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
@@ -17958,7 +17538,6 @@ class TestProxyWriteCounters:
         must not count.
         """
         import claripy
-        from angr.exploration import RustExplorationManager
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
