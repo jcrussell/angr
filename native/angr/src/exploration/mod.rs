@@ -928,7 +928,25 @@ impl RustExplorationManager {
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
     pub fn get_state_pc_by_id(&self, state_id: u64) -> Option<u64> {
         // find_state already checks pending_callback first.
-        self.find_state(state_id).map(|s| s.pc())
+        self.find_state(state_id).map(|s| {
+            // angr-4rq7 (root cause #2): prefer the concrete IP register when
+            // `self.pc` is stale at 0. The full-export path (`_snapshot_to_angr`)
+            // derives `state.addr` from the IP register, so `RustStateProxy.addr`
+            // (which reads through here) must agree with it. Some states created
+            // by register-file-replace paths that don't round-trip through
+            // `set_pc` — notably forked successors under the register-proxy
+            // write-through gate, whose proxy is bound to the parent state_id —
+            // end up with `self.pc == 0` while the IP register holds the real
+            // branch target. A nonzero `self.pc` is always authoritative (the
+            // gate-off path keeps them in sync); only the `pc == 0` case falls
+            // back, and a genuinely-zero IP register still reports 0.
+            let pc = s.pc();
+            if pc != 0 {
+                pc
+            } else {
+                s.get_ip().as_u64().unwrap_or(0)
+            }
+        })
     }
 
     /// Get the tail of a state's bbl history (last `n` addresses).
