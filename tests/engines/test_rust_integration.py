@@ -186,11 +186,17 @@ class TestRustIntegration:
         FAST_EXAMPLES,
         ids=[e[0] for e in FAST_EXAMPLES],
     )
-    def test_rust_no_worse_than_3x(self, example_name, expected, timeout, uses_predicate):
-        """Run both engines, assert Rust time < 3x Python time.
+    def test_both_engines_succeed_and_report_timing(
+        self, example_name, expected, timeout, uses_predicate
+    ):
+        """Smoke-test that both engines solve each fast example; report timing.
 
-        Uses 3x threshold (not 2x) to account for test variance.
-        Known regressions are expected to improve with Phase 1-2 optimizations.
+        This is NOT a perf gate — it only asserts that the Python and Rust
+        engines each succeed on the example, then prints the Rust/Python time
+        ratio for visibility. The authoritative perf regression gate is
+        ``tests/benchmarks/run_regression.py`` (run in CI with bimodal-variance
+        handling); asserting a hard ratio here would duplicate that gate while
+        fighting subprocess/CI timing variance, so we deliberately don't.
         """
         if example_name in self.KNOWN_XFAIL:
             pytest.xfail(f"{example_name}: known Rust engine compatibility issue")
