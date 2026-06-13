@@ -18,6 +18,9 @@ By default it runs the three bimodal benchmarks tracked in
 run_single.py is invoked as a subprocess so each run inherits its
 4 GB RLIMIT_AS — safe on 8 GB / 0-swap hosts.
 """
+
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -26,7 +29,6 @@ import statistics
 import subprocess
 import sys
 import time
-
 
 DEFAULT_BENCHMARKS = [
     "ekopartyctf2016_sokohashv2",
@@ -102,8 +104,9 @@ def summarise(label: str, values: list[float]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--runs", type=int, default=20, help="Runs per benchmark (default 20)")
-    ap.add_argument("--benchmarks", nargs="+", default=DEFAULT_BENCHMARKS,
-                    help="Benchmark names (default: 3 bimodal benches)")
+    ap.add_argument(
+        "--benchmarks", nargs="+", default=DEFAULT_BENCHMARKS, help="Benchmark names (default: 3 bimodal benches)"
+    )
     ap.add_argument("--timeout", type=int, default=120, help="Per-run timeout in seconds")
     ap.add_argument("--bin-width", type=float, default=1.0, help="Histogram bin width in seconds")
     ap.add_argument("--json", dest="json_path", default=None, help="Write raw JSON output to PATH")
@@ -119,22 +122,24 @@ def main() -> int:
         for i in range(args.runs):
             res = run_once(bench, timeout=args.timeout)
             if res is None:
-                print(f"  run {i+1}/{args.runs}: TIMEOUT")
+                print(f"  run {i + 1}/{args.runs}: TIMEOUT")
                 continue
             t, status = res
             values.append(t)
             if status == "fail":
                 fail_count += 1
             tag = "OK  " if status == "ok" else "FAIL"
-            print(f"  run {i+1}/{args.runs}: {tag} {t:.2f}s")
+            print(f"  run {i + 1}/{args.runs}: {tag} {t:.2f}s")
         summary = summarise(bench, values)
         summary["fail_count"] = fail_count
         all_summaries.append(summary)
         if values:
-            print(f"\n  summary: n={summary['n']} (fail={fail_count}) "
-                  f"min={summary['min']:.2f}s median={summary['median']:.2f}s "
-                  f"max={summary['max']:.2f}s mean={summary['mean']:.2f}s "
-                  f"stdev={summary['stdev']:.2f}s")
+            print(
+                f"\n  summary: n={summary['n']} (fail={fail_count}) "
+                f"min={summary['min']:.2f}s median={summary['median']:.2f}s "
+                f"max={summary['max']:.2f}s mean={summary['mean']:.2f}s "
+                f"stdev={summary['stdev']:.2f}s"
+            )
             print("\n  histogram:")
             print(format_histogram(values, args.bin_width))
 

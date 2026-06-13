@@ -4,6 +4,9 @@ These tests intentionally avoid touching the benchmark subprocess
 machinery — they only exercise ``compute_diff``/``_flatten``/
 ``format_report`` so they stay milliseconds-fast and CI-safe.
 """
+
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -11,7 +14,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
-import bench_diff  # noqa: E402
+import bench_diff
 
 
 def test_flatten_expands_nested_dict_counter():
@@ -123,8 +126,8 @@ def test_cli_table_output_via_main(tmp_path):
     base_path.write_text(json.dumps(base))
     curr_path.write_text(json.dumps(curr))
 
-    import io
     import contextlib
+    import io
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -143,8 +146,8 @@ def test_cli_json_output_via_main(tmp_path):
     base_path.write_text(json.dumps(base))
     curr_path.write_text(json.dumps(curr))
 
-    import io
     import contextlib
+    import io
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):

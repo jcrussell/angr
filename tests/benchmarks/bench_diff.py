@@ -27,12 +27,13 @@ on a regressed bench surface the same delta inline against
 the baseline counters file is missing the gate keeps working, just
 without the per-counter breakdown.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def load_counters(path: str) -> dict:
@@ -150,16 +151,10 @@ def format_report(
     if not rows:
         lines.append("no material counter changes")
         return "\n".join(lines)
-    lines.append(
-        f"{'counter':<50} {'baseline':>14} {'current':>14} "
-        f"{'delta':>14} {'pct':>10}"
-    )
+    lines.append(f"{'counter':<50} {'baseline':>14} {'current':>14} {'delta':>14} {'pct':>10}")
     lines.append("-" * 106)
     for key, b, c, delta, pct in rows[:max_rows]:
-        lines.append(
-            f"{key:<50} {_fmt_val(b):>14} {_fmt_val(c):>14} "
-            f"{_fmt_val(delta):>14} {_fmt_pct(pct)}"
-        )
+        lines.append(f"{key:<50} {_fmt_val(b):>14} {_fmt_val(c):>14} {_fmt_val(delta):>14} {_fmt_pct(pct)}")
     if len(rows) > max_rows:
         lines.append(f"... ({len(rows) - max_rows} more counters omitted)")
     return "\n".join(lines)

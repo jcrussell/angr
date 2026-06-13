@@ -4,11 +4,12 @@ Handles converting Rust state snapshots to angr SimStates, syncing constraints,
 restoring plugins, and managing stash export. These methods are defined as a
 mixin class that RustExplorationManager inherits from.
 """
+
 from __future__ import annotations
 
 import logging
 import warnings
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import claripy
 
@@ -71,7 +72,7 @@ def _install_rust_history_warning(state) -> None:
     No-op if the plugin is already the warning subclass or is some unrelated
     custom subclass (we only swap a clean ``SimStateHistory``).
     """
-    history = getattr(state, 'history', None)
+    history = getattr(state, "history", None)
     if history is None:
         return
     if type(history) is SimStateHistory:
@@ -102,7 +103,7 @@ class RustSolverFallback:
     FFI solver entry point is added.
     """
 
-    _ATTACH_FLAG = '_rust_fallback_attached'
+    _ATTACH_FLAG = "_rust_fallback_attached"
 
     def __init__(self, state, state_id, rust_mgr):
         self._state = state
@@ -155,7 +156,7 @@ class RustSolverFallback:
         # Replay constraints that the caller added after attach
         current = len(self._state.solver.constraints)
         if current != self._synced_constraint_count:
-            new_constraints = self._state.solver.constraints[self._synced_constraint_count:]
+            new_constraints = self._state.solver.constraints[self._synced_constraint_count :]
             for c in new_constraints:
                 try:
                     self._cached_rust_ctx.add_constraint_ast(c)
@@ -176,12 +177,12 @@ class RustSolverFallback:
         if result is not None:
             if cast_to == bytes:
                 nbytes = (expr.length + 7) // 8
-                raw = result.to_bytes(nbytes, 'little')
+                raw = result.to_bytes(nbytes, "little")
                 return raw[::-1]
             return result
         # Wide BVS (e.g. 160-bit flag): Rust eval returns None because the
         # full symbol isn't in Rust's table. Decompose into byte-sized evals.
-        if hasattr(expr, 'length') and expr.length > 64:
+        if hasattr(expr, "length") and expr.length > 64:
             nbytes = expr.length // 8
             byte_vals = []
             for i in range(nbytes):
@@ -196,7 +197,7 @@ class RustSolverFallback:
             for bv in byte_vals:
                 value = (value << 8) | bv
             if cast_to == bytes:
-                return value.to_bytes(nbytes, 'big')
+                return value.to_bytes(nbytes, "big")
             return value
         return None
 
@@ -219,7 +220,7 @@ class RustSolverFallback:
             if results:
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
-                    return [r.to_bytes(nbytes, 'big') for r in results]
+                    return [r.to_bytes(nbytes, "big") for r in results]
                 return list(results)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust eval_upto failed; Python
@@ -231,7 +232,7 @@ class RustSolverFallback:
     def min(self, expr, **kwargs):
         try:
             rust_ctx = self._get_rust_ctx()
-            result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
+            result = rust_ctx.min(expr, signed=kwargs.get("signed", False))
             if result is not None:
                 return result
         except Exception as e:
@@ -243,7 +244,7 @@ class RustSolverFallback:
     def max(self, expr, **kwargs):
         try:
             rust_ctx = self._get_rust_ctx()
-            result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
+            result = rust_ctx.max(expr, signed=kwargs.get("signed", False))
             if result is not None:
                 return result
         except Exception as e:
@@ -266,8 +267,7 @@ class RustSolverFallback:
             # cat-(c) WRONG-ANSWER RISK: returning False here would mean
             # "UNSAT" — a wrong answer that masks the underlying solver
             # failure. Re-raise so the caller sees the failure.
-            l.warning("Both Rust and Python satisfiable() failed for "
-                      "state — Python error: %s", e_py)
+            l.warning("Both Rust and Python satisfiable() failed for state — Python error: %s", e_py)
             raise
 
 
@@ -285,11 +285,11 @@ class _LazySimStateRef:
     ``_lazy_state_refs`` cache (one wrapper per Rust state id).
     """
 
-    __slots__ = ('_lazy_mgr', '_lazy_state_id')
+    __slots__ = ("_lazy_mgr", "_lazy_state_id")
 
     def __init__(self, mgr, state_id):
-        object.__setattr__(self, '_lazy_mgr', mgr)
-        object.__setattr__(self, '_lazy_state_id', state_id)
+        object.__setattr__(self, "_lazy_mgr", mgr)
+        object.__setattr__(self, "_lazy_state_id", state_id)
 
     def _materialize(self):
         return self._lazy_mgr._materialize_single_state(self._lazy_state_id)
@@ -298,7 +298,7 @@ class _LazySimStateRef:
         # __getattr__ only fires when normal lookup misses, so the two slot
         # attributes never recurse. Guard private/dunder names so debugger /
         # pickle / inspect probes don't accidentally materialize the state.
-        if name.startswith('_') or name.startswith('__'):
+        if name.startswith("_") or name.startswith("__"):
             raise AttributeError(name)
         return getattr(self._materialize(), name)
 
@@ -312,7 +312,7 @@ class _LazySimStateRef:
         return f"<_LazySimStateRef state_id={self._lazy_state_id}>"
 
     def __hash__(self):
-        return hash(('_LazySimStateRef', self._lazy_state_id))
+        return hash(("_LazySimStateRef", self._lazy_state_id))
 
     def __eq__(self, other):
         if isinstance(other, _LazySimStateRef):
@@ -339,8 +339,8 @@ class RustStateExportMixin:
         the next `_get_stash_states` visit.
         """
         for state in self._state_cache.values():
-            scratch = getattr(state, 'scratch', None)
-            if scratch is not None and getattr(scratch, 'rust_fully_synced', False):
+            scratch = getattr(state, "scratch", None)
+            if scratch is not None and getattr(scratch, "rust_fully_synced", False):
                 scratch.rust_fully_synced = False
 
     def _get_stash_states(self, stash: str) -> list:
@@ -395,7 +395,7 @@ class RustStateExportMixin:
         """
         state = self._state_cache.get(state_id)
         if state is not None:
-            if not getattr(state.scratch, 'rust_fully_synced', False):
+            if not getattr(state.scratch, "rust_fully_synced", False):
                 self._sync_cached_state(state, state_id)
             self._finalize_materialized_state(state)
             return state
@@ -419,7 +419,7 @@ class RustStateExportMixin:
             return state
 
         # Currently-stepping-state copy
-        stepping_id = getattr(self, '_current_stepping_state_id', None)
+        stepping_id = getattr(self, "_current_stepping_state_id", None)
         if stepping_id is not None and stepping_id in self._state_cache:
             state = self._state_cache[stepping_id].copy()
             self._sync_cached_state(state, state_id)
@@ -484,10 +484,10 @@ class RustStateExportMixin:
         """
         if self._stdin_content:
             try:
-                posix = getattr(state, 'posix', None)
+                posix = getattr(state, "posix", None)
                 if posix is not None:
-                    stdin = getattr(posix, 'stdin', None)
-                    if stdin is not None and hasattr(stdin, 'content') and not stdin.content:
+                    stdin = getattr(posix, "stdin", None)
+                    if stdin is not None and hasattr(stdin, "content") and not stdin.content:
                         stdin.content = list(self._stdin_content)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: stdin restore best-effort; state's
@@ -505,16 +505,16 @@ class RustStateExportMixin:
         state can become stale. This refreshes them.
         """
         try:
-            posix = getattr(state, 'posix', None)
+            posix = getattr(state, "posix", None)
             if posix is None:
                 return
-            for attr in ('stdin', 'stdout', 'stderr'):
+            for attr in ("stdin", "stdout", "stderr"):
                 child = getattr(posix, attr, None)
-                if child is not None and hasattr(child, 'set_state'):
+                if child is not None and hasattr(child, "set_state"):
                     child.set_state(state)
-            if hasattr(posix, 'fd') and posix.fd:
+            if hasattr(posix, "fd") and posix.fd:
                 for fd_obj in posix.fd.values():
-                    if fd_obj is not None and hasattr(fd_obj, 'set_state'):
+                    if fd_obj is not None and hasattr(fd_obj, "set_state"):
                         fd_obj.set_state(state)
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: states without posix plugin
@@ -522,7 +522,7 @@ class RustStateExportMixin:
             # that we silently absorb. Weakref refresh is fix-up only.
             pass
 
-    def _sync_rust_registers_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_registers_to_state(self, state: angr.SimState, state_id: int):
         """Sync concrete register values from Rust state to Python state.
 
         After Rust executes code, register values computed during execution
@@ -538,6 +538,7 @@ class RustStateExportMixin:
         # ``get_registers_named()`` (which returns the concrete portion
         # of Rust's register file only). Skip the sync entirely.
         from angr.exploration.rust_state_proxy import RustRegisterProxy
+
         regs_plugin = getattr(state, "registers", None)
         if isinstance(regs_plugin, RustRegisterProxy):
             # angr-4rq7: a materialized state that inherits a callback
@@ -573,8 +574,7 @@ class RustStateExportMixin:
             # cat-(c) WRONG-ANSWER RISK: registers in Python state are now
             # stale. User code reading state.regs.* after exploration will
             # see pre-exploration values, not the values Rust computed.
-            l.warning("export_state(%d) failed during register sync: %s — "
-                      "Python registers may be stale", state_id, e)
+            l.warning("export_state(%d) failed during register sync: %s — Python registers may be stale", state_id, e)
             return
 
         named_regs = snapshot.get_registers_named()
@@ -587,7 +587,7 @@ class RustStateExportMixin:
                 # expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
 
-    def _sync_rust_mmap_base_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_mmap_base_to_state(self, state: angr.SimState, state_id: int):
         """Push Rust's per-state mmap_base into Python's state.heap.mmap_base.
 
         The native mmap syscall handler bumps Rust's mmap_base on addr=0 calls;
@@ -615,7 +615,7 @@ class RustStateExportMixin:
         if rust_base > heap.mmap_base:
             heap.mmap_base = rust_base
 
-    def _sync_rust_posix_brk_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_posix_brk_to_state(self, state: angr.SimState, state_id: int):
         """Push Rust's per-state posix_brk into Python's state.posix.brk.
 
         Mirror of _sync_rust_mmap_base_to_state for the brk(2) heap pointer.
@@ -649,7 +649,7 @@ class RustStateExportMixin:
         if rust_brk > py_brk:
             posix.brk = rust_brk
 
-    def _sync_rust_callstack_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
         """Sync Rust-tracked call frames into state.callstack.
 
         Rust's call_stack (push order, outermost first) is the source of truth
@@ -671,7 +671,7 @@ class RustStateExportMixin:
           read or chain reconstruction. Matches the write-through model used
           for memory / registers / solver.
         """
-        if getattr(self, '_use_export_callstack_proxy', False):
+        if getattr(self, "_use_export_callstack_proxy", False):
             from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
             try:
@@ -683,7 +683,8 @@ class RustStateExportMixin:
                 # keeps its pre-Rust CallStack plugin.
                 l.debug(
                     "RustCallStackProxyPlugin install failed for %d: %s",
-                    state_id, e,
+                    state_id,
+                    e,
                 )
             return
 
@@ -721,7 +722,7 @@ class RustStateExportMixin:
             # incomplete history.
             l.debug("register_plugin('callstack') failed for %d: %s", state_id, e)
 
-    def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_memory_to_state(self, state: angr.SimState, state_id: int):
         """Sync memory from Rust state to Python state.
 
         Two modes:
@@ -740,7 +741,7 @@ class RustStateExportMixin:
           page export and no writeback into the SimState. Matches the
           write-through model used for callstack / registers / solver.
         """
-        if getattr(self, '_use_export_memory_proxy', False):
+        if getattr(self, "_use_export_memory_proxy", False):
             from angr.exploration.rust_state_proxy import RustMemoryProxy
 
             try:
@@ -753,7 +754,8 @@ class RustStateExportMixin:
                 # template bytes.
                 l.debug(
                     "RustMemoryProxy install failed for %d: %s",
-                    state_id, e,
+                    state_id,
+                    e,
                 )
             # Symbolic-AST sync (_sync_rust_symbolic_objects_to_state) is
             # for pushing Rust-computed claripy ASTs into Python memory; the
@@ -771,17 +773,25 @@ class RustStateExportMixin:
                 # cat-(c) WRONG-ANSWER RISK: flushed failed but unflushed
                 # worked — pending symbolic writes may not be visible in
                 # Python memory. WARN so the user notices.
-                l.warning("export_state_flushed(%d) failed (%s); falling "
-                          "back to unflushed snapshot — pending symbolic "
-                          "stores may be missing", state_id, e_flushed)
+                l.warning(
+                    "export_state_flushed(%d) failed (%s); falling "
+                    "back to unflushed snapshot — pending symbolic "
+                    "stores may be missing",
+                    state_id,
+                    e_flushed,
+                )
             except Exception as e_unflushed:
                 # cat-(c) WRONG-ANSWER RISK: both export paths failed.
                 # Python state.memory will return zeros (or stale data)
                 # for any address Rust wrote.
-                l.warning("Both export_state_flushed and export_state failed "
-                          "for state %d (flushed: %s; unflushed: %s) — "
-                          "Python memory will be stale",
-                          state_id, e_flushed, e_unflushed)
+                l.warning(
+                    "Both export_state_flushed and export_state failed "
+                    "for state %d (flushed: %s; unflushed: %s) — "
+                    "Python memory will be stale",
+                    state_id,
+                    e_flushed,
+                    e_unflushed,
+                )
                 return  # State may not be in Rust stashes anymore
 
         for i in range(snapshot.page_count()):
@@ -818,8 +828,7 @@ class RustStateExportMixin:
                                 # this region will return whatever the
                                 # Python state held pre-exploration (often
                                 # zero or a stale BVS).
-                                l.warning("Failed to sync concrete chunk to 0x%x: %s",
-                                          page_addr + start, e)
+                                l.warning("Failed to sync concrete chunk to 0x%x: %s", page_addr + start, e)
                             start = None
             else:
                 try:
@@ -844,7 +853,7 @@ class RustStateExportMixin:
         # are excluded — they already have proper claripy identity in Python.
         self._sync_rust_symbolic_objects_to_state(state, state_id)
 
-    def _sync_rust_symbolic_objects_to_state(self, state: "angr.SimState", state_id: int):
+    def _sync_rust_symbolic_objects_to_state(self, state: angr.SimState, state_id: int):
         """Export Rust-computed symbolic expressions as claripy ASTs into Python memory.
 
         Uses the shared Z3 context: Rust builds Z3 ASTs in Python's Z3 context,
@@ -858,15 +867,15 @@ class RustStateExportMixin:
             # are not exported to Python memory. state.memory.load() of
             # those addresses will see concrete bytes (or template BVS),
             # not the symbolic expression Rust computed.
-            l.warning("get_state_symbolic_z3_asts(%d) failed: %s — "
-                      "Rust-side symbolic memory not synced", state_id, e)
+            l.warning("get_state_symbolic_z3_asts(%d) failed: %s — Rust-side symbolic memory not synced", state_id, e)
             return
 
         if not sym_asts:
             return
 
-        import z3 as z3mod
         import ctypes
+
+        import z3 as z3mod
 
         z3_backend = claripy.backends.z3
         z3_ctx = z3_backend._context  # The shared Z3 context
@@ -950,7 +959,7 @@ class RustStateExportMixin:
             l.warning(f"Failed to get state {state_id}: {e}")
             return None
 
-    def _snapshot_to_angr(self, snapshot) -> "angr.SimState":
+    def _snapshot_to_angr(self, snapshot) -> angr.SimState:
         """Convert a Rust state snapshot to an angr SimState.
 
         Creates an angr SimState from the snapshot data, including:
@@ -987,7 +996,7 @@ class RustStateExportMixin:
         self._attach_rust_solver_fallback(state, snapshot.state_id)
         return state
 
-    def _load_snapshot_registers(self, state: "angr.SimState", snapshot):
+    def _load_snapshot_registers(self, state: angr.SimState, snapshot):
         """Restore register values from snapshot using Rust's named register export."""
         named_regs = snapshot.get_registers_named()
         for reg_name, (value, size_bits) in named_regs.items():
@@ -998,7 +1007,7 @@ class RustStateExportMixin:
                 # registers that angr doesn't expose (ip_at_syscall etc.).
                 pass
 
-    def _load_snapshot_pages(self, state: "angr.SimState", snapshot, arch):
+    def _load_snapshot_pages(self, state: angr.SimState, snapshot, arch):
         """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
@@ -1006,14 +1015,18 @@ class RustStateExportMixin:
                 continue
             page_addr, data, _perms, symbolic_offsets = page
             try:
-                state.memory.store(page_addr, claripy.BVV(data, len(data) * 8),
-                                   endness=arch.memory_endness,
-                                   inspect=False)
+                state.memory.store(
+                    page_addr, claripy.BVV(data, len(data) * 8), endness=arch.memory_endness, inspect=False
+                )
                 if not symbolic_offsets:
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
                 self._restore_symbolic_regions(
-                    state, snapshot, page_addr, regions, arch,
+                    state,
+                    snapshot,
+                    page_addr,
+                    regions,
+                    arch,
                 )
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: page failed to load. State
@@ -1052,9 +1065,7 @@ class RustStateExportMixin:
                 sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
                 ast = claripy.BVS(sym_name, size * 8)
                 self._stats_orphan_bvs_snapshot_restore += 1
-            state.memory.store(sym_addr, ast,
-                               endness=arch.memory_endness,
-                               inspect=False)
+            state.memory.store(sym_addr, ast, endness=arch.memory_endness, inspect=False)
 
     def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int):
         """Look up the original claripy AST for a symbolic byte at sym_addr.
@@ -1095,8 +1106,8 @@ class RustStateExportMixin:
     def _find_plugin_template_state(
         self,
         state_id: int,
-        snapshot_parent_id: Optional[int] = None,
-    ) -> Optional["angr.SimState"]:
+        snapshot_parent_id: int | None = None,
+    ) -> angr.SimState | None:
         """Locate the best SimState to source plugins (posix/libc/heap/fs/log) from.
 
         Walks ancestors in proximity order (closest first):
@@ -1158,9 +1169,9 @@ class RustStateExportMixin:
 
     def _restore_plugins_to_state(
         self,
-        state: "angr.SimState",
+        state: angr.SimState,
         state_id: int,
-        snapshot_parent_id: Optional[int] = None,
+        snapshot_parent_id: int | None = None,
     ):
         """Restore plugins to an exported state from the closest cached ancestor.
 
@@ -1184,13 +1195,13 @@ class RustStateExportMixin:
             return
 
         # Copy plugins that are commonly needed
-        plugins_to_restore = ['posix', 'libc', 'heap', 'fs', 'log']
+        plugins_to_restore = ["posix", "libc", "heap", "fs", "log"]
 
         for plugin_name in plugins_to_restore:
             try:
                 if hasattr(template, plugin_name):
                     plugin = getattr(template, plugin_name)
-                    if plugin is not None and hasattr(plugin, 'copy'):
+                    if plugin is not None and hasattr(plugin, "copy"):
                         # Only copy if not already present
                         if not hasattr(state, plugin_name) or getattr(state, plugin_name) is None:
                             state.register_plugin(plugin_name, plugin.copy())
@@ -1206,16 +1217,16 @@ class RustStateExportMixin:
         # These nested SimPacketsStream objects hold weakrefs to the state that
         # can become stale after state caching/export cycles
         try:
-            posix = getattr(state, 'posix', None)
+            posix = getattr(state, "posix", None)
             if posix is not None:
-                for attr in ('stdin', 'stdout', 'stderr'):
+                for attr in ("stdin", "stdout", "stderr"):
                     child = getattr(posix, attr, None)
-                    if child is not None and hasattr(child, 'set_state'):
+                    if child is not None and hasattr(child, "set_state"):
                         child.set_state(state)
                 # Also fix fd entries
-                if hasattr(posix, 'fd') and posix.fd:
+                if hasattr(posix, "fd") and posix.fd:
                     for fd_obj in posix.fd.values():
-                        if fd_obj is not None and hasattr(fd_obj, 'set_state'):
+                        if fd_obj is not None and hasattr(fd_obj, "set_state"):
                             fd_obj.set_state(state)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: posix weakref refresh failed
@@ -1233,7 +1244,7 @@ class RustStateExportMixin:
         # only when the empty stream is actually consumed.
         _install_rust_history_warning(state)
 
-    def eval_memory(self, state_id: int, addr: int, size: int) -> Optional[bytes]:
+    def eval_memory(self, state_id: int, addr: int, size: int) -> bytes | None:
         """Evaluate memory from a Rust state's solver context.
 
         Args:

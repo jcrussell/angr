@@ -32,13 +32,13 @@ synthetic-examples directory, so we ``chdir`` to the upstream example
 dir before importing and let the upstream functions resolve ``./bomb``
 relative to that cwd.
 """
+
+from __future__ import annotations
+
 import importlib.util
 import os
-import sys
 
-_EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
-)
+_EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 _UPSTREAM_DIR = os.path.join(_EXAMPLES_DIR, "cmu_binary_bomb")
 _UPSTREAM_SOLVE = os.path.join(_UPSTREAM_DIR, "solve.py")
 

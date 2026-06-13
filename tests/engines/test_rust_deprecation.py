@@ -7,6 +7,7 @@ the policy doc's promise holds at runtime.
 
 Parent epic: angr-9cps. This is sub-task .4 (decorator + warning test).
 """
+
 from __future__ import annotations
 
 import warnings
@@ -70,10 +71,7 @@ def test_warning_fires_once_per_callable():
         for _ in range(5):
             old_api()
 
-    assert len(caught) == 1, (
-        "warning must dedupe per callable so test logs and long-running "
-        "sessions stay legible"
-    )
+    assert len(caught) == 1, "warning must dedupe per callable so test logs and long-running sessions stay legible"
 
 
 def test_separate_callables_warn_independently():

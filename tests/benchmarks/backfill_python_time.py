@@ -13,14 +13,15 @@ Usage:
     python tests/benchmarks/backfill_python_time.py --force          # re-run even if already populated
     python tests/benchmarks/backfill_python_time.py --dry-run        # don't write the JSON
 """
+
+from __future__ import annotations
+
 import argparse
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from run_regression import BASELINE_FILE, load_baseline, save_baseline, run_one
-
+from run_regression import load_baseline, run_one, save_baseline
 
 # Default per-entry timeout (seconds). Some Python runs take 30+s.
 DEFAULT_TIMEOUT = 90
@@ -38,14 +39,13 @@ TIMEOUT_OVERRIDES = {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"Default per-entry timeout (default: {DEFAULT_TIMEOUT}s)")
+    parser.add_argument(
+        "--timeout", type=int, default=DEFAULT_TIMEOUT, help=f"Default per-entry timeout (default: {DEFAULT_TIMEOUT}s)"
+    )
     parser.add_argument("--mem-limit", type=int, default=4096)
     parser.add_argument("--only", help="Only run a single named benchmark")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-run even if python_time is already populated")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Don't save updates to baseline_timings.json")
+    parser.add_argument("--force", action="store_true", help="Re-run even if python_time is already populated")
+    parser.add_argument("--dry-run", action="store_true", help="Don't save updates to baseline_timings.json")
     args = parser.parse_args()
 
     baseline = load_baseline()
@@ -71,7 +71,7 @@ def main():
         # Strategy is encoded in the key for __dfs variants; the angr-example
         # name is the part before "__dfs" if present.
         if key.endswith("__dfs"):
-            example_name = key[:-len("__dfs")]
+            example_name = key[: -len("__dfs")]
             strategy = "dfs"
         else:
             example_name = key

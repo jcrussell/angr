@@ -15,6 +15,7 @@ return type of ``factory.simulation_manager(...)`` (and the
 ``factory.successors`` engine dispatch) under the same call patterns
 that internal analyses use.
 """
+
 from __future__ import annotations
 
 __package__ = __package__ or "tests.engines"  # pylint:disable=redefined-builtin
@@ -26,9 +27,8 @@ import pytest
 import angr
 from angr.sim_manager import SimulationManager
 
-
 # Availability guard and examples-dir resolution live in conftest (angr-7gdp).
-from tests.engines.conftest import (  # noqa: F401
+from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,

@@ -21,6 +21,7 @@ Fauxware is used as the binary across all three because:
 * it is the canonical regression binary across the rest of the Rust
   engine test suite.
 """
+
 from __future__ import annotations
 
 __package__ = __package__ or "tests.analyses"  # pylint:disable=redefined-builtin
@@ -31,17 +32,15 @@ import pytest
 
 import angr
 
-
 try:
     from angr.exploration import RustExplorationManager
+
     RUST_EXPLORATION_AVAILABLE = True
 except ImportError:
     RUST_EXPLORATION_AVAILABLE = False
 
 
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
-)
+EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
 FAUXWARE = os.path.join(EXAMPLES_DIR, "fauxware", "fauxware")
 
@@ -106,13 +105,9 @@ class TestAnalysesSliceDdgVfgRust:
         # populates ``chosen_statements`` (and therefore ``annotated_cfg``).
         # ``no_construct=True`` would skip construction and leave the
         # statement map empty — not a useful smoke check.
-        bs = proj.analyses.BackwardSlice(
-            cfg, cdg, ddg, targets=[(main_node, -1)], control_flow_slice=True
-        )
+        bs = proj.analyses.BackwardSlice(cfg, cdg, ddg, targets=[(main_node, -1)], control_flow_slice=True)
         assert bs.chosen_statements is not None
-        assert len(bs.chosen_statements) > 0, (
-            "BackwardSlice produced an empty chosen_statements set"
-        )
+        assert len(bs.chosen_statements) > 0, "BackwardSlice produced an empty chosen_statements set"
         # annotated_cfg() is the canonical consumer-facing product.
         anno_cfg = bs.annotated_cfg()
         assert anno_cfg is not None
@@ -134,9 +129,7 @@ class TestAnalysesSliceDdgVfgRust:
         assert vfg is not None
         # VFG records per-function final states when requested; the seed
         # function should appear in the resulting map.
-        assert main_addr in vfg.function_final_states, (
-            "VFG ran but did not record a final state for main"
-        )
+        assert main_addr in vfg.function_final_states, "VFG ran but did not record a final state for main"
 
 
 if __name__ == "__main__":  # pragma: no cover

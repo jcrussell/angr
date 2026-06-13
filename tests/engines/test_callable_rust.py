@@ -16,6 +16,7 @@ method to return a :class:`RustExplorationManager` — the same hook
 ``tests/benchmarks/run_single.py`` installs when invoking the bench under
 the Rust engine.
 """
+
 from __future__ import annotations
 
 __package__ = __package__ or "tests.engines"  # pylint:disable=redefined-builtin
@@ -27,9 +28,8 @@ import pytest
 
 import angr
 
-
 # Availability guard and examples-dir resolution live in conftest (angr-7gdp).
-from tests.engines.conftest import (  # noqa: F401
+from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
@@ -117,9 +117,7 @@ class TestCallableRust:
                 assert ret is not None, f"Callable returned None for index {i}"
                 concrete = claripy.backends.concrete.convert(ret).value
                 ch = chr(concrete & 0xFF)
-                assert ch == expected[i], (
-                    f"index {i}: got {ch!r} (0x{concrete:x}), expected {expected[i]!r}"
-                )
+                assert ch == expected[i], f"index {i}: got {ch!r} (0x{concrete:x}), expected {expected[i]!r}"
 
 
 if __name__ == "__main__":  # pragma: no cover

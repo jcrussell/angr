@@ -20,6 +20,9 @@ Exit codes:
     1 = regression detected (wrong output, too slow, or SLA failure)
     2 = setup error
 """
+
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -32,10 +35,10 @@ import time
 # Reuse the subprocess runner from run_single.py
 sys.path.insert(0, os.path.dirname(__file__))
 from run_single import (
-    _run_in_child,
-    _resolve_examples_dir,
-    EXAMPLES_DIR,
     DEFAULT_MEM_LIMIT_MB,
+    EXAMPLES_DIR,
+    _resolve_examples_dir,
+    _run_in_child,
 )
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
@@ -49,9 +52,9 @@ BASELINE_COUNTERS_FILE = os.path.join(os.path.dirname(__file__), "baseline_count
 # Tracked metrics beyond timing. Each entry: (key_in_stats, key_in_baseline, regression_threshold_pct)
 # A regression is flagged when the metric INCREASES by more than threshold_pct.
 TRACKED_METRICS = [
-    ("callback_count",   "callback_count",   0.10),  # 10% more callbacks = algorithmic regression
-    ("state_creations",  "state_creations",   0.10),
-    ("steps",            "steps",             0.15),  # 15% more steps
+    ("callback_count", "callback_count", 0.10),  # 10% more callbacks = algorithmic regression
+    ("state_creations", "state_creations", 0.10),
+    ("steps", "steps", 0.15),  # 15% more steps
 ]
 
 # Tiered benchmark suites. Each entry: (name, timeout_seconds, [strategy, [rust_only]])
@@ -173,12 +176,14 @@ REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 # (median ~22.5s, fast tail ~9s matching Python's solve time, slow tail
 # ~35s). Pre-fix the bench was tightly clustered at ~30s; the simpler AST
 # gives Z3 more branch-choice freedom, widening the distribution.
-BIMODAL_BENCHMARKS = frozenset({
-    "securityfest_fairlight",
-    "ekopartyctf2016_sokohashv2",
-    "google2016_unbreakable_1",
-    "hackcon2016_angry-reverser",
-})
+BIMODAL_BENCHMARKS = frozenset(
+    {
+        "securityfest_fairlight",
+        "ekopartyctf2016_sokohashv2",
+        "google2016_unbreakable_1",
+        "hackcon2016_angry-reverser",
+    }
+)
 
 
 def _normalize_output(output):
@@ -190,6 +195,7 @@ def _normalize_output(output):
     printable ASCII character sequence.
     """
     import re
+
     # For byte-string reprs like b'Code_Talkers\xf5\xf5u\xf5...',
     # find the meaningful prefix: the longest prefix of printable ASCII text
     # (letters, digits, punctuation) before non-printable sequences dominate.
@@ -205,9 +211,7 @@ def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
     pool = ctx.Pool(1)
     examples_dir = _resolve_examples_dir(name, EXAMPLES_DIR)
     try:
-        async_result = pool.apply_async(
-            _run_in_child, (name, engine, examples_dir, mem_limit_mb, strategy)
-        )
+        async_result = pool.apply_async(_run_in_child, (name, engine, examples_dir, mem_limit_mb, strategy))
         return async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
         pool.terminate()
@@ -251,7 +255,10 @@ def _git_revparse(*args):
         out = subprocess.run(
             ["git", "rev-parse", *args],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
         )
         if out.returncode == 0:
             return out.stdout.strip()
@@ -268,16 +275,10 @@ def save_history_record(path, results):
     same set that baseline_timings.json tracks.
     """
     commit = os.environ.get("GITHUB_SHA") or _git_revparse("HEAD") or "unknown"
-    branch = (
-        os.environ.get("GITHUB_REF_NAME")
-        or _git_revparse("--abbrev-ref", "HEAD")
-        or "unknown"
-    )
+    branch = os.environ.get("GITHUB_REF_NAME") or _git_revparse("--abbrev-ref", "HEAD") or "unknown"
     record = {
         "schema_version": 1,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc)
-            .isoformat(timespec="seconds")
-            .replace("+00:00", "Z"),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "commit": commit,
         "branch": branch,
         "results": results,
@@ -290,41 +291,63 @@ def save_history_record(path, results):
 def main():
     parser = argparse.ArgumentParser(description="Rust engine benchmark regression test")
     parser.add_argument("--update", action="store_true", help="Update baseline timings")
-    parser.add_argument("--update-counters", action="store_true",
-                        help="Refresh baseline_counters.json (used by the bench_diff "
-                             "report on a regression) without touching baseline_timings.json. "
-                             "Safe to run periodically — counter snapshots are not "
-                             "performance-gated, only diffed.")
-    parser.add_argument("--threshold", type=float, default=0.15,
-                        help="Regression threshold (default: 0.15 = 15%% slower)")
+    parser.add_argument(
+        "--update-counters",
+        action="store_true",
+        help="Refresh baseline_counters.json (used by the bench_diff "
+        "report on a regression) without touching baseline_timings.json. "
+        "Safe to run periodically — counter snapshots are not "
+        "performance-gated, only diffed.",
+    )
+    parser.add_argument(
+        "--threshold", type=float, default=0.15, help="Regression threshold (default: 0.15 = 15%% slower)"
+    )
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
-    parser.add_argument("--rust-only", action="store_true",
-                        help="Only run Rust engine (skip Python comparison)")
-    parser.add_argument("--full", action="store_true",
-                        help="Run full suite (fast + medium tier)")
-    parser.add_argument("--check-counts", action="store_true",
-                        help="Check algorithmic metrics (callback_count, state_creations, steps) for regressions")
-    parser.add_argument("--sla-warn-threshold", type=float, default=1.0,
-                        help="Speedup vs Python below this prints a SLA warning (default: 1.0x)")
-    parser.add_argument("--sla-fail-threshold", type=float, default=0.5,
-                        help="Speedup vs Python below this fails the run (default: 0.5x)")
-    parser.add_argument("--no-sla", action="store_true",
-                        help="Disable SLA enforcement (skip speedup check entirely)")
-    parser.add_argument("--skip-bimodal", action="store_true",
-                        help="Skip benchmarks with known bimodal Z3 timing variance "
-                             "(intended for PR gates that need stable signal).")
-    parser.add_argument("--retry-failures", type=int, default=0, metavar="N",
-                        help="Re-run timing-regression failures up to N times. A "
-                             "single retry passing within --threshold clears the "
-                             "failure. Mitigates sub-second-bench noise where the "
-                             "same diff can flip pass/fail across runs without code "
-                             "changes (see bd memory benchmark-regression-noise-floor). "
-                             "Engine errors, output mismatches, SLA failures, and "
-                             "metric regressions are never retried.")
-    parser.add_argument("--history-record", metavar="PATH",
-                        help="Write a timestamped JSON record of this run to PATH "
-                             "(used by the perf dashboard to assemble historical "
-                             "time-series data).")
+    parser.add_argument("--rust-only", action="store_true", help="Only run Rust engine (skip Python comparison)")
+    parser.add_argument("--full", action="store_true", help="Run full suite (fast + medium tier)")
+    parser.add_argument(
+        "--check-counts",
+        action="store_true",
+        help="Check algorithmic metrics (callback_count, state_creations, steps) for regressions",
+    )
+    parser.add_argument(
+        "--sla-warn-threshold",
+        type=float,
+        default=1.0,
+        help="Speedup vs Python below this prints a SLA warning (default: 1.0x)",
+    )
+    parser.add_argument(
+        "--sla-fail-threshold",
+        type=float,
+        default=0.5,
+        help="Speedup vs Python below this fails the run (default: 0.5x)",
+    )
+    parser.add_argument("--no-sla", action="store_true", help="Disable SLA enforcement (skip speedup check entirely)")
+    parser.add_argument(
+        "--skip-bimodal",
+        action="store_true",
+        help="Skip benchmarks with known bimodal Z3 timing variance (intended for PR gates that need stable signal).",
+    )
+    parser.add_argument(
+        "--retry-failures",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Re-run timing-regression failures up to N times. A "
+        "single retry passing within --threshold clears the "
+        "failure. Mitigates sub-second-bench noise where the "
+        "same diff can flip pass/fail across runs without code "
+        "changes (see bd memory benchmark-regression-noise-floor). "
+        "Engine errors, output mismatches, SLA failures, and "
+        "metric regressions are never retried.",
+    )
+    parser.add_argument(
+        "--history-record",
+        metavar="PATH",
+        help="Write a timestamped JSON record of this run to PATH "
+        "(used by the perf dashboard to assemble historical "
+        "time-series data).",
+    )
     args = parser.parse_args()
 
     global REGRESSION_SUITE
@@ -445,19 +468,21 @@ def main():
                 if base_counters and rust_stats:
                     try:
                         from bench_diff import compute_diff, format_report
+
                         rows = compute_diff(base_counters, rust_stats)
-                        print(format_report(
-                            rows, max_rows=20,
-                            header=f"  counter diff for {baseline_key}:",
-                        ))
+                        print(
+                            format_report(
+                                rows,
+                                max_rows=20,
+                                header=f"  counter diff for {baseline_key}:",
+                            )
+                        )
                     except Exception as exc:
                         # Diff helper is best-effort; never let it mask
                         # the underlying timing failure.
                         print(f"  (counter diff failed: {exc})")
                 if args.retry_failures > 0:
-                    retry_candidates.append(
-                        (failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key)
-                    )
+                    retry_candidates.append((failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key))
 
             # Check algorithmic metric regressions
             if args.check_counts:
@@ -467,8 +492,12 @@ def main():
                     if current_val is not None and baseline_val is not None and baseline_val > 0:
                         if current_val > baseline_val * (1 + threshold_pct):
                             pct = ((current_val / baseline_val) - 1) * 100
-                            print(f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)")
-                            failures.append(f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)")
+                            print(
+                                f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)"
+                            )
+                            failures.append(
+                                f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)"
+                            )
 
         # SLA check: enforce minimum speedup vs Python. Falls back to the
         # python_time cached in baseline when this run skipped Python (e.g.
@@ -480,14 +509,16 @@ def main():
             if sla_py_time is not None and sla_py_time > 0 and rust_time > 0:
                 sla_speedup = sla_py_time / rust_time
                 if sla_speedup < args.sla_fail_threshold:
-                    print(f"  SLA FAIL: {sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x "
-                          f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)")
-                    failures.append(
-                        f"{name}: SLA fail ({sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x)"
+                    print(
+                        f"  SLA FAIL: {sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x "
+                        f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)"
                     )
+                    failures.append(f"{name}: SLA fail ({sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x)")
                 elif sla_speedup < args.sla_warn_threshold:
-                    print(f"  SLA WARN: {sla_speedup:.2f}x < {args.sla_warn_threshold:.2f}x "
-                          f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)")
+                    print(
+                        f"  SLA WARN: {sla_speedup:.2f}x < {args.sla_warn_threshold:.2f}x "
+                        f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)"
+                    )
 
         # Print metric summary
         metric_parts = []
@@ -525,7 +556,7 @@ def main():
     # We re-run each candidate up to N times and clear the failure on the first
     # measurement that lands within threshold.
     if args.retry_failures > 0 and retry_candidates:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"Retry pass: {len(retry_candidates)} timing regression(s), up to {args.retry_failures} attempt(s) each")
         for failure_msg, name, timeout, strategy, mem_limit, bl, baseline_key in retry_candidates:
             label = f"{name} (DFS)" if strategy == "dfs" else name
@@ -539,7 +570,9 @@ def main():
                 retry_time = retry_result["elapsed"]
                 if retry_time <= bl * (1 + args.threshold):
                     pct = ((retry_time / bl) - 1) * 100
-                    print(f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s ({pct:+.0f}%) — within threshold, clearing failure")
+                    print(
+                        f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s ({pct:+.0f}%) — within threshold, clearing failure"
+                    )
                     cleared = True
                     # NOTE: results[baseline_key]["rust_time"] keeps the original
                     # measurement on purpose. The retry signals pass/fail only —
@@ -553,7 +586,7 @@ def main():
                 failures.remove(failure_msg)
 
     total_elapsed = time.perf_counter() - total_start
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Total time: {total_elapsed:.1f}s")
     print(f"Benchmarks: {len(REGRESSION_SUITE)}, Passed: {len(results)}, Failed: {len(failures)}")
 
@@ -571,7 +604,7 @@ def main():
         save_history_record(args.history_record, results)
 
     if failures:
-        print(f"\nFAILURES:")
+        print("\nFAILURES:")
         for f in failures:
             print(f"  - {f}")
         sys.exit(1)

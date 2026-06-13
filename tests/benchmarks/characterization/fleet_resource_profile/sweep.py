@@ -11,6 +11,7 @@ Default sweep:
 
 Adjust with --concurrencies and --count-multiplier as needed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,10 +46,14 @@ def run_one(engine: str, count: int, concurrency: int, mem_limit_mb: int) -> dic
     cmd = [
         sys.executable,
         RUN_FLEET,
-        "--engine", engine,
-        "--count", str(count),
-        "--concurrency", str(concurrency),
-        "--mem-limit-mb", str(mem_limit_mb),
+        "--engine",
+        engine,
+        "--count",
+        str(count),
+        "--concurrency",
+        str(concurrency),
+        "--mem-limit-mb",
+        str(mem_limit_mb),
         "--json",
     ]
     proc = subprocess.run(
@@ -59,9 +64,11 @@ def run_one(engine: str, count: int, concurrency: int, mem_limit_mb: int) -> dic
         check=False,
     )
     if proc.returncode != 0:
-        print(f"[warn] run_fleet failed (engine={engine}, count={count}, "
-              f"concurrency={concurrency}): rc={proc.returncode}",
-              file=sys.stderr)
+        print(
+            f"[warn] run_fleet failed (engine={engine}, count={count}, "
+            f"concurrency={concurrency}): rc={proc.returncode}",
+            file=sys.stderr,
+        )
         if proc.stderr:
             print(proc.stderr[-1000:], file=sys.stderr)
     # run_fleet writes the JSON blob on the last non-empty stdout line
@@ -72,8 +79,7 @@ def run_one(engine: str, count: int, concurrency: int, mem_limit_mb: int) -> dic
     try:
         return json.loads(last)
     except json.JSONDecodeError:
-        return {"engine": engine, "count": count, "concurrency": concurrency,
-                "failures": -1, "error": "json-decode"}
+        return {"engine": engine, "count": count, "concurrency": concurrency, "failures": -1, "error": "json-decode"}
 
 
 def main() -> int:
@@ -104,8 +110,7 @@ def main() -> int:
     for concurrency in args.concurrencies:
         count = concurrency * args.count_multiplier
         for engine in args.engines:
-            print(f"[sweep] engine={engine} count={count} "
-                  f"concurrency={concurrency} ...", flush=True)
+            print(f"[sweep] engine={engine} count={count} concurrency={concurrency} ...", flush=True)
             metrics = run_one(engine, count, concurrency, args.mem_limit_mb)
             rows.append(metrics)
             keep = {k: metrics.get(k) for k in FIELDS}

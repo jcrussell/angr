@@ -2,6 +2,9 @@
 
 This module tests the Rust-native exploration manager for symbolic execution.
 """
+
+from __future__ import annotations
+
 import os
 import re
 import types
@@ -11,17 +14,16 @@ import pytest
 
 import angr
 
-
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
-    RustExplorationManager,
-    _RustExplorationManager,
     ExplorationEvent,
     PythonCallbacks,
+    RustExplorationManager,
     RustSimState,
+    _RustExplorationManager,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -198,6 +200,7 @@ class TestRustExplorationManagerUnit:
     def test_set_rust_log_level(self):
         """Test setting Rust log level from Python."""
         from angr.rustylib.vex_engine import set_rust_log_level
+
         # Should accept all valid levels without error
         for level in ("error", "warn", "info", "debug", "trace", "off"):
             set_rust_log_level(level)
@@ -252,9 +255,7 @@ class TestRustExplorationManagerUnit:
         assert mgr.has_native_procedure("custom_widget_init")
         assert "custom_widget_init" in mgr.list_native_procedures()
 
-    def test_register_python_procedure_invoked_via_simprocedure_hook(
-        self, fauxware_project
-    ):
+    def test_register_python_procedure_invoked_via_simprocedure_hook(self, fauxware_project):
         """A Python-registered native procedure runs when its hook fires.
 
         Simulates the dispatcher path: register a SimProcedure at an address
@@ -299,7 +300,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -342,8 +343,7 @@ class TestRustExplorationManagerUnit:
 
         deadended_ids = mgr.get_state_ids("deadended")
         assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; "
-            f"stashes={mgr.stash_counts()}"
+            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
         )
         sid = deadended_ids[0]
 
@@ -390,12 +390,10 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
-        mgr.register_python_procedure(
-            proc_name, num_args=num_args, no_return=no_return, callable=callable_
-        )
+        mgr.register_python_procedure(proc_name, num_args=num_args, no_return=no_return, callable=callable_)
         mgr.register_simprocedure(hook_addr, proc_name, num_args=num_args, no_return=no_return)
 
         STACK_BASE = 0x7FFF0000
@@ -431,7 +429,12 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500000
         state = self._setup_amd64_python_proc_test(
-            mgr, HOOK, "sym_proc", num_args=1, no_return=False, callable_=proc,
+            mgr,
+            HOOK,
+            "sym_proc",
+            num_args=1,
+            no_return=False,
+            callable_=proc,
         )
 
         # Replace RDI with a fresh symbolic BV via the shared Z3 context.
@@ -445,13 +448,9 @@ class TestRustExplorationManagerUnit:
         # Native call attempted then errored → python_fallbacks bumped, event
         # emitted asking Python to take over the SimProcedure.
         stats = mgr.native_procedure_stats()
-        assert stats["python_fallbacks"] >= 1, (
-            f"expected python_fallbacks>=1 after symbolic arg, got stats={stats}"
-        )
+        assert stats["python_fallbacks"] >= 1, f"expected python_fallbacks>=1 after symbolic arg, got stats={stats}"
         assert stats["native_calls"] == 0
-        assert invocations == [], (
-            f"python callable must NOT run for symbolic args; invocations={invocations}"
-        )
+        assert invocations == [], f"python callable must NOT run for symbolic args; invocations={invocations}"
         assert event.event_type == "need_callback", (
             f"expected need_callback (SimProcedure fallback); got {event.event_type}"
         )
@@ -463,8 +462,7 @@ class TestRustExplorationManagerUnit:
         mgr_stats = mgr.stats()
         by_name = mgr_stats["simprocedure_fallback_by_name"]
         assert by_name.get("sym_proc", 0) >= 1, (
-            f"simprocedure_fallback_by_name should record 'sym_proc' fallback; "
-            f"got {by_name}"
+            f"simprocedure_fallback_by_name should record 'sym_proc' fallback; got {by_name}"
         )
         assert sum(by_name.values()) == mgr_stats["simprocedure_python_fallback_count"], (
             f"sum of by-name counts must equal scalar fallback counter; "
@@ -476,17 +474,14 @@ class TestRustExplorationManagerUnit:
         # mgr.stats() and native_procedure_stats() views must agree.
         sym_by_name = stats["symbolic_fallbacks_by_name"]
         assert sym_by_name.get("sym_proc", 0) >= 1, (
-            f"native_procedure_stats symbolic_fallbacks_by_name should record "
-            f"'sym_proc'; got {sym_by_name}"
+            f"native_procedure_stats symbolic_fallbacks_by_name should record 'sym_proc'; got {sym_by_name}"
         )
         assert stats["not_implemented_fallbacks_by_name"].get("sym_proc", 0) == 0
         assert stats["other_fallbacks_by_name"].get("sym_proc", 0) == 0
         assert mgr_stats["native_proc_symbolic_fallbacks_by_name"].get("sym_proc", 0) >= 1
         # The three buckets must sum to native_proc_fallbacks.
         assert (
-            stats["symbolic_fallbacks"]
-            + stats["not_implemented_fallbacks"]
-            + stats["other_fallbacks"]
+            stats["symbolic_fallbacks"] + stats["not_implemented_fallbacks"] + stats["other_fallbacks"]
             == stats["python_fallbacks"]
         ), (
             f"sum(symbolic+not_implemented+other) must equal python_fallbacks; "
@@ -512,7 +507,12 @@ class TestRustExplorationManagerUnit:
         # Two-arg procedure, but populate three arg regs.
         mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr, HOOK, "two_arg_proc", num_args=2, no_return=False, callable_=proc,
+            mgr,
+            HOOK,
+            "two_arg_proc",
+            num_args=2,
+            no_return=False,
+            callable_=proc,
             arg_values=(0xAAAA, 0xBBBB, 0xCCCC),  # rdi, rsi, rdx
             return_addr=EXIT_HOOK,
         )
@@ -541,7 +541,12 @@ class TestRustExplorationManagerUnit:
         EXIT_HOOK = 0x600200
         mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr, HOOK, "no_arg_proc", num_args=0, no_return=False, callable_=proc,
+            mgr,
+            HOOK,
+            "no_arg_proc",
+            num_args=0,
+            no_return=False,
+            callable_=proc,
             arg_values=(0xDEAD, 0xBEEF),  # ignored
             return_addr=EXIT_HOOK,
         )
@@ -575,7 +580,12 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500300
         state = self._setup_amd64_python_proc_test(
-            mgr, HOOK, "bad_ret_proc", num_args=0, no_return=False, callable_=proc,
+            mgr,
+            HOOK,
+            "bad_ret_proc",
+            num_args=0,
+            no_return=False,
+            callable_=proc,
         )
 
         mgr.add_state("active", state)
@@ -585,15 +595,9 @@ class TestRustExplorationManagerUnit:
         # extraction failed, so the dispatcher fell back.
         assert invocations == [()], f"({label}) expected one invocation, got {invocations}"
         stats = mgr.native_procedure_stats()
-        assert stats["python_fallbacks"] >= 1, (
-            f"({label}) expected python_fallbacks>=1, got stats={stats}"
-        )
-        assert stats["native_calls"] == 0, (
-            f"({label}) failed return must not count as a successful native call"
-        )
-        assert event.event_type == "need_callback", (
-            f"({label}) expected need_callback fallback; got {event.event_type}"
-        )
+        assert stats["python_fallbacks"] >= 1, f"({label}) expected python_fallbacks>=1, got stats={stats}"
+        assert stats["native_calls"] == 0, f"({label}) failed return must not count as a successful native call"
+        assert event.event_type == "need_callback", f"({label}) expected need_callback fallback; got {event.event_type}"
 
         # angr-ilsr: PythonNativeProcedure surfaces ProcedureError::Other for
         # bad return values, which must land in the "other" bucket, not
@@ -616,7 +620,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
 
         STRLEN_HOOK = 0x500500
         STRING_ADDR = 0x2000
@@ -630,8 +634,7 @@ class TestRustExplorationManagerUnit:
         mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
         # Force the dispatcher to bypass NativeStrlen by name.
         assert mgr.has_native_procedure("strlen"), (
-            "precondition: strlen must be registered natively (else the "
-            "override path is moot)"
+            "precondition: strlen must be registered natively (else the override path is moot)"
         )
         mgr.set_python_override("strlen")
 
@@ -650,14 +653,12 @@ class TestRustExplorationManagerUnit:
         # Native must NOT have run (override skipped it before dispatch).
         nstats = mgr.native_procedure_stats()
         assert nstats["native_calls"] == 0, (
-            f"native strlen must not fire when Python override is set; "
-            f"native_procedure_stats={nstats}"
+            f"native strlen must not fire when Python override is set; native_procedure_stats={nstats}"
         )
         # And the python_fallbacks counter on native_proc_stats stays at 0
         # because native was *bypassed*, not *attempted-and-failed*.
         assert nstats["python_fallbacks"] == 0, (
-            f"override path bypasses native entirely (no fallback bookkeeping); "
-            f"native_procedure_stats={nstats}"
+            f"override path bypasses native entirely (no fallback bookkeeping); native_procedure_stats={nstats}"
         )
 
         # The dispatcher must have routed to the Python SimProcedure path —
@@ -666,19 +667,16 @@ class TestRustExplorationManagerUnit:
         # per the dispatch-priority docs).
         mgr_stats = mgr.stats()
         assert mgr_stats["simprocedure_python_fallback_count"] >= 1, (
-            f"override should route through the Python SimProcedure path; "
-            f"got stats={mgr_stats}"
+            f"override should route through the Python SimProcedure path; got stats={mgr_stats}"
         )
         assert mgr_stats["simprocedure_fallback_by_name"].get("strlen", 0) >= 1, (
-            f"by-name fallback bookkeeping must record 'strlen'; got "
-            f"{mgr_stats['simprocedure_fallback_by_name']}"
+            f"by-name fallback bookkeeping must record 'strlen'; got {mgr_stats['simprocedure_fallback_by_name']}"
         )
 
         # And the engine emitted a need_simprocedure event so Python knows
         # to take over.
         assert event.event_type == "need_callback", (
-            f"expected need_callback to hand SimProcedure to Python; "
-            f"got {event.event_type}"
+            f"expected need_callback to hand SimProcedure to Python; got {event.event_type}"
         )
         assert event.callback_reason == "simprocedure"
 
@@ -698,8 +696,7 @@ class TestRustExplorationManagerUnit:
 
         nstats2 = mgr.native_procedure_stats()
         assert nstats2["native_calls"] >= 1, (
-            f"after remove_python_override, native strlen must fire; "
-            f"native_procedure_stats={nstats2}"
+            f"after remove_python_override, native strlen must fire; native_procedure_stats={nstats2}"
         )
 
     def test_python_procedure_re_registration_overrides_prior(self):
@@ -725,12 +722,20 @@ class TestRustExplorationManagerUnit:
         # First registration via the helper, then override.
         mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr, HOOK, "swap_proc", num_args=0, no_return=False, callable_=first,
+            mgr,
+            HOOK,
+            "swap_proc",
+            num_args=0,
+            no_return=False,
+            callable_=first,
             return_addr=EXIT_HOOK,
         )
         # Re-register same name with a different callable.
         mgr.register_python_procedure(
-            "swap_proc", num_args=0, no_return=False, callable=second,
+            "swap_proc",
+            num_args=0,
+            no_return=False,
+            callable=second,
         )
 
         mgr.add_state("active", state)
@@ -743,9 +748,7 @@ class TestRustExplorationManagerUnit:
         deadended = mgr.get_state_ids("deadended")
         assert len(deadended) == 1, f"stashes={mgr.stash_counts()}"
         rax = mgr.get_state_register(deadended[0], "rax")
-        assert rax == 0x2222, (
-            f"expected RAX=0x2222 from override callable; got {rax:#x}"
-        )
+        assert rax == 0x2222, f"expected RAX=0x2222 from override callable; got {rax:#x}"
 
 
 class TestRustSimStateIntegration:
@@ -805,7 +808,6 @@ class TestRustSimStateIntegration:
 class TestRustExplorationPython:
     """Tests for Python RustExplorationManager wrapper."""
 
-
     def test_python_wrapper_creation(self, fauxware_project):
         """Test creating Python wrapper."""
 
@@ -827,9 +829,7 @@ class TestRustExplorationPython:
         assert plain_mgr._rust_mgr.state_enforce_permissions(plain_ids[0]) is False
 
         # Option present → flag flips on for the Rust state.
-        strict_state = fauxware_project.factory.entry_state(
-            add_options={o.STRICT_PAGE_ACCESS}
-        )
+        strict_state = fauxware_project.factory.entry_state(add_options={o.STRICT_PAGE_ACCESS})
         strict_mgr = RustExplorationManager(fauxware_project, [strict_state])
         strict_ids = strict_mgr._rust_mgr.get_state_ids("active")
         assert strict_ids, "expected an active state to be added"
@@ -857,20 +857,16 @@ class TestRustExplorationPython:
         sid = ids[0]
 
         # Baseline: pc and the IP register agree on the entry state.
-        assert mgr._rust_mgr.get_state_pc_by_id(sid) == \
-            mgr._rust_mgr.get_state_register(sid, "rip")
+        assert mgr._rust_mgr.get_state_pc_by_id(sid) == mgr._rust_mgr.get_state_register(sid, "rip")
 
         # Write a new IP through the same FFI the register proxy uses.
         new_pc = 0x4006ED
-        mgr._rust_mgr.set_state_register_symbolic_ast(
-            sid, "rip", claripy.BVV(new_pc, 64)
-        )
+        mgr._rust_mgr.set_state_register_symbolic_ast(sid, "rip", claripy.BVV(new_pc, 64))
 
         # Both the register file and the pc field must reflect the write.
         assert mgr._rust_mgr.get_state_register(sid, "rip") == new_pc
         assert mgr._rust_mgr.get_state_pc_by_id(sid) == new_pc, (
-            "set_register('rip') must sync state.pc — otherwise the next "
-            "block fetch lifts at a stale/zero address"
+            "set_register('rip') must sync state.pc — otherwise the next block fetch lifts at a stale/zero address"
         )
 
     def test_strict_page_access_blocks_nx_block_fetch(self):
@@ -887,9 +883,11 @@ class TestRustExplorationPython:
         callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
         callbacks.set_memory_store(lambda addr, data: None)
         lift_addrs = []
+
         def lift(addr):
             lift_addrs.append(addr)
-            return '{}'
+            return "{}"
+
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)
 
@@ -903,12 +901,8 @@ class TestRustExplorationPython:
         mgr.run(10)
 
         counts = mgr.stash_counts()
-        assert counts.get("errored", 0) == 1, (
-            f"expected the NX block fetch to error the state, got stashes={counts}"
-        )
-        assert 0x1000 not in lift_addrs, (
-            "permission check must fire before lift_block is dispatched"
-        )
+        assert counts.get("errored", 0) == 1, f"expected the NX block fetch to error the state, got stashes={counts}"
+        assert 0x1000 not in lift_addrs, "permission check must fire before lift_block is dispatched"
 
     def test_strict_page_access_alone_does_not_block_nx_fetch(self):
         """STRICT_PAGE_ACCESS without ENABLE_NX must not raise on a fetch
@@ -923,9 +917,11 @@ class TestRustExplorationPython:
         callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
         callbacks.set_memory_store(lambda addr, data: None)
         lift_addrs = []
+
         def lift(addr):
             lift_addrs.append(addr)
-            return '{}'
+            return "{}"
+
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)
 
@@ -939,12 +935,8 @@ class TestRustExplorationPython:
         mgr.run(10)
 
         counts = mgr.stash_counts()
-        assert counts.get("errored", 0) == 0, (
-            f"NX should not fire without enforce_nx; got stashes={counts}"
-        )
-        assert 0x1000 in lift_addrs, (
-            "lift_block should have been dispatched at 0x1000 since NX is off"
-        )
+        assert counts.get("errored", 0) == 0, f"NX should not fire without enforce_nx; got stashes={counts}"
+        assert 0x1000 in lift_addrs, "lift_block should have been dispatched at 0x1000 since NX is off"
 
     def test_enable_nx_propagates_to_rust(self, fauxware_project):
         """A SimState with ENABLE_NX option should flip the Rust memory
@@ -959,9 +951,7 @@ class TestRustExplorationPython:
         assert plain_mgr._rust_mgr.state_enforce_nx(plain_ids[0]) is False
 
         # Option present → flag flips on for the Rust state.
-        nx_state = fauxware_project.factory.entry_state(
-            add_options={o.ENABLE_NX}
-        )
+        nx_state = fauxware_project.factory.entry_state(add_options={o.ENABLE_NX})
         nx_mgr = RustExplorationManager(fauxware_project, [nx_state])
         nx_ids = nx_mgr._rust_mgr.get_state_ids("active")
         assert nx_ids, "expected an active state to be added"
@@ -980,9 +970,7 @@ class TestRustExplorationPython:
         assert plain_mgr._rust_mgr.state_no_ip_concretization(plain_ids[0]) is False
 
         # Option present → flag flips on for the Rust state.
-        nic_state = fauxware_project.factory.entry_state(
-            add_options={o.NO_IP_CONCRETIZATION}
-        )
+        nic_state = fauxware_project.factory.entry_state(add_options={o.NO_IP_CONCRETIZATION})
         nic_mgr = RustExplorationManager(fauxware_project, [nic_state])
         nic_ids = nic_mgr._rust_mgr.get_state_ids("active")
         assert nic_ids, "expected an active state to be added"
@@ -992,8 +980,9 @@ class TestRustExplorationPython:
         """With NO_IP_CONCRETIZATION, a `jmp rax` against a symbolic rax must
         skip enumeration and land the state in the `unconstrained` stash —
         matches engines/successors.py:292-296 (max_targets=0, no warning)."""
-        import angr
         import claripy
+
+        import angr
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -1015,8 +1004,7 @@ class TestRustExplorationPython:
         )
         # Active stash should not have forked into many enumerated targets.
         assert len(mgr.active) == 0, (
-            "active stash must be empty — NO_IP_CONCRETIZATION should have "
-            "short-circuited enumeration"
+            "active stash must be empty — NO_IP_CONCRETIZATION should have short-circuited enumeration"
         )
 
     def test_no_symbolic_jump_resolution_propagates_to_rust(self, fauxware_project):
@@ -1033,9 +1021,7 @@ class TestRustExplorationPython:
         assert plain_mgr._rust_mgr.state_no_symbolic_jump_resolution(plain_ids[0]) is False
 
         # Option present → flag flips on for the Rust state.
-        nsjr_state = fauxware_project.factory.entry_state(
-            add_options={o.NO_SYMBOLIC_JUMP_RESOLUTION}
-        )
+        nsjr_state = fauxware_project.factory.entry_state(add_options={o.NO_SYMBOLIC_JUMP_RESOLUTION})
         nsjr_mgr = RustExplorationManager(fauxware_project, [nsjr_state])
         nsjr_ids = nsjr_mgr._rust_mgr.get_state_ids("active")
         assert nsjr_ids, "expected an active state to be added"
@@ -1046,8 +1032,9 @@ class TestRustExplorationPython:
         rax must skip enumeration and land the state in the `unconstrained`
         stash — matches engines/successors.py:234-239 (early elif route to
         unconstrained_successors before AddressConcretizer is invoked)."""
-        import angr
         import claripy
+
+        import angr
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -1067,8 +1054,7 @@ class TestRustExplorationPython:
             f"got stashes={ {k: len(v) for k, v in mgr.stashes.items() if v} }"
         )
         assert len(mgr.active) == 0, (
-            "active stash must be empty — NO_SYMBOLIC_JUMP_RESOLUTION should "
-            "have short-circuited enumeration"
+            "active stash must be empty — NO_SYMBOLIC_JUMP_RESOLUTION should have short-circuited enumeration"
         )
 
     def test_symbolic_syscall_num_forces_python_fallback(self):
@@ -1085,8 +1071,9 @@ class TestRustExplorationPython:
         ``(syscall_num, None)`` and the unknown-syscall stub takes over, so
         no enumeration happens.
         """
-        import angr
         import claripy
+
+        import angr
         from angr import sim_options as o
 
         # AMD64: `0f 05` = syscall. Pad so PC+2 stays mapped.
@@ -1112,8 +1099,7 @@ class TestRustExplorationPython:
         # the -1 sentinel key (no concrete num was consulted).
         by_num = stats["syscall_python_fallback_by_num"]
         assert by_num.get(-1, 0) >= 1, (
-            "symbolic syscall must increment syscall_python_fallback_by_num[-1] "
-            f"(got {by_num})"
+            f"symbolic syscall must increment syscall_python_fallback_by_num[-1] (got {by_num})"
         )
 
     def test_concrete_syscall_num_still_uses_native_dispatch(self):
@@ -1138,8 +1124,7 @@ class TestRustExplorationPython:
         )
         # NativeExitSyscall routes the state to deadended.
         assert len(mgr.deadended) == 1, (
-            f"native exit(60) must deadend the state, got stashes="
-            f"{ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+            f"native exit(60) must deadend the state, got stashes={ {k: len(v) for k, v in mgr.stashes.items() if v} }"
         )
 
     def test_mips_native_syscall_clears_a3_error_register(self):
@@ -1209,9 +1194,7 @@ class TestRustExplorationPython:
         a3 = self._find_single_state_register(mgr, "a3")
         v0 = self._find_single_state_register(mgr, "v0")
         assert a3 != 0, f"MIPS $a3 must be non-zero on a syscall error, got {a3:#x}"
-        assert v0 == 1, (
-            f"MIPS $v0 must hold the positive errno (1) on the error path, got {v0:#x}"
-        )
+        assert v0 == 1, f"MIPS $v0 must hold the positive errno (1) on the error path, got {v0:#x}"
 
     @staticmethod
     def _find_single_state_register(mgr, reg):
@@ -1237,9 +1220,7 @@ class TestRustExplorationPython:
         assert plain_mgr._rust_mgr.state_keep_ip_symbolic(plain_ids[0]) is False
 
         # Option present → flag flips on for the Rust state.
-        kis_state = fauxware_project.factory.entry_state(
-            add_options={o.KEEP_IP_SYMBOLIC}
-        )
+        kis_state = fauxware_project.factory.entry_state(add_options={o.KEEP_IP_SYMBOLIC})
         kis_mgr = RustExplorationManager(fauxware_project, [kis_state])
         kis_ids = kis_mgr._rust_mgr.get_state_ids("active")
         assert kis_ids, "expected an active state to be added"
@@ -1256,8 +1237,9 @@ class TestRustExplorationPython:
         Rust manager API's `get_state_register("rip")` returns Some(value)).
         With the option, the IP register is symbolic and the API returns None.
         """
-        import angr
         import claripy
+
+        import angr
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. Two concrete jump targets are mapped so
@@ -1286,34 +1268,24 @@ class TestRustExplorationPython:
         base_mgr = RustExplorationManager(proj, [_new_state(with_keep=False)])
         base_mgr.step(1)
         base_ids = base_mgr._rust_mgr.get_state_ids("active")
-        assert len(base_ids) == 2, (
-            f"expected 2 forks for jmp rax over 2 targets, got {len(base_ids)}"
-        )
+        assert len(base_ids) == 2, f"expected 2 forks for jmp rax over 2 targets, got {len(base_ids)}"
         for sid in base_ids:
             rip = base_mgr._rust_mgr.get_state_register(sid, "rip")
-            assert rip is not None, (
-                "without KEEP_IP_SYMBOLIC, rip should be concretized to a u64"
-            )
-            assert rip in (0x2000, 0x2010), (
-                f"unexpected concretized rip 0x{rip:x}"
-            )
+            assert rip is not None, "without KEEP_IP_SYMBOLIC, rip should be concretized to a u64"
+            assert rip in (0x2000, 0x2010), f"unexpected concretized rip 0x{rip:x}"
 
         # --- With KEEP_IP_SYMBOLIC ---
         kis_mgr = RustExplorationManager(proj, [_new_state(with_keep=True)])
         kis_mgr.step(1)
         kis_ids = kis_mgr._rust_mgr.get_state_ids("active")
         assert len(kis_ids) == 2, (
-            f"expected 2 forks for jmp rax over 2 targets with "
-            f"KEEP_IP_SYMBOLIC, got {len(kis_ids)}"
+            f"expected 2 forks for jmp rax over 2 targets with KEEP_IP_SYMBOLIC, got {len(kis_ids)}"
         )
         for sid in kis_ids:
             rip = kis_mgr._rust_mgr.get_state_register(sid, "rip")
-            assert rip is None, (
-                f"with KEEP_IP_SYMBOLIC, rip must stay symbolic, got "
-                f"concrete 0x{rip:x}"
-            )
+            assert rip is None, f"with KEEP_IP_SYMBOLIC, rip must stay symbolic, got concrete 0x{rip:x}"
             assert kis_mgr._rust_mgr.state_keep_ip_symbolic(sid) is True, (
-                f"keep_ip_symbolic flag should propagate through fork"
+                "keep_ip_symbolic flag should propagate through fork"
             )
 
     def test_solver_stats_populated(self, fauxware_project):
@@ -1340,16 +1312,13 @@ class TestRustExplorationPython:
         assert baseline["z3_unsat_count"] == 0
         assert baseline["z3_timeout_count"] == 0
 
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         stats = mgr.get_solver_stats()
-        assert stats["z3_check_count"] >= 1, \
-            f"expected at least one solver query, got {stats['z3_check_count']}"
+        assert stats["z3_check_count"] >= 1, f"expected at least one solver query, got {stats['z3_check_count']}"
         assert stats["z3_check_time_ns"] >= 0
         # Sat + unsat + timeout should account for every check.
-        assert (stats["z3_sat_count"]
-                + stats["z3_unsat_count"]
-                + stats["z3_timeout_count"]) == stats["z3_check_count"]
+        assert (stats["z3_sat_count"] + stats["z3_unsat_count"] + stats["z3_timeout_count"]) == stats["z3_check_count"]
 
     def test_z3_ast_cache_counters(self, fauxware_project):
         """angr-zdho: `z3_ast_cache_hit` + `z3_ast_cache_miss` are exposed via
@@ -1365,12 +1334,11 @@ class TestRustExplorationPython:
         assert baseline["z3_ast_cache_hit"] == 0
         assert baseline["z3_ast_cache_miss"] == 0
 
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         stats = mgr.get_solver_stats()
         assert stats["z3_ast_cache_miss"] >= 1, (
-            "exploration with at least one Z3 query should produce cache misses; "
-            f"got {stats['z3_ast_cache_miss']}"
+            f"exploration with at least one Z3 query should produce cache misses; got {stats['z3_ast_cache_miss']}"
         )
 
     def test_fork_counters_exposed_and_non_summable(self, fauxware_project):
@@ -1408,11 +1376,10 @@ class TestRustExplorationPython:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.enable_profiling()
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         exec_stats = mgr._rust_mgr.get_execution_stats()
-        for key in ("solver_fork_count", "deferred_fork_count",
-                    "solver_fork_time_ns", "deferred_fork_time_ns"):
+        for key in ("solver_fork_count", "deferred_fork_count", "solver_fork_time_ns", "deferred_fork_time_ns"):
             assert key in exec_stats, f"missing key {key}"
             assert isinstance(exec_stats[key], int), f"{key} not int"
             assert exec_stats[key] >= 0, f"{key} negative: {exec_stats[key]}"
@@ -1430,21 +1397,22 @@ class TestRustExplorationPython:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         sharing = mgr._rust_mgr.analyze_constraint_sharing()
         for key in (
-            "total_visits", "unique_pointers", "unique_shapes",
-            "structural_duplicates", "states_analyzed", "constraints_analyzed",
+            "total_visits",
+            "unique_pointers",
+            "unique_shapes",
+            "structural_duplicates",
+            "states_analyzed",
+            "constraints_analyzed",
         ):
             assert key in sharing, f"missing key {key} in {sharing}"
             assert isinstance(sharing[key], int), f"{key} not int"
 
-        assert sharing["unique_pointers"] >= sharing["unique_shapes"], (
-            f"hash-cons can never split: {sharing}"
-        )
-        assert (sharing["structural_duplicates"]
-                == sharing["unique_pointers"] - sharing["unique_shapes"]), (
+        assert sharing["unique_pointers"] >= sharing["unique_shapes"], f"hash-cons can never split: {sharing}"
+        assert sharing["structural_duplicates"] == sharing["unique_pointers"] - sharing["unique_shapes"], (
             f"structural_duplicates accounting wrong: {sharing}"
         )
         # fauxware should produce at least one constraint to walk.
@@ -1456,7 +1424,7 @@ class TestRustExplorationPython:
 
         # Find the "Welcome" message address
         # In fauxware, this is typically around 0x4006ed
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1464,8 +1432,7 @@ class TestRustExplorationPython:
         # Run exploration
         mgr.explore(find=find_addr)
         # Exploration completed — verify at least one state was found or explored
-        assert len(mgr.found) > 0 or len(mgr.deadended) > 0, \
-            "exploration should find states or deadend some"
+        assert len(mgr.found) > 0 or len(mgr.deadended) > 0, "exploration should find states or deadend some"
 
     def test_state_export_cache_invalidated_on_step(self, fauxware_project):
         """step() / explore() must clear the rust_fully_synced sentinel on
@@ -1485,27 +1452,27 @@ class TestRustExplorationPython:
         mgr.step(n=1)
 
         active = mgr.active
-        assert len(active) >= 1, \
-            "fauxware should still have at least one active state after one step"
+        assert len(active) >= 1, "fauxware should still have at least one active state after one step"
         first = active[0]
         # First read materializes the SimState and sets the sentinel.
-        assert getattr(first.scratch, 'rust_fully_synced', False), \
+        assert getattr(first.scratch, "rust_fully_synced", False), (
             "first read should set the rust_fully_synced sentinel"
+        )
         cached_state = mgr._state_cache[first._lazy_state_id]
 
         # Re-read without stepping: cache hit must preserve wrapper identity
         # and not re-sync the cached SimState.
         again = mgr.active
-        assert again[0] is first, \
-            "repeated mgr.active access must return the cached lazy ref"
-        assert getattr(again[0].scratch, 'rust_fully_synced', False)
+        assert again[0] is first, "repeated mgr.active access must return the cached lazy ref"
+        assert getattr(again[0].scratch, "rust_fully_synced", False)
 
         # step() invalidates: cached mirror is now stale until next read.
         # Observe the sentinel via the cached SimState directly; reading it
         # through the wrapper would re-trigger materialization.
         mgr.step(n=1)
-        assert not getattr(cached_state.scratch, 'rust_fully_synced', False), \
+        assert not getattr(cached_state.scratch, "rust_fully_synced", False), (
             "step() must clear rust_fully_synced on cached SimStates"
+        )
 
         # explore() must also invalidate at its top.
         state2 = fauxware_project.factory.entry_state()
@@ -1513,11 +1480,12 @@ class TestRustExplorationPython:
         mgr2.step(n=1)
         cached_wrapper = mgr2.active[0]
         # Force materialization to seed the cache + set the sentinel.
-        assert getattr(cached_wrapper.scratch, 'rust_fully_synced', False)
+        assert getattr(cached_wrapper.scratch, "rust_fully_synced", False)
         mgr2_cached = mgr2._state_cache[cached_wrapper._lazy_state_id]
         mgr2.explore(max_steps=1)
-        assert not getattr(mgr2_cached.scratch, 'rust_fully_synced', False), \
+        assert not getattr(mgr2_cached.scratch, "rust_fully_synced", False), (
             "explore() must clear rust_fully_synced on cached SimStates"
+        )
 
     def test_stash_access(self, fauxware_project):
         """Test accessing stashes."""
@@ -1543,12 +1511,11 @@ class TestRustExplorationPython:
         mgr = RustExplorationManager(fauxware_project, [state], max_active_states=2)
 
         # Run exploration with limited active states
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         # Active states should never exceed the limit
         counts = mgr.stash_counts()
-        assert counts.get("active", 0) <= 2, \
-            f"active count {counts['active']} exceeds max_active_states=2"
+        assert counts.get("active", 0) <= 2, f"active count {counts['active']} exceeds max_active_states=2"
 
     def test_max_active_states_prunes_forks(self, fauxware_project):
         """Excess forks should be pruned when max_active_states is reached.
@@ -1560,13 +1527,11 @@ class TestRustExplorationPython:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], max_active_states=1)
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         counts = mgr.stash_counts()
-        assert counts.get("active", 0) <= 1, \
-            f"active count {counts.get('active', 0)} exceeds max_active_states=1"
-        assert counts.get("pruned", 0) > 0, \
-            f"expected pruned states with max_active_states=1, got counts={counts}"
+        assert counts.get("active", 0) <= 1, f"active count {counts.get('active', 0)} exceeds max_active_states=1"
+        assert counts.get("pruned", 0) > 0, f"expected pruned states with max_active_states=1, got counts={counts}"
 
     def test_progress_callback(self, fauxware_project):
         """Test that progress callback fires during exploration."""
@@ -1579,16 +1544,16 @@ class TestRustExplorationPython:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.set_progress_callback(on_progress, interval_steps=1)
-        mgr.explore(find=0x4006ed, num_find=1)
+        mgr.explore(find=0x4006ED, num_find=1)
 
         # Progress callback should have fired at least once
         assert len(progress_reports) > 0, "progress callback never fired"
         # Each report should have the expected keys
         report = progress_reports[0]
-        assert 'step_count' in report
-        assert 'active_count' in report
-        assert 'found_count' in report
-        assert 'elapsed_seconds' in report
+        assert "step_count" in report
+        assert "active_count" in report
+        assert "found_count" in report
+        assert "elapsed_seconds" in report
 
 
 class TestExplorationEvent:
@@ -1602,17 +1567,17 @@ class TestExplorationEvent:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         # Run should return an event
         event = mgr.run(1)
 
         # Check event structure
-        assert hasattr(event, 'event_type')
-        assert hasattr(event, 'found_count')
-        assert hasattr(event, 'active_count')
-        assert hasattr(event, 'steps_taken')
+        assert hasattr(event, "event_type")
+        assert hasattr(event, "found_count")
+        assert hasattr(event, "active_count")
+        assert hasattr(event, "steps_taken")
 
 
 class TestRustEdgeCases:
@@ -1622,6 +1587,7 @@ class TestRustEdgeCases:
     def setup_class(cls):
         """Ensure the shared Z3 context is initialized for solver tests."""
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def test_page_boundary_store_load(self):
@@ -1648,8 +1614,8 @@ class TestRustEdgeCases:
 
     def test_many_symbolic_variables(self):
         """Solver with >50 symbolic variables and constraints."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         symbols = []
@@ -1670,8 +1636,8 @@ class TestRustEdgeCases:
 
     def test_solver_push_pop(self):
         """Push/pop preserves solver state correctly."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -1695,8 +1661,8 @@ class TestRustEdgeCases:
         so this round-trips the dunder ASTs through the slow path and checks
         the Rust solver matches claripy's unsigned semantics.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
 
@@ -1741,17 +1707,15 @@ class TestRustEdgeCases:
 class TestCallablePredicates:
     """Tests for callable find/avoid predicates with RustStateProxy."""
 
-
     def test_find_lambda_by_address(self, fauxware_project):
         """Callable find predicate matching by address works."""
 
-        ACCEPTED = 0x4006ed
-        REJECTED = 0x4006fd
+        ACCEPTED = 0x4006ED
+        REJECTED = 0x4006FD
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=lambda s: s.addr == ACCEPTED, avoid=REJECTED,
-                    max_steps=50000)
+        mgr.explore(find=lambda s: s.addr == ACCEPTED, avoid=REJECTED, max_steps=50000)
 
         assert len(mgr.found) > 0, "Should find at least one state reaching accepted()"
         for s in mgr.found:
@@ -1760,21 +1724,21 @@ class TestCallablePredicates:
     def test_avoid_lambda_by_address(self, fauxware_project):
         """Callable avoid predicate matching by address works."""
 
-        ACCEPTED = 0x4006ed
-        REJECTED = 0x4006fd
+        ACCEPTED = 0x4006ED
+        REJECTED = 0x4006FD
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=ACCEPTED, avoid=lambda s: s.addr == REJECTED,
-                    max_steps=50000)
+        mgr.explore(find=ACCEPTED, avoid=lambda s: s.addr == REJECTED, max_steps=50000)
 
         assert len(mgr.found) > 0, "Should find at least one state reaching accepted()"
 
     def test_solver_proxy_eval_returns_single_value(self):
         """RustSolverProxy.eval() returns a single value, not a tuple."""
-        from angr.exploration.rust_state_proxy import RustSolverProxy
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -1794,9 +1758,10 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_upto_returns_tuple(self):
         """RustSolverProxy.eval_upto() returns a tuple."""
-        from angr.exploration.rust_state_proxy import RustSolverProxy
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -1815,9 +1780,10 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_cast_to_bytes(self):
         """RustSolverProxy.eval() with cast_to=bytes works."""
-        from angr.exploration.rust_state_proxy import RustSolverProxy
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -1853,13 +1819,13 @@ class TestCallStackProxy:
         """After exploration, found-state callstack frames match the
         snapshot exposed by the underlying Rust manager."""
         from angr.exploration.rust_state_proxy import (
-            RustCallStackProxy,
             RustCallStackFrameProxy,
+            RustCallStackProxy,
         )
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
         assert len(mgr.found) > 0
 
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -1910,7 +1876,7 @@ class TestCallStackProxy:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
         assert len(mgr.found) > 0
         found_state = mgr.found[0]
 
@@ -1944,10 +1910,10 @@ class TestCallStackProxy:
         parent = RustSimState("amd64")
         # outermost → innermost
         parent.push_call_frame(0x1000, 0x2000, 0x1005, 0x7000)
-        parent.push_call_frame(0x2008, 0x3000, 0x200d, 0x6f00)
+        parent.push_call_frame(0x2008, 0x3000, 0x200D, 0x6F00)
         assert parent.get_call_stack() == [
             (0x1000, 0x2000, 0x1005, 0x7000),
-            (0x2008, 0x3000, 0x200d, 0x6f00),
+            (0x2008, 0x3000, 0x200D, 0x6F00),
         ]
 
         child = parent.fork()
@@ -1955,19 +1921,19 @@ class TestCallStackProxy:
         assert child.get_call_stack() == parent.get_call_stack()
 
         # Diverge: parent pushes one more, child pushes a different frame.
-        parent.push_call_frame(0xaaaa, 0xbbbb, 0xaaaf, 0x6e00)
-        child.push_call_frame(0xcccc, 0xdddd, 0xccd1, 0x6e00)
+        parent.push_call_frame(0xAAAA, 0xBBBB, 0xAAAF, 0x6E00)
+        child.push_call_frame(0xCCCC, 0xDDDD, 0xCCD1, 0x6E00)
 
         # Each side sees only its own divergence.
         assert parent.get_call_stack() == [
             (0x1000, 0x2000, 0x1005, 0x7000),
-            (0x2008, 0x3000, 0x200d, 0x6f00),
-            (0xaaaa, 0xbbbb, 0xaaaf, 0x6e00),
+            (0x2008, 0x3000, 0x200D, 0x6F00),
+            (0xAAAA, 0xBBBB, 0xAAAF, 0x6E00),
         ]
         assert child.get_call_stack() == [
             (0x1000, 0x2000, 0x1005, 0x7000),
-            (0x2008, 0x3000, 0x200d, 0x6f00),
-            (0xcccc, 0xdddd, 0xccd1, 0x6e00),
+            (0x2008, 0x3000, 0x200D, 0x6F00),
+            (0xCCCC, 0xDDDD, 0xCCD1, 0x6E00),
         ]
 
     def test_callstack_proxy_reverses_after_fork(self):
@@ -1987,11 +1953,11 @@ class TestCallStackProxy:
         mgr = _RustExplorationManager("amd64")
         parent = RustSimState("amd64")
         parent.push_call_frame(0x100, 0x200, 0x105, 0x7000)
-        parent.push_call_frame(0x208, 0x300, 0x20d, 0x6ff0)
+        parent.push_call_frame(0x208, 0x300, 0x20D, 0x6FF0)
         child = parent.fork()
         # Diverge at the top of the stack (post-fork divergence).
-        parent.push_call_frame(0x310, 0x400, 0x315, 0x6fe0)
-        child.push_call_frame(0x310, 0x500, 0x315, 0x6fe0)
+        parent.push_call_frame(0x310, 0x400, 0x315, 0x6FE0)
+        child.push_call_frame(0x310, 0x500, 0x315, 0x6FE0)
         mgr.add_state("active", parent)
         mgr.add_state("active", child)
         # add_state forks internally; recover the assigned ids in order.
@@ -2038,7 +2004,7 @@ class TestCallStackProxy:
         a = RustSimState("amd64")
         a.push_call_frame(0x10, 0x20, 0x15, 0x7000)
         b = a.fork()
-        b.push_call_frame(0x30, 0x40, 0x35, 0x6ff0)
+        b.push_call_frame(0x30, 0x40, 0x35, 0x6FF0)
         mgr.add_state("active", a)
         mgr.add_state("active", b)
         ids = mgr.get_state_ids("active")
@@ -2098,10 +2064,10 @@ class TestRustInspectMarshalling:
     def test_callbacks_have_inspect_slots(self):
         """PythonCallbacks exposes set_inspect_mem_{read,write} + bitmask."""
         cbs = PythonCallbacks()
-        assert hasattr(cbs, 'set_inspect_mem_read')
-        assert hasattr(cbs, 'set_inspect_mem_write')
-        assert hasattr(cbs, 'set_inspect_enabled')
-        assert hasattr(cbs, 'get_inspect_enabled')
+        assert hasattr(cbs, "set_inspect_mem_read")
+        assert hasattr(cbs, "set_inspect_mem_write")
+        assert hasattr(cbs, "set_inspect_enabled")
+        assert hasattr(cbs, "get_inspect_enabled")
         assert cbs.get_inspect_enabled() == 0
         cbs.set_inspect_enabled(0b11)
         assert cbs.get_inspect_enabled() == 0b11
@@ -2116,15 +2082,15 @@ class TestRustInspectMarshalling:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
         proxy_inspect = mgr._get_inspect_proxy()
-        bp = proxy_inspect.b('mem_read', when='before', action=lambda s: None)
+        bp = proxy_inspect.b("mem_read", when="before", action=lambda s: None)
         assert bp is not None
         assert mgr._callbacks.get_inspect_enabled() & 0b01 != 0
         # Adding a mem_write BP sets bit 1 too.
-        proxy_inspect.b('mem_write', when='after', action=lambda s: None)
+        proxy_inspect.b("mem_write", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & 0b10 != 0
         # Removing them clears the bitmask.
-        proxy_inspect.remove_breakpoint('mem_read', bp)
-        proxy_inspect._mgr._inspect_breakpoints['mem_write'].clear()
+        proxy_inspect.remove_breakpoint("mem_read", bp)
+        proxy_inspect._mgr._inspect_breakpoints["mem_write"].clear()
         proxy_inspect._mgr._update_inspect_bitmask()
         assert mgr._callbacks.get_inspect_enabled() == 0
 
@@ -2145,13 +2111,13 @@ class TestRustInspectMarshalling:
         ins = mgr._get_inspect_proxy()
         for evt in ("constraints", "vex_lift"):
             with pytest.raises(NotImplementedError, match="reg_read"):
-                ins.b(evt, when='before', action=lambda s: None)
+                ins.b(evt, when="before", action=lambda s: None)
 
     def _make_mgr_with_state_id(self, project):
         """Helper: build a manager and return (mgr, valid_state_id) for dispatch tests."""
         state = project.factory.entry_state()
         mgr = RustExplorationManager(project, [state])
-        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state"
         return mgr, state_ids[0], state
 
@@ -2161,22 +2127,25 @@ class TestRustInspectMarshalling:
         events = []
 
         def on_read(s):
-            events.append({
-                'addr': s.inspect.mem_read_address,
-                'length': s.inspect.mem_read_length,
-                'endness': s.inspect.mem_read_endness,
-            })
+            events.append(
+                {
+                    "addr": s.inspect.mem_read_address,
+                    "length": s.inspect.mem_read_length,
+                    "endness": s.inspect.mem_read_endness,
+                }
+            )
 
-        mgr._get_inspect_proxy().b('mem_read', when='before', action=on_read)
-        mgr._cb_inspect_mem_read(sid, 'before', 0x401234, 4, None, 'Iend_LE')
+        mgr._get_inspect_proxy().b("mem_read", when="before", action=on_read)
+        mgr._cb_inspect_mem_read(sid, "before", 0x401234, 4, None, "Iend_LE")
 
         assert len(events) == 1
         ev = events[0]
-        assert ev['length'] == 4
-        assert ev['endness'] == 'Iend_LE'
+        assert ev["length"] == 4
+        assert ev["endness"] == "Iend_LE"
         import claripy
-        assert isinstance(ev['addr'], claripy.ast.bv.BV)
-        assert state.solver.eval(ev['addr']) == 0x401234
+
+        assert isinstance(ev["addr"], claripy.ast.bv.BV)
+        assert state.solver.eval(ev["addr"]) == 0x401234
 
     def test_dispatch_mem_write_after_carries_value_ast(self, fauxware_project):
         """mem_write AFTER passes the stored value through to mem_write_expr."""
@@ -2184,31 +2153,33 @@ class TestRustInspectMarshalling:
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
-        sym_val = claripy.BVS('written_value', 32)
+        sym_val = claripy.BVS("written_value", 32)
 
         def on_write(s):
-            seen.append((
-                s.inspect.mem_write_address,
-                s.inspect.mem_write_length,
-                s.inspect.mem_write_expr,
-                s.inspect.mem_write_endness,
-            ))
+            seen.append(
+                (
+                    s.inspect.mem_write_address,
+                    s.inspect.mem_write_length,
+                    s.inspect.mem_write_expr,
+                    s.inspect.mem_write_endness,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
-        mgr._cb_inspect_mem_write(sid, 'after', 0x402000, 4, sym_val, 'Iend_LE')
+        mgr._get_inspect_proxy().b("mem_write", when="after", action=on_write)
+        mgr._cb_inspect_mem_write(sid, "after", 0x402000, 4, sym_val, "Iend_LE")
 
         assert len(seen) == 1
         addr, length, expr, endness = seen[0]
         assert length == 4
-        assert endness == 'Iend_LE'
+        assert endness == "Iend_LE"
         assert expr is sym_val
 
     def test_dispatch_skipped_when_no_bps(self, fauxware_project):
         """Dispatch with empty BP list is a no-op (no exception, nothing fired)."""
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         # No BPs registered — dispatch should silently return.
-        mgr._cb_inspect_mem_read(sid, 'before', 0x1000, 8, None, 'Iend_LE')
-        mgr._cb_inspect_mem_write(sid, 'after', 0x1000, 8, None, 'Iend_LE')
+        mgr._cb_inspect_mem_read(sid, "before", 0x1000, 8, None, "Iend_LE")
+        mgr._cb_inspect_mem_write(sid, "after", 0x1000, 8, None, "Iend_LE")
 
     def test_dispatch_reentrancy_guard(self, fauxware_project):
         """A BP action that triggers another inspect dispatch is suppressed.
@@ -2224,10 +2195,10 @@ class TestRustInspectMarshalling:
         def reentrant_action(s):
             fire_count[0] += 1
             # Try to trigger another dispatch from inside the BP action.
-            mgr._cb_inspect_mem_read(sid, 'before', 0xdead, 4, None, 'Iend_LE')
+            mgr._cb_inspect_mem_read(sid, "before", 0xDEAD, 4, None, "Iend_LE")
 
-        mgr._get_inspect_proxy().b('mem_read', when='before', action=reentrant_action)
-        mgr._cb_inspect_mem_read(sid, 'before', 0x401234, 4, None, 'Iend_LE')
+        mgr._get_inspect_proxy().b("mem_read", when="before", action=reentrant_action)
+        mgr._cb_inspect_mem_read(sid, "before", 0x401234, 4, None, "Iend_LE")
 
         # Outer fire should run exactly once — the reentrant call returns early.
         assert fire_count[0] == 1
@@ -2240,36 +2211,34 @@ class TestRustInspectMarshalling:
         def on_read(s):
             hits.append(s.inspect.mem_read_length)
 
-        mgr._get_inspect_proxy().b('mem_read', when='before', action=on_read)
+        mgr._get_inspect_proxy().b("mem_read", when="before", action=on_read)
 
         # Invoke through the Rust PyO3 entry point — exercises both the
         # Rust callback dispatch path and the Python dispatcher.
-        mgr._callbacks.call_inspect_mem_read(sid, 'before', 0xcafe, 8, None, 'Iend_LE')
+        mgr._callbacks.call_inspect_mem_read(sid, "before", 0xCAFE, 8, None, "Iend_LE")
         assert hits == [8]
 
     def test_rust_call_inspect_skips_when_callback_unset(self):
         """call_inspect_mem_* is a no-op when no callback is registered."""
         cbs = PythonCallbacks()
         # No callback set — should not raise.
-        cbs.call_inspect_mem_read(-1, 'before', 0x1000, 4, None, 'Iend_LE')
-        cbs.call_inspect_mem_write(-1, 'after', 0x1000, 4, None, 'Iend_LE')
+        cbs.call_inspect_mem_read(-1, "before", 0x1000, 4, None, "Iend_LE")
+        cbs.call_inspect_mem_write(-1, "after", 0x1000, 4, None, "Iend_LE")
 
     def test_state_proxy_inspect_routes_to_manager(self, fauxware_project):
         """RustStateProxy.inspect returns the manager-wide proxy when bound."""
-        from angr.exploration.rust_state_proxy import RustStateProxy, RustInspectProxy
+        from angr.exploration.rust_state_proxy import RustInspectProxy, RustStateProxy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state"
-        proxy = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project,
-                               python_mgr=mgr)
+        proxy = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project, python_mgr=mgr)
         ins = proxy.inspect
         assert isinstance(ins, RustInspectProxy)
         # Identity: same proxy returned across calls / across state proxies.
         assert proxy.inspect is ins
-        proxy2 = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project,
-                                python_mgr=mgr)
+        proxy2 = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project, python_mgr=mgr)
         assert proxy2.inspect is ins
 
 
@@ -2296,13 +2265,15 @@ class TestRustInspectMemReadDispatch:
         events = []
 
         def on_read(s):
-            events.append((
-                s.inspect.mem_read_address,
-                s.inspect.mem_read_length,
-                s.inspect.mem_read_endness,
-            ))
+            events.append(
+                (
+                    s.inspect.mem_read_address,
+                    s.inspect.mem_read_length,
+                    s.inspect.mem_read_endness,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('mem_read', when='after', action=on_read)
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
         # Bitmask must reflect the BP — sanity-check before stepping.
         assert mgr._callbacks.get_inspect_enabled() & 0b01 != 0
 
@@ -2347,7 +2318,7 @@ class TestRustInspectMemReadDispatch:
             except Exception:
                 pass
 
-        mgr._get_inspect_proxy().b('mem_read', when='after', action=on_read)
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
         mgr.run(max_steps=5)
 
         assert fire_count[0] > 0, "BP must fire at least once"
@@ -2376,13 +2347,15 @@ class TestRustInspectMemWriteDispatch:
         events = []
 
         def on_write(s):
-            events.append((
-                s.inspect.mem_write_address,
-                s.inspect.mem_write_length,
-                s.inspect.mem_write_endness,
-            ))
+            events.append(
+                (
+                    s.inspect.mem_write_address,
+                    s.inspect.mem_write_length,
+                    s.inspect.mem_write_endness,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
+        mgr._get_inspect_proxy().b("mem_write", when="after", action=on_write)
         # Bitmask must reflect the BP — sanity-check before stepping.
         assert mgr._callbacks.get_inspect_enabled() & 0b10 != 0
 
@@ -2441,7 +2414,7 @@ class TestRustInspectMemWriteDispatch:
             except Exception:
                 pass
 
-        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
+        mgr._get_inspect_proxy().b("mem_write", when="after", action=on_write)
         # 5 steps is enough to hit a store; bound steps so a stuck loop
         # would still time out via pytest's default timeout.
         mgr.run(max_steps=5)
@@ -2461,7 +2434,7 @@ class TestRustInspectExtendedEvents:
     def _make_mgr_with_state_id(self, project):
         state = project.factory.entry_state()
         mgr = RustExplorationManager(project, [state])
-        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state"
         return mgr, state_ids[0], state
 
@@ -2469,16 +2442,16 @@ class TestRustInspectExtendedEvents:
         """PythonCallbacks gained set_inspect_{reg_read,reg_write,instruction,irsb,exit}."""
         cbs = PythonCallbacks()
         for name in (
-            'set_inspect_reg_read',
-            'set_inspect_reg_write',
-            'set_inspect_instruction',
-            'set_inspect_irsb',
-            'set_inspect_exit',
-            'call_inspect_reg_read',
-            'call_inspect_reg_write',
-            'call_inspect_instruction',
-            'call_inspect_irsb',
-            'call_inspect_exit',
+            "set_inspect_reg_read",
+            "set_inspect_reg_write",
+            "set_inspect_instruction",
+            "set_inspect_irsb",
+            "set_inspect_exit",
+            "call_inspect_reg_read",
+            "call_inspect_reg_write",
+            "call_inspect_instruction",
+            "call_inspect_irsb",
+            "call_inspect_exit",
         ):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
@@ -2492,15 +2465,15 @@ class TestRustInspectExtendedEvents:
         proxy_inspect = mgr._get_inspect_proxy()
         # Bits per _INSPECT_EVENT_BITS: 2/3/5/6/7 for these events.
         expected = {
-            'reg_read': 1 << 2,
-            'reg_write': 1 << 3,
-            'exit': 1 << 5,
-            'instruction': 1 << 6,
-            'irsb': 1 << 7,
+            "reg_read": 1 << 2,
+            "reg_write": 1 << 3,
+            "exit": 1 << 5,
+            "instruction": 1 << 6,
+            "irsb": 1 << 7,
         }
         for evt, bit in expected.items():
             mask_before = mgr._callbacks.get_inspect_enabled()
-            proxy_inspect.b(evt, when='before', action=lambda s: None)
+            proxy_inspect.b(evt, when="before", action=lambda s: None)
             mask_after = mgr._callbacks.get_inspect_enabled()
             assert mask_after & bit != 0, f"{evt} did not set bit {bit:#b}"
             assert mask_after != mask_before
@@ -2508,38 +2481,44 @@ class TestRustInspectExtendedEvents:
     def test_dispatch_reg_read_fires_bp(self, fauxware_project):
         """_cb_inspect_reg_read invokes the user's BP with reg_read_* attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         events = []
 
         def on_read(s):
-            events.append((
-                s.inspect.reg_read_offset,
-                s.inspect.reg_read_length,
-                s.inspect.reg_read_expr,
-            ))
+            events.append(
+                (
+                    s.inspect.reg_read_offset,
+                    s.inspect.reg_read_length,
+                    s.inspect.reg_read_expr,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('reg_read', when='after', action=on_read)
-        val = claripy.BVV(0xdeadbeef, 32)
-        mgr._cb_inspect_reg_read(sid, 'after', 16, 4, val)
+        mgr._get_inspect_proxy().b("reg_read", when="after", action=on_read)
+        val = claripy.BVV(0xDEADBEEF, 32)
+        mgr._cb_inspect_reg_read(sid, "after", 16, 4, val)
 
         assert events == [(16, 4, val)]
 
     def test_dispatch_reg_write_fires_bp(self, fauxware_project):
         """_cb_inspect_reg_write invokes the user's BP with reg_write_* attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_write(s):
-            seen.append((
-                s.inspect.reg_write_offset,
-                s.inspect.reg_write_length,
-                s.inspect.reg_write_expr,
-            ))
+            seen.append(
+                (
+                    s.inspect.reg_write_offset,
+                    s.inspect.reg_write_length,
+                    s.inspect.reg_write_expr,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('reg_write', when='after', action=on_write)
-        val = claripy.BVS('written_reg', 32)
-        mgr._cb_inspect_reg_write(sid, 'after', 32, 4, val)
+        mgr._get_inspect_proxy().b("reg_write", when="after", action=on_write)
+        val = claripy.BVS("written_reg", 32)
+        mgr._cb_inspect_reg_write(sid, "after", 32, 4, val)
 
         assert seen == [(32, 4, val)]
 
@@ -2551,8 +2530,8 @@ class TestRustInspectExtendedEvents:
         def on_insn(s):
             addrs.append(s.inspect.instruction)
 
-        mgr._get_inspect_proxy().b('instruction', when='before', action=on_insn)
-        mgr._cb_inspect_instruction(sid, 'before', 0x401234)
+        mgr._get_inspect_proxy().b("instruction", when="before", action=on_insn)
+        mgr._cb_inspect_instruction(sid, "before", 0x401234)
         assert addrs == [0x401234]
 
     def test_dispatch_irsb_fires_bp(self, fauxware_project):
@@ -2563,26 +2542,29 @@ class TestRustInspectExtendedEvents:
         def on_irsb(s):
             addrs.append(s.inspect.address)
 
-        mgr._get_inspect_proxy().b('irsb', when='before', action=on_irsb)
-        mgr._cb_inspect_irsb(sid, 'before', 0x400580)
+        mgr._get_inspect_proxy().b("irsb", when="before", action=on_irsb)
+        mgr._cb_inspect_irsb(sid, "before", 0x400580)
         assert addrs == [0x400580]
 
     def test_dispatch_exit_fires_bp(self, fauxware_project):
         """_cb_inspect_exit invokes the user's BP with target/guard/jumpkind."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_exit(s):
-            seen.append((
-                s.inspect.exit_target,
-                s.inspect.exit_guard,
-                s.inspect.exit_jumpkind,
-            ))
+            seen.append(
+                (
+                    s.inspect.exit_target,
+                    s.inspect.exit_guard,
+                    s.inspect.exit_jumpkind,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('exit', when='before', action=on_exit)
-        guard = claripy.BVS('cond', 1)
-        mgr._cb_inspect_exit(sid, 'before', 0x401500, 'Ijk_Boring', guard)
+        mgr._get_inspect_proxy().b("exit", when="before", action=on_exit)
+        guard = claripy.BVS("cond", 1)
+        mgr._cb_inspect_exit(sid, "before", 0x401500, "Ijk_Boring", guard)
 
         assert len(seen) == 1
         target, g, jk = seen[0]
@@ -2590,7 +2572,7 @@ class TestRustInspectExtendedEvents:
         # Project is AMD64 (fauxware) — addresses are 64-bit.
         assert target.size() == 64
         assert g is guard
-        assert jk == 'Ijk_Boring'
+        assert jk == "Ijk_Boring"
 
     def test_instruction_fires_during_exploration(self, fauxware_project):
         """instruction BP receives events for every IMark during exploration."""
@@ -2603,7 +2585,7 @@ class TestRustInspectExtendedEvents:
         def on_insn(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('instruction', when='before', action=on_insn)
+        mgr._get_inspect_proxy().b("instruction", when="before", action=on_insn)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 6) != 0
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no instruction events captured"
@@ -2619,7 +2601,7 @@ class TestRustInspectExtendedEvents:
         def on_irsb(s):
             addrs.append(s.inspect.address)
 
-        mgr._get_inspect_proxy().b('irsb', when='before', action=on_irsb)
+        mgr._get_inspect_proxy().b("irsb", when="before", action=on_irsb)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 7) != 0
         mgr.run(max_steps=3)
         assert len(addrs) > 0, "no irsb events captured"
@@ -2638,7 +2620,7 @@ class TestRustInspectExtendedEvents:
         def on_read(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('reg_read', when='after', action=on_read)
+        mgr._get_inspect_proxy().b("reg_read", when="after", action=on_read)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 2) != 0
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no reg_read events captured"
@@ -2654,7 +2636,7 @@ class TestRustInspectExtendedEvents:
         def on_write(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('reg_write', when='after', action=on_write)
+        mgr._get_inspect_proxy().b("reg_write", when="after", action=on_write)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 3) != 0
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no reg_write events captured"
@@ -2672,10 +2654,10 @@ class TestRustInspectExtendedEvents:
         """angr-4ai9: PythonCallbacks gained set_inspect_{call,return}."""
         cbs = PythonCallbacks()
         for name in (
-            'set_inspect_call',
-            'set_inspect_return',
-            'call_inspect_call',
-            'call_inspect_return',
+            "set_inspect_call",
+            "set_inspect_return",
+            "call_inspect_call",
+            "call_inspect_return",
         ):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
@@ -2687,45 +2669,47 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('call', when='before', action=lambda s: None)
+        ins.b("call", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
-        ins.b('return', when='before', action=lambda s: None)
+        ins.b("return", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
 
     def test_dispatch_call_fires_bp(self, fauxware_project):
         """_cb_inspect_call invokes the user's BP with function_address."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_call(s):
             seen.append(s.inspect.function_address)
 
-        mgr._get_inspect_proxy().b('call', when='before', action=on_call)
-        mgr._cb_inspect_call(sid, 'before', 0x401abc)
+        mgr._get_inspect_proxy().b("call", when="before", action=on_call)
+        mgr._cb_inspect_call(sid, "before", 0x401ABC)
 
         assert len(seen) == 1
         addr = seen[0]
         assert isinstance(addr, claripy.ast.bv.BV)
         assert addr.size() == 64  # AMD64
-        assert addr.concrete_value == 0x401abc
+        assert addr.concrete_value == 0x401ABC
 
     def test_dispatch_return_fires_bp(self, fauxware_project):
         """_cb_inspect_return invokes the user's BP with function_address."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_ret(s):
             seen.append(s.inspect.function_address)
 
-        mgr._get_inspect_proxy().b('return', when='before', action=on_ret)
-        mgr._cb_inspect_return(sid, 'before', 0x4011a0)
+        mgr._get_inspect_proxy().b("return", when="before", action=on_ret)
+        mgr._cb_inspect_return(sid, "before", 0x4011A0)
 
         assert len(seen) == 1
         addr = seen[0]
         assert isinstance(addr, claripy.ast.bv.BV)
-        assert addr.concrete_value == 0x4011a0
+        assert addr.concrete_value == 0x4011A0
 
     def test_call_fires_before_and_after(self, fauxware_project):
         """A `call` BP registered for either phase sees only its phase."""
@@ -2734,14 +2718,18 @@ class TestRustInspectExtendedEvents:
         after_count = [0]
 
         mgr._get_inspect_proxy().b(
-            'call', when='before', action=lambda s: before_count.__setitem__(0, before_count[0] + 1),
+            "call",
+            when="before",
+            action=lambda s: before_count.__setitem__(0, before_count[0] + 1),
         )
         mgr._get_inspect_proxy().b(
-            'call', when='after', action=lambda s: after_count.__setitem__(0, after_count[0] + 1),
+            "call",
+            when="after",
+            action=lambda s: after_count.__setitem__(0, after_count[0] + 1),
         )
         # Drive both phases for a single call event.
-        mgr._cb_inspect_call(sid, 'before', 0x40_0000)
-        mgr._cb_inspect_call(sid, 'after', 0x40_0000)
+        mgr._cb_inspect_call(sid, "before", 0x40_0000)
+        mgr._cb_inspect_call(sid, "after", 0x40_0000)
         assert before_count[0] == 1
         assert after_count[0] == 1
 
@@ -2756,7 +2744,7 @@ class TestRustInspectExtendedEvents:
         def on_call(s):
             targets.append(s.inspect.function_address.concrete_value)
 
-        mgr._get_inspect_proxy().b('call', when='before', action=on_call)
+        mgr._get_inspect_proxy().b("call", when="before", action=on_call)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
         # fauxware's _start calls __libc_start_main pretty early; bound
         # the run so the test stays fast even if no internal call fires.
@@ -2779,7 +2767,7 @@ class TestRustInspectExtendedEvents:
         def on_ret(s):
             seen.append(s.inspect.function_address.concrete_value)
 
-        mgr._get_inspect_proxy().b('return', when='before', action=on_ret)
+        mgr._get_inspect_proxy().b("return", when="before", action=on_ret)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
         mgr.run(max_steps=20)
         assert all(t >= 0 for t in seen)
@@ -2790,10 +2778,10 @@ class TestRustInspectExtendedEvents:
         """PythonCallbacks gained set_inspect_{tmp_read,tmp_write}."""
         cbs = PythonCallbacks()
         for name in (
-            'set_inspect_tmp_read',
-            'set_inspect_tmp_write',
-            'call_inspect_tmp_read',
-            'call_inspect_tmp_write',
+            "set_inspect_tmp_read",
+            "set_inspect_tmp_write",
+            "call_inspect_tmp_read",
+            "call_inspect_tmp_write",
         ):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
@@ -2805,43 +2793,49 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('tmp_read', when='after', action=lambda s: None)
+        ins.b("tmp_read", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 13) != 0
-        ins.b('tmp_write', when='after', action=lambda s: None)
+        ins.b("tmp_write", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 14) != 0
 
     def test_dispatch_tmp_read_fires_bp(self, fauxware_project):
         """_cb_inspect_tmp_read invokes the user's BP with tmp_read_* attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_read(s):
-            seen.append((
-                s.inspect.tmp_read_num,
-                s.inspect.tmp_read_expr,
-            ))
+            seen.append(
+                (
+                    s.inspect.tmp_read_num,
+                    s.inspect.tmp_read_expr,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('tmp_read', when='after', action=on_read)
-        val = claripy.BVV(0xdeadbeef, 32)
-        mgr._cb_inspect_tmp_read(sid, 'after', 7, val)
+        mgr._get_inspect_proxy().b("tmp_read", when="after", action=on_read)
+        val = claripy.BVV(0xDEADBEEF, 32)
+        mgr._cb_inspect_tmp_read(sid, "after", 7, val)
         assert seen == [(7, val)]
 
     def test_dispatch_tmp_write_fires_bp(self, fauxware_project):
         """_cb_inspect_tmp_write invokes the user's BP with tmp_write_* attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_write(s):
-            seen.append((
-                s.inspect.tmp_write_num,
-                s.inspect.tmp_write_expr,
-            ))
+            seen.append(
+                (
+                    s.inspect.tmp_write_num,
+                    s.inspect.tmp_write_expr,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('tmp_write', when='after', action=on_write)
-        val = claripy.BVS('written_tmp', 64)
-        mgr._cb_inspect_tmp_write(sid, 'after', 3, val)
+        mgr._get_inspect_proxy().b("tmp_write", when="after", action=on_write)
+        val = claripy.BVS("written_tmp", 64)
+        mgr._cb_inspect_tmp_write(sid, "after", 3, val)
         assert seen == [(3, val)]
 
     def test_tmp_read_fires_during_exploration(self, fauxware_project):
@@ -2855,7 +2849,7 @@ class TestRustInspectExtendedEvents:
         def on_read(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('tmp_read', when='after', action=on_read)
+        mgr._get_inspect_proxy().b("tmp_read", when="after", action=on_read)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 13) != 0
         mgr.run(max_steps=3)
         # Every IRSB has multiple RdTmps (binop args, store data, ...).
@@ -2872,7 +2866,7 @@ class TestRustInspectExtendedEvents:
         def on_write(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('tmp_write', when='after', action=on_write)
+        mgr._get_inspect_proxy().b("tmp_write", when="after", action=on_write)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 14) != 0
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no tmp_write events captured"
@@ -2882,7 +2876,7 @@ class TestRustInspectExtendedEvents:
     def test_statement_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_statement / call_inspect_statement."""
         cbs = PythonCallbacks()
-        for name in ('set_inspect_statement', 'call_inspect_statement'):
+        for name in ("set_inspect_statement", "call_inspect_statement"):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
     def test_statement_bit_matches_spec(self, fauxware_project):
@@ -2893,7 +2887,7 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('statement', when='before', action=lambda s: None)
+        ins.b("statement", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 15) != 0
 
     def test_dispatch_statement_fires_bp(self, fauxware_project):
@@ -2904,8 +2898,8 @@ class TestRustInspectExtendedEvents:
         def on_stmt(s):
             seen.append(s.inspect.statement)
 
-        mgr._get_inspect_proxy().b('statement', when='before', action=on_stmt)
-        mgr._cb_inspect_statement(sid, 'before', 4)
+        mgr._get_inspect_proxy().b("statement", when="before", action=on_stmt)
+        mgr._cb_inspect_statement(sid, "before", 4)
         assert seen == [4]
 
     def test_statement_fires_during_exploration(self, fauxware_project):
@@ -2919,21 +2913,19 @@ class TestRustInspectExtendedEvents:
         def on_stmt(s):
             seen_indices.append(s.inspect.statement)
 
-        mgr._get_inspect_proxy().b('statement', when='before', action=on_stmt)
+        mgr._get_inspect_proxy().b("statement", when="before", action=on_stmt)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 15) != 0
         mgr.run(max_steps=3)
         # Every IRSB has multiple statements; we should see indices starting at 0.
         assert len(seen_indices) > 0, "no statement events captured"
-        assert min(seen_indices) == 0, (
-            f"stmt indices should start at 0, got min={min(seen_indices)}"
-        )
+        assert min(seen_indices) == 0, f"stmt indices should start at 0, got min={min(seen_indices)}"
 
     # ---- angr-lge2: expr (per VEX IR expression eval) ----
 
     def test_expr_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_expr / call_inspect_expr."""
         cbs = PythonCallbacks()
-        for name in ('set_inspect_expr', 'call_inspect_expr'):
+        for name in ("set_inspect_expr", "call_inspect_expr"):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
     def test_expr_bit_matches_spec(self, fauxware_project):
@@ -2944,21 +2936,22 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('expr', when='after', action=lambda s: None)
+        ins.b("expr", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 16) != 0
 
     def test_dispatch_expr_fires_bp(self, fauxware_project):
         """_cb_inspect_expr invokes the user's BP with expr_result attr."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_expr(s):
             seen.append((s.inspect.expr, s.inspect.expr_result))
 
-        mgr._get_inspect_proxy().b('expr', when='after', action=on_expr)
-        sentinel = claripy.BVV(0xdeadbeef, 32)
-        mgr._cb_inspect_expr(sid, 'after', sentinel)
+        mgr._get_inspect_proxy().b("expr", when="after", action=on_expr)
+        sentinel = claripy.BVV(0xDEADBEEF, 32)
+        mgr._cb_inspect_expr(sid, "after", sentinel)
         assert len(seen) == 1
         expr_attr, expr_result = seen[0]
         assert expr_attr is None
@@ -2975,7 +2968,7 @@ class TestRustInspectExtendedEvents:
         def on_expr(s):
             fire_count[0] += 1
 
-        mgr._get_inspect_proxy().b('expr', when='after', action=on_expr)
+        mgr._get_inspect_proxy().b("expr", when="after", action=on_expr)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 16) != 0
         mgr.run(max_steps=3)
         # eval_expr_with_callbacks fires for every IR expression in every
@@ -2988,8 +2981,7 @@ class TestRustInspectExtendedEvents:
     def test_address_concretization_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_address_concretization / call_*."""
         cbs = PythonCallbacks()
-        for name in ('set_inspect_address_concretization',
-                     'call_inspect_address_concretization'):
+        for name in ("set_inspect_address_concretization", "call_inspect_address_concretization"):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
     def test_address_concretization_bit_matches_spec(self, fauxware_project):
@@ -3000,31 +2992,34 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('address_concretization', when='before', action=lambda s: None)
+        ins.b("address_concretization", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 17) != 0
 
     def test_dispatch_address_concretization_before_fires_bp(self, fauxware_project):
         """_cb_inspect_address_concretization invokes the BP for BP_BEFORE."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_ac(s):
-            seen.append((
-                s.inspect.address_concretization_action,
-                s.inspect.address_concretization_expr,
-                s.inspect.address_concretization_result,
-                s.inspect.address_concretization_strategy,
-                s.inspect.address_concretization_memory,
-                s.inspect.address_concretization_add_constraints,
-            ))
+            seen.append(
+                (
+                    s.inspect.address_concretization_action,
+                    s.inspect.address_concretization_expr,
+                    s.inspect.address_concretization_result,
+                    s.inspect.address_concretization_strategy,
+                    s.inspect.address_concretization_memory,
+                    s.inspect.address_concretization_add_constraints,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('address_concretization', when='before', action=on_ac)
-        addr_ast = claripy.BVS('sym_addr', 64)
-        mgr._cb_inspect_address_concretization(sid, 'before', 'load', addr_ast, None)
+        mgr._get_inspect_proxy().b("address_concretization", when="before", action=on_ac)
+        addr_ast = claripy.BVS("sym_addr", 64)
+        mgr._cb_inspect_address_concretization(sid, "before", "load", addr_ast, None)
         assert len(seen) == 1
         action, expr_ast, result, strategy, memory, add_constraints = seen[0]
-        assert action == 'load'
+        assert action == "load"
         assert expr_ast is addr_ast
         assert result is None
         # MVP gap: strategy/memory/add_constraints are not surfaced.
@@ -3035,23 +3030,30 @@ class TestRustInspectExtendedEvents:
     def test_dispatch_address_concretization_after_carries_result(self, fauxware_project):
         """_cb_inspect_address_concretization passes concretization result list on AFTER."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_ac(s):
-            seen.append((
-                s.inspect.address_concretization_action,
-                s.inspect.address_concretization_result,
-            ))
+            seen.append(
+                (
+                    s.inspect.address_concretization_action,
+                    s.inspect.address_concretization_result,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('address_concretization', when='after', action=on_ac)
-        addr_ast = claripy.BVS('sym_addr', 64)
+        mgr._get_inspect_proxy().b("address_concretization", when="after", action=on_ac)
+        addr_ast = claripy.BVS("sym_addr", 64)
         mgr._cb_inspect_address_concretization(
-            sid, 'after', 'store', addr_ast, [0x400000, 0x400004, 0x400008],
+            sid,
+            "after",
+            "store",
+            addr_ast,
+            [0x400000, 0x400004, 0x400008],
         )
         assert len(seen) == 1
         action, result = seen[0]
-        assert action == 'store'
+        assert action == "store"
         assert result == [0x400000, 0x400004, 0x400008]
 
     # ---- angr-vfst: symbolic_variable ----
@@ -3059,8 +3061,7 @@ class TestRustInspectExtendedEvents:
     def test_symbolic_variable_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_symbolic_variable / call_*."""
         cbs = PythonCallbacks()
-        for name in ('set_inspect_symbolic_variable',
-                     'call_inspect_symbolic_variable'):
+        for name in ("set_inspect_symbolic_variable", "call_inspect_symbolic_variable"):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
     def test_symbolic_variable_bit_matches_spec(self, fauxware_project):
@@ -3071,28 +3072,31 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('symbolic_variable', when='after', action=lambda s: None)
+        ins.b("symbolic_variable", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 18) != 0
 
     def test_dispatch_symbolic_variable_fires_bp(self, fauxware_project):
         """_cb_inspect_symbolic_variable invokes BP with name/size/expr attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_sv(s):
-            seen.append((
-                s.inspect.symbolic_name,
-                s.inspect.symbolic_size,
-                s.inspect.symbolic_expr,
-            ))
+            seen.append(
+                (
+                    s.inspect.symbolic_name,
+                    s.inspect.symbolic_size,
+                    s.inspect.symbolic_expr,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('symbolic_variable', when='after', action=on_sv)
-        expr_ast = claripy.BVS('mem_400000_4', 32)
-        mgr._cb_inspect_symbolic_variable(sid, 'after', 'mem_400000_4', 32, expr_ast)
+        mgr._get_inspect_proxy().b("symbolic_variable", when="after", action=on_sv)
+        expr_ast = claripy.BVS("mem_400000_4", 32)
+        mgr._cb_inspect_symbolic_variable(sid, "after", "mem_400000_4", 32, expr_ast)
         assert len(seen) == 1
         name, size, expr = seen[0]
-        assert name == 'mem_400000_4'
+        assert name == "mem_400000_4"
         assert size == 32
         assert expr is expr_ast
 
@@ -3105,14 +3109,20 @@ class TestRustInspectExtendedEvents:
         from angr.exploration.rust_state_proxy import (
             _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
         )
+
         cbs = PythonCallbacks()
-        assert _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS == frozenset({
-            'simprocedure', 'syscall', 'dirty',
-        })
-        for evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
-            assert not hasattr(cbs, f'set_inspect_{evt}'), (
-                f"unexpected Rust slot for python-dispatched event {evt!r}"
+        assert (
+            frozenset(
+                {
+                    "simprocedure",
+                    "syscall",
+                    "dirty",
+                }
             )
+            == _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS
+        )
+        for evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
+            assert not hasattr(cbs, f"set_inspect_{evt}"), f"unexpected Rust slot for python-dispatched event {evt!r}"
 
     def test_simprocedure_syscall_dirty_bits_match_spec(self, fauxware_project):
         """Registering a `simprocedure`/`syscall`/`dirty` BP flips the
@@ -3124,11 +3134,11 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('simprocedure', when='before', action=lambda s: None)
+        ins.b("simprocedure", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 10) != 0
-        ins.b('syscall', when='before', action=lambda s: None)
+        ins.b("syscall", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 11) != 0
-        ins.b('dirty', when='before', action=lambda s: None)
+        ins.b("dirty", when="before", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 12) != 0
 
     def test_dispatch_simprocedure_fires_bp(self, fauxware_project):
@@ -3137,19 +3147,21 @@ class TestRustInspectExtendedEvents:
         seen = []
 
         def on_sp(s):
-            seen.append((
-                s.inspect.simprocedure_name,
-                s.inspect.simprocedure_addr,
-                s.inspect.simprocedure,
-                s.inspect.simprocedure_result,
-            ))
+            seen.append(
+                (
+                    s.inspect.simprocedure_name,
+                    s.inspect.simprocedure_addr,
+                    s.inspect.simprocedure,
+                    s.inspect.simprocedure_result,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('simprocedure', when='before', action=on_sp)
+        mgr._get_inspect_proxy().b("simprocedure", when="before", action=on_sp)
         sentinel = object()
-        mgr._cb_inspect_simprocedure(sid, 'before', 'malloc', 0x401000, sentinel, None)
+        mgr._cb_inspect_simprocedure(sid, "before", "malloc", 0x401000, sentinel, None)
         assert len(seen) == 1
         name, addr, inst, result = seen[0]
-        assert name == 'malloc'
+        assert name == "malloc"
         assert addr == 0x401000
         assert inst is sentinel
         assert result is None
@@ -3162,36 +3174,39 @@ class TestRustInspectExtendedEvents:
         def on_sc(s):
             seen.append((s.inspect.syscall_name, s.inspect.simprocedure))
 
-        mgr._get_inspect_proxy().b('syscall', when='after', action=on_sc)
+        mgr._get_inspect_proxy().b("syscall", when="after", action=on_sc)
         sentinel = object()
-        mgr._cb_inspect_syscall(sid, 'after', 'read', sentinel)
+        mgr._cb_inspect_syscall(sid, "after", "read", sentinel)
         assert len(seen) == 1
         sc_name, inst = seen[0]
-        assert sc_name == 'read'
+        assert sc_name == "read"
         assert inst is sentinel
 
     def test_dispatch_dirty_fires_bp(self, fauxware_project):
         """_cb_inspect_dirty invokes the user's BP with all four attrs."""
         import claripy
+
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
 
         def on_dirty(s):
-            seen.append((
-                s.inspect.dirty_name,
-                s.inspect.dirty_handler,
-                s.inspect.dirty_args,
-                s.inspect.dirty_result,
-            ))
+            seen.append(
+                (
+                    s.inspect.dirty_name,
+                    s.inspect.dirty_handler,
+                    s.inspect.dirty_args,
+                    s.inspect.dirty_result,
+                )
+            )
 
-        mgr._get_inspect_proxy().b('dirty', when='after', action=on_dirty)
+        mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
         handler = lambda *a: None  # noqa: E731
         args = [claripy.BVV(0x10, 64), claripy.BVV(0x20, 64)]
-        result = claripy.BVV(0xdeadbeef, 64)
-        mgr._cb_inspect_dirty(sid, 'after', 'amd64g_dirtyhelper_RDTSC', handler, args, result)
+        result = claripy.BVV(0xDEADBEEF, 64)
+        mgr._cb_inspect_dirty(sid, "after", "amd64g_dirtyhelper_RDTSC", handler, args, result)
         assert len(seen) == 1
         name, hand, ar, res = seen[0]
-        assert name == 'amd64g_dirtyhelper_RDTSC'
+        assert name == "amd64g_dirtyhelper_RDTSC"
         assert hand is handler
         assert ar == args
         assert res is result
@@ -3207,7 +3222,7 @@ class TestRustInspectExtendedEvents:
         def on_sp(s):
             names.append(s.inspect.simprocedure_name)
 
-        mgr._get_inspect_proxy().b('simprocedure', when='before', action=on_sp)
+        mgr._get_inspect_proxy().b("simprocedure", when="before", action=on_sp)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 10) != 0
         mgr.run(max_steps=30)
         # fauxware hits __libc_start_main, puts, read, strcmp, etc. very
@@ -3220,7 +3235,7 @@ class TestRustInspectExtendedEvents:
     def test_fork_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_fork / call_inspect_fork."""
         cbs = PythonCallbacks()
-        for name in ('set_inspect_fork', 'call_inspect_fork'):
+        for name in ("set_inspect_fork", "call_inspect_fork"):
             assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
 
     def test_fork_bit_matches_spec(self, fauxware_project):
@@ -3231,7 +3246,7 @@ class TestRustInspectExtendedEvents:
         ins = mgr._get_inspect_proxy()
 
         assert mgr._callbacks.get_inspect_enabled() == 0
-        ins.b('fork', when='after', action=lambda s: None)
+        ins.b("fork", when="after", action=lambda s: None)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 4) != 0
 
     def test_dispatch_fork_fires_bp(self, fauxware_project):
@@ -3245,8 +3260,8 @@ class TestRustInspectExtendedEvents:
             # inspect_attributes table has none for fork).
             fired.append(s)
 
-        mgr._get_inspect_proxy().b('fork', when='after', action=on_fork)
-        mgr._cb_inspect_fork(sid, 'after')
+        mgr._get_inspect_proxy().b("fork", when="after", action=on_fork)
+        mgr._cb_inspect_fork(sid, "after")
         assert len(fired) == 1
 
     def test_fork_fires_during_exploration(self, fauxware_project):
@@ -3266,7 +3281,7 @@ class TestRustInspectExtendedEvents:
         def on_fork(s):
             fork_count[0] += 1
 
-        mgr._get_inspect_proxy().b('fork', when='after', action=on_fork)
+        mgr._get_inspect_proxy().b("fork", when="after", action=on_fork)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 4) != 0
         mgr.run(max_steps=40)
         # fauxware has at least one symbolic branch within 40 steps;
@@ -3291,27 +3306,28 @@ class TestRustInspectAllowlistConsistency:
             _RUST_INSPECT_EVENT_BITS,
             _RUST_INSPECT_SUPPORTED_EVENTS,
         )
-        assert _RUST_INSPECT_SUPPORTED_EVENTS == frozenset(_INSPECT_EVENT_SPECS)
+
+        assert frozenset(_INSPECT_EVENT_SPECS) == _RUST_INSPECT_SUPPORTED_EVENTS
         assert set(_RUST_INSPECT_ATTRS_BY_EVENT) == set(_INSPECT_EVENT_SPECS)
         assert set(_RUST_INSPECT_EVENT_BITS) == set(_INSPECT_EVENT_SPECS)
 
     def test_event_bits_are_unique_and_in_range(self):
         """Every supported event has a unique bit position fitting in u32."""
         from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+
         bits = [spec["bit"] for spec in _INSPECT_EVENT_SPECS.values()]
         assert len(bits) == len(set(bits)), f"duplicate bits in specs: {bits}"
         # angr-4ai9 widened inspect_enabled from u8 to u16 to make room for
         # call/return (8/9); angr-lge2 widened from u16 to u32 to make room
         # for `expr` (bit 16) after `statement` filled bit 15.
-        assert all(0 <= b < 32 for b in bits), (
-            "inspect_enabled is a u32 — bits must be in 0..=31"
-        )
+        assert all(0 <= b < 32 for b in bits), "inspect_enabled is a u32 — bits must be in 0..=31"
 
     def test_every_supported_event_has_dispatch_method(self):
         """A supported event without a `_cb_inspect_<event>` method on
         RustExplorationManager would silently be enabled in the bitmask
         but never fire — assert one exists per event."""
         from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+
         for evt in _INSPECT_EVENT_SPECS:
             attr = f"_cb_inspect_{evt}"
             assert hasattr(RustExplorationManager, attr), (
@@ -3335,6 +3351,7 @@ class TestRustInspectAllowlistConsistency:
             _INSPECT_EVENT_SPECS,
             _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
         )
+
         cbs = PythonCallbacks()
         for evt in _INSPECT_EVENT_SPECS:
             if evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
@@ -3363,7 +3380,7 @@ class TestRustInspectAllowlistConsistency:
             if evt in _RUST_INSPECT_SUPPORTED_EVENTS:
                 continue
             try:
-                ins.b(evt, when='before', action=lambda s: None)
+                ins.b(evt, when="before", action=lambda s: None)
             except NotImplementedError:
                 continue
             unhandled.append(evt)
@@ -3383,12 +3400,11 @@ class TestRustInspectAllowlistConsistency:
             _RUST_INSPECT_SUPPORTED_EVENTS,
             _format_unsupported_event_msg,
         )
+
         msg = _format_unsupported_event_msg("call")
         for evt in _RUST_INSPECT_SUPPORTED_EVENTS:
             assert evt in msg, (
-                f"supported event {evt!r} missing from rejection "
-                f"message — would mislead users about what is "
-                f"available"
+                f"supported event {evt!r} missing from rejection message — would mislead users about what is available"
             )
 
     def test_manager_breakpoint_storage_matches_specs(self, fauxware_project):
@@ -3445,15 +3461,15 @@ class TestStatePluginsProxy:
         """state.globals copied from the source SimState; writes persist."""
 
         state = fauxware_project.factory.entry_state()
-        state.globals['init_key'] = 'init_value'
+        state.globals["init_key"] = "init_value"
         mgr = RustExplorationManager(fauxware_project, [state])
 
         proxy = mgr.proxy.active[0]
-        assert proxy.globals.get('init_key') == 'init_value'
-        proxy.globals['new_key'] = 42
+        assert proxy.globals.get("init_key") == "init_value"
+        proxy.globals["new_key"] = 42
         # Re-fetch
         proxy2 = mgr.proxy.active[0]
-        assert proxy2.globals.get('new_key') == 42
+        assert proxy2.globals.get("new_key") == 42
 
     def test_options_inherited_by_forked_states(self, fauxware_project):
         """Children forked in Rust inherit options from their root state on
@@ -3468,11 +3484,10 @@ class TestStatePluginsProxy:
         mgr.run(max_steps=20)
 
         # Every state in any stash should see LAZY_SOLVES via parent walk.
-        for stash in ('active', 'deadended', 'found'):
+        for stash in ("active", "deadended", "found"):
             for sid in mgr._rust_mgr.get_state_ids(stash):
                 opts = mgr.get_state_options_py(sid)
-                assert o.LAZY_SOLVES in opts, \
-                    f"state {sid} in {stash} missing inherited LAZY_SOLVES"
+                assert o.LAZY_SOLVES in opts, f"state {sid} in {stash} missing inherited LAZY_SOLVES"
 
     def test_heap_mmap_base_exposed(self, fauxware_project):
         """state.heap.mmap_base reads/writes through to the Rust state."""
@@ -3531,9 +3546,7 @@ class TestStatePluginsProxy:
         for proxy in mgr.proxy.active:
             jk = proxy.scratch.jumpkind
             # Either no transitions yet (None) or a known Ijk_*.
-            assert jk is None or jk.startswith("Ijk_"), (
-                f"unexpected jumpkind {jk!r}"
-            )
+            assert jk is None or jk.startswith("Ijk_"), f"unexpected jumpkind {jk!r}"
 
     def test_scratch_unsupported_attrs_are_none(self, fauxware_project):
         """SimStateScratch attributes the Rust engine doesn't persist
@@ -3596,6 +3609,7 @@ class TestRegisterProxySymbolicRecovery:
         meant to fix.
         """
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     @staticmethod
@@ -3605,6 +3619,7 @@ class TestRegisterProxySymbolicRecovery:
         is properly cached for FFI round-trip. Returns ``(state_id, sym)``
         where ``sym`` is the originating claripy BVS."""
         import claripy
+
         sym = claripy.BVS("sym_rax_proxy_4pm1", 64)
         sid = mgr.create_state("active")
         mgr.set_state_register_symbolic_ast(sid, "rax", sym)
@@ -3622,9 +3637,7 @@ class TestRegisterProxySymbolicRecovery:
 
         ast = proxy.regs.rax
         assert ast is not None
-        assert hasattr(ast, "symbolic") and ast.symbolic, (
-            f"expected symbolic AST for rax, got {ast!r}"
-        )
+        assert hasattr(ast, "symbolic") and ast.symbolic, f"expected symbolic AST for rax, got {ast!r}"
         # Cached: the proxy must hand back the SAME Python object on
         # repeated reads. The constraint-add path relies on this — if the
         # second read returned a different BVS, the constraint added on the
@@ -3762,7 +3775,6 @@ class TestStateProxyCopySemantics:
         """Writing a register on the copy leaves the source register intact."""
         import claripy
 
-
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
@@ -3774,7 +3786,8 @@ class TestStateProxyCopySemantics:
 
         # Source is untouched
         assert proxy.regs.rax is original_rax or (
-            proxy.regs.rax.concrete and original_rax.concrete
+            proxy.regs.rax.concrete
+            and original_rax.concrete
             and proxy.regs.rax.concrete_value == original_rax.concrete_value
         )
         # Copy got the new value
@@ -3790,7 +3803,6 @@ class TestStateProxyCopySemantics:
         touches the state's solver).
         """
         import claripy
-
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -3925,7 +3937,6 @@ class TestStateProxyCopySemantics:
         don't leak (angr-yhe0)."""
         import gc
 
-
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
@@ -3950,7 +3961,6 @@ class TestStateProxyCopySemantics:
         do."""
         import gc
 
-
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
@@ -3969,7 +3979,6 @@ class TestStateProxyCopySemantics:
         ``_copies`` stash returns to its pre-fork count. Validates the
         full Spiller-style workload pattern (angr-yhe0)."""
         import gc
-
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -4014,7 +4023,9 @@ class TestSolverProxyTimeout:
         `state.solver.timeout = N` before evaluating.
         """
         import time
+
         import claripy
+
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         mgr = _RustExplorationManager("amd64")
@@ -4145,9 +4156,7 @@ class TestProxyLiskovGaps:
         with pytest.raises(claripy.errors.UnsatError):
             proxy.memory.load(addr_sym, 4)
 
-    def test_memory_store_symbolic_addr_single_solution_routes_multi(
-        self, fauxware_project
-    ):
+    def test_memory_store_symbolic_addr_single_solution_routes_multi(self, fauxware_project):
         """angr-4scu step 2: a symbolic-address write that resolves to a
         single concrete solution under the state's constraints lands in
         Rust memory and is visible through the proxy's concrete-addr load
@@ -4191,9 +4200,7 @@ class TestProxyLiskovGaps:
         loaded = proxy.memory.load(target, 4, endness="Iend_LE")
         assert loaded.concrete_value == 0xDEADBEEF
 
-    def test_memory_store_symbolic_addr_with_symbolic_value(
-        self, fauxware_project
-    ):
+    def test_memory_store_symbolic_addr_with_symbolic_value(self, fauxware_project):
         """A symbolic-AST value at a single-solution symbolic address
         registers the symbol in the shared cache (the Multi-cell path runs
         ``claripy_to_rustbv`` on the data AST), so a subsequent solver
@@ -4303,9 +4310,7 @@ class TestProxyMemoryFind:
         proxy = mgr.proxy.active[0]
 
         with pytest.raises(NotImplementedError, match="char_size"):
-            proxy.memory.find(
-                fauxware_project.entry, b"x", 16, char_size=2
-            )
+            proxy.memory.find(fauxware_project.entry, b"x", 16, char_size=2)
 
 
 # Gate-toggle parametrization table (angr-evu3): each SimProc-callback /
@@ -4391,9 +4396,7 @@ class TestCallbackMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         # Build a throwaway SimState matching what
         # ``_create_state_for_callback`` would hand to the helper.
         # Bind the proxy to the live seed state id so concrete-store / load
@@ -4412,9 +4415,7 @@ class TestCallbackMemoryProxyGate:
         / concrete-load fast path the proxy already supported."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4432,9 +4433,7 @@ class TestCallbackMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4454,12 +4453,9 @@ class TestCallbackMemoryProxyGate:
         ``posix/open.py`` crash discovered in step 4 parity validation when
         ``strlen.max_null_index == 0`` (null at offset 0).
         """
-        from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4482,9 +4478,7 @@ class TestCallbackMemoryProxyGate:
         import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4520,9 +4514,7 @@ class TestCallbackMemoryProxyGate:
                 angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
             },
         )
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4567,9 +4559,7 @@ class TestCallbackMemoryProxyReentryGuards:
         """
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4600,7 +4590,7 @@ class TestCallbackMemoryProxyReentryGuards:
         mgr, cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
         calls = []
         cb_state.memory.store = lambda *a, **k: calls.append((a, k))
-        mgr._cb_memory_store(0x7ffffffefff0, b"\x01\x02\x03\x04")
+        mgr._cb_memory_store(0x7FFFFFFEFFF0, b"\x01\x02\x03\x04")
         # Bypass returns early — the proxy memory is left untouched.
         assert calls == []
 
@@ -4652,9 +4642,7 @@ class TestRustMemoryProxyPluginGapStubs:
     def _install_proxy(self, fauxware_project):
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -4713,9 +4701,7 @@ class TestCallbackSolverProxyGate:
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -4730,9 +4716,7 @@ class TestCallbackSolverProxyGate:
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -4745,12 +4729,9 @@ class TestCallbackSolverProxyGate:
         """``state.solver.add(c)`` routes the constraint into the underlying
         Rust state's solver. ``state.solver.constraints`` reads it back."""
         import claripy
-        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -4769,9 +4750,7 @@ class TestCallbackSolverProxyGate:
         import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -4789,9 +4768,7 @@ class TestCallbackSolverProxyGate:
         import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_solver_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -4818,9 +4795,7 @@ class TestCallbackCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -4835,9 +4810,7 @@ class TestCallbackCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -4857,9 +4830,7 @@ class TestCallbackCallStackProxyGate:
         ``RustCallStackProxy`` shape)."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -4881,10 +4852,8 @@ class TestCallbackCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackFrameProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
-        mgr.explore(find=0x4006ed)
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         sid = mgr._rust_mgr.get_state_ids("found")[0]
         cb_state = fauxware_project.factory.entry_state()
@@ -4936,7 +4905,7 @@ class TestCallbackCallStackProxyGate:
         # ``TestExportCallStackProxyGate::test_sync_on_empty_rust_stack_installs_proxy``
         # when the export-gate tests ran after this one.
         original_frames = RustCallStackProxyPlugin._frames
-        type(proxy)._frames = property(lambda self: snapshot)  # noqa: SLF001
+        type(proxy)._frames = property(lambda self: snapshot)
         try:
             assert len(proxy) == 3
             top = proxy[0]
@@ -4964,9 +4933,7 @@ class TestCallbackCallStackProxyGate:
         cross-state_id callstack merge is out of scope for the gate."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -4979,9 +4946,7 @@ class TestCallbackCallStackProxyGate:
         practice."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -5027,9 +4992,7 @@ class TestExportCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
         mgr._sync_rust_callstack_to_state(target, seed_id)
@@ -5047,9 +5010,7 @@ class TestExportCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_callstack_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
         # Sanity: seed state has no Rust frames yet.
@@ -5066,10 +5027,8 @@ class TestExportCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_callstack_proxy=True
-        )
-        mgr.explore(find=0x4006ed)
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
+        mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.callstack, RustCallStackProxyPlugin)
@@ -5093,7 +5052,7 @@ class TestExportCallStackProxyGate:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr._use_export_callstack_proxy is False
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.callstack, CallStack)
@@ -5136,9 +5095,7 @@ class TestExportMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
         mgr._sync_rust_memory_to_state(target, seed_id)
@@ -5157,9 +5114,7 @@ class TestExportMemoryProxyGate:
         fires under the gate."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_memory_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
         calls: list[int] = []
@@ -5167,9 +5122,7 @@ class TestExportMemoryProxyGate:
         def _spy(self, _state, sid):
             calls.append(sid)
 
-        monkeypatch.setattr(
-            type(mgr), "_sync_rust_symbolic_objects_to_state", _spy
-        )
+        monkeypatch.setattr(type(mgr), "_sync_rust_symbolic_objects_to_state", _spy)
         mgr._sync_rust_memory_to_state(target, seed_id)
         # Proxy install short-circuits before the symbolic-AST helper runs.
         assert calls == []
@@ -5181,10 +5134,8 @@ class TestExportMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_export_memory_proxy=True
-        )
-        mgr.explore(find=0x4006ed)
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
+        mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.memory, RustMemoryProxy)
@@ -5208,7 +5159,7 @@ class TestExportMemoryProxyGate:
             use_callback_memory_proxy=False,
         )
         assert mgr._use_export_memory_proxy is False
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert not isinstance(found.memory, RustMemoryProxy)
@@ -5270,17 +5221,17 @@ class TestSimProcForkViaRustGate:
         # use_simproc_fork_via_rust=False explicitly so the legacy-dispatch
         # path is exercised even under a gates-on CI env (kwarg=False beats
         # the ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST env var).
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_simproc_fork_via_rust=False
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=False)
         assert mgr._use_simproc_fork_via_rust is False
 
         calls = {"add_rust_state": 0}
 
         orig_add = mgr._add_rust_state
+
         def fake_add(stash, st):
             calls["add_rust_state"] += 1
             return orig_add(stash, st)
+
         monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
 
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
@@ -5295,17 +5246,17 @@ class TestSimProcForkViaRustGate:
         because the Rust-side fork lands a new state in 'active'."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_simproc_fork_via_rust=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=True)
         assert mgr._use_simproc_fork_via_rust is True
 
         calls = {"add_rust_state": 0}
 
         orig_add = mgr._add_rust_state
+
         def fake_add(stash, st):
             calls["add_rust_state"] += 1
             return orig_add(stash, st)
+
         monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
 
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
@@ -5318,23 +5269,21 @@ class TestSimProcForkViaRustGate:
         # Rust-owned fork lands a new state in 'active'.
         assert after == before + 1
 
-    def test_add_forked_state_dispatch_on_none_state_id(
-        self, fauxware_project, monkeypatch
-    ):
+    def test_add_forked_state_dispatch_on_none_state_id(self, fauxware_project, monkeypatch):
         """Gate on: ``callback_state_id is None`` is a no-op (the callback
         is already torn down; the fork would have no parent). No
         ``_add_rust_state`` call and stash count unchanged."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_simproc_fork_via_rust=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=True)
 
         calls = {"add_rust_state": 0}
         orig_add = mgr._add_rust_state
+
         def fake_add(stash, st):
             calls["add_rust_state"] += 1
             return orig_add(stash, st)
+
         monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
 
         before = len(mgr._rust_mgr.get_state_ids("active"))
@@ -5352,15 +5301,13 @@ class TestSimProcForkViaRustGate:
         # Baseline: default off
         s_off = fauxware_project.factory.entry_state()
         mgr_off = RustExplorationManager(fauxware_project, [s_off])
-        mgr_off.explore(find=0x4006ed)
+        mgr_off.explore(find=0x4006ED)
         found_off = len(mgr_off.found)
 
         # Gate on
         s_on = fauxware_project.factory.entry_state()
-        mgr_on = RustExplorationManager(
-            fauxware_project, [s_on], use_simproc_fork_via_rust=True
-        )
-        mgr_on.explore(find=0x4006ed)
+        mgr_on = RustExplorationManager(fauxware_project, [s_on], use_simproc_fork_via_rust=True)
+        mgr_on.explore(find=0x4006ED)
         found_on = len(mgr_on.found)
 
         assert found_on == found_off
@@ -5381,6 +5328,7 @@ class TestProxyWriteThrough:
         for both halves of the class.
         """
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def test_register_write_concrete_int(self, fauxware_project):
@@ -5602,13 +5550,13 @@ class TestMmapMapFixedNative:
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
-        state.regs.rax = 9              # mmap
-        state.regs.rdi = target_addr    # addr
-        state.regs.rsi = length         # length
-        state.regs.rdx = prot           # prot
-        state.regs.r10 = flags          # flags
+        state.regs.rax = 9  # mmap
+        state.regs.rdi = target_addr  # addr
+        state.regs.rsi = length  # length
+        state.regs.rdx = prot  # prot
+        state.regs.r10 = flags  # flags
         state.regs.r8 = 0xFFFFFFFF_FFFFFFFF  # fd = -1
-        state.regs.r9 = 0               # offset
+        state.regs.r9 = 0  # offset
         return proj, state
 
     def test_map_fixed_collision_no_python_fallback(self):
@@ -5989,9 +5937,7 @@ class TestStateMetadataStorage:
         assert dead_sid not in mgr._predicate_eval_cache, (
             "stale predicate-eval entry for a non-stash state must be pruned"
         )
-        assert live_sid in mgr._predicate_eval_cache, (
-            "predicate-eval entry for a live active state must be preserved"
-        )
+        assert live_sid in mgr._predicate_eval_cache, "predicate-eval entry for a live active state must be preserved"
 
     def test_cleanup_state_cache_evicts_oldest_first(self, fauxware_project):
         """When `_state_cache` grows beyond `_max_state_cache_size`,
@@ -6035,8 +5981,7 @@ class TestStateMetadataStorage:
         retained = set(mgr._state_cache.keys())
         evicted = [s for s in ordered_sids if s not in retained]
         assert evicted == ordered_sids[:3], (
-            f"expected oldest 3 evicted in insertion order; "
-            f"got evicted={evicted}, retained={retained}"
+            f"expected oldest 3 evicted in insertion order; got evicted={evicted}, retained={retained}"
         )
 
     def test_cleanup_state_cache_drops_dead_states(self, fauxware_project):
@@ -6066,9 +6011,7 @@ class TestStateMetadataStorage:
         mgr._cleanup_state_cache()
 
         assert live_sid in mgr._state_cache
-        assert dead_sid not in mgr._state_cache, (
-            "states absent from active/found stashes must be dropped from cache"
-        )
+        assert dead_sid not in mgr._state_cache, "states absent from active/found stashes must be dropped from cache"
 
     def test_cleanup_state_cache_skips_pinned(self, fauxware_project):
         """``_cleanup_state_cache`` Step 2: pinned ids (roots, current
@@ -6097,9 +6040,7 @@ class TestStateMetadataStorage:
 
         mgr._cleanup_state_cache()
 
-        assert sid_pinned in mgr._state_cache, (
-            "current callback state must not be evicted under cache pressure"
-        )
+        assert sid_pinned in mgr._state_cache, "current callback state must not be evicted under cache pressure"
 
     def test_cleanup_state_cache_prunes_state_roots(self, fauxware_project):
         """`_cleanup_state_cache` must drop `_state_roots` entries whose key
@@ -6121,13 +6062,9 @@ class TestStateMetadataStorage:
         mgr._cleanup_state_cache()
 
         assert live_sid in mgr._state_roots
-        assert dead_sid not in mgr._state_roots, (
-            "_state_roots entry for a dead state must be pruned"
-        )
+        assert dead_sid not in mgr._state_roots, "_state_roots entry for a dead state must be pruned"
 
-    def test_cleanup_state_cache_prunes_predicate_matched_ids(
-        self, fauxware_project
-    ):
+    def test_cleanup_state_cache_prunes_predicate_matched_ids(self, fauxware_project):
         """`_cleanup_state_cache` must shrink `_predicate_matched_ids` to
         only ids that still exist in some Rust stash. The set otherwise
         grows monotonically over the manager's lifetime — fine for a one-
@@ -6186,9 +6123,7 @@ class TestStateMetadataStorage:
         # Either the entry was cleaned up (state evicted) — empty is OK —
         # or its metadata still has only the (0x9000 -> ast) entry we put.
         if leftover:
-            assert 0x9000 in leftover, (
-                f"parent metadata corrupted by fork-aliasing; got {leftover}"
-            )
+            assert 0x9000 in leftover, f"parent metadata corrupted by fork-aliasing; got {leftover}"
             recovered_ast, _ = leftover[0x9000]
             # clone_ref preserves Python object identity, so the AST we
             # planted should be the same object we get back.
@@ -6325,8 +6260,8 @@ class TestHooksAndProcedures:
         match. The helper must surface the per-instance display_name.
         """
         from angr.exploration.rust_callback_dispatch import _simproc_dispatch_name
-        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
         from angr.procedures.posix.getenv import getenv
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
         stub = ReturnUnconstrained(display_name="setenv")
         assert _simproc_dispatch_name(stub) == "setenv"
@@ -6336,9 +6271,7 @@ class TestHooksAndProcedures:
         real = getenv()
         assert _simproc_dispatch_name(real) == "getenv"
 
-    def test_register_simprocedures_uses_display_name_for_stubs(
-        self, fauxware_project, monkeypatch
-    ):
+    def test_register_simprocedures_uses_display_name_for_stubs(self, fauxware_project, monkeypatch):
         """angr-gbk6: _register_simprocedures wires stubs to Rust by symbol.
 
         Without preferring display_name, every ReturnUnconstrained-backed
@@ -6377,8 +6310,7 @@ class TestHooksAndProcedures:
 
         names_by_addr = {addr: name for (addr, name, _na, _nr) in captured}
         assert names_by_addr.get(stub_addr) == "setenv", (
-            f"expected stub to register as 'setenv', got "
-            f"{names_by_addr.get(stub_addr)!r}; full capture={captured}"
+            f"expected stub to register as 'setenv', got {names_by_addr.get(stub_addr)!r}; full capture={captured}"
         )
 
 
@@ -6431,12 +6363,13 @@ class TestSolverOperations:
     def setup_class(cls):
         """Ensure the shared Z3 context is initialized for solver tests."""
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def test_solver_min_max(self):
         """min() and max() return correct bounds."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6448,8 +6381,8 @@ class TestSolverOperations:
 
     def test_solver_unsatisfiable(self):
         """Contradictory constraints make solver UNSAT."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6465,8 +6398,8 @@ class TestSolverOperations:
         memory `satisfiable-wrong-answer`: False from satisfiable() must
         mean a definitive UNSAT, never a swallowed exception.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6488,8 +6421,8 @@ class TestSolverOperations:
         tracked constraints do. The returned indices are 0-based and
         match the order in which add_constraint_tracked_ast() was called.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6519,8 +6452,8 @@ class TestSolverOperations:
         down the silent-empty behaviour memo'd in
         `avoid-rust-tracking-actions-silent-ignore`.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6534,8 +6467,8 @@ class TestSolverOperations:
         if constraints were tracked. Z3 does not produce a core for a
         SAT instance, so the matched indices list is empty.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6546,8 +6479,8 @@ class TestSolverOperations:
 
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx1 = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6575,8 +6508,8 @@ class TestSolverOperations:
         own fresh local vec and must remain isolated. Regression for
         angr-agvl.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_iso", 32)
@@ -6624,8 +6557,8 @@ class TestSolverOperations:
         Sibling state must still be isolated from the parent's post-fork
         constraints. Regression for angr-agvl.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_push_iso", 32)
@@ -6672,8 +6605,8 @@ class TestSolverOperations:
 
     def test_solver_multiple_variables(self):
         """Solver handles multiple independent symbolic variables."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6691,28 +6624,28 @@ class TestSolverOperations:
 
     def test_solver_eval_upto_wide_bvs(self):
         """eval_upto should handle BVS wider than 128 bits without truncation."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         # 296-bit BVS (like whitehatvn's 37-byte arg)
         x = claripy.BVS("wide_var", 296)
         # Constrain first byte to 'A' (0x41) and last byte to 'Z' (0x5a)
         ctx.add_constraint_ast(claripy.Extract(295, 288, x) == 0x41)
-        ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x5a)
+        ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x5A)
 
         results = ctx.eval_upto(x, 2)
         assert len(results) >= 1, "should find at least one solution"
         for r in results:
             nbytes = 37
-            val_bytes = r.to_bytes(nbytes, 'big')
+            val_bytes = r.to_bytes(nbytes, "big")
             assert val_bytes[0] == 0x41, "first byte should be 'A'"
-            assert val_bytes[-1] == 0x5a, "last byte should be 'Z'"
+            assert val_bytes[-1] == 0x5A, "last byte should be 'Z'"
 
     def test_solver_eval_upto_excludes_duplicates(self):
         """eval_upto should return distinct values."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 8)
@@ -6735,8 +6668,8 @@ class TestSolverOperations:
         solutions like x = 51 (and also x in [0, 5]). A regression that
         loses ITE structure could over-constrain and force x to one branch.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -6785,8 +6718,8 @@ class TestSolverOperations:
         details and follow-up paths (Z3_global_param_set before
         ``Solver::new``).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
         ctx = RustSolverContext()
@@ -6820,8 +6753,8 @@ class TestSolverOperations:
         order-independence witnesses — they catch a dropped/duplicated
         constraint while staying immune to Z3's model-choice latitude.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
         c1 = x >= 100
@@ -6915,7 +6848,7 @@ class TestDeterministicMode:
         def _run() -> tuple[int, bytes]:
             state = fauxware_project.factory.entry_state()
             mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
-            mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+            mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
             assert len(mgr.found) > 0, "expected at least one found state"
             stdin = mgr.found[0].posix.dumps(0)
             return len(mgr.found), bytes(stdin)
@@ -6974,7 +6907,6 @@ class TestRustStateRegisters:
 class TestSerializeIRSB:
     """Tests for IRSB serialization (used in lift callbacks)."""
 
-
     def test_serialize_basic_block(self, fauxware_project):
         """Serializing a basic block produces valid JSON."""
         import json
@@ -6990,12 +6922,12 @@ class TestSerializeIRSB:
         result = mgr._serialize_irsb(irsb)
         data = json.loads(result)
 
-        assert 'addr' in data
-        assert 'statements' in data
-        assert 'next' in data
-        assert 'jumpkind' in data
-        assert 'tyenv' in data
-        assert len(data['statements']) > 0
+        assert "addr" in data
+        assert "statements" in data
+        assert "next" in data
+        assert "jumpkind" in data
+        assert "tyenv" in data
+        assert len(data["statements"]) > 0
 
     def test_serialize_roundtrip_consistency(self, fauxware_project):
         """Serializing the same block twice produces identical output."""
@@ -7014,17 +6946,16 @@ class TestSerializeIRSB:
 class TestExplorationIntegration:
     """Integration tests with real binaries."""
 
-
     def test_explore_with_max_steps(self, fauxware_project):
         """Exploration respects max_steps limit."""
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, max_steps=1)
+        mgr.explore(find=0x4006ED, max_steps=1)
 
         # 1 step is too few to find target in fauxware
         stats = mgr.stats
-        assert stats['ffi_crossings'] > 0, "should have crossed FFI boundary"
+        assert stats["ffi_crossings"] > 0, "should have crossed FFI boundary"
         assert len(mgr.found) == 0, "1 step too few to find target in fauxware"
 
     def test_explore_finds_correct_state(self, fauxware_project):
@@ -7032,7 +6963,7 @@ class TestExplorationIntegration:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
 
         assert len(mgr.found) > 0, "Should find at least one state"
 
@@ -7050,7 +6981,7 @@ class TestExplorationIntegration:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         _start = time.perf_counter()
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
         elapsed_us = (time.perf_counter() - _start) * 1e6
 
         stats = mgr.stats
@@ -7071,13 +7002,9 @@ class TestExplorationIntegration:
         # NB `callback_count` (no kind suffix) is a Python-side FFI-crossing
         # bookkeeping counter, not a PerformanceTracker bucket — skip it.
         bucket_count = sum(
-            v for k, v in stats.items()
-            if k.startswith("callback_") and k.endswith("_count") and k != "callback_count"
+            v for k, v in stats.items() if k.startswith("callback_") and k.endswith("_count") and k != "callback_count"
         )
-        bucket_ns = sum(
-            v for k, v in stats.items()
-            if k.startswith("callback_") and k.endswith("_total_ns")
-        )
+        bucket_ns = sum(v for k, v in stats.items() if k.startswith("callback_") and k.endswith("_total_ns"))
         assert stats["python_callback_count"] == bucket_count
         assert stats["python_callback_dispatch_us"] == bucket_ns // 1000
 
@@ -7106,16 +7033,14 @@ class TestExplorationIntegration:
         assert baseline["mem_load_bytes"] == 0
         assert baseline["mem_store_bytes"] == 0
 
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
 
         stats = mgr.get_solver_stats()
         assert stats["mem_load_count"] > 0, (
-            f"expected non-zero mem_load_count after fauxware exploration; "
-            f"got {stats['mem_load_count']}"
+            f"expected non-zero mem_load_count after fauxware exploration; got {stats['mem_load_count']}"
         )
         assert stats["mem_store_count"] > 0, (
-            f"expected non-zero mem_store_count after fauxware exploration; "
-            f"got {stats['mem_store_count']}"
+            f"expected non-zero mem_store_count after fauxware exploration; got {stats['mem_store_count']}"
         )
         # Bytes must be at least the count (every op moves ≥1 byte) and
         # bounded by 64 * count (largest VEX load width on amd64 is 64
@@ -7133,7 +7058,7 @@ class TestExplorationIntegration:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.use_technique(Timeout(timeout=0.001))  # 1ms timeout — should trigger quickly
-        mgr.explore(find=0x4006ed, max_steps=50000)
+        mgr.explore(find=0x4006ED, max_steps=50000)
         # The 1ms budget expires long before the 50000-step cap, so the target
         # is never found and only a handful of steps execute.
         assert not mgr.found
@@ -7190,8 +7115,7 @@ class TestExplorationIntegration:
         )
         assert hooked_counts, "hooked run produced no states"
         assert len(hooked_counts) == len(baseline_counts), (
-            f"hooked vs baseline state counts differ: hooked={len(hooked_counts)}, "
-            f"baseline={len(baseline_counts)}"
+            f"hooked vs baseline state counts differ: hooked={len(hooked_counts)}, baseline={len(baseline_counts)}"
         )
         # Every paired state should have strictly more Z3 assertions in the
         # hooked run. If claripy_to_rustbv silently drops the FP constraint
@@ -7286,7 +7210,6 @@ class TestExplorationIntegration:
         per-byte/per-chunk symbolic fillers — the exact shape sokohashv2's
         do_repmovsd encounters.
         """
-        import claripy
         import angr
 
         # 0x1000: nop                (hooked, length=1)
@@ -7324,9 +7247,7 @@ class TestExplorationIntegration:
 
         assert hook_fired, "hook never fired"
 
-        all_states = (
-            list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        all_states = list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
         assert all_states, "expected at least one state after run"
         final = all_states[0]
 
@@ -7336,18 +7257,13 @@ class TestExplorationIntegration:
         # any 64-bit value; if dst was concrete-witnessed during resume,
         # rax is fixed and one of the alternatives below is unsatisfiable.
         rax = final.regs.rax
-        assert final.solver.satisfiable(
-            extra_constraints=[rax == 0xDEADBEEFCAFEBABE]
-        ), (
+        assert final.solver.satisfiable(extra_constraints=[rax == 0xDEADBEEFCAFEBABE]), (
             "rax not constrainable to 0xDEADBEEFCAFEBABE — Rust load at "
             "dst returned a concrete witness rather than the hook-copied "
             "symbolic value (angr-ctct)"
         )
-        assert final.solver.satisfiable(
-            extra_constraints=[rax == 0x1111222233334444]
-        ), (
-            "rax not constrainable to 0x1111222233334444 — Rust load at "
-            "dst was concretized (angr-ctct)"
+        assert final.solver.satisfiable(extra_constraints=[rax == 0x1111222233334444]), (
+            "rax not constrainable to 0x1111222233334444 — Rust load at dst was concretized (angr-ctct)"
         )
 
     def test_filler_materialised_multibyte_symbolic_preserved(self):
@@ -7459,9 +7375,7 @@ class TestExplorationIntegration:
         rust_state = fresh_state()
         mgr = RustExplorationManager(proj, [rust_state])
         mgr.run(max_steps=1)
-        all_states = (
-            list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
-        )
+        all_states = list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
         assert all_states, "expected at least one state after run"
         final = all_states[0]
         r0 = final.regs.r0
@@ -7497,8 +7411,7 @@ class TestExplorationIntegration:
         block = proj.factory.block(hook_addr)
         first_insn_size = block.capstone.insns[0].size
         assert first_insn_size == hook_length, (
-            f"Expected a {hook_length}-byte instruction at {hook_addr:#x}, "
-            f"got {first_insn_size}-byte"
+            f"Expected a {hook_length}-byte instruction at {hook_addr:#x}, got {first_insn_size}-byte"
         )
 
         fire_addrs = []
@@ -7597,16 +7510,13 @@ class TestExplorationIntegration:
             mgr._rust_mgr = original_rust_mgr
 
         assert len(resumed_calls) == 1, (
-            f"Expected resume_after_simprocedure to fire exactly once for the "
-            f"first successor, got {len(resumed_calls)}"
+            f"Expected resume_after_simprocedure to fire exactly once for the first successor, got {len(resumed_calls)}"
         )
         assert len(forked_calls) == len(all_succs) - 1, (
-            f"Expected {len(all_succs) - 1} forked successors, got "
-            f"{len(forked_calls)} — extras were dropped (the bug)"
+            f"Expected {len(all_succs) - 1} forked successors, got {len(forked_calls)} — extras were dropped (the bug)"
         )
         assert forked_calls[0] is succ_b, (
-            "The forked successor identity does not match all_succs[1]; "
-            "wrong state was passed to _add_forked_state."
+            "The forked successor identity does not match all_succs[1]; wrong state was passed to _add_forked_state."
         )
 
 
@@ -7647,16 +7557,16 @@ class TestPluginMutationAcrossCallbacks:
         proj = fauxware_project
         main_sym = proj.loader.find_symbol("main")
         assert main_sym is not None
-        addr_a = main_sym.rebased_addr + 1   # 0x40071e: mov rbp, rsp
-        addr_b = main_sym.rebased_addr + 8   # 0x400725: mov dword ptr [rbp-0x34], edi
+        addr_a = main_sym.rebased_addr + 1  # 0x40071e: mov rbp, rsp
+        addr_b = main_sym.rebased_addr + 8  # 0x400725: mov dword ptr [rbp-0x34], edi
 
         observations = []
 
         def hook_a(state):
-            state.globals['qm7w_marker'] = 'written_in_A'
+            state.globals["qm7w_marker"] = "written_in_A"
 
         def hook_b(state):
-            observations.append(state.globals.get('qm7w_marker', '<MISSING>'))
+            observations.append(state.globals.get("qm7w_marker", "<MISSING>"))
 
         unhook = self._hook_two_addrs(proj, addr_a, addr_b, hook_a, hook_b)
         try:
@@ -7667,7 +7577,7 @@ class TestPluginMutationAcrossCallbacks:
             unhook()
 
         assert observations, "hook B never fired — could not exercise the chain"
-        assert all(obs == 'written_in_A' for obs in observations), (
+        assert all(obs == "written_in_A" for obs in observations), (
             f"Plugin mutation written by hook A was not visible in hook B. "
             f"observations={observations!r} — the second callback fell back to "
             f"a state without A's globals mutation, which means lazy "
@@ -7692,7 +7602,7 @@ class TestPluginMutationAcrossCallbacks:
 
         from angr.storage.file import SimFileDescriptor
 
-        sentinel_name = 'qm7w_sentinel_fd'
+        sentinel_name = "qm7w_sentinel_fd"
         observations = []
 
         def hook_a(state):
@@ -7704,7 +7614,7 @@ class TestPluginMutationAcrossCallbacks:
 
         def hook_b(state):
             fd_obj = state.posix.fd.get(99)
-            observations.append(getattr(getattr(fd_obj, 'file', None), 'name', None))
+            observations.append(getattr(getattr(fd_obj, "file", None), "name", None))
 
         unhook = self._hook_two_addrs(proj, addr_a, addr_b, hook_a, hook_b)
         try:
@@ -7784,6 +7694,7 @@ class TestPluginTemplateSelection:
         """
         from angr.storage import SimFile
         from angr.storage.file import SimFileDescriptor
+
         state = proj.factory.entry_state()
         simfile = SimFile(name, content=b"marker_data")
         state.fs.insert(name, simfile)
@@ -7822,9 +7733,7 @@ class TestPluginTemplateSelection:
 
         # Synthesize an uncached descendant id.
         uncached_id = parent_id + 99999
-        template = mgr._find_plugin_template_state(
-            uncached_id, snapshot_parent_id=parent_id
-        )
+        template = mgr._find_plugin_template_state(uncached_id, snapshot_parent_id=parent_id)
         assert template is parent_state, (
             "Expected parent state as template when state_id is uncached "
             f"and snapshot_parent_id points at the cached parent; got {template!r}"
@@ -7847,7 +7756,7 @@ class TestPluginTemplateSelection:
         # registering it as a root. Stamp it with a marker fd so we can detect
         # cross-pollination if the fallback ever picks it.
         descendant_id = root_id + 12345
-        descendant = self._make_state_with_marker_fd(proj, 99, '2k64_descendant')
+        descendant = self._make_state_with_marker_fd(proj, 99, "2k64_descendant")
         mgr._state_cache[descendant_id] = descendant
         # Critically: _state_roots does NOT contain descendant_id (it's a
         # forked descendant, not a root).
@@ -7884,10 +7793,7 @@ class TestPluginTemplateSelection:
         mgr._state_roots[orphan_id] = root_id
 
         template = mgr._find_plugin_template_state(orphan_id)
-        assert template is root_cached, (
-            "Expected the tracked-root state as the template fallback, "
-            f"got {template!r}"
-        )
+        assert template is root_cached, f"Expected the tracked-root state as the template fallback, got {template!r}"
 
     def test_returns_none_when_no_root_cached(self, fauxware_project):
         """No cached ancestor and no cached root → return None (skip plugin
@@ -7904,10 +7810,8 @@ class TestPluginTemplateSelection:
 
         # Use a state_id Rust definitely doesn't know about so get_state_root
         # returns None.
-        template = mgr._find_plugin_template_state(0xdead_beef_cafe)
-        assert template is None, (
-            f"Expected None when nothing is cached, got {template!r}"
-        )
+        template = mgr._find_plugin_template_state(0xDEAD_BEEF_CAFE)
+        assert template is None, f"Expected None when nothing is cached, got {template!r}"
 
 
 class TestAdversarial:
@@ -7917,6 +7821,7 @@ class TestAdversarial:
     def setup_class(cls):
         """Ensure the shared Z3 context is initialized for solver tests."""
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     # --- API misuse ---
@@ -8006,6 +7911,7 @@ class TestAdversarial:
     def test_solver_empty_constraints(self):
         """Solver with no constraints should be satisfiable."""
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         assert ctx.satisfiable()
 
@@ -8021,6 +7927,7 @@ class TestAdversarial:
         """
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 5)
@@ -8031,6 +7938,7 @@ class TestAdversarial:
         """Wide bitvector (256-bit) should work."""
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         x = claripy.BVS("wide", 256)
         ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x42)
@@ -8041,6 +7949,7 @@ class TestAdversarial:
     def test_eval_handle_invalid_id_returns_none(self):
         """eval_handle for an unknown handle id maps Option::None → Python None."""
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         # Pick an id that no handle was ever issued for.
         assert ctx.eval_handle(99999) is None
@@ -8052,6 +7961,7 @@ class TestAdversarial:
         is normalized to 0; the handle still reports width=0 and is_concrete.
         """
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         h = ctx.create_concrete(0, 0)
         assert h.width == 0
@@ -8067,6 +7977,7 @@ class TestAdversarial:
         """
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
         ctx = RustSolverContext()
         x = claripy.BVS("wide1k", 1024)
         ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x42)
@@ -8122,9 +8033,9 @@ class TestAdversarial:
         """Calling explore() twice should not crash."""
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, max_steps=5)
+        mgr.explore(find=0x4006ED, max_steps=5)
         # Run again — should continue from where it left off
-        mgr.explore(find=0x4006ed, max_steps=5)
+        mgr.explore(find=0x4006ED, max_steps=5)
 
 
 class TestMultiArchSupport:
@@ -8447,7 +8358,6 @@ class TestMultiArchSupport:
         Promotes x86 (32-bit) from Skeleton (no e2e coverage) to
         Experimental — tested in the arch support matrix.
         """
-        import struct
         import claripy
 
         # i386 little-endian:
@@ -8460,14 +8370,14 @@ class TestMultiArchSupport:
         #   0x10: 90 90 90 90 90 90 90 90  (found region)
         #   0x18: 90          (avoid)
         code = bytes.fromhex(
-            "01C0"            # add eax, eax
-            "83C010"          # add eax, 0x10
-            "83F864"          # cmp eax, 0x64
-            "7406"            # je  +6  -> 0x10
-            "EB0C"            # jmp +12 -> 0x18
-            "90909090"        # pad 0x0c..0x0f
+            "01C0"  # add eax, eax
+            "83C010"  # add eax, 0x10
+            "83F864"  # cmp eax, 0x64
+            "7406"  # je  +6  -> 0x10
+            "EB0C"  # jmp +12 -> 0x18
+            "90909090"  # pad 0x0c..0x0f
             "9090909090909090"  # found region 0x10..0x17
-            "90"              # avoid 0x18
+            "90"  # avoid 0x18
         )
         assert len(code) == 0x19
         blob_path = tmp_path / "x86_branch.bin"
@@ -8488,16 +8398,11 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=100)
 
-        assert len(mgr.found) >= 1, (
-            f"x86 exploration did not reach 0x400010; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"x86 exploration did not reach 0x400010; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
         # 2*eax + 16 == 100  ⇒  eax == 42.
-        assert found.solver.eval(eax) == 42, (
-            f"Expected eax==42 to reach found, got {found.solver.eval(eax)}"
-        )
+        assert found.solver.eval(eax) == 42, f"Expected eax==42 to reach found, got {found.solver.eval(eax)}"
 
     def test_arm32_explore_real_binary(self):
         """End-to-end ARM32 (ARMEL) exploration on a real binary.
@@ -8513,9 +8418,7 @@ class TestMultiArchSupport:
         """
         import claripy
 
-        binary_path = os.path.expanduser(
-            "~/repos/angr-examples/examples/android_arm_license_validation/validate"
-        )
+        binary_path = os.path.expanduser("~/repos/angr-examples/examples/android_arm_license_validation/validate")
         if not os.path.exists(binary_path):
             pytest.skip(f"ARM binary not found at {binary_path}")
 
@@ -8523,7 +8426,7 @@ class TestMultiArchSupport:
         assert proj.arch.name == "ARMEL"
 
         state = proj.factory.blank_state(addr=0x401760)
-        concrete_addr = 0xffe00000
+        concrete_addr = 0xFFE00000
         code = claripy.BVS("code", 10 * 8)
         state.memory.store(concrete_addr, code, endness="Iend_BE")
         state.regs.r0 = concrete_addr
@@ -8531,10 +8434,7 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x401840, avoid=0x401854, num_find=1, max_steps=2000)
 
-        assert len(mgr.found) >= 1, (
-            f"ARM exploration did not reach 0x401840; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"ARM exploration did not reach 0x401840; counts={mgr.stash_counts()}"
         # Sanity: solver still has a model for the symbolic input.
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
@@ -8560,6 +8460,7 @@ class TestMultiArchSupport:
         silently.
         """
         import struct
+
         import claripy
 
         # ARM (AL condition = 0xE), packed big-endian for ARMEB BE32:
@@ -8574,9 +8475,15 @@ class TestMultiArchSupport:
         #   0x20: NOP  (avoid)         0xE1A00000
         code = struct.pack(
             ">IIIIIIIII",
-            0xE0800000, 0xE2800010, 0xE3A01064, 0xE1500001,
-            0x0A000000, 0xEA000001,
-            0xE1A00000, 0xE1A00000, 0xE1A00000,
+            0xE0800000,
+            0xE2800010,
+            0xE3A01064,
+            0xE1500001,
+            0x0A000000,
+            0xEA000001,
+            0xE1A00000,
+            0xE1A00000,
+            0xE1A00000,
         )
         blob_path = tmp_path / "armeb_branch.bin"
         blob_path.write_bytes(code)
@@ -8597,16 +8504,11 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x10018, avoid=0x10020, num_find=1, max_steps=100)
 
-        assert len(mgr.found) >= 1, (
-            f"ARMEB exploration did not reach 0x10018; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"ARMEB exploration did not reach 0x10018; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
         # 2*r0 + 16 == 100 ⇒ r0 == 42.
-        assert found.solver.eval(r0) == 42, (
-            f"Expected r0==42 to reach found, got {found.solver.eval(r0)}"
-        )
+        assert found.solver.eval(r0) == 42, f"Expected r0==42 to reach found, got {found.solver.eval(r0)}"
 
     def test_aarch64_explore_blob(self, tmp_path):
         """End-to-end AArch64 exploration on a hand-assembled blob.
@@ -8624,6 +8526,7 @@ class TestMultiArchSupport:
         calling-convention bugs hide for months.
         """
         import struct
+
         import claripy
 
         # AArch64 little-endian:
@@ -8636,8 +8539,13 @@ class TestMultiArchSupport:
         #   0x18: NOP  (avoid)        d503201f
         code = struct.pack(
             "<IIIIIII",
-            0x52800541, 0x6B01001F, 0x54000040, 0x14000003,
-            0xD503201F, 0xD503201F, 0xD503201F,
+            0x52800541,
+            0x6B01001F,
+            0x54000040,
+            0x14000003,
+            0xD503201F,
+            0xD503201F,
+            0xD503201F,
         )
         blob_path = tmp_path / "aarch64_branch.bin"
         blob_path.write_bytes(code)
@@ -8655,15 +8563,10 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, (
-            f"AArch64 exploration did not reach 0x400010; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"AArch64 exploration did not reach 0x400010; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(x0) == 42, (
-            f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
-        )
+        assert found.solver.eval(x0) == 42, f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
 
     def test_aarch64_concrete_branch_no_spurious_fork(self, tmp_path):
         """arm64g_calculate_condition must not fork on concrete flags (angr-37d4).
@@ -8684,8 +8587,13 @@ class TestMultiArchSupport:
         # Same blob as test_aarch64_explore_blob.
         code = struct.pack(
             "<IIIIIII",
-            0x52800541, 0x6B01001F, 0x54000040, 0x14000003,
-            0xD503201F, 0xD503201F, 0xD503201F,
+            0x52800541,
+            0x6B01001F,
+            0x54000040,
+            0x14000003,
+            0xD503201F,
+            0xD503201F,
+            0xD503201F,
         )
         blob_path = tmp_path / "aarch64_concrete_branch.bin"
         blob_path.write_bytes(code)
@@ -8701,14 +8609,11 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, (
-            f"concrete x0==42 did not reach found; counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"concrete x0==42 did not reach found; counts={mgr.stash_counts()}"
         # The key assertion: the concretely-infeasible avoid branch must not
         # have been forked into existence.
         assert len(mgr.avoided) == 0, (
-            f"spurious fork: concrete-flag B.EQ created the infeasible avoid "
-            f"branch; counts={mgr.stash_counts()}"
+            f"spurious fork: concrete-flag B.EQ created the infeasible avoid branch; counts={mgr.stash_counts()}"
         )
 
     def test_aarch64_neon_mla_blob(self, tmp_path):
@@ -8727,6 +8632,7 @@ class TestMultiArchSupport:
         solution.
         """
         import struct
+
         import claripy
 
         # AArch64 little-endian — verified individually via pyvex:
@@ -8743,9 +8649,16 @@ class TestMultiArchSupport:
         #   0x400024: NOP (avoid)       D503201F
         code = struct.pack(
             "<IIIIIIIIII",
-            0x1E270000, 0x1E270001, 0x4E219400, 0x0E013C00,
-            0x52800281, 0x6B01001F, 0x54000040, 0x14000002,
-            0xD503201F, 0xD503201F,
+            0x1E270000,
+            0x1E270001,
+            0x4E219400,
+            0x0E013C00,
+            0x52800281,
+            0x6B01001F,
+            0x54000040,
+            0x14000002,
+            0xD503201F,
+            0xD503201F,
         )
         blob_path = tmp_path / "aarch64_neon_mla.bin"
         blob_path.write_bytes(code)
@@ -8763,10 +8676,7 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400020, avoid=0x400024, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, (
-            f"AArch64 NEON exploration did not reach 0x400020; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"AArch64 NEON exploration did not reach 0x400020; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
 
@@ -8774,8 +8684,7 @@ class TestMultiArchSupport:
         val = found.solver.eval(x0) & 0xFF
         expected = (val + val * val) & 0xFF
         assert expected == 20, (
-            f"low-byte residue {val} did not satisfy r + r*r == 20 (mod 256); "
-            f"got r + r*r = {expected}"
+            f"low-byte residue {val} did not satisfy r + r*r == 20 (mod 256); got r + r*r = {expected}"
         )
 
     def test_aarch64_explore_real_elf(self, tmp_path):
@@ -8802,6 +8711,7 @@ class TestMultiArchSupport:
         support matrix; pairs with angr-gxhf.1.
         """
         import struct
+
         import claripy
 
         # AArch64 little-endian instructions (verified against ARMv8 ARM):
@@ -8842,42 +8752,48 @@ class TestMultiArchSupport:
         ENTRY = BASE + EHDR_SIZE + PHDR_SIZE + 8  # skip subroutine
 
         # ELF64 header (little-endian)
-        ehdr = b"\x7fELF" + bytes([
-            2,  # EI_CLASS = ELF64
-            1,  # EI_DATA = LSB
-            1,  # EI_VERSION
-            0,  # EI_OSABI = System V
-            0,  # EI_ABIVERSION
-        ]) + b"\x00" * 7  # EI_PAD
+        ehdr = (
+            b"\x7fELF"
+            + bytes(
+                [
+                    2,  # EI_CLASS = ELF64
+                    1,  # EI_DATA = LSB
+                    1,  # EI_VERSION
+                    0,  # EI_OSABI = System V
+                    0,  # EI_ABIVERSION
+                ]
+            )
+            + b"\x00" * 7
+        )  # EI_PAD
         ehdr += struct.pack(
             "<HHIQQQIHHHHHH",
-            2,                  # e_type = ET_EXEC
-            0xB7,               # e_machine = EM_AARCH64
-            1,                  # e_version
-            ENTRY,              # e_entry
-            EHDR_SIZE,          # e_phoff
-            0,                  # e_shoff
-            0,                  # e_flags
-            EHDR_SIZE,          # e_ehsize
-            PHDR_SIZE,          # e_phentsize
-            1,                  # e_phnum
-            0,                  # e_shentsize
-            0,                  # e_shnum
-            0,                  # e_shstrndx
+            2,  # e_type = ET_EXEC
+            0xB7,  # e_machine = EM_AARCH64
+            1,  # e_version
+            ENTRY,  # e_entry
+            EHDR_SIZE,  # e_phoff
+            0,  # e_shoff
+            0,  # e_flags
+            EHDR_SIZE,  # e_ehsize
+            PHDR_SIZE,  # e_phentsize
+            1,  # e_phnum
+            0,  # e_shentsize
+            0,  # e_shnum
+            0,  # e_shstrndx
         )
         assert len(ehdr) == EHDR_SIZE
 
         # PT_LOAD program header
         phdr = struct.pack(
             "<IIQQQQQQ",
-            1,                  # p_type = PT_LOAD
-            5,                  # p_flags = PF_R | PF_X
-            0,                  # p_offset
-            BASE,               # p_vaddr
-            BASE,               # p_paddr
-            TOTAL,              # p_filesz
-            TOTAL,              # p_memsz
-            0x1000,             # p_align
+            1,  # p_type = PT_LOAD
+            5,  # p_flags = PF_R | PF_X
+            0,  # p_offset
+            BASE,  # p_vaddr
+            BASE,  # p_paddr
+            TOTAL,  # p_filesz
+            TOTAL,  # p_memsz
+            0x1000,  # p_align
         )
         assert len(phdr) == PHDR_SIZE
 
@@ -8887,9 +8803,7 @@ class TestMultiArchSupport:
 
         proj = angr.Project(str(elf_path), auto_load_libs=False)
         assert proj.arch.name == "AARCH64"
-        assert proj.entry == ENTRY, (
-            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-        )
+        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
 
         state = proj.factory.blank_state(addr=proj.entry)
         x0 = claripy.BVS("x0", 64)
@@ -8898,16 +8812,11 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400094, avoid=0x40009C, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, (
-            f"AArch64 ELF exploration did not reach 0x400094; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"AArch64 ELF exploration did not reach 0x400094; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
         # The doubled input must equal 84, so the input must be 42.
-        assert found.solver.eval(x0) == 42, (
-            f"Expected x0==42 (so 2*x0==84) to reach found, got {found.solver.eval(x0)}"
-        )
+        assert found.solver.eval(x0) == 42, f"Expected x0==42 (so 2*x0==84) to reach found, got {found.solver.eval(x0)}"
 
     def test_mips32_explore_blob(self, tmp_path):
         """End-to-end MIPS32 (big-endian) exploration on a hand-assembled blob.
@@ -8924,6 +8833,7 @@ class TestMultiArchSupport:
         matrix.
         """
         import struct
+
         import claripy
 
         # MIPS32 big-endian, with delay slots:
@@ -8936,8 +8846,13 @@ class TestMultiArchSupport:
         #   0x18: NOP (avoid)            00000000
         code = struct.pack(
             ">IIIIIII",
-            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
-            0x00000000, 0x00000000, 0x00000000,
+            0x2408002A,
+            0x10880003,
+            0x00000000,
+            0x10000002,
+            0x00000000,
+            0x00000000,
+            0x00000000,
         )
         blob_path = tmp_path / "mips32_branch.bin"
         blob_path.write_bytes(code)
@@ -8956,15 +8871,10 @@ class TestMultiArchSupport:
         mgr = RustExplorationManager(proj, [state])
         mgr.explore(find=0x400014, avoid=0x400018, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, (
-            f"MIPS32 exploration did not reach 0x400014; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"MIPS32 exploration did not reach 0x400014; counts={mgr.stash_counts()}"
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, (
-            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-        )
+        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
 
     def test_mips32_explore_le_real_elf(self, tmp_path):
         """End-to-end MIPS32 little-endian exploration on a hand-assembled ELF.
@@ -8986,6 +8896,7 @@ class TestMultiArchSupport:
         Pairs with angr-gxhf.2.
         """
         import struct
+
         import claripy
 
         # MIPS32 instruction encodings are endian-agnostic at decode time;
@@ -9000,8 +8911,13 @@ class TestMultiArchSupport:
         #   0x18: NOP (avoid)            00000000
         code = struct.pack(
             "<IIIIIII",
-            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
-            0x00000000, 0x00000000, 0x00000000,
+            0x2408002A,
+            0x10880003,
+            0x00000000,
+            0x10000002,
+            0x00000000,
+            0x00000000,
+            0x00000000,
         )
 
         # Minimal ELF32 (MIPS LE) header. PT_LOAD covers file [0, 84+len(code)]
@@ -9013,42 +8929,48 @@ class TestMultiArchSupport:
         ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
 
         # ELF32 header (little-endian)
-        ehdr = b"\x7fELF" + bytes([
-            1,  # EI_CLASS = ELF32
-            1,  # EI_DATA = LSB (little-endian)
-            1,  # EI_VERSION
-            0,  # EI_OSABI = System V
-            0,  # EI_ABIVERSION
-        ]) + b"\x00" * 7  # EI_PAD
+        ehdr = (
+            b"\x7fELF"
+            + bytes(
+                [
+                    1,  # EI_CLASS = ELF32
+                    1,  # EI_DATA = LSB (little-endian)
+                    1,  # EI_VERSION
+                    0,  # EI_OSABI = System V
+                    0,  # EI_ABIVERSION
+                ]
+            )
+            + b"\x00" * 7
+        )  # EI_PAD
         ehdr += struct.pack(
             "<HHIIIIIHHHHHH",
-            2,                  # e_type = ET_EXEC
-            0x08,               # e_machine = EM_MIPS
-            1,                  # e_version
-            ENTRY,              # e_entry
-            EHDR_SIZE,          # e_phoff
-            0,                  # e_shoff
-            0x50001000,         # e_flags = EF_MIPS_ARCH_32 | EF_MIPS_ABI_O32
-            EHDR_SIZE,          # e_ehsize
-            PHDR_SIZE,          # e_phentsize
-            1,                  # e_phnum
-            0,                  # e_shentsize
-            0,                  # e_shnum
-            0,                  # e_shstrndx
+            2,  # e_type = ET_EXEC
+            0x08,  # e_machine = EM_MIPS
+            1,  # e_version
+            ENTRY,  # e_entry
+            EHDR_SIZE,  # e_phoff
+            0,  # e_shoff
+            0x50001000,  # e_flags = EF_MIPS_ARCH_32 | EF_MIPS_ABI_O32
+            EHDR_SIZE,  # e_ehsize
+            PHDR_SIZE,  # e_phentsize
+            1,  # e_phnum
+            0,  # e_shentsize
+            0,  # e_shnum
+            0,  # e_shstrndx
         )
         assert len(ehdr) == EHDR_SIZE
 
         # ELF32 PT_LOAD program header (field order differs from ELF64!)
         phdr = struct.pack(
             "<IIIIIIII",
-            1,                  # p_type = PT_LOAD
-            0,                  # p_offset
-            BASE,               # p_vaddr
-            BASE,               # p_paddr
-            TOTAL,              # p_filesz
-            TOTAL,              # p_memsz
-            5,                  # p_flags = PF_R | PF_X
-            0x1000,             # p_align
+            1,  # p_type = PT_LOAD
+            0,  # p_offset
+            BASE,  # p_vaddr
+            BASE,  # p_paddr
+            TOTAL,  # p_filesz
+            TOTAL,  # p_memsz
+            5,  # p_flags = PF_R | PF_X
+            0x1000,  # p_align
         )
         assert len(phdr) == PHDR_SIZE
 
@@ -9059,12 +8981,9 @@ class TestMultiArchSupport:
         proj = angr.Project(str(elf_path), auto_load_libs=False)
         assert proj.arch.name == "MIPS32"
         assert proj.arch.memory_endness == "Iend_LE", (
-            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS32: "
-            f"got {proj.arch.memory_endness}"
+            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS32: got {proj.arch.memory_endness}"
         )
-        assert proj.entry == ENTRY, (
-            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-        )
+        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
 
         state = proj.factory.blank_state(addr=proj.entry)
         a0 = claripy.BVS("a0", 32)
@@ -9081,14 +9000,11 @@ class TestMultiArchSupport:
         )
 
         assert len(mgr.found) >= 1, (
-            f"MIPS32 LE ELF exploration did not reach {ENTRY + 0x14:#x}; "
-            f"counts={mgr.stash_counts()}"
+            f"MIPS32 LE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
         )
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, (
-            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-        )
+        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
 
     def test_mips32_symbolic_register_survives_disk_init_cache(self, tmp_path):
         """User-set symbolic registers must survive the disk init cache (angr-g9hy).
@@ -9107,6 +9023,7 @@ class TestMultiArchSupport:
         N>=30 (deterministic).
         """
         import struct
+
         import claripy
 
         def addiu(rt, rs, imm):
@@ -9125,19 +9042,19 @@ class TestMultiArchSupport:
         code = [addiu(8, 0, 0)]  # init: t0 = 0
         for _ in range(N):
             code.append(addu(8, 8, 4))  # addu t0, t0, a0
-            code.append(b_(1))          # b +1 -> skip nop_pad
-            code.append(0)              # nop (delay slot)
-            code.append(0)              # nop_pad (B target)
+            code.append(b_(1))  # b +1 -> skip nop_pad
+            code.append(0)  # nop (delay slot)
+            code.append(0)  # nop_pad (B target)
         target = N * 5
         code.append(addiu(9, 0, target))  # addiu t1, zero, N*5
-        code.append(beq(8, 9, 3))         # beq t0, t1, +3 -> FOUND
-        code.append(0)                    # delay
-        code.append(b_(2))                # b +2 -> AVOID
-        code.append(0)                    # delay
+        code.append(beq(8, 9, 3))  # beq t0, t1, +3 -> FOUND
+        code.append(0)  # delay
+        code.append(b_(2))  # b +2 -> AVOID
+        code.append(0)  # delay
         found_idx = len(code)
-        code.append(0)                    # FOUND
+        code.append(0)  # FOUND
         avoid_idx = len(code)
-        code.append(0)                    # AVOID
+        code.append(0)  # AVOID
 
         code_bytes = struct.pack("<" + "I" * len(code), *code)
         BASE = 0x400000
@@ -9149,12 +9066,30 @@ class TestMultiArchSupport:
         ehdr = b"\x7fELF" + bytes([1, 1, 1, 0, 0]) + b"\x00" * 7
         ehdr += struct.pack(
             "<HHIIIIIHHHHHH",
-            2, 0x08, 1, ENTRY, EHDR_SIZE, 0, 0x50001000,
-            EHDR_SIZE, PHDR_SIZE, 1, 0, 0, 0,
+            2,
+            0x08,
+            1,
+            ENTRY,
+            EHDR_SIZE,
+            0,
+            0x50001000,
+            EHDR_SIZE,
+            PHDR_SIZE,
+            1,
+            0,
+            0,
+            0,
         )
         phdr = struct.pack(
             "<IIIIIIII",
-            1, 0, BASE, BASE, TOTAL, TOTAL, 5, 0x1000,
+            1,
+            0,
+            BASE,
+            BASE,
+            TOTAL,
+            TOTAL,
+            5,
+            0x1000,
         )
         elf_path = tmp_path / "mips32_accum.elf"
         elf_path.write_bytes(ehdr + phdr + code_bytes)
@@ -9171,14 +9106,9 @@ class TestMultiArchSupport:
         avoid_addr = ENTRY + 4 * avoid_idx
         mgr.explore(find=find_addr, avoid=avoid_addr, num_find=1, max_steps=500)
 
-        assert mgr.found, (
-            f"Symbolic accumulator collapsed before reaching find — "
-            f"stashes={mgr.stash_counts()}"
-        )
+        assert mgr.found, f"Symbolic accumulator collapsed before reaching find — stashes={mgr.stash_counts()}"
         result = mgr.found[0].solver.eval(a0)
-        assert result == 5, (
-            f"Expected a0==5 (so t0 == N*5 satisfies BEQ), got {result}"
-        )
+        assert result == 5, f"Expected a0==5 (so t0 == N*5 satisfies BEQ), got {result}"
 
     def test_mips64_explore_le_real_elf(self, tmp_path):
         """End-to-end MIPS64 little-endian exploration on a hand-assembled ELF.
@@ -9203,6 +9133,7 @@ class TestMultiArchSupport:
         Pairs with angr-gxhf.3.
         """
         import struct
+
         import claripy
 
         # MIPS64 instruction encodings — same as MIPS32 for these opcodes
@@ -9217,8 +9148,13 @@ class TestMultiArchSupport:
         #   0x18: NOP (avoid)            00000000
         code = struct.pack(
             "<IIIIIII",
-            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
-            0x00000000, 0x00000000, 0x00000000,
+            0x2408002A,
+            0x10880003,
+            0x00000000,
+            0x10000002,
+            0x00000000,
+            0x00000000,
+            0x00000000,
         )
 
         # Minimal ELF64 (MIPS64 LE) header. PT_LOAD covers file
@@ -9230,42 +9166,48 @@ class TestMultiArchSupport:
         ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
 
         # ELF64 header (little-endian)
-        ehdr = b"\x7fELF" + bytes([
-            2,  # EI_CLASS = ELF64
-            1,  # EI_DATA = LSB (little-endian)
-            1,  # EI_VERSION
-            0,  # EI_OSABI = System V
-            0,  # EI_ABIVERSION
-        ]) + b"\x00" * 7  # EI_PAD
+        ehdr = (
+            b"\x7fELF"
+            + bytes(
+                [
+                    2,  # EI_CLASS = ELF64
+                    1,  # EI_DATA = LSB (little-endian)
+                    1,  # EI_VERSION
+                    0,  # EI_OSABI = System V
+                    0,  # EI_ABIVERSION
+                ]
+            )
+            + b"\x00" * 7
+        )  # EI_PAD
         ehdr += struct.pack(
             "<HHIQQQIHHHHHH",
-            2,                  # e_type = ET_EXEC
-            0x08,               # e_machine = EM_MIPS
-            1,                  # e_version
-            ENTRY,              # e_entry
-            EHDR_SIZE,          # e_phoff
-            0,                  # e_shoff
-            0x60000000,         # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
-            EHDR_SIZE,          # e_ehsize
-            PHDR_SIZE,          # e_phentsize
-            1,                  # e_phnum
-            0,                  # e_shentsize
-            0,                  # e_shnum
-            0,                  # e_shstrndx
+            2,  # e_type = ET_EXEC
+            0x08,  # e_machine = EM_MIPS
+            1,  # e_version
+            ENTRY,  # e_entry
+            EHDR_SIZE,  # e_phoff
+            0,  # e_shoff
+            0x60000000,  # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
+            EHDR_SIZE,  # e_ehsize
+            PHDR_SIZE,  # e_phentsize
+            1,  # e_phnum
+            0,  # e_shentsize
+            0,  # e_shnum
+            0,  # e_shstrndx
         )
         assert len(ehdr) == EHDR_SIZE
 
         # ELF64 PT_LOAD program header (field order: p_type, p_flags first)
         phdr = struct.pack(
             "<IIQQQQQQ",
-            1,                  # p_type = PT_LOAD
-            5,                  # p_flags = PF_R | PF_X
-            0,                  # p_offset
-            BASE,               # p_vaddr
-            BASE,               # p_paddr
-            TOTAL,              # p_filesz
-            TOTAL,              # p_memsz
-            0x1000,             # p_align
+            1,  # p_type = PT_LOAD
+            5,  # p_flags = PF_R | PF_X
+            0,  # p_offset
+            BASE,  # p_vaddr
+            BASE,  # p_paddr
+            TOTAL,  # p_filesz
+            TOTAL,  # p_memsz
+            0x1000,  # p_align
         )
         assert len(phdr) == PHDR_SIZE
 
@@ -9277,12 +9219,9 @@ class TestMultiArchSupport:
         assert proj.arch.name == "MIPS64"
         assert proj.arch.bits == 64
         assert proj.arch.memory_endness == "Iend_LE", (
-            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS64: "
-            f"got {proj.arch.memory_endness}"
+            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS64: got {proj.arch.memory_endness}"
         )
-        assert proj.entry == ENTRY, (
-            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-        )
+        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
 
         state = proj.factory.blank_state(addr=proj.entry)
         a0 = claripy.BVS("a0", 64)
@@ -9299,14 +9238,11 @@ class TestMultiArchSupport:
         )
 
         assert len(mgr.found) >= 1, (
-            f"MIPS64 LE ELF exploration did not reach {ENTRY + 0x14:#x}; "
-            f"counts={mgr.stash_counts()}"
+            f"MIPS64 LE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
         )
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, (
-            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-        )
+        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
 
     def test_mips64_explore_be_real_elf(self, tmp_path):
         """End-to-end MIPS64 big-endian exploration on a hand-assembled ELF.
@@ -9333,6 +9269,7 @@ class TestMultiArchSupport:
         Pairs with the ``mips64_be_branch`` synthetic benchmark.
         """
         import struct
+
         import claripy
 
         # MIPS64 instruction encodings — same as MIPS32 for these opcodes
@@ -9347,8 +9284,13 @@ class TestMultiArchSupport:
         #   0x18: NOP (avoid)            00000000
         code = struct.pack(
             ">IIIIIII",
-            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
-            0x00000000, 0x00000000, 0x00000000,
+            0x2408002A,
+            0x10880003,
+            0x00000000,
+            0x10000002,
+            0x00000000,
+            0x00000000,
+            0x00000000,
         )
 
         # Minimal ELF64 (MIPS64 BE) header. PT_LOAD covers file
@@ -9360,42 +9302,48 @@ class TestMultiArchSupport:
         ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
 
         # ELF64 header (big-endian)
-        ehdr = b"\x7fELF" + bytes([
-            2,  # EI_CLASS = ELF64
-            2,  # EI_DATA = MSB (big-endian)
-            1,  # EI_VERSION
-            0,  # EI_OSABI = System V
-            0,  # EI_ABIVERSION
-        ]) + b"\x00" * 7  # EI_PAD
+        ehdr = (
+            b"\x7fELF"
+            + bytes(
+                [
+                    2,  # EI_CLASS = ELF64
+                    2,  # EI_DATA = MSB (big-endian)
+                    1,  # EI_VERSION
+                    0,  # EI_OSABI = System V
+                    0,  # EI_ABIVERSION
+                ]
+            )
+            + b"\x00" * 7
+        )  # EI_PAD
         ehdr += struct.pack(
             ">HHIQQQIHHHHHH",
-            2,                  # e_type = ET_EXEC
-            0x08,               # e_machine = EM_MIPS
-            1,                  # e_version
-            ENTRY,              # e_entry
-            EHDR_SIZE,          # e_phoff
-            0,                  # e_shoff
-            0x60000000,         # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
-            EHDR_SIZE,          # e_ehsize
-            PHDR_SIZE,          # e_phentsize
-            1,                  # e_phnum
-            0,                  # e_shentsize
-            0,                  # e_shnum
-            0,                  # e_shstrndx
+            2,  # e_type = ET_EXEC
+            0x08,  # e_machine = EM_MIPS
+            1,  # e_version
+            ENTRY,  # e_entry
+            EHDR_SIZE,  # e_phoff
+            0,  # e_shoff
+            0x60000000,  # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
+            EHDR_SIZE,  # e_ehsize
+            PHDR_SIZE,  # e_phentsize
+            1,  # e_phnum
+            0,  # e_shentsize
+            0,  # e_shnum
+            0,  # e_shstrndx
         )
         assert len(ehdr) == EHDR_SIZE
 
         # ELF64 PT_LOAD program header (field order: p_type, p_flags first)
         phdr = struct.pack(
             ">IIQQQQQQ",
-            1,                  # p_type = PT_LOAD
-            5,                  # p_flags = PF_R | PF_X
-            0,                  # p_offset
-            BASE,               # p_vaddr
-            BASE,               # p_paddr
-            TOTAL,              # p_filesz
-            TOTAL,              # p_memsz
-            0x1000,             # p_align
+            1,  # p_type = PT_LOAD
+            5,  # p_flags = PF_R | PF_X
+            0,  # p_offset
+            BASE,  # p_vaddr
+            BASE,  # p_paddr
+            TOTAL,  # p_filesz
+            TOTAL,  # p_memsz
+            0x1000,  # p_align
         )
         assert len(phdr) == PHDR_SIZE
 
@@ -9407,13 +9355,10 @@ class TestMultiArchSupport:
         assert proj.arch.name == "MIPS64"
         assert proj.arch.bits == 64
         assert proj.arch.memory_endness == "Iend_BE", (
-            f"cle ELF loader did not pick up EI_DATA=MSB for MIPS64: "
-            f"got {proj.arch.memory_endness}"
+            f"cle ELF loader did not pick up EI_DATA=MSB for MIPS64: got {proj.arch.memory_endness}"
         )
         assert proj.arch.instruction_endness == "Iend_BE"
-        assert proj.entry == ENTRY, (
-            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-        )
+        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
 
         state = proj.factory.blank_state(addr=proj.entry)
         a0 = claripy.BVS("a0", 64)
@@ -9430,14 +9375,11 @@ class TestMultiArchSupport:
         )
 
         assert len(mgr.found) >= 1, (
-            f"MIPS64 BE ELF exploration did not reach {ENTRY + 0x14:#x}; "
-            f"counts={mgr.stash_counts()}"
+            f"MIPS64 BE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
         )
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, (
-            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-        )
+        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
 
     # ------------------------------------------------------------------
     # SimProcedure round-trip tests (angr-orc9). One per non-amd64 arch:
@@ -9461,7 +9403,7 @@ class TestMultiArchSupport:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -9488,14 +9430,12 @@ class TestMultiArchSupport:
 
         deadended_ids = mgr.get_state_ids("deadended")
         assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; "
-            f"stashes={mgr.stash_counts()}"
+            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
         )
         sid = deadended_ids[0]
         r0 = mgr.get_state_register(sid, "r0")
         assert r0 == 5, (
-            f"strlen('hello') should return 5 in r0, got {r0!r}. "
-            f"native_calls={mgr.native_procedure_stats()}"
+            f"strlen('hello') should return 5 in r0, got {r0!r}. native_calls={mgr.native_procedure_stats()}"
         )
         # SP must be untouched: ARM doesn't push the return address.
         sp = mgr.get_state_register(sid, "sp")
@@ -9516,7 +9456,7 @@ class TestMultiArchSupport:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -9543,14 +9483,12 @@ class TestMultiArchSupport:
 
         deadended_ids = mgr.get_state_ids("deadended")
         assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; "
-            f"stashes={mgr.stash_counts()}"
+            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
         )
         sid = deadended_ids[0]
         x0 = mgr.get_state_register(sid, "x0")
         assert x0 == 5, (
-            f"strlen('hello') should return 5 in x0, got {x0!r}. "
-            f"native_calls={mgr.native_procedure_stats()}"
+            f"strlen('hello') should return 5 in x0, got {x0!r}. native_calls={mgr.native_procedure_stats()}"
         )
         sp = mgr.get_state_register(sid, "sp")
         assert sp == STACK_BASE, (
@@ -9573,7 +9511,7 @@ class TestMultiArchSupport:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -9600,14 +9538,12 @@ class TestMultiArchSupport:
 
         deadended_ids = mgr.get_state_ids("deadended")
         assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; "
-            f"stashes={mgr.stash_counts()}"
+            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
         )
         sid = deadended_ids[0]
         v0 = mgr.get_state_register(sid, "v0")
         assert v0 == 5, (
-            f"strlen('hello') should return 5 in $v0, got {v0!r}. "
-            f"native_calls={mgr.native_procedure_stats()}"
+            f"strlen('hello') should return 5 in $v0, got {v0!r}. native_calls={mgr.native_procedure_stats()}"
         )
         sp = mgr.get_state_register(sid, "sp")
         assert sp == STACK_BASE, (
@@ -9633,7 +9569,7 @@ class TestMultiArchSupport:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: '{}')
+        callbacks.set_lift_block(lambda a: "{}")
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -9660,14 +9596,12 @@ class TestMultiArchSupport:
 
         deadended_ids = mgr.get_state_ids("deadended")
         assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; "
-            f"stashes={mgr.stash_counts()}"
+            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
         )
         sid = deadended_ids[0]
         v0 = mgr.get_state_register(sid, "v0")
         assert v0 == 5, (
-            f"strlen('hello') should return 5 in $v0, got {v0!r}. "
-            f"native_calls={mgr.native_procedure_stats()}"
+            f"strlen('hello') should return 5 in $v0, got {v0!r}. native_calls={mgr.native_procedure_stats()}"
         )
         sp = mgr.get_state_register(sid, "sp")
         assert sp == STACK_BASE, (
@@ -9687,7 +9621,7 @@ class TestErroredStash:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         # Explore with a valid find address
-        ACCEPTED = 0x4006ed
+        ACCEPTED = 0x4006ED
         mgr.explore(find=ACCEPTED, max_steps=50000)
 
         # errored should be a list (possibly empty for successful exploration)
@@ -9697,19 +9631,19 @@ class TestErroredStash:
         # If there are errored states, they should be RustErrorRecord instances
         for record in errored:
             assert isinstance(record, RustErrorRecord)
-            assert hasattr(record, 'state')
-            assert hasattr(record, 'error')
-            assert hasattr(record, 'addr')
-            assert hasattr(record, 'error_class')
-            assert hasattr(record, 'registers')
-            assert hasattr(record, 'last_statements')
-            assert hasattr(record, 'constraint_count')
+            assert hasattr(record, "state")
+            assert hasattr(record, "error")
+            assert hasattr(record, "addr")
+            assert hasattr(record, "error_class")
+            assert hasattr(record, "registers")
+            assert hasattr(record, "last_statements")
+            assert hasattr(record, "constraint_count")
             assert isinstance(record.error, Exception)
             assert isinstance(record.error_class, str)
             assert isinstance(record.registers, dict)
             assert isinstance(record.last_statements, list)
             assert isinstance(record.constraint_count, int)
-            assert repr(record).startswith('<State errored')
+            assert repr(record).startswith("<State errored")
 
     def test_error_record_has_state(self):
         """RustErrorRecord wraps a state with error info."""
@@ -9735,21 +9669,21 @@ class TestErroredStash:
         from angr.exploration import RustErrorRecord
 
         cases = {
-            'memory error: unmapped 0xdead': 'memory',
-            'operation error: shift overflow': 'operation',
-            'invalid VEX IR: bogus': 'invalid_ir',
-            'unsupported: CAS instruction': 'unsupported',
-            'type mismatch: expected I64, got I32': 'type_mismatch',
-            'unknown temporary t42': 'unknown_temp',
-            'callback error: python raised': 'callback',
-            'lift error: bytes': 'lift',
-            'need lift at 0x401000': 'need_lift',
-            'need Python fallback: VECRET': 'need_python_fallback',
-            'resolve_function error: bad addr': 'resolve_function',
-            'something with timeout in it': 'timeout',
-            'page is unmapped at 0x0': 'unmapped',
-            'rust panic in interpreter': 'rust_panic',
-            'totally novel error': 'unknown',
+            "memory error: unmapped 0xdead": "memory",
+            "operation error: shift overflow": "operation",
+            "invalid VEX IR: bogus": "invalid_ir",
+            "unsupported: CAS instruction": "unsupported",
+            "type mismatch: expected I64, got I32": "type_mismatch",
+            "unknown temporary t42": "unknown_temp",
+            "callback error: python raised": "callback",
+            "lift error: bytes": "lift",
+            "need lift at 0x401000": "need_lift",
+            "need Python fallback: VECRET": "need_python_fallback",
+            "resolve_function error: bad addr": "resolve_function",
+            "something with timeout in it": "timeout",
+            "page is unmapped at 0x0": "unmapped",
+            "rust panic in interpreter": "rust_panic",
+            "totally novel error": "unknown",
         }
         for msg, expected in cases.items():
             record = RustErrorRecord(None, msg, 0x400000)
@@ -9760,7 +9694,7 @@ class TestErroredStash:
         from angr.exploration import RustErrorRecord
 
         record = RustErrorRecord(None, "unsupported: CAS", 0x400000)
-        assert 'class=unsupported' in repr(record)
+        assert "class=unsupported" in repr(record)
 
     def test_error_record_defaults_when_state_none(self):
         """Snapshot/history/constraint-count default cleanly when state is None."""
@@ -9778,6 +9712,7 @@ class TestErrorRecovery:
     @classmethod
     def setup_class(cls):
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def test_unmapped_memory_load_returns_error(self):
@@ -9804,8 +9739,9 @@ class TestErrorRecovery:
         Locks down current behaviour for angr-ho6i: if the engine ever silently
         keeps the state in `active`, this test fails and a real bug is filed.
         """
-        import angr
         import claripy
+
+        import angr
         from angr import sim_options as o
 
         # mov rax, [rdi]   -> 48 8b 07
@@ -9874,23 +9810,17 @@ class TestErrorRecovery:
         # PythonVEXFallback recorded for the block.
         stats = mgr.stats
         fb = mgr._rust_mgr.get_fallback_stats()
-        assert stats["dcas_unsupported_count"] == 0, (
-            f"DCAS now native — counter must stay zero; stats={stats}, fb={fb}"
-        )
+        assert stats["dcas_unsupported_count"] == 0, f"DCAS now native — counter must stay zero; stats={stats}, fb={fb}"
         assert fb["dcas_unsupported_count"] == 0
-        assert not any(
-            "double compare-and-swap" in reason
-            for reason in fb["addresses"].values()
-        ), f"DCAS reason still recorded in fallback addrs: {fb['addresses']}"
+        assert not any("double compare-and-swap" in reason for reason in fb["addresses"].values()), (
+            f"DCAS reason still recorded in fallback addrs: {fb['addresses']}"
+        )
         # Block was actually run by the Rust interpreter (not silently skipped):
         # the DCAS path issues exactly 2 stores (lo + hi halves). Any DCAS that
         # falls back early or returns Unsupported produces 0.
-        assert stats["rust_step_count"] > 0, (
-            f"Rust did not step the state; stats={stats}"
-        )
+        assert stats["rust_step_count"] > 0, f"Rust did not step the state; stats={stats}"
         assert stats["rust_store_stmt_count"] >= 2, (
-            f"DCAS lo/hi stores not fired; rust_store_stmt_count="
-            f"{stats['rust_store_stmt_count']}; stats={stats}"
+            f"DCAS lo/hi stores not fired; rust_store_stmt_count={stats['rust_store_stmt_count']}; stats={stats}"
         )
 
     def test_dcas_cmpxchg16b_no_match_keeps_memory(self):
@@ -9929,9 +9859,7 @@ class TestErrorRecovery:
         assert mgr.stats["rust_store_stmt_count"] == 0, (
             f"cmp-false DCAS should not store; got {mgr.stats['rust_store_stmt_count']}"
         )
-        survived = (
-            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
         assert survived, "DCAS block produced no survived state"
         s = survived[0]
 
@@ -9954,8 +9882,9 @@ class TestErrorRecovery:
         Before the fix this test errored with "CAS: oldHi/expdHi/dataHi
         must be all-Some (DCAS) or all-None (single)".
         """
-        import angr
         import claripy
+
+        import angr
 
         # lock cmpxchg qword ptr [rdi], rcx  -> f0 48 0f b1 0f
         # ret                                -> c3
@@ -9979,13 +9908,10 @@ class TestErrorRecovery:
         assert mgr.stats["rust_step_count"] > 0
         assert mgr.stats["dcas_unsupported_count"] == 0
         assert mgr.stats["rust_store_stmt_count"] >= 1, (
-            f"single-word CAS should issue >=1 store on match; got "
-            f"{mgr.stats['rust_store_stmt_count']}"
+            f"single-word CAS should issue >=1 store on match; got {mgr.stats['rust_store_stmt_count']}"
         )
 
-        survived = (
-            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
         assert survived, "CMPXCHG block produced no survived state"
         s = survived[0]
         mem = s.solver.eval(s.memory.load(0x2000, 8, endness="Iend_LE"))
@@ -9997,17 +9923,16 @@ class TestErrorRecovery:
         original value. The CPU also writes the loaded value back to RAX
         (so subsequent compares see the actual contents).
         """
-        import angr
         import claripy
+
+        import angr
 
         shellcode = bytes.fromhex("f0480fb10fc3")
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
 
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rdi = 0x2000
-        state.memory.store(
-            0x2000, claripy.BVV(0xAAAAAAAAAAAAAAAA, 64), endness="Iend_LE"
-        )
+        state.memory.store(0x2000, claripy.BVV(0xAAAAAAAAAAAAAAAA, 64), endness="Iend_LE")
         state.regs.rax = 0x1234  # NO match (mem holds 0xAA...)
         state.regs.rcx = 0xDEADBEEF
         state.regs.rsp = 0x7FFFFE00
@@ -10020,13 +9945,10 @@ class TestErrorRecovery:
         assert mgr.stats["rust_step_count"] > 0
         # cmp-false: zero CAS-driven stores.
         assert mgr.stats["rust_store_stmt_count"] == 0, (
-            f"cmp-false single CAS should not store; got "
-            f"{mgr.stats['rust_store_stmt_count']}"
+            f"cmp-false single CAS should not store; got {mgr.stats['rust_store_stmt_count']}"
         )
 
-        survived = (
-            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
         assert survived, "CMPXCHG block produced no survived state"
         s = survived[0]
         # Memory is unchanged.
@@ -10043,8 +9965,9 @@ class TestErrorRecovery:
         the loaded value into the result temp (which the lifted IR
         then puts into the destination register).
         """
-        import angr
         import claripy
+
+        import angr
 
         # ldrex r0, [r1]: 0xE1910F9F -> bytes LE: 9F 0F 91 E1
         # bx lr        : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -10062,9 +9985,7 @@ class TestErrorRecovery:
         mgr.run(max_steps=2)
 
         assert mgr.stats["rust_step_count"] > 0
-        survived = (
-            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
         assert survived, "LDREX block produced no survived state"
         s = survived[0]
         r0 = s.solver.eval(s.regs.r0)
@@ -10078,8 +9999,9 @@ class TestErrorRecovery:
         LLSC success bit into Rd (the status register), so a successful
         STREX leaves Rd = 0.
         """
-        import angr
         import claripy
+
+        import angr
 
         # strex r0, r2, [r1]: 0xE1810F92 -> bytes LE: 92 0F 81 E1
         # bx lr             : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -10098,9 +10020,7 @@ class TestErrorRecovery:
         mgr.run(max_steps=2)
 
         assert mgr.stats["rust_step_count"] > 0
-        survived = (
-            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
-        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
         assert survived, "STREX block produced no survived state"
         s = survived[0]
         mem = s.solver.eval(s.memory.load(0x2000, 4, endness="Iend_LE"))
@@ -10115,8 +10035,9 @@ class TestErrorRecovery:
         UNSAT children, so an UNSAT parent is evicted via the prune path
         rather than silently advancing.
         """
-        import angr
         import claripy
+
+        import angr
 
         # mov rax, 1     -> 48 c7 c0 01 00 00 00
         # cmp rax, 0     -> 48 83 f8 00
@@ -10130,9 +10051,7 @@ class TestErrorRecovery:
         x = claripy.BVS("contradiction", 32)
         state.solver.add(x > 100)
         state.solver.add(x < 50)
-        assert not state.solver.satisfiable(), (
-            "Sanity: Python solver also sees the contradiction."
-        )
+        assert not state.solver.satisfiable(), "Sanity: Python solver also sees the contradiction."
 
         mgr = RustExplorationManager(proj, [state])
         mgr.run(max_steps=20)
@@ -10158,8 +10077,8 @@ class TestErrorRecovery:
 
     def test_solver_eval_after_unsat(self):
         """Evaluating an expression on an UNSAT solver should return None, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -10172,8 +10091,8 @@ class TestErrorRecovery:
 
     def test_solver_min_on_unsat(self):
         """min() on UNSAT solver should return None, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -10184,8 +10103,8 @@ class TestErrorRecovery:
 
     def test_solver_eval_upto_on_unsat(self):
         """eval_upto() on UNSAT solver returns empty list, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -10196,8 +10115,8 @@ class TestErrorRecovery:
 
     def test_solver_many_constraints(self):
         """Solver handles many constraints without crashing."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -10211,8 +10130,8 @@ class TestErrorRecovery:
 
     def test_solver_fork_many_times(self):
         """Forking solver many times should not leak or crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
         import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -10308,6 +10227,7 @@ class TestErrorRecovery:
 
     def _build_load_store_manager(self):
         import angr
+
         shellcode = bytes.fromhex("c3")  # ret
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -10318,10 +10238,12 @@ class TestErrorRecovery:
         """SimMemoryError from state.memory.load() is the expected failure mode
         and must keep being swallowed (zero buffer fallback)."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped read")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10337,6 +10259,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected bug")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10348,10 +10271,12 @@ class TestErrorRecovery:
         """SimMemoryError from state.memory.store() is the expected failure
         mode and must keep being swallowed."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped write")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10365,6 +10290,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected bug")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10387,26 +10313,30 @@ class TestErrorRecovery:
     def test_cb_lift_block_swallows_pyvex_error(self):
         """PyVEXError from the lifter must keep falling back to '{}'."""
         from pyvex.errors import PyVEXError
+
         mgr, _ = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise PyVEXError("simulated lift failure")
+
         mgr._project.factory.block = boom
 
         result = mgr._cb_lift_block(0x1000)
-        assert result == '{}'
+        assert result == "{}"
 
     def test_cb_lift_block_swallows_sim_engine_error(self):
         """SimEngineError from block construction must keep falling back."""
         from angr.errors import SimEngineError
+
         mgr, _ = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimEngineError("simulated engine failure")
+
         mgr._project.factory.block = boom
 
         result = mgr._cb_lift_block(0x1000)
-        assert result == '{}'
+        assert result == "{}"
 
     def test_cb_lift_block_propagates_unrelated_exceptions(self):
         """Non-(SimEngine/Claripy/PyVEX) exceptions must propagate."""
@@ -10414,6 +10344,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected lift bug")
+
         mgr._project.factory.block = boom
 
         with pytest.raises(RuntimeError, match="unexpected lift bug"):
@@ -10426,7 +10357,9 @@ class TestErrorRecovery:
     def test_cb_lift_block_uses_dirty_bytes_when_provided(self):
         """dirty_bytes lifts the supplied buffer, not the project's static binary."""
         import json
+
         import angr
+
         # Project's static binary at 0x1000 is "ret" (0xc3, 1 byte).
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -10435,29 +10368,31 @@ class TestErrorRecovery:
         # dirty_bytes is "nop; ret" (0x90 0xc3); the lift must reflect the
         # extra nop, proving cle's stale buffer was bypassed.
         result = mgr._cb_lift_block(0x1000, dirty_bytes=b"\x90\xc3")
-        assert result and result != '{}', f"expected non-empty IRSB, got {result!r}"
+        assert result and result != "{}", f"expected non-empty IRSB, got {result!r}"
         irsb = json.loads(result)
-        imarks = [s for s in irsb['statements'] if s.get('tag') == 'Ist_IMark']
+        imarks = [s for s in irsb["statements"] if s.get("tag") == "Ist_IMark"]
         # Two IMarks (nop at 0x1000, ret at 0x1001) prove both bytes were lifted.
         assert len(imarks) == 2, f"expected 2 IMarks (nop+ret), got {len(imarks)}: {imarks}"
-        assert imarks[0]['addr'] == 0x1000
-        assert imarks[1]['addr'] == 0x1001
+        assert imarks[0]["addr"] == 0x1000
+        assert imarks[1]["addr"] == 0x1001
 
     def test_cb_lift_block_static_binary_when_no_dirty_bytes(self):
         """Without dirty_bytes the lift comes from the project's static binary."""
         import json
+
         import angr
+
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         mgr = RustExplorationManager(proj, [state])
 
         result = mgr._cb_lift_block(0x1000)
-        assert result and result != '{}'
+        assert result and result != "{}"
         irsb = json.loads(result)
-        imarks = [s for s in irsb['statements'] if s.get('tag') == 'Ist_IMark']
+        imarks = [s for s in irsb["statements"] if s.get("tag") == "Ist_IMark"]
         # Static binary is just 0xc3 (1 byte ret) — exactly one IMark.
         assert len(imarks) == 1, f"expected 1 IMark (ret only), got {len(imarks)}"
-        assert imarks[0]['addr'] == 0x1000
+        assert imarks[0]["addr"] == 0x1000
 
     def test_smc_rust_passes_dirty_bytes_to_python_lift(self):
         """End-to-end SMC: a Rust-side store to in-binary code marks the page
@@ -10480,10 +10415,10 @@ class TestErrorRecovery:
         #   After the store: 0x1010 = c3 c3 (ret ; ret)
         shellcode = (
             bytes.fromhex("48b81010000000000000")  # mov rax, 0x1010
-            + bytes.fromhex("c600c3")              # mov byte [rax], 0xc3
-            + bytes.fromhex("ffe0")                # jmp rax
-            + b"\x00"                              # padding to align 0x1010
-            + bytes.fromhex("90c3")                # nop ; ret (static at 0x1010)
+            + bytes.fromhex("c600c3")  # mov byte [rax], 0xc3
+            + bytes.fromhex("ffe0")  # jmp rax
+            + b"\x00"  # padding to align 0x1010
+            + bytes.fromhex("90c3")  # nop ; ret (static at 0x1010)
         )
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(
@@ -10493,8 +10428,8 @@ class TestErrorRecovery:
                 o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
             },
         )
-        state.regs.rsp = 0x7ffff0000
-        state.memory.store(0x7ffff0000, b"\x00" * 8)
+        state.regs.rsp = 0x7FFFF0000
+        state.memory.store(0x7FFFF0000, b"\x00" * 8)
 
         mgr = RustExplorationManager(proj, [state])
         # load_shellcode's cle Blob has obj.binary == None, so the default
@@ -10530,7 +10465,7 @@ class TestErrorRecovery:
             "Rust failed to pass dirty_bytes for SMC lift at 0x1010; "
             f"all lifts: {[(hex(a), b is not None) for a, b in recorded]}"
         )
-        assert last_bytes[0] == 0xc3, (
+        assert last_bytes[0] == 0xC3, (
             f"dirty_bytes[0] should be 0xc3 (the byte just stored), got "
             f"0x{last_bytes[0]:02x} (full: {last_bytes[:8].hex()})"
         )
@@ -10538,10 +10473,12 @@ class TestErrorRecovery:
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped page")
+
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -10554,6 +10491,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected fetch bug")
+
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -10589,10 +10527,12 @@ class TestErrorRecovery:
         """SimMemoryError from state.memory.store() must keep being swallowed
         per-store in the batch loop (other stores still attempted)."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped batch store")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10606,6 +10546,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected batch store bug")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10617,10 +10558,12 @@ class TestErrorRecovery:
         """SimMemoryError from state.memory.load() must keep returning a
         per-entry zero buffer in the batch loop."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped batch load")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10634,6 +10577,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected batch load bug")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10645,10 +10589,12 @@ class TestErrorRecovery:
         """SimMemoryError from state.memory.load() must keep returning empty
         pages per-entry in the batch loop."""
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped batch page")
+
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -10661,6 +10607,7 @@ class TestErrorRecovery:
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected batch page bug")
+
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -10670,11 +10617,14 @@ class TestErrorRecovery:
     def test_cb_memory_store_symbolic_value_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.store() must keep being swallowed."""
         import claripy
+
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped symbolic store")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10687,10 +10637,12 @@ class TestErrorRecovery:
         """Non-Sim/Claripy exceptions must propagate out of
         _cb_memory_store_symbolic_value."""
         import claripy
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected symbolic store bug")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10722,6 +10674,7 @@ class TestErrorRecovery:
         full callback must land in Python state memory and be loadable back.
         Uses 0x4000 because 0x1000 is already mapped by load_shellcode."""
         import claripy
+
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
 
@@ -10733,8 +10686,9 @@ class TestErrorRecovery:
 
         mgr._cb_memory_store_symbolic_full(addr, data)
 
-        loaded = state.memory.load(target_addr, 4, endness=state.arch.memory_endness,
-                                   inspect=False, disable_actions=True)
+        loaded = state.memory.load(
+            target_addr, 4, endness=state.arch.memory_endness, inspect=False, disable_actions=True
+        )
         assert state.solver.eval(loaded) == 0xCAFEBABE
 
     def test_cb_memory_load_symbolic_full_returns_stored_ast(self):
@@ -10742,14 +10696,19 @@ class TestErrorRecovery:
         evaluates to the previously stored value at a symbolic-but-pinned
         address."""
         import claripy
+
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
 
         target_addr = 0x4000
         state.memory.map_region(target_addr, 0x100, 7)
-        state.memory.store(target_addr, claripy.BVV(0xDEADBEEF, 32),
-                           endness=state.arch.memory_endness,
-                           inspect=False, disable_actions=True)
+        state.memory.store(
+            target_addr,
+            claripy.BVV(0xDEADBEEF, 32),
+            endness=state.arch.memory_endness,
+            inspect=False,
+            disable_actions=True,
+        )
 
         addr = claripy.BVS("sym_load_addr", 64)
         state.solver.add(addr == target_addr)
@@ -10764,11 +10723,14 @@ class TestErrorRecovery:
         callbacks). Otherwise Rust's flush_stores() path would propagate the
         error and tear down exploration."""
         import claripy
+
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped symbolic-address store")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10782,10 +10744,12 @@ class TestErrorRecovery:
         """Non-Sim/Claripy exceptions must propagate so real bugs aren't
         masked as silent no-ops."""
         import claripy
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected symbolic-address store bug")
+
         state.memory.store = boom
 
         mgr._set_callback_state(state)
@@ -10800,11 +10764,14 @@ class TestErrorRecovery:
         so Rust can keep going (it'll wrap the result in a sym_pyref_*
         placeholder via expressions.rs)."""
         import claripy
+
         from angr.errors import SimMemoryError
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped symbolic-address load")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10818,10 +10785,12 @@ class TestErrorRecovery:
     def test_cb_memory_load_symbolic_full_propagates_unrelated_exceptions(self):
         """Non-Sim/Claripy exceptions must propagate."""
         import claripy
+
         mgr, state = self._build_load_store_manager()
 
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected symbolic-address load bug")
+
         state.memory.load = boom
 
         mgr._set_callback_state(state)
@@ -10843,6 +10812,7 @@ class TestErrorRecovery:
         This is the common case: every other symbolic-store callback hits
         this path and the existing Python state.memory.store handles it."""
         import claripy
+
         mgr, _ = self._build_load_store_manager()
         addr = claripy.BVS("plain_addr", 64)
         data = claripy.BVV(0xCAFEBABE, 32)
@@ -10853,9 +10823,11 @@ class TestErrorRecovery:
         through (return False).  Outside an active step there is no
         Rust state to apply the Multi-cell store to."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, _ = self._build_load_store_manager()
         # Force no stepping state id (mirrors the off-path callback case).
         mgr._get_stepping_state_id = lambda: None
@@ -10869,9 +10841,11 @@ class TestErrorRecovery:
         with the original addr/data ASTs.  Asserts the routing only;
         the Rust side is unit-tested separately."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, _ = self._build_load_store_manager()
         captured = []
 
@@ -10898,14 +10872,14 @@ class TestErrorRecovery:
         must fall through to the Python state path so the write is not
         silently lost.  _try_multi_cell_store returns False in that case."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, _ = self._build_load_store_manager()
         mgr._get_stepping_state_id = lambda: 1234
-        mgr._rust_state_memory_store_symbolic_multi = (
-            lambda *_args, **_kw: False
-        )
+        mgr._rust_state_memory_store_symbolic_multi = lambda *_args, **_kw: False
 
         addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
         data = claripy.BVV(0xCAFEBABE, 32)
@@ -10915,9 +10889,11 @@ class TestErrorRecovery:
         """Errors from the Rust side must be swallowed so the Python
         fallback can still apply the store."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, _ = self._build_load_store_manager()
         mgr._get_stepping_state_id = lambda: 1234
 
@@ -10936,15 +10912,15 @@ class TestErrorRecovery:
         return without invoking state.memory.store.  Pinned via a stub
         state.memory.store that would otherwise record a call."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
         mgr._get_stepping_state_id = lambda: 1234
-        mgr._rust_state_memory_store_symbolic_multi = (
-            lambda *_args, **_kw: True
-        )
+        mgr._rust_state_memory_store_symbolic_multi = lambda *_args, **_kw: True
 
         store_calls = []
         original_store = state.memory.store
@@ -10954,10 +10930,7 @@ class TestErrorRecovery:
             addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
             data = claripy.BVV(0xCAFEBABE, 32)
             mgr._cb_memory_store_symbolic_full(addr, data)
-            assert store_calls == [], (
-                "MultiwriteAnnotation-tagged store leaked to Python "
-                "state.memory.store"
-            )
+            assert store_calls == [], "MultiwriteAnnotation-tagged store leaked to Python state.memory.store"
         finally:
             state.memory.store = original_store
 
@@ -10965,15 +10938,15 @@ class TestErrorRecovery:
         """If the Multi-cell PyO3 path returns False, the Python state
         path must still receive the store so the write is preserved."""
         import claripy
+
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
+
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
         mgr._get_stepping_state_id = lambda: 1234
-        mgr._rust_state_memory_store_symbolic_multi = (
-            lambda *_args, **_kw: False
-        )
+        mgr._rust_state_memory_store_symbolic_multi = lambda *_args, **_kw: False
 
         store_calls = []
         original_store = state.memory.store
@@ -10983,9 +10956,7 @@ class TestErrorRecovery:
             addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
             data = claripy.BVV(0xCAFEBABE, 32)
             mgr._cb_memory_store_symbolic_full(addr, data)
-            assert len(store_calls) == 1, (
-                "Phase 1.4 fallback dropped the store on Multi-cell False"
-            )
+            assert len(store_calls) == 1, "Phase 1.4 fallback dropped the store on Multi-cell False"
         finally:
             state.memory.store = original_store
 
@@ -11019,6 +10990,7 @@ class TestErrorRecovery:
         before it returned `Unsupported`).
         """
         import json
+
         import claripy
 
         mgr = _RustExplorationManager("amd64")
@@ -11056,26 +11028,29 @@ class TestErrorRecovery:
             "arch": "AMD64",
             "statements": [
                 {"tag": "Ist_IMark", "addr": 0x1000, "len": 4, "delta": 0},
-                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                    "tag": "Iex_Load", "end": "Iend_LE", "ty": "Ity_I64",
-                    "addr": {"tag": "Iex_Const",
-                             "con": {"tag": "Ico_U64", "value": 0x2000}}}},
-                {"tag": "Ist_WrTmp", "tmp": 2, "data": {
-                    "tag": "Iex_Const",
-                    "con": {"tag": "Ico_U64", "value": 0}}},
-                {"tag": "Ist_WrTmp", "tmp": 3, "data": {
-                    "tag": "Iex_Const",
-                    "con": {"tag": "Ico_U1", "value": True}}},
-                {"tag": "Ist_LoadG",
-                 "dst": 1,
-                 "addr": {"tag": "Iex_RdTmp", "tmp": 0},
-                 "alt": {"tag": "Iex_RdTmp", "tmp": 2},
-                 "guard": {"tag": "Iex_RdTmp", "tmp": 3},
-                 "cvt": "ILGop_Ident64",
-                 "end": "Iend_LE"},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Load",
+                        "end": "Iend_LE",
+                        "ty": "Ity_I64",
+                        "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
+                    },
+                },
+                {"tag": "Ist_WrTmp", "tmp": 2, "data": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0}}},
+                {"tag": "Ist_WrTmp", "tmp": 3, "data": {"tag": "Iex_Const", "con": {"tag": "Ico_U1", "value": True}}},
+                {
+                    "tag": "Ist_LoadG",
+                    "dst": 1,
+                    "addr": {"tag": "Iex_RdTmp", "tmp": 0},
+                    "alt": {"tag": "Iex_RdTmp", "tmp": 2},
+                    "guard": {"tag": "Iex_RdTmp", "tmp": 3},
+                    "cvt": "ILGop_Ident64",
+                    "end": "Iend_LE",
+                },
             ],
-            "next": {"tag": "Iex_Const",
-                     "con": {"tag": "Ico_U64", "value": 0x1010}},
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x1010}},
             "jumpkind": "Ijk_Boring",
             "offsIP": 184,  # AMD64 RIP register offset
             "tyenv": {"types": ["Ity_I64", "Ity_I64", "Ity_I64", "Ity_I1"]},
@@ -11099,10 +11074,7 @@ class TestErrorRecovery:
         # Either the Python full callback fires (Strided / TooLarge / Failed
         # branch) or the concrete callback fires for a non-0x2000 address
         # (Single / Multiple branch resolving the symbolic temp).
-        loadg_dispatched = (
-            len(full_calls) > 0
-            or any(addr != 0x2000 for addr, _ in load_calls)
-        )
+        loadg_dispatched = len(full_calls) > 0 or any(addr != 0x2000 for addr, _ in load_calls)
         assert loadg_dispatched, (
             f"LoadG with symbolic address never reached resolve_loadg_load. "
             f"memory_load_symbolic_full fired {len(full_calls)} times; "
@@ -11121,15 +11093,16 @@ class TestErrorRecovery:
         invoking the manager-level callback the way Rust would.
         """
         import claripy
+
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
 
         # Map a region and store a known value so the load returns it.
         target = 0x4100
         state.memory.map_region(target, 0x100, 7)
-        state.memory.store(target, claripy.BVV(0xCAFED00D, 32),
-                           endness=state.arch.memory_endness,
-                           inspect=False, disable_actions=True)
+        state.memory.store(
+            target, claripy.BVV(0xCAFED00D, 32), endness=state.arch.memory_endness, inspect=False, disable_actions=True
+        )
 
         # Pin a symbolic address to `target` — the same shape the LoadG
         # fallback feeds the callback (a symbolic AST that Python's
@@ -11158,6 +11131,7 @@ class TestErrorRecovery:
         hang", not "respects timeout to the millisecond".
         """
         import time
+
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext
 
@@ -11242,8 +11216,7 @@ class TestZ3TacticEnvVar:
             timeout=60,
         )
         assert proc.returncode == 0, (
-            f"subprocess failed (env={tactic_env_value!r}):\n"
-            f"stdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
+            f"subprocess failed (env={tactic_env_value!r}):\nstdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
         )
         sat_str, val_str = proc.stdout.strip().split("|")
         return int(sat_str), int(val_str) if val_str != "None" else None
@@ -11322,15 +11295,18 @@ class TestSolverOutputCorrectness:
     def setup_class(cls):
         """Ensure the shared Z3 context is initialized for solver tests."""
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def _make_ctx(self):
         from angr.rustylib.vex_engine import RustSolverContext
+
         return RustSolverContext()
 
     def test_single_equality(self):
         """x == 42 should eval to exactly 42."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 42)
@@ -11339,6 +11315,7 @@ class TestSolverOutputCorrectness:
     def test_arithmetic_chain(self):
         """x + 10 == 50 should give x == 40."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x + 10 == 50)
@@ -11347,6 +11324,7 @@ class TestSolverOutputCorrectness:
     def test_bitwise_and_mask(self):
         """x & 0xFF == 0x41 constrains the low byte to 'A'."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x & 0xFF == 0x41)
@@ -11356,6 +11334,7 @@ class TestSolverOutputCorrectness:
     def test_xor_constraint(self):
         """x ^ key == target should give x == key ^ target."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         key = 0xDEADBEEF
@@ -11366,6 +11345,7 @@ class TestSolverOutputCorrectness:
     def test_shift_left(self):
         """(x << 4) == 0x120 should give x == 0x12."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x << 4 == 0x120)
@@ -11377,6 +11357,7 @@ class TestSolverOutputCorrectness:
     def test_extract_byte(self):
         """Extract byte 1 (bits 15:8) == 0xBE constrains that byte."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(claripy.Extract(15, 8, x) == 0xBE)
@@ -11386,6 +11367,7 @@ class TestSolverOutputCorrectness:
     def test_concat_constraint(self):
         """Concat(a, b) == 0xAABB constrains both a and b."""
         import claripy
+
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
         b = claripy.BVS("b", 8)
@@ -11396,6 +11378,7 @@ class TestSolverOutputCorrectness:
     def test_signed_comparison(self):
         """Signed comparison: x >s -5 and x <s 5 should give value in (-5, 5)."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(claripy.SGT(x, claripy.BVV(-5, 32)))
@@ -11411,6 +11394,7 @@ class TestSolverOutputCorrectness:
     def test_multi_variable_system(self):
         """System of equations: x + y == 100, x - y == 20 => x=60, y=40."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -11422,6 +11406,7 @@ class TestSolverOutputCorrectness:
     def test_eval_upto_exact_range(self):
         """eval_upto on tightly constrained variable returns all valid values."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(claripy.UGE(x, 0x41))  # >= 'A'
@@ -11432,6 +11417,7 @@ class TestSolverOutputCorrectness:
     def test_min_max_with_complex_constraints(self):
         """min/max with multiple overlapping constraints."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x >= 100)
@@ -11443,6 +11429,7 @@ class TestSolverOutputCorrectness:
     def test_fork_preserves_values(self):
         """Forked solver preserves parent constraints and returns correct values."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -11478,6 +11465,7 @@ class TestCallableStepFunc:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         call_count = 0
+
         def count_steps(sm):
             nonlocal call_count
             call_count += 1
@@ -11492,6 +11480,7 @@ class TestCallableStepFunc:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         call_count = 0
+
         def counting_step(sm):
             nonlocal call_count
             call_count += 1
@@ -11503,7 +11492,6 @@ class TestCallableStepFunc:
 
     def test_prune_removes_unsat_states(self, fauxware_project):
         """prune() removes unsatisfiable states from active stash."""
-        import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11525,6 +11513,7 @@ class TestCallableStepFunc:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         prune_count = 0
+
         def prune_step(sm):
             nonlocal prune_count
             sm.prune()
@@ -11557,7 +11546,7 @@ class TestCallableStepFunc:
     def test_prune_with_filter_func(self, fauxware_project):
         """prune(filter_func=...) keeps only matching states."""
 
-        ACCEPTED = 0x4006ed
+        ACCEPTED = 0x4006ED
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -11641,8 +11630,8 @@ class TestCallableStepFunc:
         original_sm = fauxware_project.factory.simulation_manager
 
         def rust_sm(thing=None, **kwargs):
-            kwargs.pop('use_rust_engine', None)
-            kwargs.pop('techniques', None)  # RustExplorationManager doesn't take techniques
+            kwargs.pop("use_rust_engine", None)
+            kwargs.pop("techniques", None)  # RustExplorationManager doesn't take techniques
             if thing is None:
                 thing = [fauxware_project.factory.entry_state()]
             elif isinstance(thing, angr.SimState):
@@ -11672,6 +11661,7 @@ class TestCallableStepFunc:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         call_count = 0
+
         def count_step(sm):
             nonlocal call_count
             call_count += 1
@@ -11687,6 +11677,7 @@ class TestCallableStepFunc:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         found_deadended = False
+
         def check_deadended(sm):
             nonlocal found_deadended
             if len(sm.deadended) > 0:
@@ -11695,8 +11686,9 @@ class TestCallableStepFunc:
         mgr.run(step_func=check_deadended, n=100000)
         # With drop_terminal_states=False, deadended states should be visible
         # during step_func calls (or at end)
-        assert found_deadended or len(mgr.deadended) > 0, \
+        assert found_deadended or len(mgr.deadended) > 0, (
             "Deadended states should be preserved during step_func execution"
+        )
 
 
 class TestCallStackTracking:
@@ -11734,7 +11726,7 @@ class TestCallStackTracking:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         # Check that the found state IDs are accessible via the Rust manager
@@ -11773,7 +11765,7 @@ class TestDetailedHistory:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -11795,7 +11787,7 @@ class TestDetailedHistory:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -11811,7 +11803,7 @@ class TestDetailedHistory:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -11845,7 +11837,7 @@ class TestDetailedHistory:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], max_history=5)
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -11863,7 +11855,7 @@ class TestDetailedHistory:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed)
+        mgr.explore(find=0x4006ED)
 
         assert len(mgr.found) > 0
         found_ids = mgr._rust_mgr.get_state_ids("found")
@@ -11955,7 +11947,13 @@ class TestDetailedHistory:
         # Oldest 3 (0x3000-0x3002) and the first 3 of 0x4000-0x4009
         # are evicted; the tail 0x4003-0x4009 survives.
         assert [entry[0] for entry in kept] == [
-            0x4003, 0x4004, 0x4005, 0x4006, 0x4007, 0x4008, 0x4009,
+            0x4003,
+            0x4004,
+            0x4005,
+            0x4006,
+            0x4007,
+            0x4008,
+            0x4009,
         ]
 
 
@@ -11991,12 +11989,12 @@ class TestNativeTechniques:
         mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
 
         from angr.exploration_techniques import LengthLimiter
+
         tech = LengthLimiter(max_length=50)
         mgr.use_technique(tech)
 
         # Verify it was registered natively
-        assert getattr(tech, '_native_length_limiter', False), \
-            "LengthLimiter should be marked as native"
+        assert getattr(tech, "_native_length_limiter", False), "LengthLimiter should be marked as native"
         assert mgr._rust_mgr.native_technique_count() == 1
 
     def test_length_limiter_cuts_long_paths(self, fauxware_project):
@@ -12005,6 +12003,7 @@ class TestNativeTechniques:
         mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
 
         from angr.exploration_techniques import LengthLimiter
+
         mgr.use_technique(LengthLimiter(max_length=5))
 
         # Explore — paths beyond 5 blocks should be cut
@@ -12020,11 +12019,11 @@ class TestNativeTechniques:
         mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
 
         from angr.exploration_techniques import Timeout
+
         tech = Timeout(timeout=30)
         mgr.use_technique(tech)
 
-        assert getattr(tech, '_native_timeout', False), \
-            "Timeout should be marked as native"
+        assert getattr(tech, "_native_timeout", False), "Timeout should be marked as native"
         assert mgr._rust_mgr.native_technique_count() == 1
 
     def test_multiple_native_techniques(self):
@@ -12071,8 +12070,7 @@ class TestExplorationTechniqueStepHookDispatch:
 
         mgr.run(max_steps=10)
 
-        assert tech.step_calls >= 1, \
-            "step() hook should have been invoked at least once"
+        assert tech.step_calls >= 1, "step() hook should have been invoked at least once"
 
     def test_step_hook_simgr_is_proxy(self, fauxware_project):
         """The simgr arg to step() is a RustSimulationManagerProxy."""
@@ -12172,8 +12170,7 @@ class TestExplorationTechniqueStepHookDispatch:
         # DFS overrides step() in Python, but we shadow it natively in the
         # Rust manager — _has_technique_step_hooks() must skip it to avoid
         # double-dispatch (and double-stepping).
-        assert not mgr._has_technique_step_hooks(), \
-            "Native DFS step() must NOT be re-dispatched"
+        assert not mgr._has_technique_step_hooks(), "Native DFS step() must NOT be re-dispatched"
 
     def test_proxy_step_without_callback_raises(self):
         """Direct RustSimulationManagerProxy.step() with no callback raises."""
@@ -12307,20 +12304,20 @@ class TestExplorationStrategy:
     def test_set_exploration_strategy_dfs(self, fauxware_project):
         """Test setting DFS strategy finds the same result."""
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.set_exploration_strategy('dfs')
+        mgr.set_exploration_strategy("dfs")
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "DFS should find at least one state"
 
     def test_set_exploration_strategy_bfs(self, fauxware_project):
         """Test BFS strategy (default) works."""
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.set_exploration_strategy('bfs')
+        mgr.set_exploration_strategy("bfs")
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "BFS should find at least one state"
 
@@ -12330,12 +12327,12 @@ class TestExplorationStrategy:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
-            mgr.set_exploration_strategy('random')
+            mgr.set_exploration_strategy("random")
 
     def test_dfs_technique_auto_detection(self, fauxware_project):
         """Test that angr DFS technique is auto-detected."""
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.use_technique(angr.exploration_techniques.DFS())
@@ -12350,18 +12347,16 @@ class TestExplorationStrategy:
         order. Regression for the angr-3ms1 Flavor-1 wiring step.
         """
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], exploration_strategy='dfs'
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], exploration_strategy="dfs")
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "DFS-at-init should find at least one state"
 
     def test_init_kwarg_strategy_bfs_default(self, fauxware_project):
         """Default exploration_strategy is 'bfs' and explicit 'bfs' both work."""
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         # Default — no kwarg.
         state1 = fauxware_project.factory.entry_state()
         mgr1 = RustExplorationManager(fauxware_project, [state1])
@@ -12370,9 +12365,7 @@ class TestExplorationStrategy:
 
         # Explicit 'bfs' — same as default.
         state2 = fauxware_project.factory.entry_state()
-        mgr2 = RustExplorationManager(
-            fauxware_project, [state2], exploration_strategy='bfs'
-        )
+        mgr2 = RustExplorationManager(fauxware_project, [state2], exploration_strategy="bfs")
         mgr2.explore(find=find_addr)
         assert len(mgr2.found) > 0
 
@@ -12381,9 +12374,7 @@ class TestExplorationStrategy:
 
         state = fauxware_project.factory.entry_state()
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
-            RustExplorationManager(
-                fauxware_project, [state], exploration_strategy='random'
-            )
+            RustExplorationManager(fauxware_project, [state], exploration_strategy="random")
 
     def test_init_kwarg_use_shared_lineage_solver_default_off(self, fauxware_project):
         """Default ``use_shared_lineage_solver=False`` keeps the opt-in off and
@@ -12401,7 +12392,8 @@ class TestExplorationStrategy:
 
         state_explicit = fauxware_project.factory.entry_state()
         mgr_explicit = RustExplorationManager(
-            fauxware_project, [state_explicit],
+            fauxware_project,
+            [state_explicit],
             use_shared_lineage_solver=False,
         )
         assert mgr_explicit._use_shared_lineage_solver is False
@@ -12409,7 +12401,7 @@ class TestExplorationStrategy:
         # The explore-to-find golden path still works when the kwarg is
         # off — guards against an accidental gate flip in the default
         # path.
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         mgr_default.explore(find=find_addr)
         assert len(mgr_default.found) > 0
 
@@ -12426,16 +12418,15 @@ class TestExplorationStrategy:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
-            fauxware_project, [state],
+            fauxware_project,
+            [state],
             use_shared_lineage_solver=True,
         )
         assert mgr._use_shared_lineage_solver is True
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         mgr.explore(find=find_addr)
-        assert len(mgr.found) > 0, (
-            "explore() must succeed with the opt-in enabled (flag is inert today)"
-        )
+        assert len(mgr.found) > 0, "explore() must succeed with the opt-in enabled (flag is inert today)"
 
     def test_deep_loop_recipe_dfs_plus_length_limiter(self, fauxware_project):
         """Recipe for deep-input-loop binaries (angr-smxp / angr-xel4 spike):
@@ -12452,24 +12443,24 @@ class TestExplorationStrategy:
         ``max_length`` bound on the active stash at the end of exploration.
         """
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(
-            fauxware_project, [state],
-            exploration_strategy='dfs',
+            fauxware_project,
+            [state],
+            exploration_strategy="dfs",
             max_active_states=64,
         )
         max_length = 32
         mgr.use_technique(
             angr.exploration_techniques.LengthLimiter(
-                max_length=max_length, drop=True,
+                max_length=max_length,
+                drop=True,
             )
         )
 
         mgr.explore(find=find_addr, max_steps=200)
-        assert len(mgr.found) > 0, (
-            "DFS + LengthLimiter recipe must still reach fauxware's find"
-        )
+        assert len(mgr.found) > 0, "DFS + LengthLimiter recipe must still reach fauxware's find"
 
         # No state in the active stash should exceed max_length blocks.
         # Use the lightweight proxy iterator so we don't pay the cost of
@@ -12477,8 +12468,7 @@ class TestExplorationStrategy:
         for proxy in mgr.active_proxies():
             depth = len(proxy.history.bbl_addrs)
             assert depth <= max_length, (
-                f"LengthLimiter should drop states past {max_length} blocks, "
-                f"observed depth={depth}"
+                f"LengthLimiter should drop states past {max_length} blocks, observed depth={depth}"
             )
 
 
@@ -12493,10 +12483,12 @@ class TestVexOperationCoverage:
     @classmethod
     def setup_class(cls):
         from angr.exploration.rust_manager import _setup_shared_z3_context
+
         _setup_shared_z3_context()
 
     def _make_ctx(self):
         from angr.rustylib.vex_engine import RustSolverContext
+
         return RustSolverContext()
 
     # --- Arithmetic ---
@@ -12504,6 +12496,7 @@ class TestVexOperationCoverage:
     def test_add_concrete(self):
         """x + 7 == 49 => x == 42."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x + 7 == 49)
@@ -12512,6 +12505,7 @@ class TestVexOperationCoverage:
     def test_add_symbolic(self):
         """x + y == 100, y == 30 => x == 70."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12522,6 +12516,7 @@ class TestVexOperationCoverage:
     def test_add_overflow_wraps(self):
         """0xFFFFFFFF + 1 wraps to 0 in 32-bit."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x + 1 == 0)
@@ -12530,6 +12525,7 @@ class TestVexOperationCoverage:
     def test_sub_concrete(self):
         """x - 8 == 34 => x == 42."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x - 8 == 34)
@@ -12538,6 +12534,7 @@ class TestVexOperationCoverage:
     def test_sub_symbolic(self):
         """x - y == 20, y == 10 => x == 30."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12548,6 +12545,7 @@ class TestVexOperationCoverage:
     def test_sub_underflow_wraps(self):
         """0 - 1 wraps to 0xFFFFFFFF in 32-bit."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x - 1 == 0xFFFFFFFF)
@@ -12556,6 +12554,7 @@ class TestVexOperationCoverage:
     def test_mul_concrete(self):
         """x * 6 == 42 => x == 7."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x * 6 == 42)
@@ -12566,6 +12565,7 @@ class TestVexOperationCoverage:
     def test_mul_symbolic(self):
         """x * y == 56, x == 7 => y == 8."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12578,6 +12578,7 @@ class TestVexOperationCoverage:
     def test_and_mask(self):
         """x & 0xFF == 0x42 constrains low byte."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast((x & 0xFF) == 0x42)
@@ -12586,6 +12587,7 @@ class TestVexOperationCoverage:
     def test_and_symbolic(self):
         """x & y == 0x10, x == 0x1F, so y & 0x1F == 0x10."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12597,6 +12599,7 @@ class TestVexOperationCoverage:
     def test_or_bits(self):
         """x | 0xF0 == 0xFF => x & 0x0F must be 0x0F."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast((x | 0xF0) == 0xFF)
@@ -12606,6 +12609,7 @@ class TestVexOperationCoverage:
     def test_or_symbolic(self):
         """x | y == 0xFF, x == 0x0F => y must set high nibble."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         y = claripy.BVS("y", 8)
@@ -12617,6 +12621,7 @@ class TestVexOperationCoverage:
     def test_xor_concrete(self):
         """x ^ 0xAA == 0x55 => x == 0xFF."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast((x ^ 0xAA) == 0x55)
@@ -12625,6 +12630,7 @@ class TestVexOperationCoverage:
     def test_xor_self_is_zero(self):
         """x ^ x == 0 for any x."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast((x ^ x) == 0)
@@ -12633,6 +12639,7 @@ class TestVexOperationCoverage:
     def test_xor_symbolic_inverse(self):
         """x ^ y == 0xFFFFFFFF => y == ~x."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12643,6 +12650,7 @@ class TestVexOperationCoverage:
     def test_not_bitwise(self):
         """~x == 0x00 => x == 0xFF (8-bit)."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(~x == 0x00)
@@ -12653,6 +12661,7 @@ class TestVexOperationCoverage:
     def test_shl_concrete(self):
         """x << 4 == 0x120 => low nibble lost, x == 0x12."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast((x << 4) == 0x120)
@@ -12662,6 +12671,7 @@ class TestVexOperationCoverage:
     def test_shl_symbolic_amount(self):
         """x << n == 0x80, x == 1 => n == 7."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         n = claripy.BVS("n", 32)
@@ -12673,6 +12683,7 @@ class TestVexOperationCoverage:
     def test_lshr_concrete(self):
         """LShR(x, 8) == 0x12 => x >> 8 == 0x12."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(claripy.LShR(x, 8) == 0x12)
@@ -12682,6 +12693,7 @@ class TestVexOperationCoverage:
     def test_lshr_vs_arithmetic(self):
         """LShR is logical (zero-fill), not arithmetic."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0x80000000)
@@ -12691,6 +12703,7 @@ class TestVexOperationCoverage:
     def test_arithmetic_shr(self):
         """Arithmetic shift right sign-extends."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0x80000000)
@@ -12703,6 +12716,7 @@ class TestVexOperationCoverage:
     def test_extract_low_byte(self):
         """Extract(7, 0, x) gets the least significant byte."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0xDEADBEEF)
@@ -12712,6 +12726,7 @@ class TestVexOperationCoverage:
     def test_extract_high_byte(self):
         """Extract(31, 24, x) gets the most significant byte."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0xDEADBEEF)
@@ -12721,6 +12736,7 @@ class TestVexOperationCoverage:
     def test_extract_middle_word(self):
         """Extract(23, 8, x) gets the middle two bytes."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(claripy.Extract(23, 8, x) == 0xBEEF)
@@ -12730,6 +12746,7 @@ class TestVexOperationCoverage:
     def test_extract_single_bit(self):
         """Extract(0, 0, x) gets bit 0."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(claripy.Extract(0, 0, x) == 1)
@@ -12739,6 +12756,7 @@ class TestVexOperationCoverage:
     def test_concat_two_bytes(self):
         """Concat(a, b) forms a 16-bit value."""
         import claripy
+
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
         b = claripy.BVS("b", 8)
@@ -12749,6 +12767,7 @@ class TestVexOperationCoverage:
     def test_concat_four_bytes(self):
         """Concat(a, b, c, d) forms a 32-bit value."""
         import claripy
+
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
         b = claripy.BVS("b", 8)
@@ -12763,6 +12782,7 @@ class TestVexOperationCoverage:
     def test_concat_then_extract_roundtrip(self):
         """Extract undoes Concat for matching bit ranges."""
         import claripy
+
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
         b = claripy.BVS("b", 8)
@@ -12778,6 +12798,7 @@ class TestVexOperationCoverage:
     def test_zeroext_8_to_32(self):
         """ZeroExt(24, x8) where x8 == 0xFF gives 0x000000FF."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x == 0xFF)
@@ -12788,6 +12809,7 @@ class TestVexOperationCoverage:
     def test_zeroext_preserves_value(self):
         """ZeroExt should not change the numeric value of a positive number."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 16)
         ctx.add_constraint_ast(x == 0x1234)
@@ -12798,6 +12820,7 @@ class TestVexOperationCoverage:
     def test_signext_positive(self):
         """SignExt of positive value (MSB=0) is same as ZeroExt."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x == 0x7F)  # positive in signed 8-bit
@@ -12808,6 +12831,7 @@ class TestVexOperationCoverage:
     def test_signext_negative(self):
         """SignExt of negative value (MSB=1) fills with 1s."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x == 0x80)  # -128 in signed 8-bit
@@ -12818,6 +12842,7 @@ class TestVexOperationCoverage:
     def test_signext_ff(self):
         """SignExt(24, 0xFF) == 0xFFFFFFFF."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x == 0xFF)
@@ -12830,6 +12855,7 @@ class TestVexOperationCoverage:
     def test_reverse_16bit(self):
         """Reverse(0x1234) == 0x3412."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 16)
         ctx.add_constraint_ast(x == 0x1234)
@@ -12839,6 +12865,7 @@ class TestVexOperationCoverage:
     def test_reverse_32bit(self):
         """Reverse(0xDEADBEEF) == 0xEFBEADDE."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0xDEADBEEF)
@@ -12848,6 +12875,7 @@ class TestVexOperationCoverage:
     def test_reverse_involution(self):
         """Reverse(Reverse(x)) == x."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0xCAFEBABE)
@@ -12857,6 +12885,7 @@ class TestVexOperationCoverage:
     def test_reverse_64bit(self):
         """Reverse of a 64-bit value."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
         ctx.add_constraint_ast(x == 0x0102030405060708)
@@ -12868,6 +12897,7 @@ class TestVexOperationCoverage:
     def test_uge(self):
         """Unsigned greater-or-equal."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(claripy.UGE(x, 0xFE))
@@ -12877,6 +12907,7 @@ class TestVexOperationCoverage:
     def test_ule(self):
         """Unsigned less-or-equal."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(claripy.ULE(x, 2))
@@ -12886,6 +12917,7 @@ class TestVexOperationCoverage:
     def test_sgt(self):
         """Signed greater-than constrains to positive range."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(claripy.SGT(x, claripy.BVV(0x7C, 8)))  # > 124 signed
@@ -12896,6 +12928,7 @@ class TestVexOperationCoverage:
     def test_sle(self):
         """Signed less-or-equal with negative bound."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         # x <=s -126 (0x82) means x is in {0x80, 0x81, 0x82} = {-128, -127, -126}
@@ -12909,6 +12942,7 @@ class TestVexOperationCoverage:
     def test_ite_true_branch(self):
         """If(True, a, b) == a."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 1)
@@ -12919,6 +12953,7 @@ class TestVexOperationCoverage:
     def test_ite_false_branch(self):
         """If(False, a, b) == b."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0)
@@ -12929,6 +12964,7 @@ class TestVexOperationCoverage:
     def test_ite_symbolic_condition(self):
         """ITE with symbolic condition and constrained result."""
         import claripy
+
         ctx = self._make_ctx()
         cond = claripy.BVS("c", 8)
         a = claripy.BVS("a", 32)
@@ -12944,6 +12980,7 @@ class TestVexOperationCoverage:
     def test_add_then_extract(self):
         """(x + y) constrained, then extract a byte of the sum."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         y = claripy.BVS("y", 32)
@@ -12956,6 +12993,7 @@ class TestVexOperationCoverage:
     def test_xor_shl_combo(self):
         """(x ^ key) << 8 == target tests combined ops."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         key = 0x55
@@ -12967,6 +13005,7 @@ class TestVexOperationCoverage:
     def test_signext_then_add(self):
         """SignExt then add: common in sign-extended address calculations."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x == 0xFE)  # -2 in signed 8-bit
@@ -12978,6 +13017,7 @@ class TestVexOperationCoverage:
     def test_concat_reverse_extract(self):
         """Concat, Reverse, Extract pipeline (common in memory operations)."""
         import claripy
+
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
         b = claripy.BVS("b", 8)
@@ -12992,6 +13032,7 @@ class TestVexOperationCoverage:
     def test_mul_and_mask(self):
         """x * 3 & 0xFF == result, checking low byte of multiplication."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0x55)
@@ -13004,6 +13045,7 @@ class TestVexOperationCoverage:
     def test_add_8bit(self):
         """8-bit addition with overflow."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
         ctx.add_constraint_ast(x + 1 == 0)
@@ -13012,6 +13054,7 @@ class TestVexOperationCoverage:
     def test_add_64bit(self):
         """64-bit addition."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
         ctx.add_constraint_ast(x + 1 == 0x100000000)
@@ -13020,6 +13063,7 @@ class TestVexOperationCoverage:
     def test_xor_64bit(self):
         """64-bit XOR."""
         import claripy
+
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
         ctx.add_constraint_ast(x ^ 0xDEADBEEFCAFEBABE == 0)
@@ -13046,12 +13090,13 @@ class TestSymbolicLibcProcedures:
     never runs.
     """
 
-    HOOK_ADDR = 0x4008c0  # in fauxware's mapped .fini area, no normal exec
-    RET_ADDR = 0x4008b0   # mapped, used as bogus ret target after the hook
-    BUF_ADDR = 0x601100   # past .bss, lazy-mapped via filler mixin
+    HOOK_ADDR = 0x4008C0  # in fauxware's mapped .fini area, no normal exec
+    RET_ADDR = 0x4008B0  # mapped, used as bogus ret target after the hook
+    BUF_ADDR = 0x601100  # past .bss, lazy-mapped via filler mixin
 
     def _make_state(self, proj, sim_proc):
         import claripy
+
         proj.hook(self.HOOK_ADDR, sim_proc, replace=True)
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -13060,8 +13105,7 @@ class TestSymbolicLibcProcedures:
                 angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
             },
         )
-        state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64),
-                           endness='Iend_LE')
+        state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64), endness="Iend_LE")
         return state
 
     def _run_one_step(self, proj, state):
@@ -13069,8 +13113,7 @@ class TestSymbolicLibcProcedures:
         mgr.run(max_steps=1)
         states = mgr.active + mgr.deadended + mgr.errored
         assert len(states) == 1, (
-            f"expected exactly one post-call state, got {len(states)} "
-            f"(stash counts: {mgr.stash_counts()})"
+            f"expected exactly one post-call state, got {len(states)} (stash counts: {mgr.stash_counts()})"
         )
         return states[0]
 
@@ -13078,9 +13121,10 @@ class TestSymbolicLibcProcedures:
         """strlen on a 5-byte symbolic buffer (each byte constrained non-null,
         terminator at offset 5) must produce min=max=5."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strlen']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strlen"]())
             sym = claripy.BVS("strlen_input", 8 * 5)
             state.memory.store(self.BUF_ADDR, sym)
             state.memory.store(self.BUF_ADDR + 5, claripy.BVV(0, 8))
@@ -13097,16 +13141,17 @@ class TestSymbolicLibcProcedures:
         """strcmp(s1, s2) where s1[0] is symbolic and s2 is "X\\0", with
         s1[0] constrained to 'X', must return 0 (equal)."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strcmp']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strcmp"]())
             sym = claripy.BVS("strcmp_b", 8)
             state.memory.store(self.BUF_ADDR, sym)
             state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
             state.memory.store(self.BUF_ADDR + 0x10, b"X\x00")
             state.regs.rdi = self.BUF_ADDR
             state.regs.rsi = self.BUF_ADDR + 0x10
-            state.solver.add(sym == ord('X'))
+            state.solver.add(sym == ord("X"))
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == 0
             assert s.solver.max(s.regs.rax) == 0
@@ -13117,17 +13162,18 @@ class TestSymbolicLibcProcedures:
         """strchr("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
         non-null must return BUF_ADDR + 3 (the index of 'X')."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strchr']())
-            state.memory.store(self.BUF_ADDR, b'a')
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strchr"]())
+            state.memory.store(self.BUF_ADDR, b"a")
             sym = claripy.BVS("strchr_q", 8)
             state.memory.store(self.BUF_ADDR + 1, sym)
-            state.memory.store(self.BUF_ADDR + 2, b'bX\x00')
-            state.solver.add(sym != ord('X'))
+            state.memory.store(self.BUF_ADDR + 2, b"bX\x00")
+            state.solver.add(sym != ord("X"))
             state.solver.add(sym != 0)
             state.regs.rdi = self.BUF_ADDR
-            state.regs.rsi = ord('X')
+            state.regs.rsi = ord("X")
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 3
             assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 3
@@ -13138,16 +13184,17 @@ class TestSymbolicLibcProcedures:
         """memchr(buf, 'X', 5) where buf[2] is symbolic constrained to 'X'
         must return BUF_ADDR + 2."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['memchr']())
-            state.memory.store(self.BUF_ADDR, b'AB')
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["memchr"]())
+            state.memory.store(self.BUF_ADDR, b"AB")
             sym = claripy.BVS("memchr_q", 8)
             state.memory.store(self.BUF_ADDR + 2, sym)
-            state.memory.store(self.BUF_ADDR + 3, b'CD')
-            state.solver.add(sym == ord('X'))
+            state.memory.store(self.BUF_ADDR + 3, b"CD")
+            state.solver.add(sym == ord("X"))
             state.regs.rdi = self.BUF_ADDR
-            state.regs.rsi = ord('X')
+            state.regs.rsi = ord("X")
             state.regs.rdx = 5
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
@@ -13159,17 +13206,18 @@ class TestSymbolicLibcProcedures:
         """memcmp(b1, b2, 4) where each buffer's middle byte is a distinct
         symbolic, constrained equal — must return 0."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['memcmp']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["memcmp"]())
             sym1 = claripy.BVS("memcmp_b1", 8)
             sym2 = claripy.BVS("memcmp_b2", 8)
-            state.memory.store(self.BUF_ADDR, b'AB')
+            state.memory.store(self.BUF_ADDR, b"AB")
             state.memory.store(self.BUF_ADDR + 2, sym1)
-            state.memory.store(self.BUF_ADDR + 3, b'D')
-            state.memory.store(self.BUF_ADDR + 0x10, b'AB')
+            state.memory.store(self.BUF_ADDR + 3, b"D")
+            state.memory.store(self.BUF_ADDR + 0x10, b"AB")
             state.memory.store(self.BUF_ADDR + 0x12, sym2)
-            state.memory.store(self.BUF_ADDR + 0x13, b'D')
+            state.memory.store(self.BUF_ADDR + 0x13, b"D")
             state.solver.add(sym1 == sym2)
             state.regs.rdi = self.BUF_ADDR
             state.regs.rsi = self.BUF_ADDR + 0x10
@@ -13184,13 +13232,14 @@ class TestSymbolicLibcProcedures:
         """atoi("7\\0") with '7' as a symbolic byte constrained to ASCII '7'
         must produce min=max=7."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['atoi']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["atoi"]())
             sym = claripy.BVS("atoi_d", 8)
             state.memory.store(self.BUF_ADDR, sym)
             state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
-            state.solver.add(sym == ord('7'))
+            state.solver.add(sym == ord("7"))
             state.regs.rdi = self.BUF_ADDR
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == 7
@@ -13202,13 +13251,14 @@ class TestSymbolicLibcProcedures:
         """strtol("a\\0", NULL, 16) with 'a' as a symbolic byte constrained
         to ASCII 'a' must produce min=max=10."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strtol']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strtol"]())
             sym = claripy.BVS("strtol_d", 8)
             state.memory.store(self.BUF_ADDR, sym)
             state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
-            state.solver.add(sym == ord('a'))
+            state.solver.add(sym == ord("a"))
             state.regs.rdi = self.BUF_ADDR
             state.regs.rsi = 0
             state.regs.rdx = 16
@@ -13222,13 +13272,14 @@ class TestSymbolicLibcProcedures:
         """strtoul("5\\0", NULL, 10) with '5' as a symbolic byte constrained
         to ASCII '5' must produce min=max=5."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strtoul']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strtoul"]())
             sym = claripy.BVS("strtoul_d", 8)
             state.memory.store(self.BUF_ADDR, sym)
             state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
-            state.solver.add(sym == ord('5'))
+            state.solver.add(sym == ord("5"))
             state.regs.rdi = self.BUF_ADDR
             state.regs.rsi = 0
             state.regs.rdx = 10
@@ -13242,11 +13293,12 @@ class TestSymbolicLibcProcedures:
         """isdigit on a 32-bit symbolic int constrained to ASCII '5' must
         return rax = 1."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['isdigit']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["isdigit"]())
             sym = claripy.BVS("isdigit_x", 32)
-            state.solver.add(sym == ord('5'))
+            state.solver.add(sym == ord("5"))
             state.regs.rdi = sym.zero_extend(32)
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == 1
@@ -13258,11 +13310,12 @@ class TestSymbolicLibcProcedures:
         """isalpha on a 32-bit symbolic int constrained to ASCII 'a' must
         return rax = 1."""
         import claripy
+
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['isalpha']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["isalpha"]())
             sym = claripy.BVS("isalpha_x", 32)
-            state.solver.add(sym == ord('a'))
+            state.solver.add(sym == ord("a"))
             state.regs.rdi = sym.zero_extend(32)
             s = self._run_one_step(proj, state)
             assert s.solver.min(s.regs.rax) == 1
@@ -13284,7 +13337,7 @@ class TestSymbolicLibcProcedures:
         """
         proj = fauxware_project
         try:
-            state = self._make_state(proj, angr.SIM_PROCEDURES['posix']['fork']())
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["fork"]())
             s = self._run_one_step(proj, state)
             # SimProcedure return value is an int (32-bit on amd64), which the
             # calling convention zero-extends to 64-bit rax. Both branches of
@@ -13318,12 +13371,12 @@ class TestNativeFileDescriptorProcedures:
     #      real binaries are loaded there, so a hook in fauxware's `.ctors`
     #      (non-executable, in-binary) qualifies. `handle_simprocedure` then
     #      tries the native registry first and dispatches NativePipe / NativeDup2.
-    PIPE_ADDR = 0x600e30   # in fauxware's .ctors (non-executable)
-    DUP2_ADDR = 0x600e3c
+    PIPE_ADDR = 0x600E30  # in fauxware's .ctors (non-executable)
+    DUP2_ADDR = 0x600E3C
     # Bottom-of-call return target: any address that won't loop back into a
     # hook. We run for max_steps that just covers the procedure dispatches —
     # afterwards the state's PC lands here and we stop without lifting blocks.
-    DEAD_ADDR = 0x4008b0
+    DEAD_ADDR = 0x4008B0
     BUF_ADDR = 0x601100  # past .bss, lazy-mapped
 
     @staticmethod
@@ -13340,8 +13393,7 @@ class TestNativeFileDescriptorProcedures:
                 sid = ids[0]
                 return sid, {
                     fd: (name, flags, is_open)
-                    for fd, name, _pos, flags, _len, is_open
-                    in mgr._rust_mgr.get_state_open_fds(sid)
+                    for fd, name, _pos, flags, _len, is_open in mgr._rust_mgr.get_state_open_fds(sid)
                 }
         raise AssertionError(f"no state in any stash: {mgr.stash_counts()}")
 
@@ -13349,9 +13401,10 @@ class TestNativeFileDescriptorProcedures:
         """pipe(buf) dispatched through the native registry must allocate two
         consecutive fds (read end at 3, write end at 4) with the correct flags."""
         import claripy
+
         proj = fauxware_project
 
-        class pipe(angr.SimProcedure):  # noqa: N801 — match native registry name
+        class pipe(angr.SimProcedure):
             num_args = 1
 
             def run(self, pipefd):  # pylint: disable=arguments-differ
@@ -13367,20 +13420,17 @@ class TestNativeFileDescriptorProcedures:
                 },
             )
             state.regs.rdi = self.BUF_ADDR
-            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
-                               endness='Iend_LE')
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             # Confirm native dispatch fired (not Python fallback).
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats['call_counts'].get('pipe', 0) == 1, \
-                f"expected native pipe dispatch, got stats={stats}"
+            assert stats["call_counts"].get("pipe", 0) == 1, f"expected native pipe dispatch, got stats={stats}"
 
             # FD layout: pre-existing 0,1,2 + newly allocated 3 (read) and 4 (write).
             _sid, fds = self._all_fds(mgr)
-            assert set(fds.keys()) == {0, 1, 2, 3, 4}, \
-                f"unexpected fd set after pipe: {sorted(fds)}"
+            assert set(fds.keys()) == {0, 1, 2, 3, 4}, f"unexpected fd set after pipe: {sorted(fds)}"
             # ReadOnly=0, WriteOnly=1 (FdFlags::to_posix).
             assert fds[3][0] == "<pipe:r>" and fds[3][1] == 0 and fds[3][2]
             assert fds[4][0] == "<pipe:w>" and fds[4][1] == 1 and fds[4][2]
@@ -13391,9 +13441,10 @@ class TestNativeFileDescriptorProcedures:
         """dup2(0, 7) dispatched natively must create fd 7 as a copy of fd 0
         (stdin), with the original /dev/stdin name preserved."""
         import claripy
+
         proj = fauxware_project
 
-        class dup2(angr.SimProcedure):  # noqa: N801 — match native registry name
+        class dup2(angr.SimProcedure):
             num_args = 2
 
             def run(self, oldfd, newfd):  # pylint: disable=arguments-differ
@@ -13408,21 +13459,18 @@ class TestNativeFileDescriptorProcedures:
                     angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
                 },
             )
-            state.regs.rdi = 0     # oldfd = stdin
-            state.regs.rsi = 7     # newfd = 7
-            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
-                               endness='Iend_LE')
+            state.regs.rdi = 0  # oldfd = stdin
+            state.regs.rsi = 7  # newfd = 7
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats['call_counts'].get('dup2', 0) == 1, \
-                f"expected native dup2 dispatch, got stats={stats}"
+            assert stats["call_counts"].get("dup2", 0) == 1, f"expected native dup2 dispatch, got stats={stats}"
 
             _sid, fds = self._all_fds(mgr)
             # Original three plus the new fd 7.
-            assert set(fds.keys()) == {0, 1, 2, 7}, \
-                f"unexpected fd set after dup2(0, 7): {sorted(fds)}"
+            assert set(fds.keys()) == {0, 1, 2, 7}, f"unexpected fd set after dup2(0, 7): {sorted(fds)}"
             # fd 7 is a clone of fd 0 (stdin).
             assert fds[7][0] == "/dev/stdin" and fds[7][1] == 0 and fds[7][2]
         finally:
@@ -13450,8 +13498,8 @@ class TestNativeFileDescriptorErrorReturns:
     # Same in-binary non-executable address pattern as
     # TestNativeFileDescriptorProcedures (see that class docstring for
     # the address-selection rationale).
-    HOOK_ADDR = 0x600e30
-    DEAD_ADDR = 0x4008b0
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
 
     @staticmethod
     def _make_stub(proc_name: str, num_args: int):
@@ -13462,9 +13510,9 @@ class TestNativeFileDescriptorErrorReturns:
         valid and for `_register_simprocedures` to forward the name to
         the Rust manager."""
         runs = {
-            1: lambda self, a0: 0,                # noqa: ARG005
-            2: lambda self, a0, a1: 0,            # noqa: ARG005
-            3: lambda self, a0, a1, a2: 0,        # noqa: ARG005
+            1: lambda self, a0: 0,
+            2: lambda self, a0, a1: 0,
+            3: lambda self, a0, a1, a2: 0,
         }
         return type(
             proc_name,
@@ -13475,22 +13523,27 @@ class TestNativeFileDescriptorErrorReturns:
     @pytest.mark.parametrize(
         "proc_name,num_args,reg_args,bad_fd",
         [
-            ("close", 1, (99,),       99),  # close(99) — fd never opened
-            ("dup",   1, (99,),       99),  # dup(99)   — fd never opened
-            ("dup2",  2, (99, 7),     7),   # dup2(99, 7) — newfd 7 must NOT be created
-            ("lseek", 3, (99, 0, 0),  99),  # lseek(99, 0, SEEK_SET)
+            ("close", 1, (99,), 99),  # close(99) — fd never opened
+            ("dup", 1, (99,), 99),  # dup(99)   — fd never opened
+            ("dup2", 2, (99, 7), 7),  # dup2(99, 7) — newfd 7 must NOT be created
+            ("lseek", 3, (99, 0, 0), 99),  # lseek(99, 0, SEEK_SET)
         ],
     )
     def test_native_error_returns_minus_one(
-        self, fauxware_project, proc_name, num_args, reg_args, bad_fd,
+        self,
+        fauxware_project,
+        proc_name,
+        num_args,
+        reg_args,
+        bad_fd,
     ):
         import claripy
+
         proj = fauxware_project
 
         stub_cls = self._make_stub(proc_name, num_args)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
-
             state = proj.factory.blank_state(
                 addr=self.HOOK_ADDR,
                 add_options={
@@ -13515,8 +13568,7 @@ class TestNativeFileDescriptorErrorReturns:
             # contract — what matters is the call_count tick.
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get(proc_name, 0) == 1, (
-                f"expected native {proc_name} dispatch on error path, "
-                f"got stats={stats}"
+                f"expected native {proc_name} dispatch on error path, got stats={stats}"
             )
 
             sid = None
@@ -13530,21 +13582,16 @@ class TestNativeFileDescriptorErrorReturns:
             # (2) Return value sentinel: -1 as u64 == 0xFFFFFFFFFFFFFFFF.
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 0xFFFFFFFFFFFFFFFF, (
-                f"expected rax=-1 sentinel from native {proc_name} error path, "
-                f"got rax={rax:#x}"
+                f"expected rax=-1 sentinel from native {proc_name} error path, got rax={rax:#x}"
             )
 
             # (3) Post-call FileSystem invariant: the bad fd was not
             # silently registered.
             fds = {
                 fd: (name, flags, is_open)
-                for fd, name, _pos, flags, _len, is_open
-                in mgr._rust_mgr.get_state_open_fds(sid)
+                for fd, name, _pos, flags, _len, is_open in mgr._rust_mgr.get_state_open_fds(sid)
             }
-            assert bad_fd not in fds, (
-                f"native {proc_name} error path must NOT register bad fd "
-                f"{bad_fd}; got fds={fds}"
-            )
+            assert bad_fd not in fds, f"native {proc_name} error path must NOT register bad fd {bad_fd}; got fds={fds}"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
@@ -13561,9 +13608,9 @@ class TestNativeMemoryAlignedAllocators:
     DescriptorProcedures (see that class docstring for the rationale).
     """
 
-    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
-    DEAD_ADDR = 0x4008b0
-    BUF_ADDR = 0x601100    # past .bss, lazy-mapped
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008B0
+    BUF_ADDR = 0x601100  # past .bss, lazy-mapped
 
     @staticmethod
     def _make_stub(proc_name: str, num_args: int):
@@ -13571,8 +13618,8 @@ class TestNativeMemoryAlignedAllocators:
         The `run` is bypassed when native dispatch fires (the expected path),
         but the class must exist so `proj.hook` is valid."""
         runs = {
-            2: lambda self, a0, a1: 0,         # noqa: ARG005
-            3: lambda self, a0, a1, a2: 0,     # noqa: ARG005
+            2: lambda self, a0, a1: 0,
+            3: lambda self, a0, a1, a2: 0,
         }
         return type(
             proc_name,
@@ -13585,6 +13632,7 @@ class TestNativeMemoryAlignedAllocators:
         non-zero pointer in rax, and tick the call_counts['memalign']
         counter exactly once."""
         import claripy
+
         proj = fauxware_project
 
         stub_cls = self._make_stub("memalign", 2)
@@ -13597,19 +13645,15 @@ class TestNativeMemoryAlignedAllocators:
                     angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
                 },
             )
-            state.regs.rdi = 64     # alignment
-            state.regs.rsi = 100    # size
-            state.memory.store(state.regs.rsp,
-                               claripy.BVV(self.DEAD_ADDR, 64),
-                               endness="Iend_LE")
+            state.regs.rdi = 64  # alignment
+            state.regs.rsi = 100  # size
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
 
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("memalign", 0) == 1, (
-                f"expected native memalign dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("memalign", 0) == 1, f"expected native memalign dispatch, got stats={stats}"
 
             sid = None
             for stash in ("active", "deadended", "errored", "unconstrained"):
@@ -13629,6 +13673,7 @@ class TestNativeMemoryAlignedAllocators:
         """posix_memalign(memptr, 32, 80) must dispatch natively, return 0
         in rax, and write an aligned pointer to *memptr in memory."""
         import claripy
+
         proj = fauxware_project
 
         stub_cls = self._make_stub("posix_memalign", 3)
@@ -13641,12 +13686,10 @@ class TestNativeMemoryAlignedAllocators:
                     angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
                 },
             )
-            state.regs.rdi = self.BUF_ADDR    # memptr (void**)
-            state.regs.rsi = 32               # alignment
-            state.regs.rdx = 80               # size
-            state.memory.store(state.regs.rsp,
-                               claripy.BVV(self.DEAD_ADDR, 64),
-                               endness="Iend_LE")
+            state.regs.rdi = self.BUF_ADDR  # memptr (void**)
+            state.regs.rsi = 32  # alignment
+            state.regs.rdx = 80  # size
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
 
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
@@ -13666,17 +13709,13 @@ class TestNativeMemoryAlignedAllocators:
 
             # eax holds the errno-style return; 0 on success.
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
-            assert rax & 0xFFFFFFFF == 0, (
-                f"expected eax=0 success, got rax={rax:#x}"
-            )
+            assert rax & 0xFFFFFFFF == 0, f"expected eax=0 success, got rax={rax:#x}"
 
             # *memptr must hold an aligned non-zero pointer.
             stored = mgr._rust_mgr.get_state_memory(sid, self.BUF_ADDR, 8)
             stored_addr = int.from_bytes(stored, "little")
             assert stored_addr != 0, "*memptr not written"
-            assert stored_addr % 32 == 0, (
-                f"*memptr={stored_addr:#x} not aligned to 32"
-            )
+            assert stored_addr % 32 == 0, f"*memptr={stored_addr:#x} not aligned to 32"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
@@ -13694,17 +13733,17 @@ class TestNativeStringToNumericProcedures:
     rationale of using a fake hook in fauxware's `.ctors`).
     """
 
-    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
-    DEAD_ADDR = 0x4008b0
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008B0
     STRING_ADDR = 0x601100  # past .bss, lazy-mapped
     ENDPTR_ADDR = 0x601200  # storage for *endptr
 
     @staticmethod
     def _make_stub(proc_name: str, num_args: int):
         runs = {
-            1: lambda self, a0: 0,             # noqa: ARG005
-            2: lambda self, a0, a1: 0,         # noqa: ARG005
-            3: lambda self, a0, a1, a2: 0,     # noqa: ARG005
+            1: lambda self, a0: 0,
+            2: lambda self, a0, a1: 0,
+            3: lambda self, a0, a1, a2: 0,
         }
         return type(
             proc_name,
@@ -13714,6 +13753,7 @@ class TestNativeStringToNumericProcedures:
 
     def _setup_state(self, proj, string_bytes: bytes, *, set_endptr: bool = False):
         import claripy
+
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
             add_options={
@@ -13724,9 +13764,7 @@ class TestNativeStringToNumericProcedures:
         buf = string_bytes + b"\x00"
         for i, b in enumerate(buf):
             state.memory.store(self.STRING_ADDR + i, claripy.BVV(b, 8))
-        state.memory.store(state.regs.rsp,
-                           claripy.BVV(self.DEAD_ADDR, 64),
-                           endness="Iend_LE")
+        state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
     def _first_state_id(self, mgr):
@@ -13746,16 +13784,14 @@ class TestNativeStringToNumericProcedures:
         try:
             state = self._setup_state(proj, b"9223372036854775000")
             state.regs.rdi = self.STRING_ADDR  # nptr
-            state.regs.rsi = 0                  # endptr (NULL)
-            state.regs.rdx = 10                 # base
+            state.regs.rsi = 0  # endptr (NULL)
+            state.regs.rdx = 10  # base
 
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("strtoll", 0) == 1, (
-                f"expected native strtoll dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("strtoll", 0) == 1, f"expected native strtoll dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
@@ -13779,9 +13815,7 @@ class TestNativeStringToNumericProcedures:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("strtoull", 0) == 1, (
-                f"expected native strtoull dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("strtoull", 0) == 1, f"expected native strtoull dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
@@ -13810,9 +13844,7 @@ class TestNativeStringToNumericProcedures:
             assert rax == 123
             stored = mgr._rust_mgr.get_state_memory(sid, self.ENDPTR_ADDR, 8)
             stored_addr = int.from_bytes(stored, "little")
-            assert stored_addr == self.STRING_ADDR + 3, (
-                f"endptr={stored_addr:#x} expected {self.STRING_ADDR + 3:#x}"
-            )
+            assert stored_addr == self.STRING_ADDR + 3, f"endptr={stored_addr:#x} expected {self.STRING_ADDR + 3:#x}"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
@@ -13832,15 +13864,14 @@ class TestNativeStringToNumericProcedures:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("strtod", 0) == 1, (
-                f"expected native strtod dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("strtod", 0) == 1, f"expected native strtod dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None
             xmm0 = mgr._rust_mgr.get_state_register(sid, "xmm0")
             # xmm0 is 128 bits; low 64 carry the scalar double return.
             low64 = xmm0 & ((1 << 64) - 1)
             import struct
+
             parsed = struct.unpack("<d", low64.to_bytes(8, "little"))[0]
             assert parsed == 3.141592653589793, f"xmm0 low64 → {parsed!r}"
         finally:
@@ -13861,16 +13892,16 @@ class TestNativeStdioStatusAndWrite:
     rationale of using a fake hook in fauxware's `.ctors`).
     """
 
-    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
-    DEAD_ADDR = 0x4008b0
-    STRING_ADDR = 0x601100   # past .bss, lazy-mapped
-    FILE_PTR    = 0x601200   # FILE struct; +112 = _fileno on amd64
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008B0
+    STRING_ADDR = 0x601100  # past .bss, lazy-mapped
+    FILE_PTR = 0x601200  # FILE struct; +112 = _fileno on amd64
 
     @staticmethod
     def _make_stub(proc_name: str, num_args: int):
         runs = {
-            1: lambda self, a0: 0,             # noqa: ARG005
-            2: lambda self, a0, a1: 0,         # noqa: ARG005
+            1: lambda self, a0: 0,
+            2: lambda self, a0, a1: 0,
         }
         return type(
             proc_name,
@@ -13880,6 +13911,7 @@ class TestNativeStdioStatusAndWrite:
 
     def _setup_state(self, proj, *, fileno: int, source_bytes: bytes | None = None):
         import claripy
+
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
             add_options={
@@ -13898,9 +13930,7 @@ class TestNativeStdioStatusAndWrite:
             for i, b in enumerate(buf):
                 state.memory.store(self.STRING_ADDR + i, claripy.BVV(b, 8))
         # Return address for the stub call.
-        state.memory.store(state.regs.rsp,
-                           claripy.BVV(self.DEAD_ADDR, 64),
-                           endness="Iend_LE")
+        state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
     def _first_state_id(self, mgr):
@@ -13924,9 +13954,7 @@ class TestNativeStdioStatusAndWrite:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("feof", 0) == 1, (
-                f"expected native feof dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("feof", 0) == 1, f"expected native feof dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
@@ -13948,9 +13976,7 @@ class TestNativeStdioStatusAndWrite:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("ferror", 0) == 1, (
-                f"expected native ferror dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("ferror", 0) == 1, f"expected native ferror dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
@@ -13975,17 +14001,13 @@ class TestNativeStdioStatusAndWrite:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("fputs", 0) == 1, (
-                f"expected native fputs dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("fputs", 0) == 1, f"expected native fputs dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 1, f"fputs success → rax={rax}, expected 1"
             stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
-            assert stdout_bytes == payload, (
-                f"stdout={stdout_bytes!r} expected {payload!r}"
-            )
+            assert stdout_bytes == payload, f"stdout={stdout_bytes!r} expected {payload!r}"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
@@ -14004,9 +14026,7 @@ class TestNativeStdioStatusAndWrite:
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
-            assert stats["call_counts"].get("fputs", 0) == 1, (
-                f"expected native fputs dispatch, got stats={stats}"
-            )
+            assert stats["call_counts"].get("fputs", 0) == 1, f"expected native fputs dispatch, got stats={stats}"
             sid = self._first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
@@ -14035,11 +14055,11 @@ class TestNativeReadCacheSync:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
 
         assert len(mgr.found) > 0, "fauxware backdoor must remain reachable with NativeRead enabled"
         stats = mgr._rust_mgr.native_procedure_stats()
-        assert stats['call_counts'].get('read', 0) >= 1, (
+        assert stats["call_counts"].get("read", 0) >= 1, (
             f"expected at least one native read dispatch, got stats={stats}"
         )
 
@@ -14054,7 +14074,7 @@ class TestNativeReadCacheSync:
 
         # Calling outside a callback raises RuntimeError("no pending callback state")
         # — that's fine; what we're verifying is wrapper presence.
-        assert hasattr(mgr._rust_mgr, 'pending_memory_load_symbolic_page'), (
+        assert hasattr(mgr._rust_mgr, "pending_memory_load_symbolic_page"), (
             "pending_memory_load_symbolic_page wrapper missing on Rust manager"
         )
         try:
@@ -14075,10 +14095,10 @@ class TestNativeExtendedStringProcedures:
     rax holds the expected value.
     """
 
-    HOOK_ADDR = 0x600e30   # in fauxware's .ctors
-    DEAD_ADDR = 0x4008b0
-    S_ADDR = 0x601100      # haystack / scan target
-    SET_ADDR = 0x601200    # accept / reject set
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors
+    DEAD_ADDR = 0x4008B0
+    S_ADDR = 0x601100  # haystack / scan target
+    SET_ADDR = 0x601200  # accept / reject set
 
     @staticmethod
     def _make_stub(proc_name: str):
@@ -14090,6 +14110,7 @@ class TestNativeExtendedStringProcedures:
 
     def _setup_state(self, proj, s_bytes: bytes, set_bytes: bytes):
         import claripy
+
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
             add_options={
@@ -14101,9 +14122,7 @@ class TestNativeExtendedStringProcedures:
             state.memory.store(self.S_ADDR + i, claripy.BVV(b, 8))
         for i, b in enumerate(set_bytes + b"\x00"):
             state.memory.store(self.SET_ADDR + i, claripy.BVV(b, 8))
-        state.memory.store(state.regs.rsp,
-                           claripy.BVV(self.DEAD_ADDR, 64),
-                           endness="Iend_LE")
+        state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
     def _first_state_id(self, mgr):
@@ -14135,40 +14154,30 @@ class TestNativeExtendedStringProcedures:
 
     def test_strrchr_native_dispatch(self, fauxware_project):
         # "hello" has two 'l's; last is at S_ADDR + 3.
-        count, rax = self._run_one(
-            fauxware_project, "strrchr", b"hello", b"", ord('l')
-        )
+        count, rax = self._run_one(fauxware_project, "strrchr", b"hello", b"", ord("l"))
         assert count == 1, "expected native strrchr dispatch"
         assert rax == self.S_ADDR + 3, f"rax={rax:#x}"
 
     def test_strrchr_native_dispatch_not_found(self, fauxware_project):
-        count, rax = self._run_one(
-            fauxware_project, "strrchr", b"hello", b"", ord('z')
-        )
+        count, rax = self._run_one(fauxware_project, "strrchr", b"hello", b"", ord("z"))
         assert count == 1
         assert rax == 0, f"rax={rax:#x}"
 
     def test_strpbrk_native_dispatch(self, fauxware_project):
         # First vowel in "hello world" is 'e' at offset 1.
-        count, rax = self._run_one(
-            fauxware_project, "strpbrk", b"hello world", b"aeiou", self.SET_ADDR
-        )
+        count, rax = self._run_one(fauxware_project, "strpbrk", b"hello world", b"aeiou", self.SET_ADDR)
         assert count == 1, "expected native strpbrk dispatch"
         assert rax == self.S_ADDR + 1, f"rax={rax:#x}"
 
     def test_strspn_native_dispatch(self, fauxware_project):
         # Prefix "abc" of "abc123" is in accept set {a,b,c}.
-        count, rax = self._run_one(
-            fauxware_project, "strspn", b"abc123", b"abc", self.SET_ADDR
-        )
+        count, rax = self._run_one(fauxware_project, "strspn", b"abc123", b"abc", self.SET_ADDR)
         assert count == 1, "expected native strspn dispatch"
         assert rax == 3, f"rax={rax}"
 
     def test_strcspn_native_dispatch(self, fauxware_project):
         # First reject byte ',' in "abc,def" is at offset 3.
-        count, rax = self._run_one(
-            fauxware_project, "strcspn", b"abc,def", b",;", self.SET_ADDR
-        )
+        count, rax = self._run_one(fauxware_project, "strcspn", b"abc,def", b",;", self.SET_ADDR)
         assert count == 1, "expected native strcspn dispatch"
         assert rax == 3, f"rax={rax}"
 
@@ -14410,16 +14419,12 @@ class TestNativeResourceLimitSyscalls:
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0
         # Successor should still be reachable; load *rlim and confirm.
-        all_states = (
-            list(mgr.active) + list(mgr.deadended) + list(mgr.found)
-        )
+        all_states = list(mgr.active) + list(mgr.deadended) + list(mgr.found)
         assert all_states, "expected at least one state after getrlimit"
         s = all_states[0]
         cur = s.memory.load(rlim_addr, 8, endness="Iend_LE")
         cur_val = s.solver.eval(cur)
-        assert cur_val == 8388608, (
-            f"RLIMIT_STACK rlim_cur should be 8388608, got {cur_val}"
-        )
+        assert cur_val == 8388608, f"RLIMIT_STACK rlim_cur should be 8388608, got {cur_val}"
 
 
 class TestNativeReadlinkSyscall:
@@ -14446,15 +14451,14 @@ class TestNativeReadlinkSyscall:
             setattr(state.regs, reg, 0)
         state.regs.rdi = 0x4000  # pathname
         state.regs.rsi = 0x5000  # buf (must not be touched)
-        state.regs.rdx = 256     # bufsiz
+        state.regs.rdx = 256  # bufsiz
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            "native readlink(89) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
+            f"native readlink(89) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
         )
 
 
@@ -14482,9 +14486,9 @@ class TestNativeReadlinkatSyscall:
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
         state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD
-        state.regs.rsi = 0x4000              # pathname
-        state.regs.rdx = 0x5000              # buf (untouched)
-        state.regs.r10 = 256                 # bufsiz
+        state.regs.rsi = 0x4000  # pathname
+        state.regs.rdx = 0x5000  # buf (untouched)
+        state.regs.r10 = 256  # bufsiz
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
@@ -14521,8 +14525,8 @@ class TestNativeFaccessatSyscall:
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
         state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD (-100 reinterpreted u64)
-        state.regs.rsi = 0x4000              # pathname
-        state.regs.rdx = 0                   # mode = F_OK
+        state.regs.rsi = 0x4000  # pathname
+        state.regs.rdx = 0  # mode = F_OK
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
@@ -14616,15 +14620,14 @@ class TestNativeAccessSyscall:
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
         state.regs.rdi = 0x4000  # pathname
-        state.regs.rsi = 0       # mode = F_OK
+        state.regs.rsi = 0  # mode = F_OK
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            "native access(21) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
+            f"native access(21) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
         )
 
 
@@ -14657,16 +14660,15 @@ class TestNativeFstatSyscall:
         state.regs.rax = 5  # fstat
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
-        state.regs.rdi = 99       # fd that was never opened
-        state.regs.rsi = 0x4000   # statbuf
+        state.regs.rdi = 99  # fd that was never opened
+        state.regs.rsi = 0x4000  # statbuf
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            "native fstat(5) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
+            f"native fstat(5) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
         )
 
 
@@ -14704,8 +14706,7 @@ class TestNativeStatSyscall:
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            "native stat(4) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
+            f"native stat(4) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
         )
 
 
@@ -14742,8 +14743,7 @@ class TestNativeLstatSyscall:
 
         stats = mgr._rust_mgr.stats()
         assert stats["syscall_python_fallback_count"] == 0, (
-            "native lstat(6) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
+            f"native lstat(6) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
         )
 
 
@@ -14773,9 +14773,9 @@ class TestNativeNewfstatatSyscall:
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
             setattr(state.regs, reg, 0)
         state.regs.rdi = 0xFFFFFFFFFFFFFF9C  # AT_FDCWD
-        state.regs.rsi = 0x4000              # pathname
-        state.regs.rdx = 0x5000              # statbuf (unread on failure)
-        state.regs.r10 = 0                   # flag
+        state.regs.rsi = 0x4000  # pathname
+        state.regs.rdx = 0x5000  # statbuf (unread on failure)
+        state.regs.r10 = 0  # flag
 
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=1)
@@ -14799,8 +14799,8 @@ class TestNativeConcurrencySyscalls:
     @pytest.mark.parametrize(
         "syscall_num,label,futex_op",
         [
-            (202, "futex_wake", 1),    # FUTEX_WAKE -> concrete 0
-            (202, "futex_wait", 0),    # FUTEX_WAIT -> symbolic
+            (202, "futex_wake", 1),  # FUTEX_WAKE -> concrete 0
+            (202, "futex_wait", 0),  # FUTEX_WAIT -> symbolic
             (284, "eventfd", 0),
             (290, "eventfd2", 0),
             (213, "epoll_create", 0),
@@ -14809,9 +14809,7 @@ class TestNativeConcurrencySyscalls:
             (232, "epoll_wait", 0),
         ],
     )
-    def test_concurrency_syscall_dispatches_natively(
-        self, syscall_num, label, futex_op
-    ):
+    def test_concurrency_syscall_dispatches_natively(self, syscall_num, label, futex_op):
         import angr
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
@@ -14931,14 +14929,18 @@ class TestClaripyAnnotationRoundtrip:
         class _ExprTaint(claripy.Annotation):
             def __init__(self, tag):
                 self.tag = tag
+
             @property
             def relocatable(self):
                 return True
+
             @property
             def eliminatable(self):
                 return False
+
             def __hash__(self):
                 return hash(("_ExprTaint", self.tag))
+
             def __eq__(self, other):
                 return isinstance(other, _ExprTaint) and self.tag == other.tag
 
@@ -14967,27 +14969,21 @@ class TestClaripyAnnotationRoundtrip:
         # test introduces __gt__/__lt__ on a __add__ subexpression) and on
         # the unique BVS name.
         our_constraints = [
-            c for c in exported
+            c
+            for c in exported
             if bvs_name in str(c)
             and getattr(c, "op", None) in ("__gt__", "__lt__", "ULT", "ULE", "UGT", "UGE", "SLT", "SGT", "SLE", "SGE")
             and any(getattr(a, "op", None) == "__add__" for a in getattr(c, "args", ()))
         ]
-        assert our_constraints, (
-            f"no exported constraints match this test's pattern: "
-            f"got {[str(c) for c in exported]}"
-        )
+        assert our_constraints, f"no exported constraints match this test's pattern: got {[str(c) for c in exported]}"
 
         for c in our_constraints:
-            assert c.has_annotation_type(_ExprTaint), (
-                f"top-level constraint dropped Expression annotation: {c!r}"
-            )
-            inner_exprs = [a for a in c.args
-                           if hasattr(a, "op") and a.op == "__add__"]
+            assert c.has_annotation_type(_ExprTaint), f"top-level constraint dropped Expression annotation: {c!r}"
+            inner_exprs = [a for a in c.args if hasattr(a, "op") and a.op == "__add__"]
             assert inner_exprs, f"expected inner __add__ Expression in {c!r}"
             for inner in inner_exprs:
                 assert inner.has_annotation_type(_ExprTaint), (
-                    f"inner Expression dropped annotation on roundtrip: "
-                    f"{inner!r}, annotations={inner.annotations}"
+                    f"inner Expression dropped annotation on roundtrip: {inner!r}, annotations={inner.annotations}"
                 )
 
 
@@ -15009,6 +15005,7 @@ class TestEdgeCases:
         copies constraints/options but not memory pages, so the bleed is silent.
         """
         from angr.exploration.rust_manager import RustExplorationManager
+
         RustExplorationManager._init_cache.clear()
         yield
         RustExplorationManager._init_cache.clear()
@@ -15099,8 +15096,7 @@ class TestEdgeCases:
 
         assert len(mgr.found) == 0, f"found should be empty with no find, got {len(mgr.found)}"
         # active drains to other stashes — total state count is preserved.
-        total = (len(mgr.active) + len(mgr.deadended)
-                 + len(mgr.avoid) + len(mgr.errored))
+        total = len(mgr.active) + len(mgr.deadended) + len(mgr.avoid) + len(mgr.errored)
         assert total >= 1, f"all states vanished: counts={mgr.stash_counts()}"
 
     def test_only_avoid_addresses_no_find(self, fauxware_project):
@@ -15111,14 +15107,12 @@ class TestEdgeCases:
         mgr = RustExplorationManager(fauxware_project, [state])
         # 0x4006fd is the rejection branch in fauxware. Without find, the
         # explore loop should still dispatch avoid via the address set.
-        mgr.explore(avoid=0x4006fd, max_steps=50000)
+        mgr.explore(avoid=0x4006FD, max_steps=50000)
 
         assert len(mgr.found) == 0, "no find configured — found must be empty"
         # At least one path through fauxware reaches the rejection branch when
         # auth values are unconstrained.
-        assert len(mgr.avoid) >= 1, (
-            f"expected at least one avoided state; counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.avoid) >= 1, f"expected at least one avoided state; counts={mgr.stash_counts()}"
 
     def test_lazy_solves_option_explore(self, fauxware_project):
         """Exploration with LAZY_SOLVES enabled completes and finds the
@@ -15129,15 +15123,11 @@ class TestEdgeCases:
             add_options={angr.sim_options.LAZY_SOLVES},
         )
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
 
-        assert len(mgr.found) >= 1, (
-            f"LAZY_SOLVES exploration found nothing; counts={mgr.stash_counts()}"
-        )
+        assert len(mgr.found) >= 1, f"LAZY_SOLVES exploration found nothing; counts={mgr.stash_counts()}"
         # The found state's constraints must still be satisfiable.
-        assert mgr.found[0].solver.satisfiable(), (
-            "found state under LAZY_SOLVES is not satisfiable"
-        )
+        assert mgr.found[0].solver.satisfiable(), "found state under LAZY_SOLVES is not satisfiable"
 
     def test_multiple_explores_on_same_manager(self, fauxware_project):
         """Re-entrant exploration: calling explore() twice on the same
@@ -15147,13 +15137,13 @@ class TestEdgeCases:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         # First explore: small step budget — likely doesn't reach target.
-        mgr.explore(find=0x4006ed, max_steps=50)
+        mgr.explore(find=0x4006ED, max_steps=50)
         first_found = len(mgr.found)
         first_total_steps = mgr.stats.get("total_steps", 0)
 
         # Second explore: continue with a larger budget. Must not crash and
         # must accumulate steps on top of the first call.
-        mgr.explore(find=0x4006ed, max_steps=50000)
+        mgr.explore(find=0x4006ED, max_steps=50000)
         second_total_steps = mgr.stats.get("total_steps", 0)
 
         assert second_total_steps >= first_total_steps, (
@@ -15161,8 +15151,7 @@ class TestEdgeCases:
         )
         # Re-entrant explore must eventually find the target.
         assert len(mgr.found) >= max(1, first_found), (
-            f"found stash regressed across explores; "
-            f"first={first_found}, second={len(mgr.found)}"
+            f"found stash regressed across explores; first={first_found}, second={len(mgr.found)}"
         )
 
     def test_symbolic_store_then_load_same_address(self, fauxware_project):
@@ -15186,8 +15175,7 @@ class TestEdgeCases:
         loaded = s.memory.load(addr, 8, endness=s.arch.memory_endness)
         s.solver.add(sym == 0x1122334455667788)
         assert s.solver.eval(loaded) == 0x1122334455667788, (
-            f"store/load roundtrip on same symbolic address failed: "
-            f"got {s.solver.eval(loaded):#x}"
+            f"store/load roundtrip on same symbolic address failed: got {s.solver.eval(loaded):#x}"
         )
 
     def test_rejected_options_emit_warning(self, fauxware_project):
@@ -15210,8 +15198,7 @@ class TestEdgeCases:
             warnings.simplefilter("always")
             RustExplorationManager(fauxware_project, [state])
 
-        messages = [str(w.message) for w in caught
-                    if issubclass(w.category, UserWarning)]
+        messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
         assert any("UNINITIALIZED_ACCESS_AWARENESS" in m for m in messages), (
             f"expected UNINITIALIZED_ACCESS_AWARENESS warning; got {messages!r}"
         )
@@ -15219,12 +15206,20 @@ class TestEdgeCases:
             f"expected BEST_EFFORT_MEMORY_STORING warning; got {messages!r}"
         )
 
-    @pytest.mark.parametrize("option_name", [
-        "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
-        "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS",
-    ])
+    @pytest.mark.parametrize(
+        "option_name",
+        [
+            "TRACK_MEMORY_ACTIONS",
+            "TRACK_REGISTER_ACTIONS",
+            "TRACK_TMP_ACTIONS",
+            "TRACK_JMP_ACTIONS",
+            "TRACK_OP_ACTIONS",
+        ],
+    )
     def test_action_tracking_options_raise_at_construction(
-        self, fauxware_project, option_name,
+        self,
+        fauxware_project,
+        option_name,
     ):
         """The TRACK_*_ACTIONS family must raise NotImplementedError at
         RustExplorationManager construction. Rust does not emit SimAction
@@ -15243,9 +15238,7 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
         assert option_name in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_track_action_history_does_not_raise(self, fauxware_project):
         """TRACK_ACTION_HISTORY alone must not raise — it is a metadata
@@ -15315,12 +15308,11 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
         assert "CONCRETIZE" in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_conservative_write_strategy_raises_at_construction(
-        self, fauxware_project,
+        self,
+        fauxware_project,
     ):
         """CONSERVATIVE_WRITE_STRATEGY must raise NotImplementedError at
         manager construction. Rust's SymbolicMemory always concretizes
@@ -15336,15 +15328,12 @@ class TestEdgeCases:
         with pytest.raises(NotImplementedError) as exc:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
-        assert "CONSERVATIVE_WRITE_STRATEGY" in msg, (
-            f"error must name the option: {msg!r}"
-        )
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "CONSERVATIVE_WRITE_STRATEGY" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_do_ret_emulation_option_raises_at_construction(
-        self, fauxware_project,
+        self,
+        fauxware_project,
     ):
         """DO_RET_EMULATION must raise NotImplementedError at manager
         construction. The Python engine emits an emulated ret successor at
@@ -15360,9 +15349,7 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
         assert "DO_RET_EMULATION" in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_callless_option_raises_at_construction(self, fauxware_project):
         """CALLLESS must raise NotImplementedError at manager construction.
@@ -15379,12 +15366,11 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
         assert "CALLLESS" in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_efficient_state_merging_option_raises_at_construction(
-        self, fauxware_project,
+        self,
+        fauxware_project,
     ):
         """EFFICIENT_STATE_MERGING must raise NotImplementedError at manager
         construction. The Python engine uses this option to retain strong
@@ -15403,15 +15389,12 @@ class TestEdgeCases:
         with pytest.raises(NotImplementedError) as exc:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
-        assert "EFFICIENT_STATE_MERGING" in msg, (
-            f"error must name the option: {msg!r}"
-        )
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "EFFICIENT_STATE_MERGING" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_symbol_fill_unconstrained_registers_option_raises_at_construction(
-        self, fauxware_project,
+        self,
+        fauxware_project,
     ):
         """SYMBOL_FILL_UNCONSTRAINED_REGISTERS must raise NotImplementedError
         at manager construction. The Python filler creates a fresh symbolic
@@ -15431,15 +15414,12 @@ class TestEdgeCases:
         with pytest.raises(NotImplementedError) as exc:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
-        assert "SYMBOL_FILL_UNCONSTRAINED_REGISTERS" in msg, (
-            f"error must name the option: {msg!r}"
-        )
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "SYMBOL_FILL_UNCONSTRAINED_REGISTERS" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
     def test_symbol_fill_unconstrained_memory_option_does_not_raise(
-        self, fauxware_project,
+        self,
+        fauxware_project,
     ):
         """SYMBOL_FILL_UNCONSTRAINED_MEMORY must NOT raise — Rust's
         load_concrete_lazy in native/angr/src/memory/load.rs falls back to a
@@ -15455,13 +15435,18 @@ class TestEdgeCases:
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr is not None
 
-    @pytest.mark.parametrize("option_name", [
-        "BYPASS_ERRORED_IROP",
-        "BYPASS_ERRORED_IRCCALL",
-        "BYPASS_ERRORED_IRSTMT",
-    ])
+    @pytest.mark.parametrize(
+        "option_name",
+        [
+            "BYPASS_ERRORED_IROP",
+            "BYPASS_ERRORED_IRCCALL",
+            "BYPASS_ERRORED_IRSTMT",
+        ],
+    )
     def test_bypass_errored_options_raise_at_construction(
-        self, fauxware_project, option_name,
+        self,
+        fauxware_project,
+        option_name,
     ):
         """The BYPASS_ERRORED_* family must raise NotImplementedError at
         manager construction. Python's HeavyResilienceMixin catches
@@ -15480,22 +15465,25 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [state])
         msg = str(exc.value)
         assert option_name in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, (
-            f"error must point users to the Python engine: {msg!r}"
-        )
+        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
-    @pytest.mark.parametrize("option_name", [
-        "BYPASS_UNSUPPORTED_IROP",
-        "BYPASS_UNSUPPORTED_IREXPR",
-        "BYPASS_UNSUPPORTED_IRSTMT",
-        "BYPASS_UNSUPPORTED_IRDIRTY",
-        "BYPASS_UNSUPPORTED_IRCCALL",
-        "BYPASS_UNSUPPORTED_SYSCALL",
-        "UNSUPPORTED_BYPASS_ZERO_DEFAULT",
-        "UNSUPPORTED_FORCE_CONCRETIZE",
-    ])
+    @pytest.mark.parametrize(
+        "option_name",
+        [
+            "BYPASS_UNSUPPORTED_IROP",
+            "BYPASS_UNSUPPORTED_IREXPR",
+            "BYPASS_UNSUPPORTED_IRSTMT",
+            "BYPASS_UNSUPPORTED_IRDIRTY",
+            "BYPASS_UNSUPPORTED_IRCCALL",
+            "BYPASS_UNSUPPORTED_SYSCALL",
+            "UNSUPPORTED_BYPASS_ZERO_DEFAULT",
+            "UNSUPPORTED_FORCE_CONCRETIZE",
+        ],
+    )
     def test_bypass_unsupported_options_honored_silently(
-        self, fauxware_project, option_name,
+        self,
+        fauxware_project,
+        option_name,
     ):
         """The BYPASS_UNSUPPORTED_* family (and the two modifier options
         UNSUPPORTED_BYPASS_ZERO_DEFAULT / UNSUPPORTED_FORCE_CONCRETIZE)
@@ -15516,12 +15504,9 @@ class TestEdgeCases:
             warnings.simplefilter("always")
             mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr is not None
-        target = [w for w in caught
-                  if issubclass(w.category, UserWarning)
-                  and option_name in str(w.message)]
+        target = [w for w in caught if issubclass(w.category, UserWarning) and option_name in str(w.message)]
         assert not target, (
-            f"{option_name} must not emit a UserWarning at construction; "
-            f"got {[str(w.message) for w in target]!r}"
+            f"{option_name} must not emit a UserWarning at construction; got {[str(w.message) for w in target]!r}"
         )
 
     def test_bypass_veritesting_exceptions_warns(self, fauxware_project):
@@ -15540,8 +15525,7 @@ class TestEdgeCases:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             RustExplorationManager(fauxware_project, [state])
-        messages = [str(w.message) for w in caught
-                    if issubclass(w.category, UserWarning)]
+        messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
         assert any("BYPASS_VERITESTING_EXCEPTIONS" in m for m in messages), (
             f"expected BYPASS_VERITESTING_EXCEPTIONS warning; got {messages!r}"
         )
@@ -15561,13 +15545,12 @@ class TestEdgeCases:
             RustExplorationManager(fauxware_project, [s1, s2, s3])
 
         target_warnings = [
-            w for w in caught
-            if issubclass(w.category, UserWarning)
-            and "UNINITIALIZED_ACCESS_AWARENESS" in str(w.message)
+            w
+            for w in caught
+            if issubclass(w.category, UserWarning) and "UNINITIALIZED_ACCESS_AWARENESS" in str(w.message)
         ]
         assert len(target_warnings) == 1, (
-            f"expected exactly one UNINITIALIZED_ACCESS_AWARENESS warning "
-            f"across 3 states, got {len(target_warnings)}"
+            f"expected exactly one UNINITIALIZED_ACCESS_AWARENESS warning across 3 states, got {len(target_warnings)}"
         )
 
     def test_default_state_options_do_not_warn_for_non_rejected(self, fauxware_project):
@@ -15620,12 +15603,10 @@ class TestEdgeCases:
             _ = s.history.actions
 
         history_warnings = [
-            w for w in caught
-            if issubclass(w.category, UserWarning) and "state.history.actions" in str(w.message)
+            w for w in caught if issubclass(w.category, UserWarning) and "state.history.actions" in str(w.message)
         ]
         assert len(history_warnings) == 1, (
-            f"expected exactly one history.actions warning, got "
-            f"{[str(w.message) for w in caught]!r}"
+            f"expected exactly one history.actions warning, got {[str(w.message) for w in caught]!r}"
         )
         assert "Rust engine" in str(history_warnings[0].message)
 
@@ -15647,12 +15628,10 @@ class TestEdgeCases:
             _ = s.history.events
 
         history_warnings = [
-            w for w in caught
-            if issubclass(w.category, UserWarning) and "state.history.events" in str(w.message)
+            w for w in caught if issubclass(w.category, UserWarning) and "state.history.events" in str(w.message)
         ]
         assert len(history_warnings) == 1, (
-            f"expected exactly one history.events warning, got "
-            f"{[str(w.message) for w in caught]!r}"
+            f"expected exactly one history.events warning, got {[str(w.message) for w in caught]!r}"
         )
 
     def test_history_actions_warn_once_process_wide(self, fauxware_project):
@@ -15675,17 +15654,15 @@ class TestEdgeCases:
             warnings.simplefilter("always")
             _ = s.history.actions
             _ = s.history.actions  # second read on same state
-            _ = s.history.events   # different attribute, same latch
+            _ = s.history.events  # different attribute, same latch
 
         history_warnings = [
-            w for w in caught
+            w
+            for w in caught
             if issubclass(w.category, UserWarning)
-            and ("state.history.actions" in str(w.message)
-                 or "state.history.events" in str(w.message))
+            and ("state.history.actions" in str(w.message) or "state.history.events" in str(w.message))
         ]
-        assert len(history_warnings) == 1, (
-            f"expected one process-wide warning, got {len(history_warnings)}"
-        )
+        assert len(history_warnings) == 1, f"expected one process-wide warning, got {len(history_warnings)}"
 
     def test_history_warning_does_not_fire_when_actions_not_read(self, fauxware_project):
         """Users who run RustExplorationManager but never touch
@@ -15706,10 +15683,10 @@ class TestEdgeCases:
                 _ = s.history.recent_bbl_addrs
 
         history_warnings = [
-            w for w in caught
+            w
+            for w in caught
             if issubclass(w.category, UserWarning)
-            and ("state.history.actions" in str(w.message)
-                 or "state.history.events" in str(w.message))
+            and ("state.history.actions" in str(w.message) or "state.history.events" in str(w.message))
         ]
         assert history_warnings == [], (
             f"expected zero history warnings when .actions/.events not read; "
@@ -15758,8 +15735,8 @@ class TestEdgeCases:
         rec = _RecordingMgr(mgr._rust_mgr)
         proxy = RustHistoryProxy(rec, sid)
         addrs = proxy.recent_bbl_addrs
-        _ = proxy.bbl_addrs       # delegate
-        _ = proxy.block_count     # delegate
+        _ = proxy.bbl_addrs  # delegate
+        _ = proxy.block_count  # delegate
 
         assert rec.export_calls == 0, "recent_bbl_addrs must not export_state"
         assert rec.tail_calls == [(sid, RustHistoryProxy._RECENT_TAIL_DEFAULT)], (
@@ -15794,9 +15771,7 @@ class TestEdgeCases:
         active = mgr.active
         assert isinstance(active, list), "mgr.active must return a list"
         assert active, "expected at least one active state after one step"
-        assert all(isinstance(s, _LazySimStateRef) for s in active), (
-            "stash entries must be _LazySimStateRef wrappers"
-        )
+        assert all(isinstance(s, _LazySimStateRef) for s in active), "stash entries must be _LazySimStateRef wrappers"
 
         # (2) Iteration without attribute access does not materialize.
         materialize_calls = []
@@ -15812,12 +15787,9 @@ class TestEdgeCases:
                 # touching __slots__ attrs does not trigger __getattr__
                 _ = s._lazy_state_id
             _ = len(mgr.active)
-            assert mgr.active[0] is mgr.active[0], (
-                "wrapper identity must be preserved across repeated stash reads"
-            )
+            assert mgr.active[0] is mgr.active[0], "wrapper identity must be preserved across repeated stash reads"
             assert materialize_calls == [], (
-                f"iteration / len / index should not materialize SimStates; "
-                f"got {materialize_calls!r}"
+                f"iteration / len / index should not materialize SimStates; got {materialize_calls!r}"
             )
 
             # (3) Accessing a real attribute triggers materialization once.
@@ -15825,15 +15797,14 @@ class TestEdgeCases:
             sid = first._lazy_state_id
             _ = first.solver  # this triggers materialization
             assert materialize_calls == [sid], (
-                f"first .solver access should materialize once; got "
-                f"{materialize_calls!r}"
+                f"first .solver access should materialize once; got {materialize_calls!r}"
             )
             # Note: each attribute access re-enters _materialize() which is
             # cheap once rust_fully_synced is True (no plugin/sync work), but
             # the call count still increments. Verify cached path is taken
             # (no re-sync) by checking rust_fully_synced stays set.
             cached = mgr._state_cache[sid]
-            assert getattr(cached.scratch, 'rust_fully_synced', False), (
+            assert getattr(cached.scratch, "rust_fully_synced", False), (
                 "rust_fully_synced should remain set on a hot lazy ref"
             )
         finally:
@@ -15866,12 +15837,10 @@ class TestUnconstrainedRet:
 
         # The state must be in the unconstrained stash (Python's behaviour).
         assert len(mgr.unconstrained) == 1, (
-            f"expected 1 unconstrained state, got stashes="
-            f"{ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+            f"expected 1 unconstrained state, got stashes={ {k: len(v) for k, v in mgr.stashes.items() if v} }"
         )
         assert len(mgr.deadended) == 0, (
-            "ret-from-blank-state must not deadend (would have meant the "
-            "popped IP was silently concretized to 0)"
+            "ret-from-blank-state must not deadend (would have meant the popped IP was silently concretized to 0)"
         )
 
 
@@ -15911,8 +15880,7 @@ class TestRustConcreteMemoryStoreRoundTrip:
         all_states = list(mgr.found) + list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
         assert all_states, "expected at least one state after run"
         s = all_states[0]
-        loaded = s.memory.load(0x4216C0, 4, endness=s.arch.memory_endness,
-                               inspect=False, disable_actions=True)
+        loaded = s.memory.load(0x4216C0, 4, endness=s.arch.memory_endness, inspect=False, disable_actions=True)
         val = s.solver.eval(loaded)
         assert val == 0x12345678, (
             f"expected 0x12345678 at 0x4216c0, got 0x{val:x}. "
@@ -15930,6 +15898,7 @@ class TestRustManagerCleanup:
     def test_clear_ast_cache_ffi_exposed(self):
         """The Rust-side cache flush helper must be callable from Python."""
         from angr.rustylib.vex_engine import clear_ast_cache
+
         # No-op on an empty cache; must not raise.
         clear_ast_cache()
         clear_ast_cache()
@@ -15959,7 +15928,7 @@ class TestRustManagerCleanup:
         mgr.run(max_steps=4)
         mgr.cleanup()
         # Still reachable post-cleanup.
-        assert mgr.stash_counts()['active'] >= 0
+        assert mgr.stash_counts()["active"] >= 0
 
     def test_clear_caches_on_cleanup_flag_default_off(self):
         """Default constructor leaves the flag off — single-long-exploration
@@ -15975,12 +15944,14 @@ class TestRustManagerCleanup:
         """When the constructor flag is set, __del__ wires through to
         cleanup(); explicit drop triggers the cache flush without raising."""
         import gc
+
         import angr
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
         mgr = RustExplorationManager(
-            proj, [state],
+            proj,
+            [state],
             clear_caches_on_cleanup=True,
         )
         assert mgr._clear_caches_on_cleanup is True
@@ -16003,7 +15974,7 @@ class TestLoaderPagesCache:
 
         RustExplorationManager._loader_pages_cache.clear()
         loader = fauxware_project.loader
-        main_sym = loader.find_symbol('main')
+        main_sym = loader.find_symbol("main")
         assert main_sym is not None
 
         # First manager: cache miss, populates the entry.
@@ -16036,21 +16007,24 @@ class TestLoaderPagesCache:
         proj_a = angr.Project(binary, auto_load_libs=False)
         proj_b = angr.Project(binary, auto_load_libs=False)
 
-        main_a = proj_a.loader.find_symbol('main').rebased_addr
-        main_b = proj_b.loader.find_symbol('main').rebased_addr
+        main_a = proj_a.loader.find_symbol("main").rebased_addr
+        main_b = proj_b.loader.find_symbol("main").rebased_addr
 
         RustExplorationManager(proj_a, [proj_a.factory.blank_state(addr=main_a)])
         RustExplorationManager(proj_b, [proj_b.factory.blank_state(addr=main_b)])
 
         assert proj_a.loader in RustExplorationManager._loader_pages_cache
         assert proj_b.loader in RustExplorationManager._loader_pages_cache
-        assert (RustExplorationManager._loader_pages_cache[proj_a.loader]
-                is not RustExplorationManager._loader_pages_cache[proj_b.loader])
+        assert (
+            RustExplorationManager._loader_pages_cache[proj_a.loader]
+            is not RustExplorationManager._loader_pages_cache[proj_b.loader]
+        )
 
     def test_loader_pages_cache_weakref_auto_evicts(self):
         """When the Project (and its Loader) is garbage-collected, the
         WeakKeyDictionary entry must vanish — no stale-id collisions."""
         import gc
+
         import angr
         from angr.exploration.rust_manager import RustExplorationManager
 
@@ -16060,7 +16034,7 @@ class TestLoaderPagesCache:
             pytest.skip("fauxware binary not found")
 
         proj = angr.Project(binary, auto_load_libs=False)
-        main = proj.loader.find_symbol('main').rebased_addr
+        main = proj.loader.find_symbol("main").rebased_addr
         mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=main)])
         assert proj.loader in RustExplorationManager._loader_pages_cache
 
@@ -16083,7 +16057,8 @@ class TestSyncExtraPagesFastPath:
     def _fresh_rust_state(project):
         """Build a bare _RustSimState matching the project's arch."""
         from angr.rustylib.vex_engine import RustSimState
-        is_le = project.arch.memory_endness == 'Iend_LE'
+
+        is_le = project.arch.memory_endness == "Iend_LE"
         return RustSimState(project.arch.name, little_endian=is_le)
 
     def test_lazy_regions_use_batch_ffi(self, fauxware_project):
@@ -16097,7 +16072,7 @@ class TestSyncExtraPagesFastPath:
         # Add 8 extra non-loader pages so the function has work to do.
         for i in range(8):
             page_addr = 0x4000_0000 + i * 0x1000
-            state.memory.store(page_addr, b'\x00' * 0x1000, endness='Iend_BE')
+            state.memory.store(page_addr, b"\x00" * 0x1000, endness="Iend_BE")
         mgr = RustExplorationManager(fauxware_project, [state])
         rust_state = self._fresh_rust_state(fauxware_project)
 
@@ -16106,32 +16081,29 @@ class TestSyncExtraPagesFastPath:
         real_batch = type(rust_state).add_lazy_regions_batch
         real_single = type(rust_state).add_lazy_region
         try:
-            type(rust_state).add_lazy_regions_batch = (
-                lambda self, regions, _r=real_batch, _b=batch_calls:
-                    (_b.append(list(regions)), _r(self, regions))[1]
-            )
-            type(rust_state).add_lazy_region = (
-                lambda self, start, size, _r=real_single, _s=single_calls:
-                    (_s.append((start, size)), _r(self, start, size))[1]
-            )
+            type(rust_state).add_lazy_regions_batch = lambda self, regions, _r=real_batch, _b=batch_calls: (
+                _b.append(list(regions)),
+                _r(self, regions),
+            )[1]
+            type(rust_state).add_lazy_region = lambda self, start, size, _r=real_single, _s=single_calls: (
+                _s.append((start, size)),
+                _r(self, start, size),
+            )[1]
             sp = state.solver.eval(state.regs.sp)
             stack_base = (sp & ~0xFFF) + 0x1000
             stack_start = stack_base - 0x11_0000
             mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
             RustStateSyncMixin._sync_extra_python_pages(
-                mgr, state, rust_state, mapped, set(),
-                sp & ~0xFFF, stack_start, stack_base, 0x1000)
+                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000
+            )
         finally:
             type(rust_state).add_lazy_regions_batch = real_batch
             type(rust_state).add_lazy_region = real_single
 
         assert len(single_calls) == 0, (
-            f"_sync_extra_python_pages should batch lazy regions, "
-            f"saw {len(single_calls)} single calls"
+            f"_sync_extra_python_pages should batch lazy regions, saw {len(single_calls)} single calls"
         )
-        assert len(batch_calls) == 1, (
-            f"expected exactly one batch call, got {len(batch_calls)}"
-        )
+        assert len(batch_calls) == 1, f"expected exactly one batch call, got {len(batch_calls)}"
         addrs_in_batch = {addr for addr, _size in batch_calls[0]}
         for i in range(8):
             assert 0x4000_0000 + i * 0x1000 in addrs_in_batch
@@ -16152,7 +16124,7 @@ class TestSyncExtraPagesFastPath:
         # add_lazy_regions_batch — no per-page bytes() copy, no FFI map.
         for i in range(220):
             page_addr = 0x4100_0000 + i * 0x1000
-            state.memory.store(page_addr, b'\x00' * 0x1000, endness='Iend_BE')
+            state.memory.store(page_addr, b"\x00" * 0x1000, endness="Iend_BE")
         mgr = RustExplorationManager(fauxware_project, [state])
         rust_state = self._fresh_rust_state(fauxware_project)
 
@@ -16175,26 +16147,22 @@ class TestSyncExtraPagesFastPath:
             stack_start = stack_base - 0x11_0000
             mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
             RustStateSyncMixin._sync_extra_python_pages(
-                mgr, state, rust_state, mapped, set(),
-                sp & ~0xFFF, stack_start, stack_base, 0x1000)
+                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000
+            )
         finally:
             UltraPage.concrete_load = orig_cl
 
         # mma path: > 200 zero pages → eager_zero=False → no FFI
         # map_memory_data, no bytes() copy.  concrete_load MUST be zero.
         assert calls["concrete_load"] == 0, (
-            f"UltraPage lazy path should never call concrete_load; "
-            f"saw {calls['concrete_load']}"
+            f"UltraPage lazy path should never call concrete_load; saw {calls['concrete_load']}"
         )
 
     def test_add_lazy_regions_batch_ffi_available(self, fauxware_project):
         """Smoke-test the new Rust FFI surface exists and is callable."""
         rust_state = self._fresh_rust_state(fauxware_project)
-        assert hasattr(rust_state, 'add_lazy_regions_batch'), (
-            "Rust FFI must expose add_lazy_regions_batch (angr-b58a)"
-        )
-        rust_state.add_lazy_regions_batch([(0x4200_0000, 0x1000),
-                                           (0x4200_1000, 0x1000)])
+        assert hasattr(rust_state, "add_lazy_regions_batch"), "Rust FFI must expose add_lazy_regions_batch (angr-b58a)"
+        rust_state.add_lazy_regions_batch([(0x4200_0000, 0x1000), (0x4200_1000, 0x1000)])
 
 
 class TestStashProxyAccessors:
@@ -16203,14 +16171,9 @@ class TestStashProxyAccessors:
     """
 
     def test_all_five_methods_exposed(self, fauxware_project):
-        mgr = RustExplorationManager(
-            fauxware_project, [fauxware_project.factory.entry_state()]
-        )
-        for name in ('found_proxies', 'active_proxies', 'avoid_proxies',
-                     'deadended_proxies', 'unconstrained_proxies'):
-            assert callable(getattr(mgr, name)), (
-                f"RustExplorationManager.{name}() should be callable"
-            )
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        for name in ("found_proxies", "active_proxies", "avoid_proxies", "deadended_proxies", "unconstrained_proxies"):
+            assert callable(getattr(mgr, name)), f"RustExplorationManager.{name}() should be callable"
 
     def test_active_proxies_returns_rust_state_proxy(self, fauxware_project):
         """active_proxies() returns RustStateProxy objects whose attrs
@@ -16259,10 +16222,7 @@ class TestStashProxyAccessors:
             full_addrs = sorted(s.addr for s in full_states)
             proxy_addrs = sorted(p.addr for p in proxy_states)
             for a in proxy_addrs:
-                assert a in full_addrs, (
-                    f"proxy addr {hex(a)} not in full-states addrs "
-                    f"{[hex(x) for x in full_addrs]}"
-                )
+                assert a in full_addrs, f"proxy addr {hex(a)} not in full-states addrs {[hex(x) for x in full_addrs]}"
 
     def test_proxies_skip_simstate_materialization(self, fauxware_project):
         """The proxy accessor must NOT call into the SimState export path.
@@ -16278,10 +16238,7 @@ class TestStashProxyAccessors:
         original = mgr._get_stash_states
 
         def _fail(*args, **kwargs):
-            raise AssertionError(
-                "found_proxies() must not call _get_stash_states "
-                "(SimState materialization)"
-            )
+            raise AssertionError("found_proxies() must not call _get_stash_states (SimState materialization)")
 
         mgr._get_stash_states = _fail
         try:
@@ -16303,19 +16260,16 @@ class TestStashProxyAccessors:
         read paths agree.
         """
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project, [state], use_callback_register_proxy=True
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_register_proxy=True)
         mgr.run(max_steps=200)
 
         checked = 0
-        for stash in ('active', 'found', 'deadended', 'avoid', 'unconstrained'):
+        for stash in ("active", "found", "deadended", "avoid", "unconstrained"):
             for sid in mgr._rust_mgr.get_state_ids(stash):
                 rust_pc = mgr._rust_mgr.get_state_pc_by_id(sid)
                 full = mgr._materialize_single_state(sid)
                 assert full.addr == rust_pc, (
-                    f"stash {stash} state {sid}: full-export addr "
-                    f"{hex(full.addr)} != Rust pc {hex(rust_pc)}"
+                    f"stash {stash} state {sid}: full-export addr {hex(full.addr)} != Rust pc {hex(rust_pc)}"
                 )
                 checked += 1
         # fauxware reaches the strcmp fork, so at least one state exists.
@@ -16354,6 +16308,7 @@ class TestRustExecutionErrorHierarchy:
             RustUnsupportedVexOpError,
             RustZ3Error,
         )
+
         # Sanity: each is a class object.
         for cls in (
             RustExecutionError,
@@ -16376,6 +16331,7 @@ class TestRustExecutionErrorHierarchy:
             RustUnsupportedVexOpError,
             RustZ3Error,
         )
+
         subclasses = (
             RustMalformedIRSBError,
             RustOomError,
@@ -16384,9 +16340,7 @@ class TestRustExecutionErrorHierarchy:
             RustZ3Error,
         )
         for cls in subclasses:
-            assert issubclass(cls, RustExecutionError), (
-                f"{cls.__name__} must subclass RustExecutionError"
-            )
+            assert issubclass(cls, RustExecutionError), f"{cls.__name__} must subclass RustExecutionError"
         assert issubclass(RustExecutionError, Exception)
 
     def test_pytest_raises_catches_subclass_via_base(self):
@@ -16395,8 +16349,9 @@ class TestRustExecutionErrorHierarchy:
         This is the key downstream contract: callers can write a single
         ``except RustExecutionError`` to handle all engine failures.
         """
-        from angr.exploration import RustExecutionError
         from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        from angr.exploration import RustExecutionError
 
         for kind in (
             "malformed_irsb",
@@ -16420,8 +16375,9 @@ class TestRustExecutionErrorHierarchy:
         — the API tkbr.1 will route into. Replace with a real-path test
         once tkbr.1 lands.
         """
-        from angr.exploration import RustUnsupportedSyscallError
         from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        from angr.exploration import RustUnsupportedSyscallError
 
         with pytest.raises(RustUnsupportedSyscallError, match=r"brk"):
             _raise_typed_test_error(
@@ -16448,26 +16404,36 @@ class TestRustExecutionErrorHierarchy:
         the only remaining NeonUnimplemented placeholder.
         """
         import json
-        from angr.exploration import RustUnsupportedVexOpError
+
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustUnsupportedVexOpError
 
         irsb = {
             "addr": 4096,
             "arch": "ARM64",
             "statements": [
                 {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                    "tag": "Iex_Const",
-                    "con": {"tag": "Ico_U64", "value": 0},
-                }},
-                {"tag": "Ist_WrTmp", "tmp": 1, "data": {
-                    "tag": "Iex_Binop",
-                    "op": "Iop_PwAdd32Fx2",
-                    "args": [
-                        {"tag": "Iex_RdTmp", "tmp": 0},
-                        {"tag": "Iex_RdTmp", "tmp": 0},
-                    ],
-                }},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Const",
+                        "con": {"tag": "Ico_U64", "value": 0},
+                    },
+                },
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 1,
+                    "data": {
+                        "tag": "Iex_Binop",
+                        "op": "Iop_PwAdd32Fx2",
+                        "args": [
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                        ],
+                    },
+                },
             ],
             "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
             "jumpkind": "Ijk_Boring",
@@ -16495,8 +16461,10 @@ class TestRustExecutionErrorHierarchy:
         test stays valid even as real opcodes get mapped over time.
         """
         import json
-        from angr.exploration import RustUnsupportedVexOpError
+
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustUnsupportedVexOpError
 
         fake_op = "Iop_NotARealOp1234"
         irsb = {
@@ -16504,15 +16472,23 @@ class TestRustExecutionErrorHierarchy:
             "arch": "AMD64",
             "statements": [
                 {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                    "tag": "Iex_Const",
-                    "con": {"tag": "Ico_U64", "value": 0},
-                }},
-                {"tag": "Ist_WrTmp", "tmp": 1, "data": {
-                    "tag": "Iex_Unop",
-                    "op": fake_op,
-                    "arg": {"tag": "Iex_RdTmp", "tmp": 0},
-                }},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Const",
+                        "con": {"tag": "Ico_U64", "value": 0},
+                    },
+                },
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 1,
+                    "data": {
+                        "tag": "Iex_Unop",
+                        "op": fake_op,
+                        "arg": {"tag": "Iex_RdTmp", "tmp": 0},
+                    },
+                },
             ],
             "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
             "jumpkind": "Ijk_Boring",
@@ -16536,24 +16512,30 @@ class TestRustExecutionErrorHierarchy:
         ``RustExecutionError`` class.
         """
         import json
-        from angr.exploration import RustExecutionError
+
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustExecutionError
 
         irsb = {
             "addr": 4096,
             "arch": "AMD64",
             "statements": [
                 {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                    "tag": "Iex_CCall",
-                    "cee": {
-                        "name": "amd64g_NotARealCCall",
-                        "addr": 0,
-                        "mcx_mask": 0,
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_CCall",
+                        "cee": {
+                            "name": "amd64g_NotARealCCall",
+                            "addr": 0,
+                            "mcx_mask": 0,
+                        },
+                        "retty": "Ity_I64",
+                        "args": [],
                     },
-                    "retty": "Ity_I64",
-                    "args": [],
-                }},
+                },
             ],
             "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
             "jumpkind": "Ijk_Boring",
@@ -16593,8 +16575,10 @@ class TestRustExecutionErrorHierarchy:
         ``test_cb_lift_block_*`` in ``TestRustManagerCallbacksUnit``.
         """
         import json
-        from angr.exploration import RustMalformedIRSBError
+
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustMalformedIRSBError
 
         addr = 0x1000
         irsb = {
@@ -16605,11 +16589,13 @@ class TestRustExecutionErrorHierarchy:
                 # LLSC `result` references temp 99, but tyenv only declares
                 # one type (t0:Ity_I64). The dispatcher resolves the temp
                 # type via `irsb.tyenv.get(99)` -> None -> InvalidIR.
-                {"tag": "Ist_LLSC",
-                 "result": 99,
-                 "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
-                 "storedata": None,
-                 "end": "Iend_LE"},
+                {
+                    "tag": "Ist_LLSC",
+                    "result": 99,
+                    "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
+                    "storedata": None,
+                    "end": "Iend_LE",
+                },
             ],
             "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": addr + 4}},
             "jumpkind": "Ijk_Boring",
@@ -16702,10 +16688,7 @@ _UNMAPPED_CRYPTO_AND_POLY = [
 # the acceptance target of ">=50 unsupported ops/syscalls" lands once the
 # NEON-unimplemented (1) and syscalls (>=15) are added below.
 _UNMAPPED_VEX_OPS_REAL = (
-    _UNMAPPED_X87_TRANSCENDENTALS
-    + _UNMAPPED_NEON_QSHL_IMM
-    + _UNMAPPED_FP_DECIMAL
-    + _UNMAPPED_CRYPTO_AND_POLY
+    _UNMAPPED_X87_TRANSCENDENTALS + _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAPPED_CRYPTO_AND_POLY
 )
 
 # Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
@@ -16756,57 +16739,79 @@ def _build_unop_irsb_json(op_name, arch):
     """Single-Unop IRSB referencing `op_name`. Args/result type are I64 since
     the dispatch hits `IROp::Unmapped` before any width validation runs."""
     import json
+
     offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
-    return json.dumps({
-        "addr": 4096,
-        "arch": arch,
-        "statements": [
-            {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-            {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                "tag": "Iex_Const",
-                "con": {"tag": "Ico_U64", "value": 0},
-            }},
-            {"tag": "Ist_WrTmp", "tmp": 1, "data": {
-                "tag": "Iex_Unop",
-                "op": op_name,
-                "arg": {"tag": "Iex_RdTmp", "tmp": 0},
-            }},
-        ],
-        "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-        "jumpkind": "Ijk_Boring",
-        "offsIP": offs_ip,
-        "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-    })
+    return json.dumps(
+        {
+            "addr": 4096,
+            "arch": arch,
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Const",
+                        "con": {"tag": "Ico_U64", "value": 0},
+                    },
+                },
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 1,
+                    "data": {
+                        "tag": "Iex_Unop",
+                        "op": op_name,
+                        "arg": {"tag": "Iex_RdTmp", "tmp": 0},
+                    },
+                },
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": offs_ip,
+            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+        }
+    )
 
 
 def _build_binop_irsb_json(op_name, arch):
     """Single-Binop IRSB referencing `op_name`. Used for QShlN-style ops
     (binary in VEX) and the lone NeonUnimplemented entry Iop_PwAdd32Fx2."""
     import json
+
     offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
-    return json.dumps({
-        "addr": 4096,
-        "arch": arch,
-        "statements": [
-            {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-            {"tag": "Ist_WrTmp", "tmp": 0, "data": {
-                "tag": "Iex_Const",
-                "con": {"tag": "Ico_U64", "value": 0},
-            }},
-            {"tag": "Ist_WrTmp", "tmp": 1, "data": {
-                "tag": "Iex_Binop",
-                "op": op_name,
-                "args": [
-                    {"tag": "Iex_RdTmp", "tmp": 0},
-                    {"tag": "Iex_RdTmp", "tmp": 0},
-                ],
-            }},
-        ],
-        "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-        "jumpkind": "Ijk_Boring",
-        "offsIP": offs_ip,
-        "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-    })
+    return json.dumps(
+        {
+            "addr": 4096,
+            "arch": arch,
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Const",
+                        "con": {"tag": "Ico_U64", "value": 0},
+                    },
+                },
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 1,
+                    "data": {
+                        "tag": "Iex_Binop",
+                        "op": op_name,
+                        "args": [
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                        ],
+                    },
+                },
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": offs_ip,
+            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+        }
+    )
 
 
 class TestRustUnsupportedErrorParametrized:
@@ -16831,8 +16836,9 @@ class TestRustUnsupportedErrorParametrized:
     def test_unmapped_vex_op_raises_unsupported(self, op_name):
         """Each currently-unmapped real opcode surfaces as
         ``RustUnsupportedVexOpError`` carrying `<op_name>` + arch."""
-        from angr.exploration import RustUnsupportedVexOpError
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustUnsupportedVexOpError
 
         with pytest.raises(RustUnsupportedVexOpError) as exc_info:
             execute_irsb_for_test(_build_unop_irsb_json(op_name, "AMD64"), "amd64")
@@ -16847,8 +16853,9 @@ class TestRustUnsupportedErrorParametrized:
     def test_neon_unimplemented_raises_unsupported(self, op_name):
         """NeonUnimplemented routes through ``OpError::UnsupportedNeon`` but
         Python-side it still surfaces as ``RustUnsupportedVexOpError``."""
-        from angr.exploration import RustUnsupportedVexOpError
         from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        from angr.exploration import RustUnsupportedVexOpError
 
         with pytest.raises(RustUnsupportedVexOpError) as exc_info:
             execute_irsb_for_test(_build_binop_irsb_json(op_name, "ARM64"), "arm64")
@@ -16865,8 +16872,9 @@ class TestRustUnsupportedErrorParametrized:
         back to the Python callback path; this parametrize pins the Python
         exception API so a follow-up tkbr.1-style conversion only needs to
         wire each handler into the existing typed-error path."""
-        from angr.exploration import RustUnsupportedSyscallError
         from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        from angr.exploration import RustUnsupportedSyscallError
 
         with pytest.raises(RustUnsupportedSyscallError) as exc_info:
             _raise_typed_test_error(
@@ -16888,11 +16896,7 @@ class TestRustUnsupportedErrorParametrized:
         Tracked here so a thoughtless trim of any list (e.g. an
         implementation lands that moves an op from this list to the real
         dispatch) still keeps the total above the bar."""
-        total = (
-            len(_UNMAPPED_VEX_OPS_REAL)
-            + len(_NEON_UNIMPLEMENTED)
-            + len(_UNSUPPORTED_SYSCALLS)
-        )
+        total = len(_UNMAPPED_VEX_OPS_REAL) + len(_NEON_UNIMPLEMENTED) + len(_UNSUPPORTED_SYSCALLS)
         assert total >= 50, f"only {total} parametrized cases; need >=50"
 
 
@@ -16938,10 +16942,7 @@ class TestImportZ3ConstraintPtrsValidation:
         with pytest.raises(ValueError, match="null pointer at index 1"):
             mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr, 0])
         after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        assert before == after, (
-            f"validation failure leaked partial constraints: "
-            f"before={before} after={after}"
-        )
+        assert before == after, f"validation failure leaked partial constraints: before={before} after={after}"
 
     def test_bv_sort_pointer_rejected(self, fauxware_project):
         """A Z3 AST with non-Bool sort (e.g. a BV) is rejected as the wrong
@@ -16987,9 +16988,7 @@ class TestImportZ3ConstraintPtrsValidation:
         sat = mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr])
         assert sat is True, "constraint x==0x4242 should be satisfiable"
         after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        assert after == before + 1, (
-            f"expected 1 constraint to be added; got before={before} after={after}"
-        )
+        assert after == before + 1, f"expected 1 constraint to be added; got before={before} after={after}"
 
 
 class TestStashNameValidation:
@@ -17064,8 +17063,7 @@ class TestStashNameValidation:
         captured = capfd.readouterr()
         warn_count = captured.err.count("creating new stash 'custom_stash_630x'")
         assert warn_count == 1, (
-            f"expected exactly one warn for repeated use; got {warn_count} "
-            f"in stderr:\n{captured.err!r}"
+            f"expected exactly one warn for repeated use; got {warn_count} in stderr:\n{captured.err!r}"
         )
         assert mgr.stash_count("custom_stash_630x") == 3
 
@@ -17102,8 +17100,7 @@ class TestStashNameValidation:
             mgr.create_state("c242_typo")
             captured = capfd.readouterr()
             assert "creating new stash 'c242_typo'" in captured.err, (
-                f"per-module filter should keep stash warns live; "
-                f"got stderr:\n{captured.err!r}"
+                f"per-module filter should keep stash warns live; got stderr:\n{captured.err!r}"
             )
             # Only the stash warn should be present; nothing from any other
             # rustylib::* module slipped through.
@@ -17111,8 +17108,7 @@ class TestStashNameValidation:
                 if not line.startswith("[rust:"):
                     continue
                 assert "rustylib::stash" in line, (
-                    f"non-stash log leaked through under per-module 'off' "
-                    f"default: {line!r}"
+                    f"non-stash log leaked through under per-module 'off' default: {line!r}"
                 )
         finally:
             # Reset so we don't leak this filter into later tests.
@@ -17144,9 +17140,7 @@ class TestSnapshotRoundTrip:
     binary, plus the format-version asymmetric-mismatch error path.
     """
 
-    def test_dump_load_fauxware_round_trip_preserves_stash_shape(
-        self, fauxware_project, tmp_path
-    ):
+    def test_dump_load_fauxware_round_trip_preserves_stash_shape(self, fauxware_project, tmp_path):
         """Mid-exploration snapshot + restore preserves the structural shape
         of every stash (state_id set, per-state pc, per-state constraint
         count). This is the structural-equivalence half of the round-trip
@@ -17169,7 +17163,7 @@ class TestSnapshotRoundTrip:
         functional after restore, not stuck).
         """
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
 
         run_state = fauxware_project.factory.entry_state()
         run_mgr = RustExplorationManager(fauxware_project, [run_state])
@@ -17181,12 +17175,8 @@ class TestSnapshotRoundTrip:
 
         pre_counts = dict(run_mgr.stash_counts())
         pre_active_ids = sorted(run_mgr._rust_mgr.get_state_ids("active"))
-        pre_active_pcs = [
-            run_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in pre_active_ids
-        ]
-        pre_active_constraint_counts = [
-            run_mgr._rust_mgr.state_constraint_count(sid) for sid in pre_active_ids
-        ]
+        pre_active_pcs = [run_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in pre_active_ids]
+        pre_active_constraint_counts = [run_mgr._rust_mgr.state_constraint_count(sid) for sid in pre_active_ids]
 
         resumed_state = fauxware_project.factory.entry_state()
         resumed_mgr = RustExplorationManager(fauxware_project, [resumed_state])
@@ -17194,24 +17184,15 @@ class TestSnapshotRoundTrip:
 
         post_counts = dict(resumed_mgr.stash_counts())
         post_active_ids = sorted(resumed_mgr._rust_mgr.get_state_ids("active"))
-        post_active_pcs = [
-            resumed_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in post_active_ids
-        ]
-        post_active_constraint_counts = [
-            resumed_mgr._rust_mgr.state_constraint_count(sid)
-            for sid in post_active_ids
-        ]
+        post_active_pcs = [resumed_mgr._rust_mgr.get_state_pc_by_id(sid) for sid in post_active_ids]
+        post_active_constraint_counts = [resumed_mgr._rust_mgr.state_constraint_count(sid) for sid in post_active_ids]
 
-        assert post_counts == pre_counts, (
-            f"stash counts differ post-restore: {pre_counts} -> {post_counts}"
-        )
+        assert post_counts == pre_counts, f"stash counts differ post-restore: {pre_counts} -> {post_counts}"
         assert post_active_ids == pre_active_ids, (
-            f"active state_ids differ post-restore: "
-            f"{pre_active_ids} -> {post_active_ids}"
+            f"active state_ids differ post-restore: {pre_active_ids} -> {post_active_ids}"
         )
         assert post_active_pcs == pre_active_pcs, (
-            f"active state PCs differ post-restore: "
-            f"{pre_active_pcs} -> {post_active_pcs}"
+            f"active state PCs differ post-restore: {pre_active_pcs} -> {post_active_pcs}"
         )
 
         # angr-82g6: `state_constraint_count` (the
@@ -17231,14 +17212,10 @@ class TestSnapshotRoundTrip:
 
         resumed_mgr.explore(find=find_addr, num_find=1)
         assert len(resumed_mgr.found) > 0, (
-            "resumed manager must continue exploration after load and "
-            "reach the find address"
+            "resumed manager must continue exploration after load and reach the find address"
         )
         resumed_stdin = bytes(resumed_mgr.found[0].posix.dumps(0))
-        assert len(resumed_stdin) > 0, (
-            "resumed exploration's first found state must have a non-empty "
-            "stdin model"
-        )
+        assert len(resumed_stdin) > 0, "resumed exploration's first found state must have a non-empty stdin model"
 
     def test_load_snapshot_rejects_stale_version_byte(self, fauxware_project, tmp_path):
         """Format-version asymmetric mismatch: load must refuse a snapshot
@@ -17278,9 +17255,7 @@ class TestSnapshotRoundTrip:
         with pytest.raises(ValueError, match="empty snapshot envelope"):
             mgr.load_snapshot(str(empty_path))
 
-    def test_load_from_disk_constructs_fresh_manager_without_placeholder(
-        self, fauxware_project, tmp_path
-    ):
+    def test_load_from_disk_constructs_fresh_manager_without_placeholder(self, fauxware_project, tmp_path):
         """angr-9o4n: the v1.0 classmethod constructs a fresh manager
         without requiring the caller to pre-build an entry state purely
         for the constructor's signature. Functionally equivalent to
@@ -17293,7 +17268,7 @@ class TestSnapshotRoundTrip:
         ``find`` and produces a non-empty stdin model.
         """
 
-        find_addr = 0x4006ed
+        find_addr = 0x4006ED
 
         run_state = fauxware_project.factory.entry_state()
         run_mgr = RustExplorationManager(fauxware_project, [run_state])
@@ -17314,9 +17289,7 @@ class TestSnapshotRoundTrip:
             "resumed exploration must produce a non-empty stdin model"
         )
 
-    def test_load_from_disk_passes_kwargs_to_constructor(
-        self, fauxware_project, tmp_path
-    ):
+    def test_load_from_disk_passes_kwargs_to_constructor(self, fauxware_project, tmp_path):
         """Manager-level configuration (not captured by the snapshot) must
         be overridable on resume by passing kwargs through to ``__init__``.
         Smoke-checks that ``exploration_strategy='dfs'`` and a custom
@@ -17336,9 +17309,7 @@ class TestSnapshotRoundTrip:
             solver_timeout_ms=12345,
         )
         # Active stash carries the same state_ids as the source.
-        assert sorted(resumed._rust_mgr.get_state_ids("active")) == sorted(
-            run_mgr._rust_mgr.get_state_ids("active")
-        )
+        assert sorted(resumed._rust_mgr.get_state_ids("active")) == sorted(run_mgr._rust_mgr.get_state_ids("active"))
         # Resume is functional after the kwargs path.
         resumed.step(n=1)
 
@@ -17384,15 +17355,11 @@ class TestAvoidMultivaluedOptions:
             add_options={angr.sim_options.AVOID_MULTIVALUED_READS},
         )
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
         # We don't assert found > 0 because the option can prune the
         # success path; the contract is that the engine doesn't crash.
-        total = (len(mgr.active) + len(mgr.deadended)
-                 + len(mgr.avoid) + len(mgr.errored) + len(mgr.found))
-        assert total >= 1, (
-            f"AVOID_MULTIVALUED_READS exploration lost all states; "
-            f"counts={mgr.stash_counts()}"
-        )
+        total = len(mgr.active) + len(mgr.deadended) + len(mgr.avoid) + len(mgr.errored) + len(mgr.found)
+        assert total >= 1, f"AVOID_MULTIVALUED_READS exploration lost all states; counts={mgr.stash_counts()}"
 
     def test_avoid_multivalued_writes_smoke(self, fauxware_project):
         """Exploration with AVOID_MULTIVALUED_WRITES completes without
@@ -17403,17 +17370,11 @@ class TestAvoidMultivaluedOptions:
             add_options={angr.sim_options.AVOID_MULTIVALUED_WRITES},
         )
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
-        total = (len(mgr.active) + len(mgr.deadended)
-                 + len(mgr.avoid) + len(mgr.errored) + len(mgr.found))
-        assert total >= 1, (
-            f"AVOID_MULTIVALUED_WRITES exploration lost all states; "
-            f"counts={mgr.stash_counts()}"
-        )
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
+        total = len(mgr.active) + len(mgr.deadended) + len(mgr.avoid) + len(mgr.errored) + len(mgr.found)
+        assert total >= 1, f"AVOID_MULTIVALUED_WRITES exploration lost all states; counts={mgr.stash_counts()}"
 
-    def test_avoid_multivalued_read_returns_unconstrained_via_memory_api(
-        self, fauxware_project
-    ):
+    def test_avoid_multivalued_read_returns_unconstrained_via_memory_api(self, fauxware_project):
         """End-to-end: with AVOID_MULTIVALUED_READS set, a symbolic-address
         load via the Rust `memory_load_symbolic` path returns an
         unconstrained value — solver eval is NOT pinned to any concrete
@@ -17445,7 +17406,10 @@ class TestAvoidMultivaluedOptions:
         # `configure_concretization_strategies` call — we can re-call it
         # idempotently here as a smoke check that the kwargs are accepted.
         mgr._rust_mgr.configure_concretization_strategies(
-            False, 1024, 128, False,
+            False,
+            1024,
+            128,
+            False,
             avoid_multivalued_reads=True,
             avoid_multivalued_writes=False,
         )
@@ -17486,9 +17450,7 @@ class TestCounterParity:
             "benchmarks",
             "run_single.py",
         )
-        spec = importlib.util.spec_from_file_location(
-            "_bench_run_single", run_single_path
-        )
+        spec = importlib.util.spec_from_file_location("_bench_run_single", run_single_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module._DUMP_EXPLICIT_GROUPS, module._DUMP_PREFIX_GROUPS
@@ -17521,9 +17483,7 @@ class TestCounterParity:
             f"{len(expected) - len(missing)})"
         )
 
-    def test_stats_dict_has_at_least_one_key_per_prefix_family(
-        self, fauxware_project
-    ):
+    def test_stats_dict_has_at_least_one_key_per_prefix_family(self, fauxware_project):
         """Each prefix family in ``_DUMP_PREFIX_GROUPS`` (``rust_*``,
         ``z3_*``, ``vex_*``, ``mem_*``, ``concretize_*``, ``bvop_*``,
         ``zext_*``) must contribute at least one key to ``mgr.stats()``.
@@ -17544,8 +17504,7 @@ class TestCounterParity:
                 missing_families.append(f"{label!r} (prefix={prefix!r})")
         assert not missing_families, (
             "mgr.stats() is missing entire counter families expected by "
-            "run_single.py --dump-counters prefix groups:\n  "
-            + "\n  ".join(missing_families)
+            "run_single.py --dump-counters prefix groups:\n  " + "\n  ".join(missing_families)
         )
 
 
@@ -17580,9 +17539,7 @@ class TestProxyWriteCounters:
         stats = mgr.stats
         for key in self.PROXY_COUNTER_KEYS:
             assert key in stats, f"missing proxy counter: {key}"
-            assert stats[key] == 0, (
-                f"expected {key} == 0 on a clean manager, got {stats[key]}"
-            )
+            assert stats[key] == 0, f"expected {key} == 0 on a clean manager, got {stats[key]}"
 
     def test_register_proxy_write_bumps_counter(self, fauxware_project):
         """``RustRegisterProxy.__setattr__`` increments ``_stats_proxy_reg_writes``
@@ -17598,16 +17555,12 @@ class TestProxyWriteCounters:
         mgr.run(max_steps=1)
         state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state after one step"
-        proxy = RustRegisterProxy(
-            mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr
-        )
+        proxy = RustRegisterProxy(mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr)
         before = mgr._stats_proxy_reg_writes
         proxy.rax = 0xDEADBEEF
         proxy.rbx = 0xCAFEBABE
         after = mgr._stats_proxy_reg_writes
-        assert after - before == 2, (
-            f"expected 2 register writes, got delta {after - before}"
-        )
+        assert after - before == 2, f"expected 2 register writes, got delta {after - before}"
         assert mgr.stats["proxy_reg_writes"] == after
 
     def test_memory_proxy_concrete_write_bumps_counter(self, fauxware_project):
@@ -17622,21 +17575,17 @@ class TestProxyWriteCounters:
         mgr.run(max_steps=1)
         state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state after one step"
-        proxy = RustMemoryProxy(
-            mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr
-        )
+        proxy = RustMemoryProxy(mgr._rust_mgr, state_ids[0], fauxware_project.arch, python_mgr=mgr)
         # Pick an address inside the binary's loaded text region — angr maps
         # those pages by default. The exact location does not matter; we
         # just need a concrete-addr concrete-payload write to flow through
         # ``set_state_memory_concrete``.
         addr = fauxware_project.entry
         before = mgr._stats_proxy_mem_concrete_writes
-        proxy.store(addr, b"abcd")           # bytes branch
+        proxy.store(addr, b"abcd")  # bytes branch
         proxy.store(addr + 8, 0x1234, size=2)  # int branch
         after = mgr._stats_proxy_mem_concrete_writes
-        assert after - before == 2, (
-            f"expected 2 concrete-memory writes, got delta {after - before}"
-        )
+        assert after - before == 2, f"expected 2 concrete-memory writes, got delta {after - before}"
         assert mgr.stats["proxy_mem_concrete_writes"] == after
 
     def test_solver_proxy_add_bumps_counter(self, fauxware_project):
@@ -17646,6 +17595,7 @@ class TestProxyWriteCounters:
         must not count.
         """
         import claripy
+
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
@@ -17653,18 +17603,13 @@ class TestProxyWriteCounters:
         mgr.run(max_steps=1)
         state_ids = list(mgr._rust_mgr.get_state_ids("active"))
         assert state_ids, "expected at least one active state after one step"
-        proxy = RustSolverProxyPlugin(
-            mgr._rust_mgr, state_ids[0], python_mgr=mgr
-        )
+        proxy = RustSolverProxyPlugin(mgr._rust_mgr, state_ids[0], python_mgr=mgr)
         sym = claripy.BVS("x", 32)
         before = mgr._stats_proxy_solver_adds
         proxy.add(sym == 1, sym != 2)  # 2 real constraints
-        proxy.add(True)                 # tautology — must not bump
+        proxy.add(True)  # tautology — must not bump
         after = mgr._stats_proxy_solver_adds
-        assert after - before == 2, (
-            f"expected 2 solver adds (tautology filtered), got delta "
-            f"{after - before}"
-        )
+        assert after - before == 2, f"expected 2 solver adds (tautology filtered), got delta {after - before}"
         assert mgr.stats["proxy_solver_adds"] == after
 
 
@@ -17683,9 +17628,7 @@ class TestCgcReceiveStdinSync:
     """
 
     def test_cadet_buffer_overflow_dumps_stdin(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-            "~/repos/angr-examples/examples"
-        )
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
         cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
         if not os.path.exists(cadet):
             pytest.skip(f"CADET_00001 binary not found at {cadet}")
@@ -17701,17 +17644,13 @@ class TestCgcReceiveStdinSync:
                 break
             mgr.run(max_steps=1)
 
-        assert mgr.unconstrained, (
-            f"CADET buffer-overflow never reached unconstrained; "
-            f"counts={mgr.stash_counts()}"
-        )
+        assert mgr.unconstrained, f"CADET buffer-overflow never reached unconstrained; counts={mgr.stash_counts()}"
 
         crashing_input = bytes(mgr.unconstrained[0].posix.dumps(0))
         # The fix: stdin symbols recorded by cgc_receive are evaluated via the
         # Rust solver and injected, so the crashing input is non-empty.
         assert len(crashing_input) > 0, (
-            "posix.dumps(0) returned empty bytes — CGC receive() stdin "
-            "symbols were not synced into state.posix.fd[0]"
+            "posix.dumps(0) returned empty bytes — CGC receive() stdin symbols were not synced into state.posix.fd[0]"
         )
 
 
@@ -17731,9 +17670,7 @@ class TestDirectCallEntryMainResolution:
     """
 
     def test_resolve_main_from_direct_call_entry(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-            "~/repos/angr-examples/examples"
-        )
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
         cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
         if not os.path.exists(cadet):
             pytest.skip(f"CADET_00001 binary not found at {cadet}")
@@ -17749,9 +17686,7 @@ class TestDirectCallEntryMainResolution:
         )
 
     def test_imported_entry_state_starts_at_main_not_mid_init(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-            "~/repos/angr-examples/examples"
-        )
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
         cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
         if not os.path.exists(cadet):
             pytest.skip(f"CADET_00001 binary not found at {cadet}")
@@ -17763,8 +17698,7 @@ class TestDirectCallEntryMainResolution:
         # Post-fix the init-to-main lands at main (0x8048080). The pre-fix bug
         # imported the state at 0x804840c (mid __libc_csu_init).
         assert active[0].addr == 0x8048080, (
-            f"imported entry state should start at main 0x8048080, "
-            f"got {hex(active[0].addr)} (mid-init regression)"
+            f"imported entry state should start at main 0x8048080, got {hex(active[0].addr)} (mid-init regression)"
         )
 
 

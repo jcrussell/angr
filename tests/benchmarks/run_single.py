@@ -10,11 +10,13 @@ Usage:
     python tests/benchmarks/run_single.py defcamp_r100 --both
     python tests/benchmarks/run_single.py grub --engine rust --mem-limit 2048
 """
+
+from __future__ import annotations
+
 import argparse
 import multiprocessing
 import os
 import sys
-
 
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 # Synthetic examples shipped in-repo (e.g. inline-ELF benchmarks for arches
@@ -37,6 +39,7 @@ def _resolve_examples_dir(example_name, examples_dir):
         return SYNTHETIC_EXAMPLES_DIR
     return examples_dir
 
+
 # Catalog of tested examples with expected behavior
 # tier: "fast" (<5s), "medium" (5-30s), "slow" (30-120s), "very_slow" (>120s)
 # Thresholds are based on Rust engine time (the engine under optimization);
@@ -45,52 +48,124 @@ def _resolve_examples_dir(example_name, examples_dir):
 # (which skips slow/very_slow); refresh when rust_time drifts across thresholds.
 EXAMPLE_CATALOG = {
     # === Core benchmark suite (fast, always correct) ===
-    "fauxware":                {"tier": "fast",    "rust_ok": True,  "notes": "SimProcedure callbacks"},
-    "defcamp_r100":            {"tier": "fast",    "rust_ok": True,  "notes": "Basic find/avoid"},
-    "ais3_crackme":            {"tier": "fast",    "rust_ok": True,  "notes": "Symbolic argv, state forking"},
-    "sym-write":               {"tier": "fast",    "rust_ok": True,  "notes": "Symbolic writes, callable predicates (rust 0.44s post-perf-wave; was medium tier pre-2026)"},
-    "securityfest_fairlight":  {"tier": "medium",  "rust_ok": True,  "notes": "Heavy VEX interpretation"},
-    "flareon2015_5":           {"tier": "medium",   "rust_ok": True,  "notes": "Complex symbolic memory"},
-    "flareon2015_10":          {"tier": "medium",  "rust_ok": True,  "notes": "Callable step_func, pruning"},
-    "ekopartyctf2016_rev250":  {"tier": "fast",    "rust_ok": True,  "notes": "Deep constraint solving (rust 2.0s post-perf-wave; was medium tier pre-2026)"},
-    "csaw_wyvern":             {"tier": "fast",    "rust_ok": True,  "notes": "Linear constraints (rust 0.94s post-perf-wave; was medium tier pre-2026)"},
+    "fauxware": {"tier": "fast", "rust_ok": True, "notes": "SimProcedure callbacks"},
+    "defcamp_r100": {"tier": "fast", "rust_ok": True, "notes": "Basic find/avoid"},
+    "ais3_crackme": {"tier": "fast", "rust_ok": True, "notes": "Symbolic argv, state forking"},
+    "sym-write": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "Symbolic writes, callable predicates (rust 0.44s post-perf-wave; was medium tier pre-2026)",
+    },
+    "securityfest_fairlight": {"tier": "medium", "rust_ok": True, "notes": "Heavy VEX interpretation"},
+    "flareon2015_5": {"tier": "medium", "rust_ok": True, "notes": "Complex symbolic memory"},
+    "flareon2015_10": {"tier": "medium", "rust_ok": True, "notes": "Callable step_func, pruning"},
+    "ekopartyctf2016_rev250": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "Deep constraint solving (rust 2.0s post-perf-wave; was medium tier pre-2026)",
+    },
+    "csaw_wyvern": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "Linear constraints (rust 0.94s post-perf-wave; was medium tier pre-2026)",
+    },
     # === Extended examples ===
-    "codegate_2017-angrybird": {"tier": "fast",    "rust_ok": True,  "notes": "LAZY_SOLVES, manual state init (rust 2.8s post-perf-wave; was medium tier pre-2026)"},
-    "google2016_unbreakable_0":{"tier": "fast",    "rust_ok": True,  "notes": "Basic constraint solving"},
-    "google2016_unbreakable_1":{"tier": "fast",    "rust_ok": True,  "notes": "Multi-step constraints"},
+    "codegate_2017-angrybird": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "LAZY_SOLVES, manual state init (rust 2.8s post-perf-wave; was medium tier pre-2026)",
+    },
+    "google2016_unbreakable_0": {"tier": "fast", "rust_ok": True, "notes": "Basic constraint solving"},
+    "google2016_unbreakable_1": {"tier": "fast", "rust_ok": True, "notes": "Multi-step constraints"},
     # === New benchmark candidates (untested with Rust engine) ===
-    "sharif7_rev50":           {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
-    "defcon2016quals_baby-re": {"tier": "fast",    "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult, angr-24vr): scanf hooks, baseline_timings Py 1.455s Rust 0.722s (~2x faster than Python). Catalog previously claimed Rust 28s (slow, medium tier) — pre-perf-wave note + tier replaced."},
-    "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "2026-06-06 refresh (angr-oh6a): TIMEOUT >60s (no longer the 'list index error' the catalog historically claimed; pre-iter-497 note replaced)"},
-    "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
-    "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
-    "unmapped_analysis":       {"tier": "fast",    "rust_ok": True,  "notes": "STRICT_PAGE_ACCESS, DivModU128to64 fix"},
-    "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": True,  "notes": "Multi-stage explore, disk cache fix"},
-    "strcpy_find":             {"tier": "fast",    "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult): buffer overflow / strcpy detection, baseline_timings Py 0.89s Rust 0.46s (~2x faster than Python). Catalog previously claimed Rust 4.0s — pre-perf-wave note replaced."},
-    "flareon2015_2":           {"tier": "fast",    "rust_ok": True,  "notes": "32-bit x86, correct output"},
-    "whitehatvn2015_re400":    {"tier": "fast",    "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult): ~2.07x speedup (baseline_timings Py 3.145s Rust 1.52s), partial output divergence (leading zeros). Catalog previously claimed 2.7x — drift from intervening churn."},
-    "mma_howtouse":            {"tier": "medium",  "rust_ok": True,  "notes": "Callable DLL, 45 calls, Py 4.3s Rust 6.6s (0.65x)"},
-    "defcamp_r200":            {"tier": "medium",  "rust_ok": None,  "notes": "BROKEN: Python fails too (ManualMergepoint)"},
-    "CADET_00001":             {"tier": "medium",  "rust_ok": False, "notes": "CGC challenge: Py 22s (buffer-overflow + 2x easter-egg explore). Rust post-angr-rdgs (e16ca3bf3) has all 7 CGC syscalls native + buffer-overflow phase passes in ~0.1s. angr-vx8p.3 (2026-06-13) fixed the stdin-sync gap: cgc.rs receive() now records stdin_symbols so posix.dumps(0) returns the crashing input (regression: TestCgcReceiveStdinSync). REMAINING blocker: easter-egg phase (sm.explore find=0x804833E) still does not converge under Rust — solve.py raises IndexError at sm.found[0] in ~4.3s — so the bench stays python-only in baseline_timings.json (rust_time=null). See angr-zgk6 and bd memory benchmark-cadet-cgc-partial-unblock for the remaining convergence plan."},
-    "ekopartyctf2015_rev100":  {"tier": "medium",  "rust_ok": False, "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout"},
-    "whitehat_crypto400":      {"tier": "medium",  "rust_ok": False, "notes": "2026-06-06 refresh (angr-oh6a): FAIL 0.08s NotImplementedError SYMBOL_FILL_UNCONSTRAINED_REGISTERS (matches simple_heap_overflow pattern; SimOption guard short-circuits before exploration begins). Catalog previously claimed 'list index error'; the guard supersedes that path entirely now."},
-    "ekopartyctf2016_sokohashv2":{"tier": "medium", "rust_ok": True,  "notes": "2026-06-06 refresh (angr-zult): save_unconstrained, Windows PE, bimodal-Z3 trio (see docs/advanced-topics/rust_bimodal_variance.rst); baseline_timings Py 5.833s Rust 16.0s (~0.36x). Catalog previously claimed 0.46x — bimodal variance shifts the ratio sample-to-sample."},
-    "insomnihack_aeg":         {"tier": "slow",    "rust_ok": False, "notes": "Post-fkvt: Rust OOMs at ~75s under 4GB cap (state explosion during AEG exploration); Py >180s (posix.dumps over symbolic stdin). Not viable for regression gate. See angr-86c4.", "argv": ["./demo_bin"]},
-    "0ctf_trace":              {"tier": "medium",  "rust_ok": None,  "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s"},
-    "simple_heap_overflow":    {"tier": "medium",  "rust_ok": False, "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)"},
+    "sharif7_rev50": {"tier": "very_slow", "rust_ok": None, "notes": "Both engines timeout >60s"},
+    "defcon2016quals_baby-re": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "2026-06-06 refresh (angr-zult, angr-24vr): scanf hooks, baseline_timings Py 1.455s Rust 0.722s (~2x faster than Python). Catalog previously claimed Rust 28s (slow, medium tier) — pre-perf-wave note + tier replaced.",
+    },
+    "asisctffinals2015_license": {
+        "tier": "medium",
+        "rust_ok": False,
+        "notes": "2026-06-06 refresh (angr-oh6a): TIMEOUT >60s (no longer the 'list index error' the catalog historically claimed; pre-iter-497 note replaced)",
+    },
+    "0ctf_momo_3": {"tier": "very_slow", "rust_ok": None, "notes": "Both engines timeout >60s"},
+    "csgames2018": {"tier": "fast", "rust_ok": True, "notes": "Callable predicates, stdout check"},
+    "unmapped_analysis": {"tier": "fast", "rust_ok": True, "notes": "STRICT_PAGE_ACCESS, DivModU128to64 fix"},
+    "hitcon2017_sakura": {"tier": "very_slow", "rust_ok": True, "notes": "Multi-stage explore, disk cache fix"},
+    "strcpy_find": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "2026-06-06 refresh (angr-zult): buffer overflow / strcpy detection, baseline_timings Py 0.89s Rust 0.46s (~2x faster than Python). Catalog previously claimed Rust 4.0s — pre-perf-wave note replaced.",
+    },
+    "flareon2015_2": {"tier": "fast", "rust_ok": True, "notes": "32-bit x86, correct output"},
+    "whitehatvn2015_re400": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "2026-06-06 refresh (angr-zult): ~2.07x speedup (baseline_timings Py 3.145s Rust 1.52s), partial output divergence (leading zeros). Catalog previously claimed 2.7x — drift from intervening churn.",
+    },
+    "mma_howtouse": {"tier": "medium", "rust_ok": True, "notes": "Callable DLL, 45 calls, Py 4.3s Rust 6.6s (0.65x)"},
+    "defcamp_r200": {"tier": "medium", "rust_ok": None, "notes": "BROKEN: Python fails too (ManualMergepoint)"},
+    "CADET_00001": {
+        "tier": "medium",
+        "rust_ok": False,
+        "notes": "CGC challenge: Py 22s (buffer-overflow + 2x easter-egg explore). Rust post-angr-rdgs (e16ca3bf3) has all 7 CGC syscalls native + buffer-overflow phase passes in ~0.1s. angr-vx8p.3 (2026-06-13) fixed the stdin-sync gap: cgc.rs receive() now records stdin_symbols so posix.dumps(0) returns the crashing input (regression: TestCgcReceiveStdinSync). REMAINING blocker: easter-egg phase (sm.explore find=0x804833E) still does not converge under Rust — solve.py raises IndexError at sm.found[0] in ~4.3s — so the bench stays python-only in baseline_timings.json (rust_time=null). See angr-zgk6 and bd memory benchmark-cadet-cgc-partial-unblock for the remaining convergence plan.",
+    },
+    "ekopartyctf2015_rev100": {
+        "tier": "medium",
+        "rust_ok": False,
+        "notes": "30 sim managers, run(n=4)/step(size=), Rust timeout",
+    },
+    "whitehat_crypto400": {
+        "tier": "medium",
+        "rust_ok": False,
+        "notes": "2026-06-06 refresh (angr-oh6a): FAIL 0.08s NotImplementedError SYMBOL_FILL_UNCONSTRAINED_REGISTERS (matches simple_heap_overflow pattern; SimOption guard short-circuits before exploration begins). Catalog previously claimed 'list index error'; the guard supersedes that path entirely now.",
+    },
+    "ekopartyctf2016_sokohashv2": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "2026-06-06 refresh (angr-zult): save_unconstrained, Windows PE, bimodal-Z3 trio (see docs/advanced-topics/rust_bimodal_variance.rst); baseline_timings Py 5.833s Rust 16.0s (~0.36x). Catalog previously claimed 0.46x — bimodal variance shifts the ratio sample-to-sample.",
+    },
+    "insomnihack_aeg": {
+        "tier": "slow",
+        "rust_ok": False,
+        "notes": "Post-fkvt: Rust OOMs at ~75s under 4GB cap (state explosion during AEG exploration); Py >180s (posix.dumps over symbolic stdin). Not viable for regression gate. See angr-86c4.",
+        "argv": ["./demo_bin"],
+    },
+    "0ctf_trace": {
+        "tier": "medium",
+        "rust_ok": None,
+        "notes": "MIPS blob, uses factory.successors() not simgr, Rust engine unused, Py 26.9s",
+    },
+    "simple_heap_overflow": {
+        "tier": "medium",
+        "rust_ok": False,
+        "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)",
+    },
     # === Slow/problematic examples ===
-    "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
-    "asisctffinals2015_fake":  {"tier": "very_slow","rust_ok": False, "notes": "Z3 AST structure too complex for post-exploration solve"},
-    "b01lersctf2020_little_engine":{"tier": "very_slow", "rust_ok": None, "notes": "~150s Python, untested Rust"},
-    "tumctf2016_zwiebel":      {"tier": "very_slow","rust_ok": None, "notes": "Self-modifying code, ~2.5h"},
+    "hackcon2016_angry-reverser": {"tier": "slow", "rust_ok": True, "notes": "LAZY_SOLVES, Z3 structure mismatch"},
+    "asisctffinals2015_fake": {
+        "tier": "very_slow",
+        "rust_ok": False,
+        "notes": "Z3 AST structure too complex for post-exploration solve",
+    },
+    "b01lersctf2020_little_engine": {"tier": "very_slow", "rust_ok": None, "notes": "~150s Python, untested Rust"},
+    "tumctf2016_zwiebel": {"tier": "very_slow", "rust_ok": None, "notes": "Self-modifying code, ~2.5h"},
 }
 
 
-def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bfs",
-                  diff_state=False, diff_interval=1, diff_max_snapshots=200,
-                  use_shared_lineage_solver=False):
+def _run_in_child(
+    example_name,
+    engine,
+    examples_dir,
+    mem_limit_mb,
+    strategy="bfs",
+    diff_state=False,
+    diff_interval=1,
+    diff_max_snapshots=200,
+    use_shared_lineage_solver=False,
+):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
-    import io
     import importlib.util
     import resource
     import time
@@ -130,6 +205,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
     if _bench_dir not in sys.path:
         sys.path.insert(0, _bench_dir)
     from test_utils import BufferedStringIO
+
     if diff_state:
         from diff_state import install_snapshotter
 
@@ -143,9 +219,10 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             nonlocal rust_mgr_instance
             # Don't intercept calls from angr internals (CFG, analyses, etc.)
             import traceback
+
             caller_frames = traceback.extract_stack()
             for frame in caller_frames[:-1]:
-                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
                     return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
@@ -154,16 +231,17 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             else:
                 states = [thing]
             rust_mgr_instance = RustExplorationManager(
-                factory_self.project, states,
+                factory_self.project,
+                states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
             )
             rust_mgr_instance.enable_profiling()
-            if strategy == 'dfs':
-                rust_mgr_instance.set_exploration_strategy('dfs')
+            if strategy == "dfs":
+                rust_mgr_instance.set_exploration_strategy("dfs")
             if diff_state:
-                install_snapshotter(rust_mgr_instance, snapshots,
-                                    interval=diff_interval,
-                                    max_snapshots=diff_max_snapshots)
+                install_snapshotter(
+                    rust_mgr_instance, snapshots, interval=diff_interval, max_snapshots=diff_max_snapshots
+                )
             return rust_mgr_instance
 
         angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
@@ -177,13 +255,12 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
         def patched_python_simulation_manager(factory_self, thing=None, **kwargs):
             mgr = original_sm(factory_self, thing, **kwargs)
             import traceback
+
             caller_frames = traceback.extract_stack()
             for frame in caller_frames[:-1]:
-                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
                     return mgr
-            install_snapshotter(mgr, snapshots,
-                                interval=diff_interval,
-                                max_snapshots=diff_max_snapshots)
+            install_snapshotter(mgr, snapshots, interval=diff_interval, max_snapshots=diff_max_snapshots)
             return mgr
 
         angr.factory.AngrObjectFactory.simulation_manager = patched_python_simulation_manager
@@ -302,32 +379,53 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
 # Keys not matched by any category fall into "misc".
 _DUMP_EXPLICIT_GROUPS = {
     "exploration": {
-        "active", "steps", "found", "deadended_count", "avoided_count",
-        "pruned_count", "errors", "find_addrs", "avoid_addrs",
-        "drop_terminal_states", "hooks", "simprocedures",
-        "state_roots_size", "block_cache_size",
+        "active",
+        "steps",
+        "found",
+        "deadended_count",
+        "avoided_count",
+        "pruned_count",
+        "errors",
+        "find_addrs",
+        "avoid_addrs",
+        "drop_terminal_states",
+        "hooks",
+        "simprocedures",
+        "state_roots_size",
+        "block_cache_size",
     },
     "python-side": {
-        "callback_count", "ffi_crossings", "state_creations",
-        "cache_hits", "cache_misses", "technique_filter_calls",
-        "hook_sync_calls", "hook_sync_skips", "time_in_callbacks",
-        "time_in_rust_run", "time_in_predicate_eval",
-        "time_in_active_check", "time_in_explore",
-        "z3_ptr_cache_hits", "z3_ptr_cache_misses",
+        "callback_count",
+        "ffi_crossings",
+        "state_creations",
+        "cache_hits",
+        "cache_misses",
+        "technique_filter_calls",
+        "hook_sync_calls",
+        "hook_sync_skips",
+        "time_in_callbacks",
+        "time_in_rust_run",
+        "time_in_predicate_eval",
+        "time_in_active_check",
+        "time_in_explore",
+        "z3_ptr_cache_hits",
+        "z3_ptr_cache_misses",
     },
     "fallbacks": {
         "simprocedure_python_fallback_count",
         "simprocedure_fallback_by_name",
         "syscall_python_fallback_count",
         "syscall_python_fallback_by_num",
-        "native_proc_calls", "native_proc_fallbacks",
+        "native_proc_calls",
+        "native_proc_fallbacks",
         "native_proc_symbolic_fallbacks",
         "native_proc_symbolic_fallbacks_by_name",
         "native_proc_not_implemented_fallbacks",
         "native_proc_not_implemented_fallbacks_by_name",
         "native_proc_other_fallbacks",
         "native_proc_other_fallbacks_by_name",
-        "vex_fallback_count", "vex_fallback_unique_addrs",
+        "vex_fallback_count",
+        "vex_fallback_unique_addrs",
         "dcas_unsupported_count",
     },
 }
@@ -341,9 +439,16 @@ _DUMP_PREFIX_GROUPS = [
     ("zext collapse", "zext_"),
 ]
 _DUMP_GROUP_ORDER = [
-    "exploration", "python-side", "fallbacks",
-    "rust execution", "z3 solver", "vex op dispatch", "memory volume",
-    "concretization fanout", "ast construction", "zext collapse",
+    "exploration",
+    "python-side",
+    "fallbacks",
+    "rust execution",
+    "z3 solver",
+    "vex op dispatch",
+    "memory volume",
+    "concretization fanout",
+    "ast construction",
+    "zext collapse",
     "misc",
 ]
 
@@ -418,15 +523,25 @@ def _dump_counters_table(stats):
 def _dump_counters_json(stats):
     """Emit the raw stats dict as JSON to stdout (machine-consumable)."""
     import json
+
     # dict values (simprocedure_fallback_by_name) are fine; default=str
     # handles any unexpected non-JSON-native value without crashing.
     print(json.dumps(stats, indent=2, default=str, sort_keys=True))
 
 
-def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs",
-                diff_state=False, diff_interval=1, diff_max_snapshots=200,
-                dump_counters=False, counters_json=False,
-                use_shared_lineage_solver=False):
+def run_example(
+    example_name,
+    engine,
+    timeout=180,
+    mem_limit_mb=DEFAULT_MEM_LIMIT_MB,
+    strategy="bfs",
+    diff_state=False,
+    diff_interval=1,
+    diff_max_snapshots=200,
+    dump_counters=False,
+    counters_json=False,
+    use_shared_lineage_solver=False,
+):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
@@ -439,9 +554,17 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     try:
         async_result = pool.apply_async(
             _run_in_child,
-            (example_name, engine, examples_dir, mem_limit_mb, strategy,
-             diff_state, diff_interval, diff_max_snapshots,
-             use_shared_lineage_solver),
+            (
+                example_name,
+                engine,
+                examples_dir,
+                mem_limit_mb,
+                strategy,
+                diff_state,
+                diff_interval,
+                diff_max_snapshots,
+                use_shared_lineage_solver,
+            ),
         )
         result = async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
@@ -489,11 +612,19 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     if engine == "rust" and stats and not counters_json:
         parts = []
         for key in [
-            "callback_count", "ffi_crossings", "state_creations",
-            "cache_hits", "cache_misses", "technique_filter_calls",
-            "hook_sync_calls", "time_in_callbacks",
-            "z3_ptr_cache_hits", "z3_ptr_cache_misses",
-            "time_in_rust_run", "time_in_predicate_eval", "time_in_active_check",
+            "callback_count",
+            "ffi_crossings",
+            "state_creations",
+            "cache_hits",
+            "cache_misses",
+            "technique_filter_calls",
+            "hook_sync_calls",
+            "time_in_callbacks",
+            "z3_ptr_cache_hits",
+            "z3_ptr_cache_misses",
+            "time_in_rust_run",
+            "time_in_predicate_eval",
+            "time_in_active_check",
             "time_in_explore",
         ]:
             if key in stats:
@@ -508,7 +639,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         # Print Rust-side execution profiling breakdown
         rust_keys = [k for k in stats if k.startswith("rust_")]
         if rust_keys:
-            print(f"  rust profiling:")
+            print("  rust profiling:")
             # Time breakdowns (convert ns to seconds)
             for key in sorted(rust_keys):
                 val = stats[key]
@@ -516,7 +647,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                     continue
                 if key.endswith("_time_ns"):
                     label = key[5:-8]  # strip "rust_" and "_time_ns"
-                    print(f"    {label}: {val/1e9:.3f}s")
+                    print(f"    {label}: {val / 1e9:.3f}s")
                 elif key.endswith("_count"):
                     label = key[5:-6]  # strip "rust_" and "_count"
                     print(f"    {label}: {val}")
@@ -528,14 +659,14 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         # Print Z3 solver stats
         z3_keys = [k for k in stats if k.startswith("z3_")]
         if z3_keys and any(stats.get(k, 0) > 0 for k in z3_keys):
-            print(f"  z3 solver stats:")
+            print("  z3 solver stats:")
             for key in sorted(z3_keys):
                 val = stats[key]
                 if val == 0:
                     continue
                 if key.endswith("_time_ns"):
                     label = key[:-8]  # strip "_time_ns"
-                    print(f"    {label}: {val/1e6:.1f}ms ({val/1e9:.3f}s)")
+                    print(f"    {label}: {val / 1e6:.1f}ms ({val / 1e9:.3f}s)")
                 else:
                     print(f"    {key}: {val}")
 
@@ -544,7 +675,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         # ITE chain depth ever stored in a memory cell, and cumulative depth.
         mem_keys = [k for k in stats if k.startswith("mem_ite_")]
         if mem_keys and any(stats.get(k, 0) > 0 for k in mem_keys):
-            print(f"  symbolic memory ite-depth:")
+            print("  symbolic memory ite-depth:")
             for key in sorted(mem_keys):
                 val = stats[key]
                 if val == 0:
@@ -556,7 +687,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         # access volume so bench attribution doesn't need a flamegraph.
         vex_keys = [k for k in stats if k.startswith("vex_")]
         if vex_keys and any(stats.get(k, 0) > 0 for k in vex_keys):
-            print(f"  vex op dispatch:")
+            print("  vex op dispatch:")
             for key in sorted(vex_keys):
                 val = stats[key]
                 if val == 0:
@@ -564,12 +695,12 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                 print(f"    {key}: {val}")
 
         memvol_keys = [
-            k for k in stats
-            if k.startswith("mem_load") or k.startswith("mem_store")
-            or k == "mem_lazy_page_fault_count"
+            k
+            for k in stats
+            if k.startswith("mem_load") or k.startswith("mem_store") or k == "mem_lazy_page_fault_count"
         ]
         if memvol_keys and any(stats.get(k, 0) > 0 for k in memvol_keys):
-            print(f"  memory volume:")
+            print("  memory volume:")
             for key in sorted(memvol_keys):
                 val = stats[key]
                 if val == 0:
@@ -578,7 +709,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
 
         conc_keys = [k for k in stats if k.startswith("concretize_")]
         if conc_keys and any(stats.get(k, 0) > 0 for k in conc_keys):
-            print(f"  concretization fanout:")
+            print("  concretization fanout:")
             for key in sorted(conc_keys):
                 val = stats[key]
                 if val == 0:
@@ -587,7 +718,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
 
         bvop_keys = [k for k in stats if k.startswith("bvop_")]
         if bvop_keys and any(stats.get(k, 0) > 0 for k in bvop_keys):
-            print(f"  ast emissions:")
+            print("  ast emissions:")
             for key in sorted(bvop_keys):
                 val = stats[key]
                 if val == 0:
@@ -612,34 +743,60 @@ def main():
     parser.add_argument("--engine", choices=["rust", "python"], default="rust")
     parser.add_argument("--both", action="store_true", help="Run both engines")
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
-                        help=f"Memory limit in MB (default: {DEFAULT_MEM_LIMIT_MB})")
+    parser.add_argument(
+        "--mem-limit",
+        type=int,
+        default=DEFAULT_MEM_LIMIT_MB,
+        help=f"Memory limit in MB (default: {DEFAULT_MEM_LIMIT_MB})",
+    )
     parser.add_argument("--list", action="store_true", help="List all cataloged examples")
-    parser.add_argument("--strategy", choices=["bfs", "dfs"], default="bfs",
-                        help="Exploration strategy (default: bfs)")
-    parser.add_argument("--suite", choices=["fast", "medium", "all"],
-                        help="Run a suite of examples (fast: <5s, medium: <30s, all: everything)")
-    parser.add_argument("--diff-state", action="store_true",
-                        help="Run both engines and diff per-step state snapshots (regs, "
-                             "constraint count, satisfiability, history depth). Implies --both.")
-    parser.add_argument("--diff-interval", type=int, default=1,
-                        help="Snapshot every N step() calls when --diff-state is used (default: 1)")
-    parser.add_argument("--diff-max-snapshots", type=int, default=200,
-                        help="Cap snapshots per engine to bound memory/time (default: 200)")
-    parser.add_argument("--dump-counters", action="store_true",
-                        help="At bench end, pretty-print every counter from "
-                             "mgr.stats() grouped by category (callbacks, z3, "
-                             "vex, memory, concretization, etc.). Rust engine only.")
-    parser.add_argument("--counters-json", action="store_true",
-                        help="At bench end, emit the full mgr.stats() dict as "
-                             "JSON to stdout for machine consumption. Rust "
-                             "engine only. Mutually exclusive with --dump-counters "
-                             "(JSON wins when both are set).")
-    parser.add_argument("--use-shared-lineage-solver", action="store_true",
-                        help="Rust engine only. Construct RustExplorationManager "
-                             "with use_shared_lineage_solver=True so the fork-time "
-                             "SharedLineageSolver materialization gate engages "
-                             "(angr-v5a5 slice 4c.3 step 1c canary measurement).")
+    parser.add_argument("--strategy", choices=["bfs", "dfs"], default="bfs", help="Exploration strategy (default: bfs)")
+    parser.add_argument(
+        "--suite",
+        choices=["fast", "medium", "all"],
+        help="Run a suite of examples (fast: <5s, medium: <30s, all: everything)",
+    )
+    parser.add_argument(
+        "--diff-state",
+        action="store_true",
+        help="Run both engines and diff per-step state snapshots (regs, "
+        "constraint count, satisfiability, history depth). Implies --both.",
+    )
+    parser.add_argument(
+        "--diff-interval",
+        type=int,
+        default=1,
+        help="Snapshot every N step() calls when --diff-state is used (default: 1)",
+    )
+    parser.add_argument(
+        "--diff-max-snapshots",
+        type=int,
+        default=200,
+        help="Cap snapshots per engine to bound memory/time (default: 200)",
+    )
+    parser.add_argument(
+        "--dump-counters",
+        action="store_true",
+        help="At bench end, pretty-print every counter from "
+        "mgr.stats() grouped by category (callbacks, z3, "
+        "vex, memory, concretization, etc.). Rust engine only.",
+    )
+    parser.add_argument(
+        "--counters-json",
+        action="store_true",
+        help="At bench end, emit the full mgr.stats() dict as "
+        "JSON to stdout for machine consumption. Rust "
+        "engine only. Mutually exclusive with --dump-counters "
+        "(JSON wins when both are set).",
+    )
+    parser.add_argument(
+        "--use-shared-lineage-solver",
+        action="store_true",
+        help="Rust engine only. Construct RustExplorationManager "
+        "with use_shared_lineage_solver=True so the fork-time "
+        "SharedLineageSolver materialization gate engages "
+        "(angr-v5a5 slice 4c.3 step 1c canary measurement).",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -661,15 +818,27 @@ def main():
             if args.both:
                 run_example(name, "python", args.timeout, args.mem_limit, args.strategy)
                 print()
-                run_example(name, "rust", args.timeout, args.mem_limit, args.strategy,
-                            dump_counters=args.dump_counters,
-                            counters_json=args.counters_json,
-                            use_shared_lineage_solver=args.use_shared_lineage_solver)
+                run_example(
+                    name,
+                    "rust",
+                    args.timeout,
+                    args.mem_limit,
+                    args.strategy,
+                    dump_counters=args.dump_counters,
+                    counters_json=args.counters_json,
+                    use_shared_lineage_solver=args.use_shared_lineage_solver,
+                )
             else:
-                run_example(name, args.engine, args.timeout, args.mem_limit, args.strategy,
-                            dump_counters=args.dump_counters,
-                            counters_json=args.counters_json,
-                            use_shared_lineage_solver=args.use_shared_lineage_solver)
+                run_example(
+                    name,
+                    args.engine,
+                    args.timeout,
+                    args.mem_limit,
+                    args.strategy,
+                    dump_counters=args.dump_counters,
+                    counters_json=args.counters_json,
+                    use_shared_lineage_solver=args.use_shared_lineage_solver,
+                )
         return
 
     if not args.example:
@@ -680,15 +849,27 @@ def main():
         print(f"=== {args.example} ===")
         run_example(args.example, "python", args.timeout, args.mem_limit, args.strategy)
         print()
-        run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy,
-                    dump_counters=args.dump_counters,
-                    counters_json=args.counters_json,
-                    use_shared_lineage_solver=args.use_shared_lineage_solver)
+        run_example(
+            args.example,
+            "rust",
+            args.timeout,
+            args.mem_limit,
+            args.strategy,
+            dump_counters=args.dump_counters,
+            counters_json=args.counters_json,
+            use_shared_lineage_solver=args.use_shared_lineage_solver,
+        )
     else:
-        run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy,
-                    dump_counters=args.dump_counters,
-                    counters_json=args.counters_json,
-                    use_shared_lineage_solver=args.use_shared_lineage_solver)
+        run_example(
+            args.example,
+            args.engine,
+            args.timeout,
+            args.mem_limit,
+            args.strategy,
+            dump_counters=args.dump_counters,
+            counters_json=args.counters_json,
+            use_shared_lineage_solver=args.use_shared_lineage_solver,
+        )
 
 
 def _run_diff_state(args) -> int:
@@ -713,12 +894,26 @@ def _run_diff_state(args) -> int:
     overall_ok = True
     for name in names:
         print(f"\n=== diff-state: {name} ===")
-        py_res = run_example(name, "python", args.timeout, args.mem_limit, args.strategy,
-                             diff_state=True, diff_interval=args.diff_interval,
-                             diff_max_snapshots=args.diff_max_snapshots)
-        rs_res = run_example(name, "rust", args.timeout, args.mem_limit, args.strategy,
-                             diff_state=True, diff_interval=args.diff_interval,
-                             diff_max_snapshots=args.diff_max_snapshots)
+        py_res = run_example(
+            name,
+            "python",
+            args.timeout,
+            args.mem_limit,
+            args.strategy,
+            diff_state=True,
+            diff_interval=args.diff_interval,
+            diff_max_snapshots=args.diff_max_snapshots,
+        )
+        rs_res = run_example(
+            name,
+            "rust",
+            args.timeout,
+            args.mem_limit,
+            args.strategy,
+            diff_state=True,
+            diff_interval=args.diff_interval,
+            diff_max_snapshots=args.diff_max_snapshots,
+        )
         if not py_res or not py_res.get("ok"):
             print(f"DIFF SKIP {name}: python run failed")
             overall_ok = False
@@ -740,8 +935,10 @@ def _run_diff_state(args) -> int:
             print(f"DIFF OK {name}: {result['step_count'][0]} steps match")
         else:
             overall_ok = False
-            print(f"DIFF FAIL {name}: first divergence at step {result['first_divergent_step']} "
-                  f"(diverged_steps={result['diverged_steps']})")
+            print(
+                f"DIFF FAIL {name}: first divergence at step {result['first_divergent_step']} "
+                f"(diverged_steps={result['diverged_steps']})"
+            )
             for line in result["summary"]:
                 print(line)
 

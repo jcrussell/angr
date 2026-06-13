@@ -7,6 +7,7 @@ Usage:
     python sweep.py --engines rust        # rust only
     python sweep.py --no-plot             # skip matplotlib
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,7 +17,6 @@ import re
 import subprocess
 import sys
 import time
-
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN_ONE = os.path.join(HERE, "run_one.py")
@@ -45,26 +45,40 @@ def parse_run_one_line(line: str) -> dict | None:
 
 def run_one(n: int, engine: str, build_dir: str, mem_limit_mb: int, timeout_s: int) -> dict:
     cmd = [
-        sys.executable, RUN_ONE,
-        "--engine", engine, "--n", str(n),
-        "--build-dir", build_dir,
-        "--mem-limit-mb", str(mem_limit_mb),
+        sys.executable,
+        RUN_ONE,
+        "--engine",
+        engine,
+        "--n",
+        str(n),
+        "--build-dir",
+        build_dir,
+        "--mem-limit-mb",
+        str(mem_limit_mb),
     ]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout_s, cwd=os.path.dirname(os.path.abspath(__file__)),
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
     except subprocess.TimeoutExpired:
-        return {"n": n, "engine": engine, "wall_s": float(timeout_s),
-                "rss_kb": -1, "terminal": -1, "error": "timeout"}
+        return {"n": n, "engine": engine, "wall_s": float(timeout_s), "rss_kb": -1, "terminal": -1, "error": "timeout"}
 
     for line in proc.stdout.splitlines():
         rec = parse_run_one_line(line)
         if rec is not None:
             return rec
-    return {"n": n, "engine": engine, "wall_s": -1.0,
-            "rss_kb": -1, "terminal": -1, "error": f"no-output (rc={proc.returncode})"}
+    return {
+        "n": n,
+        "engine": engine,
+        "wall_s": -1.0,
+        "rss_kb": -1,
+        "terminal": -1,
+        "error": f"no-output (rc={proc.returncode})",
+    }
 
 
 def write_csv(records: list[dict], path: str) -> None:
@@ -78,6 +92,7 @@ def write_csv(records: list[dict], path: str) -> None:
 def plot(records: list[dict], path: str) -> None:
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -116,8 +131,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--n-min", type=int, default=2)
     p.add_argument("--n-max", type=int, default=10)
-    p.add_argument("--engines", default="rust,python",
-                   help="comma-separated subset of {rust,python}")
+    p.add_argument("--engines", default="rust,python", help="comma-separated subset of {rust,python}")
     p.add_argument("--mem-limit-mb", type=int, default=3072)
     p.add_argument("--timeout-s", type=int, default=300)
     p.add_argument("--build-dir", default="/tmp/fork_tree_build")
@@ -137,7 +151,7 @@ def main() -> int:
             elapsed = time.monotonic() - t0
             print(
                 f"  N={n:>2} {engine:<6} wall={rec['wall_s']:>7.2f}s "
-                f"rss={rec['rss_kb']/1024:>7.1f}MB terminal={rec['terminal']:>6} "
+                f"rss={rec['rss_kb'] / 1024:>7.1f}MB terminal={rec['terminal']:>6} "
                 f"err={rec['error']} (subprocess {elapsed:.1f}s)"
             )
             records.append(rec)
@@ -147,11 +161,16 @@ def main() -> int:
                 print(f"  → {engine} errored at N={n}; skipping larger N")
                 ns_remaining = [m for m in ns if m > n]
                 for m in ns_remaining:
-                    records.append({
-                        "n": m, "engine": engine, "wall_s": -1.0,
-                        "rss_kb": -1, "terminal": -1,
-                        "error": f"skipped-after-N{n}-{rec['error']}",
-                    })
+                    records.append(
+                        {
+                            "n": m,
+                            "engine": engine,
+                            "wall_s": -1.0,
+                            "rss_kb": -1,
+                            "terminal": -1,
+                            "error": f"skipped-after-N{n}-{rec['error']}",
+                        }
+                    )
                 # Remove this engine from the rest of the sweep.
                 engines = [e for e in engines if e != engine]
                 break

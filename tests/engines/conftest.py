@@ -15,6 +15,7 @@ is not built, every Rust symbol below is ``None`` and
 symbol is dereferenced, so skip behavior is identical to the old per-file
 guards.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,16 +28,18 @@ import angr
 # benchmark utilities; re-exported here so engine tests don't keep a copy).
 from tests.benchmarks.test_utils import BufferedStringIO  # noqa: F401
 
-
 # --- Availability guard ---------------------------------------------------
 # Attempt the broadest import once. Modules import only the symbols they use.
 try:
     from angr.rustylib.vex_engine import (
-        RustExplorationManager as _RustExplorationManager,
         ExplorationEvent,
         PythonCallbacks,
         RustSimState,
     )
+    from angr.rustylib.vex_engine import (
+        RustExplorationManager as _RustExplorationManager,
+    )
+
     from angr.exploration import RustExplorationManager
 
     RUST_EXPLORATION_AVAILABLE = True
@@ -56,14 +59,10 @@ _BINARY_CANDIDATES = [
     os.path.expanduser("~/repos/angr-examples/examples/fauxware"),
     os.path.expanduser("~/angr-examples/examples/fauxware"),
 ]
-TEST_BINARIES_DIR = next(
-    (d for d in _BINARY_CANDIDATES if os.path.isdir(d)), _BINARY_CANDIDATES[0]
-)
+TEST_BINARIES_DIR = next((d for d in _BINARY_CANDIDATES if os.path.isdir(d)), _BINARY_CANDIDATES[0])
 
 # Honors ANGR_EXAMPLES_DIR (set by CI), else the default checkout location.
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
-)
+EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
 
 # --- Fixtures -------------------------------------------------------------

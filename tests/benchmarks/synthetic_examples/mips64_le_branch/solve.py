@@ -26,11 +26,15 @@ green and timing stays within 15% of baseline_timings.json's cached
 
 Solution: ``$a0 == 42`` makes ``(a0 << 1) + 16 == 100``.
 """
+
+from __future__ import annotations
+
 import os
 import struct
 
-import angr
 import claripy
+
+import angr
 
 
 # Register numbers (MIPS N64, same as O32 for these opcodes):
@@ -94,39 +98,45 @@ AVOID_OFFSET = 0x24
 
 def _build_elf():
     """Return raw bytes of an ELF64 MIPS LE executable wrapping ``CODE``."""
-    ehdr = b"\x7fELF" + bytes([
-        2,  # EI_CLASS = ELF64
-        1,  # EI_DATA = LSB (little-endian)
-        1,  # EI_VERSION
-        0,  # EI_OSABI = System V
-        0,  # EI_ABIVERSION
-    ]) + b"\x00" * 7
+    ehdr = (
+        b"\x7fELF"
+        + bytes(
+            [
+                2,  # EI_CLASS = ELF64
+                1,  # EI_DATA = LSB (little-endian)
+                1,  # EI_VERSION
+                0,  # EI_OSABI = System V
+                0,  # EI_ABIVERSION
+            ]
+        )
+        + b"\x00" * 7
+    )
     ehdr += struct.pack(
         "<HHIQQQIHHHHHH",
-        2,            # e_type = ET_EXEC
-        0x08,         # e_machine = EM_MIPS
-        1,            # e_version
-        ENTRY,        # e_entry
-        EHDR_SIZE,    # e_phoff
-        0,            # e_shoff
-        0x60000000,   # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
-        EHDR_SIZE,    # e_ehsize
-        PHDR_SIZE,    # e_phentsize
-        1,            # e_phnum
-        0,            # e_shentsize
-        0,            # e_shnum
-        0,            # e_shstrndx
+        2,  # e_type = ET_EXEC
+        0x08,  # e_machine = EM_MIPS
+        1,  # e_version
+        ENTRY,  # e_entry
+        EHDR_SIZE,  # e_phoff
+        0,  # e_shoff
+        0x60000000,  # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
+        EHDR_SIZE,  # e_ehsize
+        PHDR_SIZE,  # e_phentsize
+        1,  # e_phnum
+        0,  # e_shentsize
+        0,  # e_shnum
+        0,  # e_shstrndx
     )
     phdr = struct.pack(
         "<IIQQQQQQ",
-        1,            # p_type = PT_LOAD
-        5,            # p_flags = PF_R | PF_X
-        0,            # p_offset
-        BASE,         # p_vaddr
-        BASE,         # p_paddr
-        TOTAL,        # p_filesz
-        TOTAL,        # p_memsz
-        0x1000,       # p_align
+        1,  # p_type = PT_LOAD
+        5,  # p_flags = PF_R | PF_X
+        0,  # p_offset
+        BASE,  # p_vaddr
+        BASE,  # p_paddr
+        TOTAL,  # p_filesz
+        TOTAL,  # p_memsz
+        0x1000,  # p_align
     )
     return ehdr + phdr + CODE
 

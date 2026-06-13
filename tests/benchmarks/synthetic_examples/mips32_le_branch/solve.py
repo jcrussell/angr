@@ -23,12 +23,15 @@ so the SLA speedup check does not flag it.
 
 Solution: ``$a0 == 42`` makes ``(a0 << 1) + 16 == 100``.
 """
+
+from __future__ import annotations
+
 import os
 import struct
-import sys
+
+import claripy
 
 import angr
-import claripy
 
 
 # Register numbers (MIPS O32):
@@ -92,39 +95,45 @@ AVOID_OFFSET = 0x24
 
 def _build_elf():
     """Return raw bytes of an ELF32 MIPS LE executable wrapping ``CODE``."""
-    ehdr = b"\x7fELF" + bytes([
-        1,  # EI_CLASS = ELF32
-        1,  # EI_DATA = LSB (little-endian)
-        1,  # EI_VERSION
-        0,  # EI_OSABI = System V
-        0,  # EI_ABIVERSION
-    ]) + b"\x00" * 7
+    ehdr = (
+        b"\x7fELF"
+        + bytes(
+            [
+                1,  # EI_CLASS = ELF32
+                1,  # EI_DATA = LSB (little-endian)
+                1,  # EI_VERSION
+                0,  # EI_OSABI = System V
+                0,  # EI_ABIVERSION
+            ]
+        )
+        + b"\x00" * 7
+    )
     ehdr += struct.pack(
         "<HHIIIIIHHHHHH",
-        2,            # e_type = ET_EXEC
-        0x08,         # e_machine = EM_MIPS
-        1,            # e_version
-        ENTRY,        # e_entry
-        EHDR_SIZE,    # e_phoff
-        0,            # e_shoff
-        0x50001000,   # e_flags = EF_MIPS_ARCH_32 | EF_MIPS_ABI_O32
-        EHDR_SIZE,    # e_ehsize
-        PHDR_SIZE,    # e_phentsize
-        1,            # e_phnum
-        0,            # e_shentsize
-        0,            # e_shnum
-        0,            # e_shstrndx
+        2,  # e_type = ET_EXEC
+        0x08,  # e_machine = EM_MIPS
+        1,  # e_version
+        ENTRY,  # e_entry
+        EHDR_SIZE,  # e_phoff
+        0,  # e_shoff
+        0x50001000,  # e_flags = EF_MIPS_ARCH_32 | EF_MIPS_ABI_O32
+        EHDR_SIZE,  # e_ehsize
+        PHDR_SIZE,  # e_phentsize
+        1,  # e_phnum
+        0,  # e_shentsize
+        0,  # e_shnum
+        0,  # e_shstrndx
     )
     phdr = struct.pack(
         "<IIIIIIII",
-        1,            # p_type = PT_LOAD
-        0,            # p_offset
-        BASE,         # p_vaddr
-        BASE,         # p_paddr
-        TOTAL,        # p_filesz
-        TOTAL,        # p_memsz
-        5,            # p_flags = PF_R | PF_X
-        0x1000,       # p_align
+        1,  # p_type = PT_LOAD
+        0,  # p_offset
+        BASE,  # p_vaddr
+        BASE,  # p_paddr
+        TOTAL,  # p_filesz
+        TOTAL,  # p_memsz
+        5,  # p_flags = PF_R | PF_X
+        0x1000,  # p_align
     )
     return ehdr + phdr + CODE
 

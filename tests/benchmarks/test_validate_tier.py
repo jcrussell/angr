@@ -4,11 +4,14 @@ These tests stay in-process — they only exercise pure-Python helpers
 (``classify``, ``within_boundary``, ``audit``) against synthetic catalog
 and baseline dicts, so they are millisecond-fast and CI-safe.
 """
+
+from __future__ import annotations
+
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-import validate_tier  # noqa: E402
+import validate_tier
 
 
 def test_classify_buckets():
@@ -70,11 +73,11 @@ def test_audit_skips_when_time_missing():
 
 def test_audit_flags_drift_beyond_tolerance():
     catalog = {
-        "boundary": {"tier": "fast", "rust_ok": True},   # tolerated
+        "boundary": {"tier": "fast", "rust_ok": True},  # tolerated
         "clear_drift": {"tier": "fast", "rust_ok": True},  # not tolerated
     }
     baseline = {
-        "boundary":    {"rust_time": 5.2, "python_time": None},
+        "boundary": {"rust_time": 5.2, "python_time": None},
         "clear_drift": {"rust_time": 15.0, "python_time": None},
     }
     drift, tolerated, _ = validate_tier.audit(catalog, baseline, tol=0.10)
@@ -96,6 +99,7 @@ def test_audit_real_catalog_smoke():
     out-of-tolerance drift today. Acts as a regression gate against future
     catalog edits that drift past the boundary slack."""
     import json
+
     from run_single import EXAMPLE_CATALOG
 
     baseline_path = os.path.join(os.path.dirname(__file__), "baseline_timings.json")

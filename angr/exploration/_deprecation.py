@@ -34,13 +34,13 @@ The first call from any context emits::
 See :ref:`rust-engine-api-stability` for when and how to apply this decorator
 during a minor-release deprecation cycle.
 """
+
 from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
-
 
 _warned: set[object] = set()
 
@@ -77,10 +77,7 @@ def _deprecated(
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
             if func not in _warned:
                 _warned.add(func)
-                message = (
-                    f"{qualname} is deprecated since {version} and will be "
-                    f"removed in {removed_in}."
-                )
+                message = f"{qualname} is deprecated since {version} and will be removed in {removed_in}."
                 if replacement is not None:
                     message += f" Use ``{replacement}`` instead."
                 warnings.warn(message, DeprecationWarning, stacklevel=2)

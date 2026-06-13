@@ -27,6 +27,7 @@ Output format:
       per_proc_max_s=<f> peak_aggregate_rss_mb=<f> peak_per_proc_rss_mb=<f> \\
       sum_per_proc_peak_rss_mb=<f> failures=<i>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -203,9 +204,7 @@ def run_fleet(
         "concurrency": concurrency,
         "example": example,
         "wall_s": total_wall,
-        "per_proc_mean_s": (
-            sum(per_proc_wall) / len(per_proc_wall) if per_proc_wall else 0.0
-        ),
+        "per_proc_mean_s": (sum(per_proc_wall) / len(per_proc_wall) if per_proc_wall else 0.0),
         "per_proc_max_s": max(per_proc_wall, default=0.0),
         "peak_aggregate_rss_mb": sampler.aggregate_peak / 1024.0,
         "peak_per_proc_rss_mb": max_per_proc_peak_kb / 1024.0,
@@ -249,10 +248,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(metrics))
     else:
-        flat = " ".join(
-            f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
-            for k, v in metrics.items()
-        )
+        flat = " ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items())
         print(flat)
     return 0 if metrics["failures"] == 0 else 1
 

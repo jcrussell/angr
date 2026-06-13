@@ -10,6 +10,7 @@ ref), so a Python-side identity map is unnecessary. The former
 ``_lookup_handle``, had no production callers) and leaked strong refs without
 bound — it was removed in angr-iu40.
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +37,7 @@ class CallbackMemoryTracker:
         symbolic_writes = tracker.get_symbolic_writes()
     """
 
-    def __init__(self, state: "angr.SimState"):
+    def __init__(self, state: angr.SimState):
         """Initialize the tracker for a given state.
 
         Args:
@@ -50,7 +51,7 @@ class CallbackMemoryTracker:
 
     def __enter__(self):
         """Start tracking memory writes."""
-        if hasattr(self._state, 'memory') and hasattr(self._state.memory, 'store'):
+        if hasattr(self._state, "memory") and hasattr(self._state.memory, "store"):
             self._original_store = self._state.memory.store
             self._tracking = True
 
@@ -65,13 +66,13 @@ class CallbackMemoryTracker:
                 # Track the write
                 try:
                     # Get concrete address
-                    if hasattr(addr, 'symbolic') and addr.symbolic:
+                    if hasattr(addr, "symbolic") and addr.symbolic:
                         # For symbolic addresses, we can't easily track
                         pass
                     else:
                         if isinstance(addr, int):
                             concrete_addr = addr
-                        elif hasattr(addr, 'args') and isinstance(addr.args[0], int):
+                        elif hasattr(addr, "args") and isinstance(addr.args[0], int):
                             concrete_addr = addr.args[0]
                         else:
                             concrete_addr = tracker._state.solver.eval(addr)
@@ -82,24 +83,24 @@ class CallbackMemoryTracker:
                             data_bytes = bytes(data)
                             if size is None:
                                 size = len(data_bytes)
-                        elif hasattr(data, 'symbolic') and data.symbolic:
+                        elif hasattr(data, "symbolic") and data.symbolic:
                             # For symbolic data, get a concrete witness
                             concrete_data = tracker._state.solver.eval(data)
                             if size is None:
-                                size = data.size() // 8 if hasattr(data, 'size') else 8
-                            data_bytes = concrete_data.to_bytes(size, 'little')
+                                size = data.size() // 8 if hasattr(data, "size") else 8
+                            data_bytes = concrete_data.to_bytes(size, "little")
                             # Also track the symbolic AST for Rust import
                             tracker._symbolic_writes.append((concrete_addr, data))
                         elif isinstance(data, int):
                             if size is None:
                                 size = 8
-                            data_bytes = data.to_bytes(size, 'little')
+                            data_bytes = data.to_bytes(size, "little")
                         else:
                             # claripy concrete value
                             concrete_val = tracker._state.solver.eval(data)
                             if size is None:
-                                size = data.size() // 8 if hasattr(data, 'size') else 8
-                            data_bytes = concrete_val.to_bytes(size, 'little')
+                                size = data.size() // 8 if hasattr(data, "size") else 8
+                            data_bytes = concrete_val.to_bytes(size, "little")
 
                         tracker._writes.append((concrete_addr, bytes(data_bytes)))
                 except Exception as e:

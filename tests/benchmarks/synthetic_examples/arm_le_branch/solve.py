@@ -21,12 +21,15 @@ the non-scaffolded path.
 
 Solution: ``r0 == 42`` makes ``2*r0 + 16 == 100``.
 """
+
+from __future__ import annotations
+
 import os
 import struct
 
-import angr
 import claripy
 
+import angr
 
 # ARM (AL condition = 0xE) little-endian instruction encodings.
 # Each is a 32-bit ARM word; the file stores them little-endian
@@ -67,39 +70,45 @@ AVOID_OFFSET = 0x20
 
 def _build_elf():
     """Return raw bytes of an ELF32 ARM LE executable wrapping ``CODE``."""
-    ehdr = b"\x7fELF" + bytes([
-        1,  # EI_CLASS = ELF32
-        1,  # EI_DATA = LSB (little-endian)
-        1,  # EI_VERSION
-        0,  # EI_OSABI = System V
-        0,  # EI_ABIVERSION
-    ]) + b"\x00" * 7
+    ehdr = (
+        b"\x7fELF"
+        + bytes(
+            [
+                1,  # EI_CLASS = ELF32
+                1,  # EI_DATA = LSB (little-endian)
+                1,  # EI_VERSION
+                0,  # EI_OSABI = System V
+                0,  # EI_ABIVERSION
+            ]
+        )
+        + b"\x00" * 7
+    )
     ehdr += struct.pack(
         "<HHIIIIIHHHHHH",
-        2,            # e_type = ET_EXEC
-        0x28,         # e_machine = EM_ARM
-        1,            # e_version
-        ENTRY,        # e_entry
-        EHDR_SIZE,    # e_phoff
-        0,            # e_shoff
-        0x05000000,   # e_flags = EF_ARM_EABI v5
-        EHDR_SIZE,    # e_ehsize
-        PHDR_SIZE,    # e_phentsize
-        1,            # e_phnum
-        0,            # e_shentsize
-        0,            # e_shnum
-        0,            # e_shstrndx
+        2,  # e_type = ET_EXEC
+        0x28,  # e_machine = EM_ARM
+        1,  # e_version
+        ENTRY,  # e_entry
+        EHDR_SIZE,  # e_phoff
+        0,  # e_shoff
+        0x05000000,  # e_flags = EF_ARM_EABI v5
+        EHDR_SIZE,  # e_ehsize
+        PHDR_SIZE,  # e_phentsize
+        1,  # e_phnum
+        0,  # e_shentsize
+        0,  # e_shnum
+        0,  # e_shstrndx
     )
     phdr = struct.pack(
         "<IIIIIIII",
-        1,            # p_type = PT_LOAD
-        0,            # p_offset
-        BASE,         # p_vaddr
-        BASE,         # p_paddr
-        TOTAL,        # p_filesz
-        TOTAL,        # p_memsz
-        5,            # p_flags = PF_R | PF_X
-        0x1000,       # p_align
+        1,  # p_type = PT_LOAD
+        0,  # p_offset
+        BASE,  # p_vaddr
+        BASE,  # p_paddr
+        TOTAL,  # p_filesz
+        TOTAL,  # p_memsz
+        5,  # p_flags = PF_R | PF_X
+        0x1000,  # p_align
     )
     return ehdr + phdr + CODE
 

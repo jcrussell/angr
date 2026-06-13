@@ -174,6 +174,16 @@ from .errors import (
     UnsupportedNodeTypeError,
     UnsupportedSyscallError,
 )
+from .exploration import (
+    RustErrorRecord,
+    RustExecutionError,
+    RustExplorationManager,
+    RustMalformedIRSBError,
+    RustOomError,
+    RustUnsupportedSyscallError,
+    RustUnsupportedVexOpError,
+    RustZ3Error,
+)
 from .exploration_techniques import ExplorationTechnique
 from .knowledge_base import KnowledgeBase
 from .llm_client import LLMClient
@@ -200,19 +210,7 @@ from .storage.file import (
     SimPacketsStream,
 )
 
-from .exploration import (
-    RustErrorRecord,
-    RustExecutionError,
-    RustExplorationManager,
-    RustMalformedIRSBError,
-    RustOomError,
-    RustUnsupportedSyscallError,
-    RustUnsupportedVexOpError,
-    RustZ3Error,
-)
-
 # for compatibility reasons
-from . import sim_manager as manager
 
 options = sim_options  # alias
 

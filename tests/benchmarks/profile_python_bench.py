@@ -27,6 +27,9 @@ Output (with --cprofile and --out PREFIX):
     PREFIX.txt             top-50 cumulative + tottime tables
     PREFIX.folded          collapsed-stack format (input for flamegraph.pl)
 """
+
+from __future__ import annotations
+
 import argparse
 import cProfile
 import importlib.util
@@ -36,7 +39,6 @@ import pstats
 import resource
 import sys
 import time
-
 
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 SYNTHETIC_EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetic_examples")
@@ -61,6 +63,7 @@ def _install_rust_engine_patch():
 
     def patched_simulation_manager(factory_self, thing=None, **kwargs):
         import traceback
+
         caller_frames = traceback.extract_stack()
         for frame in caller_frames[:-1]:
             if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
@@ -112,7 +115,7 @@ def _write_text_report(stats_obj, out_path, top_n=50):
         s = pstats.Stats(stats_obj, stream=buf)
         s.sort_stats(pstats.SortKey.CUMULATIVE)
         s.print_stats(top_n)
-        f.write("# cProfile cumulative time, top {}\n".format(top_n))
+        f.write(f"# cProfile cumulative time, top {top_n}\n")
         f.write(buf.getvalue())
         f.write("\n\n")
 
@@ -120,7 +123,7 @@ def _write_text_report(stats_obj, out_path, top_n=50):
         s = pstats.Stats(stats_obj, stream=buf)
         s.sort_stats(pstats.SortKey.TIME)
         s.print_stats(top_n)
-        f.write("# cProfile tottime (self), top {}\n".format(top_n))
+        f.write(f"# cProfile tottime (self), top {top_n}\n")
         f.write(buf.getvalue())
 
 
@@ -151,17 +154,16 @@ def _write_folded(stats_obj, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("example")
     ap.add_argument("--engine", choices=["python", "rust"], default="rust")
-    ap.add_argument("--cprofile", action="store_true",
-                    help="Run under cProfile, dump pstats + text report")
-    ap.add_argument("--out", default=None,
-                    help="Output prefix for pstats / text / folded files "
-                         "(required with --cprofile)")
-    ap.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
-                    help=f"RLIMIT_AS in MB (default {DEFAULT_MEM_LIMIT_MB})")
+    ap.add_argument("--cprofile", action="store_true", help="Run under cProfile, dump pstats + text report")
+    ap.add_argument(
+        "--out", default=None, help="Output prefix for pstats / text / folded files (required with --cprofile)"
+    )
+    ap.add_argument(
+        "--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB, help=f"RLIMIT_AS in MB (default {DEFAULT_MEM_LIMIT_MB})"
+    )
     args = ap.parse_args()
 
     mem_bytes = args.mem_limit * 1024 * 1024

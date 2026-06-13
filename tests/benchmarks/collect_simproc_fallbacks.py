@@ -10,6 +10,9 @@ Usage:
     python tests/benchmarks/collect_simproc_fallbacks.py
     python tests/benchmarks/collect_simproc_fallbacks.py --benches fauxware ais3_crackme
 """
+
+from __future__ import annotations
+
 import argparse
 import collections
 import json
@@ -20,8 +23,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from run_single import run_example, DEFAULT_MEM_LIMIT_MB
-
+from run_single import DEFAULT_MEM_LIMIT_MB, run_example
 
 # Benches with callback_count > 0 from baseline_timings.json — these are the
 # only ones that contribute to the fallback counter. Slow benches (sokohash,
@@ -49,8 +51,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--benches", nargs="+", default=CANDIDATE_BENCHES)
     parser.add_argument("--timeout", type=int, default=90)
-    parser.add_argument("--out", default=None,
-                        help="Write the aggregated JSON to this file (default: stdout only)")
+    parser.add_argument("--out", default=None, help="Write the aggregated JSON to this file (default: stdout only)")
     args = parser.parse_args()
 
     per_bench: dict[str, dict[str, int]] = {}
@@ -58,8 +59,7 @@ def main():
 
     for name in args.benches:
         print(f"\n=== {name} ===", flush=True)
-        result = run_example(name, "rust", timeout=args.timeout,
-                             mem_limit_mb=DEFAULT_MEM_LIMIT_MB)
+        result = run_example(name, "rust", timeout=args.timeout, mem_limit_mb=DEFAULT_MEM_LIMIT_MB)
         if not result or not result.get("ok"):
             print(f"  (skipped: {result.get('error') if result else 'no result'})")
             per_bench[name] = {}

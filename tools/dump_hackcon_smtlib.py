@@ -8,6 +8,9 @@ prints quick structural stats.
 Usage:
     python tools/dump_hackcon_smtlib.py
 """
+
+from __future__ import annotations
+
 import os
 import resource
 import sys
@@ -27,8 +30,9 @@ HACKCON_DIR = os.path.join(EXAMPLES_DIR, "hackcon2016_angry-reverser")
 
 def run_hackcon(engine):
     """Run hackcon, return (found_state, rust_mgr_or_None, elapsed)."""
-    import angr
     import claripy
+
+    import angr
 
     sys.path.insert(0, HACKCON_DIR)
     os.chdir(HACKCON_DIR)
@@ -37,6 +41,7 @@ def run_hackcon(engine):
 
     if engine == "rust":
         from angr.exploration import RustExplorationManager
+
         original_sm = angr.factory.AngrObjectFactory.simulation_manager
 
         def patched_sm(factory_self, thing=None, **kwargs):
@@ -54,22 +59,40 @@ def run_hackcon(engine):
         angr.factory.AngrObjectFactory.simgr = patched_sm
 
     # Inlined solve.py logic (avoid re-exec hassles)
-    flag = claripy.BVS('flag', 20 * 8, explicit_name=True)
+    flag = claripy.BVS("flag", 20 * 8, explicit_name=True)
     buf = 0x606000
     crazy = 0x400646
-    find = 0x405a6e
-    avoids = [0x402c3c, 0x402eaf, 0x40311c, 0x40338b, 0x4035f8, 0x403868,
-              0x403ad5, 0x403d47, 0x403fb9, 0x404227, 0x404496, 0x40470a,
-              0x404978, 0x404bec, 0x404e59, 0x4050c7, 0x405338, 0x4055a9,
-              0x4057f4, 0x405a2b]
+    find = 0x405A6E
+    avoids = [
+        0x402C3C,
+        0x402EAF,
+        0x40311C,
+        0x40338B,
+        0x4035F8,
+        0x403868,
+        0x403AD5,
+        0x403D47,
+        0x403FB9,
+        0x404227,
+        0x404496,
+        0x40470A,
+        0x404978,
+        0x404BEC,
+        0x404E59,
+        0x4050C7,
+        0x405338,
+        0x4055A9,
+        0x4057F4,
+        0x405A2B,
+    ]
 
-    proj = angr.Project('./yolomolo', auto_load_libs=False)
+    proj = angr.Project("./yolomolo", auto_load_libs=False)
     state = proj.factory.blank_state(addr=crazy, add_options={angr.options.LAZY_SOLVES})
-    state.memory.store(buf, flag, endness='Iend_BE')
+    state.memory.store(buf, flag, endness="Iend_BE")
     state.regs.rdi = buf
     for i in range(19):
         state.solver.add(flag.get_byte(i) >= 0x30)
-        state.solver.add(flag.get_byte(i) <= 0x7f)
+        state.solver.add(flag.get_byte(i) <= 0x7F)
 
     simgr = proj.factory.simulation_manager(state)
     t0 = time.perf_counter()
@@ -89,10 +112,8 @@ def dump_rust(out_path):
     val = found.solver.eval(flag, cast_to=bytes)
     eval_time = time.perf_counter() - t0
     with open(out_path, "w") as f:
-        for i, a in enumerate(assertions):
-            f.write(f";; assertion {i}\n{a}\n\n")
-    print(f"[rust] explore={explore_time:.2f}s eval={eval_time:.2f}s "
-          f"assertions={len(assertions)} -> {out_path}")
+        f.writelines(f";; assertion {i}\n{a}\n\n" for i, a in enumerate(assertions))
+    print(f"[rust] explore={explore_time:.2f}s eval={eval_time:.2f}s assertions={len(assertions)} -> {out_path}")
     print(f"[rust] flag={val!r}")
     return assertions
 
@@ -100,6 +121,7 @@ def dump_rust(out_path):
 def dump_python(out_path):
     found, flag, _, explore_time = run_hackcon("python")
     import claripy
+
     z3backend = claripy.backends.z3
     t0 = time.perf_counter()
     assertions = []
@@ -109,10 +131,8 @@ def dump_python(out_path):
     val = found.solver.eval(flag, cast_to=bytes)
     eval_time = time.perf_counter() - t0
     with open(out_path, "w") as f:
-        for i, a in enumerate(assertions):
-            f.write(f";; assertion {i}\n{a}\n\n")
-    print(f"[python] explore={explore_time:.2f}s eval={eval_time:.2f}s "
-          f"assertions={len(assertions)} -> {out_path}")
+        f.writelines(f";; assertion {i}\n{a}\n\n" for i, a in enumerate(assertions))
+    print(f"[python] explore={explore_time:.2f}s eval={eval_time:.2f}s assertions={len(assertions)} -> {out_path}")
     print(f"[python] flag={val!r}")
     return assertions
 
@@ -122,25 +142,29 @@ def summarize(label, assertions):
     lens = [len(a) for a in assertions]
     total = sum(lens)
     max_l = max(lens) if lens else 0
+
     # Cheap depth proxy: max paren nesting level
     def max_depth(s):
         d = 0
         m = 0
         for ch in s:
-            if ch == '(':
+            if ch == "(":
                 d += 1
                 if d > m:
                     m = d
-            elif ch == ')':
+            elif ch == ")":
                 d -= 1
         return m
+
     depths = [max_depth(a) for a in assertions]
     # Count concat tokens & extract tokens (proxies for AST shape)
     concats = sum(a.count("concat") for a in assertions)
     extracts = sum(a.count("extract") for a in assertions)
-    print(f"  {label}: n={len(assertions)} total_chars={total} "
-          f"max_chars={max_l} max_paren_depth={max(depths) if depths else 0} "
-          f"sum_depth={sum(depths)} concats={concats} extracts={extracts}")
+    print(
+        f"  {label}: n={len(assertions)} total_chars={total} "
+        f"max_chars={max_l} max_paren_depth={max(depths) if depths else 0} "
+        f"sum_depth={sum(depths)} concats={concats} extracts={extracts}"
+    )
 
 
 def main():

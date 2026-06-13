@@ -5,11 +5,12 @@ side (native/angr/src/memory.rs) and the Python side stay in lockstep.
 STACK_SIZE and MAX_OVERLAY_SECTION_SIZE live here because only Python
 references them.
 """
+
 from __future__ import annotations
 
-from angr.rustylib.vex_engine import PAGE_SIZE, PAGE_MASK
+from angr.rustylib.vex_engine import PAGE_MASK, PAGE_SIZE
 
 STACK_SIZE = 0x11_0000
 MAX_OVERLAY_SECTION_SIZE = 0x10000
 
-__all__ = ["PAGE_SIZE", "PAGE_MASK", "STACK_SIZE", "MAX_OVERLAY_SECTION_SIZE"]
+__all__ = ["MAX_OVERLAY_SECTION_SIZE", "PAGE_MASK", "PAGE_SIZE", "STACK_SIZE"]

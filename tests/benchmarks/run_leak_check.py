@@ -24,6 +24,7 @@ Exit codes:
     1 — leak detected (ratio above threshold) or iteration failure
     2 — setup / harness error (solve.py missing, child crashed, etc.)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,7 +32,6 @@ import json
 import multiprocessing
 import os
 import sys
-
 
 DEFAULT_EXAMPLE = "mma_howtouse"
 DEFAULT_ITERS = 10
@@ -44,9 +44,7 @@ DEFAULT_THRESHOLD = 1.5
 DEFAULT_MEM_LIMIT_MB = 4096
 DEFAULT_TIMEOUT_SEC = 600
 
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
-)
+EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
 
 def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir):
@@ -68,9 +66,7 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir):
 
     # mp-spawn children inherit sys.path[0] = script dir, not the cwd
     # (cf. ``venv-script-syspath`` bd memory). Prepend repo root explicitly.
-    repo_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
 
@@ -210,9 +206,7 @@ def _print_human(result: dict) -> None:
         return
 
     print(f"example={result['example']} iters={result['iters']} threshold={result['threshold']:.2f}x")
-    for i, (kb, sec) in enumerate(
-        zip(result["per_iter_rss_kb"], result["per_iter_wall_s"]), start=1
-    ):
+    for i, (kb, sec) in enumerate(zip(result["per_iter_rss_kb"], result["per_iter_wall_s"]), start=1):
         print(f"  iter {i:>2}: peak_rss_kb={kb:>10} wall={sec:.2f}s")
     print(
         f"  ratio = peak_rss(iter{result['iters']}) / peak_rss(iter1) = "
@@ -235,30 +229,37 @@ def main() -> int:
         help=f"example name under ANGR_EXAMPLES_DIR (default: {DEFAULT_EXAMPLE})",
     )
     parser.add_argument(
-        "--iters", type=int, default=DEFAULT_ITERS,
+        "--iters",
+        type=int,
+        default=DEFAULT_ITERS,
         help=f"number of main() invocations (default: {DEFAULT_ITERS})",
     )
     parser.add_argument(
-        "--threshold", type=float, default=DEFAULT_THRESHOLD,
-        help=(
-            "fail if peak_rss(iterN) / peak_rss(iter1) exceeds this "
-            f"(default: {DEFAULT_THRESHOLD})"
-        ),
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help=(f"fail if peak_rss(iterN) / peak_rss(iter1) exceeds this (default: {DEFAULT_THRESHOLD})"),
     )
     parser.add_argument(
-        "--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
+        "--mem-limit",
+        type=int,
+        default=DEFAULT_MEM_LIMIT_MB,
         help=f"RLIMIT_AS in MB for child (default: {DEFAULT_MEM_LIMIT_MB})",
     )
     parser.add_argument(
-        "--timeout", type=int, default=DEFAULT_TIMEOUT_SEC,
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SEC,
         help=f"child timeout in seconds (default: {DEFAULT_TIMEOUT_SEC})",
     )
     parser.add_argument(
-        "--examples-dir", default=EXAMPLES_DIR,
+        "--examples-dir",
+        default=EXAMPLES_DIR,
         help="override ANGR_EXAMPLES_DIR for this run",
     )
     parser.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="emit one JSON object on stdout instead of a human-readable table",
     )
     args = parser.parse_args()

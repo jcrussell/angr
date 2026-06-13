@@ -23,12 +23,15 @@ drift against the baseline ``rust_time``.
 
 Solution: ``w0 == 42`` makes ``2*w0 + 16 == 100``.
 """
+
+from __future__ import annotations
+
 import os
 import struct
 
-import angr
 import claripy
 
+import angr
 
 # AArch64 little-endian instructions (verified against ARMv8 ARM, see
 # invariant-aarch64-inline-test-opcodes memory):
@@ -68,39 +71,45 @@ AVOID_OFFSET = 0x20
 
 def _build_elf():
     """Return raw bytes of an ELF64 AArch64 LE executable wrapping ``CODE``."""
-    ehdr = b"\x7fELF" + bytes([
-        2,  # EI_CLASS = ELF64
-        1,  # EI_DATA = LSB (little-endian)
-        1,  # EI_VERSION
-        0,  # EI_OSABI = System V
-        0,  # EI_ABIVERSION
-    ]) + b"\x00" * 7
+    ehdr = (
+        b"\x7fELF"
+        + bytes(
+            [
+                2,  # EI_CLASS = ELF64
+                1,  # EI_DATA = LSB (little-endian)
+                1,  # EI_VERSION
+                0,  # EI_OSABI = System V
+                0,  # EI_ABIVERSION
+            ]
+        )
+        + b"\x00" * 7
+    )
     ehdr += struct.pack(
         "<HHIQQQIHHHHHH",
-        2,            # e_type = ET_EXEC
-        0xB7,         # e_machine = EM_AARCH64
-        1,            # e_version
-        ENTRY,        # e_entry
-        EHDR_SIZE,    # e_phoff
-        0,            # e_shoff
-        0,            # e_flags
-        EHDR_SIZE,    # e_ehsize
-        PHDR_SIZE,    # e_phentsize
-        1,            # e_phnum
-        0,            # e_shentsize
-        0,            # e_shnum
-        0,            # e_shstrndx
+        2,  # e_type = ET_EXEC
+        0xB7,  # e_machine = EM_AARCH64
+        1,  # e_version
+        ENTRY,  # e_entry
+        EHDR_SIZE,  # e_phoff
+        0,  # e_shoff
+        0,  # e_flags
+        EHDR_SIZE,  # e_ehsize
+        PHDR_SIZE,  # e_phentsize
+        1,  # e_phnum
+        0,  # e_shentsize
+        0,  # e_shnum
+        0,  # e_shstrndx
     )
     phdr = struct.pack(
         "<IIQQQQQQ",
-        1,            # p_type = PT_LOAD
-        5,            # p_flags = PF_R | PF_X
-        0,            # p_offset
-        BASE,         # p_vaddr
-        BASE,         # p_paddr
-        TOTAL,        # p_filesz
-        TOTAL,        # p_memsz
-        0x1000,       # p_align
+        1,  # p_type = PT_LOAD
+        5,  # p_flags = PF_R | PF_X
+        0,  # p_offset
+        BASE,  # p_vaddr
+        BASE,  # p_paddr
+        TOTAL,  # p_filesz
+        TOTAL,  # p_memsz
+        0x1000,  # p_align
     )
     return ehdr + phdr + CODE
 

@@ -126,6 +126,7 @@ I10. RustExplorationManager exposes `stats` as a @property
      does not re-export it). Tests that need full fallback details must
      reach in via `mgr._rust_mgr.get_fallback_stats()`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -133,7 +134,8 @@ import os
 import time
 import warnings
 import weakref
-from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import claripy
 from claripy.errors import ClaripyError
@@ -167,12 +169,21 @@ def _is_rust_memory_proxy(plugin) -> bool:
 # Try to import the Rust exploration manager
 try:
     from angr.rustylib.vex_engine import (
-        RustExplorationManager as _RustExplorationManager,
         ExplorationEvent as _ExplorationEvent,
+    )
+    from angr.rustylib.vex_engine import (
         ExplorationStateSnapshot as _ExplorationStateSnapshot,
+    )
+    from angr.rustylib.vex_engine import (
         PythonCallbacks,
+    )
+    from angr.rustylib.vex_engine import (
+        RustExplorationManager as _RustExplorationManager,
+    )
+    from angr.rustylib.vex_engine import (
         RustSimState as _RustSimState,
     )
+
     RUST_EXPLORATION_AVAILABLE = True
 except ImportError:
     # cat-(b) FALLBACK WITH LOSS: Rust extension not built; the manager
@@ -196,28 +207,34 @@ except ImportError:
 # `factory.entry_state()` would otherwise trigger a warning the user did not
 # choose. They remain divergence-risk in the doc; this set covers the options
 # a user must opt into.
-_REJECTED_OPTION_NAMES = frozenset({
-    # Conservative read strategy: refuses to concretize on range-check
-    # failure. (The write strategy variant raises, see _RAISE_OPTION_NAMES.)
-    "CONSERVATIVE_READ_STRATEGY",
-    # SimMemory error-handling tweaks.
-    "UNINITIALIZED_ACCESS_AWARENESS", "BEST_EFFORT_MEMORY_STORING",
-    # Ret-emulation guard sibling. The DO_RET_EMULATION half raises (see
-    # _RAISE_OPTION_NAMES); the guard alone is harmless without it.
-    "TRUE_RET_EMULATION_GUARD",
-    # Alternate Python engines / memory plugins.
-    "SUPER_FASTPATH", "FAST_MEMORY", "FAST_REGISTERS", "UNDER_CONSTRAINED_SYMEXEC",
-    # BYPASS_VERITESTING_EXCEPTIONS is consulted only from
-    # angr/analyses/veritesting.py (resilience= kwarg passed to nested
-    # SimulationManager.run). Veritesting under Rust already raises via
-    # EFFICIENT_STATE_MERGING (Veritesting auto-adds that option), so a
-    # user driving Veritesting hits the raise on EFFICIENT_STATE_MERGING
-    # first. Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
-    # no-op — `resilience` bundle users carry it implicitly. Reject with
-    # a warn-once rather than raise so adding `angr.options.resilience`
-    # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)
-    "BYPASS_VERITESTING_EXCEPTIONS",
-})
+_REJECTED_OPTION_NAMES = frozenset(
+    {
+        # Conservative read strategy: refuses to concretize on range-check
+        # failure. (The write strategy variant raises, see _RAISE_OPTION_NAMES.)
+        "CONSERVATIVE_READ_STRATEGY",
+        # SimMemory error-handling tweaks.
+        "UNINITIALIZED_ACCESS_AWARENESS",
+        "BEST_EFFORT_MEMORY_STORING",
+        # Ret-emulation guard sibling. The DO_RET_EMULATION half raises (see
+        # _RAISE_OPTION_NAMES); the guard alone is harmless without it.
+        "TRUE_RET_EMULATION_GUARD",
+        # Alternate Python engines / memory plugins.
+        "SUPER_FASTPATH",
+        "FAST_MEMORY",
+        "FAST_REGISTERS",
+        "UNDER_CONSTRAINED_SYMEXEC",
+        # BYPASS_VERITESTING_EXCEPTIONS is consulted only from
+        # angr/analyses/veritesting.py (resilience= kwarg passed to nested
+        # SimulationManager.run). Veritesting under Rust already raises via
+        # EFFICIENT_STATE_MERGING (Veritesting auto-adds that option), so a
+        # user driving Veritesting hits the raise on EFFICIENT_STATE_MERGING
+        # first. Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
+        # no-op — `resilience` bundle users carry it implicitly. Reject with
+        # a warn-once rather than raise so adding `angr.options.resilience`
+        # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)
+        "BYPASS_VERITESTING_EXCEPTIONS",
+    }
+)
 
 
 # SimOptions that we hard-fail rather than warn on. The Rust engine never
@@ -321,24 +338,30 @@ _REJECTED_OPTION_NAMES = frozenset({
 # workloads (insomnihack_aeg, angr-86c4) which set the option but never
 # inspect state.history.actions directly. The TRACK_*_ACTIONS family
 # remains raise-listed because those DO gate action recording.
-_RAISE_OPTION_NAMES = frozenset({
-    "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
-    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS",
-    "CONCRETIZE",
-    "CONSERVATIVE_WRITE_STRATEGY",
-    "DO_RET_EMULATION",
-    "CALLLESS",
-    "EFFICIENT_STATE_MERGING",
-    "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
-    "BYPASS_ERRORED_IROP",
-    "BYPASS_ERRORED_IRCCALL",
-    "BYPASS_ERRORED_IRSTMT",
-})
+_RAISE_OPTION_NAMES = frozenset(
+    {
+        "TRACK_MEMORY_ACTIONS",
+        "TRACK_REGISTER_ACTIONS",
+        "TRACK_TMP_ACTIONS",
+        "TRACK_JMP_ACTIONS",
+        "TRACK_OP_ACTIONS",
+        "CONCRETIZE",
+        "CONSERVATIVE_WRITE_STRATEGY",
+        "DO_RET_EMULATION",
+        "CALLLESS",
+        "EFFICIENT_STATE_MERGING",
+        "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
+        "BYPASS_ERRORED_IROP",
+        "BYPASS_ERRORED_IRCCALL",
+        "BYPASS_ERRORED_IRSTMT",
+    }
+)
 
 
 # Z3 context sharing: make Rust and Python use the same Z3 context
 # to avoid AST translation overhead between solvers.
 _z3_context_shared = False
+
 
 def _setup_shared_z3_context():
     """Share Python's Z3 context with Rust, so both create ASTs in the same context."""
@@ -346,9 +369,12 @@ def _setup_shared_z3_context():
     if _z3_context_shared:
         return
     try:
-        from angr.rustylib.vex_engine import set_shared_z3_context, reset_shared_z3_context
         import atexit
+
         import z3
+
+        from angr.rustylib.vex_engine import reset_shared_z3_context, set_shared_z3_context
+
         py_ctx = z3.main_ctx()
         set_shared_z3_context(py_ctx.ctx.value)
         _z3_context_shared = True
@@ -407,10 +433,12 @@ def set_rust_log_level(level: str = "info") -> None:
         level: One of "error", "warn", "info", "debug", "trace", "off".
     """
     from angr.rustylib.vex_engine import set_rust_log_level as _set_level
+
     _set_level(level)
 
 
 _rust_log_env_applied = False
+
 
 def _apply_rust_log_env() -> None:
     """Honor RUST_LOG (or legacy ANGR_RUST_LOG) on first manager construction.
@@ -436,39 +464,48 @@ def _apply_rust_log_env() -> None:
         return
     try:
         set_rust_log_level(level)
-    except Exception as e:  # noqa: BLE001 — never fail manager construction
+    except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: env-driven level could not be applied;
         # manager construction proceeds, but Rust-side log output stays at
         # whatever level was set previously (typically off).
         l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 
-from angr.exploration.rust_identity import CallbackMemoryTracker
-
-
-from angr.exploration.rust_state_export import RustStateExportMixin
 from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
-from angr.exploration.rust_state_sync import RustStateSyncMixin
-from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_disk_cache import RustDiskCacheManager
-
+from angr.exploration.rust_state_cache import RustStateCacheMixin
+from angr.exploration.rust_state_export import RustStateExportMixin
+from angr.exploration.rust_state_sync import RustStateSyncMixin
 
 # Per-arch GPR snapshot lists for RustErrorRecord.registers. Conservative: PC,
 # SP, BP/FP, and standard GPRs. Vector/floating-point registers are excluded.
-_ARCH_REG_SNAPSHOT: Dict[str, Tuple[str, ...]] = {
-    'AMD64': ('rip', 'rsp', 'rbp', 'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
-              'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15'),
-    'X86':   ('eip', 'esp', 'ebp', 'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'),
-    'ARM':     ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
-                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
-    'ARMEL':   ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
-                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
-    'ARMHF':   ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
-                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
-    'AARCH64': ('pc', 'sp', 'lr', 'x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6',
-                'x7', 'x8', 'x29', 'x30'),
-    'MIPS32':  ('pc', 'sp', 'ra', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3'),
-    'MIPS64':  ('pc', 'sp', 'ra', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3'),
+_ARCH_REG_SNAPSHOT: dict[str, tuple[str, ...]] = {
+    "AMD64": (
+        "rip",
+        "rsp",
+        "rbp",
+        "rax",
+        "rbx",
+        "rcx",
+        "rdx",
+        "rsi",
+        "rdi",
+        "r8",
+        "r9",
+        "r10",
+        "r11",
+        "r12",
+        "r13",
+        "r14",
+        "r15",
+    ),
+    "X86": ("eip", "esp", "ebp", "eax", "ebx", "ecx", "edx", "esi", "edi"),
+    "ARM": ("pc", "sp", "lr", "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"),
+    "ARMEL": ("pc", "sp", "lr", "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"),
+    "ARMHF": ("pc", "sp", "lr", "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"),
+    "AARCH64": ("pc", "sp", "lr", "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x29", "x30"),
+    "MIPS32": ("pc", "sp", "ra", "v0", "v1", "a0", "a1", "a2", "a3"),
+    "MIPS64": ("pc", "sp", "ra", "v0", "v1", "a0", "a1", "a2", "a3"),
 }
 
 
@@ -498,17 +535,17 @@ class RustErrorRecord:
     # CbExecutionError variants in native/angr/src/interpreter/mod.rs and
     # the formatted error strings in native/angr/src/exploration/stepping.rs.
     _ERROR_CLASS_PREFIXES = (
-        ('memory error',           'memory'),
-        ('operation error',        'operation'),
-        ('invalid vex ir',         'invalid_ir'),
-        ('unsupported',            'unsupported'),
-        ('type mismatch',          'type_mismatch'),
-        ('unknown temporary',      'unknown_temp'),
-        ('callback error',         'callback'),
-        ('lift error',             'lift'),
-        ('need lift at',           'need_lift'),
-        ('need python fallback',   'need_python_fallback'),
-        ('resolve_function error', 'resolve_function'),
+        ("memory error", "memory"),
+        ("operation error", "operation"),
+        ("invalid vex ir", "invalid_ir"),
+        ("unsupported", "unsupported"),
+        ("type mismatch", "type_mismatch"),
+        ("unknown temporary", "unknown_temp"),
+        ("callback error", "callback"),
+        ("lift error", "lift"),
+        ("need lift at", "need_lift"),
+        ("need python fallback", "need_python_fallback"),
+        ("resolve_function error", "resolve_function"),
     )
 
     def __init__(self, state, message: str, addr: int = 0):
@@ -527,13 +564,13 @@ class RustErrorRecord:
             if msg.startswith(prefix):
                 return klass
         # Substring fallbacks for nested/wrapped error messages.
-        if 'timeout' in msg:
-            return 'timeout'
-        if 'unmapped' in msg:
-            return 'unmapped'
-        if 'panic' in msg:
-            return 'rust_panic'
-        return 'unknown'
+        if "timeout" in msg:
+            return "timeout"
+        if "unmapped" in msg:
+            return "unmapped"
+        if "panic" in msg:
+            return "rust_panic"
+        return "unknown"
 
     @staticmethod
     def _count_constraints(state) -> int:
@@ -592,10 +629,7 @@ class RustErrorRecord:
         raise self.error
 
     def __repr__(self):
-        return (
-            f'<State errored at {hex(self.addr)} '
-            f'class={self.error_class} with "{self.error}">'
-        )
+        return f'<State errored at {hex(self.addr)} class={self.error_class} with "{self.error}">'
 
 
 class RustExplorationManager(
@@ -636,14 +670,14 @@ class RustExplorationManager(
     """
 
     # Class-level cache for Python init results per binary
-    _init_cache: Dict[str, "angr.SimState"] = {}
+    _init_cache: dict[str, angr.SimState] = {}
     _init_cache_max = 10
 
     # ``_disk_key_cache`` (MD5-of-binary memo) is provided by RustDiskCacheManager.
 
     # Class-level cache for blank_state objects keyed by (binary_path, addr).
     # blank_state() is expensive (~1ms); caching + copy() is <0.1ms.
-    _blank_state_cache: Dict[tuple, "angr.SimState"] = {}
+    _blank_state_cache: dict[tuple, angr.SimState] = {}
     _blank_state_cache_max = 10
 
     # Class-level cache for loader-pages output keyed (weakly) by the
@@ -655,34 +689,52 @@ class RustExplorationManager(
     # (list of (start, len)). WeakKeyDictionary auto-evicts entries when
     # the Project/Loader is garbage-collected, so we avoid stale hits if
     # Python recycles ids across short-lived projects.
-    _loader_pages_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+    _loader_pages_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
     # SimProcedures known to write memory (need full state.copy() for changed_bytes)
-    _MEMORY_WRITING_PROCS = frozenset({
-        'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
-        'fread', 'gets', 'getchar', 'fgetc', 'getc',
-        'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
-        'strcat', 'strncat', 'sprintf', 'snprintf'})
+    _MEMORY_WRITING_PROCS = frozenset(
+        {
+            "read",
+            "recv",
+            "fgets",
+            "scanf",
+            "__isoc99_scanf",
+            "fread",
+            "gets",
+            "getchar",
+            "fgetc",
+            "getc",
+            "strncpy",
+            "strcpy",
+            "memcpy",
+            "memmove",
+            "memset",
+            "strcat",
+            "strncat",
+            "sprintf",
+            "snprintf",
+        }
+    )
 
     def __init__(
         self,
-        project: "angr.Project",
-        active_states: Optional[list] = None,
+        project: angr.Project,
+        active_states: list | None = None,
         save_unconstrained: bool = False,
         solver_timeout_ms: int = 30000,
-        max_active_states: Optional[int] = None,
+        max_active_states: int | None = None,
         max_history: int = 1000,
         clear_caches_on_cleanup: bool = False,
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
-        use_callback_memory_proxy: Optional[bool] = None,
-        use_callback_register_proxy: Optional[bool] = None,
-        use_callback_solver_proxy: Optional[bool] = None,
-        use_callback_callstack_proxy: Optional[bool] = None,
-        use_export_callstack_proxy: Optional[bool] = None,
-        use_export_memory_proxy: Optional[bool] = None,
-        use_simproc_fork_via_rust: Optional[bool] = None,
+        use_callback_memory_proxy: bool | None = None,
+        use_callback_register_proxy: bool | None = None,
+        use_callback_solver_proxy: bool | None = None,
+        use_callback_callstack_proxy: bool | None = None,
+        use_export_callstack_proxy: bool | None = None,
+        use_export_memory_proxy: bool | None = None,
+        use_simproc_fork_via_rust: bool | None = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -809,15 +861,24 @@ class RustExplorationManager(
         # link_state: multi-stage-reuse short-circuit (Python SimState↔Rust id).
         # activate:   add initial states to the Rust 'active' stash.
         self._phase_boot(
-            project, save_unconstrained, clear_caches_on_cleanup,
-            solver_timeout_ms, max_active_states, max_history,
-            exploration_strategy, deterministic,
+            project,
+            save_unconstrained,
+            clear_caches_on_cleanup,
+            solver_timeout_ms,
+            max_active_states,
+            max_history,
+            exploration_strategy,
+            deterministic,
         )
         self._phase_config(
-            use_shared_lineage_solver, use_callback_memory_proxy,
-            use_callback_register_proxy, use_callback_solver_proxy,
-            use_callback_callstack_proxy, use_export_callstack_proxy,
-            use_export_memory_proxy, use_simproc_fork_via_rust,
+            use_shared_lineage_solver,
+            use_callback_memory_proxy,
+            use_callback_register_proxy,
+            use_callback_solver_proxy,
+            use_callback_callstack_proxy,
+            use_export_callstack_proxy,
+            use_export_memory_proxy,
+            use_simproc_fork_via_rust,
         )
         if self._phase_link_state(active_states):
             return
@@ -850,17 +911,14 @@ class RustExplorationManager(
         self._deterministic = bool(deterministic)
 
         if not RUST_EXPLORATION_AVAILABLE:
-            raise ImportError(
-                "RustExplorationManager not available. "
-                "Build with vex-engine feature enabled."
-            )
+            raise ImportError("RustExplorationManager not available. Build with vex-engine feature enabled.")
 
         self._project = project
         self._save_unconstrained = save_unconstrained
         # See ``cleanup()`` — only honored when the manager has a real Rust
         # backend (i.e. not the multi-stage-reuse early return below).
         self._clear_caches_on_cleanup = clear_caches_on_cleanup
-        is_le = project.arch.memory_endness == 'Iend_LE'
+        is_le = project.arch.memory_endness == "Iend_LE"
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
         # angr-krp1: plumb the SimOS name to Rust so the syscall dispatcher
@@ -869,7 +927,7 @@ class RustExplorationManager(
         # is "Linux"/"CGC"/"Windows"/"Java"/... — lowercased by the Rust
         # setter so case differences don't matter. Default ("linux") covers
         # the common case so most paths are unaffected.
-        simos_name = getattr(getattr(project, 'simos', None), 'name', None) or ''
+        simos_name = getattr(getattr(project, "simos", None), "name", None) or ""
         if simos_name:
             self._rust_mgr.set_os_name(simos_name)
 
@@ -1029,18 +1087,18 @@ class RustExplorationManager(
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
         # Per-procedure timing: {name: {'count': int, 'execute_ns': int}}
-        self._procedure_times: Dict[str, Dict[str, int]] = {}
+        self._procedure_times: dict[str, dict[str, int]] = {}
 
         # High-level instrumentation counters for optimization tracking
-        self._stats_callback_count = 0       # total Python callbacks invoked
-        self._stats_ffi_crossings = 0        # total FFI calls to Rust (run/get/set)
-        self._stats_state_creations = 0      # full SimState objects created
-        self._stats_cache_hits = 0           # state cache hits
-        self._stats_cache_misses = 0         # state cache misses
+        self._stats_callback_count = 0  # total Python callbacks invoked
+        self._stats_ffi_crossings = 0  # total FFI calls to Rust (run/get/set)
+        self._stats_state_creations = 0  # full SimState objects created
+        self._stats_cache_hits = 0  # state cache hits
+        self._stats_cache_misses = 0  # state cache misses
         self._stats_technique_filter_calls = 0  # technique filter invocations
-        self._stats_hook_sync_calls = 0      # _sync_hooks_before_step invocations
-        self._stats_hook_sync_skips = 0      # fast-path skips (no new hooks)
-        self._stats_time_in_callbacks_ns = 0 # cumulative time in callback code
+        self._stats_hook_sync_calls = 0  # _sync_hooks_before_step invocations
+        self._stats_hook_sync_skips = 0  # fast-path skips (no new hooks)
+        self._stats_time_in_callbacks_ns = 0  # cumulative time in callback code
         # angr-bs71/h0dv: defensive counter for Path A (rust_solver_ctx attach)
         # regressions. Stays at 0 in production; non-zero means a callback site
         # forgot to attach rust_solver_ctx and Python's solver may diverge from
@@ -1077,22 +1135,21 @@ class RustExplorationManager(
         # Set up callbacks
         _t0 = time.perf_counter_ns()
         self._setup_callbacks()
-        self._perf_stats.set_init_phase('setup_callbacks', time.perf_counter_ns() - _t0)
+        self._perf_stats.set_init_phase("setup_callbacks", time.perf_counter_ns() - _t0)
 
         # Load binary regions
         _t0 = time.perf_counter_ns()
         self._load_binary_regions()
-        self._perf_stats.set_init_phase('load_binary', time.perf_counter_ns() - _t0)
+        self._perf_stats.set_init_phase("load_binary", time.perf_counter_ns() - _t0)
 
         # Register SimProcedures
         _t0 = time.perf_counter_ns()
         self._register_simprocedures()
-        self._perf_stats.set_init_phase('register_simprocedures', time.perf_counter_ns() - _t0)
-
+        self._perf_stats.set_init_phase("register_simprocedures", time.perf_counter_ns() - _t0)
 
         # Track angr state mappings for callbacks
         # Using regular dict with periodic cleanup to prevent memory leaks
-        self._state_cache: Dict[int, "angr.SimState"] = {}
+        self._state_cache: dict[int, angr.SimState] = {}
 
         # Lazy SimState references handed out by _get_stash_states. Keyed by
         # Rust state id so repeated stash reads return the same wrapper
@@ -1101,7 +1158,8 @@ class RustExplorationManager(
         # `_LazySimStateRef` in rust_state_export.py. Pruned in
         # `_cleanup_state_cache` alongside _state_cache.
         from angr.exploration.rust_state_export import _LazySimStateRef
-        self._lazy_state_refs: Dict[int, _LazySimStateRef] = {}
+
+        self._lazy_state_refs: dict[int, _LazySimStateRef] = {}
 
         # Maximum state cache size. Cache is bounded to the in-flight callback
         # state plus a small LRU window of recently-mutated states; root states
@@ -1116,18 +1174,18 @@ class RustExplorationManager(
         # callbacks. Holds a strong ref to the z3 object so the AST pointer
         # stays valid (Z3 ASTs are refcounted; the shared context outlives the
         # manager). Bounded size with simple drop-and-rebuild eviction.
-        self._z3_ptr_cache: Dict[tuple, tuple] = {}
+        self._z3_ptr_cache: dict[tuple, tuple] = {}
         self._z3_ptr_cache_max = 1024
         self._z3_ptr_cache_hits = 0
         self._z3_ptr_cache_misses = 0
 
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
-        self._callback_state: Optional["angr.SimState"] = None
+        self._callback_state: angr.SimState | None = None
 
         # Cache bundle register values from _create_state_for_callback for
         # reuse as register snapshot (avoids reading registers back from state)
-        self._last_bundle_registers: Optional[dict] = None
+        self._last_bundle_registers: dict | None = None
 
         # Per-state metadata (symbolic_pages / hook_symbolic_memory /
         # addr_to_ast) is now stored on the Rust side in `RustSimState`. Access
@@ -1137,16 +1195,16 @@ class RustExplorationManager(
         self._max_symbolic_pages_cache = 100  # Retained for back-compat hooks.
 
         # Track the current callback state ID for memory tracking during callbacks
-        self._current_callback_state_id: Optional[int] = None
+        self._current_callback_state_id: int | None = None
         # Track which Rust state is being stepped for per-fork memory isolation
-        self._current_stepping_state_id: Optional[int] = None
+        self._current_stepping_state_id: int | None = None
 
         # Track procedure_data for SimProcedure continuations.
         # When a SimProcedure uses self.call() to invoke a function and register
         # a continuation, the procedure_data is stored here keyed by the continuation
         # address. When Rust invokes the continuation, we restore this data.
         # Maps continuation_addr -> procedure_data tuple.
-        self._pending_procedure_data: Dict[int, Tuple] = {}
+        self._pending_procedure_data: dict[int, tuple] = {}
 
         # Cache for addresses where SimProcedure continuations always result in exit.
         # After the first time a continuation at an address produces only Ijk_Exit
@@ -1159,7 +1217,7 @@ class RustExplorationManager(
         # Pruned in `_cleanup_state_cache`: an entry whose key state is no
         # longer in any Rust stash is dropped (state IDs are monotonically
         # allocated and never reused, so this is safe).
-        self._state_roots: Dict[int, int] = {}
+        self._state_roots: dict[int, int] = {}
 
         # Per-state-id Python-side stand-ins for state.options and state.globals.
         # The Rust engine doesn't honor SimOptions (LAZY_SOLVES / STRICT_PAGE_ACCESS
@@ -1170,8 +1228,8 @@ class RustExplorationManager(
         # views without round-tripping through Rust. Children inherit a deep
         # copy from their root on first access (see get_state_options_py /
         # get_state_globals_py).
-        self._py_state_options: Dict[int, set] = {}
-        self._py_state_globals: Dict[int, dict] = {}
+        self._py_state_options: dict[int, set] = {}
+        self._py_state_globals: dict[int, dict] = {}
 
         # Track which silently-divergent SimOptions we've already warned about
         # for this manager so the warn-once helper does not spam during runs
@@ -1193,22 +1251,21 @@ class RustExplorationManager(
             _RUST_INSPECT_EVENT_BITS,
             _RUST_INSPECT_SUPPORTED_EVENTS,
         )
-        self._inspect_breakpoints: Dict[str, list] = {
-            evt: [] for evt in _RUST_INSPECT_SUPPORTED_EVENTS
-        }
+
+        self._inspect_breakpoints: dict[str, list] = {evt: [] for evt in _RUST_INSPECT_SUPPORTED_EVENTS}
         self._INSPECT_EVENT_BITS = dict(_RUST_INSPECT_EVENT_BITS)
         # Reentrancy guard: when a user action callback runs, suppress
         # nested inspect dispatch on the same manager. uq4n.4 covers
         # the full guard test.
         self._inspect_dispatch_depth = 0
         # Lazy RustInspectProxy instance (one per manager, shared across proxies).
-        self._inspect_proxy: Optional["RustInspectProxy"] = None
+        self._inspect_proxy: RustInspectProxy | None = None
 
         # Cached memory layout from disk cache for fast _sync_memory_to_rust
-        self._mem_cache: Optional[dict] = None
+        self._mem_cache: dict | None = None
 
         # Pre-computed register dict from disk cache for fast register sync
-        self._precomputed_regs: Optional[dict] = None
+        self._precomputed_regs: dict | None = None
 
         # Track stdin BVS variables for state export.
         # List of (claripy_bvs, size_ast) tuples from SimPacketsStream.content.
@@ -1229,8 +1286,8 @@ class RustExplorationManager(
         self._reused_from = None
         if active_states:
             _single = active_states[0] if isinstance(active_states, (list, tuple)) else active_states
-            old_mgr = getattr(getattr(_single, 'scratch', None), 'rust_mgr', None)
-            old_state_id = getattr(getattr(_single, 'scratch', None), 'rust_found_state_id', None)
+            old_mgr = getattr(getattr(_single, "scratch", None), "rust_mgr", None)
+            old_state_id = getattr(getattr(_single, "scratch", None), "rust_found_state_id", None)
             if old_mgr is not None and old_state_id is not None:
                 try:
                     old_mgr.reset_for_stage(old_state_id)
@@ -1243,7 +1300,7 @@ class RustExplorationManager(
                     l.debug(f"Multi-stage reuse: reset manager for state {old_state_id}")
                     # Skip ALL remaining init — callbacks, binary, simprocedures
                     # are already set up on the old manager
-                    self._perf_stats.set_init_phase('total', time.perf_counter_ns() - self._init_start)
+                    self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
                     return True
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;
@@ -1258,11 +1315,11 @@ class RustExplorationManager(
         # Add initial states
         if active_states:
             # Handle single state or list of states
-            if hasattr(active_states, 'solver'):  # Single SimState
+            if hasattr(active_states, "solver"):  # Single SimState
                 active_states = [active_states]
             for state in active_states:
                 # Detect state options
-                if hasattr(state, 'options'):
+                if hasattr(state, "options"):
                     # Hard-fail on options the Rust engine cannot honor
                     # before doing any further work; warn-once on the rest.
                     # The post-Python-init state passed to _add_rust_state
@@ -1273,6 +1330,7 @@ class RustExplorationManager(
                     self._warn_rejected_options(state.options)
                     try:
                         from angr import sim_options as o
+
                         if o.LAZY_SOLVES in state.options:
                             self._rust_mgr.set_lazy_solves(True)
                             l.debug("Enabled lazy_solves mode from state options")
@@ -1287,16 +1345,16 @@ class RustExplorationManager(
                         # Read Python's strategy limits from memory plugin
                         read_limit = 1024  # Python default
                         write_limit = 128  # Python default
-                        if hasattr(state, 'memory'):
+                        if hasattr(state, "memory"):
                             mem = state.memory
-                            if hasattr(mem, 'read_strategies') and mem.read_strategies:
+                            if hasattr(mem, "read_strategies") and mem.read_strategies:
                                 for strat in mem.read_strategies:
-                                    if hasattr(strat, '_limit'):
+                                    if hasattr(strat, "_limit"):
                                         read_limit = strat._limit
                                         break
-                            if hasattr(mem, 'write_strategies') and mem.write_strategies:
+                            if hasattr(mem, "write_strategies") and mem.write_strategies:
                                 for strat in mem.write_strategies:
-                                    if hasattr(strat, '_limit'):
+                                    if hasattr(strat, "_limit"):
                                         write_limit = strat._limit
                                         break
                         self._rust_mgr.configure_concretization_strategies(
@@ -1311,8 +1369,12 @@ class RustExplorationManager(
                             "Configured concretization: approx=%s, read_limit=%d, "
                             "write_limit=%d, sym_write=%s, avoid_reads=%s, "
                             "avoid_writes=%s",
-                            use_approx, read_limit, write_limit, sym_write,
-                            avoid_multi_reads, avoid_multi_writes,
+                            use_approx,
+                            read_limit,
+                            write_limit,
+                            sym_write,
+                            avoid_multi_reads,
+                            avoid_multi_writes,
                         )
                     except ImportError:
                         # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import.
@@ -1325,46 +1387,50 @@ class RustExplorationManager(
                 # that the Rust engine can't execute correctly.
                 _t0 = time.perf_counter_ns()
                 state = self._run_python_init_if_needed(state)
-                self._perf_stats.add_init_phase('python_run', time.perf_counter_ns() - _t0)
+                self._perf_stats.add_init_phase("python_run", time.perf_counter_ns() - _t0)
 
                 _t0 = time.perf_counter_ns()
-                self._add_rust_state('active', state)
-                self._perf_stats.add_init_phase('add_rust_state', time.perf_counter_ns() - _t0)
+                self._add_rust_state("active", state)
+                self._perf_stats.add_init_phase("add_rust_state", time.perf_counter_ns() - _t0)
 
-        self._perf_stats.set_init_phase('total', time.perf_counter_ns() - self._init_start)
+        self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
 
     def perf_report(self) -> str:
         """Return a formatted performance report."""
         s = self._perf_stats
         lines = ["=== Rust Engine Performance Report ==="]
-        lines.append(f"Init total: {s['init_total_ns']/1e6:.1f}ms")
-        lines.append(f"  Setup callbacks: {s['init_setup_callbacks_ns']/1e6:.1f}ms")
-        lines.append(f"  Load binary regions: {s['init_load_binary_ns']/1e6:.1f}ms")
-        lines.append(f"  Register SimProcedures: {s['init_register_simprocedures_ns']/1e6:.1f}ms")
-        lines.append(f"  Python init: {s['init_python_run_ns']/1e6:.1f}ms")
-        lines.append(f"  Add Rust state: {s['init_add_rust_state_ns']/1e6:.1f}ms")
-        lines.append(f"    Memory sync: {s['init_memory_sync_ns']/1e6:.1f}ms")
-        lines.append(f"    Register sync: {s['init_register_sync_ns']/1e6:.1f}ms")
+        lines.append(f"Init total: {s['init_total_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Setup callbacks: {s['init_setup_callbacks_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Load binary regions: {s['init_load_binary_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Register SimProcedures: {s['init_register_simprocedures_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Python init: {s['init_python_run_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Add Rust state: {s['init_add_rust_state_ns'] / 1e6:.1f}ms")
+        lines.append(f"    Memory sync: {s['init_memory_sync_ns'] / 1e6:.1f}ms")
+        lines.append(f"    Register sync: {s['init_register_sync_ns'] / 1e6:.1f}ms")
         lines.append(f"SimProcedure callbacks: {s['callback_simprocedure_count']}")
-        lines.append(f"  Total time: {s['callback_simprocedure_total_ns']/1e6:.1f}ms")
-        lines.append(f"  State create: {s['callback_simprocedure_state_create_ns']/1e6:.1f}ms")
-        lines.append(f"  Execute: {s['callback_simprocedure_execute_ns']/1e6:.1f}ms")
-        lines.append(f"  State copy: {s['callback_simprocedure_state_copy_ns']/1e6:.1f}ms")
-        lines.append(f"  Sync back: {s['callback_simprocedure_sync_back_ns']/1e6:.1f}ms")
+        lines.append(f"  Total time: {s['callback_simprocedure_total_ns'] / 1e6:.1f}ms")
+        lines.append(f"  State create: {s['callback_simprocedure_state_create_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Execute: {s['callback_simprocedure_execute_ns'] / 1e6:.1f}ms")
+        lines.append(f"  State copy: {s['callback_simprocedure_state_copy_ns'] / 1e6:.1f}ms")
+        lines.append(f"  Sync back: {s['callback_simprocedure_sync_back_ns'] / 1e6:.1f}ms")
         if self._procedure_times:
-            lines.append(f"  Per-procedure breakdown:")
-            for pname, pt in sorted(self._procedure_times.items(), key=lambda x: -x[1]['execute_ns']):
-                lines.append(f"    {pname}: {pt['count']}x {pt['execute_ns']/1e6:.1f}ms")
+            lines.append("  Per-procedure breakdown:")
+            for pname, pt in sorted(self._procedure_times.items(), key=lambda x: -x[1]["execute_ns"]):
+                lines.append(f"    {pname}: {pt['count']}x {pt['execute_ns'] / 1e6:.1f}ms")
         lines.append(f"Memory load callbacks: {s['callback_memory_load_count']}")
-        lines.append(f"  Total time: {s['callback_memory_load_total_ns']/1e6:.1f}ms")
-        if s['callback_memory_load_count'] > 0:
-            lines.append(f"  Avg per call: {s['callback_memory_load_total_ns']/s['callback_memory_load_count']/1e3:.1f}us")
+        lines.append(f"  Total time: {s['callback_memory_load_total_ns'] / 1e6:.1f}ms")
+        if s["callback_memory_load_count"] > 0:
+            lines.append(
+                f"  Avg per call: {s['callback_memory_load_total_ns'] / s['callback_memory_load_count'] / 1e3:.1f}us"
+            )
         lines.append(f"Fetch page callbacks: {s['callback_fetch_page_count']}")
-        lines.append(f"  Total time: {s['callback_fetch_page_total_ns']/1e6:.1f}ms")
+        lines.append(f"  Total time: {s['callback_fetch_page_total_ns'] / 1e6:.1f}ms")
         lines.append(f"Lift block callbacks: {s['callback_lift_block_count']}")
-        lines.append(f"  Total time: {s['callback_lift_block_total_ns']/1e6:.1f}ms")
-        if s['callback_lift_block_count'] > 0:
-            lines.append(f"  Avg per call: {s['callback_lift_block_total_ns']/s['callback_lift_block_count']/1e3:.1f}us")
+        lines.append(f"  Total time: {s['callback_lift_block_total_ns'] / 1e6:.1f}ms")
+        if s["callback_lift_block_count"] > 0:
+            lines.append(
+                f"  Avg per call: {s['callback_lift_block_total_ns'] / s['callback_lift_block_count'] / 1e3:.1f}us"
+            )
         # angr-xtse.1: per-category Python callback timing for upper-bound
         # speedup analysis. All five paths are instrumented from the public
         # _handle_* entry points in rust_callback_dispatch.py.
@@ -1378,9 +1444,9 @@ class RustExplorationManager(
             count = s.get(f"callback_{key}_count", 0)
             ns = s.get(f"callback_{key}_total_ns", 0)
             lines.append(f"{label} callbacks: {count}")
-            lines.append(f"  Total time: {ns/1e6:.1f}ms")
+            lines.append(f"  Total time: {ns / 1e6:.1f}ms")
             if count > 0:
-                lines.append(f"  Avg per call: {ns/count/1e3:.1f}us")
+                lines.append(f"  Avg per call: {ns / count / 1e3:.1f}us")
         # Per-category fallback counters (angr-md0m). Pulled live from
         # self.stats — values may be 0 if the run never tripped the path.
         try:
@@ -1392,7 +1458,7 @@ class RustExplorationManager(
         if fb:
             lines.append("Fallback counters:")
             lines.append(f"  SimProcedure -> Python: {fb.get('simprocedure_python_fallback_count', 0)}")
-            by_name = fb.get('simprocedure_fallback_by_name', {}) or {}
+            by_name = fb.get("simprocedure_fallback_by_name", {}) or {}
             if by_name:
                 top = sorted(by_name.items(), key=lambda kv: -kv[1])[:10]
                 for pname, pcount in top:
@@ -1416,10 +1482,12 @@ class RustExplorationManager(
         lines = ["=== Exploration Summary ==="]
 
         # Duration
-        explore_ns = getattr(self, '_time_in_explore_ns', 0)
-        init_ns = s.get('init_total_ns', 0)
+        explore_ns = getattr(self, "_time_in_explore_ns", 0)
+        init_ns = s.get("init_total_ns", 0)
         total_ns = init_ns + explore_ns
-        lines.append(f"Total time: {total_ns/1e6:.1f}ms (init: {init_ns/1e6:.1f}ms, explore: {explore_ns/1e6:.1f}ms)")
+        lines.append(
+            f"Total time: {total_ns / 1e6:.1f}ms (init: {init_ns / 1e6:.1f}ms, explore: {explore_ns / 1e6:.1f}ms)"
+        )
 
         # Steps and throughput
         explore_s = explore_ns / 1e9 if explore_ns > 0 else 0
@@ -1428,10 +1496,10 @@ class RustExplorationManager(
 
         # State counts
         try:
-            n_found = len(self._rust_mgr.get_state_ids('found'))
-            n_active = len(self._rust_mgr.get_state_ids('active'))
-            n_deadended = len(self._rust_mgr.get_state_ids('deadended'))
-            n_avoided = len(self._rust_mgr.get_state_ids('avoided'))
+            n_found = len(self._rust_mgr.get_state_ids("found"))
+            n_active = len(self._rust_mgr.get_state_ids("active"))
+            n_deadended = len(self._rust_mgr.get_state_ids("deadended"))
+            n_avoided = len(self._rust_mgr.get_state_ids("avoided"))
             lines.append(f"States: {n_found} found, {n_active} active, {n_avoided} avoided, {n_deadended} deadended")
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: state-count snapshot failed;
@@ -1440,18 +1508,18 @@ class RustExplorationManager(
 
         # Callback breakdown
         cb_total = self._stats_callback_count
-        sp_count = s.get('callback_simprocedure_count', 0)
+        sp_count = s.get("callback_simprocedure_count", 0)
         native_count = cb_total - sp_count  # memory/lift/fetch callbacks
         lines.append(f"Callbacks: {cb_total} total ({sp_count} SimProcedure, {native_count} other)")
         if self._stats_time_in_callbacks_ns > 0:
-            lines.append(f"  Time in callbacks: {self._stats_time_in_callbacks_ns/1e6:.1f}ms")
+            lines.append(f"  Time in callbacks: {self._stats_time_in_callbacks_ns / 1e6:.1f}ms")
 
         # Per-procedure breakdown (top 5)
         if self._procedure_times:
-            sorted_procs = sorted(self._procedure_times.items(), key=lambda x: -x[1]['execute_ns'])
+            sorted_procs = sorted(self._procedure_times.items(), key=lambda x: -x[1]["execute_ns"])
             lines.append(f"SimProcedure breakdown ({len(sorted_procs)} unique):")
             for pname, pt in sorted_procs[:5]:
-                lines.append(f"  {pname}: {pt['count']}x, {pt['execute_ns']/1e6:.1f}ms")
+                lines.append(f"  {pname}: {pt['count']}x, {pt['execute_ns'] / 1e6:.1f}ms")
 
         # FFI stats
         lines.append(f"State creations: {self._stats_state_creations}")
@@ -1473,6 +1541,7 @@ class RustExplorationManager(
         # Cache the stepping state ID accessor for _get_per_fork_state
         try:
             from angr.rustylib.vex_engine import get_stepping_state_id
+
             self._get_stepping_state_id = get_stepping_state_id
         except ImportError:
             # cat-(b) FALLBACK WITH LOSS: older Rust build without
@@ -1489,17 +1558,17 @@ class RustExplorationManager(
         callbacks.set_put_register(self._cb_put_register)
         callbacks.set_dirty_call(self._cb_dirty_call)
         callbacks.set_resolve_function(self._cb_resolve_function)
-        if hasattr(callbacks, 'set_memory_store_batch'):
+        if hasattr(callbacks, "set_memory_store_batch"):
             callbacks.set_memory_store_batch(self._cb_memory_store_batch)
-        if hasattr(callbacks, 'set_memory_load_batch'):
+        if hasattr(callbacks, "set_memory_load_batch"):
             callbacks.set_memory_load_batch(self._cb_memory_load_batch)
-        if hasattr(callbacks, 'set_batch_fetch_pages'):
+        if hasattr(callbacks, "set_batch_fetch_pages"):
             callbacks.set_batch_fetch_pages(self._cb_batch_fetch_pages)
-        if hasattr(callbacks, 'set_memory_store_symbolic_value'):
+        if hasattr(callbacks, "set_memory_store_symbolic_value"):
             callbacks.set_memory_store_symbolic_value(self._cb_memory_store_symbolic_value)
-        if hasattr(callbacks, 'set_memory_store_symbolic_full'):
+        if hasattr(callbacks, "set_memory_store_symbolic_full"):
             callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
-        if hasattr(callbacks, 'set_memory_load_symbolic_full'):
+        if hasattr(callbacks, "set_memory_load_symbolic_full"):
             callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
         # state.inspect MVP (angr-uq4n.2, angr-d46u) — register dispatchers
         # even when no BPs are set so the Rust side has a target if
@@ -1515,11 +1584,12 @@ class RustExplorationManager(
             _RUST_INSPECT_EVENT_BITS,
             _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS,
         )
+
         for evt in _RUST_INSPECT_EVENT_BITS:
             if evt in _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS:
                 continue
-            setter_name = f'set_inspect_{evt}'
-            cb_name = f'_cb_inspect_{evt}'
+            setter_name = f"set_inspect_{evt}"
+            cb_name = f"_cb_inspect_{evt}"
             if hasattr(callbacks, setter_name):
                 getattr(callbacks, setter_name)(getattr(self, cb_name))
         self._rust_mgr.set_callbacks(callbacks)
@@ -1551,24 +1621,23 @@ class RustExplorationManager(
                 state_id = self._current_callback_state_id
                 effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
                 lookup_id = effective_state_id if effective_state_id is not None else state_id
-                hook_mem = (
-                    self._rust_mgr.get_state_hook_symbolic_memory(lookup_id)
-                    if lookup_id is not None else {}
-                )
+                hook_mem = self._rust_mgr.get_state_hook_symbolic_memory(lookup_id) if lookup_id is not None else {}
                 if hook_mem:
                     for mem_addr, (ast, mem_size) in hook_mem.items():
                         if mem_addr <= addr < mem_addr + mem_size:
                             offset = addr - mem_addr
                             if offset == 0 and size == mem_size:
-                                concrete = state.solver.eval(ast).to_bytes(size, 'little')
+                                concrete = state.solver.eval(ast).to_bytes(size, "little")
                                 self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
                                 if _DBG:
                                     l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
                                 return (concrete, True, ast)
-                            elif offset == 0 and size < mem_size:
+                            if offset == 0 and size < mem_size:
                                 extracted = claripy.Extract(size * 8 - 1, 0, ast)
-                                concrete = state.solver.eval(extracted).to_bytes(size, 'little')
-                                self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
+                                concrete = state.solver.eval(extracted).to_bytes(size, "little")
+                                self._register_handle(
+                                    id(extracted), extracted, addr=addr, size=size, state_id=lookup_id
+                                )
                                 return (concrete, True, extracted)
 
                 # angr-hcok: when the callback-memory-proxy gate is on, the
@@ -1587,7 +1656,8 @@ class RustExplorationManager(
                     if _DBG:
                         l.debug(
                             "Memory load 0x%x size=%d: proxy-gate filler BVS",
-                            addr, size,
+                            addr,
+                            size,
                         )
                     return (bytes(size), True, ast)
 
@@ -1595,7 +1665,7 @@ class RustExplorationManager(
 
                 # Coerce thunks/callables to actual values
                 coerce_attempts = 0
-                while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
+                while callable(val) and not hasattr(val, "op") and coerce_attempts < 3:
                     try:
                         val = val()
                         coerce_attempts += 1
@@ -1614,19 +1684,18 @@ class RustExplorationManager(
                         self._stats_orphan_bvs_mem_thunk += 1
                         break
 
-                if not hasattr(val, 'op'):
+                if not hasattr(val, "op"):
                     l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
                     return (bytes(size), False, None)
 
-                is_symbolic = getattr(val, 'symbolic', False)
+                is_symbolic = getattr(val, "symbolic", False)
                 if is_symbolic:
                     handle_id = id(val)
                     self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
-                    concrete = state.solver.eval(val).to_bytes(size, 'little')
+                    concrete = state.solver.eval(val).to_bytes(size, "little")
                     return (concrete, True, val)
-                else:
-                    concrete = state.solver.eval(val).to_bytes(size, 'little')
-                    return (concrete, False, None)
+                concrete = state.solver.eval(val).to_bytes(size, "little")
+                return (concrete, False, None)
             except (SimError, ClaripyError) as e:
                 # cat-(c) WRONG-ANSWER RISK: memory load returned zero bytes after
                 # Sim/Claripy error — Rust sees concrete zero where the program
@@ -1650,7 +1719,7 @@ class RustExplorationManager(
         if _is_rust_memory_proxy(state.memory):
             return
         try:
-            val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
+            val = claripy.BVV(int.from_bytes(data, "little"), len(data) * 8)
             state.memory.store(addr, val, endness=state.arch.memory_endness)
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: memory store silently dropped on Sim/
@@ -1663,13 +1732,13 @@ class RustExplorationManager(
             try:
                 kwargs = {}
                 if opt_level is not None:
-                    kwargs['opt_level'] = opt_level
+                    kwargs["opt_level"] = opt_level
                 if dirty_bytes is not None:
                     # SMC: Rust signaled that this lift range is on a page that
                     # has been overwritten via state.memory. The cle static
                     # binary buffer is stale; lift the fresh bytes Rust sent
                     # instead.
-                    kwargs['byte_string'] = dirty_bytes
+                    kwargs["byte_string"] = dirty_bytes
                 block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
                 return self._serialize_irsb(irsb)
@@ -1677,7 +1746,7 @@ class RustExplorationManager(
                 # cat-(c) WRONG-ANSWER RISK: lift returned empty IRSB; Rust will
                 # treat the block as a no-op step. Already warns.
                 l.warning(f"Lift error at 0x{addr:x}: {e}")
-                return '{}'
+                return "{}"
         finally:
             self._perf_stats.record_lift_block(time.perf_counter_ns() - _lb_start)
 
@@ -1696,12 +1765,12 @@ class RustExplorationManager(
                 return (bytes(4096), 0, False)
             try:
                 data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
-                is_symbolic = getattr(data, 'symbolic', False)
+                is_symbolic = getattr(data, "symbolic", False)
                 if is_symbolic:
                     if _DBG:
                         l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
                     return (bytes(4096), 0, False)
-                concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                concrete = state.solver.eval(data).to_bytes(4096, "little")
                 return (concrete, 7, True)
             except (SimError, ClaripyError):
                 # cat-(b) FALLBACK WITH LOSS: page fetch failed; return empty page
@@ -1712,14 +1781,14 @@ class RustExplorationManager(
         finally:
             self._perf_stats.record_fetch_page(time.perf_counter_ns() - _fp_start)
 
-    def _cb_get_register(self, offset: int, size: int) -> Tuple[bytes, bool, Optional[object]]:
+    def _cb_get_register(self, offset: int, size: int) -> tuple[bytes, bool, object | None]:
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
             return (bytes(size), False, None)
         try:
             val = state.registers.load(offset, size, endness=state.arch.register_endness)
-            is_sym = getattr(val, 'symbolic', False)
-            concrete = state.solver.eval(val).to_bytes(size, 'little')
+            is_sym = getattr(val, "symbolic", False)
+            concrete = state.solver.eval(val).to_bytes(size, "little")
             if is_sym:
                 self._register_handle(id(val), val)
                 return (concrete, True, val)
@@ -1736,14 +1805,14 @@ class RustExplorationManager(
         if state is None:
             return
         try:
-            val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
+            val = claripy.BVV(int.from_bytes(data, "little"), len(data) * 8)
             state.registers.store(offset, val, endness=state.arch.register_endness)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: register write failed — Python state
             # diverges from Rust on this register. Already warns.
             l.warning(f"put_register error at offset {offset}: {e}")
 
-    def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> Tuple[bytes, bool, Optional[object]]:
+    def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> tuple[bytes, bool, object | None]:
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
             return (bytes(ret_ty_bits // 8), False, None)
@@ -1753,7 +1822,7 @@ class RustExplorationManager(
         # proxy falls back to the cached default state, which is the same
         # SimState the handler sees here. BPs that read `state.inspect.*`
         # see the live attrs.
-        sid = getattr(self, '_current_callback_state_id', None)
+        sid = getattr(self, "_current_callback_state_id", None)
         if sid is None:
             sid = -1
         try:
@@ -1766,7 +1835,7 @@ class RustExplorationManager(
             handler = getattr(dirty_module, name)
             claripy_args = [claripy.BVV(arg, 64) for arg in args]
 
-            self._cb_inspect_dirty(sid, 'before', name, handler, claripy_args, None)
+            self._cb_inspect_dirty(sid, "before", name, handler, claripy_args, None)
 
             result, constraints = handler(state, *claripy_args)
 
@@ -1774,15 +1843,15 @@ class RustExplorationManager(
                 for c in constraints:
                     state.solver.add(c)
 
-            self._cb_inspect_dirty(sid, 'after', name, handler, claripy_args, result)
+            self._cb_inspect_dirty(sid, "after", name, handler, claripy_args, result)
 
             if result is None:
                 return (bytes(ret_ty_bits // 8), False, None)
 
-            is_sym = getattr(result, 'symbolic', False)
+            is_sym = getattr(result, "symbolic", False)
             concrete_val = state.solver.eval(result)
             num_bytes = ret_ty_bits // 8
-            concrete_bytes = concrete_val.to_bytes(num_bytes, 'little')
+            concrete_bytes = concrete_val.to_bytes(num_bytes, "little")
 
             if is_sym:
                 self._register_handle(id(result), result)
@@ -1795,40 +1864,40 @@ class RustExplorationManager(
             l.warning(f"dirty_call {name} error: {e}")
             return (bytes(ret_ty_bits // 8), False, None)
 
-    def _cb_resolve_function(self, addr: int, name: Optional[str]) -> Optional[Tuple[str, int, bool]]:
+    def _cb_resolve_function(self, addr: int, name: str | None) -> tuple[str, int, bool] | None:
         """Resolve an unmodeled function call."""
-        if hasattr(self._project, '_sim_procedures'):
+        if hasattr(self._project, "_sim_procedures"):
             if addr in self._project._sim_procedures:
                 proc = self._project._sim_procedures[addr]
-                proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-                num_args = getattr(proc, 'num_args', 0) or 0
-                no_ret = getattr(proc, 'NO_RET', False)
+                proc_name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+                num_args = getattr(proc, "num_args", 0) or 0
+                no_ret = getattr(proc, "NO_RET", False)
                 return (proc_name, num_args, no_ret)
 
-        if hasattr(self._project, 'loader'):
+        if hasattr(self._project, "loader"):
             obj = self._project.loader.find_object_containing(addr)
             if obj:
                 in_plt = False
                 for section in obj.sections:
-                    if section.name in ('.plt', '.plt.got', '.plt.sec') and section.min_addr <= addr < section.max_addr:
+                    if section.name in (".plt", ".plt.got", ".plt.sec") and section.min_addr <= addr < section.max_addr:
                         in_plt = True
                         break
 
                 if in_plt:
                     proc_by_name = {}
                     for proc_addr, proc in self._project._sim_procedures.items():
-                        proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                        proc_name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
                         proc_by_name[proc_name] = (proc_addr, proc)
 
                     got_to_sym = {}
-                    if hasattr(obj, 'jmprel'):
+                    if hasattr(obj, "jmprel"):
                         for sym_name, reloc in obj.jmprel.items():
                             got_to_sym[reloc.rebased_addr] = sym_name
 
                     try:
                         block = self._project.factory.block(addr, num_inst=1)
                         insn = block.capstone.insns[0] if block.capstone.insns else None
-                        if insn and insn.mnemonic == 'jmp':
+                        if insn and insn.mnemonic == "jmp":
                             for op in insn.operands:
                                 if op.type == 3:  # CS_OP_MEM
                                     got_addr = insn.address + insn.size + op.mem.disp
@@ -1836,20 +1905,22 @@ class RustExplorationManager(
                                         sym_name = got_to_sym[got_addr]
                                         if sym_name in proc_by_name:
                                             proc_addr, proc = proc_by_name[sym_name]
-                                            num_args = getattr(proc, 'num_args', 0) or 0
-                                            no_ret = getattr(proc, 'NO_RET', False)
+                                            num_args = getattr(proc, "num_args", 0) or 0
+                                            no_ret = getattr(proc, "NO_RET", False)
                                             l.debug(f"Resolved PLT at 0x{addr:x} to {sym_name} (GOT 0x{got_addr:x})")
                                             return (sym_name, num_args, no_ret)
                                     else:
                                         state = self._get_default_state()
                                         if state:
-                                            got_val = state.memory.load(got_addr, 8, endness='Iend_LE')
+                                            got_val = state.memory.load(got_addr, 8, endness="Iend_LE")
                                             extern_addr = state.solver.eval(got_val)
                                             if extern_addr in self._project._sim_procedures:
                                                 proc = self._project._sim_procedures[extern_addr]
-                                                proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-                                                num_args = getattr(proc, 'num_args', 0) or 0
-                                                no_ret = getattr(proc, 'NO_RET', False)
+                                                proc_name = (
+                                                    proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+                                                )
+                                                num_args = getattr(proc, "num_args", 0) or 0
+                                                no_ret = getattr(proc, "NO_RET", False)
                                                 l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
                                                 return (proc_name, num_args, no_ret)
                     except Exception as e:
@@ -1861,11 +1932,12 @@ class RustExplorationManager(
         if name:
             try:
                 from angr.procedures import SIM_PROCEDURES
+
                 for lib_name, procs in SIM_PROCEDURES.items():
                     if name in procs:
                         proc_class = procs[name]
-                        num_args = getattr(proc_class, 'num_args', 0) or 0
-                        no_ret = getattr(proc_class, 'NO_RET', False)
+                        num_args = getattr(proc_class, "num_args", 0) or 0
+                        no_ret = getattr(proc_class, "NO_RET", False)
                         l.debug(f"Resolved {name} to {lib_name}:{name}")
                         return (name, num_args, no_ret)
             except ImportError:
@@ -1873,16 +1945,17 @@ class RustExplorationManager(
                 # if absent, skip name-based resolution.
                 pass
 
-        if hasattr(self._project, 'loader'):
+        if hasattr(self._project, "loader"):
             sym = self._project.loader.find_symbol(addr)
             if sym and sym.name:
                 try:
                     from angr.procedures import SIM_PROCEDURES
+
                     for lib_name, procs in SIM_PROCEDURES.items():
                         if sym.name in procs:
                             proc_class = procs[sym.name]
-                            num_args = getattr(proc_class, 'num_args', 0) or 0
-                            no_ret = getattr(proc_class, 'NO_RET', False)
+                            num_args = getattr(proc_class, "num_args", 0) or 0
+                            no_ret = getattr(proc_class, "NO_RET", False)
                             l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
                             return (sym.name, num_args, no_ret)
                 except ImportError:
@@ -1890,12 +1963,12 @@ class RustExplorationManager(
                     # (symbol name path); same as above.
                     pass
 
-        if hasattr(self._project, 'loader'):
+        if hasattr(self._project, "loader"):
             obj = self._project.loader.find_object_containing(addr)
             if obj and obj.binary is not None:
                 for section in obj.sections:
                     if section.is_executable and section.min_addr <= addr < section.max_addr:
-                        if section.name not in ('.plt', '.plt.got', '.plt.sec'):
+                        if section.name not in (".plt", ".plt.got", ".plt.sec"):
                             l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
                             return ("__internal_passthrough__", 0, False)
 
@@ -1913,11 +1986,11 @@ class RustExplorationManager(
         for addr, data in stores:
             try:
                 if isinstance(data, (bytes, list)):
-                    int_val = int.from_bytes(bytes(data), 'little')
+                    int_val = int.from_bytes(bytes(data), "little")
                     val = claripy.BVV(int_val, len(data) * 8)
                 else:
                     val = claripy.BVV(data, 64)
-                state.memory.store(addr, val, endness='Iend_LE')
+                state.memory.store(addr, val, endness="Iend_LE")
             except (SimError, ClaripyError) as e:
                 # cat-(c) WRONG-ANSWER RISK: batch memory store partially failed;
                 # some addresses keep stale data. Logs at debug; promote upstream
@@ -1944,8 +2017,8 @@ class RustExplorationManager(
         for addr, size in loads:
             try:
                 val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-                is_sym = getattr(val, 'symbolic', False)
-                concrete = state.solver.eval(val).to_bytes(size, 'little')
+                is_sym = getattr(val, "symbolic", False)
+                concrete = state.solver.eval(val).to_bytes(size, "little")
                 if is_sym:
                     self._register_handle(id(val), val, addr=addr, size=size)
                     results.append((concrete, True, val))
@@ -1972,12 +2045,12 @@ class RustExplorationManager(
         results = []
         for page_addr in page_addrs:
             try:
-                data = state.memory.load(page_addr, 4096, endness='Iend_LE')
-                if getattr(data, 'symbolic', False):
-                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                data = state.memory.load(page_addr, 4096, endness="Iend_LE")
+                if getattr(data, "symbolic", False):
+                    concrete = state.solver.eval(data).to_bytes(4096, "little")
                     results.append((concrete, 7, False))
                 else:
-                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                    concrete = state.solver.eval(data).to_bytes(4096, "little")
                     results.append((concrete, 7, True))
             except (SimError, ClaripyError) as e:
                 # cat-(c) WRONG-ANSWER RISK: batch page fetch partial failure;
@@ -1994,14 +2067,13 @@ class RustExplorationManager(
         # angr-hcok: proxy gate — Rust already holds the symbolic AST in
         # its own memory; skip the Python shadow write.
         if _is_rust_memory_proxy(state.memory):
-            if hasattr(ast, 'length') and ast.length:
+            if hasattr(ast, "length") and ast.length:
                 self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8)
             return
         try:
-            if hasattr(ast, 'length') and ast.length:
+            if hasattr(ast, "length") and ast.length:
                 size = ast.length // 8
-                state.memory.store(addr, ast, endness=state.arch.memory_endness,
-                                   inspect=False, disable_actions=True)
+                state.memory.store(addr, ast, endness=state.arch.memory_endness, inspect=False, disable_actions=True)
                 self._register_handle(id(ast), ast, addr=addr, size=size)
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: symbolic store at concrete addr failed;
@@ -2038,8 +2110,9 @@ class RustExplorationManager(
             self._register_handle(id(data_ast), data_ast)
             return
         try:
-            state.memory.store(addr_ast, data_ast, endness=state.arch.memory_endness,
-                               inspect=False, disable_actions=True)
+            state.memory.store(
+                addr_ast, data_ast, endness=state.arch.memory_endness, inspect=False, disable_actions=True
+            )
             self._register_handle(id(data_ast), data_ast)
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: symbolic-address store failed; Python
@@ -2060,6 +2133,7 @@ class RustExplorationManager(
             from angr.storage.memory_mixins.address_concretization_mixin import (
                 MultiwriteAnnotation,
             )
+
             if not has_anno(MultiwriteAnnotation):
                 return False
         except (ImportError, AttributeError, Exception) as e:
@@ -2111,8 +2185,9 @@ class RustExplorationManager(
             self._register_handle(id(ast), ast, size=size)
             return ast
         try:
-            ast = state.memory.load(addr_ast, size, endness=state.arch.memory_endness,
-                                    inspect=False, disable_actions=True)
+            ast = state.memory.load(
+                addr_ast, size, endness=state.arch.memory_endness, inspect=False, disable_actions=True
+            )
             if ast is not None:
                 self._register_handle(id(ast), ast, size=size)
             return ast
@@ -2135,6 +2210,7 @@ class RustExplorationManager(
         """Return the manager-wide RustInspectProxy (lazy)."""
         if self._inspect_proxy is None:
             from angr.exploration.rust_state_proxy import RustInspectProxy
+
             self._inspect_proxy = RustInspectProxy(self)
         return self._inspect_proxy
 
@@ -2147,7 +2223,7 @@ class RustExplorationManager(
         before any payload work, so when no BPs exist the cost is one
         branch per Load/Store.
         """
-        if self._callbacks is None or not hasattr(self._callbacks, 'set_inspect_enabled'):
+        if self._callbacks is None or not hasattr(self._callbacks, "set_inspect_enabled"):
             return
         mask = 0
         for event, bit in self._INSPECT_EVENT_BITS.items():
@@ -2164,9 +2240,9 @@ class RustExplorationManager(
         """
         if state_id is not None and state_id >= 0:
             from angr.exploration.rust_state_proxy import RustStateProxy
+
             try:
-                return RustStateProxy(self._rust_mgr, state_id, self._project,
-                                      python_mgr=self)
+                return RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: state may have been
                 # dropped from Rust between dispatch and proxy build.
@@ -2220,7 +2296,9 @@ class RustExplorationManager(
         """PyO3 callback target for mem_read events from Rust."""
         try:
             self._dispatch_inspect_event(
-                "mem_read", state_id, when,
+                "mem_read",
+                state_id,
+                when,
                 mem_read_address=self._addr_attr_for(addr),
                 mem_read_length=size,
                 mem_read_expr=value_ast,
@@ -2244,7 +2322,9 @@ class RustExplorationManager(
         """PyO3 callback target for mem_write events from Rust."""
         try:
             self._dispatch_inspect_event(
-                "mem_write", state_id, when,
+                "mem_write",
+                state_id,
+                when,
                 mem_write_address=self._addr_attr_for(addr),
                 mem_write_length=size,
                 mem_write_expr=value_ast,
@@ -2267,7 +2347,9 @@ class RustExplorationManager(
         """PyO3 callback target for reg_read events from Rust (IRExpr::Get)."""
         try:
             self._dispatch_inspect_event(
-                "reg_read", state_id, when,
+                "reg_read",
+                state_id,
+                when,
                 reg_read_offset=offset,
                 reg_read_length=size,
                 reg_read_expr=value_ast,
@@ -2290,7 +2372,9 @@ class RustExplorationManager(
         """PyO3 callback target for reg_write events from Rust (IRStmt::Put)."""
         try:
             self._dispatch_inspect_event(
-                "reg_write", state_id, when,
+                "reg_write",
+                state_id,
+                when,
                 reg_write_offset=offset,
                 reg_write_length=size,
                 reg_write_expr=value_ast,
@@ -2306,7 +2390,9 @@ class RustExplorationManager(
         """PyO3 callback target for instruction events (one per IMark)."""
         try:
             self._dispatch_inspect_event(
-                "instruction", state_id, when,
+                "instruction",
+                state_id,
+                when,
                 instruction=addr,
             )
         except Exception as e:
@@ -2318,7 +2404,9 @@ class RustExplorationManager(
         """PyO3 callback target for irsb events (one per basic block)."""
         try:
             self._dispatch_inspect_event(
-                "irsb", state_id, when,
+                "irsb",
+                state_id,
+                when,
                 address=addr,
             )
         except Exception as e:
@@ -2337,7 +2425,9 @@ class RustExplorationManager(
         """PyO3 callback target for VEX conditional exit events."""
         try:
             self._dispatch_inspect_event(
-                "exit", state_id, when,
+                "exit",
+                state_id,
+                when,
                 exit_target=self._addr_attr_for(target),
                 exit_guard=guard_ast,
                 exit_jumpkind=jumpkind,
@@ -2358,7 +2448,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "call", state_id, when,
+                "call",
+                state_id,
+                when,
                 function_address=self._addr_attr_for(function_address),
             )
         except Exception as e:
@@ -2376,7 +2468,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "return", state_id, when,
+                "return",
+                state_id,
+                when,
                 function_address=self._addr_attr_for(function_address),
             )
         except Exception as e:
@@ -2392,7 +2486,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "tmp_read", state_id, when,
+                "tmp_read",
+                state_id,
+                when,
                 tmp_read_num=tmp_num,
                 tmp_read_expr=value_ast,
             )
@@ -2411,7 +2507,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "tmp_write", state_id, when,
+                "tmp_write",
+                state_id,
+                when,
                 tmp_write_num=tmp_num,
                 tmp_write_expr=value_ast,
             )
@@ -2431,7 +2529,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "statement", state_id, when,
+                "statement",
+                state_id,
+                when,
                 statement=stmt_idx,
             )
         except Exception as e:
@@ -2452,7 +2552,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "expr", state_id, when,
+                "expr",
+                state_id,
+                when,
                 expr=None,
                 expr_result=expr_result,
             )
@@ -2481,7 +2583,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "address_concretization", state_id, when,
+                "address_concretization",
+                state_id,
+                when,
                 address_concretization_strategy=None,
                 address_concretization_action=action,
                 address_concretization_memory=None,
@@ -2534,7 +2638,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "symbolic_variable", state_id, when,
+                "symbolic_variable",
+                state_id,
+                when,
                 symbolic_name=name,
                 symbolic_size=size,
                 symbolic_expr=expr_ast,
@@ -2564,7 +2670,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "simprocedure", state_id, when,
+                "simprocedure",
+                state_id,
+                when,
                 simprocedure_name=sp_name,
                 simprocedure_addr=sp_addr,
                 simprocedure=sp_inst,
@@ -2592,7 +2700,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "syscall", state_id, when,
+                "syscall",
+                state_id,
+                when,
                 syscall_name=syscall_name,
                 simprocedure=sp_inst,
             )
@@ -2622,7 +2732,9 @@ class RustExplorationManager(
         """
         try:
             self._dispatch_inspect_event(
-                "dirty", state_id, when,
+                "dirty",
+                state_id,
+                when,
                 dirty_name=dirty_name,
                 dirty_handler=dirty_handler,
                 dirty_args=dirty_args,
@@ -2656,16 +2768,13 @@ class RustExplorationManager(
 
             for region in executable_ranges:
                 try:
-                    data = self._project.loader.memory.load(
-                        region.min_addr,
-                        region.max_addr - region.min_addr
-                    )
+                    data = self._project.loader.memory.load(region.min_addr, region.max_addr - region.min_addr)
                     regions.append((region.min_addr, bytes(data)))
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: executable region not loaded into Rust;
                     # attempts to lift a block in this region will fall through to
                     # Python via lift_block. Debug-logs.
-                    name = getattr(region, 'name', repr(region))
+                    name = getattr(region, "name", repr(region))
                     l.debug(f"Could not load region {name}: {e}")
 
         self._rust_mgr.load_binary_regions(regions)
@@ -2675,18 +2784,17 @@ class RustExplorationManager(
         procs = []
 
         # Get hooked addresses from project
-        if hasattr(self._project, '_sim_procedures'):
+        if hasattr(self._project, "_sim_procedures"):
             for addr, proc in self._project._sim_procedures.items():
                 name = _simproc_dispatch_name(proc)
-                num_args = getattr(proc, 'num_args', 0) or 0
-                no_return = getattr(proc, 'NO_RET', False)
+                num_args = getattr(proc, "num_args", 0) or 0
+                no_return = getattr(proc, "NO_RET", False)
                 procs.append((addr, name, num_args, no_return))
                 # Track this hook as registered
                 self._registered_hooks.add(addr)
 
         if procs:
             self._rust_mgr.register_simprocedures(procs)
-
 
     # =========================================================================
     # Persistent disk cache for Python init results
@@ -2701,23 +2809,26 @@ class RustExplorationManager(
     # ``_blank_state_cache`` pool; the mixin reaches it via ``self``.
     # =========================================================================
 
-    def _get_cached_blank_state(self, addr: int) -> "angr.SimState":
+    def _get_cached_blank_state(self, addr: int) -> angr.SimState:
         """Get a blank state, using class-level cache when possible.
 
         blank_state() is expensive (~1ms) due to plugin initialization.
         Caching + copy() is <0.1ms.
         """
-        binary_path = getattr(self._project.loader.main_object, 'binary', None) or ''
+        binary_path = getattr(self._project.loader.main_object, "binary", None) or ""
         cache_key = (binary_path, addr)
         cached = RustExplorationManager._blank_state_cache.get(cache_key)
         if cached is not None:
             return cached.copy()
         state = self._project.factory.blank_state(addr=addr)
-        if binary_path and len(RustExplorationManager._blank_state_cache) < RustExplorationManager._blank_state_cache_max:
+        if (
+            binary_path
+            and len(RustExplorationManager._blank_state_cache) < RustExplorationManager._blank_state_cache_max
+        ):
             RustExplorationManager._blank_state_cache[cache_key] = state.copy()
         return state
 
-    def _extract_continuation_data(self, state: "angr.SimState"):
+    def _extract_continuation_data(self, state: angr.SimState):
         """Extract SimProcedure continuation data from a state's callstack.
 
         When __libc_start_main uses self.call() to invoke main(), it stores
@@ -2725,9 +2836,9 @@ class RustExplorationManager(
         the continuation (after_main) needs these args. This method captures
         that data so the Rust engine can restore it when the continuation fires.
         """
-        frame = state.callstack.top if hasattr(state, 'callstack') else None
+        frame = state.callstack.top if hasattr(state, "callstack") else None
         while frame is not None:
-            pdata = getattr(frame, 'procedure_data', None)
+            pdata = getattr(frame, "procedure_data", None)
             if pdata is not None and len(pdata) >= 5:
                 cont_addr = pdata[4]  # ideal_addr = continuation address
                 try:
@@ -2735,15 +2846,17 @@ class RustExplorationManager(
                 except (TypeError, ValueError):
                     # cat-(a) EXPECTED CONTROL FLOW: continuation addr is symbolic /
                     # non-castable; walk to the next frame.
-                    frame = getattr(frame, 'next', None)
+                    frame = getattr(frame, "next", None)
                     continue
                 if cont_addr_int > 0:
                     self._pending_procedure_data[cont_addr_int] = pdata
-                    l.debug(f"Extracted continuation data for 0x{cont_addr_int:x} "
-                            f"({len(pdata[2]) if len(pdata) > 2 and pdata[2] else 0} local_vars)")
-            frame = getattr(frame, 'next', None)
+                    l.debug(
+                        f"Extracted continuation data for 0x{cont_addr_int:x} "
+                        f"({len(pdata[2]) if len(pdata) > 2 and pdata[2] else 0} local_vars)"
+                    )
+            frame = getattr(frame, "next", None)
 
-    def _run_python_init_if_needed(self, state: "angr.SimState") -> "angr.SimState":
+    def _run_python_init_if_needed(self, state: angr.SimState) -> angr.SimState:
         """Run initialization in Python if the state starts at a loader address.
 
         When a state starts at a loader/init address (e.g., from full_init_state),
@@ -2752,7 +2865,7 @@ class RustExplorationManager(
         """
         main_obj = self._project.loader.main_object
         addr = state.addr
-        cache_key = getattr(main_obj, 'binary', None) or ''
+        cache_key = getattr(main_obj, "binary", None) or ""
         mem_key = self._compute_mem_init_key(state, cache_key)
         disk_key = self._compute_disk_init_key(state, cache_key)
 
@@ -2766,7 +2879,7 @@ class RustExplorationManager(
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
             obj = self._project.loader.find_object_containing(addr)
-            if obj is not None and obj.binary is not None and not obj.binary.startswith('cle##'):
+            if obj is not None and obj.binary is not None and not obj.binary.startswith("cle##"):
                 return state  # In a real binary (not entry), no init needed
             if addr not in self._project._sim_procedures:
                 return state  # Not a SimProcedure (e.g., LinuxLoader), don't pre-run
@@ -2785,8 +2898,7 @@ class RustExplorationManager(
             l.warning(f"Python init failed: {e}, using original state")
             return state
 
-    def _apply_state_metadata(self, src_state: "angr.SimState",
-                              dst_state: "angr.SimState") -> None:
+    def _apply_state_metadata(self, src_state: angr.SimState, dst_state: angr.SimState) -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
         ENABLE_NX / NO_IP_CONCRETIZATION / NO_SYMBOLIC_JUMP_RESOLUTION /
         KEEP_IP_SYMBOLIC / TRACK_ACTION_HISTORY options from src to dst.
@@ -2808,11 +2920,12 @@ class RustExplorationManager(
         """
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
-        if 'globals' in src_state.plugins:
+        if "globals" in src_state.plugins:
             for k, v in src_state.globals.items():
                 dst_state.globals[k] = v
         try:
             from angr import sim_options as o
+
             for opt in (
                 o.LAZY_SOLVES,
                 o.STRICT_PAGE_ACCESS,
@@ -2832,18 +2945,18 @@ class RustExplorationManager(
             # without it the option-mirror step is skipped.
             pass
 
-    def _compute_disk_init_key(self, state: "angr.SimState", cache_key: str) -> str:
+    def _compute_disk_init_key(self, state: angr.SimState, cache_key: str) -> str:
         """Compute disk init cache key. Empty string means caching is disabled
         (no binary path, or state has user symbolic data that blank_state can't
         round-trip)."""
         if not cache_key:
-            return ''
+            return ""
         if self._state_has_user_symbolic(state):
-            return ''
-        arch_name = getattr(self._project.arch, 'name', '') or ''
+            return ""
+        arch_name = getattr(self._project.arch, "name", "") or ""
         return self._disk_cache_key(cache_key, arch_name)
 
-    def _compute_mem_init_key(self, state: "angr.SimState", cache_key: str) -> str:
+    def _compute_mem_init_key(self, state: angr.SimState, cache_key: str) -> str:
         """In-memory init cache key. Returns '' (caching disabled) when the
         state has user-created symbolic data, mirroring _compute_disk_init_key.
         Without this gate, a user-symbolic store on the input state survives
@@ -2853,13 +2966,12 @@ class RustExplorationManager(
         constraints/options but not memory pages.
         """
         if not cache_key:
-            return ''
+            return ""
         if self._state_has_user_symbolic(state):
-            return ''
+            return ""
         return cache_key
 
-    def _try_in_memory_init_cache(self, state: "angr.SimState",
-                                  cache_key: str) -> Optional["angr.SimState"]:
+    def _try_in_memory_init_cache(self, state: angr.SimState, cache_key: str) -> angr.SimState | None:
         """Try the per-process init cache (~180ms savings). Returns ready state or None."""
         if not cache_key or cache_key not in RustExplorationManager._init_cache:
             return None
@@ -2869,8 +2981,7 @@ class RustExplorationManager(
         self._apply_state_metadata(state, new_state)
         return new_state
 
-    def _try_disk_init_cache(self, state: "angr.SimState",
-                             disk_key: str) -> Optional["angr.SimState"]:
+    def _try_disk_init_cache(self, state: angr.SimState, disk_key: str) -> angr.SimState | None:
         """Try the persistent disk init cache. Returns ready state or None.
 
         Note: only safe when the source state has no user symbolic data —
@@ -2887,23 +2998,24 @@ class RustExplorationManager(
         self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
         return disk_state
 
-    def _resolve_main_address(self) -> Optional[int]:
+    def _resolve_main_address(self) -> int | None:
         """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
-        main_sym = self._project.loader.find_symbol('main')
+        main_sym = self._project.loader.find_symbol("main")
         if main_sym:
             return main_sym.rebased_addr
         try:
             entry_block = self._project.factory.block(self._project.entry)
             vex = entry_block.vex
-            rdi_offset = self._project.arch.registers.get('rdi', (None,))[0]
+            rdi_offset = self._project.arch.registers.get("rdi", (None,))[0]
             if rdi_offset is None:
-                rdi_offset = self._project.arch.registers.get('edi', (None,))[0]
+                rdi_offset = self._project.arch.registers.get("edi", (None,))[0]
             if rdi_offset is not None:
                 for stmt in reversed(vex.statements):
                     s = str(stmt)
-                    if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
+                    if f"PUT(offset={rdi_offset})" in s or "PUT(rdi)" in s:
                         import re
-                        m_const = re.search(r'0x([0-9a-fA-F]+)', s)
+
+                        m_const = re.search(r"0x([0-9a-fA-F]+)", s)
                         if m_const:
                             candidate = int(m_const.group(1), 16)
                             main_obj = self._project.loader.main_object
@@ -2919,14 +3031,17 @@ class RustExplorationManager(
             # Without this, _step_python_to_main's main_addr=None heuristic waits
             # `step > 10` and grabs an arbitrary mid-init address (e.g. inside
             # __libc_csu_init), starting Rust exploration off the real CFG.
-            if vex.jumpkind == 'Ijk_Call':
+            if vex.jumpkind == "Ijk_Call":
                 import pyvex
+
                 if isinstance(vex.next, pyvex.expr.Const):
                     tgt = vex.next.con.value
                     main_obj = self._project.loader.main_object
-                    if (main_obj.min_addr <= tgt <= main_obj.max_addr
-                            and tgt != self._project.entry
-                            and tgt not in self._project._sim_procedures):
+                    if (
+                        main_obj.min_addr <= tgt <= main_obj.max_addr
+                        and tgt != self._project.entry
+                        and tgt not in self._project._sim_procedures
+                    ):
                         l.info(f"Resolved main=0x{tgt:x} from entry's direct call target")
                         return tgt
         except Exception as e:
@@ -2936,29 +3051,27 @@ class RustExplorationManager(
             l.debug(f"Could not extract main from _start: {e}")
         return None
 
-    def _save_init_state_to_caches(self, result: "angr.SimState",
-                                   cache_key: str, disk_key: str) -> None:
+    def _save_init_state_to_caches(self, result: angr.SimState, cache_key: str, disk_key: str) -> None:
         """Persist a freshly-built init state to in-memory and disk caches."""
-        if (cache_key and len(RustExplorationManager._init_cache)
-                < RustExplorationManager._init_cache_max):
+        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
             RustExplorationManager._init_cache[cache_key] = result.copy()
         if disk_key:
             self._save_init_to_disk_cache(disk_key, result)
 
-    def _step_python_to_main(self, state: "angr.SimState",
-                             main_addr: Optional[int],
-                             cache_key: str, disk_key: str,
-                             main_obj) -> "angr.SimState":
+    def _step_python_to_main(
+        self, state: angr.SimState, main_addr: int | None, cache_key: str, disk_key: str, main_obj
+    ) -> angr.SimState:
         """Run Python SimulationManager until reaching main, then cache+return."""
         # Init-only addresses we never want to land on as "main"
         init_addrs = {self._project.entry}
         for obj in self._project.loader.all_objects:
-            if hasattr(obj, 'entry') and obj.entry:
+            if hasattr(obj, "entry") and obj.entry:
                 init_addrs.add(obj.entry)
 
         # Use the REAL SimulationManager (not the monkey-patched factory)
         # to avoid infinite recursion when the factory is patched.
         from angr import SimulationManager
+
         sm = SimulationManager(project=self._project, active_states=[state])
         main_min = main_obj.min_addr
         main_max = main_obj.max_addr
@@ -2970,8 +3083,7 @@ class RustExplorationManager(
             if main_addr is not None:
                 at_main = [s for s in sm.active if s.addr == main_addr]
                 if at_main:
-                    l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
-                           f"after {step} steps")
+                    l.info(f"Python init complete: state reached main at 0x{main_addr:x} after {step} steps")
                     result = at_main[0]
                     self._extract_continuation_data(result)
                     self._save_init_state_to_caches(result, cache_key, disk_key)
@@ -2980,13 +3092,15 @@ class RustExplorationManager(
             # No main symbol: pick the first state inside the main binary that
             # isn't at _start, isn't at a SimProcedure, and is past the prologue.
             if main_addr is None and step > 10:
-                in_main = [s for s in sm.active
-                           if main_min <= s.addr <= main_max
-                           and s.addr not in init_addrs
-                           and s.addr not in self._project._sim_procedures]
+                in_main = [
+                    s
+                    for s in sm.active
+                    if main_min <= s.addr <= main_max
+                    and s.addr not in init_addrs
+                    and s.addr not in self._project._sim_procedures
+                ]
                 if in_main:
-                    l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
-                           f"after {step} steps")
+                    l.info(f"Python init complete: state at 0x{in_main[0].addr:x} after {step} steps")
                     result = in_main[0]
                     self._extract_continuation_data(result)
                     self._save_init_state_to_caches(result, cache_key, disk_key)
@@ -2998,11 +3112,10 @@ class RustExplorationManager(
         if sm.active:
             best = sm.active[0]
             self._extract_continuation_data(best)
-            l.warning(f"Python init: didn't reach main after 500 steps, "
-                      f"using state at 0x{best.addr:x}")
+            l.warning(f"Python init: didn't reach main after 500 steps, using state at 0x{best.addr:x}")
             return best
         if sm.deadended:
-            l.warning(f"Python init: all states deadended")
+            l.warning("Python init: all states deadended")
         return state
 
     def _warn_rejected_options(self, options) -> None:
@@ -3019,8 +3132,9 @@ class RustExplorationManager(
         # `intersection(options)` would fail on Python's set protocol — it
         # tries to look up each frozenset member as a state option, which
         # raises on names like "0". Iterate the small constant set instead.
-        unseen = {name for name in _REJECTED_OPTION_NAMES
-                  if name in options and name not in self._warned_rejected_options}
+        unseen = {
+            name for name in _REJECTED_OPTION_NAMES if name in options and name not in self._warned_rejected_options
+        }
         if not unseen:
             return
         for name in sorted(unseen):
@@ -3058,7 +3172,7 @@ class RustExplorationManager(
             "full matrix."
         )
 
-    def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
+    def _add_rust_state(self, stash: str, angr_state: angr.SimState):
         """Add an angr state to a Rust stash.
 
         Note: Rust internally forks the state, so we need to get the actual
@@ -3068,7 +3182,7 @@ class RustExplorationManager(
         self._concretize_stack_registers(angr_state)
 
         # Create Rust state from angr state
-        is_le = self._project.arch.memory_endness == 'Iend_LE'
+        is_le = self._project.arch.memory_endness == "Iend_LE"
         rust_state = _RustSimState(self._project.arch.name, little_endian=is_le)
 
         # angr-3ms1 step 1b: push the manager-wide opt-in for fork-time
@@ -3090,7 +3204,7 @@ class RustExplorationManager(
         # the program can't use. Only push if it's still a plain int; once
         # Python's set_brk has wrapped it as a BV, we don't try to flatten.
         try:
-            py_brk = getattr(getattr(angr_state, 'posix', None), 'brk', None)
+            py_brk = getattr(getattr(angr_state, "posix", None), "brk", None)
             if isinstance(py_brk, int):
                 rust_state.posix_brk = py_brk
         except Exception as e:
@@ -3103,14 +3217,13 @@ class RustExplorationManager(
         _t_reg = time.perf_counter_ns()
         precomputed = self._precomputed_regs
         self._precomputed_regs = None  # Consume once
-        self._sync_registers_to_rust(angr_state, rust_state,
-                                     precomputed_regs=precomputed)
-        self._perf_stats.add_init_phase('register_sync', time.perf_counter_ns() - _t_reg)
+        self._sync_registers_to_rust(angr_state, rust_state, precomputed_regs=precomputed)
+        self._perf_stats.add_init_phase("register_sync", time.perf_counter_ns() - _t_reg)
 
         # Map memory regions
         _t_mem = time.perf_counter_ns()
         self._sync_memory_to_rust(angr_state, rust_state)
-        self._perf_stats.add_init_phase('memory_sync', time.perf_counter_ns() - _t_mem)
+        self._perf_stats.add_init_phase("memory_sync", time.perf_counter_ns() - _t_mem)
 
         # Mirror angr's STRICT_PAGE_ACCESS and ENABLE_NX: when set on the
         # SimState, the Rust memory model rejects loads/stores that violate
@@ -3119,9 +3232,10 @@ class RustExplorationManager(
         # STRICT_PAGE_ACCESS — see angr/engines/vex/heavy/heavy.py:115-124).
         # add_state forks the state internally; both flags are preserved
         # through forks (see SymbolicMemory::fork in native/angr/src/memory/mod.rs).
-        if hasattr(angr_state, 'options'):
+        if hasattr(angr_state, "options"):
             try:
                 from angr import sim_options as o
+
                 if o.STRICT_PAGE_ACCESS in angr_state.options:
                     rust_state.set_enforce_permissions(True)
                 if o.ENABLE_NX in angr_state.options:
@@ -3175,17 +3289,18 @@ class RustExplorationManager(
             # route through RustSolverFallback's replay path or through
             # SimSolver write-through (angr-8oiw), not through re-installing
             # constraints at init.
-            old_rust_mgr = getattr(angr_state.scratch, 'rust_mgr', None)
-            old_state_id = getattr(angr_state.scratch, 'rust_found_state_id', None)
+            old_rust_mgr = getattr(angr_state.scratch, "rust_mgr", None)
+            old_state_id = getattr(angr_state.scratch, "rust_found_state_id", None)
             installed = False
             if old_rust_mgr is not None and old_state_id is not None:
                 try:
                     z3_ptrs = old_rust_mgr.export_z3_constraint_ptrs(old_state_id)
                     if z3_ptrs:
-                        sat = self._rust_mgr.import_z3_constraint_ptrs(
-                            actual_state_id, z3_ptrs)
-                        l.debug(f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
-                                f"Rust manager (state {old_state_id}), sat={sat}")
+                        sat = self._rust_mgr.import_z3_constraint_ptrs(actual_state_id, z3_ptrs)
+                        l.debug(
+                            f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
+                            f"Rust manager (state {old_state_id}), sat={sat}"
+                        )
                         installed = True
                 except (AttributeError, Exception) as e:
                     # cat-(b) FALLBACK WITH LOSS: Z3 pointer transfer from old manager
@@ -3196,14 +3311,15 @@ class RustExplorationManager(
 
             if not installed:
                 py_constraints = None
-                if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
+                if hasattr(angr_state, "solver") and angr_state.solver.constraints:
                     py_constraints = list(angr_state.solver.constraints)
                 if py_constraints:
                     try:
-                        sat = self._rust_mgr.add_constraints_to_state(
-                            actual_state_id, py_constraints)
-                        l.debug(f"Installed {len(py_constraints)} Python constraints to Rust state "
-                                f"{actual_state_id}, sat={sat}")
+                        sat = self._rust_mgr.add_constraints_to_state(actual_state_id, py_constraints)
+                        l.debug(
+                            f"Installed {len(py_constraints)} Python constraints to Rust state "
+                            f"{actual_state_id}, sat={sat}"
+                        )
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: constraint install to Rust failed; the
                         # new state has fewer constraints than the source state — eval /
@@ -3220,27 +3336,23 @@ class RustExplorationManager(
             # numeric keys); pull names whose boolean switch is True directly
             # from the underlying _options dict.
             try:
-                src_opts = getattr(angr_state, 'options', None)
-                inner = getattr(src_opts, '_options', None)
+                src_opts = getattr(angr_state, "options", None)
+                inner = getattr(src_opts, "_options", None)
                 if isinstance(inner, dict):
-                    self._py_state_options[actual_state_id] = {
-                        name for name, value in inner.items() if value is True
-                    }
+                    self._py_state_options[actual_state_id] = {name for name, value in inner.items() if value is True}
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: seeding _py_state_options from source
                 # state failed; child uses an empty options set on first access.
                 # Debug-logs.
-                l.debug("seed py_state_options(sid=%d) failed: %s: %s",
-                        actual_state_id, type(e).__name__, e)
+                l.debug("seed py_state_options(sid=%d) failed: %s: %s", actual_state_id, type(e).__name__, e)
             try:
-                if 'globals' in getattr(angr_state, 'plugins', {}):
+                if "globals" in getattr(angr_state, "plugins", {}):
                     self._py_state_globals[actual_state_id] = dict(angr_state.globals)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: seeding _py_state_globals from source
                 # state failed; child sees an empty globals dict on first access.
                 # Debug-logs.
-                l.debug("seed py_state_globals(sid=%d) failed: %s: %s",
-                        actual_state_id, type(e).__name__, e)
+                l.debug("seed py_state_globals(sid=%d) failed: %s: %s", actual_state_id, type(e).__name__, e)
             # Extract and cache symbolic memory regions for preservation
             # This ensures symbolic values survive Rust<->Python transitions
             symbolic_pages = self._extract_symbolic_pages(angr_state)
@@ -3252,12 +3364,16 @@ class RustExplorationManager(
                 imported_sym = 0
                 for addr, ast in symbolic_pages.items():
                     try:
-                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported_sym += 1
-                        self._register_handle(id(ast), ast, addr=addr,
-                                              size=ast.length // 8 if hasattr(ast, 'length') else 1,
-                                              state_id=actual_state_id)
+                        self._register_handle(
+                            id(ast),
+                            ast,
+                            addr=addr,
+                            size=ast.length // 8 if hasattr(ast, "length") else 1,
+                            state_id=actual_state_id,
+                        )
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic page import to Rust failed;
                         # Rust sees only the concrete-witness bytes for this page, losing
@@ -3266,7 +3382,7 @@ class RustExplorationManager(
                 if imported_sym:
                     l.debug(f"Imported {imported_sym} symbolic page entries to Rust state {actual_state_id}")
             # Import pending symbolic values to Rust SymbolicMemory
-            if hasattr(self, '_pending_symbolic_imports') and self._pending_symbolic_imports:
+            if hasattr(self, "_pending_symbolic_imports") and self._pending_symbolic_imports:
                 imported = 0
                 for addr, ast in self._pending_symbolic_imports:
                     try:
@@ -3274,12 +3390,11 @@ class RustExplorationManager(
                         # Wide values are loaded with Iend_BE (preserving original BVS identity).
                         # Rust's memory model uses LE byte extraction internally, so we
                         # apply Reverse() to match.
-                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported += 1
                         # Track the ORIGINAL (non-reversed) AST for identity preservation
-                        self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8,
-                                              state_id=actual_state_id)
+                        self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8, state_id=actual_state_id)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: pending symbolic import to Rust failed;
                         # the symbolic value is not visible to Rust — downstream loads see
@@ -3303,11 +3418,15 @@ class RustExplorationManager(
                 # Import symbolic regions to Rust's symbolic memory
                 for addr, ast in symbolic_pages.items():
                     try:
-                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(rust_state.state_id, addr, import_ast)
-                        self._register_handle(id(ast), ast, addr=addr,
-                                              size=ast.length // 8 if hasattr(ast, 'length') else 1,
-                                              state_id=rust_state.state_id)
+                        self._register_handle(
+                            id(ast),
+                            ast,
+                            addr=addr,
+                            size=ast.length // 8 if hasattr(ast, "length") else 1,
+                            state_id=rust_state.state_id,
+                        )
                     except (TypeError, ValueError, RuntimeError):
                         # cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path
                         # where actual_state_id was not determined; Python-side state ID is
@@ -3316,7 +3435,6 @@ class RustExplorationManager(
             # Enforce state cache limit
             self._cleanup_state_cache()
             l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
-
 
     # Field descriptor types for table-driven serialization:
     #   'val'  — copy attribute value directly (int, str)
@@ -3348,11 +3466,9 @@ class RustExplorationManager(
 
         return []
 
-
-                    # Last resort: the pending_callback is still set, which will cause
-                    # step() to fail on the next iteration. This is better than silently
-                    # losing the state or hanging indefinitely.
-
+        # Last resort: the pending_callback is still set, which will cause
+        # step() to fail on the next iteration. This is better than silently
+        # losing the state or hanging indefinitely.
 
     # =========================================================================
     # Public API (SimulationManager-like interface)
@@ -3366,17 +3482,17 @@ class RustExplorationManager(
         self._stats_callback_count += 1
         _cb_start = time.perf_counter_ns()
         reason = event.callback_reason
-        if reason == 'simprocedure':
+        if reason == "simprocedure":
             self._handle_simprocedure_callback(event)
-        elif reason == 'syscall':
+        elif reason == "syscall":
             self._handle_syscall_callback(event)
-        elif reason == 'symbolic_branch':
+        elif reason == "symbolic_branch":
             self._handle_symbolic_branch_callback(event)
-        elif reason == 'find_predicate':
+        elif reason == "find_predicate":
             self._handle_find_predicate_callback(event)
-        elif reason == 'avoid_predicate':
+        elif reason == "avoid_predicate":
             self._handle_avoid_predicate_callback(event)
-        elif reason == 'python_vex_fallback':
+        elif reason == "python_vex_fallback":
             self._handle_python_vex_fallback(event)
         else:
             l.warning(f"Unknown callback reason: {reason}")
@@ -3392,21 +3508,23 @@ class RustExplorationManager(
     def _check_limits(self, start_time, steps_taken, timeout, max_steps) -> bool:
         """Check if timeout or max_steps limits have been reached."""
         # Fire progress callback if due
-        cb = getattr(self, '_progress_callback', None)
+        cb = getattr(self, "_progress_callback", None)
         if cb is not None:
-            interval = getattr(self, '_progress_interval', 100)
-            last = getattr(self, '_progress_last_fired', 0)
+            interval = getattr(self, "_progress_interval", 100)
+            last = getattr(self, "_progress_last_fired", 0)
             if steps_taken - last >= interval:
                 self._progress_last_fired = steps_taken
                 counts = self._rust_mgr.stash_counts()
                 try:
-                    cb({
-                        'step_count': steps_taken,
-                        'active_count': counts.get('active', 0),
-                        'found_count': counts.get('found', 0),
-                        'deadended_count': counts.get('deadened', 0),
-                        'elapsed_seconds': time.time() - start_time,
-                    })
+                    cb(
+                        {
+                            "step_count": steps_taken,
+                            "active_count": counts.get("active", 0),
+                            "found_count": counts.get("found", 0),
+                            "deadended_count": counts.get("deadened", 0),
+                            "elapsed_seconds": time.time() - start_time,
+                        }
+                    )
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so
                     # user code can't break exploration. The callback's view skips this
@@ -3438,23 +3556,23 @@ class RustExplorationManager(
     def set_exploration_strategy(self, strategy: str):
         """Set exploration strategy: 'bfs' (default) or 'dfs'."""
         strategy = strategy.lower()
-        if strategy == 'dfs':
+        if strategy == "dfs":
             self._rust_mgr.set_state_selection_lifo()
-        elif strategy == 'bfs':
+        elif strategy == "bfs":
             self._rust_mgr.set_state_selection_fifo()
         else:
             raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs' or 'dfs'.")
 
     def explore(
         self,
-        find: Optional[Union[int, list, Callable]] = None,
-        avoid: Optional[Union[int, list, Callable]] = None,
+        find: int | list | Callable | None = None,
+        avoid: int | list | Callable | None = None,
         num_find: int = 1,
-        until: Optional[Callable] = None,
-        timeout: Optional[float] = None,
-        max_steps: Optional[int] = None,
-        **kwargs
-    ) -> "RustExplorationManager":
+        until: Callable | None = None,
+        timeout: float | None = None,
+        max_steps: int | None = None,
+        **kwargs,
+    ) -> RustExplorationManager:
         """Run exploration with find/avoid conditions.
 
         Args:
@@ -3474,9 +3592,9 @@ class RustExplorationManager(
         self._invalidate_state_export_cache()
 
         # Ensure predicate attributes exist (may not be set if find/avoid not provided)
-        if not hasattr(self, '_find_predicate'):
+        if not hasattr(self, "_find_predicate"):
             self._find_predicate = None
-        if not hasattr(self, '_avoid_predicate'):
+        if not hasattr(self, "_avoid_predicate"):
             self._avoid_predicate = None
 
         # Set find addresses and store predicate for callback handling
@@ -3500,8 +3618,9 @@ class RustExplorationManager(
         # (e.g., sm.one_active.options.add(LAZY_SOLVES) after simgr creation)
         try:
             from angr import sim_options as o
+
             for state in self._state_cache.values():
-                if hasattr(state, 'options') and o.LAZY_SOLVES in state.options:
+                if hasattr(state, "options") and o.LAZY_SOLVES in state.options:
                     self._rust_mgr.set_lazy_solves(True)
                     l.debug("Enabled lazy_solves from cached state options at explore() time")
                     break
@@ -3514,6 +3633,7 @@ class RustExplorationManager(
         # Reset solver profiling stats for this exploration run
         try:
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
+
             _REM.reset_solver_stats()
         except (ImportError, RuntimeError, AttributeError):
             # cat-(b) FALLBACK WITH LOSS: solver-stats reset failed (e.g., the
@@ -3560,9 +3680,7 @@ class RustExplorationManager(
             if max_steps is not None:
                 batch_limit = min(batch_limit, max_steps - steps_taken)
 
-            steps_taken, _time_in_rust_run = self._run_predicate_batch(
-                steps_taken, batch_limit, _time_in_rust_run
-            )
+            steps_taken, _time_in_rust_run = self._run_predicate_batch(steps_taken, batch_limit, _time_in_rust_run)
 
             # Apply technique callbacks after the batch
             if self._active_techniques:
@@ -3620,13 +3738,13 @@ class RustExplorationManager(
             _time_in_rust_run += time.perf_counter_ns() - _t1
             self._rust_mgr.sync_state_index()
 
-            if event.event_type == 'need_callback':
+            if event.event_type == "need_callback":
                 if self._dispatch_callback(event):
                     batch_done = True
                 steps_taken += 1
-            elif event.event_type == 'active_empty':
+            elif event.event_type == "active_empty":
                 batch_done = True
-            elif event.event_type in ('step_complete', 'found'):
+            elif event.event_type in ("step_complete", "found"):
                 steps_taken += remaining
                 batch_done = True
             else:
@@ -3669,7 +3787,7 @@ class RustExplorationManager(
             self._rust_mgr.sync_state_index()
 
             # Count steps: callbacks = 1, batched runs = event total
-            if event.event_type == 'need_callback':
+            if event.event_type == "need_callback":
                 steps_taken += 1
             else:
                 steps_taken += max(1, event.steps_taken)
@@ -3677,7 +3795,7 @@ class RustExplorationManager(
             # Drop unconstrained states if save_unconstrained=False
             if not self._save_unconstrained:
                 try:
-                    self._rust_mgr.clear_stash('unconstrained')
+                    self._rust_mgr.clear_stash("unconstrained")
                 except (RuntimeError, KeyError):
                     # cat-(b) FALLBACK WITH LOSS: clear_stash on the unconstrained
                     # stash failed (no such stash, race with Rust); states may persist
@@ -3689,27 +3807,27 @@ class RustExplorationManager(
                 self._cleanup_state_cache()
 
             # Dispatch event
-            if event.event_type == 'found' and event.found_count >= num_find:
+            if event.event_type == "found" and event.found_count >= num_find:
                 break
-            elif event.event_type == 'active_empty':
+            if event.event_type == "active_empty":
                 if self._active_techniques:
                     self._apply_technique_filters()
                     if self._check_technique_complete():
                         break
-                    if self._rust_mgr.get_state_ids('active'):
+                    if self._rust_mgr.get_state_ids("active"):
                         continue
                 break
-            elif event.event_type == 'need_callback':
+            if event.event_type == "need_callback":
                 if self._dispatch_callback(event):
                     break
-            elif event.event_type == 'errored':
+            elif event.event_type == "errored":
                 if _DBG:
                     l.debug(f"Exploration error (state deadended): {event.callback_reason}")
-            elif event.event_type == 'step_complete':
+            elif event.event_type == "step_complete":
                 self._cleanup_symbolic_pages_cache()
 
             # Apply technique filters after step events
-            if self._active_techniques and event.event_type in ('step_complete', 'found', 'steps_exhausted'):
+            if self._active_techniques and event.event_type in ("step_complete", "found", "steps_exhausted"):
                 self._apply_technique_filters()
                 if self._check_technique_complete():
                     break
@@ -3843,8 +3961,7 @@ class RustExplorationManager(
             # cat-(a) EXPECTED CONTROL FLOW: state may already be gone (e.g.
             # double-drop) or the Rust manager torn down. drop_copy is
             # best-effort.
-            l.debug("drop_state_from_stash(sid=%d) failed: %s: %s",
-                    copy_state_id, type(e).__name__, e)
+            l.debug("drop_state_from_stash(sid=%d) failed: %s: %s", copy_state_id, type(e).__name__, e)
             return False
         if not dropped:
             return False
@@ -3857,8 +3974,7 @@ class RustExplorationManager(
             self._rust_mgr.clear_state_metadata(copy_state_id)
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: metadata clear is best-effort.
-            l.debug("clear_state_metadata(sid=%d) after drop_copy failed: %s: %s",
-                    copy_state_id, type(e).__name__, e)
+            l.debug("clear_state_metadata(sid=%d) after drop_copy failed: %s: %s", copy_state_id, type(e).__name__, e)
         return True
 
     def _cleanup_state_cache(self):
@@ -3885,8 +4001,8 @@ class RustExplorationManager(
         own ``Drop`` when the state leaves every stash.
         """
         try:
-            active_set = set(self._rust_mgr.get_state_ids('active'))
-            found_set = set(self._rust_mgr.get_state_ids('found'))
+            active_set = set(self._rust_mgr.get_state_ids("active"))
+            found_set = set(self._rust_mgr.get_state_ids("found"))
         except (RuntimeError, KeyError):
             # cat-(b) FALLBACK WITH LOSS: cannot read live state IDs; skip this
             # cleanup tick. Cache may temporarily exceed cap until next call.
@@ -3898,8 +4014,8 @@ class RustExplorationManager(
         # keyed on them. Failure here is non-fatal — fall back to the narrower
         # active/found set so we never over-prune.
         try:
-            avoid_set = set(self._rust_mgr.get_state_ids('avoid'))
-            deadended_set = set(self._rust_mgr.get_state_ids('deadended'))
+            avoid_set = set(self._rust_mgr.get_state_ids("avoid"))
+            deadended_set = set(self._rust_mgr.get_state_ids("deadended"))
             any_stash = active_set | found_set | avoid_set | deadended_set
         except (RuntimeError, KeyError):
             # cat-(b) FALLBACK WITH LOSS: missing avoid/deadended view means
@@ -3943,7 +4059,7 @@ class RustExplorationManager(
         # Prune _predicate_matched_ids similarly: once the underlying state is
         # gone, the "already moved to found/avoid" mark is irrelevant. Lazy-
         # initialized in rust_state_cache.py, so guard with hasattr.
-        matched = getattr(self, '_predicate_matched_ids', None)
+        matched = getattr(self, "_predicate_matched_ids", None)
         if matched is not None:
             matched.intersection_update(any_stash)
 
@@ -3951,7 +4067,7 @@ class RustExplorationManager(
         # no longer in any Rust stash. Formerly pruned per-state by the removed
         # `_cleanup_state_refs`; folded here so the (addr, stdout_len) cache
         # stays bounded by live stash size across long explorations.
-        eval_cache = getattr(self, '_predicate_eval_cache', None)
+        eval_cache = getattr(self, "_predicate_eval_cache", None)
         if eval_cache is not None:
             for sid in list(eval_cache.keys()):
                 if sid not in any_stash:
@@ -3992,7 +4108,7 @@ class RustExplorationManager(
             del self._state_cache[sid]
             overflow -= 1
 
-    def step(self, n: int = 1, **kwargs) -> "RustExplorationManager":
+    def step(self, n: int = 1, **kwargs) -> RustExplorationManager:
         """Step the exploration n times.
 
         Args:
@@ -4016,16 +4132,16 @@ class RustExplorationManager(
                 event = self._rust_mgr.run(1)
             self._rust_mgr.sync_state_index()
 
-            if event.event_type == 'need_callback':
+            if event.event_type == "need_callback":
                 if self._dispatch_callback(event):
                     break
                 steps_taken += 1
-            elif event.event_type == 'active_empty':
+            elif event.event_type == "active_empty":
                 break
-            elif event.event_type == 'errored':
+            elif event.event_type == "errored":
                 l.warning(f"Step error: {event.callback_reason}")
                 break
-            elif event.event_type in ('step_complete', 'found'):
+            elif event.event_type in ("step_complete", "found"):
                 steps_taken += 1
                 if self._active_techniques:
                     self._apply_technique_filters()
@@ -4036,8 +4152,8 @@ class RustExplorationManager(
 
     def _found_count(self) -> int:
         """Fast count of found states without triggering full state export/sync."""
-        count = len(self._rust_mgr.get_state_ids('found'))
-        if hasattr(self, '_predicate_found') and self._predicate_found:
+        count = len(self._rust_mgr.get_state_ids("found"))
+        if hasattr(self, "_predicate_found") and self._predicate_found:
             count += len(self._predicate_found)
         return count
 
@@ -4047,7 +4163,7 @@ class RustExplorationManager(
 
         For SimulationManager API compatibility, this returns full angr states.
         """
-        return self._get_stash_states('active')
+        return self._get_stash_states("active")
 
     @property
     def found(self) -> list:
@@ -4057,9 +4173,9 @@ class RustExplorationManager(
         that can be used with state.solver.eval(), state.posix.dumps(), etc.
         Includes states found via callable predicates.
         """
-        states = self._get_stash_states('found')
+        states = self._get_stash_states("found")
         # Include states found via callable predicates that may not be in Rust stash
-        if hasattr(self, '_predicate_found') and self._predicate_found:
+        if hasattr(self, "_predicate_found") and self._predicate_found:
             existing_ids = {id(s) for s in states}
             for s in self._predicate_found:
                 if id(s) not in existing_ids:
@@ -4069,12 +4185,12 @@ class RustExplorationManager(
     @property
     def avoid(self) -> list:
         """Get states in the avoid stash as angr SimStates."""
-        return self._get_stash_states('avoid')
+        return self._get_stash_states("avoid")
 
     @property
     def deadended(self) -> list:
         """Get states in the deadended stash as angr SimStates."""
-        return self._get_stash_states('deadended')
+        return self._get_stash_states("deadended")
 
     @property
     def errored(self) -> list:
@@ -4083,7 +4199,7 @@ class RustExplorationManager(
         Each RustErrorRecord has .state, .error, and .addr attributes,
         matching the interface of angr's ErrorRecord class.
         """
-        states = self._get_stash_states('errored')
+        states = self._get_stash_states("errored")
         if not states:
             return states
 
@@ -4099,7 +4215,7 @@ class RustExplorationManager(
             pass
 
         # Map states to error records using state_ids from the stash
-        state_ids = self._rust_mgr.get_state_ids('errored')
+        state_ids = self._rust_mgr.get_state_ids("errored")
         records = []
         for i, state in enumerate(states):
             state_id = state_ids[i] if i < len(state_ids) else None
@@ -4115,7 +4231,7 @@ class RustExplorationManager(
         with symbolic return address) had too many possible concrete values
         to enumerate and fork.
         """
-        return self._get_stash_states('unconstrained')
+        return self._get_stash_states("unconstrained")
 
     @property
     def pruned(self) -> list:
@@ -4125,7 +4241,7 @@ class RustExplorationManager(
         exploration (e.g., both branches of a conditional were infeasible
         given the current constraints).
         """
-        return self._get_stash_states('pruned')
+        return self._get_stash_states("pruned")
 
     @property
     def proxy(self):
@@ -4141,11 +4257,12 @@ class RustExplorationManager(
             mgr.proxy.found[0].regs.rax         # reads register from Rust state
         """
         from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
         return RustSimulationManagerProxy(
             self._rust_mgr,
             project=self._project,
-            stdin_vars=getattr(self, '_stdin_vars', None),
-            stdout_tracker=getattr(self, '_stdout_tracker', {}),
+            stdin_vars=getattr(self, "_stdin_vars", None),
+            stdout_tracker=getattr(self, "_stdout_tracker", {}),
             python_mgr=self,
         )
 
@@ -4160,8 +4277,9 @@ class RustExplorationManager(
         proxy-construction args stay in sync with ``mgr.proxy``.
         """
         from angr.exploration.rust_state_proxy import RustStateProxy
-        stdin_vars = getattr(self, '_stdin_vars', None)
-        stdout_tracker = getattr(self, '_stdout_tracker', {}) or {}
+
+        stdin_vars = getattr(self, "_stdin_vars", None)
+        stdout_tracker = getattr(self, "_stdout_tracker", {}) or {}
         state_ids = self._rust_mgr.get_state_ids(stash_name)
         return [
             RustStateProxy(
@@ -4185,30 +4303,30 @@ class RustExplorationManager(
         :attr:`found` when you need full SimState plugins (``posix.dumps``,
         ``solver.eval`` of complex claripy ASTs, etc.).
         """
-        return self._stash_proxies('found')
+        return self._stash_proxies("found")
 
     def active_proxies(self) -> list:
         """Return the ``active`` stash as ``list[RustStateProxy]``. See
         :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies('active')
+        return self._stash_proxies("active")
 
     def avoid_proxies(self) -> list:
         """Return the ``avoid`` stash as ``list[RustStateProxy]``. See
         :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies('avoid')
+        return self._stash_proxies("avoid")
 
     def deadended_proxies(self) -> list:
         """Return the ``deadended`` stash as ``list[RustStateProxy]``. See
         :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies('deadended')
+        return self._stash_proxies("deadended")
 
     def unconstrained_proxies(self) -> list:
         """Return the ``unconstrained`` stash as ``list[RustStateProxy]``.
         See :meth:`found_proxies` for when to prefer proxies over full
         states."""
-        return self._stash_proxies('unconstrained')
+        return self._stash_proxies("unconstrained")
 
-    def eval_register(self, state_id: int, name: str) -> Optional[int]:
+    def eval_register(self, state_id: int, name: str) -> int | None:
         """Evaluate a register from a Rust state.
 
         Args:
@@ -4231,7 +4349,7 @@ class RustExplorationManager(
         """
         return self._rust_mgr.state_satisfiable(state_id)
 
-    def one_found_state(self) -> Optional["angr.SimState"]:
+    def one_found_state(self) -> angr.SimState | None:
         """Get one found state as an angr SimState.
 
         This is a convenience method that returns a single found state
@@ -4254,17 +4372,17 @@ class RustExplorationManager(
         """Get exploration statistics including instrumentation counters."""
         result = dict(self._rust_mgr.stats())
         # Add Python-side instrumentation counters
-        result['callback_count'] = self._stats_callback_count
-        result['ffi_crossings'] = self._stats_ffi_crossings
-        result['state_creations'] = self._stats_state_creations
-        result['cache_hits'] = self._stats_cache_hits
-        result['cache_misses'] = self._stats_cache_misses
-        result['technique_filter_calls'] = self._stats_technique_filter_calls
-        result['hook_sync_calls'] = self._stats_hook_sync_calls
-        result['hook_sync_skips'] = self._stats_hook_sync_skips
-        result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
-        result['z3_ptr_cache_hits'] = self._z3_ptr_cache_hits
-        result['z3_ptr_cache_misses'] = self._z3_ptr_cache_misses
+        result["callback_count"] = self._stats_callback_count
+        result["ffi_crossings"] = self._stats_ffi_crossings
+        result["state_creations"] = self._stats_state_creations
+        result["cache_hits"] = self._stats_cache_hits
+        result["cache_misses"] = self._stats_cache_misses
+        result["technique_filter_calls"] = self._stats_technique_filter_calls
+        result["hook_sync_calls"] = self._stats_hook_sync_calls
+        result["hook_sync_skips"] = self._stats_hook_sync_skips
+        result["time_in_callbacks"] = self._stats_time_in_callbacks_ns / 1e9  # seconds
+        result["z3_ptr_cache_hits"] = self._z3_ptr_cache_hits
+        result["z3_ptr_cache_misses"] = self._z3_ptr_cache_misses
         # angr-xtse.1: surface PerformanceTracker callback counts/times so
         # run_single.py --counters-json picks them up alongside the Rust-side
         # counters. Keys are kept verbatim ("callback_<kind>_count",
@@ -4284,34 +4402,34 @@ class RustExplorationManager(
                     callback_total_count += val
                 elif key.endswith("_total_ns"):
                     callback_total_ns += val
-        result['python_callback_count'] = callback_total_count
-        result['python_callback_dispatch_us'] = callback_total_ns // 1000
+        result["python_callback_count"] = callback_total_count
+        result["python_callback_dispatch_us"] = callback_total_ns // 1000
         # angr-h0dv: defensive counter for Path A (rust_solver_ctx attach)
         # regressions. The other legacy constraint-sync counters were retired
         # after a 20-bench soak proved Path B was dead code.
-        result['rust_ctx_missing'] = self._stats_rust_ctx_missing
+        result["rust_ctx_missing"] = self._stats_rust_ctx_missing
         # angr-ymoe: orphan-BVS fallback counters
-        result['orphan_bvs_mem_thunk'] = self._stats_orphan_bvs_mem_thunk
-        result['orphan_bvs_sym_load_full_fail'] = self._stats_orphan_bvs_sym_load_full_fail
+        result["orphan_bvs_mem_thunk"] = self._stats_orphan_bvs_mem_thunk
+        result["orphan_bvs_sym_load_full_fail"] = self._stats_orphan_bvs_sym_load_full_fail
         # angr-4o7d: snapshot-restore orphan-BVS counter
-        result['orphan_bvs_snapshot_restore'] = self._stats_orphan_bvs_snapshot_restore
+        result["orphan_bvs_snapshot_restore"] = self._stats_orphan_bvs_snapshot_restore
         # angr-7jv5: proxy write-through FFI counters
-        result['proxy_mem_concrete_writes'] = self._stats_proxy_mem_concrete_writes
-        result['proxy_mem_ast_writes'] = self._stats_proxy_mem_ast_writes
-        result['proxy_reg_writes'] = self._stats_proxy_reg_writes
-        result['proxy_solver_adds'] = self._stats_proxy_solver_adds
+        result["proxy_mem_concrete_writes"] = self._stats_proxy_mem_concrete_writes
+        result["proxy_mem_ast_writes"] = self._stats_proxy_mem_ast_writes
+        result["proxy_reg_writes"] = self._stats_proxy_reg_writes
+        result["proxy_solver_adds"] = self._stats_proxy_solver_adds
         # Add timing breakdown for predicate-mode exploration loop
-        if hasattr(self, '_time_in_rust_run_ns'):
-            result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9
-            result['time_in_predicate_eval'] = self._time_in_predicate_eval_ns / 1e9
-            result['time_in_active_check'] = self._time_in_active_check_ns / 1e9
-        if hasattr(self, '_time_in_explore_ns'):
-            result['time_in_explore'] = self._time_in_explore_ns / 1e9
+        if hasattr(self, "_time_in_rust_run_ns"):
+            result["time_in_rust_run"] = self._time_in_rust_run_ns / 1e9
+            result["time_in_predicate_eval"] = self._time_in_predicate_eval_ns / 1e9
+            result["time_in_active_check"] = self._time_in_active_check_ns / 1e9
+        if hasattr(self, "_time_in_explore_ns"):
+            result["time_in_explore"] = self._time_in_explore_ns / 1e9
         # Include Rust execution profiling stats if available
         try:
             rust_exec_stats = self._rust_mgr.get_execution_stats()
             for k, v in rust_exec_stats.items():
-                result[f'rust_{k}'] = v
+                result[f"rust_{k}"] = v
         except (RuntimeError, AttributeError):
             # cat-(b) FALLBACK WITH LOSS: Rust execution stats unavailable;
             # the stats dict still has Python-side counters.
@@ -4319,6 +4437,7 @@ class RustExplorationManager(
         # Include Z3 solver profiling stats
         try:
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
+
             solver_stats = _REM.get_solver_stats()
             for k, v in solver_stats.items():
                 result[k] = v
@@ -4348,6 +4467,7 @@ class RustExplorationManager(
         """
         try:
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
+
             return dict(_REM.get_solver_stats())
         except (ImportError, RuntimeError, AttributeError):
             # cat-(b) FALLBACK WITH LOSS: Z3 solver stats unavailable on the
@@ -4358,6 +4478,7 @@ class RustExplorationManager(
         """Reset all global Z3 solver profiling counters to zero."""
         try:
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
+
             _REM.reset_solver_stats()
         except (ImportError, RuntimeError, AttributeError):
             # cat-(b) FALLBACK WITH LOSS: solver-stats reset failed on public
@@ -4370,22 +4491,26 @@ class RustExplorationManager(
     def use_technique(self, technique, **kwargs):
         """Apply an exploration technique. See rust_techniques.use_technique()."""
         from angr.exploration.rust_techniques import use_technique
+
         return use_technique(self, technique, **kwargs)
 
     def remove_technique(self, technique) -> bool:
         """Remove an exploration technique. See rust_techniques.remove_technique()."""
         from angr.exploration.rust_techniques import remove_technique
+
         return remove_technique(self, technique)
 
     def _apply_technique_filters(self):
         """Apply ExplorationTechnique filter() callbacks via proxy."""
         self._stats_technique_filter_calls += 1
         from angr.exploration.rust_techniques import apply_technique_filters
+
         apply_technique_filters(self)
 
     def _check_technique_complete(self) -> bool:
         """Check ExplorationTechnique complete() callbacks."""
         from angr.exploration.rust_techniques import check_technique_complete
+
         return check_technique_complete(self)
 
     def _has_technique_step_hooks(self) -> bool:
@@ -4393,6 +4518,7 @@ class RustExplorationManager(
         if not self._active_techniques:
             return False
         from angr.exploration.rust_techniques import manager_has_step_hooks
+
         return manager_has_step_hooks(self)
 
     def _run_with_step_hooks(self, batch_size):
@@ -4403,19 +4529,20 @@ class RustExplorationManager(
         a direct Rust run so the loop still makes progress.
         """
         from angr.exploration.rust_techniques import dispatch_step_with_hooks
+
         event = dispatch_step_with_hooks(self, batch_size)
         if event is None:
             event = self._rust_mgr.run(batch_size)
         return event
 
-    def run(self, **kwargs) -> "RustExplorationManager":
+    def run(self, **kwargs) -> RustExplorationManager:
         """Alias for explore() for SimulationManager compatibility.
 
         Handles step_func: if provided, called after EACH step (matching
         Python SimulationManager behavior). Without step_func, delegates
         to explore() for batch execution.
         """
-        step_func = kwargs.pop('step_func', None)
+        step_func = kwargs.pop("step_func", None)
         if step_func is None:
             return self.explore(**kwargs)
 
@@ -4425,10 +4552,11 @@ class RustExplorationManager(
         # Keep terminal states since step_func may need deadended states.
         self._rust_mgr.set_drop_terminal_states(False)
         try:
-            n = kwargs.pop('n', None)
-            stash = kwargs.pop('stash', 'active')
-            until = kwargs.pop('until', None)
+            n = kwargs.pop("n", None)
+            stash = kwargs.pop("stash", "active")
+            until = kwargs.pop("until", None)
             import itertools
+
             for _ in itertools.count() if n is None else range(n):
                 if not self._rust_mgr.get_state_ids(stash):
                     break
@@ -4440,7 +4568,7 @@ class RustExplorationManager(
             self._rust_mgr.set_drop_terminal_states(True)
         return self
 
-    def move(self, from_stash: str, to_stash: str, filter_func=None) -> "RustExplorationManager":
+    def move(self, from_stash: str, to_stash: str, filter_func=None) -> RustExplorationManager:
         """Move states between stashes.
 
         Args:
@@ -4467,8 +4595,8 @@ class RustExplorationManager(
                     # export). Falls back to full export if the filter accesses
                     # something the proxy doesn't support. Mirrors filter().
                     from angr.exploration.rust_state_proxy import RustStateProxy
-                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
-                                           python_mgr=self)
+
+                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
                     try:
                         if filter_func(proxy):
                             move_ids.append(state_id)
@@ -4505,15 +4633,15 @@ class RustExplorationManager(
 
         return self
 
-    def stash(self, filter_func=None, from_stash="active", to_stash="stashed") -> "RustExplorationManager":
+    def stash(self, filter_func=None, from_stash="active", to_stash="stashed") -> RustExplorationManager:
         """Stash some states. Alias for move() with different defaults."""
         return self.move(from_stash, to_stash, filter_func=filter_func)
 
-    def unstash(self, filter_func=None, to_stash="active", from_stash="stashed") -> "RustExplorationManager":
+    def unstash(self, filter_func=None, to_stash="active", from_stash="stashed") -> RustExplorationManager:
         """Unstash some states. Alias for move() with different defaults."""
         return self.move(from_stash, to_stash, filter_func=filter_func)
 
-    def filter(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
+    def filter(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
         """Filter states in a stash by predicate.
 
         States not matching the predicate are removed (moved to 'pruned').
@@ -4538,8 +4666,8 @@ class RustExplorationManager(
                 # Falls back to full export if the filter accesses something
                 # the proxy doesn't support.
                 from angr.exploration.rust_state_proxy import RustStateProxy
-                proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
-                                        python_mgr=self)
+
+                proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
                 try:
                     if filter_func(proxy):
                         keep_ids.append(state_id)
@@ -4571,14 +4699,14 @@ class RustExplorationManager(
         # Move non-matching states to pruned stash
         for state_id in prune_ids:
             try:
-                self._rust_mgr.move_state(state_id, stash, 'pruned')
+                self._rust_mgr.move_state(state_id, stash, "pruned")
             except (RuntimeError, KeyError):
                 # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                 pass
 
         return self
 
-    def prune(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
+    def prune(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
         """Remove states from a stash based on predicate.
 
         Default behavior prunes unsatisfiable states.
@@ -4606,7 +4734,7 @@ class RustExplorationManager(
                     pass  # Keep on error
             for state_id in prune_ids:
                 try:
-                    self._rust_mgr.move_state(state_id, stash, 'pruned')
+                    self._rust_mgr.move_state(state_id, stash, "pruned")
                 except (RuntimeError, KeyError):
                     # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                     pass
@@ -4614,7 +4742,7 @@ class RustExplorationManager(
 
         return self.filter(stash=stash, filter_func=filter_func)
 
-    def drop(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
+    def drop(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
         """Drop states from a stash.
 
         States matching the predicate (or all if no predicate) are removed.
@@ -4635,7 +4763,7 @@ class RustExplorationManager(
                 # cat-(a) EXPECTED CONTROL FLOW: probing for the optional
                 # clear_stash API on older Rust builds; fall back to move_states.
                 # Fallback: move all to deadended
-                self._rust_mgr.move_states(stash, 'deadended', None)
+                self._rust_mgr.move_states(stash, "deadended", None)
         else:
             # Drop states matching predicate
             state_ids = list(self._rust_mgr.get_state_ids(stash))
@@ -4646,8 +4774,8 @@ class RustExplorationManager(
                     # export). Falls back to full export if the filter accesses
                     # something the proxy doesn't support. Mirrors filter().
                     from angr.exploration.rust_state_proxy import RustStateProxy
-                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
-                                           python_mgr=self)
+
+                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
                     matched = None
                     try:
                         matched = bool(filter_func(proxy))
@@ -4663,7 +4791,7 @@ class RustExplorationManager(
 
                     if matched:
                         try:
-                            self._rust_mgr.move_state(state_id, stash, 'deadended')
+                            self._rust_mgr.move_state(state_id, stash, "deadended")
                         except (RuntimeError, KeyError):
                             # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                             pass
@@ -4675,8 +4803,9 @@ class RustExplorationManager(
 
         return self
 
-    def split(self, stash_from: str = 'active', stash_to: str = 'stashed',
-              limit: int = 8, filter_func=None) -> "RustExplorationManager":
+    def split(
+        self, stash_from: str = "active", stash_to: str = "stashed", limit: int = 8, filter_func=None
+    ) -> RustExplorationManager:
         """Split states between stashes.
 
         Moves excess states to another stash to limit exploration width.
@@ -4713,8 +4842,7 @@ class RustExplorationManager(
         Returns state IDs per stash.
         """
         result = {}
-        for stash_name in ['active', 'found', 'avoid', 'deadended', 'errored',
-                          'unconstrained', 'pruned', 'stashed']:
+        for stash_name in ["active", "found", "avoid", "deadended", "errored", "unconstrained", "pruned", "stashed"]:
             try:
                 state_ids = list(self._rust_mgr.get_state_ids(stash_name))
                 result[stash_name] = state_ids
@@ -4740,7 +4868,7 @@ class RustExplorationManager(
             return found[0]
         return None
 
-    def copy(self) -> "RustExplorationManager":
+    def copy(self) -> RustExplorationManager:
         """Return self for SimulationManager API compatibility.
 
         RustExplorationManager is stateful and backed by a single Rust object,
@@ -4749,8 +4877,9 @@ class RustExplorationManager(
         """
         return self
 
-    def merge(self, stash: str = 'active', merge_func=None, merge_key=None,
-              prune=True, **kwargs) -> "RustExplorationManager":
+    def merge(
+        self, stash: str = "active", merge_func=None, merge_key=None, prune=True, **kwargs
+    ) -> RustExplorationManager:
         """Merge states in a stash.
 
         Exports states to Python, performs merge via claripy, then replaces
@@ -4808,12 +4937,12 @@ class RustExplorationManager(
             # Clear the Rust stash and re-add merged states
             for sid in state_ids:
                 try:
-                    self._rust_mgr.move_state(sid, stash, '_merge_drop')
+                    self._rust_mgr.move_state(sid, stash, "_merge_drop")
                 except (RuntimeError, KeyError):
                     # cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.
                     pass
             try:
-                self._rust_mgr.clear_stash('_merge_drop')
+                self._rust_mgr.clear_stash("_merge_drop")
             except (RuntimeError, KeyError):
                 # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
                 # stash failed (already empty / never created).
@@ -4898,9 +5027,9 @@ class RustExplorationManager(
     def load_from_disk(
         cls,
         path: str,
-        project: "angr.Project",
+        project: angr.Project,
         **kwargs,
-    ) -> "RustExplorationManager":
+    ) -> RustExplorationManager:
         """Construct a fresh manager and restore its stash from ``path``.
 
         Convenience wrapper around the ``RustExplorationManager(project) +
@@ -4952,6 +5081,7 @@ class RustExplorationManager(
         """
         try:
             from angr.rustylib.vex_engine import clear_ast_cache
+
             clear_ast_cache()
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: vex_engine module may be
@@ -4964,7 +5094,7 @@ class RustExplorationManager(
         # change). Wrap everything because interpreter shutdown can
         # already have torn down sys.modules by the time __del__ runs.
         try:
-            if getattr(self, '_clear_caches_on_cleanup', False):
+            if getattr(self, "_clear_caches_on_cleanup", False):
                 self.cleanup()
         except Exception:
             pass
@@ -4976,7 +5106,7 @@ class RustExplorationManager(
     def __getattr__(self, name: str):
         """Handle attribute access for stash names."""
         # Try to get stash by name
-        if name.startswith('_'):
+        if name.startswith("_"):
             raise AttributeError(name)
 
         # Handle one_* prefix for single state access (SimulationManager compatibility)

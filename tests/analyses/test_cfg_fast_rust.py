@@ -9,6 +9,7 @@ function set identical to the Python-engine baseline.
 Three binaries are exercised, drawn from the angr-examples bench corpus:
 fauxware, csgames2018 (KeygenMe), and csaw_wyvern (wyvern).
 """
+
 from __future__ import annotations
 
 __package__ = __package__ or "tests.analyses"  # pylint:disable=redefined-builtin
@@ -19,17 +20,15 @@ import pytest
 
 import angr
 
-
 try:
     from angr.exploration import RustExplorationManager
+
     RUST_EXPLORATION_AVAILABLE = True
 except ImportError:
     RUST_EXPLORATION_AVAILABLE = False
 
 
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
-)
+EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
 # (example dir name, binary file name within that dir)
 BINARIES = [
@@ -53,16 +52,8 @@ def _exec_func_addrs(proj: angr.Project, cfg) -> set[int]:
     nodes, so the smoke test restricts comparison to executable ranges where
     the function set is stable.
     """
-    exec_ranges = [
-        (s.vaddr, s.vaddr + s.memsize)
-        for s in proj.loader.main_object.sections
-        if s.is_executable
-    ]
-    return {
-        addr
-        for addr in cfg.kb.functions.keys()
-        if any(lo <= addr < hi for lo, hi in exec_ranges)
-    }
+    exec_ranges = [(s.vaddr, s.vaddr + s.memsize) for s in proj.loader.main_object.sections if s.is_executable]
+    return {addr for addr in cfg.kb.functions.keys() if any(lo <= addr < hi for lo, hi in exec_ranges)}
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

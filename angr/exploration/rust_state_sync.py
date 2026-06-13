@@ -1,14 +1,15 @@
 """Mixin for State synchronization between Python and Rust."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import claripy
 
 from angr.rustylib.vex_engine import register_names_for_arch
 
-from ._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
+from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SIZE
 
 # Precomputed all-zero buffers for _sync_extra_python_pages fast-path
 # zero-page detection (memcmp-based instead of any() byte iteration; saves
@@ -42,7 +43,7 @@ class RustStateSyncMixin:
         """
         self._stats_hook_sync_calls += 1
 
-        if not hasattr(self._project, '_sim_procedures'):
+        if not hasattr(self._project, "_sim_procedures"):
             self._stats_hook_sync_skips += 1
             return
 
@@ -61,9 +62,9 @@ class RustStateSyncMixin:
         for addr, proc in sim_procedures.items():
             if addr in registered:
                 continue
-            name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-            num_args = getattr(proc, 'num_args', 0) or 0
-            no_return = getattr(proc, 'NO_RET', False)
+            name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+            num_args = getattr(proc, "num_args", 0) or 0
+            no_return = getattr(proc, "NO_RET", False)
             procs.append((addr, name, num_args, no_return))
             registered.add(addr)
             if _DBG:
@@ -115,8 +116,9 @@ class RustStateSyncMixin:
         """
         return register_names_for_arch(arch.name)
 
-    def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState",
-                               precomputed_regs: dict = None):
+    def _sync_registers_to_rust(
+        self, angr_state: angr.SimState, rust_state: _RustSimState, precomputed_regs: dict = None
+    ):
         """Sync registers from angr state to Rust state.
 
         Args:
@@ -139,8 +141,7 @@ class RustStateSyncMixin:
             # everything in arch.register_names but Rust only knows the subset
             # in _supported_register_names.
             supported = set(reg_names)
-            filtered = {name: val for name, val in precomputed_regs.items()
-                        if name in supported}
+            filtered = {name: val for name, val in precomputed_regs.items() if name in supported}
             if filtered:
                 rust_state.set_registers_bulk(filtered)
             return
@@ -150,12 +151,13 @@ class RustStateSyncMixin:
         # Build dict of all register values, then send in single FFI call.
         # Symbolic registers are imported via Z3 AST pointers (shared context).
         import claripy as _claripy
+
         z3_backend = _claripy.backends.z3
         bulk_regs = {}
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
-                if reg_val.op == 'BVV':
+                if reg_val.op == "BVV":
                     bulk_regs[reg_name] = reg_val.args[0]
                 elif not reg_val.symbolic:
                     bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
@@ -167,17 +169,19 @@ class RustStateSyncMixin:
                     try:
                         ast_ptr = self._cached_z3_ast_ptr(reg_val, z3_backend)
                         if ast_ptr:
-                            rust_state.set_register_symbolic(
-                                reg_name, ast_ptr, reg_val.length
-                            )
+                            rust_state.set_register_symbolic(reg_name, ast_ptr, reg_val.length)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic register not
                         # synced; Rust will see stale/uninit BVS for this
                         # register. Already logged at warn (commit
                         # 4f16e3792 / angr-i1wg).
-                        l.warning("Symbolic register %s not synced to Rust "
-                                  "(Z3 conversion failed: %s) — Rust will "
-                                  "see stale/uninit value", reg_name, e)
+                        l.warning(
+                            "Symbolic register %s not synced to Rust "
+                            "(Z3 conversion failed: %s) — Rust will "
+                            "see stale/uninit value",
+                            reg_name,
+                            e,
+                        )
             except AttributeError:
                 # cat-(a) EXPECTED CONTROL FLOW: arch defines register name
                 # but state doesn't expose it (rare, but harmless to skip).
@@ -191,7 +195,7 @@ class RustStateSyncMixin:
         if bulk_regs:
             rust_state.set_registers_bulk(bulk_regs)
 
-    def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
+    def _sync_memory_to_rust(self, angr_state: angr.SimState, rust_state: _RustSimState):
         """Sync memory from angr state to Rust state.
 
         Strategy: map pages for each loaded segment (not the entire address
@@ -207,46 +211,41 @@ class RustStateSyncMixin:
         if symbolic_pages:
             l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
 
-        mapped_page_addrs, pages_mapped = self._map_loader_pages(
-            rust_state, symbolic_pages, page_size)
+        mapped_page_addrs, pages_mapped = self._map_loader_pages(rust_state, symbolic_pages, page_size)
         self._overlay_relocated_sections(angr_state, rust_state)
         l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
 
-        self._overlay_python_state_pages(
-            angr_state, rust_state, mapped_page_addrs, symbolic_pages, page_size)
+        self._overlay_python_state_pages(angr_state, rust_state, mapped_page_addrs, symbolic_pages, page_size)
         self._add_loader_lazy_regions(rust_state, page_size)
 
-        sp_page, stack_start, stack_base = self._setup_stack_region(
-            angr_state, rust_state, arch, page_size)
+        sp_page, stack_start, stack_base = self._setup_stack_region(angr_state, rust_state, arch, page_size)
 
         symbolic_regions: list = []  # (addr, claripy_ast) pairs to import
-        self._sync_stack_page(
-            angr_state, rust_state, sp_page, page_size, arch, symbolic_regions)
+        self._sync_stack_page(angr_state, rust_state, sp_page, page_size, arch, symbolic_regions)
         self._sync_extra_python_pages(
-            angr_state, rust_state, mapped_page_addrs, symbolic_pages,
-            sp_page, stack_start, stack_base, page_size)
-        self._scan_user_symbolic_pages(
-            angr_state, stack_start, stack_base, page_size, symbolic_regions)
+            angr_state, rust_state, mapped_page_addrs, symbolic_pages, sp_page, stack_start, stack_base, page_size
+        )
+        self._scan_user_symbolic_pages(angr_state, stack_start, stack_base, page_size, symbolic_regions)
 
         if symbolic_regions:
             self._pending_symbolic_imports = symbolic_regions
             l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
 
-    def _try_fast_memory_sync(self, rust_state: "_RustSimState") -> bool:
+    def _try_fast_memory_sync(self, rust_state: _RustSimState) -> bool:
         """Apply cached memory layout from disk init cache. Returns True if used."""
         if self._mem_cache is None:
             return False
         mem = self._mem_cache
         self._mem_cache = None  # Consume once
         try:
-            if mem.get('batch_pages'):
-                rust_state.map_memory_batch(mem['batch_pages'])
-            for addr, patch_bytes in mem.get('section_patches', []):
+            if mem.get("batch_pages"):
+                rust_state.map_memory_batch(mem["batch_pages"])
+            for addr, patch_bytes in mem.get("section_patches", []):
                 rust_state.map_memory_data(addr, patch_bytes, 7)
-            if mem.get('stack_page'):
-                sp_page, page_bytes = mem['stack_page']
+            if mem.get("stack_page"):
+                sp_page, page_bytes = mem["stack_page"]
                 rust_state.map_memory_data(sp_page, page_bytes, 6)
-            for start, size in mem.get('lazy_regions', []):
+            for start, size in mem.get("lazy_regions", []):
                 rust_state.add_lazy_region(start, size)
             l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
             return True
@@ -258,8 +257,7 @@ class RustStateSyncMixin:
             l.debug(f"Fast memory sync failed, falling back: {e}")
             return False
 
-    def _find_user_symbolic_pages(self, angr_state: "angr.SimState",
-                                  page_size: int) -> set:
+    def _find_user_symbolic_pages(self, angr_state: angr.SimState, page_size: int) -> set:
         """Find pages that contain user-written symbolic data.
 
         These pages are NOT pre-populated with concrete loader data, so Rust
@@ -267,7 +265,7 @@ class RustStateSyncMixin:
         symbolic AST and enables symbolic forking on comparisons).
         """
         symbolic_pages: set = set()
-        if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+        if hasattr(angr_state.memory, "get_symbolic_addrs"):
             try:
                 for addr in angr_state.memory.get_symbolic_addrs():
                     symbolic_pages.add(addr & ~(page_size - 1))
@@ -276,7 +274,7 @@ class RustStateSyncMixin:
                 # fall through to the _pages bitmap scan below. Both
                 # populate symbolic_pages, so this is a graceful fallback.
                 pass
-        if not symbolic_pages and hasattr(angr_state.memory, '_pages'):
+        if not symbolic_pages and hasattr(angr_state.memory, "_pages"):
             # angr-7vcx: scan UltraPage.symbolic_data (the dict of explicit
             # symbolic stores), NOT symbolic_bitmap. A freshly map_region'd
             # page initialises symbolic_bitmap to all-ones (every byte will
@@ -285,12 +283,12 @@ class RustStateSyncMixin:
             # data — those pages then get skipped by both _overlay and
             # _sync_extra paths, leaving Rust without the mapping and
             # silently dropping concrete stores.
-            mem_page_size = getattr(angr_state.memory, 'page_size', page_size)
+            mem_page_size = getattr(angr_state.memory, "page_size", page_size)
             for page_num in list(angr_state.memory._pages.keys()):
                 page = angr_state.memory._pages.get(page_num)
                 if page is None:
                     continue
-                sd = getattr(page, 'symbolic_data', None)
+                sd = getattr(page, "symbolic_data", None)
                 if sd is not None and len(sd) > 0:
                     symbolic_pages.add(page_num * mem_page_size)
         return symbolic_pages
@@ -309,15 +307,15 @@ class RustStateSyncMixin:
         seen_page_addrs: set = set()
         for obj in self._project.loader.all_objects:
             try:
-                if hasattr(obj, 'segments') and obj.segments:
+                if hasattr(obj, "segments") and obj.segments:
                     ranges = []
                     for seg in obj.segments:
                         if seg.memsize > 0:
-                            ranges.append((seg.min_addr & ~(page_size - 1),
-                                          (seg.max_addr + page_size) & ~(page_size - 1)))
+                            ranges.append(
+                                (seg.min_addr & ~(page_size - 1), (seg.max_addr + page_size) & ~(page_size - 1))
+                            )
                 else:
-                    ranges = [(obj.min_addr & ~(page_size - 1),
-                              (obj.max_addr + page_size) & ~(page_size - 1))]
+                    ranges = [(obj.min_addr & ~(page_size - 1), (obj.max_addr + page_size) & ~(page_size - 1))]
                 for start_page, end_page in ranges:
                     for page_addr in range(start_page, end_page, page_size):
                         if page_addr in seen_page_addrs:
@@ -363,8 +361,7 @@ class RustStateSyncMixin:
         cache[loader] = entry
         return entry
 
-    def _map_loader_pages(self, rust_state: "_RustSimState",
-                          symbolic_pages: set, page_size: int):
+    def _map_loader_pages(self, rust_state: _RustSimState, symbolic_pages: set, page_size: int):
         """Map pages for each loaded object's segments via a single FFI batch.
 
         Returns (mapped_page_addrs, pages_mapped). Skips pages already in
@@ -375,8 +372,7 @@ class RustStateSyncMixin:
         entry = self._get_loader_pages_cache(page_size)
         cached_pages = entry["batch_pages"]
         if symbolic_pages:
-            filtered = [(addr, data, perms) for (addr, data, perms) in cached_pages
-                        if addr not in symbolic_pages]
+            filtered = [(addr, data, perms) for (addr, data, perms) in cached_pages if addr not in symbolic_pages]
         else:
             filtered = cached_pages
         mapped_page_addrs = {addr for (addr, _data, _perms) in filtered}
@@ -390,24 +386,22 @@ class RustStateSyncMixin:
                     rust_state.map_memory_data(page_addr, data, perms)
         return mapped_page_addrs, len(filtered)
 
-    def _overlay_relocated_sections(self, angr_state: "angr.SimState",
-                                    rust_state: "_RustSimState") -> None:
+    def _overlay_relocated_sections(self, angr_state: angr.SimState, rust_state: _RustSimState) -> None:
         """Overlay GOT entries / relocated section data from the Python state.
 
         Only writes small concrete sections (<64KB) to avoid expensive Z3 eval.
         """
         for obj in self._project.loader.all_objects:
-            if obj.binary is None or not hasattr(obj, 'sections'):
+            if obj.binary is None or not hasattr(obj, "sections"):
                 continue
             for section in obj.sections:
                 if section.memsize > 0 and section.memsize < MAX_OVERLAY_SECTION_SIZE:
                     try:
                         val = angr_state.memory.load(
-                            section.min_addr, section.memsize,
-                            endness='Iend_BE', inspect=False,
-                            disable_actions=True)
+                            section.min_addr, section.memsize, endness="Iend_BE", inspect=False, disable_actions=True
+                        )
                         if not val.symbolic:
-                            data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
+                            data = angr_state.solver.eval(val).to_bytes(section.memsize, "big")
                             rust_state.map_memory_data(section.min_addr, data, 7)
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: GOT/relocation
@@ -418,11 +412,14 @@ class RustStateSyncMixin:
                         # this on access in most cases.
                         pass
 
-    def _overlay_python_state_pages(self, angr_state: "angr.SimState",
-                                    rust_state: "_RustSimState",
-                                    mapped_page_addrs: set,
-                                    symbolic_pages: set,
-                                    page_size: int) -> None:
+    def _overlay_python_state_pages(
+        self,
+        angr_state: angr.SimState,
+        rust_state: _RustSimState,
+        mapped_page_addrs: set,
+        symbolic_pages: set,
+        page_size: int,
+    ) -> None:
         """Overlay Python state's concrete memory on top of loader pages.
 
         Critical for multi-stage explore: when a found state from stage N is
@@ -431,7 +428,7 @@ class RustStateSyncMixin:
         runtime modifications (e.g. result buffer at 0x612040 in sakura).
         """
         state_overlay_count = 0
-        mem_pages = getattr(angr_state.memory, '_pages', None)
+        mem_pages = getattr(angr_state.memory, "_pages", None)
         if mem_pages is None:
             return
         for page_no in list(mem_pages.keys()):
@@ -456,8 +453,7 @@ class RustStateSyncMixin:
         if state_overlay_count:
             l.debug(f"Overlaid {state_overlay_count} loader pages with Python state data")
 
-    def _add_loader_lazy_regions(self, rust_state: "_RustSimState",
-                                 page_size: int) -> None:
+    def _add_loader_lazy_regions(self, rust_state: _RustSimState, page_size: int) -> None:
         """Register every loaded object as a lazy region for fetch_page callbacks.
 
         Uses the cached lazy_regions list (computed once per project, shared
@@ -473,9 +469,7 @@ class RustStateSyncMixin:
                 # be auto-fetched and will fail to load on demand.
                 pass
 
-    def _setup_stack_region(self, angr_state: "angr.SimState",
-                            rust_state: "_RustSimState", arch,
-                            page_size: int):
+    def _setup_stack_region(self, angr_state: angr.SimState, rust_state: _RustSimState, arch, page_size: int):
         """Compute the stack region and register it as lazy.
 
         Returns (sp_page, stack_start, stack_base).
@@ -487,28 +481,33 @@ class RustStateSyncMixin:
             # default; pick the conventional stack-base for this arch.
             # If the state's actual SP differs, the lazy stack region
             # may not cover real accesses and they'll FFI back to Python.
-            sp = 0x7fff_fff0_0000 if arch.bits == 64 else 0x7fff_0000
+            sp = 0x7FFF_FFF0_0000 if arch.bits == 64 else 0x7FFF_0000
         stack_base = (sp & ~(page_size - 1)) + page_size
         stack_start = stack_base - STACK_SIZE
         rust_state.add_lazy_region(stack_start, STACK_SIZE)
         sp_page = sp & ~(page_size - 1)
         return sp_page, stack_start, stack_base
 
-    def _sync_stack_page(self, angr_state: "angr.SimState",
-                         rust_state: "_RustSimState",
-                         sp_page: int, page_size: int, arch,
-                         symbolic_regions: list) -> None:
+    def _sync_stack_page(
+        self,
+        angr_state: angr.SimState,
+        rust_state: _RustSimState,
+        sp_page: int,
+        page_size: int,
+        arch,
+        symbolic_regions: list,
+    ) -> None:
         """Pre-populate just the stack page at SP from the Python state.
 
         Other stack pages are served lazily via fetch_page when accessed,
         avoiding expensive solver.eval() on unconstrained fill pages.
         """
         page_no = sp_page // page_size
-        mem_pages = getattr(angr_state.memory, '_pages', None)
+        mem_pages = getattr(angr_state.memory, "_pages", None)
         page_obj = mem_pages.get(page_no) if mem_pages is not None else None
         used_fast_path = False
         try:
-            if page_obj is not None and hasattr(page_obj, 'concrete_load'):
+            if page_obj is not None and hasattr(page_obj, "concrete_load"):
                 try:
                     concrete = bytes(page_obj.concrete_load(0, page_size))
                     if len(concrete) == page_size:
@@ -516,10 +515,9 @@ class RustStateSyncMixin:
                         used_fast_path = True
                         # Targeted scan of symbolic_data ranges only (~1-5ms)
                         # vs full _extract_symbolic_regions scan (~137ms).
-                        sd = getattr(page_obj, 'symbolic_data', None)
+                        sd = getattr(page_obj, "symbolic_data", None)
                         if sd:
-                            self._extract_stack_symbolic_from_sd(
-                                angr_state, sp_page, page_size, sd, symbolic_regions)
+                            self._extract_stack_symbolic_from_sd(angr_state, sp_page, page_size, sd, symbolic_regions)
                 except Exception:
                     # cat-(a) EXPECTED CONTROL FLOW: concrete_load fast
                     # path failed (page has symbolic content). Fall
@@ -529,15 +527,13 @@ class RustStateSyncMixin:
             if not used_fast_path:
                 # Slow path: load through memory mixin stack + solver.eval()
                 page_data = angr_state.memory.load(
-                    sp_page, page_size, endness='Iend_BE',
-                    inspect=False, disable_actions=True)
-                concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                    sp_page, page_size, endness="Iend_BE", inspect=False, disable_actions=True
+                )
+                concrete = angr_state.solver.eval(page_data).to_bytes(page_size, "big")
                 rust_state.map_memory_data(sp_page, concrete, 6)
                 if page_data.symbolic and self._has_user_symbolic_var(page_data):
-                    self._extract_symbolic_regions(
-                        angr_state, sp_page, page_size,
-                        arch.bytes, symbolic_regions)
-            l.debug(f"Pre-populated 1 stack page in Rust memory")
+                    self._extract_symbolic_regions(angr_state, sp_page, page_size, arch.bytes, symbolic_regions)
+            l.debug("Pre-populated 1 stack page in Rust memory")
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: stack page sync failed entirely
             # (slow path raised). Rust will fetch the stack page lazily
@@ -545,9 +541,9 @@ class RustStateSyncMixin:
             # FFI roundtrip per page.
             pass
 
-    def _extract_stack_symbolic_from_sd(self, angr_state: "angr.SimState",
-                                        page_addr: int, page_size: int,
-                                        sd: dict, symbolic_regions: list) -> None:
+    def _extract_stack_symbolic_from_sd(
+        self, angr_state: angr.SimState, page_addr: int, page_size: int, sd: dict, symbolic_regions: list
+    ) -> None:
         """Targeted scan of a stack page's symbolic_data ranges.
 
         Avoids the full 4096-byte byte-by-byte scan in _extract_symbolic_regions
@@ -555,10 +551,10 @@ class RustStateSyncMixin:
         """
         scan_ranges = []
         for sd_offset, sd_ast in sd.items():
-            if not hasattr(sd_ast, 'variables'):
+            if not hasattr(sd_ast, "variables"):
                 continue
             if self._has_user_symbolic_var(sd_ast):
-                ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
                 scan_ranges.append((sd_offset, ast_size))
         for start_offset, size in scan_ranges:
             for byte_off in range(size):
@@ -566,9 +562,7 @@ class RustStateSyncMixin:
                     break
                 addr = page_addr + start_offset + byte_off
                 try:
-                    val = angr_state.memory.load(
-                        addr, 1, endness='Iend_BE',
-                        inspect=False, disable_actions=True)
+                    val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                     if val.symbolic:
                         symbolic_regions.append((addr, val))
                 except Exception:
@@ -585,8 +579,7 @@ class RustStateSyncMixin:
         (not a synthetic mem_/reg_/unconstrained placeholder)."""
         try:
             return any(
-                not n.startswith('mem_') and not n.startswith('reg_')
-                and not n.startswith('unconstrained')
+                not n.startswith("mem_") and not n.startswith("reg_") and not n.startswith("unconstrained")
                 for n in ast.variables
             )
         except Exception:
@@ -594,13 +587,17 @@ class RustStateSyncMixin:
             # (concrete claripy wrapper). Treat as no-user-symbolic.
             return False
 
-    def _sync_extra_python_pages(self, angr_state: "angr.SimState",
-                                 rust_state: "_RustSimState",
-                                 mapped_page_addrs: set,
-                                 symbolic_pages: set,
-                                 sp_page: int,
-                                 stack_start: int, stack_base: int,
-                                 page_size: int) -> None:
+    def _sync_extra_python_pages(
+        self,
+        angr_state: angr.SimState,
+        rust_state: _RustSimState,
+        mapped_page_addrs: set,
+        symbolic_pages: set,
+        sp_page: int,
+        stack_start: int,
+        stack_base: int,
+        page_size: int,
+    ) -> None:
         """Sync non-loader, non-stack pages from the Python state.
 
         Critical for multi-stage explore: pages written during stage 1 (ctype
@@ -618,7 +615,7 @@ class RustStateSyncMixin:
         # (mma path); otherwise eager-map (hackcon path).
         zero_eager_cap = 200
         try:
-            mem_pages = getattr(angr_state.memory, '_pages', None)
+            mem_pages = getattr(angr_state.memory, "_pages", None)
             if mem_pages is None:
                 return
             # angr-b58a: classify pages without materializing 4KB bytes objects.
@@ -648,7 +645,7 @@ class RustStateSyncMixin:
                 if page_obj is None:
                     continue
                 perms = 6 if stack_start <= page_addr < stack_base else 7
-                cd = getattr(page_obj, 'concrete_data', None)
+                cd = getattr(page_obj, "concrete_data", None)
                 if isinstance(cd, bytearray) and len(cd) == page_size:
                     # UltraPage fast path: classify via memcmp on the backing
                     # bytearray. No bytes() copy yet — deferred to the FFI
@@ -711,10 +708,9 @@ class RustStateSyncMixin:
         if extra_pages_synced:
             l.debug(f"Synced {extra_pages_synced} extra pages from Python state (non-loader)")
 
-    def _scan_user_symbolic_pages(self, angr_state: "angr.SimState",
-                                  stack_start: int, stack_base: int,
-                                  page_size: int,
-                                  symbolic_regions: list) -> None:
+    def _scan_user_symbolic_pages(
+        self, angr_state: angr.SimState, stack_start: int, stack_base: int, page_size: int, symbolic_regions: list
+    ) -> None:
         """Scan non-stack pages for user symbolic data and import as wide regions.
 
         Importing as a single wide object preserves symbolic identity across
@@ -725,9 +721,9 @@ class RustStateSyncMixin:
         init — scanning those is ~0.3ms/page.
         """
         try:
-            pages = getattr(angr_state.memory, '_pages', {})
+            pages = getattr(angr_state.memory, "_pages", {})
             user_sym_pages = set()
-            if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+            if hasattr(angr_state.memory, "get_symbolic_addrs"):
                 try:
                     for addr in angr_state.memory.get_symbolic_addrs():
                         user_sym_pages.add(addr // page_size)
@@ -741,7 +737,7 @@ class RustStateSyncMixin:
                 # explicit stores (not unconstrained fill from the filler mixin).
                 for page_no in pages:
                     page = pages[page_no]
-                    if hasattr(page, 'symbolic_data'):
+                    if hasattr(page, "symbolic_data"):
                         sd = page.symbolic_data
                         if sd:
                             user_sym_pages.add(page_no)
@@ -752,11 +748,10 @@ class RustStateSyncMixin:
                     continue  # Stack pages already handled
                 try:
                     page_data = angr_state.memory.load(
-                        page_addr, page_size, endness='Iend_BE',
-                        inspect=False, disable_actions=True)
+                        page_addr, page_size, endness="Iend_BE", inspect=False, disable_actions=True
+                    )
                     if page_data.symbolic and self._has_user_symbolic_var(page_data):
-                        self._extract_wide_symbolic_regions(
-                            angr_state, page_addr, page_size, symbolic_regions)
+                        self._extract_wide_symbolic_regions(angr_state, page_addr, page_size, symbolic_regions)
                 except Exception:
                     # cat-(c) WRONG-ANSWER RISK: per-page scan failed; user
                     # symbolic data on this page is not added to
@@ -785,25 +780,24 @@ class RustStateSyncMixin:
         """
         # Fast path: use symbolic_data dict to find which ranges to scan
         page_no = page_addr // page_size
-        mem_pages = getattr(angr_state.memory, '_pages', None)
+        mem_pages = getattr(angr_state.memory, "_pages", None)
         page_obj = mem_pages.get(page_no) if mem_pages is not None else None
 
-        if page_obj is not None and hasattr(page_obj, 'symbolic_data'):
+        if page_obj is not None and hasattr(page_obj, "symbolic_data"):
             sd = page_obj.symbolic_data
             if sd:
                 # Determine byte ranges that need scanning from symbolic_data entries
                 scan_ranges = []
                 for sd_offset, sd_ast in sd.items():
-                    if not hasattr(sd_ast, 'variables'):
+                    if not hasattr(sd_ast, "variables"):
                         continue
                     leaf_names = list(sd_ast.variables)
                     is_user = any(
-                        not n.startswith('mem_') and not n.startswith('reg_')
-                        and not n.startswith('unconstrained')
+                        not n.startswith("mem_") and not n.startswith("reg_") and not n.startswith("unconstrained")
                         for n in leaf_names
                     )
                     if is_user:
-                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
                         scan_ranges.append((sd_offset, ast_size))
 
                 if scan_ranges:
@@ -817,8 +811,8 @@ class RustStateSyncMixin:
                         # Load the full region as a single wide object
                         try:
                             wide_val = angr_state.memory.load(
-                                region_start, actual_size, endness='Iend_BE',
-                                inspect=False, disable_actions=True)
+                                region_start, actual_size, endness="Iend_BE", inspect=False, disable_actions=True
+                            )
                             if wide_val.symbolic:
                                 out.append((region_start, wide_val))
                         except Exception:
@@ -829,8 +823,8 @@ class RustStateSyncMixin:
                                 addr = region_start + byte_off
                                 try:
                                     val = angr_state.memory.load(
-                                        addr, 1, endness='Iend_BE',
-                                        inspect=False, disable_actions=True)
+                                        addr, 1, endness="Iend_BE", inspect=False, disable_actions=True
+                                    )
                                     if val.symbolic:
                                         out.append((addr, val))
                                 except Exception:
@@ -845,15 +839,13 @@ class RustStateSyncMixin:
         while offset < page_size:
             addr = page_addr + offset
             try:
-                val = angr_state.memory.load(addr, 1, endness='Iend_BE',
-                                              inspect=False, disable_actions=True)
+                val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                 if not val.symbolic:
                     offset += 1
                     continue
                 leaf_names = list(val.variables)
                 is_user = any(
-                    not n.startswith('mem_') and not n.startswith('reg_')
-                    and not n.startswith('unconstrained')
+                    not n.startswith("mem_") and not n.startswith("reg_") and not n.startswith("unconstrained")
                     for n in leaf_names
                 )
                 if not is_user:
@@ -868,8 +860,8 @@ class RustStateSyncMixin:
                     next_addr = page_addr + offset + region_len
                     try:
                         next_val = angr_state.memory.load(
-                            next_addr, 1, endness='Iend_BE',
-                            inspect=False, disable_actions=True)
+                            next_addr, 1, endness="Iend_BE", inspect=False, disable_actions=True
+                        )
                         if next_val.symbolic and frozenset(next_val.variables) == region_vars:
                             region_len += 1
                         else:
@@ -882,8 +874,8 @@ class RustStateSyncMixin:
 
                 try:
                     wide_val = angr_state.memory.load(
-                        region_start, region_len, endness='Iend_BE',
-                        inspect=False, disable_actions=True)
+                        region_start, region_len, endness="Iend_BE", inspect=False, disable_actions=True
+                    )
                     out.append((region_start, wide_val))
                 except Exception:
                     # cat-(a) EXPECTED CONTROL FLOW: wide consolidation
@@ -908,16 +900,13 @@ class RustStateSyncMixin:
         for offset in range(0, page_size, 1):
             addr = page_addr + offset
             try:
-                val = angr_state.memory.load(addr, 1,
-                                             endness='Iend_BE',
-                                             inspect=False, disable_actions=True)
+                val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                 if val.symbolic:
                     # Check if this contains a user-defined variable
                     # (not just unconstrained fill from entry_state)
                     leaf_names = list(val.variables)
                     is_user_sym = any(
-                        not n.startswith('mem_') and not n.startswith('reg_')
-                        and not n.startswith('unconstrained')
+                        not n.startswith("mem_") and not n.startswith("reg_") and not n.startswith("unconstrained")
                         for n in leaf_names
                     )
                     if is_user_sym:
@@ -930,7 +919,7 @@ class RustStateSyncMixin:
                 # byte was meaningful (e.g. a constraint leaf).
                 pass
 
-    def _concretize_stack_registers(self, state: "angr.SimState"):
+    def _concretize_stack_registers(self, state: angr.SimState):
         """Concretize stack registers for Rust memory mapping compatibility.
 
         This prevents symbolic address issues during Rust exploration by
@@ -944,15 +933,15 @@ class RustStateSyncMixin:
         """
         arch = state.arch
 
-        if arch.name in ('AMD64', 'X86_64'):
-            bp_reg = 'rbp'
-            sp_reg = 'rsp'
-        elif arch.name == 'X86':
-            bp_reg = 'ebp'
-            sp_reg = 'esp'
-        elif arch.name.startswith('ARM'):
+        if arch.name in ("AMD64", "X86_64"):
+            bp_reg = "rbp"
+            sp_reg = "rsp"
+        elif arch.name == "X86":
+            bp_reg = "ebp"
+            sp_reg = "esp"
+        elif arch.name.startswith("ARM"):
             bp_reg = None
-            sp_reg = 'sp'
+            sp_reg = "sp"
         else:
             bp_reg = None
             sp_reg = None
@@ -961,7 +950,7 @@ class RustStateSyncMixin:
             try:
                 reg_val = getattr(state.regs, sp_reg)
                 if reg_val.symbolic:
-                    sp_default = getattr(arch, 'initial_sp', None) or 0
+                    sp_default = getattr(arch, "initial_sp", None) or 0
                     sp_val = self._eval_or_default(state, reg_val, sp_default)
                     state.solver.add(reg_val == sp_val)
                     setattr(state.regs, sp_reg, sp_val)
@@ -1005,7 +994,7 @@ class RustStateSyncMixin:
                 return state.solver.eval(reg_val)
         return default
 
-    def _sync_registers_from_rust_pending(self, state: "angr.SimState"):
+    def _sync_registers_from_rust_pending(self, state: angr.SimState):
         """Sync register values from Rust pending state to angr state.
 
         Handles both concrete and symbolic registers. Concrete values are
@@ -1053,15 +1042,15 @@ class RustStateSyncMixin:
         Cached on first call. Only considers ELF objects with actual binary
         files, excluding CLE's ExternObject, KernelObject, TLSObject etc.
         """
-        if not hasattr(self, '_binary_addr_ranges'):
+        if not hasattr(self, "_binary_addr_ranges"):
             self._binary_addr_ranges = []
             for obj in self._project.loader.all_objects:
                 # Only include real binary files (ELF, PE, etc.)
                 # Skip CLE's synthetic objects (ExternObject, KernelObject, TLS)
-                binary_path = getattr(obj, 'binary', None)
-                if not binary_path or not isinstance(binary_path, str) or binary_path.startswith('cle##'):
+                binary_path = getattr(obj, "binary", None)
+                if not binary_path or not isinstance(binary_path, str) or binary_path.startswith("cle##"):
                     continue
-                if hasattr(obj, 'segments') and obj.segments:
+                if hasattr(obj, "segments") and obj.segments:
                     for seg in obj.segments:
                         if seg.memsize > 0:
                             self._binary_addr_ranges.append((seg.min_addr, seg.max_addr))
@@ -1071,7 +1060,7 @@ class RustStateSyncMixin:
 
     def _get_register_offset_map(self, arch) -> dict:
         """Get cached {name: (offset, size)} mapping for register fast-path writes."""
-        if not hasattr(self, '_reg_offset_cache'):
+        if not hasattr(self, "_reg_offset_cache"):
             self._reg_offset_cache = {}
         arch_name = arch.name
         if arch_name not in self._reg_offset_cache:
@@ -1090,21 +1079,33 @@ class RustStateSyncMixin:
 
     def _get_arch_register_names(self, arch) -> list:
         """Get register names for an architecture."""
-        if arch.name in ('AMD64', 'X86_64'):
-            return ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
-                    'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
-                    'r12', 'r13', 'r14', 'r15', 'rip']
-        elif arch.name == 'X86':
-            return ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
-                    'ebp', 'esp', 'eip']
-        elif arch.name == 'AARCH64':
-            return (['x%d' % i for i in range(31)] +
-                    ['sp', 'pc'])
-        elif arch.name.startswith('ARM'):
-            return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-                    'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
-        else:
-            return []
+        if arch.name in ("AMD64", "X86_64"):
+            return [
+                "rax",
+                "rbx",
+                "rcx",
+                "rdx",
+                "rsi",
+                "rdi",
+                "rbp",
+                "rsp",
+                "r8",
+                "r9",
+                "r10",
+                "r11",
+                "r12",
+                "r13",
+                "r14",
+                "r15",
+                "rip",
+            ]
+        if arch.name == "X86":
+            return ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"]
+        if arch.name == "AARCH64":
+            return ["x%d" % i for i in range(31)] + ["sp", "pc"]
+        if arch.name.startswith("ARM"):
+            return ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc"]
+        return []
 
     @staticmethod
     def _get_reg_map_and_return_regs(arch):
@@ -1113,35 +1114,65 @@ class RustStateSyncMixin:
         Returns:
             Tuple of (reg_map, return_regs) or (None, None) if unsupported.
         """
-        if arch.name in ('AMD64', 'X86_64'):
+        if arch.name in ("AMD64", "X86_64"):
             reg_map = {
-                'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
-                'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
-                'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
-                'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
-                'rip': (184, 8),
+                "rax": (16, 8),
+                "rcx": (24, 8),
+                "rdx": (32, 8),
+                "rbx": (40, 8),
+                "rsp": (48, 8),
+                "rbp": (56, 8),
+                "rsi": (64, 8),
+                "rdi": (72, 8),
+                "r8": (80, 8),
+                "r9": (88, 8),
+                "r10": (96, 8),
+                "r11": (104, 8),
+                "r12": (112, 8),
+                "r13": (120, 8),
+                "r14": (128, 8),
+                "r15": (136, 8),
+                "rip": (184, 8),
             }
-            return_regs = {'rax'}
-        elif arch.name == 'X86':
+            return_regs = {"rax"}
+        elif arch.name == "X86":
             reg_map = {
-                'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
-                'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
-                'eip': (68, 4),
+                "eax": (8, 4),
+                "ecx": (12, 4),
+                "edx": (16, 4),
+                "ebx": (20, 4),
+                "esp": (24, 4),
+                "ebp": (28, 4),
+                "esi": (32, 4),
+                "edi": (36, 4),
+                "eip": (68, 4),
             }
-            return_regs = {'eax'}
-        elif arch.name in ('ARMEL', 'ARMHF', 'ARM'):
+            return_regs = {"eax"}
+        elif arch.name in ("ARMEL", "ARMHF", "ARM"):
             reg_map = {
-                'r0': (8, 4), 'r1': (12, 4), 'r2': (16, 4), 'r3': (20, 4),
-                'r4': (24, 4), 'r5': (28, 4), 'r6': (32, 4), 'r7': (36, 4),
-                'r8': (40, 4), 'r9': (44, 4), 'r10': (48, 4), 'r11': (52, 4),
-                'r12': (56, 4), 'sp': (60, 4), 'lr': (64, 4), 'pc': (68, 4),
+                "r0": (8, 4),
+                "r1": (12, 4),
+                "r2": (16, 4),
+                "r3": (20, 4),
+                "r4": (24, 4),
+                "r5": (28, 4),
+                "r6": (32, 4),
+                "r7": (36, 4),
+                "r8": (40, 4),
+                "r9": (44, 4),
+                "r10": (48, 4),
+                "r11": (52, 4),
+                "r12": (56, 4),
+                "sp": (60, 4),
+                "lr": (64, 4),
+                "pc": (68, 4),
             }
-            return_regs = {'r0'}
-        elif arch.name == 'AARCH64':
-            reg_map = {('x%d' % i): (16 + i * 8, 8) for i in range(31)}
-            reg_map['sp'] = (264, 8)
-            reg_map['pc'] = (272, 8)
-            return_regs = {'x0'}
+            return_regs = {"r0"}
+        elif arch.name == "AARCH64":
+            reg_map = {("x%d" % i): (16 + i * 8, 8) for i in range(31)}
+            reg_map["sp"] = (264, 8)
+            reg_map["pc"] = (272, 8)
+            return_regs = {"x0"}
         else:
             l.warning(f"Unknown architecture {arch.name} for register extraction")
             return None, None
@@ -1169,7 +1200,7 @@ class RustStateSyncMixin:
                     snapshot[reg_name] = (True, None, offset, size)
                 else:
                     # Fast path: BVV values have concrete int in args[0]
-                    concrete = val.args[0] if val.op == 'BVV' else state.solver.eval(val)
+                    concrete = val.args[0] if val.op == "BVV" else state.solver.eval(val)
                     snapshot[reg_name] = (False, concrete, offset, size)
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: register read failed for
@@ -1206,11 +1237,7 @@ class RustStateSyncMixin:
                 snapshot[reg_name] = (True, None, offset, size)
         return snapshot
 
-    def _extract_register_changes(
-        self,
-        old_state,
-        new_state: "angr.SimState"
-    ) -> list:
+    def _extract_register_changes(self, old_state, new_state: angr.SimState) -> list:
         """Extract register changes between states.
 
         Handles both concrete and symbolic register values. For symbolic
@@ -1247,7 +1274,11 @@ class RustStateSyncMixin:
                 else:
                     old_val = getattr(old_state.regs, reg_name)
                     old_is_symbolic = old_val.symbolic
-                    old_concrete = None if old_is_symbolic else (old_val.args[0] if old_val.op == 'BVV' else old_state.solver.eval(old_val))
+                    old_concrete = (
+                        None
+                        if old_is_symbolic
+                        else (old_val.args[0] if old_val.op == "BVV" else old_state.solver.eval(old_val))
+                    )
 
                 if new_val.symbolic:
                     # Symbolic register value - sync to Rust
@@ -1265,7 +1296,7 @@ class RustStateSyncMixin:
                                 l.debug(f"Could not sync symbolic {reg_name}: {e}")
                             try:
                                 new_concrete = new_state.solver.eval(new_val)
-                                data = new_concrete.to_bytes(size, 'little')
+                                data = new_concrete.to_bytes(size, "little")
                                 changes.append((offset, size, bytes(data)))
                             except Exception:
                                 # cat-(c) WRONG-ANSWER RISK: both AST
@@ -1280,9 +1311,9 @@ class RustStateSyncMixin:
                 else:
                     # Fast path: extract concrete value without solver.eval()
                     # BVV values have the concrete int in args[0]
-                    new_concrete = new_val.args[0] if new_val.op == 'BVV' else new_state.solver.eval(new_val)
+                    new_concrete = new_val.args[0] if new_val.op == "BVV" else new_state.solver.eval(new_val)
                     if old_is_symbolic or old_concrete != new_concrete:
-                        data = new_concrete.to_bytes(size, 'little')
+                        data = new_concrete.to_bytes(size, "little")
                         changes.append((offset, size, bytes(data)))
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: register diff failed;
@@ -1302,14 +1333,14 @@ class RustStateSyncMixin:
         """
         try:
             # Best approach: directly sync claripy AST to Rust
-            if hasattr(self._rust_mgr, 'set_pending_register_symbolic_ast'):
+            if hasattr(self._rust_mgr, "set_pending_register_symbolic_ast"):
                 self._rust_mgr.set_pending_register_symbolic_ast(reg_name, value)
                 if _DBG:
                     l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
                 return
 
             # Fallback: use handle-based sync
-            if hasattr(self._rust_mgr, 'claripy_ast_to_handle'):
+            if hasattr(self._rust_mgr, "claripy_ast_to_handle"):
                 handle = self._rust_mgr.claripy_ast_to_handle(value)
                 self._rust_mgr.set_pending_register_symbolic(reg_name, handle.id())
                 if _DBG:
@@ -1332,11 +1363,7 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Could not sync symbolic {reg_name}: {e}")
 
-    def _extract_memory_changes(
-        self,
-        old_state: "angr.SimState",
-        new_state: "angr.SimState"
-    ) -> tuple:
+    def _extract_memory_changes(self, old_state: angr.SimState, new_state: angr.SimState) -> tuple:
         """Extract memory changes between states for Rust sync.
 
         Uses angr's changed_bytes() to detect memory modifications,
@@ -1364,10 +1391,10 @@ class RustStateSyncMixin:
 
             # Group consecutive changed bytes into regions
             for item in self._group_changed_bytes(new_state, changed):
-                if item[0] == 'concrete':
+                if item[0] == "concrete":
                     _, start, size, data = item
                     concrete_changes.append((start, bytes(data)))
-                elif item[0] == 'symbolic':
+                elif item[0] == "symbolic":
                     _, start, size, data, handle_id, ast = item
                     # Provide concrete witness for Rust memory sync
                     concrete_changes.append((start, bytes(data)))
@@ -1385,8 +1412,7 @@ class RustStateSyncMixin:
                     state_id = self._current_callback_state_id
                     if state_id is not None:
                         try:
-                            self._rust_mgr.set_state_hook_symbolic_memory(
-                                state_id, start, ast, size)
+                            self._rust_mgr.set_state_hook_symbolic_memory(state_id, start, ast, size)
                         except Exception:
                             # cat-(b) FALLBACK WITH LOSS: preserving the
                             # symbolic AST per-state failed; subsequent
@@ -1406,7 +1432,7 @@ class RustStateSyncMixin:
 
         return concrete_changes, symbolic_imports
 
-    def _group_changed_bytes(self, state: "angr.SimState", changed_addrs):
+    def _group_changed_bytes(self, state: angr.SimState, changed_addrs):
         """Group consecutive changed bytes into contiguous regions.
 
         Yields tuples from _emit_memory_region:
@@ -1433,7 +1459,7 @@ class RustStateSyncMixin:
         # Emit final region
         yield from self._emit_memory_region(state, start, end - start)
 
-    def _emit_memory_region(self, state: "angr.SimState", start: int, size: int):
+    def _emit_memory_region(self, state: angr.SimState, start: int, size: int):
         """Emit a memory region with concrete bytes and optional symbolic info.
 
         Yields tuples with symbolic value info for constraint reconstruction:
@@ -1457,8 +1483,8 @@ class RustStateSyncMixin:
             val = state.memory.load(start, size, endness=state.arch.memory_endness)
             if not val.symbolic:
                 concrete = state.solver.eval(val)
-                data = concrete.to_bytes(size, 'little')
-                yield ('concrete', start, size, data)
+                data = concrete.to_bytes(size, "little")
+                yield ("concrete", start, size, data)
             else:
                 # For small symbolic regions (typical SimProcedure writes),
                 # emit byte-by-byte for simple ASTs. For large regions,
@@ -1469,7 +1495,7 @@ class RustStateSyncMixin:
                     self._register_handle(handle_id, val)
                     try:
                         concrete = state.solver.eval(val)
-                        data = concrete.to_bytes(size, 'little')
+                        data = concrete.to_bytes(size, "little")
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: large-region eval
                         # failed (often timeout on complex AST). Emit
@@ -1477,7 +1503,7 @@ class RustStateSyncMixin:
                         # zero bytes if it reads concretely. The
                         # symbolic AST is still attached.
                         data = bytes(size)
-                    yield ('symbolic', start, size, data, handle_id, val)
+                    yield ("symbolic", start, size, data, handle_id, val)
                     return
 
                 # Small region: byte-by-byte for simple ASTs
@@ -1485,14 +1511,14 @@ class RustStateSyncMixin:
                     byte_addr = start + byte_offset
                     try:
                         byte_val = state.memory.load(
-                            byte_addr, 1, endness='Iend_BE',
-                            inspect=False, disable_actions=True)
+                            byte_addr, 1, endness="Iend_BE", inspect=False, disable_actions=True
+                        )
                         if byte_val.symbolic:
                             handle_id = id(byte_val)
                             self._register_handle(handle_id, byte_val)
                             try:
                                 concrete_byte = state.solver.eval(byte_val)
-                                data = bytes([concrete_byte & 0xff])
+                                data = bytes([concrete_byte & 0xFF])
                             except Exception:
                                 # cat-(b) FALLBACK WITH LOSS: symbolic
                                 # byte couldn't be evaluated for the
@@ -1500,30 +1526,29 @@ class RustStateSyncMixin:
                                 # downstream Rust memory will be wrong
                                 # if it reads this byte concretely.
                                 data = bytes(1)
-                            yield ('symbolic', byte_addr, 1, data, handle_id, byte_val)
+                            yield ("symbolic", byte_addr, 1, data, handle_id, byte_val)
                         else:
                             try:
                                 concrete_byte = state.solver.eval(byte_val)
-                                data = bytes([concrete_byte & 0xff])
+                                data = bytes([concrete_byte & 0xFF])
                             except Exception:
                                 # cat-(b) FALLBACK WITH LOSS: concrete
                                 # byte eval failed (rare). Emit zero —
                                 # Rust will see zero here.
                                 data = bytes(1)
-                            yield ('concrete', byte_addr, 1, data)
+                            yield ("concrete", byte_addr, 1, data)
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: per-byte load
                         # failed (e.g. memory not mapped). Emit zero
                         # for that byte; Rust may see incorrect data.
-                        yield ('concrete', byte_addr, 1, bytes(1))
+                        yield ("concrete", byte_addr, 1, bytes(1))
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: region emit failed entirely
             # (load on the whole region raised). Yields nothing — the
             # caller's Rust sync misses this region's writes.
             l.debug(f"Error emitting memory region at 0x{start:x}: {e}")
-            pass
 
-    def _extract_symbolic_pages(self, state: "angr.SimState") -> dict:
+    def _extract_symbolic_pages(self, state: angr.SimState) -> dict:
         """Extract symbolic memory regions from an angr state.
 
         This identifies memory regions containing symbolic values and caches
@@ -1541,18 +1566,20 @@ class RustStateSyncMixin:
             if self._extract_via_get_symbolic_addrs(state, symbolic_regions):
                 return symbolic_regions
 
-            if hasattr(state.memory, '_pages'):
-                page_size = getattr(state.memory, 'page_size', 4096)
+            if hasattr(state.memory, "_pages"):
+                page_size = getattr(state.memory, "page_size", 4096)
                 for page_num in list(state.memory._pages.keys()):
                     page = state.memory._pages.get(page_num)
                     if page is None:
                         continue
                     page_addr = page_num * page_size
                     # First backend that hasattr-matches handles the page.
-                    (self._extract_from_ultrapage(state, page, page_addr, symbolic_regions)
-                     or self._extract_from_listpage(state, page, page_addr, symbolic_regions)
-                     or self._extract_from_alt_bitmap(state, page, page_addr, page_size, symbolic_regions)
-                     or self._extract_from_byte_map(page, page_addr, symbolic_regions))
+                    (
+                        self._extract_from_ultrapage(state, page, page_addr, symbolic_regions)
+                        or self._extract_from_listpage(state, page, page_addr, symbolic_regions)
+                        or self._extract_from_alt_bitmap(state, page, page_addr, page_size, symbolic_regions)
+                        or self._extract_from_byte_map(page, page_addr, symbolic_regions)
+                    )
 
             if symbolic_regions:
                 l.debug(f"Extracted {len(symbolic_regions)} symbolic memory regions")
@@ -1563,7 +1590,7 @@ class RustStateSyncMixin:
             l.debug(f"Error extracting symbolic pages: {e}")
         return symbolic_regions
 
-    def _load_symbolic_byte(self, state: "angr.SimState", addr: int):
+    def _load_symbolic_byte(self, state: angr.SimState, addr: int):
         """Load 1 byte at addr; return the AST if symbolic, else None.
 
         cat-(b) FALLBACK WITH LOSS on load failure: returns None, so the
@@ -1571,7 +1598,7 @@ class RustStateSyncMixin:
         """
         try:
             val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-            if hasattr(val, 'symbolic') and val.symbolic:
+            if hasattr(val, "symbolic") and val.symbolic:
                 return val
         except Exception:
             pass
@@ -1581,13 +1608,13 @@ class RustStateSyncMixin:
         out[addr] = val
         self._register_handle(id(val), val)
 
-    def _extract_via_get_symbolic_addrs(self, state: "angr.SimState", out: dict) -> bool:
+    def _extract_via_get_symbolic_addrs(self, state: angr.SimState, out: dict) -> bool:
         """Strategy 1: angr's internal symbolic tracking. Most accurate.
 
         Returns True iff at least one symbolic byte was recorded — matching
         the original early-return guard on a non-empty regions dict.
         """
-        if not hasattr(state.memory, 'get_symbolic_addrs'):
+        if not hasattr(state.memory, "get_symbolic_addrs"):
             return False
         try:
             symbolic_addrs = state.memory.get_symbolic_addrs()
@@ -1624,7 +1651,7 @@ class RustStateSyncMixin:
         bounded: pages with hundreds of filler entries from binary
         execution would otherwise burn time re-importing each one.
         """
-        if not (hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap')):
+        if not (hasattr(page, "all_bytes_changed_in_history") and hasattr(page, "symbolic_bitmap")):
             return False
         sb = page.symbolic_bitmap
         # symbolic_bitmap entries are 0 (concrete) or 1 (symbolic). A C-level
@@ -1637,8 +1664,8 @@ class RustStateSyncMixin:
             had_changed = False
             for segment in changed:
                 had_changed = True
-                start = getattr(segment, 'start', None)
-                end = getattr(segment, 'end', None)
+                start = getattr(segment, "start", None)
+                end = getattr(segment, "end", None)
                 if start is None or end is None:
                     continue
                 for offset in range(start, end):
@@ -1668,7 +1695,7 @@ class RustStateSyncMixin:
             # whole-page tax.
             MAX_EXTENT = 64
             if not had_changed:
-                sd = getattr(page, 'symbolic_data', None)
+                sd = getattr(page, "symbolic_data", None)
                 if sd is not None and 0 < len(sd) <= 64:
                     keys = list(sd.keys())
                     sb_len = len(sb)
@@ -1694,7 +1721,7 @@ class RustStateSyncMixin:
 
     def _extract_from_listpage(self, state, page, page_addr: int, out: dict) -> bool:
         """ListPage: stored_offset tracks all written bytes."""
-        if not (hasattr(page, 'stored_offset') and page.stored_offset):
+        if not (hasattr(page, "stored_offset") and page.stored_offset):
             return False
         for offset in page.stored_offset:
             addr = page_addr + offset
@@ -1705,7 +1732,7 @@ class RustStateSyncMixin:
 
     def _extract_from_alt_bitmap(self, state, page, page_addr: int, page_size: int, out: dict) -> bool:
         """Fallback page with a `_symbolic_bitmap` dict attribute."""
-        if not (hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap):
+        if not (hasattr(page, "_symbolic_bitmap") and page._symbolic_bitmap):
             return False
         for offset in range(page_size):
             if page._symbolic_bitmap.get(offset, False):
@@ -1717,13 +1744,13 @@ class RustStateSyncMixin:
 
     def _extract_from_byte_map(self, page, page_addr: int, out: dict) -> bool:
         """Page exposing a `symbolic_byte_map` of offset → AST directly."""
-        if not (hasattr(page, 'symbolic_byte_map') and page.symbolic_byte_map):
+        if not (hasattr(page, "symbolic_byte_map") and page.symbolic_byte_map):
             return False
         for offset, sym_val in page.symbolic_byte_map.items():
             self._record_symbolic(out, page_addr + offset, sym_val)
         return True
 
-    def _install_rust_memory_proxy(self, state: "angr.SimState"):
+    def _install_rust_memory_proxy(self, state: angr.SimState):
         """Sync stack data from Rust to Python callback state.
 
         Loads the SP page in a single bulk FFI call (pending_memory_load_page)
@@ -1737,6 +1764,7 @@ class RustStateSyncMixin:
         ``_replay_rust_dirty_pages``).
         """
         from angr.exploration.rust_manager import _is_rust_memory_proxy
+
         if _is_rust_memory_proxy(state.memory):
             return
         try:
@@ -1755,15 +1783,15 @@ class RustStateSyncMixin:
                     # Covers 64 slots (~512 bytes on x64) for args + locals
                     end_offset = min(sp_offset + 64 * ptr_size, PAGE_SIZE)
                     for off in range(sp_offset, end_offset, ptr_size):
-                        chunk = page_data[off:off + ptr_size]
+                        chunk = page_data[off : off + ptr_size]
                         if len(chunk) == ptr_size:
-                            int_val = int.from_bytes(chunk, 'little')
+                            int_val = int.from_bytes(chunk, "little")
                             if int_val != 0:
                                 addr = sp_page + off
                                 # Pass int directly — UltraPage fast path avoids claripy BVV
-                                state.memory.store(addr, int_val, size=ptr_size,
-                                                   endness='Iend_LE',
-                                                   inspect=False, disable_actions=True)
+                                state.memory.store(
+                                    addr, int_val, size=ptr_size, endness="Iend_LE", inspect=False, disable_actions=True
+                                )
                     return
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: bulk-page FFI not
@@ -1777,11 +1805,10 @@ class RustStateSyncMixin:
                 try:
                     data = self._rust_mgr.pending_memory_load(addr, ptr_size)
                     if data and len(data) == ptr_size:
-                        int_val = int.from_bytes(data, 'little')
+                        int_val = int.from_bytes(data, "little")
                         if int_val != 0:
                             val = claripy.BVV(int_val, ptr_size * 8)
-                            state.memory.store(addr, val, endness='Iend_LE',
-                                               inspect=False, disable_actions=True)
+                            state.memory.store(addr, val, endness="Iend_LE", inspect=False, disable_actions=True)
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: individual pointer
                     # load failed; that slot is not synced. Python
@@ -1793,7 +1820,7 @@ class RustStateSyncMixin:
             # callback runs with potentially stale stack contents.
             pass
 
-    def _replay_rust_dirty_pages(self, state: "angr.SimState"):
+    def _replay_rust_dirty_pages(self, state: angr.SimState):
         """Replay Rust-side memory mutations into the cached Python SimState.
 
         Walks `_get_pending_dirty_pages()` from the Rust pending state and
@@ -1821,6 +1848,7 @@ class RustStateSyncMixin:
         both redundant and lossy — skip it.
         """
         from angr.exploration.rust_manager import _is_rust_memory_proxy
+
         if _is_rust_memory_proxy(state.memory):
             return
         try:
@@ -1844,7 +1872,7 @@ class RustStateSyncMixin:
                     state.memory.store(
                         page_addr,
                         claripy.BVV(bytes(page_bytes), PAGE_SIZE * 8),
-                        endness='Iend_BE',
+                        endness="Iend_BE",
                         inspect=False,
                         disable_actions=True,
                     )
@@ -1890,7 +1918,7 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug("clear_pending_dirty_tracking failed after replay")
 
-    def _restore_symbolic_pages(self, state: "angr.SimState", state_id: int):
+    def _restore_symbolic_pages(self, state: angr.SimState, state_id: int):
         """Restore symbolic memory regions to an angr state.
 
         This restores symbolic values that were previously extracted and
@@ -1975,7 +2003,7 @@ class RustStateSyncMixin:
         if failed_count > 0:
             l.warning(f"Failed to restore {failed_count} symbolic memory regions")
 
-    def _restore_hook_symbolic_memory(self, state: "angr.SimState", state_id: int):
+    def _restore_hook_symbolic_memory(self, state: angr.SimState, state_id: int):
         """Restore symbolic memory that was tracked during hook execution.
 
         When hooks copy or manipulate symbolic memory, the symbolic ASTs are
@@ -2037,4 +2065,3 @@ class RustStateSyncMixin:
         if restored_count > 0:
             if _DBG:
                 l.debug(f"Restored {restored_count} hook symbolic memory regions for state {state_id}")
-

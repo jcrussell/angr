@@ -3,6 +3,9 @@
 Runs 12 small CTF examples through both Python and Rust engines,
 comparing correctness and checking for severe performance regressions.
 """
+
+from __future__ import annotations
+
 import importlib.util
 import os
 import sys
@@ -12,13 +15,12 @@ import pytest
 
 # Availability guard, examples-dir resolution, and the BufferedStringIO
 # stdout-capture helper live in conftest (angr-7gdp).
-from tests.engines.conftest import (  # noqa: F401
-    BufferedStringIO,
+from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
+    BufferedStringIO,
     RustExplorationManager,
 )
-
 
 # Each entry: (name, expected_substring, timeout_s, uses_callable_predicate)
 FAST_EXAMPLES = [
@@ -65,9 +67,10 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
             # whose internal SimState carries SimOptions like DO_RET_EMULATION
             # that RustExplorationManager._check_raise_options rejects.
             import traceback
+
             caller_frames = traceback.extract_stack()
             for frame in caller_frames[:-1]:
-                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
                     return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
@@ -103,6 +106,7 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 
     except Exception as e:
         import traceback
+
         return False, f"ERROR: {e}\n{traceback.format_exc()}", 0.0
 
     finally:
@@ -154,18 +158,14 @@ class TestRustIntegration:
         if expected:
             # Check expected substring in output (as bytes or str)
             expected_str = expected.decode("utf-8", errors="replace") if isinstance(expected, bytes) else expected
-            assert expected_str in output, (
-                f"Expected '{expected_str}' not found in output:\n{output[:500]}"
-            )
+            assert expected_str in output, f"Expected '{expected_str}' not found in output:\n{output[:500]}"
 
     @pytest.mark.parametrize(
         "example_name,expected,timeout,uses_predicate",
         FAST_EXAMPLES,
         ids=[e[0] for e in FAST_EXAMPLES],
     )
-    def test_both_engines_succeed_and_report_timing(
-        self, example_name, expected, timeout, uses_predicate
-    ):
+    def test_both_engines_succeed_and_report_timing(self, example_name, expected, timeout, uses_predicate):
         """Smoke-test that both engines solve each fast example; report timing.
 
         This is NOT a perf gate — it only asserts that the Python and Rust

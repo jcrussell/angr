@@ -26,9 +26,8 @@ import pytest
 
 import angr
 
-
 # Availability guard and binary-path resolution live in conftest (angr-7gdp).
-from tests.engines.conftest import (  # noqa: F401
+from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
     RustExplorationManager,
@@ -65,28 +64,27 @@ class TestHooksRustSmoke:
         proj = fauxware_project
         sym = proj.loader.find_symbol("strcmp")
         assert sym is not None, "fauxware should auto-resolve strcmp"
-        assert proj.is_symbol_hooked("strcmp"), \
-            "strcmp must already be hooked for replace=True to be meaningful"
+        assert proj.is_symbol_hooked("strcmp"), "strcmp must already be hooked for replace=True to be meaningful"
 
         fired = {"count": 0}
 
         class TaggedStrcmp(angr.SimProcedure):
-            def run(self_proc, s1, s2):  # noqa: N805
+            def run(self_proc, s1, s2):
                 fired["count"] += 1
                 return 0xC0DE
 
         proj.hook(sym.rebased_addr, TaggedStrcmp(), replace=True)
 
-        assert proj.hooked_by(sym.rebased_addr).__class__ is TaggedStrcmp, \
+        assert proj.hooked_by(sym.rebased_addr).__class__ is TaggedStrcmp, (
             "replace=True should have swapped the SimProcedure class"
+        )
 
         state = proj.factory.entry_state()
         mgr = RustExplorationManager(proj, [state])
         mgr.run(max_steps=400)
 
         assert fired["count"] >= 1, (
-            f"TaggedStrcmp never fired during the run — replace=True did not "
-            f"engage. Stash counts: {mgr.stash_counts()}"
+            f"TaggedStrcmp never fired during the run — replace=True did not engage. Stash counts: {mgr.stash_counts()}"
         )
 
     def test_hook_symbol_swaps_libc_binding(self, fauxware_project):
@@ -103,15 +101,14 @@ class TestHooksRustSmoke:
         fired = {"count": 0}
 
         class HookSymbolStrcmp(angr.SimProcedure):
-            def run(self_proc, s1, s2):  # noqa: N805
+            def run(self_proc, s1, s2):
                 fired["count"] += 1
                 return 1  # non-zero — diverges from the auto-installed strcmp
 
         addr = proj.hook_symbol("strcmp", HookSymbolStrcmp(), replace=True)
         assert addr is not None, "hook_symbol should return the hooked address"
         assert proj.hooked_by(addr).__class__ is HookSymbolStrcmp, (
-            "hook_symbol(replace=True) should install our SimProcedure at "
-            "the symbol's address"
+            "hook_symbol(replace=True) should install our SimProcedure at the symbol's address"
         )
 
         state = proj.factory.entry_state()
@@ -163,9 +160,7 @@ class TestHooksRustSmoke:
             f"instruction (Ijk_NoHook regression)."
         )
         # All fires should be at the hooked address.
-        assert all(a == hook_addr for a in fire_addrs), (
-            f"unexpected fire address(es): {[hex(a) for a in fire_addrs]}"
-        )
+        assert all(a == hook_addr for a in fire_addrs), f"unexpected fire address(es): {[hex(a) for a in fire_addrs]}"
 
     def test_unhook_removes_callback(self, fauxware_project):
         """``proj.unhook(addr)`` removes the hook so the callback no
@@ -197,8 +192,7 @@ class TestHooksRustSmoke:
         assert run1_fires, "hook didn't fire on the pre-unhook run"
 
         proj.unhook(hook_addr)
-        assert not proj.is_hooked(hook_addr), \
-            "unhook(addr) should clear is_hooked(addr)"
+        assert not proj.is_hooked(hook_addr), "unhook(addr) should clear is_hooked(addr)"
 
         # Second run: hook is gone; callback must not fire.
         active_log = run2_fires
@@ -206,6 +200,5 @@ class TestHooksRustSmoke:
         mgr2 = RustExplorationManager(proj, [state2])
         mgr2.run(max_steps=400)
         assert not run2_fires, (
-            f"callback fired {len(run2_fires)} times after unhook(addr) — "
-            f"the hook was not actually removed."
+            f"callback fired {len(run2_fires)} times after unhook(addr) — the hook was not actually removed."
         )

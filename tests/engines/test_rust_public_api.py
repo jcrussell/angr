@@ -16,15 +16,14 @@ A failure here is **not** a bug in the test. Either:
 
 Parent epic: angr-9cps. This is sub-task .3 (drift enforcement).
 """
+
 from __future__ import annotations
 
 import pytest
 
-
 # Availability guard lives in conftest — if the Rust extension didn't build,
 # skip rather than ImportError at collection time (angr-7gdp).
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE
-
 
 pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
@@ -63,21 +62,22 @@ def _resolve_classes() -> dict[str, type]:
         RustSolverProxy,
         RustStateProxy,
     )
+
     return {
-        'RustErrorRecord': RustErrorRecord,
-        'RustExplorationManager': RustExplorationManager,
-        'RustStateProxy': RustStateProxy,
-        'RustSolverProxy': RustSolverProxy,
-        'RustRegisterProxy': RustRegisterProxy,
-        'RustMemoryProxy': RustMemoryProxy,
-        'RustHeapProxy': RustHeapProxy,
-        'RustScratchProxy': RustScratchProxy,
-        'RustHistoryProxy': RustHistoryProxy,
-        'RustPosixProxy': RustPosixProxy,
-        'RustCallStackProxy': RustCallStackProxy,
-        'RustCallStackFrameProxy': RustCallStackFrameProxy,
-        'RustInspectProxy': RustInspectProxy,
-        'RustSimulationManagerProxy': RustSimulationManagerProxy,
+        "RustErrorRecord": RustErrorRecord,
+        "RustExplorationManager": RustExplorationManager,
+        "RustStateProxy": RustStateProxy,
+        "RustSolverProxy": RustSolverProxy,
+        "RustRegisterProxy": RustRegisterProxy,
+        "RustMemoryProxy": RustMemoryProxy,
+        "RustHeapProxy": RustHeapProxy,
+        "RustScratchProxy": RustScratchProxy,
+        "RustHistoryProxy": RustHistoryProxy,
+        "RustPosixProxy": RustPosixProxy,
+        "RustCallStackProxy": RustCallStackProxy,
+        "RustCallStackFrameProxy": RustCallStackFrameProxy,
+        "RustInspectProxy": RustInspectProxy,
+        "RustSimulationManagerProxy": RustSimulationManagerProxy,
     }
 
 
@@ -89,16 +89,16 @@ def _actual_public_attrs(cls_name: str, cls: type) -> set[str]:
     public attributes are plain instance attributes set in ``__init__``, so
     we build a stand-in instance and merge ``vars()`` with ``dir(cls)``.
     """
-    if cls_name == 'RustErrorRecord':
+    if cls_name == "RustErrorRecord":
         # Construct with a benign payload; init writes the attrs we need to
         # see. The taxonomy classification path needs a real message prefix
         # so it doesn't fall through to "unknown" — pick "memory error" from
         # the _ERROR_CLASS_PREFIXES table.
-        instance = cls(state=None, message='memory error: snapshot', addr=0)
+        instance = cls(state=None, message="memory error: snapshot", addr=0)
         names = set(vars(instance)) | set(dir(cls))
     else:
         names = set(dir(cls))
-    return {n for n in names if not n.startswith('_')}
+    return {n for n in names if not n.startswith("_")}
 
 
 class TestRustEngineVersion:
@@ -117,13 +117,13 @@ class TestRustEngineVersion:
 
         version = angr.exploration.__rust_engine_version__
         assert isinstance(version, str) and version, (
-            f"__rust_engine_version__ must be a non-empty string, "
-            f"got {version!r}"
+            f"__rust_engine_version__ must be a non-empty string, got {version!r}"
         )
 
     def test_attribute_matches_rustylib_submodule(self):
-        import angr.exploration
         from angr.rustylib.vex_engine import __version__ as rust_version
+
+        import angr.exploration
 
         assert angr.exploration.__rust_engine_version__ == rust_version, (
             f"Version drift between angr.exploration.__rust_engine_version__ "
@@ -137,7 +137,7 @@ class TestRustEngineVersion:
         """
         import angr.exploration
 
-        assert '__rust_engine_version__' not in angr.exploration.__all__, (
+        assert "__rust_engine_version__" not in angr.exploration.__all__, (
             "__rust_engine_version__ should follow the __version__ convention "
             "(excluded from __all__). If you intentionally added it, update "
             "this test and the policy doc."
@@ -183,8 +183,7 @@ class TestTypedExceptions:
 
         leaked = set(TYPED_EXCEPTIONS) - set(MODULE_EXPORTS)
         assert not leaked, (
-            f"TYPED_EXCEPTIONS contains names not in MODULE_EXPORTS: "
-            f"{sorted(leaked)}\n{_REMEDIATION_HINT}"
+            f"TYPED_EXCEPTIONS contains names not in MODULE_EXPORTS: {sorted(leaked)}\n{_REMEDIATION_HINT}"
         )
 
     def test_typed_exceptions_are_exception_subclasses(self):
@@ -196,10 +195,7 @@ class TestTypedExceptions:
             obj = getattr(angr.exploration, name, None)
             if not (isinstance(obj, type) and issubclass(obj, BaseException)):
                 bad.append(name)
-        assert not bad, (
-            f"TYPED_EXCEPTIONS lists names that are not Exception subclasses: "
-            f"{bad}\n{_REMEDIATION_HINT}"
-        )
+        assert not bad, f"TYPED_EXCEPTIONS lists names that are not Exception subclasses: {bad}\n{_REMEDIATION_HINT}"
 
 
 class TestClassPublicAttrs:
@@ -216,24 +212,20 @@ class TestClassPublicAttrs:
         from angr.exploration._public_api import CLASS_PUBLIC_ATTRS, MODULE_EXPORTS
 
         export_classes = {
-            n for n in MODULE_EXPORTS
+            n
+            for n in MODULE_EXPORTS
             if isinstance(getattr(angr.exploration, n, None), type)
             and not issubclass(getattr(angr.exploration, n), BaseException)
         }
         missing = export_classes - set(CLASS_PUBLIC_ATTRS)
-        assert not missing, (
-            f"Exported classes lack a CLASS_PUBLIC_ATTRS entry: "
-            f"{sorted(missing)}\n{_REMEDIATION_HINT}"
-        )
+        assert not missing, f"Exported classes lack a CLASS_PUBLIC_ATTRS entry: {sorted(missing)}\n{_REMEDIATION_HINT}"
 
     @pytest.mark.parametrize(
         "class_name",
         # Importable at parametrize-time: just list the keys without
         # touching the runtime classes (which need the Rust .so loaded).
         # _public_api.py is a pure-Python data module.
-        list(__import__(
-            'angr.exploration._public_api', fromlist=['CLASS_PUBLIC_ATTRS']
-        ).CLASS_PUBLIC_ATTRS),
+        list(__import__("angr.exploration._public_api", fromlist=["CLASS_PUBLIC_ATTRS"]).CLASS_PUBLIC_ATTRS),
     )
     def test_class_public_attrs_match_inventory(self, class_name):
         """Per-class drift detector — a row at a time so failures localize."""

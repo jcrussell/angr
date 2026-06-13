@@ -9,6 +9,8 @@ Full SimState creation is only needed for SimProcedure execution (which
 requires angr plugins like posix, filesystem, etc.).
 """
 
+from __future__ import annotations
+
 import logging
 
 import claripy
@@ -88,8 +90,8 @@ class RustSolverProxy:
         """
         self._ensure_solver()
         # Fast path: concrete expression
-        if hasattr(expr, 'concrete') and expr.concrete:
-            val = expr.concrete_value if hasattr(expr, 'concrete_value') else expr.args[0]
+        if hasattr(expr, "concrete") and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
             return self._cast_result(expr, val, cast_to)
         if extra_constraints:
             self._solver_ctx.push()
@@ -110,9 +112,9 @@ class RustSolverProxy:
         if cast_to is None:
             return result
         if cast_to is bytes:
-            if hasattr(expr, '__len__'):
+            if hasattr(expr, "__len__"):
                 nbits = len(expr)
-            elif hasattr(expr, 'size'):
+            elif hasattr(expr, "size"):
                 nbits = expr.size()
             else:
                 nbits = 64
@@ -128,18 +130,15 @@ class RustSolverProxy:
                 raise claripy.errors.UnsatError("unsat")
             result = self._cast_result(expr, result, cast_to)
             return (result,)
-        else:
-            results = self._solver_ctx.eval_upto(expr, n)
-            results = tuple(self._cast_result(expr, r, cast_to) for r in results)
-            return results
+        results = self._solver_ctx.eval_upto(expr, n)
+        results = tuple(self._cast_result(expr, r, cast_to) for r in results)
+        return results
 
     def eval_one(self, expr, **kwargs):
         """Evaluate expression expecting exactly one solution."""
         results = self.eval_upto(expr, 2, **kwargs)
         if len(results) != 1:
-            raise claripy.errors.ClaripyError(
-                f"expected 1 solution, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected 1 solution, got {len(results)}")
         return results[0]
 
     def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
@@ -159,18 +158,14 @@ class RustSolverProxy:
         """Evaluate expression expecting exactly n solutions."""
         results = self.eval_upto(expr, n + 1, **kwargs)
         if len(results) != n:
-            raise claripy.errors.ClaripyError(
-                f"expected {n} solutions, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected {n} solutions, got {len(results)}")
         return results
 
     def eval_atleast(self, expr, n, **kwargs):
         """Evaluate expression expecting at least n solutions."""
         results = self.eval_upto(expr, n, **kwargs)
         if len(results) < n:
-            raise claripy.errors.ClaripyError(
-                f"expected at least {n} solutions, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected at least {n} solutions, got {len(results)}")
         return results
 
     def min(self, expr, extra_constraints=(), signed=False, **kwargs):
@@ -432,7 +427,8 @@ class RustSolverProxyPlugin:
         """
         # Avoid an import cycle / hot-path import: SimActionObject ships
         # with angr but isn't on the import path for rust_state_proxy.
-        from angr.state_plugins.sim_action_object import SimActionObject  # noqa: PLC0415
+        from angr.state_plugins.sim_action_object import SimActionObject
+
         if isinstance(c, SimActionObject):
             return c.ast
         return c
@@ -475,7 +471,8 @@ class RustSolverProxyPlugin:
             # would mask the divergence.
             l.warning(
                 "RustSolverProxyPlugin.add: write-through failed for state %d: %s",
-                self._state_id, e,
+                self._state_id,
+                e,
             )
             raise
         # Invalidate the cached fork so the next eval picks up the new
@@ -490,7 +487,8 @@ class RustSolverProxyPlugin:
     def _get_rust_ctx(self):
         if self._rust_ctx_cache is None:
             object.__setattr__(
-                self, "_rust_ctx_cache",
+                self,
+                "_rust_ctx_cache",
                 self._mgr.fork_state_solver(self._state_id),
             )
         return self._rust_ctx_cache
@@ -542,25 +540,19 @@ class RustSolverProxyPlugin:
     def eval_one(self, expr, **kwargs):
         results = self.eval_upto(expr, 2, **kwargs)
         if len(results) != 1:
-            raise claripy.errors.ClaripyError(
-                f"expected 1 solution, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected 1 solution, got {len(results)}")
         return results[0]
 
     def eval_exact(self, expr, n, **kwargs):
         results = self.eval_upto(expr, n + 1, **kwargs)
         if len(results) != n:
-            raise claripy.errors.ClaripyError(
-                f"expected {n} solutions, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected {n} solutions, got {len(results)}")
         return results
 
     def eval_atleast(self, expr, n, **kwargs):
         results = self.eval_upto(expr, n, **kwargs)
         if len(results) < n:
-            raise claripy.errors.ClaripyError(
-                f"expected at least {n} solutions, got {len(results)}"
-            )
+            raise claripy.errors.ClaripyError(f"expected at least {n} solutions, got {len(results)}")
         return results
 
     def min(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
@@ -714,14 +706,9 @@ class RustSolverProxyPlugin:
                 yield k, v
 
     def describe_variables(self, v):
-        reverse_mapping = {
-            next(iter(var.variables)): k
-            for k, var in self.eternal_tracked_variables.items()
-        }
+        reverse_mapping = {next(iter(var.variables)): k for k, var in self.eternal_tracked_variables.items()}
         reverse_mapping.update(
-            {next(iter(var.variables)): k
-             for k, var in self.temporal_tracked_variables.items()
-             if k[-1] is not None}
+            {next(iter(var.variables)): k for k, var in self.temporal_tracked_variables.items() if k[-1] is not None}
         )
         for var in v.variables:
             if var in reverse_mapping:
@@ -815,8 +802,9 @@ class RustRegisterProxy:
             # using hasattr()/getattr() see "no such register". Note: this
             # masks transient FFI errors as missing-attribute — log debug so
             # they're visible under --debug.
-            l.debug("get_state_register(sid=%d, name=%r) failed; reporting as AttributeError",
-                    self._state_id, canonical)
+            l.debug(
+                "get_state_register(sid=%d, name=%r) failed; reporting as AttributeError", self._state_id, canonical
+            )
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(canonical)
         if val is None:
@@ -971,10 +959,7 @@ class RustRegisterProxy:
             return claripy.BVV(bytes(value), width)
         if isinstance(value, int):
             return claripy.BVV(value, width)
-        raise TypeError(
-            f"register write expects claripy AST, int, or bytes; "
-            f"got {type(value).__name__}"
-        )
+        raise TypeError(f"register write expects claripy AST, int, or bytes; got {type(value).__name__}")
 
     def load(self, reg_name_or_offset, size=None, **kwargs):
         """Load register by name or by ``(offset, size)`` tuple.
@@ -1000,9 +985,7 @@ class RustRegisterProxy:
                     f"no register for offset {reg_name_or_offset} size {size} on {self._arch.name}"
                 ) from e
             return getattr(self, name)
-        raise TypeError(
-            f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}"
-        )
+        raise TypeError(f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}")
 
     def store(self, addr, data, size=None, **kwargs):
         """Store ``data`` into the register named/offset by ``addr``.
@@ -1020,9 +1003,7 @@ class RustRegisterProxy:
             if size is None:
                 # When size is omitted, infer it from the data width
                 # (matches SimRegisters.store's behavior for concrete ints).
-                if hasattr(data, "size") and callable(data.size):
-                    size = data.size() // 8
-                elif isinstance(data, claripy.ast.Base):
+                if (hasattr(data, "size") and callable(data.size)) or isinstance(data, claripy.ast.Base):
                     size = data.size() // 8
                 elif isinstance(data, (bytes, bytearray)):
                     size = len(data)
@@ -1031,14 +1012,10 @@ class RustRegisterProxy:
             try:
                 name = self._arch.register_size_names[(addr, size)]
             except KeyError as e:
-                raise NotImplementedError(
-                    f"no register for offset {addr} size {size} on {self._arch.name}"
-                ) from e
+                raise NotImplementedError(f"no register for offset {addr} size {size} on {self._arch.name}") from e
             setattr(self, name, data)
             return
-        raise TypeError(
-            f"register store expects str name or int offset, got {type(addr).__name__}"
-        )
+        raise TypeError(f"register store expects str name or int offset, got {type(addr).__name__}")
 
     # ---------------------------------------------------------------
     # SimMemory plugin protocol surface (angr-qj30, write-through .2)
@@ -1159,9 +1136,7 @@ class RustMemoryProxy:
         only meaningful here as part of ``SimState.copy()`` plugin walk.
         True per-state CoW lives in angr-d1dr (RustStateProxy.copy()).
         """
-        return RustMemoryProxy(
-            self._mgr, self._state_id, self._arch, endness=self.endness, python_mgr=self._python_mgr
-        )
+        return RustMemoryProxy(self._mgr, self._state_id, self._arch, endness=self.endness, python_mgr=self._python_mgr)
 
     # ---------------------------------------------------------------
     # SimMemoryMixin gap stubs (angr-8dop.2)
@@ -1248,9 +1223,7 @@ class RustMemoryProxy:
                 self._ensure_solver()
                 resolved = self._solver_ctx.eval(addr)
                 if resolved is None:
-                    raise claripy.errors.UnsatError(
-                        "symbolic memory load addr is unsat"
-                    )
+                    raise claripy.errors.UnsatError("symbolic memory load addr is unsat")
                 addr = resolved
 
         ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
@@ -1301,15 +1274,13 @@ class RustMemoryProxy:
         default for raw bytes); pass ``endness='Iend_LE'`` to mirror VEX's
         little-endian convention.
         """
-        size = kwargs.pop('size', None)
+        size = kwargs.pop("size", None)
         if endness is None:
             endness = "Iend_BE"
 
         if isinstance(addr, claripy.ast.Base) and not addr.concrete:
             data_ast = self._data_to_ast(data, size, endness)
-            ok = self._mgr.state_memory_store_symbolic_multi(
-                self._state_id, addr, data_ast
-            )
+            ok = self._mgr.state_memory_store_symbolic_multi(self._state_id, addr, data_ast)
             if not ok:
                 raise NotImplementedError(
                     "RustMemoryProxy.store(): the symbolic-address write "
@@ -1327,7 +1298,7 @@ class RustMemoryProxy:
             addr = addr.concrete_value
 
         if isinstance(data, claripy.ast.Base):
-            width_bits = data.length if hasattr(data, 'length') else data.size()
+            width_bits = data.length if hasattr(data, "length") else data.size()
             if data.concrete:
                 value = data.concrete_value
                 nbytes = width_bits // 8
@@ -1357,9 +1328,7 @@ class RustMemoryProxy:
 
         if isinstance(data, int):
             if size is None:
-                raise TypeError(
-                    "memory store with an int value requires size=N (bytes)"
-                )
+                raise TypeError("memory store with an int value requires size=N (bytes)")
             byteorder = "little" if endness == "Iend_LE" else "big"
             payload = data.to_bytes(size, byteorder)
             if self._python_mgr is not None:
@@ -1367,10 +1336,7 @@ class RustMemoryProxy:
             self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
             return
 
-        raise TypeError(
-            f"memory store expects claripy AST, int, or bytes; "
-            f"got {type(data).__name__}"
-        )
+        raise TypeError(f"memory store expects claripy AST, int, or bytes; got {type(data).__name__}")
 
     def _data_to_ast(self, data, size, endness):
         """Coerce ``data`` to a claripy AST, applying endness for concrete
@@ -1399,21 +1365,27 @@ class RustMemoryProxy:
             return claripy.BVV(value, len(payload) * 8)
         if isinstance(data, int):
             if size is None:
-                raise TypeError(
-                    "memory store with an int value requires size=N (bytes)"
-                )
+                raise TypeError("memory store with an int value requires size=N (bytes)")
             byteorder = "little" if endness == "Iend_LE" else "big"
             payload = data.to_bytes(size, byteorder)
             value = int.from_bytes(payload, "little")
             return claripy.BVV(value, size * 8)
-        raise TypeError(
-            f"memory store expects claripy AST, int, or bytes; "
-            f"got {type(data).__name__}"
-        )
+        raise TypeError(f"memory store expects claripy AST, int, or bytes; got {type(data).__name__}")
 
-    def find(self, addr, data, max_search, *, default=None, endness=None,
-             chunk_size=None, max_symbolic_bytes=None, condition=None,
-             char_size=1, **kwargs):
+    def find(
+        self,
+        addr,
+        data,
+        max_search,
+        *,
+        default=None,
+        endness=None,
+        chunk_size=None,
+        max_symbolic_bytes=None,
+        condition=None,
+        char_size=1,
+        **kwargs,
+    ):
         """Search memory at ``addr`` for the byte pattern ``data``.
 
         Matches angr ``SimMemory.find()`` return shape:
@@ -1452,12 +1424,9 @@ class RustMemoryProxy:
 
         if char_size != 1:
             raise NotImplementedError(
-                "RustMemoryProxy.find() supports char_size=1 only "
-                "(wide-char search lives in SimMemory.find())."
+                "RustMemoryProxy.find() supports char_size=1 only (wide-char search lives in SimMemory.find())."
             )
-        if condition is not None and not (
-            hasattr(condition, "is_true") and condition.is_true()
-        ):
+        if condition is not None and not (hasattr(condition, "is_true") and condition.is_true()):
             raise NotImplementedError(
                 "RustMemoryProxy.find() does not support a symbolic "
                 "``condition=`` kwarg. Drop the condition or route through "
@@ -1471,9 +1440,7 @@ class RustMemoryProxy:
                 self._ensure_solver()
                 resolved = self._solver_ctx.eval(addr)
                 if resolved is None:
-                    raise claripy.errors.UnsatError(
-                        "symbolic find addr is unsat"
-                    )
+                    raise claripy.errors.UnsatError("symbolic find addr is unsat")
                 addr = resolved
 
         if isinstance(data, claripy.ast.Base):
@@ -1485,19 +1452,14 @@ class RustMemoryProxy:
                 )
             width_bits = data.size()
             if width_bits % 8:
-                raise ValueError(
-                    f"needle width must be a multiple of 8 bits, got {width_bits}"
-                )
+                raise ValueError(f"needle width must be a multiple of 8 bits, got {width_bits}")
             needle = data.concrete_value.to_bytes(width_bits // 8, "big")
         elif isinstance(data, (bytes, bytearray)):
             needle = bytes(data)
         elif isinstance(data, int):
             needle = bytes((data & 0xFF,))
         else:
-            raise TypeError(
-                f"find() needle must be claripy AST, bytes, or int; "
-                f"got {type(data).__name__}"
-            )
+            raise TypeError(f"find() needle must be claripy AST, bytes, or int; got {type(data).__name__}")
 
         needle_len = len(needle)
         if needle_len == 0:
@@ -1505,9 +1467,7 @@ class RustMemoryProxy:
             return claripy.BVV(addr, self._arch.bits), [], [0]
 
         haystack_size = max_search + needle_len - 1
-        haystack_ast = self._mgr.get_state_memory_ast(
-            self._state_id, addr, haystack_size
-        )
+        haystack_ast = self._mgr.get_state_memory_ast(self._state_id, addr, haystack_size)
         if haystack_ast is None:
             # angr-ric3: the wide load fails on mixed symbolic+concrete or
             # multi-page ranges (Rust ``state.memory_load`` returns Err when
@@ -1522,9 +1482,7 @@ class RustMemoryProxy:
             # symbolic-buffer strlen/strchr/memchr callers.
             byte_asts = []
             for i in range(haystack_size):
-                b = self._mgr.get_state_memory_ast(
-                    self._state_id, addr + i, 1
-                )
+                b = self._mgr.get_state_memory_ast(self._state_id, addr + i, 1)
                 if b is None:
                     b = claripy.BVV(0, 8)
                 byte_asts.append(b)
@@ -1598,8 +1556,7 @@ class RustHeapProxy:
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: returning None on FFI error mirrors
             # angr's behavior when state.heap is unavailable.
-            l.debug("get_state_mmap_base(sid=%d) failed: %s: %s",
-                    self._state_id, type(e).__name__, e)
+            l.debug("get_state_mmap_base(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
             return None
 
     @mmap_base.setter
@@ -1615,8 +1572,7 @@ class RustHeapProxy:
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
             # unavailable (e.g., state already cleaned up).
-            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
-                    self._state_id, type(e).__name__, e)
+            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
             return []
 
     @property
@@ -1628,8 +1584,7 @@ class RustHeapProxy:
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
             # unavailable (e.g., state already cleaned up).
-            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
-                    self._state_id, type(e).__name__, e)
+            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
             return []
 
 
@@ -1671,8 +1626,7 @@ class RustScratchProxy:
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: best-effort read; None mirrors
             # SimStateScratch's pre-block default.
-            l.debug("get_state_pc_by_id(sid=%d) failed: %s: %s",
-                    self._state_id, type(e).__name__, e)
+            l.debug("get_state_pc_by_id(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
             return None
 
     @property
@@ -1698,8 +1652,7 @@ class RustScratchProxy:
         except (RuntimeError, AttributeError, KeyError) as e:
             # cat-(b) FALLBACK WITH LOSS: history fetch failed; caller sees
             # jumpkind=None as if there were no recorded transitions.
-            l.debug("get_state_detailed_history(sid=%d) failed: %s: %s",
-                    self._state_id, type(e).__name__, e)
+            l.debug("get_state_detailed_history(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
             return None
         if not history:
             return None
@@ -1751,7 +1704,8 @@ class RustHistoryProxy:
     def recent_bbl_addrs(self):
         if self._bbl_addrs is None:
             tail = self._mgr.get_state_bbl_history_tail(
-                self._state_id, self._RECENT_TAIL_DEFAULT,
+                self._state_id,
+                self._RECENT_TAIL_DEFAULT,
             )
             self._bbl_addrs = list(tail) if tail is not None else []
         return self._bbl_addrs
@@ -1787,21 +1741,19 @@ class RustPosixProxy:
         if fd == 0:
             # stdin — evaluate symbolic variables under constraints
             return self._eval_stdin()
-        elif fd == 1:
+        if fd == 1:
             # stdout — return accumulated output (cached on proxy init)
             return self._stdout_data
-        else:
-            # Other fds (stderr, opened files) — query Rust engine
-            try:
-                return bytes(self._mgr.get_state_fd_output(self._state_id, fd))
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: empty bytes when the requested
-                # fd has no Rust-side buffer. Tools that expect specific
-                # output should distinguish "no buffer" from "empty buffer";
-                # log so they're visible under --debug.
-                l.debug("get_state_fd_output(sid=%d, fd=%d) failed: %s: %s",
-                        self._state_id, fd, type(e).__name__, e)
-                return b""
+        # Other fds (stderr, opened files) — query Rust engine
+        try:
+            return bytes(self._mgr.get_state_fd_output(self._state_id, fd))
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: empty bytes when the requested
+            # fd has no Rust-side buffer. Tools that expect specific
+            # output should distinguish "no buffer" from "empty buffer";
+            # log so they're visible under --debug.
+            l.debug("get_state_fd_output(sid=%d, fd=%d) failed: %s: %s", self._state_id, fd, type(e).__name__, e)
+            return b""
 
     def _eval_stdin(self):
         """Evaluate stdin symbolic variables to concrete bytes."""
@@ -1833,8 +1785,14 @@ class RustCallStackFrameProxy:
     angr's CallStack plugin so user code can read frames uniformly.
     """
 
-    __slots__ = ("call_site_addr", "func_addr", "ret_addr", "stack_ptr",
-                 "_index", "_owner")
+    __slots__ = (
+        "_index",
+        "_owner",
+        "call_site_addr",
+        "func_addr",
+        "ret_addr",
+        "stack_ptr",
+    )
 
     def __init__(self, frame_tuple, index, owner):
         call_site_addr, callee_addr, return_addr, stack_ptr = frame_tuple
@@ -1867,13 +1825,10 @@ class RustCallStackFrameProxy:
         next_index = self._index + 1
         if next_index >= len(self._owner._frames):
             return None
-        return RustCallStackFrameProxy(
-            self._owner._frames[next_index], next_index, self._owner
-        )
+        return RustCallStackFrameProxy(self._owner._frames[next_index], next_index, self._owner)
 
     def __repr__(self):
-        return (f"<RustCallStackFrame func=0x{self.func_addr:x} "
-                f"ret=0x{self.ret_addr:x} sp=0x{self.stack_ptr:x}>")
+        return f"<RustCallStackFrame func=0x{self.func_addr:x} ret=0x{self.ret_addr:x} sp=0x{self.stack_ptr:x}>"
 
 
 class RustCallStackProxy:
@@ -1897,8 +1852,7 @@ class RustCallStackProxy:
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
                 # Distinguishable from a real empty stack only via the log.
-                l.debug("get_state_call_stack(sid=%d) failed: %s: %s",
-                        self._state_id, type(e).__name__, e)
+                l.debug("get_state_call_stack(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
                 raw = []
             # Rust pushes onto the end → most recent is last → reverse.
             self._frames_cache = list(reversed(raw))
@@ -2002,7 +1956,8 @@ class RustCallStackProxyPlugin:
     STRONGREF_STATE: bool = False
 
     def __init__(self, rust_mgr, state_id):
-        import collections as _collections  # noqa: PLC0415
+        import collections as _collections
+
         self._mgr = rust_mgr
         self._state_id = state_id
         # SimStatePlugin protocol attrs.
@@ -2035,7 +1990,8 @@ class RustCallStackProxyPlugin:
         pass
 
     def copy(self, _memo=None):
-        import collections as _collections  # noqa: PLC0415
+        import collections as _collections
+
         clone = RustCallStackProxyPlugin(self._mgr, self._state_id)
         clone.block_counter = _collections.Counter(self.block_counter)
         clone.procedure_data = self.procedure_data
@@ -2066,9 +2022,10 @@ class RustCallStackProxyPlugin:
             # cat-(b) FALLBACK WITH LOSS: empty stack when FFI fails;
             # distinguishable from a real empty stack only via the log.
             l.debug(
-                "RustCallStackProxyPlugin.get_state_call_stack(sid=%d) "
-                "failed: %s: %s",
-                self._state_id, type(e).__name__, e,
+                "RustCallStackProxyPlugin.get_state_call_stack(sid=%d) failed: %s: %s",
+                self._state_id,
+                type(e).__name__,
+                e,
             )
             return []
         # Rust pushes onto the end (most recent last). Reverse so the
@@ -2101,7 +2058,9 @@ class RustCallStackProxyPlugin:
         if k == 0:
             return self
         return RustCallStackFrameProxy(
-            frames[k], k, _StaticFrameOwner(frames),
+            frames[k],
+            k,
+            _StaticFrameOwner(frames),
         )
 
     def __repr__(self):
@@ -2125,7 +2084,9 @@ class RustCallStackProxyPlugin:
         if len(frames) < 2:
             return None
         return RustCallStackFrameProxy(
-            frames[1], 1, _StaticFrameOwner(frames),
+            frames[1],
+            1,
+            _StaticFrameOwner(frames),
         )
 
     @property
@@ -2186,8 +2147,7 @@ class RustCallStackProxyPlugin:
         l.debug("RustCallStackProxyPlugin.pop() is a no-op stub")
         return self
 
-    def call(self, _callsite_addr, _addr, _retn_target=None,
-             _stack_pointer=None):
+    def call(self, _callsite_addr, _addr, _retn_target=None, _stack_pointer=None):
         l.debug("RustCallStackProxyPlugin.call() is a no-op stub")
         return self
 
@@ -2363,16 +2323,12 @@ _INSPECT_EVENT_SPECS: dict = {
     },
     "instruction": {
         "bit": 6,
-        "attrs": (
-            "instruction",
-        ),
+        "attrs": ("instruction",),
         "when_fired": "before",
     },
     "irsb": {
         "bit": 7,
-        "attrs": (
-            "address",
-        ),
+        "attrs": ("address",),
         "when_fired": "before",
     },
     # angr-4ai9: call/return dispatched from the BlockEnd path of
@@ -2383,16 +2339,12 @@ _INSPECT_EVENT_SPECS: dict = {
     # frame's callee on return).
     "call": {
         "bit": 8,
-        "attrs": (
-            "function_address",
-        ),
+        "attrs": ("function_address",),
         "when_fired": "before",
     },
     "return": {
         "bit": 9,
-        "attrs": (
-            "function_address",
-        ),
+        "attrs": ("function_address",),
         "when_fired": "before",
     },
     # angr-xmfj: simprocedure / syscall / dirty dispatch fires from the
@@ -2476,9 +2428,7 @@ _INSPECT_EVENT_SPECS: dict = {
     # `inspect_enabled` to `AtomicU32` in angr-lge2.
     "statement": {
         "bit": 15,
-        "attrs": (
-            "statement",
-        ),
+        "attrs": ("statement",),
         "when_fired": "before",
     },
     # angr-lge2: expr dispatch fires from `eval_expr_with_callbacks` in
@@ -2545,19 +2495,14 @@ _INSPECT_EVENT_SPECS: dict = {
 
 # Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.
 _RUST_INSPECT_SUPPORTED_EVENTS = frozenset(_INSPECT_EVENT_SPECS)
-_RUST_INSPECT_ATTRS_BY_EVENT = {
-    name: spec["attrs"] for name, spec in _INSPECT_EVENT_SPECS.items()
-}
-_RUST_INSPECT_EVENT_BITS = {
-    name: spec["bit"] for name, spec in _INSPECT_EVENT_SPECS.items()
-}
+_RUST_INSPECT_ATTRS_BY_EVENT = {name: spec["attrs"] for name, spec in _INSPECT_EVENT_SPECS.items()}
+_RUST_INSPECT_EVENT_BITS = {name: spec["bit"] for name, spec in _INSPECT_EVENT_SPECS.items()}
 # Events whose dispatch fires from Python (not from the Rust engine's
 # PythonCallbacks invocation path). Used by `_setup_callbacks` to skip
 # Rust slot registration and by the allowlist consistency test to relax
 # the "must have a `set_inspect_<event>` PyO3 slot" requirement.
 _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS = frozenset(
-    name for name, spec in _INSPECT_EVENT_SPECS.items()
-    if spec.get("dispatch_origin") == "python"
+    name for name, spec in _INSPECT_EVENT_SPECS.items() if spec.get("dispatch_origin") == "python"
 )
 
 
@@ -2649,6 +2594,7 @@ class RustInspectProxy:
     def make_breakpoint(self, event_type, *args, **kwargs):
         self._check_event(event_type)
         from angr.state_plugins.inspect import BP
+
         bp = BP(*args, **kwargs)
         self.add_breakpoint(event_type, bp)
         return bp
@@ -2661,9 +2607,7 @@ class RustInspectProxy:
     def remove_breakpoint(self, event_type, bp=None, filter_func=None):
         self._check_event(event_type)
         if bp is None and filter_func is None:
-            raise ValueError(
-                'remove_breakpoint(): You must specify either "bp" or "filter".'
-            )
+            raise ValueError('remove_breakpoint(): You must specify either "bp" or "filter".')
         bps = self._mgr._inspect_breakpoints[event_type]
         if bp is not None:
             try:
@@ -2671,9 +2615,7 @@ class RustInspectProxy:
             except ValueError:
                 pass
         else:
-            self._mgr._inspect_breakpoints[event_type] = [
-                b for b in bps if not filter_func(b)
-            ]
+            self._mgr._inspect_breakpoints[event_type] = [b for b in bps if not filter_func(b)]
         self._mgr._update_inspect_bitmask()
 
     def action(self, event_type, when, **kwargs):
@@ -2701,9 +2643,7 @@ class RustInspectProxy:
 
     def _check_event(self, event_type):
         if event_type not in self.SUPPORTED_EVENTS:
-            raise NotImplementedError(
-                _format_unsupported_event_msg(event_type)
-            )
+            raise NotImplementedError(_format_unsupported_event_msg(event_type))
 
     def _set_inspect_attrs(self, **kwargs):
         for k, v in kwargs.items():
@@ -2725,8 +2665,9 @@ class RustStateProxy:
     Full SimState is only needed for SimProcedure execution.
     """
 
-    def __init__(self, rust_mgr, state_id, project=None, stdin_vars=None,
-                 stdout_data=None, python_mgr=None, owns_copy=False):
+    def __init__(
+        self, rust_mgr, state_id, project=None, stdin_vars=None, stdout_data=None, python_mgr=None, owns_copy=False
+    ):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._project = project
@@ -2761,7 +2702,7 @@ class RustStateProxy:
     @property
     def addr(self):
         """Current program counter (O(1) via state index, no full export)."""
-        if hasattr(self, '_override_addr') and self._override_addr is not None:
+        if hasattr(self, "_override_addr") and self._override_addr is not None:
             return self._override_addr
         try:
             pc = self._mgr.get_state_pc_by_id(self._state_id)
@@ -2772,8 +2713,7 @@ class RustStateProxy:
             # spuriously match a find/avoid predicate that includes addr 0.
             # Log at warn so the failure is loud; callers reading proxy.addr
             # in critical paths will see the silent zero behavior in stderr.
-            l.warning("RustStateProxy.addr(sid=%d) lookup failed: %s: %s",
-                      self._state_id, type(e).__name__, e)
+            l.warning("RustStateProxy.addr(sid=%d) lookup failed: %s: %s", self._state_id, type(e).__name__, e)
         return 0
 
     @property
@@ -2789,6 +2729,7 @@ class RustStateProxy:
         # Fallback: get arch name from Rust and resolve
         arch_name = self._mgr.arch
         import archinfo
+
         return archinfo.arch_from_id(arch_name)
 
     @property
@@ -2812,9 +2753,7 @@ class RustStateProxy:
     def regs(self):
         """Register proxy — reads registers from Rust state."""
         if self._regs_proxy is None:
-            self._regs_proxy = RustRegisterProxy(
-                self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr
-            )
+            self._regs_proxy = RustRegisterProxy(self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr)
         return self._regs_proxy
 
     @property
@@ -2826,9 +2765,7 @@ class RustStateProxy:
     def memory(self):
         """Memory proxy — reads memory from Rust state."""
         if self._mem_proxy is None:
-            self._mem_proxy = RustMemoryProxy(
-                self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr
-            )
+            self._mem_proxy = RustMemoryProxy(self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr)
         return self._mem_proxy
 
     @property
@@ -2840,9 +2777,7 @@ class RustStateProxy:
     def history(self):
         """History proxy."""
         if self._history_proxy is None:
-            self._history_proxy = RustHistoryProxy(
-                self._mgr, self._state_id
-            )
+            self._history_proxy = RustHistoryProxy(self._mgr, self._state_id)
         return self._history_proxy
 
     @property
@@ -2850,7 +2785,8 @@ class RustStateProxy:
         """Posix proxy for stdin/stdout dumps."""
         if self._posix_proxy is None:
             self._posix_proxy = RustPosixProxy(
-                self._mgr, self._state_id,
+                self._mgr,
+                self._state_id,
                 stdin_vars=self._stdin_vars,
                 stdout_data=self._stdout_data,
             )
@@ -3011,8 +2947,7 @@ class RustSimulationManagerProxy:
     States are returned as RustStateProxy objects (O(1) creation, no sync).
     """
 
-    def __init__(self, rust_mgr, project=None, stdin_vars=None,
-                 stdout_tracker=None, python_mgr=None):
+    def __init__(self, rust_mgr, project=None, stdin_vars=None, stdout_tracker=None, python_mgr=None):
         self._mgr = rust_mgr
         self._project = project
         self._stdin_vars = stdin_vars
@@ -3028,7 +2963,8 @@ class RustSimulationManagerProxy:
     def _wrap_state(self, state_id):
         """Wrap a Rust state ID in a RustStateProxy."""
         return RustStateProxy(
-            self._mgr, state_id,
+            self._mgr,
+            state_id,
             project=self._project,
             stdin_vars=self._stdin_vars,
             stdout_data=self._stdout_tracker.get(state_id, b""),
@@ -3155,7 +3091,7 @@ class RustSimulationManagerProxy:
 
     def __repr__(self):
         counts = self._mgr.stash_counts()
-        parts = [f"<RustSimulationManagerProxy"]
+        parts = ["<RustSimulationManagerProxy"]
         for name, count in sorted(counts.items()):
             if count > 0:
                 parts.append(f" {name}:{count}")

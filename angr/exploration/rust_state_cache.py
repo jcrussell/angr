@@ -1,8 +1,9 @@
 """Mixin for State caching, predicate evaluation, and handle management."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import angr
@@ -18,13 +19,13 @@ class RustStateCacheMixin:
     RustExplorationManager attributes (self._rust_mgr, self._project, etc.).
     """
 
-    def _get_default_state(self) -> Optional["angr.SimState"]:
+    def _get_default_state(self) -> angr.SimState | None:
         """Get a default state for callbacks."""
         if self._state_cache:
             return next(iter(self._state_cache.values()))
         return None
 
-    def _get_callback_state(self) -> Optional["angr.SimState"]:
+    def _get_callback_state(self) -> angr.SimState | None:
         """Get current callback state for memory access during hooks.
 
         This returns the state that was set when entering a callback,
@@ -32,7 +33,7 @@ class RustStateCacheMixin:
         """
         return self._callback_state
 
-    def _set_callback_state(self, state: Optional["angr.SimState"]):
+    def _set_callback_state(self, state: angr.SimState | None):
         """Set the current callback state for memory access."""
         self._callback_state = state
 
@@ -58,15 +59,14 @@ class RustStateCacheMixin:
         effective_id = self._get_effective_state_id(state_id)
         if effective_id is None:
             return
-        actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
+        actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, "length") else 1)
         try:
             self._rust_mgr.set_state_addr_to_ast(effective_id, addr, ast, actual_size)
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: state may have been dropped
             # from Rust between fork and registration; the addr->AST
             # link is best-effort and missing it is fine.
-            l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s",
-                    effective_id, addr, type(e).__name__, e)
+            l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s", effective_id, addr, type(e).__name__, e)
 
     def _cleanup_symbolic_pages_cache(self):
         """No-op shim retained for back-compat hooks.
@@ -95,12 +95,12 @@ class RustStateCacheMixin:
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         # Track states already moved to found/avoid to avoid re-moving them
-        if not hasattr(self, '_predicate_matched_ids'):
+        if not hasattr(self, "_predicate_matched_ids"):
             self._predicate_matched_ids = set()
 
         # Cache: state_id -> (addr, stdout_len) at last evaluation time
         # If state's current (addr, stdout_len) matches, skip re-evaluation
-        if not hasattr(self, '_predicate_eval_cache'):
+        if not hasattr(self, "_predicate_eval_cache"):
             self._predicate_eval_cache = {}
 
         found_sids = set()
@@ -110,7 +110,7 @@ class RustStateCacheMixin:
         # Collect (state_id, addr, stdout_len) from active + deadended in bulk
         # This is much cheaper than per-state FFI calls
         state_info = {}  # state_id -> (addr, stdout_len)
-        for stash in ('active', 'deadended'):
+        for stash in ("active", "deadended"):
             try:
                 for sid, addr, stdout_len in self._rust_mgr.get_state_predicate_info(stash):
                     state_info[sid] = (addr, stdout_len)
@@ -118,8 +118,7 @@ class RustStateCacheMixin:
                 # cat-(b) FALLBACK WITH LOSS: missing predicate info means
                 # change-detection cache won't activate for this stash; we
                 # still fall through to the cached-state path below.
-                l.debug("get_state_predicate_info(stash=%s) failed: %s: %s",
-                        stash, type(e).__name__, e)
+                l.debug("get_state_predicate_info(stash=%s) failed: %s: %s", stash, type(e).__name__, e)
 
         # Also include cached states (may have been moved between stashes)
         all_state_ids = set(state_info.keys())
@@ -150,12 +149,12 @@ class RustStateCacheMixin:
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: empty stdout when retrieval
                     # fails; predicate that checks stdout content sees b"".
-                    l.debug("get_state_stdout(sid=%d) failed: %s: %s",
-                            state_id, type(e).__name__, e)
+                    l.debug("get_state_stdout(sid=%d) failed: %s: %s", state_id, type(e).__name__, e)
                 state = RustStateProxy(
-                    self._rust_mgr, state_id,
+                    self._rust_mgr,
+                    state_id,
                     project=self._project,
-                    stdin_vars=getattr(self, '_stdin_vars', None),
+                    stdin_vars=getattr(self, "_stdin_vars", None),
                     stdout_data=stdout_data,
                     python_mgr=self,
                 )
@@ -177,8 +176,7 @@ class RustStateCacheMixin:
                         # cat-(b) FALLBACK WITH LOSS: user predicate raised; we
                         # skip find for this state and fall through to avoid.
                         # User-code bug — log at debug.
-                        l.debug("find_predicate(sid=%d) raised: %s: %s",
-                                state_id, type(e).__name__, e)
+                        l.debug("find_predicate(sid=%d) raised: %s: %s", state_id, type(e).__name__, e)
 
                 if self._avoid_predicate is not None:
                     try:
@@ -187,14 +185,12 @@ class RustStateCacheMixin:
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: user predicate raised; we
                         # don't avoid this state. User-code bug — log at debug.
-                        l.debug("avoid_predicate(sid=%d) raised: %s: %s",
-                                state_id, type(e).__name__, e)
+                        l.debug("avoid_predicate(sid=%d) raised: %s: %s", state_id, type(e).__name__, e)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: predicate eval setup (stdout/
                 # stdin injection) failed; this state goes unevaluated this
                 # sweep but will be retried next sweep.
-                l.debug("predicate eval setup for sid=%d failed: %s: %s",
-                        state_id, type(e).__name__, e)
+                l.debug("predicate eval setup for sid=%d failed: %s: %s", state_id, type(e).__name__, e)
 
             # Mark uncached state as evaluated at its current (addr, stdout_len)
             if not is_cached and current_info is not None:
@@ -203,19 +199,18 @@ class RustStateCacheMixin:
         # Move matched states to found/avoid stashes
         for sid in found_sids:
             self._predicate_matched_ids.add(sid)
-            for stash in ('active', 'deadended'):
+            for stash in ("active", "deadended"):
                 try:
-                    if self._rust_mgr.move_state(sid, stash, 'found'):
+                    if self._rust_mgr.move_state(sid, stash, "found"):
                         break
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: state classified as found but
                     # the move failed; the next sweep marks it matched again
                     # (via _predicate_matched_ids) but won't move it. Log
                     # so this is visible — could mask a real find failure.
-                    l.debug("move_state(sid=%d, %s -> found) failed: %s: %s",
-                            sid, stash, type(e).__name__, e)
+                    l.debug("move_state(sid=%d, %s -> found) failed: %s: %s", sid, stash, type(e).__name__, e)
             # Record in Python-side found for predicate-matched states
-            if not hasattr(self, '_predicate_found'):
+            if not hasattr(self, "_predicate_found"):
                 self._predicate_found = []
             if sid in self._state_cache:
                 self._predicate_found.append(self._state_cache[sid])
@@ -224,15 +219,14 @@ class RustStateCacheMixin:
 
         for sid in avoid_sids:
             self._predicate_matched_ids.add(sid)
-            for stash in ('active', 'deadended'):
+            for stash in ("active", "deadended"):
                 try:
-                    self._rust_mgr.move_state(sid, stash, 'avoid')
+                    self._rust_mgr.move_state(sid, stash, "avoid")
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: state classified as avoid but
                     # the move failed; state remains active and may continue
                     # being explored. Log at debug.
-                    l.debug("move_state(sid=%d, %s -> avoid) failed: %s: %s",
-                            sid, stash, type(e).__name__, e)
+                    l.debug("move_state(sid=%d, %s -> avoid) failed: %s: %s", sid, stash, type(e).__name__, e)
 
     def _create_state_for_predicate(self, state_id):
         """Create a lightweight Python state for predicate evaluation.
@@ -250,8 +244,7 @@ class RustStateCacheMixin:
             # cat-(a) EXPECTED CONTROL FLOW: missing Rust root means we fall
             # back to "any cached state" below — the parent search is
             # best-effort.
-            l.debug("get_state_root(sid=%d) failed: %s: %s",
-                    state_id, type(e).__name__, e)
+            l.debug("get_state_root(sid=%d) failed: %s: %s", state_id, type(e).__name__, e)
             root_id = None
 
         parent_state = None
@@ -269,7 +262,7 @@ class RustStateCacheMixin:
             state = parent_state.copy()
             # Update PC from Rust state
             try:
-                for stash in ('active', 'deadended', 'found', 'avoid'):
+                for stash in ("active", "deadended", "found", "avoid"):
                     ids = self._rust_mgr.get_state_ids(stash)
                     if state_id in ids:
                         idx = ids.index(state_id)
@@ -281,8 +274,7 @@ class RustStateCacheMixin:
                 # cat-(b) FALLBACK WITH LOSS: PC sync failed; the predicate
                 # state has the parent's PC, not the forked child's. Could
                 # cause a predicate to match the wrong addr.
-                l.debug("PC sync for predicate state sid=%d failed: %s: %s",
-                        state_id, type(e).__name__, e)
+                l.debug("PC sync for predicate state sid=%d failed: %s: %s", state_id, type(e).__name__, e)
             # Attach Rust solver fallback so solver operations work
             self._attach_rust_solver_fallback(state, state_id)
             return state
@@ -292,5 +284,3 @@ class RustStateCacheMixin:
             # falls back to using a RustStateProxy.
             l.debug("Failed to create predicate state for %d: %s", state_id, e)
             return None
-
-

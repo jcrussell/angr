@@ -30,18 +30,18 @@ Designed to be cheap to run locally and to wire into CI as a warn-only
 check (``|| true``) if desired. Reads no benchmark subprocesses — just
 parses the catalog dict and the JSON baseline.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
-from typing import Optional
 
 # Allow ``import run_single`` when invoked directly from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from run_single import EXAMPLE_CATALOG  # noqa: E402
+from run_single import EXAMPLE_CATALOG
 
 # (lower-inclusive, upper-exclusive) seconds for each tier.
 TIER_BOUNDS = {
@@ -51,9 +51,7 @@ TIER_BOUNDS = {
     "very_slow": (120.0, float("inf")),
 }
 
-DEFAULT_BASELINE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "baseline_timings.json"
-)
+DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline_timings.json")
 BOUNDARY_TOLERANCE = 0.10  # ±10% slack on each tier boundary
 
 
@@ -81,7 +79,7 @@ def within_boundary(seconds: float, tier: str, tol: float) -> bool:
     return False
 
 
-def measured_time(entry: dict, baseline: dict, name: str) -> Optional[float]:
+def measured_time(entry: dict, baseline: dict, name: str) -> float | None:
     """Pick rust_time or python_time per the rust_ok convention."""
     record = baseline.get(name)
     if not record:
@@ -120,10 +118,7 @@ def audit(catalog: dict, baseline: dict, tol: float = BOUNDARY_TOLERANCE):
 def _format_rows(rows):
     lines = []
     for name, declared, strict, seconds, source in sorted(rows, key=lambda r: r[3]):
-        lines.append(
-            f"  {name:42s} declared={declared:10s} expected={strict:10s} "
-            f"{source}_time={seconds:.2f}s"
-        )
+        lines.append(f"  {name:42s} declared={declared:10s} expected={strict:10s} {source}_time={seconds:.2f}s")
     return "\n".join(lines)
 
 

@@ -15,8 +15,12 @@ Requirements:
 Usage:
     python examples/rust_exploration_example.py /path/to/angr-examples/examples
 """
+
+from __future__ import annotations
+
 import os
 import sys
+
 import angr
 
 
@@ -70,6 +74,7 @@ def example_with_techniques(binary_path):
 
     # LengthLimiter: bound exploration depth
     from angr.exploration_techniques import LengthLimiter
+
     simgr.use_technique(LengthLimiter(max_length=200))
 
     simgr.explore(find=0x400844, avoid=0x40084E, timeout=30)

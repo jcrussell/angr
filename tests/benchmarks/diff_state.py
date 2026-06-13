@@ -11,24 +11,55 @@ SimState export every step on the Rust side and balloon the snapshot file —
 the tradeoff here is to catch register/PC drift quickly and let the existing
 final-correctness check guard memory.
 """
+
 from __future__ import annotations
 
-import hashlib
 import json
 import types
-
 
 # Architecturally-meaningful registers we attempt to capture per state.
 # Missing names are silently skipped (e.g. amd64 regs on x86).
 _DIFF_REG_NAMES = (
     # amd64
-    "rip", "rsp", "rbp", "rax", "rbx", "rcx", "rdx", "rsi", "rdi",
-    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    "rip",
+    "rsp",
+    "rbp",
+    "rax",
+    "rbx",
+    "rcx",
+    "rdx",
+    "rsi",
+    "rdi",
+    "r8",
+    "r9",
+    "r10",
+    "r11",
+    "r12",
+    "r13",
+    "r14",
+    "r15",
     # x86
-    "eip", "esp", "ebp", "eax", "ebx", "ecx", "edx", "esi", "edi",
+    "eip",
+    "esp",
+    "ebp",
+    "eax",
+    "ebx",
+    "ecx",
+    "edx",
+    "esi",
+    "edi",
     # arm
-    "pc", "sp", "lr",
-    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+    "pc",
+    "sp",
+    "lr",
+    "r0",
+    "r1",
+    "r2",
+    "r3",
+    "r4",
+    "r5",
+    "r6",
+    "r7",
 )
 
 _STASH_NAMES = ("active", "found", "deadended", "avoid", "errored", "unconstrained")
@@ -157,16 +188,17 @@ def _patch_rust_explore_to_single_step(manager, max_snapshots: int):
             # found/avoid stashes manually. Without this, csgames2018
             # and sym-write never see their stdout-based find predicate
             # fire in --diff-state mode.
-            if (getattr(manager, "_find_predicate", None) is not None
-                    or getattr(manager, "_avoid_predicate", None) is not None):
+            if (
+                getattr(manager, "_find_predicate", None) is not None
+                or getattr(manager, "_avoid_predicate", None) is not None
+            ):
                 try:
                     manager._evaluate_predicates_on_active()
                 except Exception:
                     pass
         return manager
 
-    def diff_explore(find=None, avoid=None, num_find=1, until=None,
-                     timeout=None, max_steps=None, **kwargs):
+    def diff_explore(find=None, avoid=None, num_find=1, until=None, timeout=None, max_steps=None, **kwargs):
         if not hasattr(manager, "_find_predicate"):
             manager._find_predicate = None
         if not hasattr(manager, "_avoid_predicate"):
@@ -193,10 +225,12 @@ def _patch_rust_explore_to_single_step(manager, max_snapshots: int):
         # calling it after each step.
         original_step = manager.step
         if step_func is not None:
+
             def _step_with_cb(self, *a, **kw):
                 r = original_step(*a, **kw)
                 step_func(self)
                 return r
+
             manager.step = types.MethodType(_step_with_cb, manager)
         try:
             return _drive("active", float("inf"), until, timeout, n)
@@ -223,9 +257,7 @@ def _diff_stash(stash_name: str, py_states: list, rs_states: list) -> list:
     """Return human-readable lines describing differences in this stash."""
     diffs: list = []
     if len(py_states) != len(rs_states):
-        diffs.append(
-            f"  [{stash_name}] state count mismatch: py={len(py_states)} rust={len(rs_states)}"
-        )
+        diffs.append(f"  [{stash_name}] state count mismatch: py={len(py_states)} rust={len(rs_states)}")
 
     py_by_sig: dict = {}
     rs_by_sig: dict = {}
@@ -248,9 +280,7 @@ def _diff_stash(stash_name: str, py_states: list, rs_states: list) -> list:
         for py_s, rs_s in zip(py_list, rs_list):
             for key in ("constraints_count", "satisfiable"):
                 if py_s.get(key) != rs_s.get(key):
-                    diffs.append(
-                        f"  [{stash_name}] sig={sig} {key}: py={py_s.get(key)} rust={rs_s.get(key)}"
-                    )
+                    diffs.append(f"  [{stash_name}] sig={sig} {key}: py={py_s.get(key)} rust={rs_s.get(key)}")
             py_regs = py_s.get("regs", {})
             rs_regs = rs_s.get("regs", {})
             common_keys = sorted(set(py_regs) & set(rs_regs))
@@ -260,9 +290,7 @@ def _diff_stash(stash_name: str, py_states: list, rs_states: list) -> list:
                 if pv != rv:
                     pv_s = hex(pv) if isinstance(pv, int) else str(pv)
                     rv_s = hex(rv) if isinstance(rv, int) else str(rv)
-                    diffs.append(
-                        f"  [{stash_name}] sig={sig} reg {rk}: py={pv_s} rust={rv_s}"
-                    )
+                    diffs.append(f"  [{stash_name}] sig={sig} reg {rk}: py={pv_s} rust={rv_s}")
 
     return diffs
 
@@ -293,10 +321,14 @@ def _align_snapshots(py_snaps: list, rs_snaps: list) -> tuple:
     for idx, snap in enumerate(py_snaps):
         actives = snap.get("stashes", {}).get("active", [])
         if any(s.get("addr") == rs_target for s in actives):
-            return idx, 0, (
-                f"aligned: python advanced past {idx} init step(s) to reach "
-                f"rust starting addr "
-                f"{hex(rs_target) if isinstance(rs_target, int) else rs_target}"
+            return (
+                idx,
+                0,
+                (
+                    f"aligned: python advanced past {idx} init step(s) to reach "
+                    f"rust starting addr "
+                    f"{hex(rs_target) if isinstance(rs_target, int) else rs_target}"
+                ),
             )
     # Try the symmetric case: maybe Python is ahead of Rust.
     py_target = _first_active_addr(py_snaps[0])
@@ -304,10 +336,14 @@ def _align_snapshots(py_snaps: list, rs_snaps: list) -> tuple:
         for idx, snap in enumerate(rs_snaps):
             actives = snap.get("stashes", {}).get("active", [])
             if any(s.get("addr") == py_target for s in actives):
-                return 0, idx, (
-                    f"aligned: rust advanced past {idx} init step(s) to reach "
-                    f"python starting addr "
-                    f"{hex(py_target) if isinstance(py_target, int) else py_target}"
+                return (
+                    0,
+                    idx,
+                    (
+                        f"aligned: rust advanced past {idx} init step(s) to reach "
+                        f"python starting addr "
+                        f"{hex(py_target) if isinstance(py_target, int) else py_target}"
+                    ),
                 )
     return 0, 0, "no common starting address found; comparing from index 0"
 

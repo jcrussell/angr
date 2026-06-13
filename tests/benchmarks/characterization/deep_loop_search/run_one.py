@@ -11,6 +11,7 @@ prints a single line of metrics:
 
 Always runs in a subprocess (via sweep.py) with RLIMIT_AS to confine OOMs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import time
-
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "deep_loop_template.c")
@@ -43,7 +43,8 @@ def compile_binary(n: int, out_dir: str) -> str:
         f.write(src)
     subprocess.check_call(
         ["gcc", "-O0", "-no-pie", "-o", bin_path, c_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
     )
     return bin_path
 
@@ -58,14 +59,11 @@ def _max_depth_rust(mgr) -> int:
     full state export.
     """
     best = 0
-    proxies = (
-        list(mgr.active_proxies())
-        + list(mgr.deadended_proxies())
-    )
+    proxies = list(mgr.active_proxies()) + list(mgr.deadended_proxies())
     for p in proxies:
         try:
             n = len(p.history.bbl_addrs)
-        except Exception:  # noqa: BLE001
+        except Exception:
             n = 0
         if n > best:
             best = n
@@ -77,18 +75,18 @@ def _max_depth_python(sm) -> int:
     for s in list(sm.active) + list(getattr(sm, "deadended", [])):
         try:
             n = len(list(s.history.bbl_addrs))
-        except Exception:  # noqa: BLE001
+        except Exception:
             n = 0
         if n > best:
             best = n
     return best
 
 
-def run_explore(bin_path: str, engine: str, strategy: str,
-                max_steps: int, max_states: int):
+def run_explore(bin_path: str, engine: str, strategy: str, max_steps: int, max_states: int):
     """Run exploration; return dict with depth/state metrics."""
-    import angr  # noqa: E402
-    import claripy  # noqa: E402
+    import claripy
+
+    import angr
 
     proj = angr.Project(bin_path, auto_load_libs=False)
     main_sym = proj.loader.find_symbol("main")
@@ -106,9 +104,11 @@ def run_explore(bin_path: str, engine: str, strategy: str,
     try:
         if engine == "rust":
             from angr.exploration.rust_manager import RustExplorationManager
+
             mgr = RustExplorationManager(proj, [state])
             if strategy == "dfs":
                 from angr.exploration_techniques import DFS
+
                 mgr.use_technique(DFS())
             # BFS is the default FIFO queue; no technique needed.
             step = 0
@@ -130,32 +130,31 @@ def run_explore(bin_path: str, engine: str, strategy: str,
                 "deadended": len(getattr(mgr, "deadended", [])),
                 "error": None,
             }
-        else:
-            sm = proj.factory.simulation_manager(state, save_unconstrained=True)
-            if strategy == "dfs":
-                sm.use_technique(angr.exploration_techniques.DFS())
-            step = 0
-            while sm.active and step < max_steps:
-                sm.step()
-                step += 1
-                if len(sm.active) + len(sm.deadended) > max_states:
-                    return {
-                        "steps": step,
-                        "max_depth": _max_depth_python(sm),
-                        "active_at_end": len(sm.active),
-                        "deadended": len(sm.deadended),
-                        "error": f"state-explosion>{max_states}",
-                    }
-            return {
-                "steps": step,
-                "max_depth": _max_depth_python(sm),
-                "active_at_end": len(sm.active),
-                "deadended": len(sm.deadended),
-                "error": None,
-            }
+        sm = proj.factory.simulation_manager(state, save_unconstrained=True)
+        if strategy == "dfs":
+            sm.use_technique(angr.exploration_techniques.DFS())
+        step = 0
+        while sm.active and step < max_steps:
+            sm.step()
+            step += 1
+            if len(sm.active) + len(sm.deadended) > max_states:
+                return {
+                    "steps": step,
+                    "max_depth": _max_depth_python(sm),
+                    "active_at_end": len(sm.active),
+                    "deadended": len(sm.deadended),
+                    "error": f"state-explosion>{max_states}",
+                }
+        return {
+            "steps": step,
+            "max_depth": _max_depth_python(sm),
+            "active_at_end": len(sm.active),
+            "deadended": len(sm.deadended),
+            "error": None,
+        }
     except MemoryError:
         return {"error": "MemoryError"}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
@@ -163,13 +162,11 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--engine", choices=["rust", "python"], required=True)
     p.add_argument("--strategy", choices=["bfs", "dfs"], required=True)
-    p.add_argument("--n", type=int, required=True,
-                   help="iteration cap baked into the binary")
+    p.add_argument("--n", type=int, required=True, help="iteration cap baked into the binary")
     p.add_argument("--max-steps", type=int, default=500)
     p.add_argument("--max-states", type=int, default=4096)
     p.add_argument("--mem-limit-mb", type=int, default=3072)
-    p.add_argument("--build-dir", default=None,
-                   help="Reuse-able binary cache (default: temp dir)")
+    p.add_argument("--build-dir", default=None, help="Reuse-able binary cache (default: temp dir)")
     args = p.parse_args()
 
     if args.build_dir:
@@ -190,8 +187,7 @@ def main() -> int:
         pass
 
     t0 = time.monotonic()
-    result = run_explore(bin_path, args.engine, args.strategy,
-                         args.max_steps, args.max_states)
+    result = run_explore(bin_path, args.engine, args.strategy, args.max_steps, args.max_states)
     wall = time.monotonic() - t0
     rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 

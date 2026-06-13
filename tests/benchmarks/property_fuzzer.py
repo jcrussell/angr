@@ -89,6 +89,7 @@ Usage
     # and exits 0 only if zero divergences)
     python tests/benchmarks/property_fuzzer.py --trials 50 --strict
 """
+
 from __future__ import annotations
 
 import argparse
@@ -96,11 +97,9 @@ import json
 import multiprocessing
 import os
 import random
-import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Optional
 
 # Reuse the subprocess machinery from run_single.py and the bimodal /
 # output-normalization helpers from run_regression.py — both live in
@@ -109,17 +108,17 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-from run_single import (  # noqa: E402
-    DEFAULT_MEM_LIMIT_MB,
-    EXAMPLE_CATALOG,
-    EXAMPLES_DIR,
-    _run_in_child,
-)
-from run_regression import (  # noqa: E402
+from run_regression import (
     BIMODAL_BENCHMARKS,
     FAST_SUITE,
     MEDIUM_SUITE,
     _normalize_output,
+)
+from run_single import (
+    DEFAULT_MEM_LIMIT_MB,
+    EXAMPLE_CATALOG,
+    EXAMPLES_DIR,
+    _run_in_child,
 )
 
 
@@ -162,25 +161,27 @@ _KNOWN_DIVERGE = _known_diverge_set()
 #
 # Bimodal examples are filtered separately so `--include-bimodal` can
 # opt in for those who want full coverage.
-_BLOCKLIST = frozenset({
-    # tier=very_slow, both engines time out
-    "sharif7_rev50",
-    "0ctf_momo_3",
-    "tumctf2016_zwiebel",
-    "b01lersctf2020_little_engine",
-    # rust_ok=False (known broken — out of scope for this fuzzer)
-    "asisctffinals2015_license",
-    "CADET_00001",
-    "ekopartyctf2015_rev100",
-    "whitehat_crypto400",
-    "asisctffinals2015_fake",
-    # Harness-incompatible (uses sys.argv / factory.successors directly,
-    # so the engine swap in _run_in_child doesn't apply)
-    "insomnihack_aeg",
-    "0ctf_trace",
-    # Python-side broken
-    "defcamp_r200",
-})
+_BLOCKLIST = frozenset(
+    {
+        # tier=very_slow, both engines time out
+        "sharif7_rev50",
+        "0ctf_momo_3",
+        "tumctf2016_zwiebel",
+        "b01lersctf2020_little_engine",
+        # rust_ok=False (known broken — out of scope for this fuzzer)
+        "asisctffinals2015_license",
+        "CADET_00001",
+        "ekopartyctf2015_rev100",
+        "whitehat_crypto400",
+        "asisctffinals2015_fake",
+        # Harness-incompatible (uses sys.argv / factory.successors directly,
+        # so the engine swap in _run_in_child doesn't apply)
+        "insomnihack_aeg",
+        "0ctf_trace",
+        # Python-side broken
+        "defcamp_r200",
+    }
+)
 
 _STRATEGIES = ("bfs", "dfs")
 
@@ -196,16 +197,16 @@ class TrialResult:
     bimodal: bool
     python_ok: bool
     rust_ok: bool
-    python_elapsed: Optional[float] = None
-    rust_elapsed: Optional[float] = None
-    python_error: Optional[str] = None
-    rust_error: Optional[str] = None
-    output_match: Optional[bool] = None
-    output_match_normalized: Optional[bool] = None
-    python_output_snippet: Optional[str] = None
-    rust_output_snippet: Optional[str] = None
+    python_elapsed: float | None = None
+    rust_elapsed: float | None = None
+    python_error: str | None = None
+    rust_error: str | None = None
+    output_match: bool | None = None
+    output_match_normalized: bool | None = None
+    python_output_snippet: str | None = None
+    rust_output_snippet: str | None = None
     classification: str = "unrun"  # one of: pass | diverge | expected-diverge | py-fail | rust-fail | both-fail
-    divergence_kind: Optional[str] = None  # exact-mismatch | normalized-mismatch | crash-asymmetry
+    divergence_kind: str | None = None  # exact-mismatch | normalized-mismatch | crash-asymmetry
 
     def is_divergence(self) -> bool:
         return self.classification == "diverge"
@@ -257,15 +258,12 @@ def _eligible_examples(include_bimodal: bool = False) -> list[str]:
     return sorted(out)
 
 
-def _run_one(example: str, engine: str, strategy: str, timeout: int,
-             mem_limit_mb: int) -> dict:
+def _run_one(example: str, engine: str, strategy: str, timeout: int, mem_limit_mb: int) -> dict:
     """Run a single (example, engine, strategy) trial in a subprocess."""
     ctx = multiprocessing.get_context("spawn")
     pool = ctx.Pool(1)
     try:
-        async_result = pool.apply_async(
-            _run_in_child, (example, engine, EXAMPLES_DIR, mem_limit_mb, strategy)
-        )
+        async_result = pool.apply_async(_run_in_child, (example, engine, EXAMPLES_DIR, mem_limit_mb, strategy))
         return async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
         pool.terminate()
@@ -300,8 +298,7 @@ def _outputs_match(py_out: str, rust_out: str) -> tuple[bool, bool]:
     return False, False
 
 
-def run_trial(idx: int, example: str, strategy: str, seed: int,
-              timeout: int, mem_limit_mb: int) -> TrialResult:
+def run_trial(idx: int, example: str, strategy: str, seed: int, timeout: int, mem_limit_mb: int) -> TrialResult:
     """Run both engines on (example, strategy) and classify the outcome."""
     result = TrialResult(
         trial_idx=idx,
@@ -352,9 +349,7 @@ def run_trial(idx: int, example: str, strategy: str, seed: int,
             result.classification = "expected-diverge"
         else:
             result.classification = "diverge"
-        result.divergence_kind = (
-            "exact-mismatch" if exact is False else "normalized-mismatch"
-        )
+        result.divergence_kind = "exact-mismatch" if exact is False else "normalized-mismatch"
     return result
 
 
@@ -364,32 +359,37 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage\n")[-1] if "Usage" in (__doc__ or "") else "",
     )
-    parser.add_argument("--trials", type=int, default=20,
-                        help="Number of trials to run (default: 20)")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Random seed (default: time-based)")
-    parser.add_argument("--timeout", type=int, default=60,
-                        help="Per-engine timeout in seconds (default: 60)")
-    parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
-                        help=f"Memory limit per subprocess in MB (default: {DEFAULT_MEM_LIMIT_MB})")
-    parser.add_argument("--only", action="append", default=None, metavar="EXAMPLE",
-                        help="Restrict sampling to a specific example (repeatable)")
-    parser.add_argument("--include-bimodal", action="store_true",
-                        help="Include benchmarks with known bimodal Z3 timing variance")
-    parser.add_argument("--strict", action="store_true",
-                        help="Exit nonzero on any divergence (default: only nonzero on crashes)")
-    parser.add_argument("--report", default=None, metavar="PATH",
-                        help="Write a JSON report of all trials to PATH")
-    parser.add_argument("--list", action="store_true",
-                        help="List the eligible example set and exit")
+    parser.add_argument("--trials", type=int, default=20, help="Number of trials to run (default: 20)")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed (default: time-based)")
+    parser.add_argument("--timeout", type=int, default=60, help="Per-engine timeout in seconds (default: 60)")
+    parser.add_argument(
+        "--mem-limit",
+        type=int,
+        default=DEFAULT_MEM_LIMIT_MB,
+        help=f"Memory limit per subprocess in MB (default: {DEFAULT_MEM_LIMIT_MB})",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="EXAMPLE",
+        help="Restrict sampling to a specific example (repeatable)",
+    )
+    parser.add_argument(
+        "--include-bimodal", action="store_true", help="Include benchmarks with known bimodal Z3 timing variance"
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="Exit nonzero on any divergence (default: only nonzero on crashes)"
+    )
+    parser.add_argument("--report", default=None, metavar="PATH", help="Write a JSON report of all trials to PATH")
+    parser.add_argument("--list", action="store_true", help="List the eligible example set and exit")
     args = parser.parse_args()
 
     eligible = _eligible_examples(include_bimodal=args.include_bimodal)
     if args.only:
         bad = set(args.only) - set(eligible) - set(EXAMPLE_CATALOG)
         if bad:
-            print(f"ERROR: unknown example(s): {', '.join(sorted(bad))}",
-                  file=sys.stderr)
+            print(f"ERROR: unknown example(s): {', '.join(sorted(bad))}", file=sys.stderr)
             return 2
         # With --only the user has explicitly named the example, so honor
         # it even if not in the default-eligible set.
@@ -402,15 +402,16 @@ def main() -> int:
         return 0
 
     if not eligible:
-        print("ERROR: no eligible examples found. Check ANGR_EXAMPLES_DIR.",
-              file=sys.stderr)
+        print("ERROR: no eligible examples found. Check ANGR_EXAMPLES_DIR.", file=sys.stderr)
         return 2
 
     seed = args.seed if args.seed is not None else int(time.time())
     rng = random.Random(seed)
-    print(f"property-fuzzer: seed={seed} trials={args.trials} "
-          f"timeout={args.timeout}s mem-limit={args.mem_limit}MB "
-          f"eligible={len(eligible)}")
+    print(
+        f"property-fuzzer: seed={seed} trials={args.trials} "
+        f"timeout={args.timeout}s mem-limit={args.mem_limit}MB "
+        f"eligible={len(eligible)}"
+    )
 
     report = FuzzerReport(seed=seed, trials=args.trials)
     total_start = time.perf_counter()
@@ -422,11 +423,9 @@ def main() -> int:
         trial_seed = rng.randint(0, 2**31 - 1)
         report.examples_seen.append(example)
 
-        print(f"[{i+1}/{args.trials}] {example} ({strategy}) "
-              f"seed={trial_seed}", end=" ... ", flush=True)
+        print(f"[{i + 1}/{args.trials}] {example} ({strategy}) seed={trial_seed}", end=" ... ", flush=True)
         t0 = time.perf_counter()
-        result = run_trial(i, example, strategy, trial_seed,
-                           args.timeout, args.mem_limit)
+        result = run_trial(i, example, strategy, trial_seed, args.timeout, args.mem_limit)
         dt = time.perf_counter() - t0
         report.results.append(result)
 
@@ -437,16 +436,14 @@ def main() -> int:
             print(f"    python: {result.python_output_snippet!r}")
             print(f"    rust:   {result.rust_output_snippet!r}")
         elif result.classification == "expected-diverge":
-            print(f"EXPECTED-DIVERGE [{result.divergence_kind}] ({dt:.1f}s) "
-                  f"— known rust_only/bimodal entry")
+            print(f"EXPECTED-DIVERGE [{result.divergence_kind}] ({dt:.1f}s) — known rust_only/bimodal entry")
         elif result.classification == "rust-fail":
             crashes += 1
             print(f"RUST FAIL ({dt:.1f}s): {result.rust_error}")
         elif result.classification == "py-fail":
             print(f"PY FAIL ({dt:.1f}s): {result.python_error}")
         elif result.classification == "both-fail":
-            print(f"BOTH FAIL ({dt:.1f}s): "
-                  f"py={result.python_error}, rust={result.rust_error}")
+            print(f"BOTH FAIL ({dt:.1f}s): py={result.python_error}, rust={result.rust_error}")
         else:
             print(f"? ({dt:.1f}s) {result.classification}")
 

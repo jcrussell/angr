@@ -1,9 +1,10 @@
 """Mixin for Callback dispatch and SimProcedure handling for Rust exploration."""
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import claripy
 
@@ -27,10 +28,10 @@ def _simproc_dispatch_name(proc) -> str:
     base class defaults ``display_name`` to ``type(self).__name__``, so this
     coincides with the previous behaviour.
     """
-    name = getattr(proc, 'display_name', None)
+    name = getattr(proc, "display_name", None)
     if name:
         return str(name)
-    return proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+    return proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
 
 
 class RustCallbackDispatchMixin:
@@ -40,7 +41,7 @@ class RustCallbackDispatchMixin:
     RustExplorationManager attributes (self._rust_mgr, self._project, etc.).
     """
 
-    def _init_callback_history(self, state: "angr.SimState", event: "_ExplorationEvent"):
+    def _init_callback_history(self, state: angr.SimState, event: _ExplorationEvent):
         """Initialize history for callback state to prevent IndexError.
 
         Python hooks often access `state.history.recent_bbl_addrs[-1]` which
@@ -52,13 +53,11 @@ class RustCallbackDispatchMixin:
             event: The exploration event that triggered the callback.
         """
         # Use cached bundle data if available (avoids 2 extra FFI calls)
-        rust_history = getattr(state.scratch, '_rust_bundle_history', None)
-        rust_jumpkind = getattr(state.scratch, '_rust_bundle_jumpkind', None)
+        rust_history = getattr(state.scratch, "_rust_bundle_history", None)
+        rust_jumpkind = getattr(state.scratch, "_rust_bundle_jumpkind", None)
         if rust_history is None:
             try:
-                rust_history, rust_jumpkind = (
-                    self._rust_mgr.get_pending_history_and_jumpkind()
-                )
+                rust_history, rust_jumpkind = self._rust_mgr.get_pending_history_and_jumpkind()
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: pending Rust history unavailable;
                 # fall back to a single-element history. State.history may be
@@ -76,14 +75,14 @@ class RustCallbackDispatchMixin:
 
         # Directly set recent_bbl_addrs to prevent IndexError
         # This is the critical fix - hooks access state.history.recent_bbl_addrs[-1]
-        if hasattr(state.history, 'recent_bbl_addrs'):
+        if hasattr(state.history, "recent_bbl_addrs"):
             # Use Rust history if available, otherwise use callback address.
             # Always ensure history has at least one entry, even if callback_addr is 0.
             if rust_history:
                 state.history.recent_bbl_addrs = list(rust_history)
             else:
                 # Use callback_addr, or state.addr if callback_addr is None/0
-                addr_to_use = callback_addr if callback_addr else (state.addr if state.addr else 0)
+                addr_to_use = callback_addr or (state.addr or 0)
                 state.history.recent_bbl_addrs = [addr_to_use]
 
         # Set jumpkind to avoid callstack._manage() pushing a new frame
@@ -97,10 +96,12 @@ class RustCallbackDispatchMixin:
             pass
 
         if _DBG:
-            l.debug(f"Initialized callback history with {len(state.history.recent_bbl_addrs)} entries, "
-                    f"jumpkind={rust_jumpkind}, addr=0x{callback_addr:x}")
+            l.debug(
+                f"Initialized callback history with {len(state.history.recent_bbl_addrs)} entries, "
+                f"jumpkind={rust_jumpkind}, addr=0x{callback_addr:x}"
+            )
 
-    def _init_callback_callstack(self, state: "angr.SimState", event: "_ExplorationEvent"):
+    def _init_callback_callstack(self, state: angr.SimState, event: _ExplorationEvent):
         """Initialize callstack for SimProcedure continuations.
 
         SimProcedures may need procedure_data for continuations (e.g., when
@@ -114,7 +115,7 @@ class RustCallbackDispatchMixin:
             state: The angr callback state to initialize.
             event: The exploration event that triggered the callback.
         """
-        if event.callback_reason != 'simprocedure':
+        if event.callback_reason != "simprocedure":
             return
 
         addr = event.callback_addr
@@ -126,10 +127,12 @@ class RustCallbackDispatchMixin:
         if addr_int in self._pending_procedure_data:
             stored_data = self._pending_procedure_data.pop(addr_int)
             try:
-                if hasattr(state.callstack, 'top') and state.callstack.top is not None:
+                if hasattr(state.callstack, "top") and state.callstack.top is not None:
                     state.callstack.top.procedure_data = stored_data
-                    l.debug(f"Restored procedure_data for continuation at 0x{addr:x}: "
-                            f"args={len(stored_data[1]) if len(stored_data) > 1 else 0}")
+                    l.debug(
+                        f"Restored procedure_data for continuation at 0x{addr:x}: "
+                        f"args={len(stored_data[1]) if len(stored_data) > 1 else 0}"
+                    )
                     return
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: procedure_data restore failed;
@@ -139,9 +142,9 @@ class RustCallbackDispatchMixin:
 
         # Fallback: Get SP from Rust for saved state
         try:
-            sp_val = self._rust_mgr.get_pending_register('rsp')
+            sp_val = self._rust_mgr.get_pending_register("rsp")
             if sp_val is None:
-                sp_val = self._rust_mgr.get_pending_register('esp')
+                sp_val = self._rust_mgr.get_pending_register("esp")
             saved_sp = sp_val or 0
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: pending SP read failed;
@@ -152,14 +155,14 @@ class RustCallbackDispatchMixin:
         # Initialize procedure_data for continuations
         # This prevents crashes when SimProcedures use self.call()
         try:
-            if hasattr(state.callstack, 'top') and state.callstack.top is not None:
+            if hasattr(state.callstack, "top") and state.callstack.top is not None:
                 # Set procedure_data: (saved_sp, sim_args, saved_local_vars, saved_lr, ideal_addr)
                 state.callstack.top.procedure_data = (
-                    saved_sp,              # saved_sp
-                    [],                    # sim_args (populated by SimProcedure)
-                    [],                    # saved_local_vars
-                    None,                  # saved_lr
-                    addr,                  # ideal_addr
+                    saved_sp,  # saved_sp
+                    [],  # sim_args (populated by SimProcedure)
+                    [],  # saved_local_vars
+                    None,  # saved_lr
+                    addr,  # ideal_addr
                 )
                 l.debug(f"Initialized callstack procedure_data at 0x{addr:x}")
         except Exception as e:
@@ -168,7 +171,7 @@ class RustCallbackDispatchMixin:
             # missing fields. Debug-logs.
             l.debug(f"Could not initialize callstack procedure_data: {e}")
 
-    def _install_rust_solver_on_callback_state(self, state: "angr.SimState", rust_ctx):
+    def _install_rust_solver_on_callback_state(self, state: angr.SimState, rust_ctx):
         """Make the Rust solver the single source of truth for callback states.
 
         Instead of syncing constraints from Rust to Python (which can create
@@ -213,7 +216,7 @@ class RustCallbackDispatchMixin:
         # call, so a re-install would just rewrap our own closures as the
         # "originals" — an infinite-recursion footgun. Guard with a per-
         # state flag.
-        if getattr(state.scratch, '_rust_solver_installed', False):
+        if getattr(state.scratch, "_rust_solver_installed", False):
             return
 
         # First time: save real originals and create closures once.
@@ -239,15 +242,15 @@ class RustCallbackDispatchMixin:
 
         def _rust_eval(expr, cast_to=None, **kwargs):
             _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop('exact', None)
-            extra = kwargs.pop('extra_constraints', ())
+            kwargs.pop("exact", None)
+            extra = kwargs.pop("extra_constraints", ())
             try:
                 result = _with_extra_constraints(_ctx, _ctx.eval, expr, extra=extra)
                 if result is None:
                     return original_eval(expr, cast_to=cast_to, **kwargs)
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
-                    return result.to_bytes(nbytes, 'big')
+                    return result.to_bytes(nbytes, "big")
                 return result
             except claripy.errors.UnsatError:
                 # cat-(a) EXPECTED CONTROL FLOW: claripy UnsatError must propagate
@@ -261,8 +264,8 @@ class RustCallbackDispatchMixin:
 
         def _rust_satisfiable(**kwargs):
             _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop('exact', None)
-            extra = kwargs.pop('extra_constraints', ())
+            kwargs.pop("exact", None)
+            extra = kwargs.pop("extra_constraints", ())
             try:
                 return _with_extra_constraints(_ctx, _ctx.satisfiable, extra=extra)
             except Exception:
@@ -272,9 +275,9 @@ class RustCallbackDispatchMixin:
                 return original_satisfiable(**kwargs)
 
         def _rust_min(expr, **kwargs):
-            kwargs.pop('exact', None)
-            kwargs.pop('extra_constraints', None)
-            kwargs.pop('signed', None)
+            kwargs.pop("exact", None)
+            kwargs.pop("extra_constraints", None)
+            kwargs.pop("signed", None)
             try:
                 return state.scratch.rust_solver_ctx.min(expr, signed=False)
             except Exception:
@@ -284,9 +287,9 @@ class RustCallbackDispatchMixin:
                 return original_min(expr, **kwargs)
 
         def _rust_max(expr, **kwargs):
-            kwargs.pop('exact', None)
-            kwargs.pop('extra_constraints', None)
-            kwargs.pop('signed', None)
+            kwargs.pop("exact", None)
+            kwargs.pop("extra_constraints", None)
+            kwargs.pop("signed", None)
             try:
                 return state.scratch.rust_solver_ctx.max(expr, signed=False)
             except Exception:
@@ -296,8 +299,8 @@ class RustCallbackDispatchMixin:
 
         def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
             _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop('exact', None)
-            extra = kwargs.pop('extra_constraints', ())
+            kwargs.pop("exact", None)
+            extra = kwargs.pop("extra_constraints", ())
             try:
                 results = _with_extra_constraints(_ctx, _ctx.eval_upto, expr, n, extra=extra)
                 if cast_to is not None:
@@ -347,10 +350,10 @@ class RustCallbackDispatchMixin:
             return
         if not rust_stdout:
             return
-        posix = getattr(state, 'posix', None)
+        posix = getattr(state, "posix", None)
         if posix is None:
             return
-        stdout = getattr(posix, 'stdout', None)
+        stdout = getattr(posix, "stdout", None)
         if stdout is None:
             return
         try:
@@ -377,10 +380,10 @@ class RustCallbackDispatchMixin:
             stdin_symbols = self._rust_mgr.get_state_stdin_symbols(state_id)
             if not stdin_symbols:
                 return
-            posix = getattr(state, 'posix', None)
+            posix = getattr(state, "posix", None)
             if posix is None:
                 return
-            stdin_stream = getattr(posix, 'stdin', None)
+            stdin_stream = getattr(posix, "stdin", None)
             if stdin_stream is None:
                 return
             # Evaluate each stdin symbol via Rust solver to get concrete bytes
@@ -402,9 +405,9 @@ class RustCallbackDispatchMixin:
             # to avoid @property-descriptor propagation triggering __getattr__.
             l.debug("Failed to inject Rust stdin data into posix: %s", e)
 
-    _SIMPROC_NO_RET_TERMINAL = {'exit', '_exit', 'abort', '__stack_chk_fail'}
+    _SIMPROC_NO_RET_TERMINAL = {"exit", "_exit", "abort", "__stack_chk_fail"}
 
-    def _handle_simprocedure_callback(self, event: "_ExplorationEvent"):
+    def _handle_simprocedure_callback(self, event: _ExplorationEvent):
         """Handle SimProcedure callback from Rust.
 
         This handles the full SimProcedure lifecycle:
@@ -457,10 +460,10 @@ class RustCallbackDispatchMixin:
             return
 
         # Get hook length - this determines if the hook replaces code
-        hook_length = getattr(proc, 'kwargs', {}).get('length', 0)
+        hook_length = getattr(proc, "kwargs", {}).get("length", 0)
         if hook_length == 0:
-            hook_length = getattr(proc, 'length', 0)
-        is_zero_length_hook = (hook_length == 0)
+            hook_length = getattr(proc, "length", 0)
+        is_zero_length_hook = hook_length == 0
 
         # Create angr state for the SimProcedure (uses cached state if available)
         _sp_state_create_start = time.perf_counter_ns()
@@ -470,27 +473,27 @@ class RustCallbackDispatchMixin:
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             self._set_callback_state(None)
             self._current_callback_state_id = None
-            self._perf_stats.add_simprocedure_phase('state_create', time.perf_counter_ns() - _sp_state_create_start)
+            self._perf_stats.add_simprocedure_phase("state_create", time.perf_counter_ns() - _sp_state_create_start)
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
-        self._perf_stats.add_simprocedure_phase('state_create', time.perf_counter_ns() - _sp_state_create_start)
+        self._perf_stats.add_simprocedure_phase("state_create", time.perf_counter_ns() - _sp_state_create_start)
 
         # Snapshot original state (full copy / register snapshot / no copy)
         # for change extraction after the SimProcedure runs.
         _sp_copy_start = time.perf_counter_ns()
         orig_state = self._snapshot_orig_state(state, proc, name, is_zero_length_hook)
-        self._perf_stats.add_simprocedure_phase('state_copy', time.perf_counter_ns() - _sp_copy_start)
+        self._perf_stats.add_simprocedure_phase("state_copy", time.perf_counter_ns() - _sp_copy_start)
 
         # Save original constraint COUNT before hook execution.
         # Building set(constraints) is expensive (~6ms per call with many constraints).
         # Save just the count; only build the full set if count changes after callback.
         # When using a register snapshot (no full state copy), eagerly capture
         # constraints since we can't access orig_state.solver.constraints later.
-        orig_constraint_count = len(state.solver.constraints) if hasattr(state, 'solver') else 0
+        orig_constraint_count = len(state.solver.constraints) if hasattr(state, "solver") else 0
         if isinstance(orig_state, dict):
             # Snapshot mode: capture constraints eagerly for the rare case
             # where a non-memory-writing proc adds constraints
-            orig_constraints = set(state.solver.constraints) if hasattr(state, 'solver') else set()
+            orig_constraints = set(state.solver.constraints) if hasattr(state, "solver") else set()
         else:
             orig_constraints = None  # Deferred — only built if needed
 
@@ -503,8 +506,12 @@ class RustCallbackDispatchMixin:
         # not produced a return value yet.
         sp_display_name = name or proc.__class__.__name__
         self._cb_inspect_simprocedure(
-            event.callback_state_id, 'before',
-            sp_display_name, addr, proc, None,
+            event.callback_state_id,
+            "before",
+            sp_display_name,
+            addr,
+            proc,
+            None,
         )
 
         # Run the SimProcedure
@@ -517,7 +524,7 @@ class RustCallbackDispatchMixin:
 
             # Execute the procedure with memory tracking
             with memory_tracker:
-                if hasattr(proc, 'run'):
+                if hasattr(proc, "run"):
                     proc.execute(state, successors)
                 else:
                     # It's a class, instantiate it
@@ -528,17 +535,21 @@ class RustCallbackDispatchMixin:
             # observe the inner `inst.run_func` return; for now BPs see
             # the result via `successors.artifacts` or the proc instance.
             self._cb_inspect_simprocedure(
-                event.callback_state_id, 'after',
-                sp_display_name, addr, proc, None,
+                event.callback_state_id,
+                "after",
+                sp_display_name,
+                addr,
+                proc,
+                None,
             )
             _sp_exec_elapsed = time.perf_counter_ns() - _sp_execute_start
-            self._perf_stats.add_simprocedure_phase('execute', _sp_exec_elapsed)
+            self._perf_stats.add_simprocedure_phase("execute", _sp_exec_elapsed)
             # Per-procedure timing
             _proc_name = name or proc.__class__.__name__
             if _proc_name not in self._procedure_times:
-                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
-            self._procedure_times[_proc_name]['count'] += 1
-            self._procedure_times[_proc_name]['execute_ns'] += _sp_exec_elapsed
+                self._procedure_times[_proc_name] = {"count": 0, "execute_ns": 0}
+            self._procedure_times[_proc_name]["count"] += 1
+            self._procedure_times[_proc_name]["execute_ns"] += _sp_exec_elapsed
 
             # Get tracked memory writes from callback execution. When the
             # angr-4scu step-3 gate is on, ``state.memory`` is a
@@ -547,7 +558,7 @@ class RustCallbackDispatchMixin:
             # accumulated entries (so any user code introspecting it sees a
             # stable surface), but we discard the lists to avoid a
             # double-write through ``resume_after_simprocedure``.
-            if getattr(self, '_use_callback_memory_proxy', False):
+            if getattr(self, "_use_callback_memory_proxy", False):
                 tracked_writes = None
                 tracked_symbolic_writes = None
             else:
@@ -568,20 +579,36 @@ class RustCallbackDispatchMixin:
 
             if all_succs:
                 handled_early = self._handle_callback_with_successors(
-                    all_succs, proc, name, addr, addr_int, event,
-                    state, orig_state, is_zero_length_hook,
-                    tracked_writes, tracked_symbolic_writes,
-                    orig_constraints, orig_constraint_count,
+                    all_succs,
+                    proc,
+                    name,
+                    addr,
+                    addr_int,
+                    event,
+                    state,
+                    orig_state,
+                    is_zero_length_hook,
+                    tracked_writes,
+                    tracked_symbolic_writes,
+                    orig_constraints,
+                    orig_constraint_count,
                     _sp_total_start,
                 )
                 if handled_early:
                     return
             else:
                 self._handle_callback_no_successors(
-                    proc, name, addr, event, state, orig_state,
+                    proc,
+                    name,
+                    addr,
+                    event,
+                    state,
+                    orig_state,
                     is_zero_length_hook,
-                    tracked_writes, tracked_symbolic_writes,
-                    orig_constraints, orig_constraint_count,
+                    tracked_writes,
+                    tracked_symbolic_writes,
+                    orig_constraints,
+                    orig_constraint_count,
                 )
 
         except TypeError as e:
@@ -592,7 +619,7 @@ class RustCallbackDispatchMixin:
             # Continuation procedure missing local_vars (e.g., after_main without args).
             # This happens when the init phase's procedure_data wasn't captured.
             # Treat as a graceful exit (deadend) rather than a hard error.
-            if 'missing' in str(e) and 'positional argument' in str(e):
+            if "missing" in str(e) and "positional argument" in str(e):
                 l.warning(f"Continuation at 0x{addr:x} missing args (likely after_main) — deadending")
                 try:
                     self._rust_mgr.resume_after_simprocedure(0, None, None, None)
@@ -620,6 +647,7 @@ class RustCallbackDispatchMixin:
             # On exception, move state to errored stash instead of resuming with corrupted state
             l.warning(f"SimProcedure execution error at 0x{addr:x}: {e}")
             import traceback
+
             traceback.print_exc()
             # Signal error to Rust - this will move the state to errored stash
             try:
@@ -636,10 +664,10 @@ class RustCallbackDispatchMixin:
         # Only clear callback state on success, not in finally.
         self._set_callback_state(None)
         self._current_callback_state_id = None
-        self._perf_stats.add_simprocedure_phase('sync_back', time.perf_counter_ns() - _sp_sync_start)
+        self._perf_stats.add_simprocedure_phase("sync_back", time.perf_counter_ns() - _sp_sync_start)
         self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
 
-    def _find_simprocedure(self, addr: int, name: Optional[str]):
+    def _find_simprocedure(self, addr: int, name: str | None):
         """Locate a SimProcedure by address, then by class name as fallback.
 
         PLT addresses can drift between Python and Rust; the name fallback
@@ -663,7 +691,7 @@ class RustCallbackDispatchMixin:
             return None
         return proc
 
-    def _try_simproc_deadend_fast_path(self, proc, name: Optional[str], addr: int, addr_int: Optional[int]) -> bool:
+    def _try_simproc_deadend_fast_path(self, proc, name: str | None, addr: int, addr_int: int | None) -> bool:
         """Skip state creation for procedures that always deadend.
 
         Two cases:
@@ -674,7 +702,7 @@ class RustCallbackDispatchMixin:
 
         Returns True if the callback was handled (caller should return).
         """
-        proc_no_ret = getattr(proc, 'NO_RET', False)
+        proc_no_ret = getattr(proc, "NO_RET", False)
         is_terminal = proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL
         is_cached_exit = addr_int in self._exit_continuation_addrs
         if not (is_terminal or is_cached_exit):
@@ -686,11 +714,11 @@ class RustCallbackDispatchMixin:
         self._current_callback_state_id = None
         _proc_name = name or proc.__class__.__name__
         if _proc_name not in self._procedure_times:
-            self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
-        self._procedure_times[_proc_name]['count'] += 1
+            self._procedure_times[_proc_name] = {"count": 0, "execute_ns": 0}
+        self._procedure_times[_proc_name]["count"] += 1
         return True
 
-    def _snapshot_orig_state(self, state, proc, name: Optional[str], is_zero_length_hook: bool):
+    def _snapshot_orig_state(self, state, proc, name: str | None, is_zero_length_hook: bool):
         """Snapshot the pre-callback state for later change extraction.
 
         Returns one of three things:
@@ -700,12 +728,12 @@ class RustCallbackDispatchMixin:
         - the state itself for the remaining case (no copy needed; the caller
           will diff registers/memory directly against the post-execution state)
         """
-        is_user_hook = (proc.__class__.__name__ == 'UserHook')
+        is_user_hook = proc.__class__.__name__ == "UserHook"
         needs_full_copy = is_user_hook or name in self._MEMORY_WRITING_PROCS
         if needs_full_copy:
             return state.copy()
         if is_zero_length_hook:
-            bundle_regs = getattr(self, '_last_bundle_registers', None)
+            bundle_regs = getattr(self, "_last_bundle_registers", None)
             if bundle_regs is not None:
                 snapshot = self._snapshot_registers_from_bundle(bundle_regs, self._project.arch)
                 self._last_bundle_registers = None
@@ -713,7 +741,7 @@ class RustCallbackDispatchMixin:
             return self._snapshot_registers(state)
         return state
 
-    def _capture_stdin_from_successors(self, all_succs, name: Optional[str]) -> None:
+    def _capture_stdin_from_successors(self, all_succs, name: str | None) -> None:
         """Track stdin packets added by SimProcedures (fgets/read/etc.).
 
         Found states forked purely in Rust later use this to restore stdin
@@ -721,11 +749,11 @@ class RustCallbackDispatchMixin:
         """
         for succ in all_succs:
             try:
-                posix = getattr(succ, 'posix', None)
+                posix = getattr(succ, "posix", None)
                 if posix is None:
                     continue
-                stdin = getattr(posix, 'stdin', None)
-                if stdin is None or not hasattr(stdin, 'content'):
+                stdin = getattr(posix, "stdin", None)
+                if stdin is None or not hasattr(stdin, "content"):
                     continue
                 if stdin.content and len(stdin.content) > len(self._stdin_content):
                     self._stdin_content = list(stdin.content)
@@ -760,15 +788,15 @@ class RustCallbackDispatchMixin:
                 # The procedure_data is on the PREVIOUS frame (the caller's frame).
                 # Check both top and top.next for procedure_data.
                 frames_to_check = [top]
-                if hasattr(top, 'next') and top.next is not None:
+                if hasattr(top, "next") and top.next is not None:
                     frames_to_check.append(top.next)
 
                 for frame in frames_to_check:
-                    pdata = getattr(frame, 'procedure_data', None)
+                    pdata = getattr(frame, "procedure_data", None)
                     if pdata is None or len(pdata) < 5:
                         continue
                     cont_addr = pdata[4]  # ideal_addr is continuation address
-                    if hasattr(cont_addr, 'concrete'):
+                    if hasattr(cont_addr, "concrete"):
                         cont_addr_int = int(cont_addr)
                     elif isinstance(cont_addr, int):
                         cont_addr_int = cont_addr
@@ -789,8 +817,8 @@ class RustCallbackDispatchMixin:
                     if not cont_proc:
                         continue
                     cont_name = _simproc_dispatch_name(cont_proc)
-                    cont_num_args = getattr(cont_proc, 'num_args', 0) or 0
-                    cont_no_return = getattr(cont_proc, 'NO_RET', False)
+                    cont_num_args = getattr(cont_proc, "num_args", 0) or 0
+                    cont_no_return = getattr(cont_proc, "NO_RET", False)
                     self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
                     self._registered_hooks.add(cont_addr_int)
                     if _DBG:
@@ -804,11 +832,20 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Could not capture procedure_data: {e}")
 
     def _handle_callback_with_successors(
-        self, all_succs, proc, name: Optional[str], addr: int,
-        addr_int: Optional[int], event: "_ExplorationEvent",
-        state, orig_state, is_zero_length_hook: bool,
-        tracked_writes, tracked_symbolic_writes,
-        orig_constraints, orig_constraint_count,
+        self,
+        all_succs,
+        proc,
+        name: str | None,
+        addr: int,
+        addr_int: int | None,
+        event: _ExplorationEvent,
+        state,
+        orig_state,
+        is_zero_length_hook: bool,
+        tracked_writes,
+        tracked_symbolic_writes,
+        orig_constraints,
+        orig_constraint_count,
         _sp_total_start: int,
     ) -> bool:
         """Handle the success path when the SimProcedure produced successors.
@@ -817,7 +854,7 @@ class RustCallbackDispatchMixin:
         signalled and counters were finalized); False if the caller should
         continue with the normal sync_back timing/cleanup.
         """
-        proc_no_ret = getattr(proc, 'NO_RET', False) if proc else False
+        proc_no_ret = getattr(proc, "NO_RET", False) if proc else False
 
         # NO_RET termination procedure with successors — deadend.
         # __libc_start_main has NO_RET but uses self.call() for continuations,
@@ -837,10 +874,7 @@ class RustCallbackDispatchMixin:
         # NO_RET requirement prevents wrong-cache: a NO_RET=False procedure
         # might happen to all-exit for one state but normal-return for others.
         if proc_no_ret and addr_int is not None:
-            _all_exit = all(
-                getattr(s.history, 'jumpkind', None) == 'Ijk_Exit'
-                for s in all_succs
-            )
+            _all_exit = all(getattr(s.history, "jumpkind", None) == "Ijk_Exit" for s in all_succs)
             if _all_exit:
                 if _DBG:
                     l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
@@ -857,7 +891,7 @@ class RustCallbackDispatchMixin:
         # When a SimProcedure uses self.call() (Ijk_Call), the continuation
         # address is in the callstack but NOT on the stack memory. Push it
         # so the Rust engine's `ret` instruction can find it.
-        if first_succ.history.jumpkind == 'Ijk_Call':
+        if first_succ.history.jumpkind == "Ijk_Call":
             self._push_continuation_address(first_succ, addr)
 
         # For zero-length hooks where the successor stays at the same
@@ -865,10 +899,12 @@ class RustCallbackDispatchMixin:
         # address WITHOUT re-triggering the hook.
         # Check symbolic IP before .addr to prevent SimValueError.
         succ_ip_symbolic = first_succ.regs._ip.symbolic
-        succ_addr_matches = (not succ_ip_symbolic and first_succ.addr == addr)
+        succ_addr_matches = not succ_ip_symbolic and first_succ.addr == addr
         skip_hook_addr = addr if (is_zero_length_hook and succ_addr_matches) else None
         self._resume_with_state(
-            first_succ, orig_state, event,
+            first_succ,
+            orig_state,
+            event,
             skip_hook_addr=skip_hook_addr,
             tracked_writes=tracked_writes,
             tracked_symbolic_writes=tracked_symbolic_writes,
@@ -893,13 +929,13 @@ class RustCallbackDispatchMixin:
             cont_addr = None
             try:
                 cs = first_succ.callstack
-                for frame in [cs.top, getattr(cs.top, 'next', None)]:
+                for frame in [cs.top, getattr(cs.top, "next", None)]:
                     if frame is None:
                         continue
-                    pdata = getattr(frame, 'procedure_data', None)
+                    pdata = getattr(frame, "procedure_data", None)
                     if pdata is not None and len(pdata) >= 5:
                         ca = pdata[4]
-                        ca_int = int(ca) if hasattr(ca, 'concrete') else (ca if isinstance(ca, int) else None)
+                        ca_int = int(ca) if hasattr(ca, "concrete") else (ca if isinstance(ca, int) else None)
                         if ca_int is not None and ca_int != callback_addr:
                             cont_addr = ca_int
                             break
@@ -921,9 +957,7 @@ class RustCallbackDispatchMixin:
             ptr_size = first_succ.arch.bytes
             new_sp = sp - ptr_size
             first_succ.regs._sp = new_sp
-            first_succ.memory.store(new_sp,
-                claripy.BVV(cont_addr, ptr_size * 8),
-                endness='Iend_LE')
+            first_succ.memory.store(new_sp, claripy.BVV(cont_addr, ptr_size * 8), endness="Iend_LE")
             if _DBG:
                 l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
         except Exception as e:
@@ -934,11 +968,18 @@ class RustCallbackDispatchMixin:
                 l.debug(f"Could not push continuation addr: {e}")
 
     def _handle_callback_no_successors(
-        self, proc, name: Optional[str], addr: int,
-        event: "_ExplorationEvent", state, orig_state,
+        self,
+        proc,
+        name: str | None,
+        addr: int,
+        event: _ExplorationEvent,
+        state,
+        orig_state,
         is_zero_length_hook: bool,
-        tracked_writes, tracked_symbolic_writes,
-        orig_constraints, orig_constraint_count,
+        tracked_writes,
+        tracked_symbolic_writes,
+        orig_constraints,
+        orig_constraint_count,
     ) -> None:
         """Handle the path where a SimProcedure produced no successors.
 
@@ -948,7 +989,7 @@ class RustCallbackDispatchMixin:
         - Other procedures → deadend (NO_RET) or resume at return address.
         """
         # CallReturn is the terminal hook used by factory.callable().
-        no_ret_terminal = name in ('exit', '_exit', 'abort', '__stack_chk_fail', 'CallReturn')
+        no_ret_terminal = name in ("exit", "_exit", "abort", "__stack_chk_fail", "CallReturn")
         if no_ret_terminal:
             if _DBG:
                 l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
@@ -971,7 +1012,11 @@ class RustCallbackDispatchMixin:
 
         if is_zero_length_hook:
             self._resume_with_skip_hook(
-                addr, state, orig_state, event, orig_constraints,
+                addr,
+                state,
+                orig_state,
+                event,
+                orig_constraints,
                 tracked_writes=tracked_writes,
                 tracked_symbolic_writes=tracked_symbolic_writes,
                 orig_constraint_count=orig_constraint_count,
@@ -979,14 +1024,14 @@ class RustCallbackDispatchMixin:
             return
 
         # Non-zero-length, non-terminal: check NO_RET as fallback
-        if getattr(proc, 'NO_RET', False):
+        if getattr(proc, "NO_RET", False):
             if _DBG:
                 l.debug(f"No-return procedure {name} — deadending state")
             self._rust_mgr.deadend_pending_callback()
             return
 
         ret_addr = event.callback_return_addr or (addr + 1)
-        for sym_addr, ast in (tracked_symbolic_writes or []):
+        for sym_addr, ast in tracked_symbolic_writes or []:
             try:
                 self._rust_mgr.import_symbolic_memory(sym_addr, ast)
             except Exception:
@@ -998,14 +1043,14 @@ class RustCallbackDispatchMixin:
 
     def _resume_with_state(
         self,
-        succ_state: "angr.SimState",
-        orig_state: "angr.SimState",
-        event: "_ExplorationEvent",
-        skip_hook_addr: Optional[int] = None,
-        tracked_writes: Optional[list] = None,
-        tracked_symbolic_writes: Optional[list] = None,
-        orig_constraints: Optional[set] = None,
-        orig_constraint_count: Optional[int] = None
+        succ_state: angr.SimState,
+        orig_state: angr.SimState,
+        event: _ExplorationEvent,
+        skip_hook_addr: int | None = None,
+        tracked_writes: list | None = None,
+        tracked_symbolic_writes: list | None = None,
+        orig_constraints: set | None = None,
+        orig_constraint_count: int | None = None,
     ):
         """Resume Rust execution with a successor state.
 
@@ -1041,7 +1086,7 @@ class RustCallbackDispatchMixin:
         # landed in Rust via ``RustRegisterProxy.__setattr__`` →
         # ``set_state_register_symbolic_ast``. Skip the diff so we don't
         # double-write through ``resume_after_simprocedure``.
-        if getattr(self, '_use_callback_register_proxy', False):
+        if getattr(self, "_use_callback_register_proxy", False):
             reg_changes = []
         else:
             reg_changes = self._extract_register_changes(orig_state, succ_state)
@@ -1077,16 +1122,18 @@ class RustCallbackDispatchMixin:
         # Extract any new constraints added during callback.
         # Skip when using shared solver — constraints go directly to the pending
         # state's solver, so syncing them again would double-add.
-        rust_ctx = getattr(succ_state.scratch, 'rust_solver_ctx', None)
-        using_shared_solver = rust_ctx is not None and hasattr(rust_ctx, 'is_shared') and rust_ctx.is_shared()
+        rust_ctx = getattr(succ_state.scratch, "rust_solver_ctx", None)
+        using_shared_solver = rust_ctx is not None and hasattr(rust_ctx, "is_shared") and rust_ctx.is_shared()
         if using_shared_solver:
             new_constraints = []
         else:
             # When orig_state is a snapshot, rely on orig_constraint_count fast path
             new_constraints = self._extract_new_constraints(
-                succ_state if is_snapshot else orig_state, succ_state,
+                succ_state if is_snapshot else orig_state,
+                succ_state,
                 orig_constraints=orig_constraints,
-                orig_constraint_count=orig_constraint_count)
+                orig_constraint_count=orig_constraint_count,
+            )
             if new_constraints:
                 if _DBG:
                     l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
@@ -1107,9 +1154,7 @@ class RustCallbackDispatchMixin:
         # IMPORTANT: This must happen BEFORE symbolic imports, because
         # apply_changes writes concrete data which clears symbolic page markers.
         # Importing symbolic values after resume re-sets the markers correctly.
-        self._rust_mgr.resume_after_simprocedure(
-            new_pc, reg_changes, mem_changes or None, new_constraints or None
-        )
+        self._rust_mgr.resume_after_simprocedure(new_pc, reg_changes, mem_changes or None, new_constraints or None)
 
         # Import symbolic memory to Rust AFTER resume.
         # The resume's apply_changes writes concrete witnesses which clear
@@ -1145,13 +1190,13 @@ class RustCallbackDispatchMixin:
     def _resume_with_skip_hook(
         self,
         addr: int,
-        state: "angr.SimState",
-        orig_state: "angr.SimState",
-        event: "_ExplorationEvent",
-        orig_constraints: Optional[set] = None,
-        tracked_writes: Optional[list] = None,
-        tracked_symbolic_writes: Optional[list] = None,
-        orig_constraint_count: Optional[int] = None
+        state: angr.SimState,
+        orig_state: angr.SimState,
+        event: _ExplorationEvent,
+        orig_constraints: set | None = None,
+        tracked_writes: list | None = None,
+        tracked_symbolic_writes: list | None = None,
+        orig_constraint_count: int | None = None,
     ):
         """Resume Rust execution after a zero-length hook with no successors.
 
@@ -1205,7 +1250,7 @@ class RustCallbackDispatchMixin:
         # angr-qj30 (write-through .2): with the register-proxy gate on,
         # hook writes to ``state.regs.<name>`` already landed in Rust.
         is_snapshot = isinstance(orig_state, dict)
-        if getattr(self, '_use_callback_register_proxy', False):
+        if getattr(self, "_use_callback_register_proxy", False):
             reg_changes = []
         else:
             reg_changes = self._extract_register_changes(orig_state, state)
@@ -1237,11 +1282,13 @@ class RustCallbackDispatchMixin:
 
         # Filter out symbolic addresses from mem_changes
         if all_symbolic_addrs:
-            mem_changes = [(write_addr, data) for write_addr, data in mem_changes if write_addr not in all_symbolic_addrs]
+            mem_changes = [
+                (write_addr, data) for write_addr, data in mem_changes if write_addr not in all_symbolic_addrs
+            ]
 
         # Extract new constraints added during hook execution
         new_constraints = None
-        if hasattr(state, 'solver'):
+        if hasattr(state, "solver"):
             try:
                 current_count = len(state.solver.constraints)
                 # Fast path: if count unchanged, skip expensive set construction
@@ -1270,10 +1317,7 @@ class RustCallbackDispatchMixin:
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
         self._rust_mgr.resume_after_simprocedure(
-            new_pc,
-            reg_changes or None,
-            mem_changes or None,
-            new_constraints or None
+            new_pc, reg_changes or None, mem_changes or None, new_constraints or None
         )
 
         # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
@@ -1302,10 +1346,10 @@ class RustCallbackDispatchMixin:
 
     def _extract_new_constraints(
         self,
-        orig_state: "angr.SimState",
-        new_state: "angr.SimState",
-        orig_constraints: Optional[set] = None,
-        orig_constraint_count: Optional[int] = None
+        orig_state: angr.SimState,
+        new_state: angr.SimState,
+        orig_constraints: set | None = None,
+        orig_constraint_count: int | None = None,
     ) -> list:
         """Extract constraints added during callback execution.
 
@@ -1368,7 +1412,7 @@ class RustCallbackDispatchMixin:
 
         return new_constraints
 
-    def _add_forked_state(self, succ_state: "angr.SimState", event: "_ExplorationEvent"):
+    def _add_forked_state(self, succ_state: angr.SimState, event: _ExplorationEvent):
         """Add a forked state from a SimProcedure to Rust active stash.
 
         When a SimProcedure creates multiple successors (e.g., fork on
@@ -1389,7 +1433,7 @@ class RustCallbackDispatchMixin:
           ``_add_rust_state('active', succ_state)``, then add the path
           constraints back to the pending state.
         """
-        if getattr(self, '_use_simproc_fork_via_rust', False):
+        if getattr(self, "_use_simproc_fork_via_rust", False):
             self._add_forked_state_via_rust(succ_state, event)
             return
 
@@ -1400,8 +1444,9 @@ class RustCallbackDispatchMixin:
             # Attach forked solver to the state
             succ_state.scratch.rust_solver_ctx = forked_solver
             if _DBG:
-                l.debug(f"Forked solver context for additional successor "
-                        f"({forked_solver.num_constraints()} constraints)")
+                l.debug(
+                    f"Forked solver context for additional successor ({forked_solver.num_constraints()} constraints)"
+                )
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: solver-context fork for additional
             # successor failed; the forked state inherits no Rust constraints.
@@ -1412,10 +1457,10 @@ class RustCallbackDispatchMixin:
         # Extract any constraints specific to this fork path
         # These may differ from the main successor due to branching conditions
         fork_constraints = []
-        if hasattr(succ_state, 'scratch') and hasattr(succ_state.scratch, 'rust_solver_ctx'):
+        if hasattr(succ_state, "scratch") and hasattr(succ_state.scratch, "rust_solver_ctx"):
             try:
                 # If the state has path-specific constraints, extract them
-                if hasattr(succ_state.solver, 'constraints'):
+                if hasattr(succ_state.solver, "constraints"):
                     fork_constraints = list(succ_state.solver.constraints)
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: per-fork constraint extraction failed;
@@ -1423,7 +1468,7 @@ class RustCallbackDispatchMixin:
                 pass
 
         # Create a new Rust state for this successor
-        self._add_rust_state('active', succ_state)
+        self._add_rust_state("active", succ_state)
 
         # If we have fork-specific constraints, sync them to the new Rust state
         if fork_constraints:
@@ -1442,9 +1487,7 @@ class RustCallbackDispatchMixin:
         if _DBG:
             l.debug(f"Added forked state at PC 0x{succ_state.addr:x}")
 
-    def _add_forked_state_via_rust(
-        self, succ_state: "angr.SimState", event: "_ExplorationEvent"
-    ) -> None:
+    def _add_forked_state_via_rust(self, succ_state: angr.SimState, event: _ExplorationEvent) -> None:
         """Write-through fork: ask Rust to fork the parent state directly.
 
         Used when ``use_simproc_fork_via_rust`` is on (angr-t3mr). The
@@ -1466,7 +1509,7 @@ class RustCallbackDispatchMixin:
             return
 
         try:
-            new_id = self._rust_mgr.fork_state_to_stash(parent_id, 'active')
+            new_id = self._rust_mgr.fork_state_to_stash(parent_id, "active")
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust-owned fork failed; this
             # successor is silently dropped. Debug-logs.
@@ -1482,14 +1525,13 @@ class RustCallbackDispatchMixin:
         # claripy solver (when the callback solver proxy is off and the
         # parallel claripy solver carries them).
         try:
-            if hasattr(succ_state.solver, 'constraints'):
+            if hasattr(succ_state.solver, "constraints"):
                 fork_constraints = list(succ_state.solver.constraints)
                 if fork_constraints:
                     self._rust_mgr.add_constraints_to_state(new_id, fork_constraints)
                     if _DBG:
                         l.debug(
-                            f"fork_state_to_stash: added {len(fork_constraints)} "
-                            f"fork constraints to state {new_id}"
+                            f"fork_state_to_stash: added {len(fork_constraints)} fork constraints to state {new_id}"
                         )
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: constraint sync onto the new fork
@@ -1499,11 +1541,10 @@ class RustCallbackDispatchMixin:
 
         if _DBG:
             l.debug(
-                f"_add_forked_state_via_rust: forked parent {parent_id} -> "
-                f"state {new_id} at PC 0x{succ_state.addr:x}"
+                f"_add_forked_state_via_rust: forked parent {parent_id} -> state {new_id} at PC 0x{succ_state.addr:x}"
             )
 
-    def _handle_syscall_callback(self, event: "_ExplorationEvent"):
+    def _handle_syscall_callback(self, event: _ExplorationEvent):
         """Handle syscall callback from Rust.
 
         Uses cached state to preserve symbolic memory and constraints,
@@ -1522,7 +1563,7 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_syscall_call(time.perf_counter_ns() - _sc_total_start)
 
-    def _handle_syscall_callback_inner(self, event: "_ExplorationEvent"):
+    def _handle_syscall_callback_inner(self, event: _ExplorationEvent):
         syscall_num = event.callback_syscall_num
         state_id = event.callback_state_id
 
@@ -1534,7 +1575,7 @@ class RustCallbackDispatchMixin:
         if state is None:
             l.warning(f"Could not create state for syscall {syscall_num}")
             # Continue after syscall
-            pc = self._rust_mgr.get_pending_register('rip') or 0
+            pc = self._rust_mgr.get_pending_register("rip") or 0
             self._rust_mgr.resume_after_syscall(pc + 1, None, None)
             return
 
@@ -1549,7 +1590,7 @@ class RustCallbackDispatchMixin:
             # still fires.
             try:
                 sc_proc = self._project.simos.syscall(state)
-                sc_name = getattr(sc_proc, 'display_name', None) or str(syscall_num)
+                sc_name = getattr(sc_proc, "display_name", None) or str(syscall_num)
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: SIMOS may not expose
                 # syscall() (non-Unix targets). Fall back to numeric ID.
@@ -1557,7 +1598,7 @@ class RustCallbackDispatchMixin:
                 sc_name = str(syscall_num)
 
             # state.inspect syscall BEFORE (angr-xmfj).
-            self._cb_inspect_syscall(state_id, 'before', sc_name, None)
+            self._cb_inspect_syscall(state_id, "before", sc_name, None)
 
             # Execute syscall
             successors = engine.process(state, procedure=None)
@@ -1565,7 +1606,7 @@ class RustCallbackDispatchMixin:
             # state.inspect syscall AFTER (angr-xmfj). `simprocedure` is
             # the resolved syscall handler (None if resolution failed),
             # matching the Python engine's `simprocedure=inst` kwarg.
-            self._cb_inspect_syscall(state_id, 'after', sc_name, sc_proc)
+            self._cb_inspect_syscall(state_id, "after", sc_name, sc_proc)
 
             all_succs = successors.all_successors
             if all_succs:
@@ -1586,16 +1627,14 @@ class RustCallbackDispatchMixin:
                 # angr-qj30 (write-through .2): with the register-proxy
                 # gate on, syscall writes to ``state.regs.<name>`` already
                 # landed in Rust during the callback.
-                if getattr(self, '_use_callback_register_proxy', False):
+                if getattr(self, "_use_callback_register_proxy", False):
                     reg_changes = []
                 else:
                     reg_changes = self._extract_register_changes(state, succ_state)
                 mem_changes = self._extract_memory_changes(state, succ_state)
                 new_constraints = self._extract_new_constraints(state, succ_state)
 
-                self._rust_mgr.resume_after_syscall(
-                    new_pc, reg_changes, mem_changes, new_constraints or None
-                )
+                self._rust_mgr.resume_after_syscall(new_pc, reg_changes, mem_changes, new_constraints or None)
 
                 # Update cache
                 state_id = event.callback_state_id
@@ -1620,7 +1659,7 @@ class RustCallbackDispatchMixin:
             self._set_callback_state(None)
             self._current_callback_state_id = None
 
-    def _handle_find_predicate_callback(self, event: "_ExplorationEvent"):
+    def _handle_find_predicate_callback(self, event: _ExplorationEvent):
         """Handle callable find predicate evaluation callback from Rust.
 
         Uses a lightweight RustStateProxy to evaluate the predicate without
@@ -1644,7 +1683,7 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_find_predicate_call(time.perf_counter_ns() - _fp_total_start)
 
-    def _handle_find_predicate_callback_inner(self, event: "_ExplorationEvent"):
+    def _handle_find_predicate_callback_inner(self, event: _ExplorationEvent):
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state_id = event.callback_state_id
@@ -1659,9 +1698,10 @@ class RustCallbackDispatchMixin:
             # Rust pending state. No SimState creation needed.
             # Build a proxy with the pending state's PC for ip access.
             proxy = RustStateProxy(
-                self._rust_mgr, state_id,
+                self._rust_mgr,
+                state_id,
                 project=self._project,
-                stdin_vars=getattr(self, '_stdin_vars', None),
+                stdin_vars=getattr(self, "_stdin_vars", None),
                 python_mgr=self,
             )
             # Override IP to use the callback address (the PLT/hook address),
@@ -1682,7 +1722,7 @@ class RustCallbackDispatchMixin:
 
             # If matched, store the proxy as the found state
             if matched:
-                if not hasattr(self, '_predicate_found'):
+                if not hasattr(self, "_predicate_found"):
                     self._predicate_found = []
                 self._predicate_found.append(proxy)
 
@@ -1693,7 +1733,7 @@ class RustCallbackDispatchMixin:
             l.warning(f"Find predicate callback error: {e}")
             self._rust_mgr.resume_find_predicate(False)
 
-    def _handle_avoid_predicate_callback(self, event: "_ExplorationEvent"):
+    def _handle_avoid_predicate_callback(self, event: _ExplorationEvent):
         """Handle callable avoid predicate evaluation callback from Rust.
 
         Uses a lightweight RustStateProxy to evaluate the predicate without
@@ -1714,7 +1754,7 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_avoid_predicate_call(time.perf_counter_ns() - _ap_total_start)
 
-    def _handle_avoid_predicate_callback_inner(self, event: "_ExplorationEvent"):
+    def _handle_avoid_predicate_callback_inner(self, event: _ExplorationEvent):
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state_id = event.callback_state_id
@@ -1726,9 +1766,10 @@ class RustCallbackDispatchMixin:
 
         try:
             proxy = RustStateProxy(
-                self._rust_mgr, state_id,
+                self._rust_mgr,
+                state_id,
                 project=self._project,
-                stdin_vars=getattr(self, '_stdin_vars', None),
+                stdin_vars=getattr(self, "_stdin_vars", None),
                 python_mgr=self,
             )
             proxy._override_addr = addr
@@ -1752,7 +1793,7 @@ class RustCallbackDispatchMixin:
             l.warning(f"Avoid predicate callback error: {e}")
             self._rust_mgr.resume_avoid_predicate(False)
 
-    def _handle_symbolic_branch_callback(self, event: "_ExplorationEvent"):
+    def _handle_symbolic_branch_callback(self, event: _ExplorationEvent):
         """Handle symbolic branch callback from Rust.
 
         When a symbolic branch with both paths feasible is encountered,
@@ -1779,15 +1820,16 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_symbolic_branch_call(time.perf_counter_ns() - _sb_total_start)
 
-    def _handle_symbolic_branch_callback_inner(self, event: "_ExplorationEvent"):
+    def _handle_symbolic_branch_callback_inner(self, event: _ExplorationEvent):
         true_target = event.branch_true_target
         false_target = event.branch_false_target
         condition_id = event.branch_condition_id
         state_id = event.callback_state_id
 
         if _DBG:
-            l.debug(f"Handling symbolic branch: true=0x{true_target:x}, false=0x{false_target:x}, "
-                    f"cond_id={condition_id}")
+            l.debug(
+                f"Handling symbolic branch: true=0x{true_target:x}, false=0x{false_target:x}, cond_id={condition_id}"
+            )
 
         try:
             # Get the branch condition from Rust as a claripy AST
@@ -1801,6 +1843,7 @@ class RustCallbackDispatchMixin:
             if isinstance(condition, (bool, int)):
                 l.warning(f"Branch condition is {type(condition).__name__}, wrapping to claripy")
                 import claripy
+
                 condition = claripy.BoolV(bool(condition))
 
             # Create true branch constraint: condition != 0 (condition is true)
@@ -1818,7 +1861,7 @@ class RustCallbackDispatchMixin:
             # Resume Rust with the forked states
             # Pass constraints as lists for each branch
             # Get active state IDs before fork
-            ids_before = set(self._rust_mgr.get_state_ids('active'))
+            ids_before = set(self._rust_mgr.get_state_ids("active"))
 
             self._rust_mgr.resume_after_symbolic_branch(
                 true_target,
@@ -1828,7 +1871,7 @@ class RustCallbackDispatchMixin:
             )
 
             # Cache Python states for new forked Rust states
-            ids_after = set(self._rust_mgr.get_state_ids('active'))
+            ids_after = set(self._rust_mgr.get_state_ids("active"))
             new_ids = ids_after - ids_before
             if new_ids and state_id in self._state_cache:
                 parent_state = self._state_cache[state_id]
@@ -1848,6 +1891,7 @@ class RustCallbackDispatchMixin:
             # constraints are dropped. Already warns.
             l.warning(f"Symbolic branch handling error: {e}")
             import traceback
+
             l.warning(traceback.format_exc())
 
             # Fallback: just fork without proper constraints
@@ -1875,7 +1919,7 @@ class RustCallbackDispatchMixin:
                     # the pending state hangs the next step. Already warns.
                     l.error(f"Failed to move state to errored stash: {e3}")
 
-    def _get_pending_parent_id(self) -> Optional[int]:
+    def _get_pending_parent_id(self) -> int | None:
         """Get parent state ID of current pending callback state.
 
         When Rust forks a state during exploration, the forked state gets a
@@ -1894,7 +1938,7 @@ class RustCallbackDispatchMixin:
             # fallback to root/ancestry is the next line.
             return None
 
-    def _get_pending_root_state_id(self) -> Optional[int]:
+    def _get_pending_root_state_id(self) -> int | None:
         """Get root state ID for the pending callback state.
 
         When Rust forks states internally (multi-level forks), Python only has
@@ -1911,7 +1955,7 @@ class RustCallbackDispatchMixin:
             # below picks up.
             return None
 
-    def _get_effective_state_id(self, state_id: Optional[int]) -> Optional[int]:
+    def _get_effective_state_id(self, state_id: int | None) -> int | None:
         """Get effective state ID following lineage for lookups.
 
         When a state is forked in Rust, its ID changes but Python's caches
@@ -1973,7 +2017,7 @@ class RustCallbackDispatchMixin:
             parent_id = self._get_pending_parent_id()
             return [parent_id] if parent_id is not None else []
 
-    def _create_state_for_callback(self, event: "_ExplorationEvent") -> Optional["angr.SimState"]:
+    def _create_state_for_callback(self, event: _ExplorationEvent) -> angr.SimState | None:
         """Create an angr state from the pending Rust state.
 
         This method uses the cached angr state (if available) to preserve
@@ -2003,7 +2047,7 @@ class RustCallbackDispatchMixin:
             lookup_state_id = state_id
             # Fix 1B: Validate cached state has required attributes
             if cached_state is not None:
-                if not hasattr(cached_state, 'solver') or not hasattr(cached_state, 'memory'):
+                if not hasattr(cached_state, "solver") or not hasattr(cached_state, "memory"):
                     l.warning(f"Cached state {state_id} invalid type: {type(cached_state)}, clearing")
                     del self._state_cache[state_id]
                     cached_state = None
@@ -2028,8 +2072,10 @@ class RustCallbackDispatchMixin:
         if cached_state is not None:
             self._stats_cache_hits += 1
             # Copy when callable predicates need stdout history, skip otherwise
-            has_predicates = (getattr(self, '_find_predicate', None) is not None or
-                             getattr(self, '_avoid_predicate', None) is not None)
+            has_predicates = (
+                getattr(self, "_find_predicate", None) is not None
+                or getattr(self, "_avoid_predicate", None) is not None
+            )
             # angr-4scu step 3: when the callback-memory-proxy gate is on we
             # always copy the cached state. The gate swaps ``state.memory``
             # to a ``RustMemoryProxy`` later in this function; mutating the
@@ -2037,10 +2083,12 @@ class RustCallbackDispatchMixin:
             # into the cached copy and break ordinary (non-callback) reads
             # against that cache entry. The copy ensures the swap only
             # affects this one callback frame.
-            if (has_predicates
-                    or getattr(self, '_use_callback_memory_proxy', False)
-                    or getattr(self, '_use_callback_register_proxy', False)
-                    or getattr(self, '_use_callback_callstack_proxy', False)):
+            if (
+                has_predicates
+                or getattr(self, "_use_callback_memory_proxy", False)
+                or getattr(self, "_use_callback_register_proxy", False)
+                or getattr(self, "_use_callback_callstack_proxy", False)
+            ):
                 self._stats_state_creations += 1
                 state = cached_state.copy()
             else:
@@ -2054,9 +2102,9 @@ class RustCallbackDispatchMixin:
                 bundle = self._rust_mgr.export_callback_bundle(reg_names)
 
                 # Apply solver from bundle
-                forked_solver = bundle['solver']
+                forked_solver = bundle["solver"]
                 state.scratch.rust_solver_ctx = forked_solver
-                constraint_count = bundle['constraint_count']
+                constraint_count = bundle["constraint_count"]
                 if _DBG:
                     l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
 
@@ -2068,8 +2116,8 @@ class RustCallbackDispatchMixin:
                 # reads every register live from Rust by ``state_id`` — the
                 # cached state's register file will be replaced wholesale,
                 # so writing to it here would be wasted work.
-                registers = bundle['registers']
-                if not getattr(self, '_use_callback_register_proxy', False):
+                registers = bundle["registers"]
+                if not getattr(self, "_use_callback_register_proxy", False):
                     self._last_bundle_registers = registers
                     reg_map = self._get_register_offset_map(arch)
                     for reg_name, val in registers.items():
@@ -2106,8 +2154,8 @@ class RustCallbackDispatchMixin:
                     self._last_bundle_registers = None
 
                 # Cache history and jumpkind from bundle for later use
-                state.scratch._rust_bundle_history = bundle.get('history', [])
-                state.scratch._rust_bundle_jumpkind = bundle.get('jumpkind', 'Ijk_Boring')
+                state.scratch._rust_bundle_history = bundle.get("history", [])
+                state.scratch._rust_bundle_jumpkind = bundle.get("jumpkind", "Ijk_Boring")
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: callback bundle API failed; falls
                 # back to the slower individual-call path below. Debug-logs.
@@ -2133,7 +2181,7 @@ class RustCallbackDispatchMixin:
                 # angr-qj30 (write-through .2): with the register-proxy gate
                 # on, the proxy will be installed below and reads route
                 # live to Rust — skip the pre-population sync path entirely.
-                if not getattr(self, '_use_callback_register_proxy', False):
+                if not getattr(self, "_use_callback_register_proxy", False):
                     self._sync_registers_from_rust_pending(state)
 
             # Install memory proxy: wrap state.memory.load to check Rust
@@ -2154,7 +2202,7 @@ class RustCallbackDispatchMixin:
             # Restore symbolic memory regions — only needed for copied states
             # (predicates case) or on first callback for a new state.
             # When reusing the same state object, symbolic pages persist.
-            if has_predicates or not getattr(state, '_rust_sympage_restored', False):
+            if has_predicates or not getattr(state, "_rust_sympage_restored", False):
                 self._restore_symbolic_pages(state, lookup_state_id)
                 self._restore_hook_symbolic_memory(state, lookup_state_id)
                 state._rust_sympage_restored = True
@@ -2195,11 +2243,10 @@ class RustCallbackDispatchMixin:
             # monkey-patched closure path. The proxy writes through to the
             # Rust state's solver by state_id (no parallel Python claripy
             # solver). Skip the closure install entirely in that mode.
-            if (getattr(self, '_use_callback_solver_proxy', False)
-                    and event.callback_state_id is not None):
+            if getattr(self, "_use_callback_solver_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_solver_proxy(state, event.callback_state_id)
             else:
-                _cb_rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
+                _cb_rust_ctx = getattr(state.scratch, "rust_solver_ctx", None)
                 if _cb_rust_ctx is None:
                     # angr-bs71/h0dv: counter should stay at 0 across the
                     # benchmark suite. Non-zero readings here mean every
@@ -2226,8 +2273,7 @@ class RustCallbackDispatchMixin:
             # ``CallbackMemoryTracker`` diff-and-push at end-of-callback.
             # The matching site in ``_handle_simprocedure_callback`` forces
             # ``tracked_writes=None`` so the replay path is a no-op.
-            if (getattr(self, '_use_callback_memory_proxy', False)
-                    and event.callback_state_id is not None):
+            if getattr(self, "_use_callback_memory_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_memory_proxy(state, event.callback_state_id)
 
             # angr-qj30 (write-through .2): gated install of
@@ -2238,8 +2284,7 @@ class RustCallbackDispatchMixin:
             # ``_extract_register_changes`` diff-and-push. The matching site
             # in ``_handle_simprocedure_callback`` forces ``reg_changes=[]``
             # so the resume path skips the apply.
-            if (getattr(self, '_use_callback_register_proxy', False)
-                    and event.callback_state_id is not None):
+            if getattr(self, "_use_callback_register_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_register_proxy(state, event.callback_state_id)
 
             # angr-6o9p (write-through .4): gated install of
@@ -2249,8 +2294,7 @@ class RustCallbackDispatchMixin:
             # cached-state's empty entry-state callstack with a live view
             # of the Rust call frames. Off keeps the cached state's plugin
             # untouched (callbacks see whatever was on the entry state).
-            if (getattr(self, '_use_callback_callstack_proxy', False)
-                    and event.callback_state_id is not None):
+            if getattr(self, "_use_callback_callstack_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_callstack_proxy(state, event.callback_state_id)
 
         return state
@@ -2262,6 +2306,7 @@ class RustCallbackDispatchMixin:
         replacing the plugin here only affects this callback frame.
         """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
+
         proxy = RustMemoryProxy(self._rust_mgr, state_id, self._project.arch, python_mgr=self)
         proxy.set_state(state)
         # ``SimState.register_plugin`` would re-run ``set_state`` and update
@@ -2280,6 +2325,7 @@ class RustCallbackDispatchMixin:
         ``state.regs`` is needed.
         """
         from angr.exploration.rust_state_proxy import RustRegisterProxy
+
         proxy = RustRegisterProxy(self._rust_mgr, state_id, self._project.arch, python_mgr=self)
         proxy.set_state(state)
         state.register_plugin("registers", proxy)
@@ -2294,6 +2340,7 @@ class RustCallbackDispatchMixin:
         ``constraints`` / ``eval`` / ``satisfiable`` read through Rust.
         """
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
         proxy = RustSolverProxyPlugin(self._rust_mgr, state_id, python_mgr=self)
         proxy.set_state(state)
         state.register_plugin("solver", proxy)
@@ -2307,11 +2354,12 @@ class RustCallbackDispatchMixin:
         ``get_state_call_stack`` — no Python-side mirror.
         """
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+
         proxy = RustCallStackProxyPlugin(self._rust_mgr, state_id)
         proxy.set_state(state)
         state.register_plugin("callstack", proxy)
 
-    def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
+    def _ensure_critical_plugins(self, state: angr.SimState, state_id: int | None):
         """Ensure critical plugins are present on the state.
 
         Phase 3 Fix: Some scripts and SimProcedures expect plugins like
@@ -2327,7 +2375,7 @@ class RustCallbackDispatchMixin:
         # hasattr() triggers __getattr__ which may lazy-initialize plugins
         # (e.g., 'heap' takes ~80ms to initialize on first access).
         missing_plugins = []
-        for plugin_name in ['posix', 'libc']:
+        for plugin_name in ["posix", "libc"]:
             if plugin_name not in state.plugins:
                 missing_plugins.append(plugin_name)
 
@@ -2355,7 +2403,7 @@ class RustCallbackDispatchMixin:
             try:
                 if hasattr(template, plugin_name):
                     plugin = getattr(template, plugin_name)
-                    if plugin is not None and hasattr(plugin, 'copy'):
+                    if plugin is not None and hasattr(plugin, "copy"):
                         state.register_plugin(plugin_name, plugin.copy())
                         if _DBG:
                             l.debug(f"Phase 3: Restored {plugin_name} plugin")
@@ -2367,7 +2415,7 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Phase 3: Could not restore {plugin_name}: {e}")
 
-    def _create_blank_state_fallback(self, event: "_ExplorationEvent") -> Optional["angr.SimState"]:
+    def _create_blank_state_fallback(self, event: _ExplorationEvent) -> angr.SimState | None:
         """Create a blank state as fallback when no cached state is available."""
         try:
             # Create a blank state
@@ -2378,8 +2426,9 @@ class RustCallbackDispatchMixin:
                 forked_solver = self._rust_mgr.fork_pending_solver()
                 state.scratch.rust_solver_ctx = forked_solver
                 if _DBG:
-                    l.debug(f"Forked Rust solver for blank fallback state "
-                            f"({forked_solver.num_constraints()} constraints)")
+                    l.debug(
+                        f"Forked Rust solver for blank fallback state ({forked_solver.num_constraints()} constraints)"
+                    )
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: solver fork on blank state failed;
                 # the blank fallback proceeds without Rust solver context.
@@ -2399,7 +2448,7 @@ class RustCallbackDispatchMixin:
             l.warning(f"Error creating blank state for callback: {e}")
             return None
 
-    def _handle_python_vex_fallback(self, event: "_ExplorationEvent"):
+    def _handle_python_vex_fallback(self, event: _ExplorationEvent):
         """Handle Python VEX engine fallback for unsupported Rust operations.
 
         When the Rust VEX interpreter encounters an unsupported operation
@@ -2412,7 +2461,7 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_vex_fallback_call(time.perf_counter_ns() - _vf_total_start)
 
-    def _handle_python_vex_fallback_inner(self, event: "_ExplorationEvent"):
+    def _handle_python_vex_fallback_inner(self, event: _ExplorationEvent):
         addr = event.callback_addr
         state_id = event.callback_state_id
         reason = event.callback_name or "unknown"
@@ -2458,7 +2507,7 @@ class RustCallbackDispatchMixin:
             # angr-qj30 (write-through .2): with the register-proxy gate
             # on, VEX fallback writes to ``state.regs.<name>`` already
             # landed in Rust during execution.
-            if getattr(self, '_use_callback_register_proxy', False):
+            if getattr(self, "_use_callback_register_proxy", False):
                 reg_changes = []
             else:
                 reg_changes = self._extract_register_changes(state, succ)
@@ -2471,9 +2520,7 @@ class RustCallbackDispatchMixin:
             new_constraints = [c for c in succ.solver.constraints if c not in orig_constraints]
 
             # Resume Rust with the first successor
-            self._rust_mgr.resume_after_simprocedure(
-                new_pc, reg_changes, mem_changes or None, new_constraints or None
-            )
+            self._rust_mgr.resume_after_simprocedure(new_pc, reg_changes, mem_changes or None, new_constraints or None)
 
             # Additional successors (symbolic branches in the fallback block)
             # are forked into new Rust active states so the convergent path
@@ -2484,8 +2531,9 @@ class RustCallbackDispatchMixin:
                 except Exception as fork_err:
                     # cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback
                     # successor failed; that branch is silently dropped. Already warns.
-                    l.warning(f"VEX fallback at 0x{addr:x}: failed to fork "
-                              f"successor at 0x{extra_succ.addr:x}: {fork_err}")
+                    l.warning(
+                        f"VEX fallback at 0x{addr:x}: failed to fork successor at 0x{extra_succ.addr:x}: {fork_err}"
+                    )
 
             self._perf_stats.increment_simprocedure_count()
 
@@ -2499,4 +2547,3 @@ class RustCallbackDispatchMixin:
                 # cat-(b) FALLBACK WITH LOSS: resume_after_error in the outer
                 # handler also failed; pending state hangs. Tolerated.
                 pass
-

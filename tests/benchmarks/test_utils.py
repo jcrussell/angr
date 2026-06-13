@@ -1,4 +1,7 @@
 """Shared test utilities for benchmark scripts."""
+
+from __future__ import annotations
+
 import io
 
 
@@ -19,7 +22,7 @@ class BufferedStringIO(io.StringIO):
         binary_output = self._buffer.getvalue()
         if binary_output:
             try:
-                text_output += binary_output.decode('utf-8', errors='replace')
+                text_output += binary_output.decode("utf-8", errors="replace")
             except Exception:
                 pass
         return text_output

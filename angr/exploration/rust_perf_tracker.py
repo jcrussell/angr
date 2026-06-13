@@ -9,9 +9,10 @@ Read access via ``__getitem__`` and ``.get()`` is preserved so existing
 report builders and debug scripts can keep treating the tracker as a
 read-only mapping.
 """
+
 from __future__ import annotations
 
-from typing import Dict, Iterator
+from collections.abc import Iterator
 
 
 class PerformanceTracker:
@@ -54,7 +55,7 @@ class PerformanceTracker:
     )
 
     def __init__(self) -> None:
-        self._stats: Dict[str, int] = {f: 0 for f in self._FIELDS}
+        self._stats: dict[str, int] = dict.fromkeys(self._FIELDS, 0)
 
     # ---- Init phase recorders ----
 
@@ -124,5 +125,5 @@ class PerformanceTracker:
     def get(self, key: str, default: int = 0) -> int:
         return self._stats.get(key, default)
 
-    def as_dict(self) -> Dict[str, int]:
+    def as_dict(self) -> dict[str, int]:
         return dict(self._stats)

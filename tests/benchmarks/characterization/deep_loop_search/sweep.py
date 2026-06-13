@@ -11,6 +11,7 @@ subprocess with RLIMIT_AS for OOM containment. Records depth reached,
 peak RSS, wall time. Stops increasing N for a given (engine, strategy)
 once the smaller N errored.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,6 @@ import re
 import subprocess
 import sys
 import time
-
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN_ONE = os.path.join(HERE, "run_one.py")
@@ -53,26 +53,43 @@ def parse_line(line: str) -> dict | None:
     }
 
 
-def run_one(n: int, engine: str, strategy: str, max_steps: int,
-            build_dir: str, mem_limit_mb: int, timeout_s: int) -> dict:
+def run_one(
+    n: int, engine: str, strategy: str, max_steps: int, build_dir: str, mem_limit_mb: int, timeout_s: int
+) -> dict:
     cmd = [
-        sys.executable, RUN_ONE,
-        "--engine", engine,
-        "--strategy", strategy,
-        "--n", str(n),
-        "--max-steps", str(max_steps),
-        "--build-dir", build_dir,
-        "--mem-limit-mb", str(mem_limit_mb),
+        sys.executable,
+        RUN_ONE,
+        "--engine",
+        engine,
+        "--strategy",
+        strategy,
+        "--n",
+        str(n),
+        "--max-steps",
+        str(max_steps),
+        "--build-dir",
+        build_dir,
+        "--mem-limit-mb",
+        str(mem_limit_mb),
     ]
     base = {
-        "n": n, "engine": engine, "strategy": strategy,
-        "wall_s": -1.0, "rss_kb": -1, "steps": -1,
-        "max_depth": -1, "active_at_end": -1, "deadended": -1,
+        "n": n,
+        "engine": engine,
+        "strategy": strategy,
+        "wall_s": -1.0,
+        "rss_kb": -1,
+        "steps": -1,
+        "max_depth": -1,
+        "active_at_end": -1,
+        "deadended": -1,
     }
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout_s, cwd=HERE,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=HERE,
         )
     except subprocess.TimeoutExpired:
         base["wall_s"] = float(timeout_s)
@@ -89,9 +106,19 @@ def run_one(n: int, engine: str, strategy: str, max_steps: int,
 
 
 def write_csv(records: list[dict], path: str) -> None:
-    fields = ["n", "engine", "strategy", "max_steps_budget", "wall_s",
-              "rss_kb", "steps", "max_depth", "active_at_end",
-              "deadended", "error"]
+    fields = [
+        "n",
+        "engine",
+        "strategy",
+        "max_steps_budget",
+        "wall_s",
+        "rss_kb",
+        "steps",
+        "max_depth",
+        "active_at_end",
+        "deadended",
+        "error",
+    ]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -102,14 +129,10 @@ def write_csv(records: list[dict], path: str) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--n-list", default="4,8,14",
-                   help="comma-separated iteration caps to bake into binaries")
-    p.add_argument("--max-steps-list", default="200,500",
-                   help="comma-separated step budgets")
-    p.add_argument("--engines", default="rust",
-                   help="comma-separated subset of {rust,python}")
-    p.add_argument("--strategies", default="bfs,dfs",
-                   help="comma-separated subset of {bfs,dfs}")
+    p.add_argument("--n-list", default="4,8,14", help="comma-separated iteration caps to bake into binaries")
+    p.add_argument("--max-steps-list", default="200,500", help="comma-separated step budgets")
+    p.add_argument("--engines", default="rust", help="comma-separated subset of {rust,python}")
+    p.add_argument("--strategies", default="bfs,dfs", help="comma-separated subset of {bfs,dfs}")
     p.add_argument("--mem-limit-mb", type=int, default=3072)
     p.add_argument("--timeout-s", type=int, default=180)
     p.add_argument("--build-dir", default="/tmp/deep_loop_build")
@@ -121,9 +144,11 @@ def main() -> int:
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
     strategies = [s.strip() for s in args.strategies.split(",") if s.strip()]
 
-    print(f"sweep: N={ns} steps={step_budgets} engines={engines} "
-          f"strategies={strategies} timeout={args.timeout_s}s "
-          f"mem={args.mem_limit_mb}MB")
+    print(
+        f"sweep: N={ns} steps={step_budgets} engines={engines} "
+        f"strategies={strategies} timeout={args.timeout_s}s "
+        f"mem={args.mem_limit_mb}MB"
+    )
 
     records: list[dict] = []
     # Skip-after-error tracking is per (engine, strategy) for both N and steps.
@@ -134,23 +159,29 @@ def main() -> int:
                 for strategy in strategies:
                     key = (engine, strategy)
                     if key in skip:
-                        records.append({
-                            "n": n, "engine": engine, "strategy": strategy,
-                            "max_steps_budget": steps, "wall_s": -1.0,
-                            "rss_kb": -1, "steps": -1, "max_depth": -1,
-                            "active_at_end": -1, "deadended": -1,
-                            "error": "skipped-after-earlier-error",
-                        })
+                        records.append(
+                            {
+                                "n": n,
+                                "engine": engine,
+                                "strategy": strategy,
+                                "max_steps_budget": steps,
+                                "wall_s": -1.0,
+                                "rss_kb": -1,
+                                "steps": -1,
+                                "max_depth": -1,
+                                "active_at_end": -1,
+                                "deadended": -1,
+                                "error": "skipped-after-earlier-error",
+                            }
+                        )
                         continue
                     t0 = time.monotonic()
-                    rec = run_one(n, engine, strategy, steps,
-                                  args.build_dir, args.mem_limit_mb,
-                                  args.timeout_s)
+                    rec = run_one(n, engine, strategy, steps, args.build_dir, args.mem_limit_mb, args.timeout_s)
                     elapsed = time.monotonic() - t0
                     print(
                         f"  N={n:>3} steps={steps:>5} {engine:<6} "
                         f"{strategy:<3} wall={rec['wall_s']:>6.2f}s "
-                        f"rss={rec['rss_kb']/1024:>6.1f}MB "
+                        f"rss={rec['rss_kb'] / 1024:>6.1f}MB "
                         f"depth={rec['max_depth']:>3} "
                         f"active={rec['active_at_end']:>4} "
                         f"dead={rec['deadended']:>4} "

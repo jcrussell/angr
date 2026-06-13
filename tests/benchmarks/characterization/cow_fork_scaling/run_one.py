@@ -8,6 +8,7 @@ either the Rust or Python engine, and prints a single line of metrics:
 
 Runs in a subprocess (forked from sweep.py) with RLIMIT_AS to avoid OOM.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import time
-
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "fork_tree_template.c")
@@ -43,15 +43,17 @@ def compile_binary(n: int, out_dir: str) -> str:
         f.write(src)
     subprocess.check_call(
         ["gcc", "-O0", "-no-pie", "-o", bin_path, c_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
     )
     return bin_path
 
 
 def run_explore(bin_path: str, engine: str, max_states: int = 65536) -> tuple[int, str | None]:
     """Run exploration; return (deadended_count, error_str_or_none)."""
-    import angr  # noqa: E402
-    import claripy  # noqa: E402
+    import claripy
+
+    import angr
 
     proj = angr.Project(bin_path, auto_load_libs=False)
     main_sym = proj.loader.find_symbol("main")
@@ -67,6 +69,7 @@ def run_explore(bin_path: str, engine: str, max_states: int = 65536) -> tuple[in
     try:
         if engine == "rust":
             from angr.exploration.rust_manager import RustExplorationManager
+
             mgr = RustExplorationManager(proj, [state])
             step = 0
             while mgr.active and step < 4096:
@@ -74,22 +77,20 @@ def run_explore(bin_path: str, engine: str, max_states: int = 65536) -> tuple[in
                 step += 1
                 if len(mgr.active) + len(mgr.deadended) > max_states:
                     return 0, f"state-explosion>{max_states}"
-            terminal = len(getattr(mgr, "deadended", [])) + \
-                       len(getattr(mgr, "unconstrained", []))
+            terminal = len(getattr(mgr, "deadended", [])) + len(getattr(mgr, "unconstrained", []))
             return terminal, None
-        else:
-            sm = proj.factory.simulation_manager(state, save_unconstrained=True)
-            step = 0
-            while sm.active and step < 4096:
-                sm.step()
-                step += 1
-                if len(sm.active) + len(sm.deadended) > max_states:
-                    return 0, f"state-explosion>{max_states}"
-            terminal = len(sm.deadended) + len(sm.unconstrained)
-            return terminal, None
+        sm = proj.factory.simulation_manager(state, save_unconstrained=True)
+        step = 0
+        while sm.active and step < 4096:
+            sm.step()
+            step += 1
+            if len(sm.active) + len(sm.deadended) > max_states:
+                return 0, f"state-explosion>{max_states}"
+        terminal = len(sm.deadended) + len(sm.unconstrained)
+        return terminal, None
     except MemoryError:
         return 0, "MemoryError"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return 0, f"{type(e).__name__}: {e}"
 
 
@@ -98,8 +99,7 @@ def main() -> int:
     p.add_argument("--engine", choices=["rust", "python"], required=True)
     p.add_argument("--n", type=int, required=True)
     p.add_argument("--mem-limit-mb", type=int, default=4096)
-    p.add_argument("--build-dir", default=None,
-                   help="Reuse-able binary cache (default: temp dir)")
+    p.add_argument("--build-dir", default=None, help="Reuse-able binary cache (default: temp dir)")
     args = p.parse_args()
 
     if args.build_dir:
@@ -124,10 +124,7 @@ def main() -> int:
     wall = time.monotonic() - t0
     rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
-    print(
-        f"N={args.n} engine={args.engine} wall_s={wall:.3f} "
-        f"rss_kb={rss_kb} terminal={terminal} error={err}"
-    )
+    print(f"N={args.n} engine={args.engine} wall_s={wall:.3f} rss_kb={rss_kb} terminal={terminal} error={err}")
     return 0 if err is None else 1
 
 

@@ -9,8 +9,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-
 from distutils.command.build import build as st_build
+
 from setuptools import Command, setup
 from setuptools.command.develop import develop as st_develop
 from setuptools.errors import LibError
@@ -46,7 +46,10 @@ def _resolve_z3_header() -> None:
         try:
             result = subprocess.run(
                 ["pkg-config", "--variable=includedir", "z3"],
-                capture_output=True, text=True, check=False, timeout=5,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
             )
             inc = result.stdout.strip()
             if inc:
