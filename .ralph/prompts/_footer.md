@@ -52,12 +52,21 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 - **Output discipline:** no recap of completed steps, no narrative summaries
   between tool calls. End-of-turn: ≤2 sentences (what changed, what's next).
 
-## MEMORY SAFETY (8GB box, no swap — these will OOM the loop)
+## MEMORY SAFETY (7GB box, no swap — these will OOM the loop)
 
+- The iteration runs in a systemd scope capped at **6G** (`memory_limit_bytes`
+  in config.toml). pytest/repro run in that SAME scope, so any OOM kills the
+  whole session — the cap is a backstop, not isolation. Self-cap heavy work.
 - **NEVER** run angr scripts in-process. Use
   `python tests/benchmarks/run_single.py <example> --engine rust` (subprocess
   + `RLIMIT_AS=4GB`). For custom debug logic, add it to `run_single.py` or
   wrap with `resource.setrlimit(RLIMIT_AS, 4GB)`.
+- For an **unbounded/divergent explore** (e.g. CADET easter-egg, which leaks
+  states under Rust — see angr-027h), do NOT just `mgr.explore()`/`mgr.run()`.
+  Step with a hard cap and watch the active stash:
+  `for _ in range(N): mgr.step(n=1); print(mgr.stash_counts())`, and run it
+  inside a nested capped scope:
+  `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 -- env PYTHONPATH=$PWD .venv/bin/python <script>`.
 - **NEVER** run `tests/benchmarks/run_comparison_10.py`.
 - Safe quick benches: `fauxware`, `ais3_crackme`, `defcamp_r100`.
 - Avoid: `grub` (OOM), `hackcon2016_angry-reverser` (67s), `sym-write` (30s).

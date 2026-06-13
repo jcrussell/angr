@@ -5,6 +5,18 @@
 # timeout=600s, soft_fail=true, run_when="commits-only". We override only
 # what's different.
 
+[loop]
+# Cap the per-iteration systemd scope BELOW the box's total RAM (7G, no swap).
+# Default is 7G == whole machine, so any >7G process (e.g. a divergent
+# exploration) gets OOM-killed only after exhausting RAM, which kills the whole
+# `claude` session (0-byte output -> dead_session -> runner_terminal). This is
+# what failed run 20260613 iters 28-30 (a CADET explore leaked states; see bd
+# angr-027h / memory deferred-forks-unconstrained-oom). 6G leaves ~1G headroom
+# so a runaway is killed sooner. NOTE: pytest/repro run in the SAME scope as
+# claude, so an OOM still ends the session — this is a backstop, not isolation.
+# Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).
+memory_limit_bytes = "6G"
+
 [runner]
 # Wrapper script that exports PATH for ~/.cargo/bin and sources .venv before
 # exec-ing claude. Without this, ralph would need to be invoked from an already
