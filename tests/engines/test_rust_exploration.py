@@ -835,6 +835,44 @@ class TestRustExplorationPython:
         assert strict_ids, "expected an active state to be added"
         assert strict_mgr._rust_mgr.state_enforce_permissions(strict_ids[0]) is True
 
+    def test_set_ip_register_syncs_state_pc(self, fauxware_project):
+        """Writing the IP register via set_state_register_symbolic_ast must
+        keep the state's pc field in sync (angr-4rq7).
+
+        The RustRegisterProxy write-through gate routes
+        ``state.regs.ip = target`` into ``set_state_register_symbolic_ast(
+        state_id, 'rip', ...)`` -> ``RustSimState::set_register``. Before
+        the fix, set_register only updated the register file and left
+        ``self.pc`` stale (often 0 on a freshly-forked state), so
+        ``get_state_pc_by_id`` and the next block fetch read 0x0 ("Lift
+        error at 0x0") while ``get_register('rip')`` read correctly. This
+        asserts the two stay consistent after an IP write.
+        """
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ids = mgr._rust_mgr.get_state_ids("active")
+        assert ids, "expected an active state to be added"
+        sid = ids[0]
+
+        # Baseline: pc and the IP register agree on the entry state.
+        assert mgr._rust_mgr.get_state_pc_by_id(sid) == \
+            mgr._rust_mgr.get_state_register(sid, "rip")
+
+        # Write a new IP through the same FFI the register proxy uses.
+        new_pc = 0x4006ED
+        mgr._rust_mgr.set_state_register_symbolic_ast(
+            sid, "rip", claripy.BVV(new_pc, 64)
+        )
+
+        # Both the register file and the pc field must reflect the write.
+        assert mgr._rust_mgr.get_state_register(sid, "rip") == new_pc
+        assert mgr._rust_mgr.get_state_pc_by_id(sid) == new_pc, (
+            "set_register('rip') must sync state.pc — otherwise the next "
+            "block fetch lifts at a stale/zero address"
+        )
+
     def test_strict_page_access_blocks_nx_block_fetch(self):
         """Fetching a basic block from a mapped non-executable page must
         surface as a permission error (state lands in `errored`) when BOTH

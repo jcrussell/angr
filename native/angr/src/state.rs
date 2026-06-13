@@ -1679,7 +1679,27 @@ impl RustSimState {
 
     /// Set a register by name.
     pub fn set_register(&mut self, name: &str, value: RustBV) -> bool {
-        self.registers.put_reg(name, value)
+        // angr-4rq7: writing the IP register (e.g. via the RustRegisterProxy
+        // write-through gate, which routes `state.regs.ip = target` to
+        // set_state_register_symbolic_ast -> set_register("rip", ...)) must
+        // keep self.pc in sync, exactly as set_ip/set_pc do. Without this,
+        // the register file holds the real address but self.pc stays stale
+        // (often 0 on a freshly-forked state): get_state_pc_by_id() and the
+        // next block fetch then read 0x0 ("Lift error at 0x0") while
+        // get_register("rip") reads correctly — the divergence behind the
+        // register-proxy gate corruption.
+        let is_ip = self
+            .arch
+            .register_offset(name)
+            .map(|off| off == self.arch.ip_offset())
+            .unwrap_or(false);
+        let ok = self.registers.put_reg(name, value);
+        if ok && is_ip {
+            if let Some(v) = self.registers.get_ip(&self.solver.borrow()).as_u64() {
+                self.pc = v;
+            }
+        }
+        ok
     }
 
     /// Get a register by offset.
