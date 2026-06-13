@@ -4300,9 +4300,16 @@ class TestProxyGateToggles:
     ``ids`` name each gate so a failure reads ``...[use_export_memory_proxy]``.
     """
 
-    def test_gate_default_off(self, fauxware_project, kwarg, env_var, attr):
-        """Without the kwarg or env var, the gate is off."""
+    def test_gate_default_off(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
+        """Without the kwarg or env var, the gate is off.
 
+        Clears the gate's env var so the test is hermetic under a
+        gates-on CI job (nightly-ci.yml::proxy_gates_on sets the four
+        clean gates process-wide; this test asserts the *default*, which
+        must be measured with the ambient env removed).
+        """
+
+        monkeypatch.delenv(env_var, raising=False)
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         assert getattr(mgr, attr) is False
@@ -5146,11 +5153,22 @@ class TestExportMemoryProxyGate:
 
     def test_export_pipeline_uses_eager_when_off(self, fauxware_project):
         """End-to-end: gate off keeps the eager page writeback on
-        materialized states from ``found`` (no ``RustMemoryProxy``)."""
+        materialized states from ``found`` (no ``RustMemoryProxy``).
+
+        Passes ``use_*_memory_proxy=False`` explicitly so the off-path is
+        exercised even under a gates-on CI env (kwarg=False beats the env
+        var in the 4-way precedence contract); the callback memory proxy
+        also has to be off or ``found.memory`` would be a proxy plugin.
+        """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr = RustExplorationManager(
+            fauxware_project,
+            [state],
+            use_export_memory_proxy=False,
+            use_callback_memory_proxy=False,
+        )
         assert mgr._use_export_memory_proxy is False
         mgr.explore(find=0x4006ed)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
@@ -5211,7 +5229,12 @@ class TestSimProcForkViaRustGate:
         monkey-patchable). Verifies that the routing IS the legacy path."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        # use_simproc_fork_via_rust=False explicitly so the legacy-dispatch
+        # path is exercised even under a gates-on CI env (kwarg=False beats
+        # the ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST env var).
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_simproc_fork_via_rust=False
+        )
         assert mgr._use_simproc_fork_via_rust is False
 
         calls = {"add_rust_state": 0}
