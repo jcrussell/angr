@@ -582,14 +582,16 @@ impl<'a> VEXInterpreter<'a> {
                 })?;
                 let load_size = match cvt {
                     IRLoadGOp::Identity => dst_ty.bytes() as usize,
-                    IRLoadGOp::WidenS | IRLoadGOp::WidenZ => {
-                        // For widening loads, the memory load is smaller
-                        // Typically 8->32, 16->32, 32->64
-                        match dst_ty.bytes() {
-                            4 => 1, // Could be 1 or 2, default to 1
-                            8 => 4, // 32->64
-                            _ => dst_ty.bytes() as usize,
-                        }
+                    // The source width is carried in the cvt op, so an 8->32
+                    // and a 16->32 widening load are correctly distinguished
+                    // (the latter previously defaulted to a 1-byte load).
+                    IRLoadGOp::WidenS { src_bits } | IRLoadGOp::WidenZ { src_bits } => {
+                        (*src_bits / 8) as usize
+                    }
+                    IRLoadGOp::Unknown => {
+                        return Err(CbExecutionError::InvalidIR(
+                            "LoadG has an unrecognized conversion op (cvt)".to_string(),
+                        ));
                     }
                 };
 
@@ -2074,6 +2076,31 @@ mod tests {
             .try_load(0x4000, 4)
             .expect("pending store at 0x4000");
         assert_eq!(data, &[0xef, 0xbe, 0xad, 0xde]);
+    }
+
+    #[test]
+    fn loadg_unknown_cvt_surfaces_invalid_ir() {
+        use crate::vex::ir::IRLoadGOp;
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        // dst temp t0 is I32.
+        let irsb = make_irsb_with_temps(0x1000, &[IRType::I32]);
+        let stmt = IRStmt::LoadG {
+            dst: 0,
+            addr: Box::new(IRExpr::Const(IRConst::U64(0x4000))),
+            alt: Box::new(IRExpr::Const(IRConst::U32(0))),
+            guard: Box::new(IRExpr::Const(IRConst::U8(1))),
+            cvt: IRLoadGOp::Unknown,
+            endness: Endness::Little,
+        };
+        with_python(|py, cb| {
+            let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
+            // An unrecognized cvt must error rather than silently load+Identity.
+            assert!(
+                matches!(res, Err(CbExecutionError::InvalidIR(_))),
+                "Unknown LoadG cvt should surface InvalidIR"
+            );
+        });
     }
 
     #[test]

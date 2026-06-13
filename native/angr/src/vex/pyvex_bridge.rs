@@ -441,9 +441,15 @@ fn convert_callee(c: &PyVexCallee) -> IRCallee {
 fn parse_loadg_op(cvt: &str) -> IRLoadGOp {
     match cvt {
         "ILGop_IdentV128" | "ILGop_Ident64" | "ILGop_Ident32" => IRLoadGOp::Identity,
-        "ILGop_8Uto32" | "ILGop_16Uto32" | "ILGop_16Uto64" | "ILGop_32Uto64" => IRLoadGOp::WidenZ,
-        "ILGop_8Sto32" | "ILGop_16Sto32" | "ILGop_16Sto64" | "ILGop_32Sto64" => IRLoadGOp::WidenS,
-        _ => IRLoadGOp::Identity,
+        // VEX defines only the *to32 widening ops; the *to64 forms are accepted
+        // defensively in case a future lifter emits them.
+        "ILGop_8Uto32" => IRLoadGOp::WidenZ { src_bits: 8 },
+        "ILGop_8Sto32" => IRLoadGOp::WidenS { src_bits: 8 },
+        "ILGop_16Uto32" | "ILGop_16Uto64" => IRLoadGOp::WidenZ { src_bits: 16 },
+        "ILGop_16Sto32" | "ILGop_16Sto64" => IRLoadGOp::WidenS { src_bits: 16 },
+        "ILGop_32Uto64" => IRLoadGOp::WidenZ { src_bits: 32 },
+        "ILGop_32Sto64" => IRLoadGOp::WidenS { src_bits: 32 },
+        _ => IRLoadGOp::Unknown,
     }
 }
 
@@ -672,6 +678,28 @@ mod tests {
         assert_eq!(irsb.statements.len(), 2);
         assert!(matches!(irsb.arch, VexArch::AMD64));
         assert!(matches!(irsb.jumpkind, JumpKind::Boring));
+    }
+
+    #[test]
+    fn test_parse_loadg_op_carries_source_width() {
+        use super::super::ir::IRLoadGOp;
+        // Identity variants — no widening.
+        assert_eq!(parse_loadg_op("ILGop_Ident32"), IRLoadGOp::Identity);
+        assert_eq!(parse_loadg_op("ILGop_Ident64"), IRLoadGOp::Identity);
+        assert_eq!(parse_loadg_op("ILGop_IdentV128"), IRLoadGOp::Identity);
+        // The four canonical VEX widening ops (all widen to 32 bits).
+        assert_eq!(parse_loadg_op("ILGop_8Uto32"), IRLoadGOp::WidenZ { src_bits: 8 });
+        assert_eq!(parse_loadg_op("ILGop_8Sto32"), IRLoadGOp::WidenS { src_bits: 8 });
+        assert_eq!(parse_loadg_op("ILGop_16Uto32"), IRLoadGOp::WidenZ { src_bits: 16 });
+        assert_eq!(parse_loadg_op("ILGop_16Sto32"), IRLoadGOp::WidenS { src_bits: 16 });
+        // Defensive *to64 forms.
+        assert_eq!(parse_loadg_op("ILGop_16Uto64"), IRLoadGOp::WidenZ { src_bits: 16 });
+        assert_eq!(parse_loadg_op("ILGop_16Sto64"), IRLoadGOp::WidenS { src_bits: 16 });
+        assert_eq!(parse_loadg_op("ILGop_32Uto64"), IRLoadGOp::WidenZ { src_bits: 32 });
+        assert_eq!(parse_loadg_op("ILGop_32Sto64"), IRLoadGOp::WidenS { src_bits: 32 });
+        // Unknown strings are flagged, not silently treated as Identity.
+        assert_eq!(parse_loadg_op("ILGop_INVALID"), IRLoadGOp::Unknown);
+        assert_eq!(parse_loadg_op("nonsense"), IRLoadGOp::Unknown);
     }
 
     #[test]

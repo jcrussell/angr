@@ -823,9 +823,11 @@ impl<'a> VEXInterpreter<'a> {
         } else {
             // Widen the value
             match cvt {
-                IRLoadGOp::Identity => value, // Should not happen if sizes differ
-                IRLoadGOp::WidenS => value.sign_extend(target_bits, self.ctx),
-                IRLoadGOp::WidenZ => value.zero_extend(target_bits, self.ctx),
+                // Identity/Unknown should not reach a widening branch (sizes
+                // differ only for the Widen* variants); pass through if they do.
+                IRLoadGOp::Identity | IRLoadGOp::Unknown => value,
+                IRLoadGOp::WidenS { .. } => value.sign_extend(target_bits, self.ctx),
+                IRLoadGOp::WidenZ { .. } => value.zero_extend(target_bits, self.ctx),
             }
         }
     }
@@ -1311,7 +1313,7 @@ mod tests {
         let ctx = SymContext::new_mock();
         let interp = new_interp(&ctx);
         let val = RustBV::concrete(0xff, 8);
-        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenZ, val, 32);
+        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenZ { src_bits: 8 }, val, 32);
         assert_eq!(widened.width(), 32);
         assert_eq!(widened.as_u64(), Some(0xff));
     }
@@ -1322,7 +1324,7 @@ mod tests {
         let interp = new_interp(&ctx);
         // 0xff as signed i8 is -1; zero-extend says 0xff (255); sign-extend says 0xffffffff.
         let val = RustBV::concrete(0xff, 8);
-        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenS, val, 32);
+        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenS { src_bits: 8 }, val, 32);
         assert_eq!(widened.width(), 32);
         assert_eq!(widened.as_u64(), Some(0xffff_ffff));
     }
@@ -1342,7 +1344,7 @@ mod tests {
         let ctx = SymContext::new_mock();
         let interp = new_interp(&ctx);
         let val = RustBV::concrete(0xdead_beef, 32);
-        let same = interp.apply_loadg_conversion(IRLoadGOp::WidenZ, val, 32);
+        let same = interp.apply_loadg_conversion(IRLoadGOp::WidenZ { src_bits: 32 }, val, 32);
         assert_eq!(same.width(), 32);
         assert_eq!(same.as_u64(), Some(0xdead_beef));
     }

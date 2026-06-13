@@ -7670,6 +7670,64 @@ class TestExplorationIntegration:
             f"byte (angr-fv81)"
         )
 
+    def test_arm_conditional_ldrh_loads_two_bytes(self):
+        """ARM ``ldrneh`` (conditional halfword load) must read 2 bytes.
+
+        Regression for angr-21am. ``ldrneh r0, [r1]`` lifts to a VEX
+        ``LoadG`` with ``cvt=ILGop_16Uto32``. The Rust interpreter used to
+        drop the source width and default a 32-bit-destination widening
+        load to a *1-byte* memory read, so only the low byte survived and
+        the high byte was silently lost.
+
+        We store 0xABCD at the load address. The Rust engine evaluates the
+        guard symbolically (its ARM cc_* thunks read as 0/unconstrained), so
+        r0 becomes ``ITE(guard, loaded, alt)``. With the fix ``loaded`` is the
+        full 16-bit 0xABCD, so ``r0 == 0xABCD`` is satisfiable; under the old
+        1-byte bug ``loaded`` would be 0x00CD and 0xABCD would be unreachable.
+        The Python engine (concrete guard) is used as a direct oracle.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # 0x1000: ldrneh r0, [r1]   ; bytes b0 00 d1 11 (ARMEL, little-endian)
+        shellcode = bytes.fromhex("b000d111")
+        proj = angr.load_shellcode(shellcode, arch="ARMEL", load_address=0x1000)
+
+        LOAD_ADDR = 0x4000
+        VALUE = 0xABCD  # high byte 0xAB != 0 distinguishes 2-byte vs 1-byte load
+
+        def fresh_state():
+            st = proj.factory.blank_state(addr=0x1000)
+            st.regs.r1 = LOAD_ADDR
+            # blank_state zeroes the lazy ARM cc_* flag thunks (cc_op=COPY,
+            # cc_dep1=0) -> Z==0 -> the NE condition holds -> the load fires.
+            st.memory.store(LOAD_ADDR, VALUE, size=2, endness="Iend_LE")
+            return st
+
+        # Python engine oracle.
+        py_state = fresh_state()
+        py_simgr = proj.factory.simulation_manager(py_state)
+        py_simgr.step()
+        py_r0 = py_simgr.active[0].solver.eval(py_simgr.active[0].regs.r0)
+        assert py_r0 == VALUE, f"Python oracle r0=0x{py_r0:x}, expected 0x{VALUE:x}"
+
+        # Rust engine under test.
+        rust_state = fresh_state()
+        mgr = RustExplorationManager(proj, [rust_state])
+        mgr.run(max_steps=1)
+        all_states = (
+            list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
+        )
+        assert all_states, "expected at least one state after run"
+        final = all_states[0]
+        r0 = final.regs.r0
+        # The full 16-bit value must be reachable on the guard-true branch.
+        assert final.solver.satisfiable(extra_constraints=[r0 == VALUE]), (
+            f"r0 cannot equal 0x{VALUE:x} — the conditional halfword load "
+            f"read the wrong number of bytes (1 instead of 2), so the high "
+            f"byte 0x{VALUE >> 8:02x} was lost (angr-21am)"
+        )
+
     def test_hook_length_advances_pc_userhook(self, fauxware_project):
         """proj.hook(addr, fn, length=N>0) on a UserHook must skip N bytes.
 
