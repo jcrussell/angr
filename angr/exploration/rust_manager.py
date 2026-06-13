@@ -2898,20 +2898,37 @@ class RustExplorationManager(
             rdi_offset = self._project.arch.registers.get('rdi', (None,))[0]
             if rdi_offset is None:
                 rdi_offset = self._project.arch.registers.get('edi', (None,))[0]
-            if rdi_offset is None:
-                return None
-            for stmt in reversed(vex.statements):
-                s = str(stmt)
-                if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
-                    import re
-                    m_const = re.search(r'0x([0-9a-fA-F]+)', s)
-                    if m_const:
-                        candidate = int(m_const.group(1), 16)
-                        main_obj = self._project.loader.main_object
-                        if main_obj.min_addr <= candidate <= main_obj.max_addr:
-                            l.info(f"Extracted main=0x{candidate:x} from _start's rdi")
-                            return candidate
-                    break
+            if rdi_offset is not None:
+                for stmt in reversed(vex.statements):
+                    s = str(stmt)
+                    if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
+                        import re
+                        m_const = re.search(r'0x([0-9a-fA-F]+)', s)
+                        if m_const:
+                            candidate = int(m_const.group(1), 16)
+                            main_obj = self._project.loader.main_object
+                            if main_obj.min_addr <= candidate <= main_obj.max_addr:
+                                l.info(f"Extracted main=0x{candidate:x} from _start's rdi")
+                                return candidate
+                        break
+            # Fallback: a "thin" entry that is a direct `call main` (no
+            # __libc_start_main trampoline, e.g. DECREE/CGC binaries) leaves no
+            # rdi/edi PUT to parse. The entry block's call target IS main when it
+            # lands on real code in the main object (a SimProcedure target means
+            # this is the __libc_start_main case, which the rdi parse handles).
+            # Without this, _step_python_to_main's main_addr=None heuristic waits
+            # `step > 10` and grabs an arbitrary mid-init address (e.g. inside
+            # __libc_csu_init), starting Rust exploration off the real CFG.
+            if vex.jumpkind == 'Ijk_Call':
+                import pyvex
+                if isinstance(vex.next, pyvex.expr.Const):
+                    tgt = vex.next.con.value
+                    main_obj = self._project.loader.main_object
+                    if (main_obj.min_addr <= tgt <= main_obj.max_addr
+                            and tgt != self._project.entry
+                            and tgt not in self._project._sim_procedures):
+                        l.info(f"Resolved main=0x{tgt:x} from entry's direct call target")
+                        return tgt
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: main address extraction from _start
             # disassembly failed; caller resolves None and uses the post-init

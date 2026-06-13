@@ -17715,5 +17715,58 @@ class TestCgcReceiveStdinSync:
         )
 
 
+class TestDirectCallEntryMainResolution:
+    """Regression for angr-027h: a "thin" entry that is a direct ``call main``
+    (no ``__libc_start_main`` trampoline, e.g. DECREE/CGC binaries) has no
+    ``main`` symbol and no ``rdi``/``edi`` PUT for ``_resolve_main_address`` to
+    parse. Before the fix it returned ``None``, so ``_step_python_to_main``'s
+    ``main_addr is None`` heuristic waited ``step > 10`` and grabbed an
+    arbitrary mid-init address (inside ``__libc_csu_init``), starting the Rust
+    exploration off the real CFG (the imported state began at 0x804840c, ran a
+    ``pop;pop;pop;pop;ret`` gadget, and went unconstrained immediately).
+
+    The fix: ``_resolve_main_address`` falls back to the entry block's direct
+    call target when it lands on real code in the main object (a SimProcedure
+    target means the ``__libc_start_main`` case, handled by the rdi parse).
+    """
+
+    def test_resolve_main_from_direct_call_entry(self):
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
+            "~/repos/angr-examples/examples"
+        )
+        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
+        if not os.path.exists(cadet):
+            pytest.skip(f"CADET_00001 binary not found at {cadet}")
+
+        proj = angr.Project(cadet, auto_load_libs=False)
+        # The CGC binary has no 'main' symbol and its entry is `call 0x8048080`.
+        assert proj.loader.find_symbol("main") is None
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        resolved = mgr._resolve_main_address()
+        assert resolved == 0x8048080, (
+            f"expected main resolved to 0x8048080 from direct-call entry, "
+            f"got {resolved if resolved is None else hex(resolved)}"
+        )
+
+    def test_imported_entry_state_starts_at_main_not_mid_init(self):
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
+            "~/repos/angr-examples/examples"
+        )
+        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
+        if not os.path.exists(cadet):
+            pytest.skip(f"CADET_00001 binary not found at {cadet}")
+
+        proj = angr.Project(cadet, auto_load_libs=False)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        active = mgr.active
+        assert len(active) == 1
+        # Post-fix the init-to-main lands at main (0x8048080). The pre-fix bug
+        # imported the state at 0x804840c (mid __libc_csu_init).
+        assert active[0].addr == 0x8048080, (
+            f"imported entry state should start at main 0x8048080, "
+            f"got {hex(active[0].addr)} (mid-init regression)"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
