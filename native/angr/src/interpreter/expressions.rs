@@ -1248,7 +1248,7 @@ mod tests {
         let err = interp
             .eval_expr_simple(&IRExpr::RdTmp(0), &env)
             .expect_err("missing temp should error");
-        matches!(err, CbExecutionError::UnknownTemp(0));
+        assert!(matches!(err, CbExecutionError::UnknownTemp(0)));
     }
 
     #[test]
@@ -1303,7 +1303,7 @@ mod tests {
         let err = interp
             .eval_expr_simple(&load, &env)
             .expect_err("simple eval should not handle Load");
-        matches!(err, CbExecutionError::Unsupported(_));
+        assert!(matches!(err, CbExecutionError::Unsupported(_)));
     }
 
     #[test]
