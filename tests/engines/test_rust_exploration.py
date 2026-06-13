@@ -12,35 +12,16 @@ import pytest
 import angr
 
 
-# Check if Rust exploration is available
-try:
-    from angr.rustylib.vex_engine import (
-        RustExplorationManager as _RustExplorationManager,
-        ExplorationEvent,
-        PythonCallbacks,
-        RustSimState,
-    )
-    RUST_EXPLORATION_AVAILABLE = True
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
-
-# Get test binary path
-# Try multiple locations for test binaries
-_candidates = [
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "binaries"),
-    os.path.expanduser("~/repos/angr-examples/examples/fauxware"),
-    os.path.expanduser("~/angr-examples/examples/fauxware"),
-]
-TEST_BINARIES_DIR = next((d for d in _candidates if os.path.isdir(d)), _candidates[0])
-
-
-@pytest.fixture(scope="module")
-def fauxware_project():
-    """Load fauxware test binary (shared across all tests in this module)."""
-    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-    if not os.path.exists(binary_path):
-        pytest.skip("fauxware binary not found")
-    return angr.Project(binary_path, auto_load_libs=False)
+# Rust availability guard, binary-path resolution, and the module-scoped
+# fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
+from tests.engines.conftest import (  # noqa: F401
+    RUST_EXPLORATION_AVAILABLE,
+    TEST_BINARIES_DIR,
+    _RustExplorationManager,
+    ExplorationEvent,
+    PythonCallbacks,
+    RustSimState,
+)
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -4,43 +4,20 @@ Runs 12 small CTF examples through both Python and Rust engines,
 comparing correctness and checking for severe performance regressions.
 """
 import importlib.util
-import io
 import os
 import sys
 import time
 
 import pytest
 
-# Check if Rust exploration is available
-try:
-    from angr.exploration import RustExplorationManager
-    from angr.exploration.rust_manager import RUST_EXPLORATION_AVAILABLE
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
-
-EXAMPLES_DIR = os.path.expanduser("~/repos/angr-examples/examples")
-
-
-class BufferedStringIO(io.StringIO):
-    """StringIO with a buffer attribute for code that uses stdout.buffer."""
-
-    def __init__(self):
-        super().__init__()
-        self._buffer = io.BytesIO()
-
-    @property
-    def buffer(self):
-        return self._buffer
-
-    def getvalue(self) -> str:
-        text_output = super().getvalue()
-        binary_output = self._buffer.getvalue()
-        if binary_output:
-            try:
-                text_output += binary_output.decode("utf-8", errors="replace")
-            except Exception:
-                pass
-        return text_output
+# Availability guard, examples-dir resolution, and the BufferedStringIO
+# stdout-capture helper live in conftest (angr-7gdp).
+from tests.engines.conftest import (  # noqa: F401
+    BufferedStringIO,
+    EXAMPLES_DIR,
+    RUST_EXPLORATION_AVAILABLE,
+    RustExplorationManager,
+)
 
 
 # Each entry: (name, expected_substring, timeout_s, uses_callable_predicate)

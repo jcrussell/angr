@@ -27,24 +27,21 @@ import pytest
 import angr
 
 
-try:
-    from angr.exploration import RustExplorationManager
-    RUST_EXPLORATION_AVAILABLE = True
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
-
-
-_candidates = [
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "binaries"),
-    os.path.expanduser("~/repos/angr-examples/examples/fauxware"),
-    os.path.expanduser("~/angr-examples/examples/fauxware"),
-]
-TEST_BINARIES_DIR = next((d for d in _candidates if os.path.isdir(d)), _candidates[0])
+# Availability guard and binary-path resolution live in conftest (angr-7gdp).
+from tests.engines.conftest import (  # noqa: F401
+    RUST_EXPLORATION_AVAILABLE,
+    TEST_BINARIES_DIR,
+    RustExplorationManager,
+)
 
 
 @pytest.fixture
 def fauxware_project():
-    """Fresh fauxware project per test — hooks mutate project state."""
+    """Fresh fauxware project per test — hooks mutate project state.
+
+    Overrides the module-scoped conftest fixture of the same name: these
+    tests install hooks on the project, so each test needs its own.
+    """
     binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
     if not os.path.exists(binary_path):
         pytest.skip("fauxware binary not found")

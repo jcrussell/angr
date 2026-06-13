@@ -21,15 +21,9 @@ from __future__ import annotations
 import pytest
 
 
-# Mirror the availability check from test_rust_exploration.py — if the Rust
-# extension didn't build, skip rather than ImportError at collection time.
-try:
-    from angr.rustylib.vex_engine import (  # noqa: F401
-        RustExplorationManager as _RustExplorationManager,
-    )
-    RUST_EXPLORATION_AVAILABLE = True
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
+# Availability guard lives in conftest — if the Rust extension didn't build,
+# skip rather than ImportError at collection time (angr-7gdp).
+from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE
 
 
 pytestmark = pytest.mark.skipif(

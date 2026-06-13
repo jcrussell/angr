@@ -28,15 +28,11 @@ import pytest
 import angr
 
 
-try:
-    from angr.exploration import RustExplorationManager
-    RUST_EXPLORATION_AVAILABLE = True
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
-
-
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
-    "~/repos/angr-examples/examples"
+# Availability guard and examples-dir resolution live in conftest (angr-7gdp).
+from tests.engines.conftest import (  # noqa: F401
+    EXAMPLES_DIR,
+    RUST_EXPLORATION_AVAILABLE,
+    RustExplorationManager,
 )
 
 HOWTOUSE_DLL = os.path.join(EXAMPLES_DIR, "mma_howtouse", "howtouse.dll")
