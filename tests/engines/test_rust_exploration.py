@@ -4556,10 +4556,14 @@ class TestCallbackMemoryProxyReentryGuards:
 
     def test_cb_memory_store_bypasses_proxy(self, fauxware_project):
         """``_cb_memory_store`` is a no-op under the gate — Rust already
-        performed the store before invoking the callback."""
-        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
-        # Must not raise — the bypass returns early without calling proxy.
+        performed the store before invoking the callback, so the proxy's
+        ``store`` is never re-entered."""
+        mgr, cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        calls = []
+        cb_state.memory.store = lambda *a, **k: calls.append((a, k))
         mgr._cb_memory_store(0x7ffffffefff0, b"\x01\x02\x03\x04")
+        # Bypass returns early — the proxy memory is left untouched.
+        assert calls == []
 
     def test_cb_memory_load_batch_bypasses_proxy(self, fauxware_project):
         """Batch variant: one filler BVS per load entry."""
@@ -4571,9 +4575,12 @@ class TestCallbackMemoryProxyReentryGuards:
             assert ast is not None and ast.symbolic
 
     def test_cb_memory_store_batch_bypasses_proxy(self, fauxware_project):
-        """Batch store variant: no-op."""
-        mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        """Batch store variant: no-op — proxy ``store`` never re-entered."""
+        mgr, cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
+        calls = []
+        cb_state.memory.store = lambda *a, **k: calls.append((a, k))
         mgr._cb_memory_store_batch([(0x100, b"\x01\x02"), (0x200, b"\x03\x04")])
+        assert calls == []
 
     def test_cb_fetch_page_bypasses_proxy(self, fauxware_project):
         """``_cb_fetch_page`` returns empty/inaccessible under the gate so
@@ -6630,11 +6637,13 @@ class TestStateManagement:
         assert mgr.has_active_states()
 
     def test_drop_terminal_states_toggle(self):
-        """set_drop_terminal_states can be toggled."""
+        """set_drop_terminal_states flips the observable stats flag both ways."""
         mgr = _RustExplorationManager("amd64")
-        # Should not raise
+        assert mgr.stats()["drop_terminal_states"] is False  # default
         mgr.set_drop_terminal_states(True)
+        assert mgr.stats()["drop_terminal_states"] is True
         mgr.set_drop_terminal_states(False)
+        assert mgr.stats()["drop_terminal_states"] is False
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
@@ -7337,7 +7346,7 @@ class TestExplorationIntegration:
         assert stats["mem_store_bytes"] <= 64 * stats["mem_store_count"]
 
     def test_explore_with_timeout_technique(self, fauxware_project):
-        """Timeout technique stops exploration after time limit."""
+        """Timeout technique stops exploration before max_steps and finds nothing."""
         from angr.exploration import RustExplorationManager
         from angr.exploration_techniques import Timeout
 
@@ -7345,7 +7354,10 @@ class TestExplorationIntegration:
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.use_technique(Timeout(timeout=0.001))  # 1ms timeout — should trigger quickly
         mgr.explore(find=0x4006ed, max_steps=50000)
-        # Should terminate quickly due to timeout (not find the solution)
+        # The 1ms budget expires long before the 50000-step cap, so the target
+        # is never found and only a handful of steps execute.
+        assert not mgr.found
+        assert mgr.stats.get("steps", 0) < 50000
 
     def test_hook_fp_constraint_uses_z3_ptr_fallback(self, fauxware_project):
         """Constraints with ops that claripy_to_rustbv can't translate (e.g. FP)
@@ -8179,11 +8191,14 @@ class TestAdversarial:
         assert ctx.satisfiable()
 
     def test_solver_contradictory_constraints(self):
-        """UNSAT constraints: add_constraint_ast may not detect equality contradictions.
+        """UNSAT detection: x==5 && x==10 is correctly reported unsatisfiable.
 
-        Known limitation: Rust solver's add_constraint_ast converts claripy ASTs
-        to RustBV representation which may not preserve == semantics fully.
-        This test documents current behavior.
+        Characterization (see bd memory characterization-vs-fix-pattern): the
+        Rust solver routes equality constraints through Z3, which detects the
+        contradiction, so ``satisfiable()`` returns False. An earlier docstring
+        claimed add_constraint_ast might NOT preserve == semantics — that is no
+        longer the observed behavior. This assertion pins the current contract
+        so a regression back to "spuriously SAT" is caught.
         """
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext
@@ -8191,9 +8206,7 @@ class TestAdversarial:
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 5)
         ctx.add_constraint_ast(x == 10)
-        # Known: may return True due to constraint conversion limitations
-        # Real UNSAT detection works through Z3 when check() is called internally
-        ctx.satisfiable()  # Should not crash
+        assert ctx.satisfiable() is False
 
     def test_solver_wide_bitvector(self):
         """Wide bitvector (256-bit) should work."""
@@ -8261,13 +8274,16 @@ class TestAdversarial:
         assert counts.get("found", 0) == 0
 
     def test_move_state_nonexistent(self):
-        """Moving from empty stash should not crash."""
+        """Moving from an empty source stash is a no-op: counts stay zero, no raise."""
         mgr = _RustExplorationManager("amd64")
-        # Try moving states when no states exist — should be a no-op
-        try:
-            mgr.move_states("active", "found", None)
-        except Exception:
-            pass  # Some implementations may raise, that's OK
+        before = mgr.stash_counts()
+        # Contract: moving from an empty source stash does nothing and must NOT
+        # raise. No try/except — a raise here is now a genuine failure, and the
+        # stash counts must be unchanged (both stay at zero).
+        mgr.move_states("active", "found", None)
+        after = mgr.stash_counts()
+        assert before.get("active", 0) == after.get("active", 0) == 0
+        assert before.get("found", 0) == after.get("found", 0) == 0
 
     # --- Integration: RustExplorationManager Python wrapper ---
 
