@@ -1385,81 +1385,36 @@ fn rustbv_to_claripy_memo(
                 let a1 = args[1].bind(py);
                 let w0: Option<u32> = a0.getattr("length").ok().and_then(|l| l.extract().ok());
                 let w1: Option<u32> = a1.getattr("length").ok().and_then(|l| l.extract().ok());
-                // Handle Bool/BV mismatch: convert Bool to BV(1)
-                let (w0, w1) = match (w0, w1) {
+                // Handle Bool operands (length=None): convert each to BV(1) via
+                // If(cond, 1, 0), then fall through to the normal op-dispatch
+                // match below so every BVOp (Eq/Ult/Sub/And/...) is rebuilt with
+                // its real semantics. (Previously these arms early-returned and
+                // either dropped the second operand or rebuilt non-And/Or/Xor ops
+                // as __add__ — see bead angr-c3rd.)
+                let bool_to_bv1 = |arg: &Py<PyAny>| -> PyResult<Py<PyAny>> {
+                    let bv = claripy_mod.call_method1(
+                        "If",
+                        (
+                            arg,
+                            claripy_mod.call_method1("BVV", (1i32, 1u32))?,
+                            claripy_mod.call_method1("BVV", (0i32, 1u32))?,
+                        ),
+                    )?;
+                    Ok(bv.unbind())
+                };
+                let (args, w0, w1) = match (w0, w1) {
                     (None, Some(w)) => {
-                        // arg0 is Bool, arg1 is BV — convert Bool to BV(1)
-                        let bv = claripy_mod.call_method1(
-                            "If",
-                            (
-                                &args[0],
-                                claripy_mod.call_method1("BVV", (1i32, w))?,
-                                claripy_mod.call_method1("BVV", (0i32, w))?,
-                            ),
-                        )?;
-                        return {
-                            // Redo the operation with the converted operand
-                            let args_fixed = [bv.unbind(), args[1].clone()];
-                            // Fall through to the match op block below
-                            // by replacing args
-                            match op {
-                                BVOp::And => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__and__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                BVOp::Or => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__or__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                BVOp::Xor => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__xor__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                _ => {
-                                    // For other ops, just use the converted args
-                                    let a = args_fixed[0].bind(py);
-                                    a.call_method1("__add__", (&args_fixed[1],))
-                                        .map(|o| o.into())
-                                }
-                            }
-                        };
+                        (vec![bool_to_bv1(&args[0])?, args[1].clone()], 1u32, w)
                     }
                     (Some(w), None) => {
-                        // arg0 is BV, arg1 is Bool
-                        let bv = claripy_mod.call_method1(
-                            "If",
-                            (
-                                &args[1],
-                                claripy_mod.call_method1("BVV", (1i32, w))?,
-                                claripy_mod.call_method1("BVV", (0i32, w))?,
-                            ),
-                        )?;
-                        return {
-                            let args_fixed = [args[0].clone(), bv.unbind()];
-                            match op {
-                                BVOp::And => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__and__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                BVOp::Or => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__or__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                BVOp::Xor => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__xor__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                                _ => args_fixed[0]
-                                    .bind(py)
-                                    .call_method1("__add__", (&args_fixed[1],))
-                                    .map(|o| o.into()),
-                            }
-                        };
+                        (vec![args[0].clone(), bool_to_bv1(&args[1])?], w, 1u32)
                     }
-                    (Some(a), Some(b)) => (a, b),
-                    (None, None) => {
-                        return Ok(args[0].clone());
-                    } // Both Bool — just return first
+                    (None, None) => (
+                        vec![bool_to_bv1(&args[0])?, bool_to_bv1(&args[1])?],
+                        1u32,
+                        1u32,
+                    ),
+                    (Some(a), Some(b)) => (args, a, b),
                 };
                 if w0 != w1 {
                     if w0 < w1 {
@@ -1977,6 +1932,74 @@ mod tests {
         Python::attach(|py| {
             let val = 42i64.into_pyobject(py).unwrap();
             assert_eq!(extract_int_value(val.into_any().clone()).unwrap(), 42);
+        });
+    }
+
+    /// Regression for angr-c3rd: exporting `And(Eq(x,5), Eq(y,7))` (two
+    /// Bool-converting operands) must keep BOTH operands. The old (None,None)
+    /// arm returned only `args[0]`, silently dropping the second comparison.
+    #[test]
+    fn test_export_and_of_two_bools_keeps_both_operands() {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let claripy = match py.import("claripy") {
+                Ok(m) => m,
+                Err(_) => return, // claripy not importable in this env — skip
+            };
+            let ctx = SymContext::new_mock();
+            let x = RustBV::symbolic(&ctx, "x", 32);
+            let y = RustBV::symbolic(&ctx, "y", 32);
+            let eq1 = x.eq(&RustBV::concrete(5, 32), &ctx);
+            let eq2 = y.eq(&RustBV::concrete(7, 32), &ctx);
+            let expr = eq1.and(&eq2, &ctx);
+
+            let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
+            let ast = ast.bind(py);
+
+            // Both x and y must survive the export (bug dropped y entirely).
+            let vars = ast.getattr("variables").unwrap();
+            assert_eq!(
+                vars.len().unwrap(),
+                2,
+                "And(Eq,Eq) export must reference both operands' variables"
+            );
+            // And of two 1-bit BVs is itself a 1-bit BV.
+            let length: Option<u32> =
+                ast.getattr("length").ok().and_then(|l| l.extract().ok());
+            assert_eq!(length, Some(1), "And of two Bool->BV(1) is a 1-bit BV");
+        });
+    }
+
+    /// Regression for angr-c3rd: a non-And/Or/Xor op with one Bool operand
+    /// (here `Eq(Eq(x,5), BVV(1,1))`) must dispatch through the real op, not
+    /// be rebuilt as `__add__`. An `__add__` rebuild yields a BV (length 1);
+    /// the correct `__eq__` yields a Bool (length None).
+    #[test]
+    fn test_export_eq_with_bool_operand_not_rebuilt_as_add() {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let claripy = match py.import("claripy") {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let ctx = SymContext::new_mock();
+            let x = RustBV::symbolic(&ctx, "x", 32);
+            let inner = x.eq(&RustBV::concrete(5, 32), &ctx); // 1-bit Eq (Bool on export)
+            let expr = inner.eq(&RustBV::concrete(1, 1), &ctx); // Eq(Bool-ish, BV1)
+
+            let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
+            let ast = ast.bind(py);
+
+            // A Bool has length None; an erroneous __add__ rebuild would be BV(1).
+            let length: Option<u32> =
+                ast.getattr("length").ok().and_then(|l| l.extract().ok());
+            assert_eq!(
+                length, None,
+                "Eq with a Bool operand must export as a Bool (__eq__), not a BV (__add__)"
+            );
+            // x must still be present.
+            let vars = ast.getattr("variables").unwrap();
+            assert_eq!(vars.len().unwrap(), 1);
         });
     }
 }
