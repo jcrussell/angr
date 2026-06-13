@@ -538,7 +538,34 @@ class RustStateExportMixin:
         # ``get_registers_named()`` (which returns the concrete portion
         # of Rust's register file only). Skip the sync entirely.
         from angr.exploration.rust_state_proxy import RustRegisterProxy
-        if isinstance(getattr(state, "registers", None), RustRegisterProxy):
+        regs_plugin = getattr(state, "registers", None)
+        if isinstance(regs_plugin, RustRegisterProxy):
+            # angr-4rq7: a materialized state that inherits a callback
+            # ``RustRegisterProxy`` (either the live frame cached in
+            # ``_state_cache`` or a ``.copy()`` of a parent-root state) carries
+            # the proxy's per-name read ``_cache``, which is NEVER invalidated
+            # when Rust steps the state. So ``state.addr`` (via
+            # ``regs.ip`` -> ``proxy.load('ip')`` -> ``__getattr__('ip')``)
+            # returns the value cached at callback time, while the
+            # ``RustStateProxy`` accessor reads the LIVE pc via
+            # ``get_state_pc_by_id``. That stale cache is the source of the
+            # full-export-vs-proxy ``addr`` divergence that blocks promoting
+            # the register-proxy write-through gate. Two repairs, both no-ops
+            # for a freshly-bound live frame:
+            #   1. ``RustRegisterProxy.copy()`` preserves the SOURCE
+            #      ``_state_id``; rebind to the id we are materializing so
+            #      reads route to the correct Rust state.
+            #   2. Drop the stale read cache so every subsequent read goes
+            #      live. We deliberately do NOT push the concrete snapshot via
+            #      setattr (that would clobber a symbolic register the
+            #      SimProcedure wrote through the proxy) — clearing the cache
+            #      is sufficient because the proxy already reads through to
+            #      Rust on a cache miss.
+            if getattr(regs_plugin, "_state_id", None) != state_id:
+                object.__setattr__(regs_plugin, "_state_id", state_id)
+            cache = getattr(regs_plugin, "_cache", None)
+            if cache:
+                cache.clear()
             return
         try:
             snapshot = self._rust_mgr.export_state(state_id)
