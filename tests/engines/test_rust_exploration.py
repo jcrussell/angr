@@ -16274,6 +16274,37 @@ class TestStashProxyAccessors:
         finally:
             mgr._get_stash_states = original
 
+    def test_full_addr_matches_rust_pc_under_register_proxy(self, fauxware_project):
+        """angr-4rq7 regression: with the register-proxy write-through gate
+        on, the full-export ``state.addr`` must equal the live Rust PC
+        (``get_state_pc_by_id``) for every stashed state.
+
+        A materialized state that inherits a callback ``RustRegisterProxy``
+        used to read its stale per-name cache for ``regs.ip``, so the
+        full-export ``addr`` diverged from the ``X_proxies()`` accessor
+        (which reads the live pc). ``_sync_rust_registers_to_state`` now
+        clears that cache and rebinds the proxy on materialization, so both
+        read paths agree.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], use_callback_register_proxy=True
+        )
+        mgr.run(max_steps=200)
+
+        checked = 0
+        for stash in ('active', 'found', 'deadended', 'avoid', 'unconstrained'):
+            for sid in mgr._rust_mgr.get_state_ids(stash):
+                rust_pc = mgr._rust_mgr.get_state_pc_by_id(sid)
+                full = mgr._materialize_single_state(sid)
+                assert full.addr == rust_pc, (
+                    f"stash {stash} state {sid}: full-export addr "
+                    f"{hex(full.addr)} != Rust pc {hex(rust_pc)}"
+                )
+                checked += 1
+        # fauxware reaches the strcmp fork, so at least one state exists.
+        assert checked >= 1
+
 
 class TestRustExecutionErrorHierarchy:
     """Typed exception classes surfaced by the Rust engine (angr-tkbr.3).
