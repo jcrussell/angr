@@ -233,19 +233,27 @@ impl NativeSyscall for NativeReceiveSyscall {
         // recover the model — same precedent as `NativeReadSyscall` for
         // Linux stdin.
         let read_id = RECEIVE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let names: Vec<String> = (0..count)
+            .map(|i| format!("cgc_receive_{read_id}_{i}"))
+            .collect();
         let sym_bytes: Vec<RustBV> = {
             let ctx = state.solver().borrow();
-            (0..count)
-                .map(|i| {
-                    let name = format!("cgc_receive_{read_id}_{i}");
-                    RustBV::symbolic(&ctx, &name, 8)
-                })
+            names
+                .iter()
+                .map(|name| RustBV::symbolic(&ctx, name, 8))
                 .collect()
         };
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
             state
                 .memory_store(buf.wrapping_add(i as u64), sym_byte)
                 .map_err(SyscallError::Memory)?;
+        }
+        // Record each fresh symbolic byte under state.stdin_symbols (in read
+        // order) so the Python-side `_inject_rust_stdin` can evaluate them via
+        // the Rust solver and feed posix.dumps(0) — same precedent as
+        // `NativeReadSyscall::read_stdin_symbolic` for Linux stdin.
+        for name in names {
+            state.record_stdin_symbol(name, 8);
         }
 
         if rx_bytes != 0 {
@@ -699,6 +707,52 @@ mod tests {
         }
         let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
         assert_eq!(stored, Some(4));
+    }
+
+    #[test]
+    fn receive_stdin_records_stdin_symbols() {
+        // Regression (angr-vx8p.3): each fresh symbolic byte from a CGC
+        // stdin `receive` must be tracked under state.stdin_symbols so the
+        // Python-side _inject_rust_stdin can feed posix.dumps(0). Mirrors
+        // read.rs::test_read_records_stdin_symbols.
+        let h = NativeReceiveSyscall;
+        let mut state = x86_state_with_buf();
+        assert!(!state.has_stdin_symbols());
+        let _ = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(0x2000, 32),
+                    RustBV::concrete(4, 32),
+                    RustBV::concrete(0x2800, 32),
+                ],
+            )
+            .expect("ok");
+        let symbols = state.stdin_symbols();
+        assert_eq!(symbols.len(), 4);
+        for (name, bits) in symbols {
+            assert_eq!(*bits, 8);
+            assert!(name.starts_with("cgc_receive_"), "got {name}");
+        }
+    }
+
+    #[test]
+    fn receive_non_stdin_fd_records_no_stdin_symbols() {
+        // A non-stdin receive falls back to Python and must NOT pollute
+        // stdin_symbols.
+        let h = NativeReceiveSyscall;
+        let mut state = x86_state_with_buf();
+        let _ = h.call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(4, 32),
+                RustBV::concrete(0x2800, 32),
+            ],
+        );
+        assert!(!state.has_stdin_symbols());
     }
 
     #[test]

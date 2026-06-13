@@ -17560,5 +17560,52 @@ class TestProxyWriteCounters:
         assert mgr.stats["proxy_solver_adds"] == after
 
 
+class TestCgcReceiveStdinSync:
+    """Regression for angr-vx8p.3: CGC ``receive(fd=0, ...)`` symbolic bytes
+    must be tracked under ``state.stdin_symbols`` so the Python-side
+    ``_inject_rust_stdin`` can feed ``posix.dumps(0)``.
+
+    Before the fix, ``cgc.rs::receive`` wrote fresh symbolic bytes into the
+    buffer but never called ``record_stdin_symbol``, so ``posix.dumps(0)``
+    over the exported state returned ``b''`` even though the binary read
+    user-controlled stdin (see bd memory benchmark-cadet-cgc-partial-unblock).
+    Exercises only the buffer-overflow phase of CADET_00001 (reaches
+    ``unconstrained`` in ~0.1s); the heavy easter-egg explore is deliberately
+    avoided to keep the test fast and OOM-safe.
+    """
+
+    def test_cadet_buffer_overflow_dumps_stdin(self):
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser(
+            "~/repos/angr-examples/examples"
+        )
+        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
+        if not os.path.exists(cadet):
+            pytest.skip(f"CADET_00001 binary not found at {cadet}")
+
+        proj = angr.Project(cadet, auto_load_libs=False)
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+
+        # Buffer-overflow phase: step until the return address is overwritten
+        # with user-controlled stdin, producing an unconstrained state.
+        for _ in range(50):
+            if mgr.unconstrained:
+                break
+            mgr.run(max_steps=1)
+
+        assert mgr.unconstrained, (
+            f"CADET buffer-overflow never reached unconstrained; "
+            f"counts={mgr.stash_counts()}"
+        )
+
+        crashing_input = bytes(mgr.unconstrained[0].posix.dumps(0))
+        # The fix: stdin symbols recorded by cgc_receive are evaluated via the
+        # Rust solver and injected, so the crashing input is non-empty.
+        assert len(crashing_input) > 0, (
+            "posix.dumps(0) returned empty bytes — CGC receive() stdin "
+            "symbols were not synced into state.posix.fd[0]"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
