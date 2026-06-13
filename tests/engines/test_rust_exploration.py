@@ -4928,27 +4928,29 @@ class TestCallbackCallStackProxyGate:
             fauxware_project, [state], use_callback_callstack_proxy=True
         )
         mgr.explore(find=0x4006ed)
-        if not mgr.found:
-            pytest.skip("explore did not find target — nothing to verify")
+        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         sid = mgr._rust_mgr.get_state_ids("found")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, sid)
         proxy = cb_state.callstack
         raw = mgr._rust_mgr.get_state_call_stack(sid)
         assert len(proxy) == len(raw)
-        if raw:
-            # Top frame attrs match raw[-1] (raw is push-order; top is last).
-            expected = raw[-1]
-            assert proxy.call_site_addr == expected[0]
-            assert proxy.func_addr == expected[1]
-            assert proxy.ret_addr == expected[2]
-            assert proxy.stack_ptr == expected[3]
-            # ``.next`` returns a frame proxy for frame 1 when there are
-            # >= 2 frames, else None.
-            if len(raw) >= 2:
-                assert isinstance(proxy.next, RustCallStackFrameProxy)
-            else:
-                assert proxy.next is None
+        # 0x4006ed sits inside main (reached via __libc_start_main from the
+        # ELF entry stub), so the call stack must be non-empty at the find.
+        # An empty stack here is a real export regression, not a no-op.
+        assert raw, "exported call stack must be non-empty at find=0x4006ed"
+        # Top frame attrs match raw[-1] (raw is push-order; top is last).
+        expected = raw[-1]
+        assert proxy.call_site_addr == expected[0]
+        assert proxy.func_addr == expected[1]
+        assert proxy.ret_addr == expected[2]
+        assert proxy.stack_ptr == expected[3]
+        # ``.next`` returns a frame proxy for frame 1 when there are
+        # >= 2 frames, else None.
+        if len(raw) >= 2:
+            assert isinstance(proxy.next, RustCallStackFrameProxy)
+        else:
+            assert proxy.next is None
 
     def test_static_frame_walk_via_indexing(self):
         """Direct unit test of indexing + ``.next`` walk semantics with
@@ -5156,18 +5158,19 @@ class TestExportCallStackProxyGate:
             fauxware_project, [state], use_export_callstack_proxy=True
         )
         mgr.explore(find=0x4006ed)
-        if not mgr.found:
-            pytest.skip("explore did not find target — nothing to verify")
+        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.callstack, RustCallStackProxyPlugin)
         # Top-frame attribute access reads frames live from Rust.
         sid = mgr._rust_mgr.get_state_ids("found")[0]
         raw = mgr._rust_mgr.get_state_call_stack(sid)
         assert len(found.callstack) == len(raw)
-        if raw:
-            expected = raw[-1]
-            assert found.callstack.func_addr == expected[1]
-            assert found.callstack.ret_addr == expected[2]
+        # find=0x4006ed is inside main, so the stack must be non-empty;
+        # an empty exported stack is a real regression.
+        assert raw, "exported call stack must be non-empty at find=0x4006ed"
+        expected = raw[-1]
+        assert found.callstack.func_addr == expected[1]
+        assert found.callstack.ret_addr == expected[2]
 
     def test_export_pipeline_uses_chain_when_off(self, fauxware_project):
         """End-to-end: gate off keeps the eager ``CallStack`` chain
@@ -5180,8 +5183,7 @@ class TestExportCallStackProxyGate:
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr._use_export_callstack_proxy is False
         mgr.explore(find=0x4006ed)
-        if not mgr.found:
-            pytest.skip("explore did not find target — nothing to verify")
+        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.callstack, CallStack)
         assert not isinstance(found.callstack, RustCallStackProxyPlugin)
@@ -5315,8 +5317,7 @@ class TestExportMemoryProxyGate:
             fauxware_project, [state], use_export_memory_proxy=True
         )
         mgr.explore(find=0x4006ed)
-        if not mgr.found:
-            pytest.skip("explore did not find target — nothing to verify")
+        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert isinstance(found.memory, RustMemoryProxy)
 
@@ -5330,8 +5331,7 @@ class TestExportMemoryProxyGate:
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr._use_export_memory_proxy is False
         mgr.explore(find=0x4006ed)
-        if not mgr.found:
-            pytest.skip("explore did not find target — nothing to verify")
+        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
         assert not isinstance(found.memory, RustMemoryProxy)
 
