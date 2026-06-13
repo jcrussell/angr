@@ -477,6 +477,10 @@ pub struct RustExplorationManager {
     pub(crate) memory_config: MemoryConfiguration,
     /// Maximum number of states in the active stash. None = unlimited.
     pub(crate) max_active_states: Option<usize>,
+    /// One-shot guard so we emit a single `warn!` (not a per-state `debug!`)
+    /// the first time `max_active_states` prunes a state — makes a runaway
+    /// explosion visible in the log without spamming on tight fork loops.
+    pub(crate) max_active_warned: bool,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
     /// Native exploration techniques that run entirely in Rust.
@@ -539,6 +543,7 @@ impl RustExplorationManager {
             constraint_solver: ConstraintSolver::new(),
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,
+            max_active_warned: false,
             native_techniques: Vec::new(),
             constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),

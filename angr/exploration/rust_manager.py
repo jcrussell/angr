@@ -632,6 +632,19 @@ class RustErrorRecord:
         return f'<State errored at {hex(self.addr)} class={self.error_class} with "{self.error}">'
 
 
+# Default active-stash safety cap (angr-o4q3). A divergent / path-exploding
+# exploration grows the active stash without bound until it exhausts RAM and is
+# OOM-killed (observed: ralph run 20260613 iters 28-30, a CADET_00001 explore
+# leaking ~1.6 states/step). This is a *count* backstop that converts unbounded
+# growth into bounded growth — it is NOT a precise memory limit (per-state size
+# varies), so it is set far above any realistic workload (CTF explores peak in
+# the hundreds–low thousands of active states). When the cap is hit, excess
+# forks are pruned to the ``pruned`` stash and a one-time warning is logged.
+# Pass ``max_active_states=None`` to disable, or a smaller int to bound tighter.
+# Memory-precise bounding is tracked separately (angr-wcxi).
+DEFAULT_MAX_ACTIVE_STATES = 100_000
+
+
 class RustExplorationManager(
     RustCallbackDispatchMixin,
     RustStateSyncMixin,
@@ -722,7 +735,7 @@ class RustExplorationManager(
         active_states: list | None = None,
         save_unconstrained: bool = False,
         solver_timeout_ms: int = 30000,
-        max_active_states: int | None = None,
+        max_active_states: int | None = DEFAULT_MAX_ACTIVE_STATES,
         max_history: int = 1000,
         clear_caches_on_cleanup: bool = False,
         exploration_strategy: str = "bfs",
@@ -746,7 +759,13 @@ class RustExplorationManager(
                 to the 'unconstrained' stash instead of dropping them.
             solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
             max_active_states: Maximum number of states in the active stash.
-                When reached, new forked states are pruned. None = no limit.
+                When reached, new forked states are pruned to the ``pruned``
+                stash and a one-time warning is logged. Defaults to
+                :data:`DEFAULT_MAX_ACTIVE_STATES` (a runaway-explosion backstop
+                so a divergent explore fails bounded instead of OOM-killing the
+                process). Pass ``None`` to disable the cap entirely, or a
+                smaller int to bound tighter. This is a count cap, not a memory
+                limit.
             max_history: Maximum length of each state's history /
                 detailed_history ring buffer (default: 1000). 0 means
                 unlimited — only safe for short runs since long explorations

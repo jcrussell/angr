@@ -1533,6 +1533,24 @@ class TestRustExplorationPython:
         assert counts.get("active", 0) <= 1, f"active count {counts.get('active', 0)} exceeds max_active_states=1"
         assert counts.get("pruned", 0) > 0, f"expected pruned states with max_active_states=1, got counts={counts}"
 
+    def test_max_active_states_default_cap(self, fauxware_project):
+        """A manager built without max_active_states gets the default safety cap.
+
+        angr-o4q3: an unbounded active stash can OOM the process on a divergent
+        explore. The default must be a finite backstop, not None/unlimited.
+        """
+        from angr.exploration.rust_manager import DEFAULT_MAX_ACTIVE_STATES
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._rust_mgr.get_max_active_states() == DEFAULT_MAX_ACTIVE_STATES
+
+    def test_max_active_states_default_disable(self, fauxware_project):
+        """Passing max_active_states=None explicitly disables the default cap."""
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], max_active_states=None)
+        assert mgr._rust_mgr.get_max_active_states() is None
+
     def test_progress_callback(self, fauxware_project):
         """Test that progress callback fires during exploration."""
 

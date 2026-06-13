@@ -66,11 +66,25 @@ impl RustExplorationManager {
         if let Some(limit) = self.max_active_states
             && self.sm.active_count() >= limit
         {
-            log::debug!(
-                "max_active_states limit ({}) reached, pruning state {}",
-                limit,
-                state.state_id()
-            );
+            if !self.max_active_warned {
+                // First hit: warn loudly so a runaway explosion is visible.
+                // Subsequent hits drop to debug to avoid log spam on tight
+                // fork loops. Pruned states are also surfaced via the
+                // `pruned` stash counter.
+                log::warn!(
+                    "max_active_states limit ({}) reached; pruning excess forks \
+                     (likely path explosion). Raise/disable max_active_states if \
+                     this is a legitimately wide exploration.",
+                    limit
+                );
+                self.max_active_warned = true;
+            } else {
+                log::debug!(
+                    "max_active_states limit ({}) reached, pruning state {}",
+                    limit,
+                    state.state_id()
+                );
+            }
             self.push_or_drop_terminal(STASH_PRUNED, state);
             return false;
         }
