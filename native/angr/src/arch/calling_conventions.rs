@@ -100,6 +100,23 @@ pub trait CallingConvention: Send + Sync {
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
 
+    /// The Linux syscall error register and its errno threshold, if this ABI
+    /// carries a *separate* success/failure flag alongside the return value.
+    ///
+    /// On most architectures (amd64, x86, ARM, AArch64) the kernel encodes
+    /// errors directly in the return register as a small negative value, so
+    /// this returns `None`. MIPS is the notable exception: the O32/N64 Linux
+    /// ABIs set `$a3` to 0 on success and non-zero on error, with `$v0`
+    /// holding the *positive* errno. PowerPC uses `cr0.SO` similarly.
+    ///
+    /// The tuple is `(error_register_offset, errno_start)` where `errno_start`
+    /// mirrors angr's `SYSCALL_ERRNO_START` (the signed threshold above which
+    /// an unsigned return value is treated as `-errno`). See
+    /// `linux_syscall_update_error_reg` in `angr/calling_conventions.py`.
+    fn syscall_error_register(&self) -> Option<(u32, i64)> {
+        None
+    }
+
     /// Whether a `call`-style instruction pushes the return address onto the
     /// stack (true) or stores it in a link/return register (false).
     ///
@@ -477,6 +494,12 @@ impl CallingConvention for MipsO32 {
         16 // $v0 (R2)
     }
 
+    fn syscall_error_register(&self) -> Option<(u32, i64)> {
+        // $a3 (R7) = offset 36 in MIPS32 VEX guest state. errno_start matches
+        // SimCCO32LinuxSyscall.SYSCALL_ERRNO_START (-1133).
+        Some((36, -1133))
+    }
+
     fn get_return_addr(
         &self,
         regs: &RegisterFile,
@@ -544,6 +567,12 @@ impl CallingConvention for MipsN64 {
 
     fn return_register(&self) -> u32 {
         32 // $v0 (R2) in MIPS64 VEX guest state
+    }
+
+    fn syscall_error_register(&self) -> Option<(u32, i64)> {
+        // $a3 (R7) = offset 72 in MIPS64 VEX guest state. errno_start matches
+        // SimCCN64LinuxSyscall.SYSCALL_ERRNO_START (-1133).
+        Some((72, -1133))
     }
 
     fn get_return_addr(

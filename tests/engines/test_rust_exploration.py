@@ -1128,6 +1128,89 @@ class TestRustExplorationPython:
             f"{ {k: len(v) for k, v in mgr.stashes.items() if v} }"
         )
 
+    def test_mips_native_syscall_clears_a3_error_register(self):
+        """angr-pfbu: Linux MIPS syscalls report success/failure in $a3
+        (0=success, non-zero=error) separately from the $v0 return value;
+        glibc branches on it. The Rust native dispatcher previously wrote only
+        the return register, leaving $a3 holding its pre-syscall value (syscall
+        arg 4). A successful native syscall could then take the binary's errno
+        path.
+
+        Here a MIPS32 ``syscall`` runs ``getpid`` (4020, a no-arg success) with
+        $a3 pre-seeded to a sentinel. After the step $a3 must be cleared to 0,
+        mirroring ``SimCCO32LinuxSyscall.linux_syscall_update_error_reg``.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # MIPS32 little-endian `syscall` = 0x0000000c -> bytes 0c 00 00 00.
+        # Only the syscall is mapped so the successor deadends immediately and
+        # freezes $a3 (see the error-path test for why padding is avoided).
+        shellcode = b"\x0c\x00\x00\x00"
+        proj = angr.load_shellcode(shellcode, arch="mipsel", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.v0 = 4020  # getpid
+        state.regs.a3 = 0x12345678  # sentinel: must be overwritten to 0
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "MIPS getpid must take the native fast path, not the Python "
+            f"fallback (got {stats['syscall_python_fallback_count']})"
+        )
+        # The post-syscall state may land in any stash (the synthetic shellcode
+        # has no valid return target), so search all of them for the single
+        # state and read its $a3.
+        a3 = self._find_single_state_register(mgr, "a3")
+        assert a3 == 0, (
+            f"MIPS $a3 must be cleared to 0 after a successful syscall, got {a3:#x} "
+            "(stale arg4 value means glibc would take the errno path)"
+        )
+
+    def test_mips_native_syscall_error_sets_a3_nonzero(self):
+        """angr-pfbu: a native MIPS syscall returning a negative errno must set
+        $a3 non-zero and leave $v0 holding the *positive* errno, mirroring
+        ``linux_syscall_update_error_reg`` (which negates the return value on
+        the error path). ``close`` of an unopened fd returns -1 -> $a3=all-ones,
+        $v0=1.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # Only the 4-byte `syscall` is mapped: the successor at 0x1004 lifts
+        # into unmapped memory and deadends *immediately*, freezing $v0/$a3 at
+        # their post-syscall values. (Padding the shellcode with executable
+        # nops lets the engine run past the syscall and clobber $v0 before we
+        # can read it — $a3 happens to survive, but $v0 does not.)
+        shellcode = b"\x0c\x00\x00\x00"
+        proj = angr.load_shellcode(shellcode, arch="mipsel", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.v0 = 4006  # close
+        state.regs.a0 = 9999  # never-opened fd -> -EBADF path
+        state.regs.a3 = 0  # sentinel: must be set non-zero
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        a3 = self._find_single_state_register(mgr, "a3")
+        v0 = self._find_single_state_register(mgr, "v0")
+        assert a3 != 0, f"MIPS $a3 must be non-zero on a syscall error, got {a3:#x}"
+        assert v0 == 1, (
+            f"MIPS $v0 must hold the positive errno (1) on the error path, got {v0:#x}"
+        )
+
+    @staticmethod
+    def _find_single_state_register(mgr, reg):
+        """Read a register from the lone post-step state regardless of which
+        stash it landed in. Returns the register value (u128) or raises if no
+        state is found."""
+        for stash in mgr.stashes:
+            for sid in mgr._rust_mgr.get_state_ids(stash):
+                return mgr._rust_mgr.get_state_register(sid, reg)
+        raise AssertionError(f"no state found in any stash to read {reg}")
+
     def test_keep_ip_symbolic_propagates_to_rust(self, fauxware_project):
         """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
         state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's

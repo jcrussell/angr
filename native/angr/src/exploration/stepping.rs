@@ -59,6 +59,38 @@ struct InterpreterStepResult {
 // per-function.
 #[allow(clippy::result_large_err)]
 impl RustExplorationManager {
+    /// Write a native syscall's return value into the return register,
+    /// applying the Linux error-register semantics for ABIs that carry a
+    /// separate success/failure flag (MIPS `$a3`).
+    ///
+    /// Mirrors `CC.linux_syscall_update_error_reg` in
+    /// `angr/calling_conventions.py`: when the (unsigned) return value is at
+    /// or above `errno_start` it is treated as `-errno`, the error register is
+    /// set to all-ones, and the return register holds the *positive* errno;
+    /// otherwise the error register is cleared to 0 and the return value is
+    /// passed through unchanged. On arches with no error register (the common
+    /// case) only the return register is written.
+    fn write_syscall_return(&self, state: &mut RustSimState, ret_reg: u32, ret: RustBV) {
+        let Some((err_reg, errno_start)) =
+            self.environment.calling_convention.syscall_error_register()
+        else {
+            state.set_register_by_offset(ret_reg, ret);
+            return;
+        };
+
+        let bits = ret.width();
+        let (ret_val, err_val) = {
+            let ctx = state.solver().borrow();
+            let errno_start_bv = RustBV::concrete(errno_start as u128, bits);
+            let error_cond = ret.uge(&errno_start_bv, &ctx);
+            let err_val = error_cond.ite(&RustBV::ones(bits), &RustBV::zero(bits), &ctx);
+            let ret_val = error_cond.ite(&ret.neg(&ctx), &ret, &ctx);
+            (ret_val, err_val)
+        };
+        state.set_register_by_offset(ret_reg, ret_val);
+        state.set_register_by_offset(err_reg, err_val);
+    }
+
     /// Step a state, optionally skipping a hook address.
     ///
     /// The skip_addr parameter is used for zero-length hooks: after the hook
@@ -271,10 +303,8 @@ impl RustExplorationManager {
                         Ok(SyscallOutcome::Continue { ret }) => {
                             let ret_reg = self.environment.calling_convention.return_register();
                             let bits = state.arch().bits();
-                            state.set_register_by_offset(
-                                ret_reg,
-                                RustBV::concrete(ret as u128, bits),
-                            );
+                            let ret_bv = RustBV::concrete(ret as u128, bits);
+                            self.write_syscall_return(&mut state, ret_reg, ret_bv);
                             let mut successors = vec![state];
                             self.process_deferred_forks_into(
                                 &mut successors,
@@ -286,7 +316,7 @@ impl RustExplorationManager {
                         }
                         Ok(SyscallOutcome::ContinueSymbolic { ret }) => {
                             let ret_reg = self.environment.calling_convention.return_register();
-                            state.set_register_by_offset(ret_reg, ret);
+                            self.write_syscall_return(&mut state, ret_reg, ret);
                             let mut successors = vec![state];
                             self.process_deferred_forks_into(
                                 &mut successors,
