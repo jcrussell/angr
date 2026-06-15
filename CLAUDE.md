@@ -195,8 +195,13 @@ python tests/benchmarks/run_single.py fauxware --counters-json > /tmp/curr.json
 python tests/benchmarks/bench_diff.py /tmp/base.json /tmp/curr.json
 
 # Refresh baseline_counters.json (used by run_regression.py to auto-emit the
-# diff on a timing regression) without touching baseline_timings.json.
-python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --update-counters
+# diff on a timing regression) without touching baseline_timings.json. Use
+# --full so MEDIUM_SUITE benches (mma_howtouse, csaw_wyvern, flareon2015_5/10,
+# ekopartyctf2016_rev250, codegate_2017-angrybird, sym-write) get a snapshot
+# too — nightly-ci.yml runs --full, so without these the diff is silently
+# skipped on a nightly medium-tier regression (angr-amoi). Drop --full for a
+# fast-tier-only refresh.
+python tests/benchmarks/run_regression.py --full --rust-only --skip-bimodal --update-counters
 
 # Point at a custom angr-examples checkout (defaults to ~/repos/angr-examples)
 ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
