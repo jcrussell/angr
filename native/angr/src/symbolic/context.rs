@@ -254,9 +254,11 @@ impl std::error::Error for ConstraintSyncError {}
 /// - `transaction_rollback()`: Rollback on failure
 pub struct SymContext {
     /// Counter for generating unique symbol IDs.
-    next_id: AtomicU64,
+    /// `pub(super)` for the `next_id` accessor in `bv_id_ops.rs` (slice 8).
+    pub(super) next_id: AtomicU64,
     /// Number of constraints added (for tracking).
-    constraint_count: AtomicUsize,
+    /// `pub(super)` for the `num_constraints` accessor in `bv_id_ops.rs`.
+    pub(super) constraint_count: AtomicUsize,
     /// Named symbolic variables for debugging.
     /// Arc-shared on fork (O(1) clone). Only mutated when constructing
     /// a fresh merged context — Arc::make_mut works because the merged
@@ -529,31 +531,8 @@ impl SymContext {
         })
     }
 
-    /// Get the next unique ID for a symbolic variable.
-    pub fn next_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    /// Get the number of constraints.
-    pub fn num_constraints(&self) -> usize {
-        self.constraint_count.load(Ordering::SeqCst)
-    }
-
-    // =========================================================================
-    // Symbol Management
-    // =========================================================================
-
-    /// Create a new symbolic bitvector with a unique name.
-    pub fn new_bv(&self, name: &str, width: u32) -> RustBV {
-        let unique_name = self.unique_name(name);
-        RustBV::symbolic(self, &unique_name, width)
-    }
-
-    /// Create a unique name for a symbol.
-    pub fn unique_name(&self, base: &str) -> String {
-        let id = self.next_id();
-        format!("{}_{}", base, id)
-    }
+    // next_id / num_constraints / new_bv / unique_name moved to bv_id_ops.rs
+    // (slice 8, angr-a2br.2.6).
 
     // =========================================================================
     // Constraint Management (Z3-backed)
