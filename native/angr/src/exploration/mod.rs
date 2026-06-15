@@ -395,6 +395,11 @@ pub struct RustExplorationManager {
     pub(crate) find_addrs: HashSet<u64>,
     /// Avoid addresses.
     pub(crate) avoid_addrs: HashSet<u64>,
+    /// Union of find + avoid addresses. Passed to the VEX interpreter so it
+    /// breaks its internal block chain when it reaches one, instead of running
+    /// past an address-based target (angr-027h). Kept in sync by
+    /// `set_find_addrs` / `set_avoid_addrs`.
+    pub(crate) stop_addrs: HashSet<u64>,
     /// Whether find condition has callable predicates.
     pub(crate) find_needs_python: bool,
     /// Whether avoid condition has callable predicates.
@@ -527,6 +532,7 @@ impl RustExplorationManager {
             sm: StashManager::new(),
             find_addrs: HashSet::new(),
             avoid_addrs: HashSet::new(),
+            stop_addrs: HashSet::new(),
             find_needs_python: false,
             avoid_needs_python: false,
             exec_config: ExecutionConfig::default(),
@@ -607,12 +613,25 @@ impl RustExplorationManager {
     pub fn set_find_addrs(&mut self, addrs: Vec<u64>) {
         self.find_addrs = addrs.into_iter().collect();
         self.find_needs_python = false;
+        self.rebuild_stop_addrs();
     }
 
     /// Set avoid addresses.
     pub fn set_avoid_addrs(&mut self, addrs: Vec<u64>) {
         self.avoid_addrs = addrs.into_iter().collect();
         self.avoid_needs_python = false;
+        self.rebuild_stop_addrs();
+    }
+
+    /// Recompute the union of find + avoid addresses (the interpreter's
+    /// block-chain stop set). Called whenever either set changes.
+    fn rebuild_stop_addrs(&mut self) {
+        self.stop_addrs = self
+            .find_addrs
+            .iter()
+            .chain(self.avoid_addrs.iter())
+            .copied()
+            .collect();
     }
 
     /// Mark that find condition has callable predicates (needs Python).

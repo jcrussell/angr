@@ -8,11 +8,22 @@ impl<'a> VEXInterpreter<'a> {
     /// until it hits a condition that requires Python-side handling.
     ///
     /// Returns a tuple of (result, blocks_executed, deferred_forks).
+    ///
+    /// `stop_addrs` is the set of address-based find/avoid targets. The
+    /// interpreter chains blocks internally; without breaking the chain when a
+    /// chained block boundary lands on one of these, a state would execute
+    /// right past an address-based find/avoid target and the step-boundary
+    /// filter in `run_loop` would only ever observe the final pc. This mirrors
+    /// the `steps_limit = 1` guard that already exists for *callable* find/avoid
+    /// predicates (see `stepping.rs`). angr-027h: CADET easter-egg find at
+    /// 0x804833E was silently skipped because the chain ran on to the
+    /// overflow-corrupted ret and went unconstrained.
     pub fn run_until_event(
         &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         max_blocks: u32,
+        stop_addrs: &std::collections::HashSet<u64>,
     ) -> (RunResult, u32, Vec<DeferredFork>) {
         let total_start = profile_start!(self);
         let mut blocks_executed = 0u32;
@@ -25,6 +36,17 @@ impl<'a> VEXInterpreter<'a> {
         self.deferred_fork_this_step = false;
 
         for _ in 0..max_blocks {
+            // Break the internal block chain when a chained block boundary
+            // lands on an address-based find/avoid target, so the
+            // step-boundary find/avoid filter in run_loop observes this pc.
+            // `blocks_executed > 0` so a state that STARTS at a stop address
+            // (already checked at the prior step boundary) still makes forward
+            // progress instead of stalling. Falls through to the MaxBlocks
+            // return below, which materializes deferred forks. (angr-027h)
+            if blocks_executed > 0 && !stop_addrs.is_empty() && stop_addrs.contains(&self.pc) {
+                break;
+            }
+
             // Check for hook at current PC
             if self.is_hooked(self.pc) {
                 let forks = self.take_deferred_forks();

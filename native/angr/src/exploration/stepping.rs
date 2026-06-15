@@ -465,7 +465,17 @@ impl RustExplorationManager {
                 limit: _,
                 jumpkind: _,
             } => {
-                // Too many symbolic jump targets - move to unconstrained stash
+                // Too many symbolic jump targets - move to unconstrained stash.
+                //
+                // NOTE (angr-027h): materializing `deferred_forks` here before
+                // dropping the main state was tried (so a deferred break-fork
+                // leading to a find target could survive). With the
+                // chain-break-at-find/avoid guard now in `run_until_event` it no
+                // longer diverges as catastrophically as iter-28 (active
+                // plateaus rather than growing ~1.6/step), but it still never
+                // reaches the CADET easter-egg block and active keeps growing —
+                // i.e. that block is unreachable via deferred-fork resumption, a
+                // third distinct issue. Left as Err until that is solved.
                 Err(StepError::Unconstrained(state))
             }
             RunResult::UnmodeledCall {
@@ -1182,7 +1192,7 @@ impl RustExplorationManager {
             self.max_steps_per_run
         };
         let (result, _blocks_executed, deferred_forks) =
-            interp.run_until_event(py, callbacks, steps_limit);
+            interp.run_until_event(py, callbacks, steps_limit, &self.stop_addrs);
 
         // Drain interpreter state into owned values before drop.
         let last_condition = interp.take_last_branch_condition();
