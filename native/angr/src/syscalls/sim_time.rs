@@ -26,7 +26,11 @@
 //!   not implemented natively; the SimOption set is currently held on
 //!   the Python proxy (see angr-t3l3) and not visible here. We always
 //!   use the symbolic path — same default as `auto_load_libs=False`
-//!   exploration today.
+//!   exploration today. The option is therefore warn-once *rejected* on
+//!   the Python side (`_REJECTED_OPTION_NAMES` in
+//!   `angr/exploration/rust_manager.py`, policy (b)) so a user who opts
+//!   into concrete host times learns these handlers are ignoring it
+//!   rather than silently exploring a symbolic-time path (angr-0y0v).
 //! * Symbolic args (`tv`, `ts`, `which_clock`) fall back to Python.
 //! * Unmapped destination pages cause `state.memory_store` to error,
 //!   which we propagate as `SyscallError::Other` so Python (which

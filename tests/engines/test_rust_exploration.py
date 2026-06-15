@@ -14695,6 +14695,103 @@ class TestNativeResourceLimitSyscalls:
         assert cur_val == 8388608, f"RLIMIT_STACK rlim_cur should be 8388608, got {cur_val}"
 
 
+class TestNativeSimTimeSyscalls:
+    """angr-0y0v: native ``gettimeofday`` (96), ``time`` (201), and
+    ``clock_gettime`` (228) handlers in
+    ``native/angr/src/syscalls/sim_time.rs`` always write a fresh symbolic
+    ``timeval``/``timespec`` (``USE_SYSTEM_TIMES`` is rejected, not honored
+    — see ``_REJECTED_OPTION_NAMES``). Rust unit tests pin the per-handler
+    semantics; this is the cross-FFI dispatch check (each takes the Rust
+    fast path with no Python fallback). Args are 0 so each hits its
+    no-write early return (``tv``/``ts`` null → -1; ``time`` ptr null →
+    symbolic rax; ``clock_gettime`` ``which_clock``=0 is CLOCK_REALTIME).
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (96, "gettimeofday"),
+            (201, "time"),
+            (228, "clock_gettime"),
+        ],
+    )
+    def test_sim_time_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+class TestNativeDirectorySyscalls:
+    """angr-0y0v: native directory-family handlers in
+    ``native/angr/src/syscalls/directory.rs``. ``getcwd`` (79) is a real
+    handler (``size``=0 → ERANGE, no write); ``fchdir`` (81), ``rename``
+    (82), ``mkdir`` (83), ``rmdir`` (84), and ``unlink`` (87) are
+    ``stub_syscall!`` handlers that return a fresh symbolic regardless of
+    args. Rust unit tests pin per-handler semantics; this is the cross-FFI
+    dispatch check (Rust fast path, no Python fallback).
+    """
+
+    @pytest.mark.parametrize(
+        "syscall_num,label",
+        [
+            (79, "getcwd"),
+            (81, "fchdir"),
+            (82, "rename"),
+            (83, "mkdir"),
+            (84, "rmdir"),
+            (87, "unlink"),
+        ],
+    )
+    def test_directory_syscall_dispatches_natively(self, syscall_num, label):
+        import angr
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"native {label}({syscall_num}) must take the Rust fast path "
+            f"(got fallback={stats['syscall_python_fallback_count']})"
+        )
+
+
+class TestRustRejectsUseSystemTimes:
+    """angr-0y0v: ``USE_SYSTEM_TIMES`` is warn-once rejected (policy (b)) —
+    the native sim_time handlers always return a fresh symbolic value and
+    never consult the option, so we warn rather than silently diverge.
+    """
+
+    def test_use_system_times_warns_once(self):
+        import angr
+
+        proj = angr.load_shellcode(b"\x0f\x05" + b"\x90" * 0x100, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000, add_options={angr.options.USE_SYSTEM_TIMES})
+
+        with pytest.warns(UserWarning, match="USE_SYSTEM_TIMES"):
+            RustExplorationManager(proj, [state])
+
+
 class TestNativeReadlinkSyscall:
     """angr-wv38: native ``readlink`` returns ``-1`` for every path
     because the Rust ``FileSystem`` has no symlinks (EINVAL for known

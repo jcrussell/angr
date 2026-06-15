@@ -233,6 +233,18 @@ _REJECTED_OPTION_NAMES = frozenset(
         # a warn-once rather than raise so adding `angr.options.resilience`
         # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)
         "BYPASS_VERITESTING_EXCEPTIONS",
+        # USE_SYSTEM_TIMES tells Python's posix sim_time procedures
+        # (procedures/posix/sim_time.py) to return the host's real
+        # `int(time.time())` instead of a fresh symbolic timeval/timespec.
+        # The native handlers (native/angr/src/syscalls/sim_time.rs:
+        # gettimeofday/time/clock_gettime) always write a fresh symbolic
+        # value and never consult the option — wiring host-time into the
+        # native path would be a behavior change with no benchmark demand.
+        # Warn-once so a user who opted into concrete host times learns the
+        # native syscalls are ignoring it rather than silently exploring a
+        # symbolic-time path. Not in any default mode bundle, so this only
+        # fires on explicit opt-in. (angr-0y0v 2026-06-15)
+        "USE_SYSTEM_TIMES",
     }
 )
 

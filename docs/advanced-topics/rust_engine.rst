@@ -1515,11 +1515,6 @@ Inherited (option works because the code path runs in Python)
    * - ``SIMPLIFY_*`` (claripy AST simplification)
      - Simplification happens inside claripy when building the AST (e.g.
        ``state.solver.simplify``). Rust embeds those ASTs unchanged.
-   * - ``USE_SYSTEM_TIMES``
-     - Time-related SimProcedures (``gettimeofday``, ``time``,
-       ``clock_gettime``) dispatch to Python; the Python procedure honors
-       the flag. Inherited only when the procedure has not been replaced
-       by a native variant in ``native/angr/src/procedures/``.
    * - ``ALLOW_SEND_FAILURES``, ``FILES_HAVE_EOF``, ``ALL_FILES_EXIST``,
        ``ANY_FILE_MIGHT_EXIST``, ``SHORT_READS``,
        ``CONCRETIZE_SYMBOLIC_FILE_READ_SIZES``
@@ -1852,6 +1847,15 @@ vs. Python.
      - Select alternate Python engines / memory plugins.
      - (b) explicitly reject — fundamentally incompatible with Rust state
        model.
+   * - ``USE_SYSTEM_TIMES``
+     - Return the host's real ``int(time.time())`` from the time
+       SimProcedures instead of a fresh symbolic value.
+     - **(b) explicitly reject** — the native syscall handlers
+       (``native/angr/src/syscalls/sim_time.rs``:
+       ``gettimeofday``/``time``/``clock_gettime``) always write a fresh
+       symbolic ``timeval``/``timespec`` and never consult the option.
+       Warn-once so a user who opted into concrete host times learns the
+       native path is ignoring it (angr-0y0v, 2026-06-15).
    * - ``PRODUCE_ZERODIV_SUCCESSORS``
      - Spawns successor with ``divisor == 0``.
      - (a) implement — Rust treats div-by-zero as a single state.
