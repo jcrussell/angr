@@ -684,7 +684,7 @@ pub struct SymContext {
     /// Outstanding bare Z3 pushes on the per-context solver (angr-3ms1
     /// step 1a).
     ///
-    /// Tracks calls to [`scope_savepoint_push`](Self::scope_savepoint_push)
+    /// Tracks calls to `scope_savepoint_push`
     /// that took the **None** dispatch branch — i.e. those that issued
     /// `solver.push()` directly on the per-context Z3 solver and have not
     /// yet been balanced by a matching pop. The **Some** branch records
@@ -995,7 +995,7 @@ impl SymContext {
     /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
     /// the original Z3 AST structure from Python's claripy/z3 backend.
     ///
-    /// The [`Z3AstPtr`] handle carries its own refcount; on entry, this
+    /// The `Z3AstPtr` handle carries its own refcount; on entry, this
     /// function wraps the pointer as a [`z3::ast::Bool`] (which takes its
     /// own ref via `Z3_inc_ref`) and the handle's `Drop` releases the
     /// extraction-time ref before return — net zero change to the AST's
@@ -1020,7 +1020,7 @@ impl SymContext {
     /// assert at scope 0 = lineage base = leak to all siblings).
     ///
     /// **Caller contract:** the wrapped pointer must denote a Bool-sorted
-    /// AST. The constructor of [`Z3AstPtr`] is `unsafe` precisely so this
+    /// AST. The constructor of `Z3AstPtr` is `unsafe` precisely so this
     /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
     /// this method is safe to call.
     #[cfg(feature = "vex-engine-z3")]
@@ -1147,7 +1147,7 @@ impl SymContext {
     /// corresponds to the per-constraint metadata that the single-shot path
     /// stores in `local_constraints.{z3_assertions, assumed}`.
     ///
-    /// Same precondition as [`Self::add_constraint_raw`]: every [`Z3AstPtr`]
+    /// Same precondition as [`Self::add_constraint_raw`]: every `Z3AstPtr`
     /// must denote a Bool-sorted AST in the active thread-local Z3 context.
     /// The constructor of `Z3AstPtr` is `unsafe` so this is checked at
     /// extraction time.
@@ -2369,12 +2369,12 @@ impl SymContext {
     /// Save solver state for temporary constraints.
     ///
     /// Dispatches the Z3-side scope save through
-    /// [`scope_savepoint_push`](Self::scope_savepoint_push) (angr-v5a5
+    /// `scope_savepoint_push` (angr-v5a5
     /// slice 4b.2): in the None lineage branch this is the previous
     /// `self.solver().push()`; in the Some (shared-lineage) branch it
     /// records the current `scope_path` length onto `scope_savepoints`
     /// and defers the Z3-side maintenance to the lazy `switch_to` in
-    /// [`with_z3_solver`](Self::with_z3_solver). Cache invalidation
+    /// `with_z3_solver`. Cache invalidation
     /// (`sat_cache`, `model_cache`) is owned here rather than by the
     /// helper, since different future callers of the savepoint helpers
     /// may want different invalidation policies.
@@ -2389,7 +2389,7 @@ impl SymContext {
     /// Restore solver state.
     ///
     /// Dispatches the Z3-side scope restore through
-    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) (angr-v5a5
+    /// `scope_savepoint_pop` (angr-v5a5
     /// slice 4b.3): in the None lineage branch this is the previous
     /// `self.solver().pop(1)`; in the Some (shared-lineage) branch it
     /// pops the most-recent savepoint off `scope_savepoints` and
@@ -2873,7 +2873,7 @@ impl SymContext {
         }
     }
 
-    /// Restore the path-constraint state captured by [`to_snapshot`] into
+    /// Restore the path-constraint state captured by `to_snapshot` into
     /// a fresh context. The caller is responsible for constructing the
     /// `SymContext` (typically via [`SymContext::new`] or `new_mock`); this
     /// method replays the captured constraints through `assume_true` /
@@ -3165,9 +3165,9 @@ impl SymContext {
 
     /// Current count of outstanding bare Z3 pushes (angr-3ms1 step 1a).
     ///
-    /// Returns the number of [`scope_savepoint_push`](Self::scope_savepoint_push)
+    /// Returns the number of `scope_savepoint_push`
     /// calls on the **None** lineage branch that have not yet been
-    /// balanced by a matching [`scope_savepoint_pop`](Self::scope_savepoint_pop).
+    /// balanced by a matching `scope_savepoint_pop`.
     /// Always 0 immediately after construction and when every push has
     /// been popped. Always 0 along the Some (shared-lineage) branch —
     /// that branch records on `scope_savepoints` rather than touching
@@ -3241,7 +3241,7 @@ impl SymContext {
     /// would put assertions in the wrong scope.
     ///
     /// The shared-lineage Z3 push is performed lazily by
-    /// [`with_z3_solver`](Self::with_z3_solver) the next time a query
+    /// `with_z3_solver` the next time a query
     /// fires for this state — via `SharedLineageSolver::switch_to`,
     /// which pushes whatever frames the state has accumulated.
     ///
@@ -3281,7 +3281,7 @@ impl SymContext {
     /// frames added after the matching
     /// [`scope_savepoint_push()`](Self::scope_savepoint_push).
     ///
-    /// Symmetric with [`scope_savepoint_push`](Self::scope_savepoint_push):
+    /// Symmetric with `scope_savepoint_push`:
     /// when the call stack is balanced (every push has a matching pop),
     /// `scope_savepoints` empties out and `scope_path` returns to its
     /// pre-push length.
@@ -3407,8 +3407,8 @@ impl SymContext {
     /// subset (push/pop, transaction_*) is queued for slice 4b and
     /// likely needs a separate scope_path API to migrate. Slice 4b.1
     /// lands the scope-savepoint infrastructure:
-    /// [`scope_savepoint_push`](Self::scope_savepoint_push) and
-    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) dispatch on
+    /// `scope_savepoint_push` and
+    /// `scope_savepoint_pop` dispatch on
     /// lineage (None → bare per-context Z3 push/pop; Some → record/
     /// restore `scope_path.len()` on the new `scope_savepoints`
     /// stack). No public-API callers migrated yet — those come in
@@ -3464,7 +3464,7 @@ impl SymContext {
     /// angr-v5a5 slice 4b).
     ///
     /// Lets unit tests exercise the truncation behavior of
-    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) before the
+    /// `scope_savepoint_pop` before the
     /// production path that mints frames lands in slice 4c.
     #[cfg(all(test, feature = "vex-engine-z3"))]
     pub(crate) fn push_scope_frame_for_testing(&self, frame: super::lineage::ScopeFrame) {
@@ -4276,7 +4276,7 @@ mod tests {
 
     /// angr-v5a5 slice 4c.2: helper mirrors `batch_entry` for the
     /// single-shot `add_constraint_raw` path. Lifts a width-1 RustBV's
-    /// Z3 Bool AST into a typed [`Z3AstPtr`] handle whose own ref keeps
+    /// Z3 Bool AST into a typed `Z3AstPtr` handle whose own ref keeps
     /// the AST alive until consumption (no `mem::forget` leak required —
     /// the wrapper does proper refcounting via `Z3_inc_ref` / `Z3_dec_ref`).
     #[cfg(feature = "vex-engine-z3")]

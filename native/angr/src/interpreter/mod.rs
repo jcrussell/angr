@@ -441,7 +441,7 @@ pub enum BlockResult {
 }
 
 /// A concrete memory region cached locally in Rust.
-/// Uses Arc<Vec<u8>> for O(1) cloning — binary data is shared, not copied.
+/// Uses `Arc<Vec<u8>>` for O(1) cloning — binary data is shared, not copied.
 #[derive(Clone)]
 pub struct ConcreteMemoryRegion {
     /// Base address of the region.
@@ -1485,7 +1485,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Extract arguments for a SimProcedure call.
     ///
     /// Uses the calling convention to extract arguments from registers and
-    /// stack. Returns the structured [`ExtractionError`] from the trait so
+    /// stack. Returns the structured `ExtractionError` from the trait so
     /// callers see *why* extraction failed (stack unmapped vs symbolic SP
     /// vs missing memory view) instead of receiving silently-fabricated
     /// placeholders.

@@ -160,7 +160,7 @@ static LAST_SAMPLE_HOT_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_SAMPLE_STEP: AtomicU64 = AtomicU64::new(0);
 
 /// Return whether the runtime thrash detector has dismantled lineage
-/// minting. When true, [`SymContext::fork`] takes the pre-lineage path.
+/// minting. When true, `SymContext::fork` takes the pre-lineage path.
 pub fn is_lineage_dismantled() -> bool {
     LINEAGE_DISMANTLED.load(Ordering::Relaxed)
 }
@@ -422,12 +422,12 @@ impl SharedLineageSolver {
     ///    state that holds frame `K` inherited it from that pushing state,
     ///    so every path ending in id `K` at depth `D` shares the same
     ///    `D-1` ancestor frames. This O(1) check avoids the O(min(|loaded|,
-    ///    |target|)) walk through [`common_prefix_len`] when consecutive
+    ///    |target|)) walk through `common_prefix_len` when consecutive
     ///    queries come from the same state (the BFS-step intra-state query
     ///    burst that motivates the hot-state cache in the angr-v5a5 design).
     ///
     /// 2. **General prefix walk.** If the O(1) cache misses, fall back to
-    ///    [`common_prefix_len`] for the full prefix calculation. Pops the
+    ///    `common_prefix_len` for the full prefix calculation. Pops the
     ///    divergent suffix off the solver and pushes the target tail.
     pub fn switch_to(&mut self, target_path: &ScopePath) -> (usize, usize) {
         LINEAGE_SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);

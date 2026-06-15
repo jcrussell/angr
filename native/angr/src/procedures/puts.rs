@@ -6,7 +6,7 @@
 //!
 //! # Behavior
 //!
-//! - Reads the string at arg[0] byte-by-byte until NUL or MAX_PUTS_LEN
+//! - Reads the string at arg\[0\] byte-by-byte until NUL or MAX_PUTS_LEN
 //! - Appends string + newline to state.stdout_buffer
 //! - Returns length + 1 (for the appended newline)
 //! - Falls back to Python if address is symbolic

@@ -102,7 +102,7 @@ impl Permission {
 ///
 /// ## Serialization
 ///
-/// Implements `Serialize`/`Deserialize` via the [`MemoryPageData`] shadow
+/// Implements `Serialize`/`Deserialize` via the `MemoryPageData` shadow
 /// type — the `Arc<Vec<u8>>` collapses to an owned `Vec` and the
 /// `Box<[u64; BITMAP_WORDS]>` bitmaps collapse to `Vec<u64>` on the wire,
 /// rebuilding the Arc / Box on load. Symbolic AST values are NOT carried

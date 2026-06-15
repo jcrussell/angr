@@ -2559,7 +2559,7 @@ impl Clone for RustSimState {
 pub const SNAPSHOT_VERSION: u8 = 1;
 
 /// Errors raised by [`RustSimState::from_serialized`] /
-/// [`StashManager::load_snapshot`].
+/// `StashManager::load_snapshot`.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
     #[error("empty snapshot envelope")]
@@ -2582,10 +2582,10 @@ pub enum SnapshotError {
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
 ///   (carried on StashManager side).
 /// * **Bucket B (concrete + symbolic overlay)** — registers
-///   ([`RegisterFile`] serde), memory ([`SymbolicMemorySnapshot`]).
-/// * **Bucket C (Arc-shared collapse)** — hooks (Vec<u64>), environment
+///   ([`RegisterFile`] serde), memory (`SymbolicMemorySnapshot`).
+/// * **Bucket C (Arc-shared collapse)** — hooks (`Vec<u64>`), environment
 ///   (BTreeMap<bytes, bytes>).
-/// * **SymContext** — captured via [`SymContextSnapshot`] (replays
+/// * **SymContext** — captured via `SymContextSnapshot` (replays
 ///   `assumed_constraints` into a fresh Z3 solver on restore).
 ///
 /// **Bucket D (`Py<PyAny>` overlays)** — symbolic_pages,
@@ -2747,7 +2747,7 @@ impl RustSimState {
     /// stale on-disk snapshot fast. `serde_json` was chosen over postcard
     /// for the prototype because the inner [`RustBV`] op-tree carries
     /// `Arc<...>` boxed enums whose postcard schema would lock the format
-    /// to today's [`crate::symbolic::value::BVOp`] layout; JSON tolerates
+    /// to today's `crate::symbolic::value::BVOp` layout; JSON tolerates
     /// minor variant churn without a breaking change.
     pub fn to_serialized(&self) -> Vec<u8> {
         let snap = self.to_snapshot();

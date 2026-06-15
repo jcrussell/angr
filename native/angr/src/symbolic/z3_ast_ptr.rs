@@ -87,7 +87,7 @@ impl Z3AstPtr {
     /// it trips Z3's error handler, which aborts the process rather than
     /// returning a recoverable error.
     ///
-    /// Returns [`SortKind::Unknown`] if Z3 cannot resolve the AST's sort
+    /// Returns `SortKind::Unknown` if Z3 cannot resolve the AST's sort
     /// (should not happen for a live AST, but keeps the call total).
     pub fn sort_kind(&self) -> z3_sys::SortKind {
         let raw_ctx = self.ctx.get_z3_context();

@@ -241,7 +241,7 @@ impl RustSymbolTable {
         Some(self.insert(result))
     }
 
-    /// Extract bits [high:low] (inclusive).
+    /// Extract bits \[high:low\] (inclusive).
     pub fn op_extract(
         &self,
         a_id: u64,

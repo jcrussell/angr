@@ -39,7 +39,7 @@ pub enum ConcretizationResult {
     Single(u64),
     /// Multiple concrete addresses (2-256 addresses for ITE chains).
     Multiple(Vec<u64>),
-    /// Strided access pattern detected (e.g., arr[i*4] for stride=4).
+    /// Strided access pattern detected (e.g., arr\[i*4\] for stride=4).
     /// This enables efficient balanced ITE tree construction.
     Strided {
         /// Base address (minimum).
@@ -390,7 +390,7 @@ impl AddressConcretizer {
     /// # Returns
     /// * `Single` if the address has exactly one possible value
     /// * `Multiple` if the address has 2-256 possible values
-    /// * `Strided` if a regular stride pattern is detected (e.g., arr[i*4])
+    /// * `Strided` if a regular stride pattern is detected (e.g., arr\[i*4\])
     /// * `TooLarge` if the address range exceeds the limit
     /// * `Failed` if concretization is not possible
     pub fn concretize(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
@@ -519,7 +519,7 @@ impl AddressConcretizer {
     /// Try to detect a stride pattern by sampling solutions.
     ///
     /// This is used when the address range is too large to enumerate,
-    /// but might have a regular stride pattern (e.g., arr[i*4]).
+    /// but might have a regular stride pattern (e.g., arr\[i*4\]).
     fn try_detect_stride(
         &self,
         addr: &RustBV,

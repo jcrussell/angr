@@ -407,9 +407,9 @@ pub struct PythonCallbacks {
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is more efficient than individual loads when multiple loads can be batched.
     pub memory_load_batch: Option<Py<PyAny>>,
-    /// Callback for symbolic memory loads: fn(addrs: list[int], size: int, addr_ast) -> RustBV
+    /// Callback for symbolic memory loads: fn(addrs: list\[int\], size: int, addr_ast) -> RustBV
     pub memory_load_symbolic: Option<Py<PyAny>>,
-    /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
+    /// Callback for symbolic memory stores: fn(addrs: list\[int\], data: bytes, addr_ast) -> None
     pub memory_store_symbolic: Option<Py<PyAny>>,
     /// Callback for hook execution: fn(addr: u64) -> new_pc
     pub on_hook: Option<Py<PyAny>>,
@@ -421,7 +421,7 @@ pub struct PythonCallbacks {
     pub get_register: Option<Py<PyAny>>,
     /// Callback for setting register value: fn(offset: u32, data: bytes) -> None
     pub put_register: Option<Py<PyAny>>,
-    /// Callback for dirty helper calls: fn(name: str, args: list[int], ret_ty_bits: int) -> (bytes, bool, object | None)
+    /// Callback for dirty helper calls: fn(name: str, args: list\[int\], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
     pub dirty_call: Option<Py<PyAny>>,
     /// Callback for fetching a single 4KB page: fn(page_addr: u64) -> (bytes, permissions: u8, is_mapped: bool)
@@ -532,7 +532,7 @@ pub struct PythonCallbacks {
     pub inspect_expr: Option<Py<PyAny>>,
     /// Callback for state.inspect address_concretization events.
     /// Signature: `fn(state_id: int, when: str, action: str,
-    ///                addr_ast: object, result: list[int] | None) -> None`.
+    ///                addr_ast: object, result: list\[int\] | None) -> None`.
     /// `action` is "load" or "store"; `addr_ast` is the symbolic address
     /// AST (claripy reconstruction); `result` is the list of concrete
     /// addresses the concretizer produced (None on BEFORE). MVP gap: the
@@ -669,7 +669,7 @@ impl PythonCallbacks {
     /// Set the symbolic memory load callback.
     ///
     /// The callback should have signature:
-    /// `fn(addrs: list[int], size: int, addr_ast: object) -> RustBV`
+    /// `fn(addrs: list\[int\], size: int, addr_ast: object) -> RustBV`
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
     /// The callback should build an ITE chain based on the possible addresses.
@@ -680,7 +680,7 @@ impl PythonCallbacks {
     /// Set the symbolic memory store callback.
     ///
     /// The callback should have signature:
-    /// `fn(addrs: list[int], data: bytes, addr_ast: object) -> None`
+    /// `fn(addrs: list\[int\], data: bytes, addr_ast: object) -> None`
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
     /// The callback should perform conditional stores to each possible address.
@@ -737,7 +737,7 @@ impl PythonCallbacks {
     /// Set the dirty call callback.
     ///
     /// The callback should have signature:
-    /// `fn(name: str, args: list[int], ret_ty_bits: int) -> tuple[bytes, bool, object | None]`
+    /// `fn(name: str, args: list\[int\], ret_ty_bits: int) -> tuple[bytes, bool, object | None]`
     ///
     /// This handles VEX dirty calls to helper functions like CPUID, RDTSC, etc.
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
@@ -759,7 +759,7 @@ impl PythonCallbacks {
     /// Set the batched page fetch callback.
     ///
     /// The callback should have signature:
-    /// `fn(page_addrs: list[int]) -> list[tuple[bytes, int, bool]]`
+    /// `fn(page_addrs: list\[int\]) -> list[tuple[bytes, int, bool]]`
     ///
     /// Each result is (page_data_4kb, permissions, is_mapped).
     pub fn set_batch_fetch_pages(&mut self, cb: Py<PyAny>) {
@@ -904,7 +904,7 @@ impl PythonCallbacks {
     /// Set the inspect address_concretization callback.
     ///
     /// Signature: `fn(state_id: int, when: str, action: str,
-    ///                addr_ast: object, result: list[int] | None) -> None`.
+    ///                addr_ast: object, result: list\[int\] | None) -> None`.
     pub fn set_inspect_address_concretization(&mut self, cb: Py<PyAny>) {
         self.inspect_address_concretization = Some(cb);
     }
@@ -1189,7 +1189,7 @@ impl PythonCallbacks {
 }
 
 impl PythonCallbacks {
-    /// Visit every Py<PyAny> field. Used by __traverse__ on this type and
+    /// Visit every `Py<PyAny>` field. Used by __traverse__ on this type and
     /// by RustExplorationManager.__traverse__ which holds a cloned copy of
     /// PythonCallbacks (and so participates in the same cycle).
     pub fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -1237,7 +1237,7 @@ impl PythonCallbacks {
         Ok(())
     }
 
-    /// Drop every Py<PyAny> field. Used by __clear__ on this type and on
+    /// Drop every `Py<PyAny>` field. Used by __clear__ on this type and on
     /// RustExplorationManager (which has a cloned copy in its `callbacks` field).
     pub fn clear_fields(&mut self) {
         self.memory_load = None;

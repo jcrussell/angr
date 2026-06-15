@@ -1522,7 +1522,7 @@ fn armg_calc_flag_v(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> 
 
 /// Concrete ARM condition evaluation.
 ///
-/// `cond_n_op` encodes: cond in bits [7:4], cc_op in bits [3:0].
+/// `cond_n_op` encodes: cond in bits \[7:4\], cc_op in bits \[3:0\].
 /// Returns 1 if condition is true, 0 if false, None if unsupported.
 pub fn armg_calculate_condition(cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
     let cond = (cond_n_op >> 4) & 0xF;
@@ -1574,7 +1574,7 @@ pub fn armg_calculate_condition(cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64)
     Some(inv ^ (flag & 1))
 }
 
-/// Compute all ARM NZCV flags and pack into bits [31:28].
+/// Compute all ARM NZCV flags and pack into bits \[31:28\].
 pub fn armg_calculate_flags_nzcv(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
     let n = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
     let z = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
@@ -1750,7 +1750,7 @@ fn arm64g_calc_flag_v(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
 }
 
 /// Concrete arm64 condition evaluation.
-/// `cond_n_op` encodes cond in bits [7:4], cc_op in bits [3:0].
+/// `cond_n_op` encodes cond in bits \[7:4\], cc_op in bits \[3:0\].
 pub fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
     let cond = (cond_n_op >> 4) & 0xF;
     let cc_op = cond_n_op & 0xF;
@@ -1785,7 +1785,7 @@ pub fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> 
     Some(inv ^ (flag & 1))
 }
 
-/// Pack arm64 NZCV into bits [31:28].
+/// Pack arm64 NZCV into bits \[31:28\].
 pub fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
     let n = arm64g_calc_flag_n(cc_op, d1, d2, d3)?;
     let z = arm64g_calc_flag_z(cc_op, d1, d2, d3)?;

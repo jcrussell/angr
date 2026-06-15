@@ -20,7 +20,7 @@
 //! - `name_to_info`: Symbol name -> (id, width) for name-based lookup
 //!
 //! On import: Check registry before creating new symbol
-//! On export: Return original Py<PyAny> if in registry
+//! On export: Return original `Py<PyAny>` if in registry
 
 use parking_lot::RwLock;
 use pyo3::prelude::*;
@@ -48,7 +48,7 @@ pub struct SymbolicIdentityRegistry {
     py_hash_to_rust_id: RwLock<HashMap<i64, u64>>,
 
     /// Map from Rust symbol ID to original Python AST.
-    /// The Py<PyAny> is stored as a reference to preserve the original.
+    /// The `Py<PyAny>` is stored as a reference to preserve the original.
     rust_id_to_py: RwLock<HashMap<u64, Py<PyAny>>>,
 
     /// Map from symbol name to info (for name-based lookup).

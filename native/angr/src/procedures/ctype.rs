@@ -5,7 +5,7 @@
 //!
 //! Each takes a single int argument and returns 0 or non-zero.
 //! Symbolic arguments are handled by emitting a constraint-shaped result that
-//! mirrors the concrete predicate on bits[7:0] of the argument; the operand
+//! mirrors the concrete predicate on bits\[7:0\] of the argument; the operand
 //! pattern matches the underlying `as u8` truncation in the concrete path.
 
 use super::ProcedureError;

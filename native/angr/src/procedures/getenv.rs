@@ -1,6 +1,6 @@
 //! Native getenv/setenv/putenv implementations.
 //!
-//! Uses per-state environment map (HashMap<Vec<u8>, Vec<u8>>).
+//! Uses per-state environment map (`HashMap<Vec<u8>, Vec<u8>>`).
 //! - getenv: looks up key, allocates heap buffer for value, returns pointer (or NULL)
 //! - setenv: stores key=value in the environment map
 //! - putenv: parses "KEY=VALUE" string and stores in environment map

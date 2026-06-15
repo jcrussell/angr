@@ -743,7 +743,7 @@ pub enum IROp {
     /// which has identical bit-level semantics: left shift on two's complement
     /// is the same operation whether labelled "logical" or "arithmetic").
     /// Both operands are the full vector width; lane `i` of the result is
-    /// `lane_a[i] << lane_b[i]`, with the shift amount treated as unsigned
+    /// `lane_a\[i\] << lane_b\[i\]`, with the shift amount treated as unsigned
     /// (Z3 `bvshl` semantics — counts ≥ lane width produce zero). Maps to
     /// ARM USHL (DDI 0487 C7.2.310) when the count vector is non-negative;
     /// the negative-count branch of NEON USHL/SSHL is decomposed by libVEX
@@ -910,8 +910,8 @@ pub enum IROp {
 
     /// NEON pairwise integer add — `Iop_PwAdd{N}x{M}`. Binary; output has the
     /// same lane width and count as the inputs. Per-lane semantics:
-    ///   * result[i]            = a[2i]   + a[2i+1]            for i in 0..count/2
-    ///   * result[count/2 + i]  = b[2i]   + b[2i+1]            for i in 0..count/2
+    ///   * result\[i\]            = a\[2i\]   + a\[2i+1\]            for i in 0..count/2
+    ///   * result[count/2 + i]  = b\[2i\]   + b\[2i+1\]            for i in 0..count/2
     ///
     /// Maps to ARM VPADD (DDI 0487 C7.2.270) — `Iop_PwAdd32Fx2` (FP variant)
     /// is NOT routed here and remains unimplemented.
@@ -923,7 +923,7 @@ pub enum IROp {
     /// NEON pairwise widening integer add — `Iop_PwAddL{N}{S/U}x{M}`. Unary;
     /// output lane width is `2 * elem`, lane count is `count / 2`, total
     /// width preserved. Per-lane semantics:
-    ///   * result[i] = sext_or_zext(a[2i]) + sext_or_zext(a[2i+1])
+    ///   * result\[i\] = sext_or_zext(a\[2i\]) + sext_or_zext(a\[2i+1\])
     ///
     /// Maps to ARM SADDLP / UADDLP (DDI 0487 C7.2.348 / C7.2.418).
     VPwAddL {
@@ -952,7 +952,7 @@ pub enum IROp {
     /// NEON rounding halving add (a.k.a. rounding-average) —
     /// `Iop_Avg{N}{S/U}x{M}`. Binary; output has the same lane shape as the
     /// inputs. Per-lane semantics (widening to `elem+1` bits avoids overflow):
-    ///   result[i] = ((a[i] + b[i] + 1) >> 1) truncated to `elem` bits.
+    ///   result\[i\] = ((a\[i\] + b\[i\] + 1) >> 1) truncated to `elem` bits.
     /// Unsigned variants map to ARM URHADD (DDI 0487 C7.2.420) and SSE
     /// PAVGB/PAVGW (which are unsigned-only). Signed variants map to ARM
     /// SRHADD (DDI 0487 C7.2.353). Distinct from the truncating halving add

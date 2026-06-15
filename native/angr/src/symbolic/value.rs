@@ -123,47 +123,47 @@ pub enum FloatOpKind {
     /// avoid building `CmpEq(v, v)` with the operand cloned twice.
     IsNaN,
     /// Round to integer with rounding mode.
-    /// operand[0] = rm BV (32-bit, VEX rounding mode 0..3),
-    /// operand[1] = value BV (prec.bits()).
+    /// operand\[0\] = rm BV (32-bit, VEX rounding mode 0..3),
+    /// operand\[1\] = value BV (prec.bits()).
     RoundToInt,
     /// Convert int (signed/unsigned 2's complement) BV to FP at `prec`.
-    /// operand[0] = src BV at src_bits. RNE rounding implicit.
+    /// operand\[0\] = src BV at src_bits. RNE rounding implicit.
     ConvertItoF {
         src_bits: u8,
         signed: bool,
     },
     /// Convert FP at `prec` to int BV (signed/unsigned 2's complement).
-    /// operand[0] = src FP BV at prec.bits(). RNE rounding implicit.
+    /// operand\[0\] = src FP BV at prec.bits(). RNE rounding implicit.
     ConvertFtoI {
         dst_bits: u8,
         signed: bool,
     },
     /// Convert FP at `prec` to int BV (signed/unsigned 2's complement)
     /// with explicit rounding mode.
-    /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at prec.bits().
+    /// operand\[0\] = rm BV (32-bit), operand\[1\] = src FP BV at prec.bits().
     ConvertFtoIRm {
         dst_bits: u8,
         signed: bool,
     },
     /// Convert FP at `src_prec` to FP at `prec`. RNE rounding implicit.
-    /// operand[0] = src FP BV at src_prec.bits().
+    /// operand\[0\] = src FP BV at src_prec.bits().
     ConvertFtoF {
         src_prec: FloatPrec,
     },
     /// Convert FP at `src_prec` to FP at `prec` with explicit rounding mode.
-    /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at src_prec.bits().
+    /// operand\[0\] = rm BV (32-bit), operand\[1\] = src FP BV at src_prec.bits().
     ConvertFtoFRm {
         src_prec: FloatPrec,
     },
     /// Binary FP arithmetic with explicit rounding mode.
-    /// operand[0] = rm BV (32-bit, VEX rm low-2-bits 0..3),
-    /// operand[1] = a BV at prec.bits(), operand[2] = b BV at prec.bits().
+    /// operand\[0\] = rm BV (32-bit, VEX rm low-2-bits 0..3),
+    /// operand\[1\] = a BV at prec.bits(), operand\[2\] = b BV at prec.bits().
     AddRm,
     SubRm,
     MulRm,
     DivRm,
     /// Unary FP sqrt with explicit rounding mode.
-    /// operand[0] = rm BV (32-bit), operand[1] = a BV at prec.bits().
+    /// operand\[0\] = rm BV (32-bit), operand\[1\] = a BV at prec.bits().
     SqrtRm,
 }
 
@@ -398,7 +398,7 @@ pub enum Signedness {
 ///
 /// ## Serialization
 ///
-/// `RustBV` implements `Serialize`/`Deserialize` via the [`RustBVData`]
+/// `RustBV` implements `Serialize`/`Deserialize` via the `RustBVData`
 /// shadow type — the Z3 AST cache on `Symbolic` is skipped at serialize
 /// time and rebuilt on first `to_z3_ast()` call after load
 /// (a fresh `BV::new_const(name, width)` in the active Z3 thread-local
@@ -1742,13 +1742,13 @@ impl RustBV {
         }
     }
 
-    /// Extract bits [high:low] (inclusive).
+    /// Extract bits \[high:low\] (inclusive).
     #[inline]
     pub fn extract(&self, high: u32, low: u32, ctx: &SymContext) -> Self {
         self.clone().extract_into(high, low, ctx)
     }
 
-    /// Extract bits [high:low] (inclusive), consuming the argument.
+    /// Extract bits \[high:low\] (inclusive), consuming the argument.
     #[inline]
     pub fn extract_into(self, high: u32, low: u32, _ctx: &SymContext) -> Self {
         debug_assert!(high >= low);
@@ -1901,7 +1901,7 @@ impl RustBV {
     }
 
     /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
-    /// and LOW bits last (i.e. `parts[0]` becomes the high bits of the
+    /// and LOW bits last (i.e. `parts\[0\]` becomes the high bits of the
     /// result, `parts[parts.len()-1]` becomes the low bits).
     ///
     /// A linear left-fold (`acc = concat(acc, next)`) produces a skewed
@@ -2788,7 +2788,7 @@ impl RustBV {
 
     /// Build the Z3 AST for a `FloatOpKind::RoundToInt` operation.
     ///
-    /// VEX rounding modes (low 2 bits of operand[0]):
+    /// VEX rounding modes (low 2 bits of operand\[0\]):
     ///   0 = nearest (ties to even), 1 = -inf, 2 = +inf, 3 = zero (truncate).
     ///
     /// Concrete rm: pick the matching Z3 RoundingMode and call
@@ -2883,7 +2883,7 @@ impl RustBV {
     }
 
     /// Build the Z3 AST for an FP arithmetic op with explicit rounding mode
-    /// (`AddRm`/`SubRm`/`MulRm`/`DivRm`/`SqrtRm`). operand[0] is the rm BV;
+    /// (`AddRm`/`SubRm`/`MulRm`/`DivRm`/`SqrtRm`). operand\[0\] is the rm BV;
     /// remaining operands are the FP operands. Concrete rm picks one Z3
     /// `RoundingMode`; symbolic rm builds all four variants and ITEs on the
     /// rm low-2-bits — Z3 simplifies away dead arms at solve time. Mirrors
@@ -3007,7 +3007,7 @@ impl RustBV {
         unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 
-    /// Build the Z3 AST for `FloatOpKind::ConvertItoF`. operand[0] is a BV
+    /// Build the Z3 AST for `FloatOpKind::ConvertItoF`. operand\[0\] is a BV
     /// of width `src_bits` interpreted as signed/unsigned per `signed`.
     /// Result is the IEEE bits of the FP at `prec`. RNE rounding.
     #[cfg(feature = "vex-engine-z3")]
@@ -3067,8 +3067,8 @@ impl RustBV {
     }
 
     /// Build the Z3 AST for `FloatOpKind::ConvertFtoI` (no rm operand,
-    /// implicit RNE) or `FloatOpKind::ConvertFtoIRm` (operand[0] = rm BV,
-    /// operand[1] = FP value). The result is a BV of width `dst_bits`,
+    /// implicit RNE) or `FloatOpKind::ConvertFtoIRm` (operand\[0\] = rm BV,
+    /// operand\[1\] = FP value). The result is a BV of width `dst_bits`,
     /// signed or unsigned 2's complement per `signed`.
     #[cfg(feature = "vex-engine-z3")]
     fn build_fp_f_to_i_cached(
@@ -3164,7 +3164,7 @@ impl RustBV {
     }
 
     /// Build the Z3 AST for `FloatOpKind::ConvertFtoF` (no rm) or
-    /// `FloatOpKind::ConvertFtoFRm` (operand[0] = rm BV, operand[1] = FP).
+    /// `FloatOpKind::ConvertFtoFRm` (operand\[0\] = rm BV, operand\[1\] = FP).
     /// Source FP is at `src_prec`, destination FP is at `prec`.
     #[cfg(feature = "vex-engine-z3")]
     fn build_fp_f_to_f_cached(

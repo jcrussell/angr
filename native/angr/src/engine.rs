@@ -77,7 +77,7 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
     }
 }
 
-/// Run a single VEX block through [`VEXInterpreter`] for unit tests.
+/// Run a single VEX block through `VEXInterpreter` for unit tests.
 ///
 /// Driven directly from Python tests that exercise the typed-error mapping
 /// (e.g. NEON / unmapped-opcode / unhandled-CCall → typed exception).

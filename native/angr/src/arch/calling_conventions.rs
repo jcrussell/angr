@@ -200,7 +200,7 @@ pub trait CallingConvention: Send + Sync {
 
     /// Get the return address from the stack.
     ///
-    /// For x86/AMD64, this is at [rsp] after a call instruction.
+    /// For x86/AMD64, this is at \[rsp\] after a call instruction.
     fn get_return_addr(
         &self,
         regs: &RegisterFile,

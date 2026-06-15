@@ -1071,7 +1071,7 @@ impl RustSolverContext {
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
-    /// Extract bits [high:low] (inclusive).
+    /// Extract bits \[high:low\] (inclusive).
     pub fn op_extract(&self, a_id: u64, high: u32, low: u32) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
         self.inner
@@ -1239,7 +1239,7 @@ impl RustSolverContext {
         }
     }
 
-    /// Create a RustSolverContext that shares the solver from a state's Rc<RefCell<SymContext>>.
+    /// Create a RustSolverContext that shares the solver from a state's `Rc<RefCell<SymContext>>`.
     ///
     /// This is O(1) — just an Rc clone (reference count increment) instead of
     /// a full Z3 solver clone (~3ms). The shared solver writes constraints directly
