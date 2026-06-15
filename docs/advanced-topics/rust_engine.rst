@@ -3322,6 +3322,44 @@ be tracked.
        to 22.0s to cover slow mode. See
        :doc:`rust_bimodal_variance` and bd memory
        ``benchmark-bimodal-variance-rules``.
+   * - ``flareon2015_2``
+     - **Resolved by drift → ~1.07x (Rust faster).** Was 0.75x.
+     - **angr-kvn0.1, 2026-06-15.** The 5.35s baseline rust_time was
+       stale. A fresh 5-sample re-measure (``run_single.py --both``) on
+       HEAD ``1512b9cb9`` found Rust median **3.94s** (3.87–4.16s) vs
+       Python **4.21s** (4.17–4.22s) — Rust is now *faster*, matching
+       the 2026-05-20 qfbv table's 3.51s default-mode figure (this
+       bench had merely never had its baseline refreshed since the
+       post-May perf gains). Counters are FFI-light
+       (``ffi_crossings=1``, ``callback_count=0``, ``python_callback``
+       total ≈ 4ms), so the runtime is dominated by VEX interpretation
+       + Z3, not boundary tax. ``rust_time`` corrected to 3.94 in
+       ``baseline_timings.json``; no longer below 1.0x.
+   * - ``cmu_binary_bomb_partial``
+     - **Resolved by drift → ~1.06x (Rust faster).** Was 0.84x.
+     - **angr-kvn0.1, 2026-06-15.** Stale baseline. Fresh 5-sample
+       re-measure: Rust median **1.31s** (1.29–1.32s) vs Python
+       **1.39s**. ``rust_time`` corrected from 1.65 to 1.31; no longer
+       below 1.0x.
+   * - ``unmapped_analysis``
+     - **Resolved by drift → ~1.06x (Rust faster).** Was 0.90x.
+     - **angr-kvn0.1, 2026-06-15.** Stale baseline. Fresh 5-sample
+       re-measure: Rust median **0.91s** (0.89–0.92s) vs Python
+       **0.97s**. ``rust_time`` corrected from 1.07 to 0.91; no longer
+       below 1.0x.
+   * - ``android_arm_license_validation``
+     - 0.80x (genuine, but init-tax dominated — ~50ms absolute)
+     - **angr-kvn0.1, 2026-06-15.** The only one of the four that
+       remains sub-1.0x. Fresh 5-sample re-measure: Rust **0.25s**
+       (0.24–0.25s) vs Python **0.20s**. The ~50ms gap is one-time
+       setup, not engine throughput: the Rust profiling report shows
+       ``Python init`` ~1.3ms + ``Add Rust state`` ~7.8ms, and the
+       per-block ``Total time`` rows sum to only a few ms — the bench
+       barely steps (``steps=0`` in the baseline). This is the same
+       PyO3-init/state-export tax that makes the tiny ``*_branch``
+       synthetic benches show <1.0x; it is fixed-cost and amortizes
+       away on any non-trivial workload. Not actionable; documented
+       for completeness.
 
 PyO3 API trust model
 --------------------
