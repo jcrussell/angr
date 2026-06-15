@@ -309,8 +309,15 @@ impl<'a> VEXInterpreter<'a> {
                 let idx = if let Some(idx) = ix_val.as_u64() {
                     idx
                 } else {
-                    // Symbolic index - concretize using solver
+                    // Symbolic index - concretize using the solver and pin the
+                    // choice with an equality constraint so a later solve cannot
+                    // pick a different index, which would make this register
+                    // write inconsistent with the path constraints (unsound).
+                    // Mirrors the dirty-arg eager-concretize pattern below.
                     if let Some(concrete) = self.ctx.eval(&ix_val) {
+                        let conc_bv = RustBV::concrete(concrete, ix_val.width());
+                        let constraint = ix_val.eq(&conc_bv, self.ctx);
+                        self.ctx.assume_true(&constraint);
                         concrete as u64
                     } else {
                         return Err(CbExecutionError::Unsupported(
