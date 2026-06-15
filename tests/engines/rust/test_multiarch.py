@@ -50,7 +50,7 @@ class TestMultiArchSupport:
         mgr = _RustExplorationManager("mips32")
         assert mgr.arch == "mips32"
 
-        sid = mgr.create_state("active")
+        mgr.create_state("active")
         assert mgr.active_count() == 1
         mgr.set_find_addrs([0x400000])
         mgr.set_avoid_addrs([0x400100])
@@ -277,7 +277,7 @@ class TestMultiArchSupport:
         """ARM exploration manager creation."""
         mgr = _RustExplorationManager("arm")
         assert mgr.arch == "arm"
-        sid = mgr.create_state("active")
+        mgr.create_state("active")
         assert mgr.active_count() == 1
 
     def test_arm64_state_creation(self):
@@ -428,7 +428,7 @@ class TestMultiArchSupport:
 
     def test_unsupported_arch_raises(self):
         """Unknown architecture raises an error."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="unknown architecture"):
             RustSimState("pdp11")
 
     def test_x86_explore_blob(self, tmp_path):

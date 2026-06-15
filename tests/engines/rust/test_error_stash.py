@@ -491,7 +491,7 @@ class TestErrorRecovery:
         ctx.add_constraint_ast(x == 5)
         ctx.add_constraint_ast(x == 10)  # contradicts
         assert not ctx.satisfiable()
-        result = ctx.eval(x)
+        ctx.eval(x)
         # Should be None or 0-ish, not crash
         # (exact behavior is implementation-defined for UNSAT)
 
@@ -860,7 +860,7 @@ class TestErrorRecovery:
             f"expected at least one lift at 0x1010 after SMC store; "
             f"all lifts: {[(hex(a), b is not None) for a, b in recorded]}"
         )
-        last_addr, last_bytes = smc_lifts[-1]
+        _last_addr, last_bytes = smc_lifts[-1]
         assert last_bytes is not None, (
             "Rust failed to pass dirty_bytes for SMC lift at 0x1010; "
             f"all lifts: {[(hex(a), b is not None) for a, b in recorded]}"

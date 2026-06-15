@@ -5,6 +5,7 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import contextlib
 import re
 
 import pytest
@@ -399,7 +400,7 @@ class TestRustInspectMarshalling:
         mgr._cb_inspect_mem_write(sid, "after", 0x402000, 4, sym_val, "Iend_LE")
 
         assert len(seen) == 1
-        addr, length, expr, endness = seen[0]
+        _addr, length, expr, endness = seen[0]
         assert length == 4
         assert endness == "Iend_LE"
         assert expr is sym_val
@@ -606,7 +607,7 @@ class TestRustInspectMemReadDispatch:
 
         # At least one load should have fired.
         assert len(events) > 0, "no mem_read events captured during run"
-        addr, length, endness = events[0]
+        _addr, length, endness = events[0]
         assert endness in ("Iend_LE", "Iend_BE")
         assert 0 < length <= 16
 
@@ -662,10 +663,8 @@ class TestRustInspectMemReadDispatch:
 
         def on_read(s):
             fire_count[0] += 1
-            try:
+            with contextlib.suppress(Exception):
                 _ = s.addr
-            except Exception:
-                pass
 
         mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
         mgr.run(max_steps=5)
@@ -712,7 +711,7 @@ class TestRustInspectMemWriteDispatch:
 
         # At least one stack-frame store should have fired.
         assert len(events) > 0, "no mem_write events captured during run"
-        addr, length, endness = events[0]
+        _addr, length, endness = events[0]
         # Endness should be a valid VEX endness string.
         assert endness in ("Iend_LE", "Iend_BE")
         # Length should be a positive integer up to register width.
@@ -758,10 +757,8 @@ class TestRustInspectMemWriteDispatch:
             # currently held by the interpreter, this swallows a "state
             # not found" error inside the dispatcher. The contract is
             # that exploration keeps running and does not deadlock.
-            try:
+            with contextlib.suppress(Exception):
                 _ = s.addr
-            except Exception:
-                pass
 
         mgr._get_inspect_proxy().b("mem_write", when="after", action=on_write)
         # 5 steps is enough to hit a store; bound steps so a stuck loop

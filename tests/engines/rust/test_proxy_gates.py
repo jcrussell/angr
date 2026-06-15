@@ -373,7 +373,7 @@ class TestProxyGateToggles:
     """angr-evu3: the SimProc-callback and export-pipeline proxy gates share
     an identical 4-way precedence contract — default off, ``kwarg=True`` on,
     ``ANGR_RUST_USE_*=1`` env var on, and an explicit ``kwarg=False`` beating
-    the env var. This consolidates the former 6 gates × 4 toggle tests (once
+    the env var. This consolidates the former 6 gates x 4 toggle tests (once
     duplicated verbatim across the Test*Gate classes) into one parametrized
     table; the per-gate behavioral tests stay in their own classes. The
     ``ids`` name each gate so a failure reads ``...[use_export_memory_proxy]``.
@@ -635,7 +635,7 @@ class TestCallbackMemoryProxyReentryGuards:
         mgr, _cb_state, _seed_id = self._mgr_with_proxy_in_cache(fauxware_project)
         results = mgr._cb_memory_load_batch([(0x28, 8), (0x100, 4)])
         assert len(results) == 2
-        for concrete, is_sym, ast in results:
+        for _concrete, is_sym, ast in results:
             assert is_sym is True
             assert ast is not None and ast.symbolic
 
@@ -1244,7 +1244,7 @@ class TestSimProcForkViaRustGate:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        with pytest.raises(ValueError, match="state .* not found"):
+        with pytest.raises(ValueError, match=r"state .* not found"):
             mgr._rust_mgr.fork_state_to_stash(99999, "active")
 
     def test_add_forked_state_dispatch_off(self, fauxware_project, monkeypatch):

@@ -249,10 +249,7 @@ class TestSolverOutputCorrectness:
         ctx.add_constraint_ast(claripy.SLT(x, claripy.BVV(5, 32)))
         val = ctx.eval(x)
         # Interpret as signed 32-bit
-        if val >= 0x80000000:
-            signed_val = val - 0x100000000
-        else:
-            signed_val = val
+        signed_val = val - 0x100000000 if val >= 0x80000000 else val
         assert -5 < signed_val < 5
 
     def test_multi_variable_system(self):
@@ -659,7 +656,7 @@ class TestDetailedHistory:
         history_str = snapshot.get_detailed_history_str()
         assert len(history_str) > 0
         valid_jumpkinds = {"Ijk_Boring", "Ijk_Call", "Ijk_Ret", "Ijk_Sys_syscall", "Ijk_Other"}
-        for addr, jk_str, target in history_str:
+        for _addr, jk_str, _target in history_str:
             assert jk_str in valid_jumpkinds, f"Unknown jumpkind: {jk_str}"
 
     def test_detailed_history_has_calls(self, fauxware_project):
@@ -1283,7 +1280,7 @@ class TestStateMerging:
         mgr = _RustExplorationManager("amd64")
         sid1 = mgr.create_state("active")
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="at least 2"):
             mgr.merge_states([sid1], "merged")
 
     def test_merge_states_invalid_id(self):
@@ -1291,7 +1288,7 @@ class TestStateMerging:
         mgr = _RustExplorationManager("amd64")
         sid1 = mgr.create_state("active")
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match=r"state .* not found"):
             mgr.merge_states([sid1, 999999], "merged")
 
     def test_merge_three_states(self):

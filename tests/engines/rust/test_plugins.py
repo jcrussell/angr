@@ -336,7 +336,7 @@ class TestAdversarial:
     def test_create_state_invalid_stash(self):
         """Creating state in nonexistent stash should work (dynamic stash)."""
         mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("nonexistent_stash_42")
+        mgr.create_state("nonexistent_stash_42")
         counts = mgr.stash_counts()
         assert counts.get("nonexistent_stash_42", 0) == 1
 
@@ -546,8 +546,8 @@ class TestAdversarial:
     def test_many_states_in_stash(self):
         """Many states in a stash should work."""
         mgr = _RustExplorationManager("amd64")
-        for i in range(50):
-            sid = mgr.create_state("active")
+        for _ in range(50):
+            mgr.create_state("active")
         assert mgr.active_count() == 50
 
     def test_stash_counts_empty(self):

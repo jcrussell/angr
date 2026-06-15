@@ -58,7 +58,7 @@ class TestMmapBaseSync:
     def test_get_state_mmap_base_unknown_state_raises(self):
         """Unknown state IDs surface a ValueError (matches the timeout API)."""
         mgr = _RustExplorationManager("amd64")
-        with pytest.raises(ValueError, match="state .* not found"):
+        with pytest.raises(ValueError, match=r"state .* not found"):
             mgr.get_state_mmap_base(999_999)
 
     def test_export_path_syncs_rust_mmap_base_into_state_heap(self, fauxware_project):
@@ -239,7 +239,7 @@ class TestPosixBrkSync:
     def test_get_state_posix_brk_unknown_state_raises(self):
         """Unknown state IDs surface a ValueError (matches the mmap_base API)."""
         mgr = _RustExplorationManager("amd64")
-        with pytest.raises(ValueError, match="state .* not found"):
+        with pytest.raises(ValueError, match=r"state .* not found"):
             mgr.get_state_posix_brk(999_999)
 
     def test_init_push_aligns_rust_posix_brk_with_python(self, fauxware_project):
@@ -434,7 +434,7 @@ class TestStateMetadataStorage:
 
         mgr = _RustExplorationManager("amd64")
         ast = claripy.BVS("nope", 8)
-        with pytest.raises(ValueError, match="state .* not found"):
+        with pytest.raises(ValueError, match=r"state .* not found"):
             mgr.set_state_addr_to_ast(424242, 0x1, ast, 1)
 
     def test_clear_state_metadata_drops_all_three_maps(self):
@@ -483,7 +483,6 @@ class TestStateMetadataStorage:
         """
         import claripy
 
-        parent = RustSimState("amd64")
         ast_parent = claripy.BVS("parent_only", 32)
         # We need to set the entry through the manager API. Wire the state
         # in via create_state isn't enough since we want the .fork() path,

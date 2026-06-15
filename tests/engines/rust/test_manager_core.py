@@ -50,7 +50,7 @@ class TestRustExplorationManagerUnit:
         assert mgr.active_count() == 1
 
         # Create another state
-        state_id2 = mgr.create_state("active")
+        mgr.create_state("active")
         # Note: Both states might have ID 0 since create_state creates fresh states
         assert mgr.active_count() == 2
 
