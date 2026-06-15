@@ -467,15 +467,30 @@ impl RustExplorationManager {
             } => {
                 // Too many symbolic jump targets - move to unconstrained stash.
                 //
-                // NOTE (angr-027h): materializing `deferred_forks` here before
-                // dropping the main state was tried (so a deferred break-fork
-                // leading to a find target could survive). With the
-                // chain-break-at-find/avoid guard now in `run_until_event` it no
-                // longer diverges as catastrophically as iter-28 (active
-                // plateaus rather than growing ~1.6/step), but it still never
-                // reaches the CADET easter-egg block and active keeps growing —
-                // i.e. that block is unreachable via deferred-fork resumption, a
-                // third distinct issue. Left as Err until that is solved.
+                // NOTE (angr-027h): `deferred_forks` are intentionally dropped
+                // here. The interpreter returns them (execution.rs
+                // UnconstrainedJump arm calls take_deferred_forks) but the
+                // manager discards them with the unconstrained main state.
+                //
+                // Why this blocks the CADET easter-egg find (confirmed iter64,
+                // full CFG of sub_80481a0 — see bd memory
+                // `benchmark-cadet-eggphase-rootcause-cfg`): the find target
+                // 0x804833E sits behind a symbolic strlen loop whose exit
+                // (je 0x804826f) is a FORWARD branch, so deferred-fork mode
+                // takes the loop-continuation as the main chain and DEFERS every
+                // loop exit. The main chain dives the loop, overflows the saved
+                // return address (receive reads 0x80 bytes), and ret goes
+                // unconstrained — at which point the accumulated loop-exit forks
+                // (the only paths that can ever reach the egg) are dropped here.
+                // Net: mgr.explore(find=0x804833E) goes active=1 for ~3 steps
+                // then active=0/unconstrained=1 forever.
+                //
+                // iter63 tried materializing the forks via handle_block_end:
+                // active stops collapsing but diverges (resumed forks re-enter
+                // the loop nest and re-overflow) and still never reaches the egg.
+                // The real fix is a search-order change — loop-exit forks must
+                // enter the pending stash and be explored under find guidance,
+                // not re-chained eagerly. Left as Err until that lands.
                 Err(StepError::Unconstrained(state))
             }
             RunResult::UnmodeledCall {
