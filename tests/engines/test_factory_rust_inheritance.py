@@ -104,7 +104,12 @@ class TestFactoryRustInheritance:
         """
         from angr.engines.vex.heavy.heavy import HeavyVEXMixin
 
-        _ = proj.factory.simulation_manager(use_rust_engine=True)
+        mgr = proj.factory.simulation_manager(use_rust_engine=True)
+        # Pin the precondition: if ``use_rust_engine=True`` silently fell
+        # back to a Python ``SimulationManager``, the test's premise
+        # ("after a RustExplorationManager has been built") would be false
+        # and the assertion below would pass vacuously.
+        assert isinstance(mgr, RustExplorationManager)
         engine = proj.factory.default_engine
         # The default engine is ``UberEngine`` / ``UberEnginePcode``;
         # both inherit from HeavyVEXMixin (the Python VEX interpreter).

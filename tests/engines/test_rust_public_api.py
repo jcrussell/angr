@@ -168,7 +168,7 @@ class TestModuleExports:
         import angr.exploration
         from angr.exploration._public_api import MODULE_EXPORTS
 
-        unresolved = [n for n in MODULE_EXPORTS if not hasattr(angr.exploration, n)]
+        unresolved = [n for n in MODULE_EXPORTS if getattr(angr.exploration, n, None) is None]
         assert not unresolved, (
             f"MODULE_EXPORTS lists names not actually reachable from "
             f"angr.exploration: {unresolved}\n{_REMEDIATION_HINT}"
@@ -181,6 +181,9 @@ class TestTypedExceptions:
     def test_typed_exceptions_are_in_module_exports(self):
         from angr.exploration._public_api import MODULE_EXPORTS, TYPED_EXCEPTIONS
 
+        # Guard against an accidentally-emptied list trivially satisfying
+        # the set-difference check below.
+        assert TYPED_EXCEPTIONS
         leaked = set(TYPED_EXCEPTIONS) - set(MODULE_EXPORTS)
         assert not leaked, (
             f"TYPED_EXCEPTIONS contains names not in MODULE_EXPORTS: {sorted(leaked)}\n{_REMEDIATION_HINT}"
