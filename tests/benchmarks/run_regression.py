@@ -68,29 +68,30 @@ TRACKED_METRICS = [
     ("steps", "steps", 0.15),  # 15% more steps
 ]
 
-# Benches exempt from the --check-counts gate. The fast-tier baselines were
-# soak-validated as deterministic (0% variance across 5 runs/bench, angr-bq9v
-# 2026-06-15), but these entries were NOT: the four BIMODAL_BENCHMARKS exercise
-# multi-solution constraints where Z3 model nondeterminism can shift the
-# explored path (and therefore step/callback counts), and the MEDIUM-tier
-# benches have not yet had a counter-stability soak. They still gate on timing
-# and peak memory; only the algorithmic-count check is skipped. Re-measure and
-# remove from this set before relying on their count baselines.
+# Benches exempt from the --check-counts gate. Only the four
+# BIMODAL_BENCHMARKS remain: they exercise multi-solution constraints where Z3
+# model nondeterminism can shift the explored path (and therefore
+# step/callback counts), so their count baselines are not reliably stable. They
+# still gate on timing and peak memory; only the algorithmic-count check is
+# skipped.
+#
+# The seven MEDIUM-tier benches (sym-write, flareon2015_5/10,
+# ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird, mma_howtouse)
+# were soak-validated as deterministic — 0% variance in
+# callback_count/state_creations/steps across 5 runs/bench (angr-lagp,
+# 2026-06-15), mirroring the fast-tier soak (angr-bq9v). Their baselines were
+# refreshed to the measured values and they are now gated. The soak surfaced
+# the same kind of silent drift bq9v found in the fast tier: sym-write
+# callback_count 22->20 / state_creations 1->0 / steps 18->20, and
+# ekopartyctf2016_rev250 callback_count 5->1 / steps 3->7.
 COUNT_EXEMPT = frozenset(
     {
-        # bimodal (Z3 multi-solution → potential count nondeterminism)
+        # bimodal (Z3 multi-solution → count nondeterminism); see
+        # BIMODAL_BENCHMARKS and docs/advanced-topics/rust_bimodal_variance.rst
         "google2016_unbreakable_1",
         "securityfest_fairlight",
         "ekopartyctf2016_sokohashv2",
         "hackcon2016_angry-reverser",
-        # medium tier — not yet soak-validated for counter stability
-        "sym-write",
-        "flareon2015_5",
-        "flareon2015_10",
-        "ekopartyctf2016_rev250",
-        "csaw_wyvern",
-        "codegate_2017-angrybird",
-        "mma_howtouse",
     }
 )
 

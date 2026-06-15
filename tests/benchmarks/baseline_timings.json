@@ -104,12 +104,12 @@
     "steps": 40
   },
   "ekopartyctf2016_rev250": {
-    "callback_count": 5,
+    "callback_count": 1,
     "peak_memory_mb": 546.4,
     "python_time": 31.65,
     "rust_time": 2.023,
     "state_creations": 0,
-    "steps": 3
+    "steps": 7
   },
   "ekopartyctf2016_sokohashv2": {
     "callback_count": 9,
@@ -224,12 +224,12 @@
     "steps": 95
   },
   "sym-write": {
-    "callback_count": 22,
+    "callback_count": 20,
     "peak_memory_mb": 195.5,
     "python_time": 1.0,
     "rust_time": 0.436,
-    "state_creations": 1,
-    "steps": 18
+    "state_creations": 0,
+    "steps": 20
   },
   "unmapped_analysis": {
     "callback_count": 2,
