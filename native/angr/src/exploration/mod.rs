@@ -459,6 +459,16 @@ pub struct RustExplorationManager {
     /// skipped without consulting any concrete number). Used by `stats()` to
     /// surface which native handlers would close the next gap.
     pub(crate) syscall_python_fallback_by_num: HashMap<i64, u64>,
+    /// Total count of syscalls handled by a native `NativeSyscall` handler
+    /// (the fast path that never round-trips to Python). Incremented only when
+    /// `handler.call` returns `Ok` — a native handler that returns `Err` falls
+    /// through to the Python callback and is counted under
+    /// `syscall_python_fallback_count` instead. Surfaced via `stats()`.
+    pub(crate) syscall_native_count: u64,
+    /// Per-syscall-number breakdown of `syscall_native_count`. Key is the
+    /// syscall number (architecture- or DECREE/CGC-specific). Lets `stats()`
+    /// confirm which native handlers actually fired on a workload.
+    pub(crate) syscall_native_by_num: HashMap<i64, u64>,
     /// State IDs that have already produced a DCAS warning. We log the first
     /// DCAS hit per state to avoid spamming the log on tight DCAS loops.
     pub(crate) dcas_warned_states: HashSet<u64>,
@@ -537,6 +547,8 @@ impl RustExplorationManager {
             simprocedure_fallback_by_name: HashMap::new(),
             syscall_python_fallback_count: 0,
             syscall_python_fallback_by_num: HashMap::new(),
+            syscall_native_count: 0,
+            syscall_native_by_num: HashMap::new(),
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false, // P9: Default to BFS (FIFO)
@@ -1680,6 +1692,7 @@ impl RustExplorationManager {
     ///   "dcas_unsupported_count": subset of fallbacks driven by double-CAS
     ///   "simprocedure_python_fallback_count": SimProcedures dispatched to Python
     ///   "syscall_python_fallback_count": syscalls dispatched to Python
+    ///   "syscall_native_count": syscalls handled natively (no Python round-trip)
     /// See [`stats_api::_get_fallback_stats`] for the body.
     pub fn get_fallback_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self._get_fallback_stats(py)

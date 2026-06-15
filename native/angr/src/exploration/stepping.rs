@@ -299,7 +299,18 @@ impl RustExplorationManager {
                             fork_snapshots,
                         )));
                     };
-                    match handler.call(&mut state, &args) {
+                    let outcome = handler.call(&mut state, &args);
+                    if outcome.is_ok() {
+                        // Native fast path fired (no Python round-trip). An
+                        // `Err` outcome falls through to the Python callback
+                        // below and is counted as a fallback instead.
+                        self.syscall_native_count += 1;
+                        *self
+                            .syscall_native_by_num
+                            .entry(num.map(|n| n as i64).unwrap_or(-1))
+                            .or_insert(0) += 1;
+                    }
+                    match outcome {
                         Ok(SyscallOutcome::Continue { ret }) => {
                             let ret_reg = self.environment.calling_convention.return_register();
                             let bits = state.arch().bits();

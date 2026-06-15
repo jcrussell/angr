@@ -116,6 +116,12 @@ impl RustExplorationManager {
             syscall_fallback_by_num.set_item(*num, *count)?;
         }
         dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
+        dict.set_item("syscall_native_count", self.syscall_native_count)?;
+        let syscall_native_by_num = PyDict::new(py);
+        for (num, count) in &self.syscall_native_by_num {
+            syscall_native_by_num.set_item(*num, *count)?;
+        }
+        dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
         Ok(dict)
     }
 
@@ -150,6 +156,12 @@ impl RustExplorationManager {
             syscall_fallback_by_num.set_item(*num, *count)?;
         }
         dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
+        dict.set_item("syscall_native_count", self.syscall_native_count)?;
+        let syscall_native_by_num = PyDict::new(py);
+        for (num, count) in &self.syscall_native_by_num {
+            syscall_native_by_num.set_item(*num, *count)?;
+        }
+        dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
         Ok(dict)
     }
 

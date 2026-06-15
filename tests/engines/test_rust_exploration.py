@@ -18382,6 +18382,59 @@ class TestCgcReceiveStdinSync:
         )
 
 
+class TestCgcEndToEndNativeDispatch:
+    """Integration test for angr-isru: pin the
+    ``docs/advanced-topics/rust_engine.rst`` claim that the CADET_00001
+    buffer-overflow phase "runs end-to-end under Rust".
+
+    Complements ``TestCgcReceiveStdinSync`` (which only asserts the crashing
+    input is non-empty) by proving the seven native CGC syscall handlers
+    (``native/angr/src/syscalls/cgc.rs``) actually fired through the
+    ``os_name=="cgc"`` dispatch table: ``stats["syscall_native_count"] > 0``
+    with zero Python syscall fallbacks. Until this test, the only coverage of
+    CGC dispatch was Rust ``#[test]``s on the handlers in isolation — no
+    Python-suite test loaded a DECREE binary and ran the engine on it.
+
+    Exercises only the buffer-overflow phase (reaches ``unconstrained`` in
+    ~0.1s under Rust); the heavy easter-egg explore (angr-027h) is avoided to
+    keep the test fast and OOM-safe.
+    """
+
+    def test_cadet_buffer_overflow_native_cgc_dispatch(self):
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
+        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
+        if not os.path.exists(cadet):
+            pytest.skip(f"CADET_00001 binary not found at {cadet}")
+
+        proj = angr.Project(cadet, auto_load_libs=False)
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+
+        for _ in range(50):
+            if mgr.unconstrained:
+                break
+            mgr.run(max_steps=1)
+
+        assert mgr.unconstrained, f"CADET buffer-overflow never reached unconstrained; counts={mgr.stash_counts()}"
+
+        # Found-state semantics: the unconstrained state is the crash, and its
+        # stdin (recorded by native cgc.rs::receive) is the crashing input.
+        crashing_input = bytes(mgr.unconstrained[0].posix.dumps(0))
+        assert len(crashing_input) > 0, "crashing input empty — native CGC receive() did not record stdin symbols"
+
+        # The point of this test: native CGC syscall dispatch fired with no
+        # Python round-trip. receive()/transmit() are the minimum the
+        # buffer-overflow phase exercises.
+        stats = mgr.stats
+        assert stats["syscall_native_count"] > 0, (
+            f"expected native CGC syscall dispatch (>0), got {stats['syscall_native_count']}; "
+            f"native_by_num={stats.get('syscall_native_by_num')}"
+        )
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"CGC syscalls fell back to Python: {stats['syscall_python_fallback_by_num']}"
+        )
+
+
 class TestDirectCallEntryMainResolution:
     """Regression for angr-027h: a "thin" entry that is a direct ``call main``
     (no ``__libc_start_main`` trampoline, e.g. DECREE/CGC binaries) has no
