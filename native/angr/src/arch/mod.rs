@@ -682,7 +682,11 @@ impl RegisterFile {
 
 impl Clone for Box<dyn Arch> {
     fn clone(&self) -> Self {
-        // This is a bit of a hack - we rely on architectures being singletons
+        // This is a bit of a hack - we rely on architectures being singletons.
+        // The match is exhaustive: every `dyn Arch` implementor is one of the
+        // six supported singletons, so PPC32/PPC64/S390X can never be the
+        // dynamic type here. We still panic loudly rather than silently
+        // mis-cloning to AMD64 should a new VexArch implementor ever appear.
         match self.vex_arch() {
             VexArch::X86 => Box::new(X86),
             VexArch::AMD64 => Box::new(AMD64),
@@ -690,9 +694,26 @@ impl Clone for Box<dyn Arch> {
             VexArch::ARM64 => Box::new(ARM64),
             VexArch::MIPS32 => Box::new(MIPS32),
             VexArch::MIPS64 => Box::new(MIPS64),
-            _ => Box::new(AMD64), // Default to AMD64 for unsupported archs
+            other @ (VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X) => {
+                panic!("{}", unsupported_arch_msg(other))
+            }
         }
     }
+}
+
+/// Panic/error message for a VexArch the Rust engine does not implement.
+///
+/// The Rust engine supports six arches (X86, AMD64, ARM, ARM64, MIPS32,
+/// MIPS64). For PPC32/PPC64/S390X — which Python angr supports — callers
+/// should fall back to the Python engine. `RustExplorationManager`
+/// construction rejects these loudly via `arch_from_name`; this message
+/// covers the downstream snapshot-restore / interpreter-fork paths that
+/// take a `VexArch` directly.
+fn unsupported_arch_msg(arch: VexArch) -> String {
+    format!(
+        "Rust engine does not support {arch:?}; supported arches are X86, AMD64, \
+         ARM, ARM64, MIPS32, MIPS64. Use the Python engine for this architecture."
+    )
 }
 
 /// Create an architecture by name.
@@ -720,7 +741,9 @@ pub fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
         VexArch::ARM64 => Box::new(ARM64),
         VexArch::MIPS32 => Box::new(MIPS32),
         VexArch::MIPS64 => Box::new(MIPS64),
-        _ => Box::new(AMD64), // Default for unsupported archs
+        other @ (VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X) => {
+            panic!("{}", unsupported_arch_msg(other))
+        }
     }
 }
 
@@ -728,6 +751,55 @@ pub fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
 mod tests {
     use super::*;
     use crate::symbolic::SymContext;
+
+    #[test]
+    fn test_arch_from_vex_supported() {
+        // The six supported arches resolve to a singleton with the matching VexArch.
+        for vex in [
+            VexArch::X86,
+            VexArch::AMD64,
+            VexArch::ARM,
+            VexArch::ARM64,
+            VexArch::MIPS32,
+            VexArch::MIPS64,
+        ] {
+            assert_eq!(arch_from_vex(vex).vex_arch(), vex);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Rust engine does not support")]
+    fn test_arch_from_vex_ppc32_panics() {
+        let _ = arch_from_vex(VexArch::PPC32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rust engine does not support")]
+    fn test_arch_from_vex_ppc64_panics() {
+        let _ = arch_from_vex(VexArch::PPC64);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rust engine does not support")]
+    fn test_arch_from_vex_s390x_panics() {
+        let _ = arch_from_vex(VexArch::S390X);
+    }
+
+    #[test]
+    fn test_clone_box_dyn_arch_roundtrips() {
+        // Cloning a boxed supported arch preserves its identity (no AMD64 fallback).
+        for vex in [
+            VexArch::X86,
+            VexArch::AMD64,
+            VexArch::ARM,
+            VexArch::ARM64,
+            VexArch::MIPS32,
+            VexArch::MIPS64,
+        ] {
+            let boxed = arch_from_vex(vex);
+            assert_eq!(boxed.clone().vex_arch(), vex);
+        }
+    }
 
     #[test]
     fn test_register_file_concrete() {
