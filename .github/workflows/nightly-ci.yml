@@ -125,6 +125,10 @@ jobs:
         # included for drift signal (matches existing FAST behavior with
         # bimodal google2016_unbreakable_1); --retry-failures 2 absorbs
         # most bimodal noise.
+        # The peak_memory_mb regression check is on by default (50% over
+        # baseline) and runs here as a hard fail — distinct from
+        # rss_leak_check, which gates iterative growth on one bench. The PR
+        # gate runs the same check in --memory-warn-only mode during the soak.
         # --retry-failures 2: see ci.yml::benchmark_regression for rationale.
         # The retry only re-runs failures and does NOT overwrite the recorded
         # measurement in the history record, so the dashboard's time-series

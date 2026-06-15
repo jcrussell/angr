@@ -14,6 +14,8 @@ Usage:
     python tests/benchmarks/run_regression.py --threshold 0.2  # 20% regression threshold
     python tests/benchmarks/run_regression.py --sla-fail-threshold 0.7  # Tighter SLA
     python tests/benchmarks/run_regression.py --no-sla       # Disable SLA check
+    python tests/benchmarks/run_regression.py --memory-threshold 0.4  # Tighter peak-RSS gate
+    python tests/benchmarks/run_regression.py --no-memory-check  # Disable peak-RSS gate
 
 Exit codes:
     0 = all benchmarks pass
@@ -322,6 +324,29 @@ def main():
         help="Check algorithmic metrics (callback_count, state_creations, steps) for regressions",
     )
     parser.add_argument(
+        "--no-memory-check",
+        action="store_true",
+        help="Disable the peak_memory_mb regression check (enabled by "
+        "default). The check fails a bench whose Rust peak RSS exceeds "
+        "its baseline peak_memory_mb by more than --memory-threshold.",
+    )
+    parser.add_argument(
+        "--memory-threshold",
+        type=float,
+        default=0.5,
+        help="Peak-RSS regression threshold (default: 0.5 = 50%% over "
+        "baseline). Deliberately generous: allocator/page-cache "
+        "variance on ru_maxrss is larger than timing variance, so a "
+        "tighter bound risks false positives.",
+    )
+    parser.add_argument(
+        "--memory-warn-only",
+        action="store_true",
+        help="Downgrade peak_memory_mb regressions from failures to "
+        "warnings (for soaking the gate before promoting it to a hard "
+        "fail).",
+    )
+    parser.add_argument(
         "--sla-warn-threshold",
         type=float,
         default=1.0,
@@ -509,6 +534,28 @@ def main():
                             failures.append(
                                 f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)"
                             )
+
+            # Check peak-RSS regression. Distinct from the nightly leak
+            # check (run_leak_check.py), which gates iterative growth on a
+            # single bench — this catches a one-shot allocation blowup on
+            # any bench before it reaches hard OOM under the RLIMIT_AS cap.
+            # ru_maxrss is a process-wide high-water mark, so the threshold
+            # is intentionally generous (see --memory-threshold help).
+            baseline_mem = baseline[baseline_key].get("peak_memory_mb") if not args.no_memory_check else None
+            if (
+                baseline_mem is not None
+                and baseline_mem > 0
+                and rust_peak_mem is not None
+                and rust_peak_mem > baseline_mem * (1 + args.memory_threshold)
+            ):
+                pct = ((rust_peak_mem / baseline_mem) - 1) * 100
+                tag = "MEMORY WARN" if args.memory_warn_only else "MEMORY REGRESSION"
+                print(f"  {tag}: peak_memory_mb {rust_peak_mem:.0f}MB vs baseline {baseline_mem:.0f}MB (+{pct:.0f}%)")
+                if not args.memory_warn_only:
+                    failures.append(
+                        f"{name}: peak_memory_mb regression "
+                        f"({rust_peak_mem:.0f}MB vs {baseline_mem:.0f}MB, +{pct:.0f}%)"
+                    )
 
         # SLA check: enforce minimum speedup vs Python. Falls back to the
         # python_time cached in baseline when this run skipped Python (e.g.

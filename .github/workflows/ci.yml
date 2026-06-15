@@ -166,7 +166,12 @@ jobs:
         #   `benchmark-regression-noise-floor`). Retrying clears spurious flags
         #   without touching baselines (the riskier alternative — see memory
         #   `avoid-update-baseline-without-verification`).
-        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2
+        # --memory-warn-only: the peak_memory_mb regression check is on by
+        #   default, but on the fast-feedback PR path it only warns during the
+        #   initial soak so allocator/page-cache RSS variance can't redden a PR.
+        #   The nightly gate runs it as a hard fail. Promote to a hard PR gate
+        #   after a clean soak (see bd angr-wcxi follow-up).
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --memory-warn-only
         timeout-minutes: 5
 
   property_fuzzer_quick:
