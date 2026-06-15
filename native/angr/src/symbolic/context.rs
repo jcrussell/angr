@@ -1981,6 +1981,15 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
+        // The binary search below tracks bounds in a u128. For widths above 128
+        // the true extremum can exceed u128::MAX, and the old `u128::MAX` cap
+        // plus the low-128-truncated witness returned a wrong value. Report
+        // unknown rather than a truncated extremum (angr-cxw7). 128-bit BVs are
+        // fine: their range is exactly [0, u128::MAX].
+        if width > 128 {
+            return None;
+        }
+
         // Peek the cached model (populated by is_sat above when it does a
         // fresh check, or carried over from a prior eval/min/max on the
         // same constraint set).
@@ -2104,6 +2113,13 @@ impl SymContext {
 
         let ast = bv.to_z3_ast();
         let width = bv.width();
+
+        // See min(): widths above 128 cannot be represented in the u128 binary
+        // search bounds, so a truncated extremum would be returned. Report
+        // unknown instead (angr-cxw7).
+        if width > 128 {
+            return None;
+        }
 
         let witness = self.cached_model_eval(&ast);
         if witness.is_some() {

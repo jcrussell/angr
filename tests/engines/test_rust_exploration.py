@@ -8396,6 +8396,53 @@ class TestAdversarial:
         assert v.bit_length() <= 1024
         assert (v & 0xFF) == 0x42
 
+    def test_wide_concrete_bvv_import_rejected(self):
+        """angr-cxw7: a concrete BVV whose value needs >128 bits must error
+        loudly, not silently truncate to its low 128 bits.
+
+        ``RustBV::Concrete`` stores its value in a u128, so importing
+        ``BVV(1 << 200, 256)`` used to wrap to 0. extract_int_value now
+        rejects it with a RuntimeError (BridgeError::InvalidArgs). The import
+        path is exercised here via ``min`` (which propagates the conversion
+        error; ``eval``/``add_constraint_ast`` take Z3-export fast paths that
+        bypass the u128 import).
+        """
+        import claripy
+        import pytest
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        with pytest.raises(RuntimeError):
+            ctx.min(claripy.BVV(1 << 200, 256), signed=False)
+
+        # A 256-bit literal whose magnitude fits in 128 bits imports fine.
+        assert ctx.min(claripy.BVV(1 << 100, 256), signed=False) == (1 << 100)
+
+    def test_wide_bv_extrema_returns_none(self):
+        """angr-cxw7: min/max on a >128-bit symbolic BV returns None rather
+        than a value truncated to the u128 binary-search range.
+
+        128-bit BVs still return a real extremum (range is exactly
+        [0, u128::MAX]); only widths strictly above 128 are unknown.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("xwide", 256)
+        ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x42)
+        assert ctx.satisfiable()
+        assert ctx.min(x, signed=False) is None
+        assert ctx.max(x, signed=False) is None
+
+        # A 128-bit BV is still handled (fits in u128).
+        ctx2 = RustSolverContext()
+        y = claripy.BVS("y128", 128)
+        ctx2.add_constraint_ast(claripy.UGE(y, 5))
+        ctx2.add_constraint_ast(claripy.ULE(y, 9))
+        assert ctx2.min(y, signed=False) == 5
+        assert ctx2.max(y, signed=False) == 9
+
     # --- Exploration manager with states ---
 
     def test_many_states_in_stash(self):

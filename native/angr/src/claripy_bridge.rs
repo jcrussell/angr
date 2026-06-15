@@ -1811,6 +1811,20 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 
     // For larger values, use Python's int.to_bytes
     let bit_length: usize = obj.call_method0("bit_length")?.extract().unwrap_or(128);
+
+    // RustBV::Concrete stores its value in a u128, so any integer that needs
+    // more than 128 significant bits cannot be represented exactly. Silently
+    // masking to the low 128 bits (the old `clamp(1, 16)` behavior) produced a
+    // wrong concrete value, e.g. `claripy.BVV(1 << 200, 256)` imported as 0.
+    // Error loudly instead so callers don't operate on truncated data
+    // (angr-cxw7). Wide *symbolic* BVs still work via the Concat path; this
+    // only rejects wide concrete literals.
+    if bit_length > 128 {
+        return Err(BridgeError::InvalidArgs(format!(
+            "concrete integer needs {bit_length} bits but RustBV::Concrete is capped at 128; \
+             wide concrete BVV import is unsupported"
+        )));
+    }
     let byte_length = bit_length.div_ceil(8);
     let byte_length = byte_length.clamp(1, 16);
 
@@ -1928,6 +1942,27 @@ mod tests {
         Python::attach(|py| {
             let val = 42i64.into_pyobject(py).unwrap();
             assert_eq!(extract_int_value(val.into_any().clone()).unwrap(), 42);
+        });
+    }
+
+    /// angr-cxw7: an integer needing more than 128 bits must be rejected, not
+    /// silently truncated to its low 128 bits. `1 << 200` previously imported
+    /// as 0.
+    #[test]
+    fn test_extract_int_value_above_128_bits_errors() {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            // 2**200, built in Python so it stays an arbitrary-precision int.
+            let big = py
+                .eval(c"1 << 200", None, None)
+                .expect("eval 1<<200")
+                .into_any();
+            let err = extract_int_value(big).expect_err("must reject >128-bit int");
+            assert!(matches!(err, BridgeError::InvalidArgs(_)));
+
+            // A 256-bit-wide value whose magnitude still fits in 128 bits is OK.
+            let small = py.eval(c"1 << 100", None, None).expect("eval 1<<100");
+            assert_eq!(extract_int_value(small.into_any()).unwrap(), 1u128 << 100);
         });
     }
 
