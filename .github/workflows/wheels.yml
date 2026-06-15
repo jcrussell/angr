@@ -63,10 +63,18 @@ jobs:
               rm -rf /tmp/wh;
             done
           # Verify the repaired wheel installs clean and resolves the shared libz3.
+          # The AST-passthrough smoke test (angr-9eit) is the load-bearing check:
+          # it mints a Z3 AST in claripy and reads it back through the Rust solver,
+          # proving both halves resolved the SAME site-packages/z3/lib/libz3.so via
+          # the wheel's $ORIGIN/../z3/lib RUNPATH. If --exclude libz3.so had failed
+          # and the wheel vendored a private libz3 (a second Z3_context), this would
+          # crash or return a wrong answer. {project} is the cibuildwheel-provided
+          # repo root, so the script ships with the source checkout, not the wheel.
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: >
             python -c "import angr, z3, os; print('z3 lib:', os.path.dirname(z3.__file__))" &&
-            python -c "import angr; m=angr.exploration.RustExplorationManager; print('rust engine import OK')"
+            python -c "import angr; m=angr.exploration.RustExplorationManager; print('rust engine import OK')" &&
+            python {project}/tests/smoke/wheel_ast_passthrough.py
 
       - uses: actions/upload-artifact@v4
         with:

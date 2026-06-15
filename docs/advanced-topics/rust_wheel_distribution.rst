@@ -144,7 +144,14 @@ Open blockers (filed as beads)
    full PyO3 surface (``py-clone`` + all ``#[pymethods]``), limited-ABI ``.so``
    imports and passes ``tests/engines/rust``. ``wheels.yml`` collapsed to a
    single abi3 wheel.
-#. Confirm AST passthrough actually works through a repaired wheel (the whole
-   point): a clean-venv smoke test that mints a Z3 AST in ``claripy`` and reads
-   it back through the Rust engine, proving both resolved the **same**
-   ``libz3.so`` via ``$ORIGIN/../z3/lib``.
+#. **RESOLVED (2026-06-15, angr-9eit):** the AST-passthrough smoke test lives at
+   ``tests/smoke/wheel_ast_passthrough.py`` and is wired into ``wheels.yml``'s
+   ``CIBW_TEST_COMMAND`` (``python {project}/tests/smoke/wheel_ast_passthrough.py``).
+   It mints a Z3 AST in ``claripy`` and reads it back through the Rust
+   ``RustSolverContext`` (constraints + ``min``/``max``/``eval`` + an UNSAT
+   contradiction), proving both halves resolved the **same** ``libz3.so`` via
+   ``$ORIGIN/../z3/lib``. The script runs standalone (exits nonzero on failure)
+   and is also collected by pytest for local verification. Note the *execution*
+   of this test inside the cibuildwheel container is still gated by the Docker/CI
+   verification in blocker #1 (angr-3gjm) — the test is authored and locally
+   green, but has not yet run against an actually-repaired wheel.
