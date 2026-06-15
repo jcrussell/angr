@@ -33,13 +33,21 @@ Tool:
    $ python tests/benchmarks/bimodal_variance.py --runs 20 --bin-width 1.0 \
      --json /tmp/bimodal_variance.json
 
-``google2016_unbreakable_1`` — no longer bimodal
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``google2016_unbreakable_1`` — appeared unimodal 2026-05-13 (SUPERSEDED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. note::
+
+   **Superseded 2026-05-22.** This bench *re-bimodalized* and is back in
+   ``BIMODAL_BENCHMARKS`` at HEAD. See the
+   `2026-05-22 — unbreakable_1 re-bimodalized`_ section below for the
+   current classification. The 2026-05-13 / 2026-05-18 unimodal
+   measurements are kept here for the timeline only.
 
 20/20 runs in **3.01–3.06s** (median 3.03s, mean 3.03s, stdev 0.01s).
-Previous characterization (``invariant-sla-bimodal-unbreakable1``) had
-a 1.4–3.3s span. The fast mode is gone in 2026-05-13 measurements;
-the benchmark has stabilized at what used to be the slow mode.
+The earlier characterization had a 1.4–3.3s span. The fast mode is gone
+in 2026-05-13 measurements; the benchmark has stabilized at what used to
+be the slow mode.
 
 .. code-block:: text
 
@@ -140,10 +148,11 @@ The bimodal classification itself:
 - ``securityfest_fairlight`` — still bimodal in 2026-05-13 *and*
   2026-05-18 campaigns; structural floor confirmed (see
   re-validation section below).
-- ``google2016_unbreakable_1`` — no longer bimodal in 2026-05-13
-  measurements. **Removed from** ``BIMODAL_BENCHMARKS`` on 2026-05-18
-  after the re-validation campaign below confirmed continued
-  unimodality.
+- ``google2016_unbreakable_1`` — appeared unimodal in 2026-05-13
+  measurements; **removed from** ``BIMODAL_BENCHMARKS`` on 2026-05-18.
+  **This removal was reverted on 2026-05-22** when the bench
+  re-bimodalized — see `2026-05-22 — unbreakable_1 re-bimodalized`_. It
+  is back in ``BIMODAL_BENCHMARKS`` at HEAD.
 
 2026-05-18 re-validation
 ------------------------
@@ -167,14 +176,23 @@ median, likely from intervening Rust engine work (notably the
 2026-05-18 ``f54bbba93`` lazy-zero-page cap, but the speedup is
 broad and not pinned to a single commit). No slow mode reappears.
 
-Decision: removed from ``BIMODAL_BENCHMARKS`` in ``run_regression.py``
-so the PR-time gate (``--skip-bimodal``) now covers it. The baseline
-``rust_time = 3.5s`` is left as-is — it gives ~42% headroom over the
-2.48s worst-case sample and ~15% above the 2026-05-13 3.06s sample,
-preserving room for natural drift without re-tightening on a single
-session's measurement. (Per the ``avoid-update-baseline-without-verification``
-memory, baselines should not be tightened on optimistic single-session
-data; the headroom here is intentional.)
+Decision (2026-05-18): removed from ``BIMODAL_BENCHMARKS`` in
+``run_regression.py`` so the PR-time gate (``--skip-bimodal``) now covers
+it. The baseline ``rust_time = 3.5s`` is left as-is — it gives ~42%
+headroom over the 2.48s worst-case sample and ~15% above the 2026-05-13
+3.06s sample, preserving room for natural drift without re-tightening on
+a single session's measurement. (Per the
+``avoid-update-baseline-without-verification`` memory, baselines should
+not be tightened on optimistic single-session data; the headroom here is
+intentional.)
+
+.. note::
+
+   **Superseded 2026-05-22.** This removal was reverted four days later
+   when ralph iter-2 caught the bench at 5.21s and a 15-sample
+   re-validation re-confirmed a multi-modal distribution. The bench is
+   back in ``BIMODAL_BENCHMARKS`` (commit ``e30214e88``). See
+   `2026-05-22 — unbreakable_1 re-bimodalized`_.
 
 Cached ``python_time = 1.602s`` gives a current speedup of
 ~0.65x (1.602 / 2.46). The PR-time SLA gate (default fail at 0.5x,
@@ -287,8 +305,9 @@ hold. Distribution has shifted from the historic clean bimodal split
 Slow-mode max 17.44s stays within the +15% threshold for the 16.0s
 baseline (18.4s), so the baseline is left unchanged. Median 11.98s
 gives a current speedup of ~0.49x against cached ``python_time = 5.833s``;
-the mean 12.69s gives ~0.46x, consistent with the 0.4x reported in
-``CLAUDE.md``.
+the mean 12.69s gives ~0.46x, with the longer-tail mean pulling the
+typical figure toward ~0.4x (see the per-bench table in
+:doc:`rust_engine`).
 
 Decision: **retained in** ``BIMODAL_BENCHMARKS``. The slow-mode tail
 (17.x s) still exceeds 1× python time by ~3×, and the structural
@@ -297,6 +316,48 @@ sources (x87 transcendental fallback per
 The PR-time gate ``--skip-bimodal`` continues to exclude this benchmark
 so a slow-mode run does not flake a PR. See bd memory
 ``benchmark-sokohashv2-2026-05-18``.
+
+2026-05-22 — unbreakable_1 re-bimodalized
+-----------------------------------------
+
+Four days after the 2026-05-18 removal, the ralph iter-2 gate flagged
+``google2016_unbreakable_1`` at **5.21s** against its 3.5s baseline. A
+15-sample re-validation on HEAD ``14187073d`` found the bench had **not**
+stayed unimodal — it had reorganized into a multi-modal distribution
+with a fast mode well below the old median and a re-emergent slow tail:
+
+.. code-block:: text
+
+   15-sample distribution (HEAD 14187073d):
+     0.91–0.99s | 11   (fast mode)
+     1.15s      |  2   (mid)
+     1.86s      |  1   (slow)
+     2.65s      |  1   (slow tail)
+   plus the gate sample at 5.21s extending the tail further
+
+The fast mode (~0.97s median) is ~3.6× faster than the 2026-05-18
+median (2.46s). Post-May-18 perf gains — likely angr-b58a (UltraPage
+memcmp + lazy-region FFI), angr-zdho (z3_ast cache instrumentation), and
+angr-9jly (proxy fast-path) — appear to have *widened* the gap between
+the fast and slow Z3 modes rather than collapsing them. SLA at the fast
+mode would be 1.65× (1.602s Python / 0.97s Rust median) — a new best if
+not for the slow tail.
+
+Spike conclusion (category c per the taxonomy): the slow tail is Z3
+SAT-heuristic nondeterminism, not an actionable Rust bug. The
+``BIMODAL_BENCHMARKS`` gate is the correct mitigation.
+
+Decisions:
+
+- **Re-added to** ``BIMODAL_BENCHMARKS`` in commit ``e30214e88`` (spike
+  angr-pfy4 / re-add bead angr-ja0i), reverting the 2026-05-18 removal so
+  ``--skip-bimodal`` excludes it from the PR-time gate again; the nightly
+  gate continues to track drift.
+- ``rust_time`` baseline left at **3.5s** — it covers the fast mode and
+  the bulk of the distribution; the rare 5.21s tail is exactly the kind
+  of Z3-nondeterministic spike ``--skip-bimodal`` exists to absorb.
+- See :doc:`rust_engine` ("Other benchmarks below 1.0x") for the full
+  per-bench table entry.
 
 2026-06-02 — hackcon2016_angry-reverser joins the bimodal set
 ------------------------------------------------------------
@@ -361,9 +422,9 @@ Per-bench summary lines (``summary: n=20 min=… median=… …``) and a
 Related memories
 ----------------
 
-- ``invariant-bimodal-variance-benchmarks`` — historical 9.5s/15.4s
-  and 7.8s/15s figures (now superseded by the 2026-05-13 campaign).
-- ``invariant-sla-bimodal-unbreakable1`` — historical 1.4–3.3s range
-  (now superseded; unbreakable_1 has unimodalized at 3.03s).
+- ``benchmark-bimodal-variance-rules`` — consolidated rules for the four
+  bimodal benches and how the gate handles them (supersedes the pruned
+  ``invariant-bimodal-variance-benchmarks`` and
+  ``invariant-sla-bimodal-unbreakable1`` historical-figure memories).
 - ``pr-bench-gate-jitter-risk`` — context for why ``--skip-bimodal``
   exists in the PR-time gate.
