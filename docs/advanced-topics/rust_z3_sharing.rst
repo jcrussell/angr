@@ -108,8 +108,7 @@ states travel through three phases:
    (``z3_assertions_shared``) and a per-fork ``Vec<Bool>``
    (``LocalConstraints::z3_assertions``). The split exists so a fork
    with no new constraints is an ``Arc::clone`` instead of a deep
-   copy — see the ``arc-shared-z3-cache`` bd memory for design
-   history.
+   copy.
 3. **Fork.** ``SymContext::fork()`` "freezes self": when not inside
    a ``push()`` transaction, ``local_constraints.z3_assertions`` is
    drained into ``z3_assertions_shared`` (under ``Arc::get_mut``
@@ -143,8 +142,9 @@ assertion list directly. It is structurally unsuitable: when source
 and destination contexts are the same — the case for every fork under
 our shared-context design — ``Z3_solver_translate`` returns a solver
 with **zero** assertions, silently losing the entire constraint set.
-See the ``avoid-z3-solver-translate-same-context`` bd memory for the
-reproducer and verdict.
+A standalone reproducer lives at
+``native/angr/tests/z3_translate_spike.rs``; this engine therefore never
+uses ``Z3_solver_translate`` to fork a solver.
 
 Push/pop discipline
 -------------------

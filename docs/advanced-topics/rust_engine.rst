@@ -478,10 +478,9 @@ re-built **lazily** on the child's first solver query
 (``z3_materialize_count``); the parent's accumulated assertions
 propagate via the ``z3_assertions_shared: Arc<Vec<z3::ast::Bool>>``
 that is frozen on each fork and shared by structural reference. No
-``Z3_solver_translate`` is invoked (that path is documented at
-``z3-solver-translate-same-context-bug-z3-solver`` — it loses every
-assertion on a same-context solver, so the engine deliberately avoids
-it).
+``Z3_solver_translate`` is invoked (that path loses every assertion on
+a same-context solver, so the engine deliberately avoids it — see the
+"Why not ``Z3_solver_translate``?" section of :doc:`rust_z3_sharing`).
 
 In-flight push/pop on a single state's solver is balanced inside a
 ``with_z3_solver(|solver| { ... })`` closure at every call site:
@@ -614,8 +613,7 @@ Z3 simplification touches the engine in three places:
 
 Concrete sample data is too thin to make a routing decision: across
 the surveyed benches the sampled-population is 1–2 calls and the
-reduced-count is the same number (100%). The
-``1joc-simplify-sample-too-small`` memory already flagged this — at
+reduced-count is the same number (100%). This was already flagged — at
 stride 64 even ``ais3_crackme``'s 120 ``z3_assume_symbolic`` calls
 yields only ~2 samples. A full-population run (stride 1) would
 quantify the reduction rate per bench, but it would also tank the
@@ -977,8 +975,8 @@ zero-cost when not read. They reset alongside the Z3 counters via
   constraint-export / lineage-switch work for nothing. The HashSet
   overhead (one ``insert`` + ``contains`` per add) is bounded above
   by ``add_constraint_raw_total`` * O(hash), trivial against the
-  ``z3_check`` time it gates. See ``angr-dtrl`` for the audit and
-  ``sfp9-dedup-null-result`` bd memory for the original wall-clock A/B.
+  ``z3_check`` time it gates. See ``angr-dtrl`` for the audit and the
+  original wall-clock A/B.
 
 Sample output on ``defcamp_r100`` (Rust engine, 3 SAT paths):
 
@@ -2470,9 +2468,7 @@ PyO3 dispatch path. The four entry points covered by
   procedure. ``is_hooked(addr)`` returns ``False`` after the call.
 
 Hooks are heavily exercised by the benchmark suite (``flareon2015_5``,
-``flareon2015_10``, ``whitehatvn2015_re400`` and others — see the
-``bench-simprocedure-fallback-distribution`` memory for the per-bench
-``UserHook`` fallback counts), but the explicit smoke tests pin the
+``flareon2015_10``, ``whitehatvn2015_re400`` and others), but the explicit smoke tests pin the
 contract end-to-end so a regression here fails loudly rather than as
 a benchmark slowdown.
 
@@ -3024,9 +3020,9 @@ entries across all 45 manager instances, with a manual
 hypothesis no longer holds:
 
 #. claripy migrated its caches to ``WeakValueDictionary`` and removed
-   the public ``clear_all_caches()`` entry point. The memory
-   ``avoid-trusting-stale-cache-clear-speedup`` records the 2026-05-17
-   verification.
+   the public ``clear_all_caches()`` entry point (verified 2026-05-17);
+   the earlier ~23% "speedup" was an artifact of measuring against a
+   stale cache, not a real win.
 #. The Rust-side ``clear_ast_cache()`` PyO3 hook (angr-518z) targets
    only the Rust translation-side LRUs, not Python claripy state, and
    measured 0% gain on mma_howtouse (angr-gra3 validation,
@@ -3041,8 +3037,7 @@ hypothesis no longer holds:
 * Rust: median 7.39s, range 7.25–7.45s, peak_mem 276–277MB.
 * Speedup: 0.59x (5/5 OK, no failures, very tight variance — not
   bimodal).
-* Tracks the validated ``benchmark-mma-howtouse-2026-05-17-final``
-  memory (HEAD 17ab6787a: 7.32s / 4.29s = 0.58x).
+* Validated at HEAD 17ab6787a (7.32s / 4.29s = 0.58x).
 
 The ``baseline_timings.json`` rust_time of 6.513s pre-dates the post
 angr-9maq / angr-gra3 / angr-8t45 wave; current Rust time sits ~13%
@@ -3103,7 +3098,7 @@ follow-up fixes landed against the 36.7 ms per-Callable Memory sync:
 
 Together these brought Rust wall from ~7.23 s to ~6.26 s
 (0.59× → 0.70×) and per-Callable total memory sync from ~39 ms to
-~5 ms (see bd memory ``bzsc-mma-sync-phase-breakdown``). The
+~5 ms (bead ``angr-bzsc``). The
 remaining ~2 s gap is spread across phases too small individually
 to be worth attribution.
 
@@ -3121,11 +3116,8 @@ documentation-resolved per ``angr-ed7j-doc-resolution``.
 ``342df4a7f`` (2026-05-02), bringing peak to ~285MB. The current 0.59x
 slowdown is purely CPU time.
 
-**Relevant memories:** ``benchmark-mma-howtouse-2026-05-17-final``,
-``avoid-trusting-stale-cache-clear-speedup``,
-``mma-howtouse-leak-source``,
-``benchmark-mma-howtouse-leak-fix``,
-``angr-ed7j-doc-resolution``.
+**Relevant memories:** ``benchmark-mma-howtouse-cprofile-attribution``,
+``i9f2-mma-howtouse-attribution`` (bead ``angr-ed7j``).
 
 **See also:** :doc:`rust_engine_flame_comparison` for a side-by-side
 cProfile reading of mma_howtouse and sym-write under both engines —
@@ -3174,8 +3166,7 @@ inside Z3.
 nothing in the engine controls it. The x87 transcendental code path
 *is not exercised* on this benchmark (verified 2026-05-23 via counters
 dump), so implementing them natively would not move sokohashv2. See bd
-memory ``sokohashv2-no-transcendental-hits-2026-05-23`` and
-``angr-9l1y-closed-2026-05-23``.
+memory ``sokohashv2-two-bugs`` (bead ``angr-9l1y``).
 
 **2026-05-18 re-validation (post-fix):** After the angr-ctct
 (commit ``c6b2824cb``) + angr-fv81 (commit ``13bb9f741``) memory-sync
@@ -3191,20 +3182,16 @@ The clean bimodal "~9.5s OR ~15.4s" picture has softened into a
 trimodal-ish spread with a dominant mid-mode around 12s. Slow-mode max
 17.44s stays within baseline+15% (18.4s) so the 16.0s baseline is left
 unchanged. Median 11.98s gives ~0.49x; the typical 0.4x in
-``CLAUDE.md`` reflects the longer-tail mean. See bd memory
-``benchmark-sokohashv2-2026-05-18``.
+``tests/benchmarks/baseline_timings.json`` reflects the longer-tail mean.
 
-**Relevant memories:** ``avoid-silent-zero-raw-fallback``,
-``invariant-bimodal-variance-benchmarks``,
-``benchmark-perf-wins-2026-05-09``,
-``benchmark-sokohashv2-2026-05-18``,
-``sokohashv2-no-transcendental-hits-2026-05-23``.
+**Relevant memories:** ``benchmark-bimodal-variance-rules``,
+``sokohashv2-two-bugs``.
 
 Other benchmarks below 1.0x
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-These are listed in the CLAUDE.md performance table but were not the
-focus of angr-ed7j. Captured here for completeness so future drift can
+These are tracked in ``tests/benchmarks/baseline_timings.json`` but were
+not the focus of angr-ed7j. Captured here for completeness so future drift can
 be tracked.
 
 .. list-table::
@@ -3287,8 +3274,8 @@ be tracked.
      - Bimodal; 2026-05-13 campaign measured ~7.95s OR ~21.4s
        (15× slow, 5× fast over 20 runs). Baseline raised from 16.0s
        to 22.0s to cover slow mode. See
-       :doc:`rust_bimodal_variance` and
-       ``invariant-bimodal-variance-benchmarks``.
+       :doc:`rust_bimodal_variance` and bd memory
+       ``benchmark-bimodal-variance-rules``.
 
 PyO3 API trust model
 --------------------
@@ -4176,8 +4163,7 @@ alone — fixing any one in isolation does not enable parallelism.
    pure single-threaded CoW idiom. Cost to convert: large, touches
    every state-creation path. Replacing ``Rc`` with ``Arc`` is cheap;
    ``RefCell`` → ``Mutex`` introduces lock contention on the constraint
-   hot path (``assume_*``, ``add_constraint_raw`` — see
-   ``add-constraint-raw-dedup-83pct-csaw`` memory: 82.5 % of csaw_wyvern
+   hot path (``assume_*``, ``add_constraint_raw`` — 82.5 % of csaw_wyvern
    calls hit dedup, so the lock would be heavily contended).
 
 **2. Z3 context thread-locality (z3-rs 0.19+).** The z3-rs crate uses

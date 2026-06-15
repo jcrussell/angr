@@ -87,8 +87,8 @@ state — Z3 walks the AST internally with one ``Z3_translate`` call.
   task): translate is <5 % of runtime. **Viable.**
 * Per-step migration: translate dominates. **Not viable.**
 
-Full numbers and methodology: bd memory ``59jk2-translate-cost``,
-``native/angr/tests/z3_translate_spike.rs``.
+Full numbers and methodology: the ``z3_translate_spike`` test at
+``native/angr/tests/z3_translate_spike.rs`` (bead ``angr-59jk``).
 
 
 Current Rust threading model

@@ -72,8 +72,8 @@ worst case.
 
    summary: min=7.94s median=21.39s max=21.53s mean=18.05s stdev=5.98s
 
-The slow mode has drifted from the historical ~15s (recorded in memory
-``invariant-bimodal-variance-benchmarks``) to ~21.4s. The current
+The slow mode has drifted from the historical ~15s (recorded in bd
+memory ``benchmark-bimodal-variance-rules``) to ~21.4s. The current
 baseline ``rust_time = 16.0s`` no longer absorbs it — 15× of 20 runs
 exceed even the +15% threshold (16.0 × 1.15 = 18.4s). Baseline has been
 raised to ``22.0s`` to cover the slow mode plus headroom.
@@ -268,8 +268,8 @@ a current speedup of ~0.73x (slow mode) or 1.97x (fast mode, 15.756 /
 defaults (fail < 0.5x, warn < 1.0x), this prints a WARN line and does
 not fail.
 
-Structural floor: as recorded in ``fairlight-bottleneck`` and
-``benchmark-fairlight-2026-05`` memories, Z3 ``check()`` accounts for
+Structural floor: as recorded in the ``fairlight-bottleneck`` bd
+memory, Z3 ``check()`` accounts for
 ~95% of wall-clock time in this benchmark; the only known further
 optimization (``LAZY_SOLVES``) gave ~0.65s upper bound (25x) in a
 synthetic test but requires correctness proofs that have not been
@@ -311,11 +311,10 @@ typical figure toward ~0.4x (see the per-bench table in
 
 Decision: **retained in** ``BIMODAL_BENCHMARKS``. The slow-mode tail
 (17.x s) still exceeds 1× python time by ~3×, and the structural
-sources (x87 transcendental fallback per
-``avoid-silent-zero-raw-fallback``, Z3 nondeterminism) are unchanged.
+sources (x87 transcendental fallback, Z3 nondeterminism) are unchanged.
 The PR-time gate ``--skip-bimodal`` continues to exclude this benchmark
-so a slow-mode run does not flake a PR. See bd memory
-``benchmark-sokohashv2-2026-05-18``.
+so a slow-mode run does not flake a PR. Root cause: ``sokohashv2-two-bugs``
+bd memory; current timings in ``tests/benchmarks/baseline_timings.json``.
 
 2026-05-22 — unbreakable_1 re-bimodalized
 -----------------------------------------
@@ -395,7 +394,7 @@ Decisions:
   built-in margin.
 - Added to ``BIMODAL_BENCHMARKS`` so ``--skip-bimodal`` excludes it
   from the PR-time gate; the nightly gate continues to track drift.
-- See bd memory ``hackcon-signext-root-cause`` for the full spike
+- See bd memory ``hackcon-z3-ast-structure`` for the full spike
   writeup including the construction-site analysis.
 
 Reproducing
@@ -423,8 +422,7 @@ Related memories
 ----------------
 
 - ``benchmark-bimodal-variance-rules`` — consolidated rules for the four
-  bimodal benches and how the gate handles them (supersedes the pruned
-  ``invariant-bimodal-variance-benchmarks`` and
-  ``invariant-sla-bimodal-unbreakable1`` historical-figure memories).
+  bimodal benches and how the gate handles them (supersedes two pruned
+  historical-figure memories from the 2026-06 memory prune).
 - ``pr-bench-gate-jitter-risk`` — context for why ``--skip-bimodal``
   exists in the PR-time gate.

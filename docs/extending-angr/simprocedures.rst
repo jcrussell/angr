@@ -333,8 +333,8 @@ Add one only if all of these are true:
 
 * The function is called *frequently* under the Rust engine — typically a
   libc primitive that shows up in callback-frequency profiles
-  (see the ``z3_check_count`` / fallback counters in ``CLAUDE.md`` →
-  *Z3 Solver Profiling Counters*).
+  (see the ``z3_check_count`` / fallback counters in the *Z3 solver
+  profiling counters* section of :doc:`../advanced-topics/rust_engine`).
 * It has a well-defined contract that you can implement byte-for-byte
   against ``RustSimState`` (or you have an explicit, documented
   approximation, like ``strlen``'s ``MAX_STRLEN`` cap).
@@ -760,8 +760,7 @@ the string-to-numeric family, env mutation, and extended string ops.
        ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
        ``tolower``, ``toupper``
      - 10 / 10
-     - ``ctype.rs`` (symbolic-aware, see ``ctype-symbolic-pattern``
-       memory)
+     - ``ctype.rs`` (symbolic-aware helper pattern lives in the file)
    * - String → integer (pre-campaign)
      - ``strtol``, ``atoi``
      - 2 / 2

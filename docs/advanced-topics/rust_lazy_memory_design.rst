@@ -69,8 +69,9 @@ memories:
   ``angr-3tek``, but the underlying eager-store cost still bites
   symbolic-heavy variants).
 * ``unbreakable_1`` — high variance bimodal Z3 mode in part driven by
-  ITE chain depth interacting with the model picker
-  (``benchmark-google2016-unbreakable-1-regression``).
+  ITE chain depth interacting with the model picker (see
+  :doc:`rust_bimodal_variance`; current timings in
+  ``tests/benchmarks/baseline_timings.json``).
 * ``mma_howtouse`` — 0.7× — separate root cause (claripy AST cache
   growth across ``Callable`` invocations), called out here only
   because it is sometimes confused with the eager-store cost.
@@ -241,9 +242,7 @@ z3-rs 0.19 (the version pinned in ``native/angr/Cargo.toml``) does
 expose ``Array::store``/``select`` — confirmed in
 ``z3-0.19.7/src/ast/array.rs``. No version bump needed. There is no
 existing Z3 array usage anywhere under
-``native/angr/src/symbolic/`` (memory
-``invariant-lazy-mem-deferred-2026-05-09`` confirmed by grep on
-2026-05-09).
+``native/angr/src/symbolic/`` (confirmed by grep on 2026-05-09).
 
 Pros:
 
@@ -252,8 +251,7 @@ Pros:
   concretization.
 * No upfront concretization means the address ↔ value relationship
   is preserved across the whole store chain — solving the
-  ``read_fallback_any`` loss-of-relationship issue noted in
-  ``invariant-lazy-mem-deferred-2026-05-09``.
+  ``read_fallback_any`` loss-of-relationship issue.
 
 Cons:
 

@@ -506,8 +506,8 @@ Rationale:
   is paid down by the larger refactor.
 * The mma_howtouse / hackcon residual gaps turn out to be in
   the diff-and-push path (not the case today — both are in
-  ``state_create`` or Z3-shape mismatches per
-  ``9maq-root-cause`` / the hackcon `rust_engine` notes).
+  ``state_create`` or Z3-shape mismatches per bd memory
+  ``9maq-bisect-method`` / the hackcon :doc:`rust_engine` notes).
 
 
 Open questions (if reopened)
