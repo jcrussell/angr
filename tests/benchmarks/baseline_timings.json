@@ -39,6 +39,14 @@
     "state_creations": 0,
     "steps": 0
   },
+  "CADET_00001_partial": {
+    "callback_count": 0,
+    "peak_memory_mb": 545.0,
+    "python_time": 11.8,
+    "rust_time": 8.24,
+    "state_creations": 0,
+    "steps": 0
+  },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
     "peak_memory_mb": 385.0,

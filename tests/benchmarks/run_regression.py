@@ -187,6 +187,13 @@ FAST_SUITE = [
 
 # Medium tier: 10-60s, run with --full
 MEDIUM_SUITE = [
+    # Convergent subset (phases 1+2) of CADET_00001's upstream solve.py
+    # (angr-027h). Wrapper in synthetic_examples/ skips the pathological
+    # phase-3 step-loop egg hunt (see the CADET_00001 catalog note in
+    # run_single.py and bd memory benchmark-cadet-phase3-not-a-bench). Both
+    # engines converge — Rust ~6.9s vs Py ~11.8s — so it is NOT rust_only;
+    # the explore(find=) speedup is worth tracking.
+    ("CADET_00001_partial", 120),
     ("sym-write", 60, "bfs", True),
     ("flareon2015_5", 60, "bfs", True),
     ("flareon2015_10", 60),
@@ -231,6 +238,11 @@ BIMODAL_BENCHMARKS = frozenset(
         "ekopartyctf2016_sokohashv2",
         "google2016_unbreakable_1",
         "hackcon2016_angry-reverser",
+        # angr-027h: the CADET easter-egg explore(find=) over symbolic stdin
+        # hits multi-solution unconstrained jumps; 4 samples clustered into two
+        # modes (~6.8s/411MB and ~8.2s/545MB) from Z3 model nondeterminism.
+        # baseline_timings uses the slow mode so the gate tolerates both.
+        "CADET_00001_partial",
     }
 )
 

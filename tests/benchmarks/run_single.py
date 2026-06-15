@@ -109,7 +109,12 @@ EXAMPLE_CATALOG = {
     "CADET_00001": {
         "tier": "medium",
         "rust_ok": False,
-        "notes": "CGC challenge: Py 22s (buffer-overflow + 2x easter-egg explore). Rust post-angr-rdgs (e16ca3bf3) has all 7 CGC syscalls native + buffer-overflow phase passes in ~0.1s. angr-vx8p.3 (2026-06-13) fixed the stdin-sync gap: cgc.rs receive() now records stdin_symbols so posix.dumps(0) returns the crashing input (regression: TestCgcReceiveStdinSync). REMAINING blocker: easter-egg phase (sm.explore find=0x804833E) still does not converge under Rust — solve.py raises IndexError at sm.found[0] in ~4.3s — so the bench stays python-only in baseline_timings.json (rust_time=null). See angr-zgk6 and bd memory benchmark-cadet-cgc-partial-unblock for the remaining convergence plan.",
+        "notes": "Full upstream solve.py is NOT a viable end-to-end Rust bench (angr-027h): its 3 phases need mutually exclusive manager configs. Phase 2 (easter-egg explore(find=)) converges only with the two-phase eager retry, which DROPS unconstrained forks; phase 3 (raw 'while True: sm.step()' egg hunt) converges only with set_block_granular(True)+set_materialize_unconstrained_forks(True) (angr-bmyx/angr-ckdy) and is fundamentally heavy (~538 block-granular steps, ~158s, growing active stash). No single config runs all 3 phases competitively (full run TIMEOUTs >280s vs Py 22s). The convergent subset (phases 1+2) is benched separately as CADET_00001_partial. See bd memory benchmark-cadet-phase3-not-a-bench.",
+    },
+    "CADET_00001_partial": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "angr-027h: convergent subset of CADET_00001's upstream solve.py — phase 1 (buffer-overflow step-until-unconstrained) + phase 2 (easter-egg sm.explore(find=0x804833E)). Skips the upstream phase-3 raw step-loop egg hunt, which is pathological under Rust (see CADET_00001 entry). Wrapper lives in synthetic_examples/. Both phases converge: Rust ~4.2s vs Py ~10s explore-path (2.4x). The wrapper chdirs to the upstream CADET_00001 dir so ./CADET_00001 resolves.",
     },
     "ekopartyctf2015_rev100": {
         "tier": "medium",
