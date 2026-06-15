@@ -12,6 +12,7 @@ mod handle;
 #[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
 pub mod registry;
+mod sharing;
 #[cfg(feature = "vex-engine-z3")]
 mod solver_build;
 mod stats;
@@ -20,12 +21,10 @@ mod value;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
 
-pub use context::{
-    ConstraintSharingStats, ConstraintSharingWalk, ConstraintSyncError, DEFAULT_SOLVER_TIMEOUT_MS,
-    SymContext, SymContextSnapshot,
-};
+pub use context::{ConstraintSyncError, DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
 pub use handle::RustBVHandle;
 pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};
+pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 pub use stats::{
     VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
     record_concretize_disjunction, record_concretize_read, record_concretize_write,
