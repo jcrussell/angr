@@ -1,0 +1,70 @@
+# Prebuilt manylinux wheel for the Rust engine.
+#
+# PROTOTYPE — committed UNVERIFIED (bd bead angr-ivwn). See
+# docs/advanced-topics/rust_wheel_distribution.rst for the design rationale.
+#
+# The crux: the Rust cdylib and claripy must load the SAME libz3.so at runtime
+# (AST passthrough hands Z3 Ast pointers across the FFI boundary — a pointer is
+# only valid in its own Z3_context). Therefore this job MUST NOT let auditwheel
+# vendor libz3 into the wheel (that would give the extension a private, second
+# Z3 context). Instead it EXCLUDES libz3.so and relativizes RUNPATH to the
+# z3-solver wheel's install dir ($ORIGIN/../z3/lib). z3-solver is a runtime dep
+# (pinned 4.13.0.0 transitively via claripy==9.2.209 — do not widen; see the
+# avoid-pip-install-deps bd memory and the unversioned-SONAME warning in the memo).
+#
+# Verification (clean-venv install + make test-quick + AST-passthrough smoke)
+# can only run in CI with Docker — it cannot be exercised in the dev sandbox.
+
+name: Wheels
+
+on:
+  workflow_dispatch:
+  # Enable on tags once verified:
+  # push:
+  #   tags:
+  #     - "v*"
+
+jobs:
+  build_wheels:
+    name: Build manylinux wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+        env:
+          # Linux x86_64 only for the prototype. CPython 3.10–3.13.
+          CIBW_BUILD: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          # build.rs needs the Rust toolchain + z3 headers + z3-solver's libz3.so.
+          # Headers are BUILD-TIME ONLY; they never enter the wheel.
+          CIBW_BEFORE_ALL_LINUX: >
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
+            (yum install -y zlib-devel || true)
+          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
+          # z3-solver must be importable so build.rs::find_z3_pkg_from_python
+          # resolves libz3.so; libz3-dev supplies z3.h for z3-sys bindgen.
+          CIBW_BEFORE_BUILD_LINUX: >
+            pip install z3-solver==4.13.0.0 patchelf &&
+            (yum install -y z3-devel || pip download z3-solver==4.13.0.0 >/dev/null) &&
+            echo "NOTE: z3.h must be present — set Z3_SYS_Z3_HEADER if z3-devel is unavailable in the manylinux image"
+          # DO NOT vendor libz3: exclude it, then point RUNPATH at the
+          # z3-solver wheel's lib dir (sibling of angr/ in site-packages).
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            auditwheel repair --exclude libz3.so --exclude libz3.so.* -w {dest_dir} {wheel} &&
+            for w in {dest_dir}/*.whl; do
+              python -m wheel unpack "$w" -d /tmp/wh &&
+              patchelf --set-rpath '$ORIGIN/../z3/lib' /tmp/wh/*/angr/rustylib*.so &&
+              python -m wheel pack /tmp/wh/* -d {dest_dir} &&
+              rm -rf /tmp/wh;
+            done
+          # Verify the repaired wheel installs clean and resolves the shared libz3.
+          CIBW_TEST_REQUIRES: "pytest"
+          CIBW_TEST_COMMAND: >
+            python -c "import angr, z3, os; print('z3 lib:', os.path.dirname(z3.__file__))" &&
+            python -c "import angr; m=angr.exploration.RustExplorationManager; print('rust engine import OK')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-manylinux-x86_64
+          path: ./wheelhouse/*.whl

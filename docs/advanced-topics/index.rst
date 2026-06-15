@@ -15,6 +15,7 @@ Advanced Topics
    rust_lazy_memory_design
    rust_parallel_design
    rust_proxy_writes_design
+   rust_wheel_distribution
    rust_z3_sharing
    file_system
    ir
