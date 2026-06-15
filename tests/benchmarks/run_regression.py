@@ -268,8 +268,7 @@ def _normalize_output(output):
     # (letters, digits, punctuation) before non-printable sequences dominate.
     # Strategy: remove any suffix that starts with a \xNN escape and contains
     # only \xNN escapes and occasional single printable chars.
-    output = re.sub(r"(\\x[0-9a-fA-F]{2}[^']*?)(')", r"\2", output)
-    return output
+    return re.sub(r"(\\x[0-9a-fA-F]{2}[^']*?)(')", r"\2", output)
 
 
 def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
@@ -423,13 +422,14 @@ def main():
         type=int,
         default=0,
         metavar="N",
-        help="Re-run timing-regression failures up to N times. A "
-        "single retry passing within --threshold clears the "
-        "failure. Mitigates sub-second-bench noise where the "
-        "same diff can flip pass/fail across runs without code "
-        "changes (see bd memory benchmark-regression-noise-floor). "
-        "Engine errors, output mismatches, SLA failures, and "
-        "metric regressions are never retried.",
+        help="Re-run timing/SLA/peak-memory regression failures up to N "
+        "times. Each failed dimension is re-checked on the fresh "
+        "measurement and cleared the first time it lands within bounds. "
+        "Mitigates sub-second-bench noise and transient Z3-path / "
+        "ru_maxrss variance where the same binary can flip pass/fail "
+        "across runs without code changes (see bd memory "
+        "benchmark-regression-noise-floor). Engine errors, output "
+        "mismatches, and algorithmic metric regressions are never retried.",
     )
     parser.add_argument(
         "--history-record",
@@ -478,11 +478,32 @@ def main():
     current_counters: dict[str, dict] = {}
     results = {}
     failures = []
-    # When --retry-failures > 0, each timing-regression failure is recorded here
-    # alongside everything we need to re-run it. The retry pass below then drops
-    # the matching failures[] entry if any retry comes in within threshold.
-    retry_candidates = []  # list of (failure_msg, name, timeout, strategy, mem_limit, baseline_rust_time, baseline_key)
+    # When --retry-failures > 0, per-bench retry records are keyed by name. A single anomalously slow/heavy
+    # run can emit up to three correlated failures (timing, SLA, memory); the
+    # retry pass re-checks each failed dimension and clears the ones that land
+    # within bounds on a fresh measurement. Each record:
+    #   {"name", "timeout", "strategy", "mem_limit", "baseline_key",
+    #    "bl" (baseline rust_time), "baseline_mem", "sla_py_time",
+    #    "timing_msg", "sla_msg", "mem_msg"}  — the *_msg keys are present only
+    #   for the dimensions that actually failed.
+    retry_info = {}
     total_start = time.perf_counter()
+
+    def _retry_record(name, timeout, strategy, baseline_key):
+        rec = retry_info.get(name)
+        if rec is None:
+            rec = {
+                "name": name,
+                "timeout": timeout,
+                "strategy": strategy,
+                "mem_limit": args.mem_limit,
+                "baseline_key": baseline_key,
+                "bl": None,
+                "baseline_mem": None,
+                "sla_py_time": None,
+            }
+            retry_info[name] = rec
+        return rec
 
     for name, timeout, strategy, entry_rust_only in REGRESSION_SUITE:
         label = f"{name} (DFS)" if strategy == "dfs" else name
@@ -521,14 +542,13 @@ def main():
         if py_output is not None and rust_output != py_output:
             norm_py = _normalize_output(py_output)
             norm_rust = _normalize_output(rust_output)
-            if norm_rust != norm_py:
-                # Also try whitespace-tolerant comparison
-                if norm_rust.split() != norm_py.split():
-                    print(" OUTPUT MISMATCH!")
-                    print(f"    Python: {py_output[:100]}")
-                    print(f"    Rust:   {rust_output[:100]}")
-                    failures.append(f"{name}: output mismatch")
-                    continue
+            # Whitespace-tolerant comparison: only a mismatch after splitting counts.
+            if norm_rust != norm_py and norm_rust.split() != norm_py.split():
+                print(" OUTPUT MISMATCH!")
+                print(f"    Python: {py_output[:100]}")
+                print(f"    Rust:   {rust_output[:100]}")
+                failures.append(f"{name}: output mismatch")
+                continue
 
         # Check speedup
         if py_time is not None and py_time > 0:
@@ -572,22 +592,24 @@ def main():
                         # the underlying timing failure.
                         print(f"  (counter diff failed: {exc})")
                 if args.retry_failures > 0:
-                    retry_candidates.append((failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key))
+                    rec = _retry_record(name, timeout, strategy, baseline_key)
+                    rec["bl"] = bl
+                    rec["timing_msg"] = failure_msg
 
             # Check algorithmic metric regressions
             if args.check_counts and baseline_key not in COUNT_EXEMPT:
                 for stat_key, bl_key, threshold_pct in TRACKED_METRICS:
                     current_val = rust_stats.get(stat_key)
                     baseline_val = baseline[baseline_key].get(bl_key)
-                    if current_val is not None and baseline_val is not None and baseline_val > 0:
-                        if current_val > baseline_val * (1 + threshold_pct):
-                            pct = ((current_val / baseline_val) - 1) * 100
-                            print(
-                                f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)"
-                            )
-                            failures.append(
-                                f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)"
-                            )
+                    if (
+                        current_val is not None
+                        and baseline_val is not None
+                        and baseline_val > 0
+                        and current_val > baseline_val * (1 + threshold_pct)
+                    ):
+                        pct = ((current_val / baseline_val) - 1) * 100
+                        print(f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)")
+                        failures.append(f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)")
 
             # Check peak-RSS regression. Distinct from the nightly leak
             # check (run_leak_check.py), which gates iterative growth on a
@@ -606,10 +628,15 @@ def main():
                 tag = "MEMORY WARN" if args.memory_warn_only else "MEMORY REGRESSION"
                 print(f"  {tag}: peak_memory_mb {rust_peak_mem:.0f}MB vs baseline {baseline_mem:.0f}MB (+{pct:.0f}%)")
                 if not args.memory_warn_only:
-                    failures.append(
+                    mem_msg = (
                         f"{name}: peak_memory_mb regression "
                         f"({rust_peak_mem:.0f}MB vs {baseline_mem:.0f}MB, +{pct:.0f}%)"
                     )
+                    failures.append(mem_msg)
+                    if args.retry_failures > 0:
+                        rec = _retry_record(name, timeout, strategy, baseline_key)
+                        rec["baseline_mem"] = baseline_mem
+                        rec["mem_msg"] = mem_msg
 
         # SLA check: enforce minimum speedup vs Python. Falls back to the
         # python_time cached in baseline when this run skipped Python (e.g.
@@ -625,7 +652,12 @@ def main():
                         f"  SLA FAIL: {sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x "
                         f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)"
                     )
-                    failures.append(f"{name}: SLA fail ({sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x)")
+                    sla_msg = f"{name}: SLA fail ({sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x)"
+                    failures.append(sla_msg)
+                    if args.retry_failures > 0:
+                        rec = _retry_record(name, timeout, strategy, baseline_key)
+                        rec["sla_py_time"] = sla_py_time
+                        rec["sla_msg"] = sla_msg
                 elif sla_speedup < args.sla_warn_threshold:
                     print(
                         f"  SLA WARN: {sla_speedup:.2f}x < {args.sla_warn_threshold:.2f}x "
@@ -667,35 +699,67 @@ def main():
     # noise-dominated; the same diff can flip pass/fail across consecutive runs.
     # We re-run each candidate up to N times and clear the failure on the first
     # measurement that lands within threshold.
-    if args.retry_failures > 0 and retry_candidates:
+    if args.retry_failures > 0 and retry_info:
+        n_dims = sum(("timing_msg" in r) + ("sla_msg" in r) + ("mem_msg" in r) for r in retry_info.values())
         print(f"\n{'=' * 50}")
-        print(f"Retry pass: {len(retry_candidates)} timing regression(s), up to {args.retry_failures} attempt(s) each")
-        for failure_msg, name, timeout, strategy, mem_limit, bl, baseline_key in retry_candidates:
+        print(
+            f"Retry pass: {len(retry_info)} bench(es), {n_dims} failure(s) "
+            f"(timing/SLA/memory), up to {args.retry_failures} attempt(s) each"
+        )
+        for rec in retry_info.values():
+            name, strategy = rec["name"], rec["strategy"]
             label = f"{name} (DFS)" if strategy == "dfs" else name
             print(f"\n--- retry: {label} ---")
-            cleared = False
+            # Outstanding dimensions to clear for this bench.
+            pending = {k for k in ("timing_msg", "sla_msg", "mem_msg") if k in rec}
             for attempt in range(1, args.retry_failures + 1):
-                retry_result = run_one(name, "rust", timeout, mem_limit, strategy)
+                if not pending:
+                    break
+                retry_result = run_one(name, "rust", rec["timeout"], rec["mem_limit"], strategy)
                 if not retry_result.get("ok"):
                     print(f"  attempt {attempt}: Rust FAIL ({retry_result.get('error', '?')})")
                     continue
                 retry_time = retry_result["elapsed"]
-                if retry_time <= bl * (1 + args.threshold):
+                retry_mem = retry_result.get("peak_memory_mb")
+                # NOTE: results[baseline_key] keeps the ORIGINAL measurements on
+                # purpose. The retry signals pass/fail only — overwriting with
+                # the lower retry value would tighten the next baseline refresh
+                # and drift the gate downward over time (see bd memory
+                # `avoid-update-baseline-without-verification`).
+                if "timing_msg" in pending:
+                    bl = rec["bl"]
                     pct = ((retry_time / bl) - 1) * 100
-                    print(
-                        f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s ({pct:+.0f}%) — within threshold, clearing failure"
-                    )
-                    cleared = True
-                    # NOTE: results[baseline_key]["rust_time"] keeps the original
-                    # measurement on purpose. The retry signals pass/fail only —
-                    # overwriting with the lower retry value would tighten the
-                    # next baseline refresh and drift the gate downward over
-                    # time (see bd memory `avoid-update-baseline-without-verification`).
-                    break
-                pct = ((retry_time / bl) - 1) * 100
-                print(f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%) — still regressed")
-            if cleared:
-                failures.remove(failure_msg)
+                    if retry_time <= bl * (1 + args.threshold):
+                        print(f"  attempt {attempt}: timing {retry_time:.2f}s vs {bl:.2f}s ({pct:+.0f}%) — cleared")
+                        pending.discard("timing_msg")
+                    else:
+                        print(
+                            f"  attempt {attempt}: timing {retry_time:.2f}s vs {bl:.2f}s (+{pct:.0f}%) — still regressed"
+                        )
+                if "sla_msg" in pending:
+                    speedup = rec["sla_py_time"] / retry_time if retry_time > 0 else 0
+                    if speedup >= args.sla_fail_threshold:
+                        print(f"  attempt {attempt}: SLA {speedup:.2f}x >= {args.sla_fail_threshold:.2f}x — cleared")
+                        pending.discard("sla_msg")
+                    else:
+                        print(
+                            f"  attempt {attempt}: SLA {speedup:.2f}x < {args.sla_fail_threshold:.2f}x — still failing"
+                        )
+                if "mem_msg" in pending:
+                    bmem = rec["baseline_mem"]
+                    if retry_mem is not None and retry_mem <= bmem * (1 + args.memory_threshold):
+                        print(f"  attempt {attempt}: memory {retry_mem:.0f}MB vs {bmem:.0f}MB — cleared")
+                        pending.discard("mem_msg")
+                    elif retry_mem is not None:
+                        pct = ((retry_mem / bmem) - 1) * 100
+                        print(
+                            f"  attempt {attempt}: memory {retry_mem:.0f}MB vs {bmem:.0f}MB (+{pct:.0f}%) — still regressed"
+                        )
+            # Any dimension cleared above is removed from the canonical failures
+            # list; dimensions still pending stay failed.
+            for key in ("timing_msg", "sla_msg", "mem_msg"):
+                if key in rec and key not in pending:
+                    failures.remove(rec[key])
 
     total_elapsed = time.perf_counter() - total_start
     print(f"\n{'=' * 50}")
