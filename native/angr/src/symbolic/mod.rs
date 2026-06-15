@@ -10,6 +10,8 @@
 #[cfg(feature = "vex-engine-z3")]
 mod bv_codec;
 mod bv_id_ops;
+#[cfg(feature = "vex-engine-z3")]
+mod constraint_ops;
 mod context;
 mod handle;
 #[cfg(feature = "vex-engine-z3")]
