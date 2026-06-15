@@ -316,13 +316,13 @@ below "Supported" as experimental.
      - Cdecl
      - Supported (selectors: CS/DS/ES/FS/GS/SS; bases: LDT/GDT + FS_CONST/GS_CONST placeholders)
    * - ARM (32-bit)
-     - 2
+     - 3
      - 3 (LE validate, LE native-proc, BE blob)
      - 2 (arm_le_branch synthetic + android_arm_license_validation real ELF)
      - ARMEABI
      - Supported
    * - ARM64
-     - 1
+     - 2
      - 4 (blob branch, NEON mla, real ELF, native-proc)
      - 1 (aarch64_le_branch synthetic)
      - AArch64

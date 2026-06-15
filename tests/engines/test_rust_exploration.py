@@ -8659,6 +8659,104 @@ class TestMultiArchSupport:
         assert state.get_register("$26") == 0xABCD1234DEADBEEF
         assert state.get_register("$27") == 0x5678EF90CAFEBABE
 
+    def test_arm32_full_register_family_dispatch(self):
+        """ARM32 VFP (d/q), FPSCR, and high GPRs round-trip via the standard
+        register dispatch.
+
+        Covers angr-9n19: the prior ARM32 unit tests touched only
+        r0/r1/sp/lr. ``native/angr/src/arch/arm.rs`` defines d0-d31, q0-q15,
+        fpscr, and r8-r12 (plus the fp/ip aliases) that were verified only by
+        Rust-side offset assertions — this exercises them through the same
+        ``set_register``/``get_register`` path real explorations use.
+        """
+        state = RustSimState("arm")
+
+        # High GPRs r8-r12 (callee-saved / scratch) and the fp/ip aliases.
+        state.set_register("r8", 0x08080808)
+        state.set_register("r9", 0x09090909)
+        state.set_register("r10", 0x10101010)
+        state.set_register("r11", 0x11111111)
+        state.set_register("r12", 0x12121212)
+        assert state.get_register("r8") == 0x08080808
+        assert state.get_register("r9") == 0x09090909
+        assert state.get_register("r10") == 0x10101010
+        # fp aliases r11, ip aliases r12.
+        assert state.get_register("fp") == 0x11111111
+        assert state.get_register("ip") == 0x12121212
+
+        # VFP double registers (64-bit): d0 (first), d15 (mid), d31 (last).
+        state.set_register("d0", 0x1122334455667788)
+        state.set_register("d15", 0xCAFEBABEDEADBEEF)
+        state.set_register("d31", 0xFFEEDDCCBBAA9988)
+        assert state.get_register("d0") == 0x1122334455667788
+        assert state.get_register("d15") == 0xCAFEBABEDEADBEEF
+        assert state.get_register("d31") == 0xFFEEDDCCBBAA9988
+
+        # NEON quad registers (128-bit) alias pairs of d registers: q0 overlaps
+        # d0/d1. The low 64 bits land in d0, the high 64 bits in d1 (the guest
+        # state is little-endian).
+        qval = (0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210
+        state.set_register("q0", qval)
+        assert state.get_register("q0") == qval
+        assert state.get_register("d0") == 0xFEDCBA9876543210
+        assert state.get_register("d1") == 0x0123456789ABCDEF
+
+        # FPSCR (32-bit VFP status/control register).
+        state.set_register("fpscr", 0x0A0B0C0D)
+        assert state.get_register("fpscr") == 0x0A0B0C0D
+
+    def test_aarch64_full_register_family_dispatch(self):
+        """AArch64 SIMD (q/v/d), CC thunks, and high GPRs round-trip via the
+        standard register dispatch.
+
+        Covers angr-9n19: the prior AArch64 unit test touched only x0/x1/sp.
+        ``native/angr/src/arch/arm64.rs`` defines x8-x30 (+ w aliases),
+        q0-q31/v0-v31 (128-bit), d0-d31 (low-64 views), and the VEX
+        condition-code thunks (cc_op/cc_dep1/cc_dep2/cc_ndep). AArch64's VEX
+        guest represents flags as those thunks, not a flat NZCV register, so
+        this pins the thunk names. All were previously checked only by
+        Rust-side offset assertions.
+        """
+        state = RustSimState("aarch64")
+
+        # High GPRs x8-x30 and the fp/lr aliases (x29/x30).
+        state.set_register("x8", 0x0808080808080808)
+        state.set_register("x16", 0x1616161616161616)
+        state.set_register("x28", 0x2828282828282828)
+        state.set_register("x29", 0x2929292929292929)
+        state.set_register("x30", 0x3030303030303030)
+        assert state.get_register("x8") == 0x0808080808080808
+        assert state.get_register("x16") == 0x1616161616161616
+        assert state.get_register("x28") == 0x2828282828282828
+        assert state.get_register("fp") == 0x2929292929292929  # fp == x29
+        assert state.get_register("lr") == 0x3030303030303030  # lr == x30
+
+        # 32-bit w-views read the low half of the x register.
+        assert state.get_register("w8") == 0x08080808
+        assert state.get_register("w30") == 0x30303030
+
+        # SIMD quad registers (128-bit); q and v are aliases of the same slot,
+        # and d is the low-64 view.
+        qval = (0x0011223344556677 << 64) | 0x8899AABBCCDDEEFF
+        state.set_register("q5", qval)
+        assert state.get_register("q5") == qval
+        assert state.get_register("v5") == qval  # v5 aliases q5
+        assert state.get_register("d5") == 0x8899AABBCCDDEEFF
+
+        # d31 / q31 at the end of the SIMD block.
+        state.set_register("d31", 0x1234567890ABCDEF)
+        assert state.get_register("d31") == 0x1234567890ABCDEF
+
+        # VEX condition-code thunks (AArch64 has no flat NZCV register).
+        state.set_register("cc_op", 0x1111111111111111)
+        state.set_register("cc_dep1", 0x2222222222222222)
+        state.set_register("cc_dep2", 0x3333333333333333)
+        state.set_register("cc_ndep", 0x4444444444444444)
+        assert state.get_register("cc_op") == 0x1111111111111111
+        assert state.get_register("cc_dep1") == 0x2222222222222222
+        assert state.get_register("cc_dep2") == 0x3333333333333333
+        assert state.get_register("cc_ndep") == 0x4444444444444444
+
     def test_arm_state_creation(self):
         """ARM32 state creation and register operations."""
         state = RustSimState("arm")
