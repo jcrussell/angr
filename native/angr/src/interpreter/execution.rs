@@ -18,12 +18,21 @@ impl<'a> VEXInterpreter<'a> {
     /// predicates (see `stepping.rs`). angr-027h: CADET easter-egg find at
     /// 0x804833E was silently skipped because the chain ran on to the
     /// overflow-corrupted ret and went unconstrained.
+    ///
+    /// `block_granular` (angr-bmyx) generalizes that: when `true`, the chain
+    /// breaks at *every* block boundary, not just at `stop_addrs`, so each call
+    /// executes exactly one block and every interior pc is observable at the
+    /// step boundary — Python angr's block-granular `step()` semantics. The
+    /// manager sets it for bare step-loops with no find target (CADET solve.py
+    /// phase 3); it stays `false` for `explore()` so chaining keeps its
+    /// throughput.
     pub fn run_until_event(
         &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         max_blocks: u32,
         stop_addrs: &std::collections::HashSet<u64>,
+        block_granular: bool,
     ) -> (RunResult, u32, Vec<DeferredFork>) {
         let total_start = profile_start!(self);
         let mut blocks_executed = 0u32;
@@ -36,14 +45,19 @@ impl<'a> VEXInterpreter<'a> {
         self.deferred_fork_this_step = false;
 
         for _ in 0..max_blocks {
-            // Break the internal block chain when a chained block boundary
-            // lands on an address-based find/avoid target, so the
+            // Break the internal block chain at a block boundary so the
             // step-boundary find/avoid filter in run_loop observes this pc.
-            // `blocks_executed > 0` so a state that STARTS at a stop address
+            // `blocks_executed > 0` so a state that STARTS at the boundary
             // (already checked at the prior step boundary) still makes forward
             // progress instead of stalling. Falls through to the MaxBlocks
-            // return below, which materializes deferred forks. (angr-027h)
-            if blocks_executed > 0 && !stop_addrs.is_empty() && stop_addrs.contains(&self.pc) {
+            // return below, which materializes deferred forks. Two triggers:
+            //   - block_granular (angr-bmyx): break at EVERY boundary, so each
+            //     call advances exactly one block (Python-like step()).
+            //   - stop_addrs (angr-027h): break only when the boundary lands on
+            //     an address-based find/avoid target.
+            if blocks_executed > 0
+                && (block_granular || (!stop_addrs.is_empty() && stop_addrs.contains(&self.pc)))
+            {
                 break;
             }
 

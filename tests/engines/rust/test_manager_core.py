@@ -1766,6 +1766,58 @@ class TestRustEdgeCases:
             assert len(active) == 1, f"expected one active state, got {mgr.stash_counts()}"
             assert active[0].addr == 0x1009, f"loop drifted off the pad to {hex(active[0].addr)}"
 
+    def test_block_granular_step_observes_mid_chain_address(self):
+        """Block-granular stepping makes a chained-through block boundary observable.
+
+        Regression for angr-bmyx. The VEX interpreter chains basic blocks within
+        one ``step(n=1)``, so a state runs THROUGH an interior block boundary
+        without ever stopping there — which breaks bare step-loop idioms like
+        CADET solve.py phase 3 (``while True: sm.step(); break if any active.addr
+        == TARGET``). ``set_block_granular(True)`` breaks the chain at every
+        block boundary so each ``step()`` advances exactly one block.
+
+        Layout (3 blocks, each a direct jmp):
+          0x1000: eb 02  jmp 0x1004   (block A)
+          0x1004: eb 02  jmp 0x1008   (block B — the transient mid-chain target)
+          0x1008: eb fe  jmp $        (block C — self-loop landing pad)
+        The 0x1002/0x1006 nop pads are dead (jumped over).
+        """
+        shellcode = b"\xeb\x02\x90\x90\xeb\x02\x90\x90\xeb\xfe"
+
+        # Default (chaining on): step(n=1) runs A->B->C and parks on the C
+        # self-loop; the 0x1004 boundary is never observable.
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        chained = RustExplorationManager(proj, [proj.factory.blank_state(addr=0x1000)])
+        seen_chained = set()
+        for _ in range(3):
+            chained.step(n=1)
+            seen_chained.update(p.addr for p in chained.active_proxies())
+        assert 0x1004 not in seen_chained, (
+            f"chained stepping should run past 0x1004, but observed it: {sorted(map(hex, seen_chained))}"
+        )
+        assert 0x1008 in seen_chained, (
+            f"chained stepping should reach the self-loop pad: {sorted(map(hex, seen_chained))}"
+        )
+
+        # Block-granular: each step advances exactly one block, so the 0x1004
+        # boundary becomes observable.
+        proj2 = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        bg = RustExplorationManager(proj2, [proj2.factory.blank_state(addr=0x1000)])
+        prev = bg.set_block_granular(True)
+        assert prev is False, "block-granular should default to off"
+
+        bg.step(n=1)
+        active = bg.active_proxies()
+        assert len(active) == 1, f"expected one active state, got {bg.stash_counts()}"
+        assert active[0].addr == 0x1004, f"step 1 should stop at the 0x1004 boundary, got {hex(active[0].addr)}"
+
+        bg.step(n=1)
+        active = bg.active_proxies()
+        assert active[0].addr == 0x1008, f"step 2 should advance one block to 0x1008, got {hex(active[0].addr)}"
+
+        # Restoring chaining returns the prior (enabled) value.
+        assert bg.set_block_granular(False) is True
+
     def test_page_boundary_store_load(self):
         """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""
         state = RustSimState("amd64")

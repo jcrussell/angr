@@ -4274,6 +4274,34 @@ class RustExplorationManager(
             del self._state_cache[sid]
             overflow -= 1
 
+    def set_block_granular(self, enabled: bool = True) -> bool:
+        """Toggle block-granular stepping (angr-bmyx).
+
+        When enabled, the Rust VEX interpreter stops chaining basic blocks and
+        returns to the step boundary after every block, so each ``step()``
+        advances exactly one block and every interior address is observable —
+        matching Python angr's block-granular ``step()`` semantics. This lets a
+        bare step-loop (``while True: sm.step(); break if any active.addr ==
+        TARGET``, e.g. CADET solve.py phase 3) detect a mid-path target that the
+        chained interpreter would otherwise run straight through.
+
+        ``explore(find=...)`` does not need this — address-based finds already
+        break the chain at the specific target addresses — and leaving it off
+        preserves chaining throughput on the ``explore``/benchmark paths.
+
+        Args:
+            enabled: True to step one block at a time, False to restore chaining.
+
+        Returns:
+            The previous setting, so a scoped step-loop can restore it. Returns
+            False on a Rust extension that predates this method (no-op).
+        """
+        try:
+            return bool(self._rust_mgr.set_block_granular(bool(enabled)))
+        except AttributeError:
+            # Rust extension predates set_block_granular; chaining stays on.
+            return False
+
     def step(self, n: int = 1, **kwargs) -> RustExplorationManager:
         """Step the exploration n times.
 

@@ -1296,8 +1296,13 @@ impl RustExplorationManager {
         } else {
             self.max_steps_per_run
         };
-        let (result, _blocks_executed, deferred_forks) =
-            interp.run_until_event(py, callbacks, steps_limit, &self.stop_addrs);
+        let (result, _blocks_executed, deferred_forks) = interp.run_until_event(
+            py,
+            callbacks,
+            steps_limit,
+            &self.stop_addrs,
+            self.block_granular,
+        );
 
         // Drain interpreter state into owned values before drop.
         let last_condition = interp.take_last_branch_condition();

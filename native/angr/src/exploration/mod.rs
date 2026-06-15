@@ -400,6 +400,17 @@ pub struct RustExplorationManager {
     /// past an address-based target (angr-027h). Kept in sync by
     /// `set_find_addrs` / `set_avoid_addrs`.
     pub(crate) stop_addrs: HashSet<u64>,
+    /// Block-granular stepping mode (angr-bmyx). When `true`, the VEX
+    /// interpreter breaks its internal block chain at *every* basic-block
+    /// boundary, so each `step(n=1)` advances exactly one block and every
+    /// interior pc becomes observable at a step boundary — matching Python
+    /// angr's block-granular `step()`. This is what makes idioms like CADET
+    /// solve.py phase 3 (`while True: sm.step(); break if any active.addr ==
+    /// TARGET`) reach a mid-path target that the chained interpreter would
+    /// otherwise run straight through. Default `false`: chaining stays on so
+    /// `explore()`/benchmark step paths keep their throughput. Toggled via
+    /// `set_block_granular`.
+    pub(crate) block_granular: bool,
     /// Whether find condition has callable predicates.
     pub(crate) find_needs_python: bool,
     /// Whether avoid condition has callable predicates.
@@ -543,6 +554,7 @@ impl RustExplorationManager {
             find_addrs: HashSet::new(),
             avoid_addrs: HashSet::new(),
             stop_addrs: HashSet::new(),
+            block_granular: false,
             find_needs_python: false,
             avoid_needs_python: false,
             exec_config: ExecutionConfig::default(),
@@ -698,6 +710,28 @@ impl RustExplorationManager {
     /// re-seeds the initial states with this set to `false`.
     pub fn set_use_deferred_forks(&mut self, enabled: bool) {
         self.exec_config.use_deferred_forks = enabled;
+    }
+
+    /// Toggle block-granular stepping (angr-bmyx). When `true`, the VEX
+    /// interpreter stops chaining basic blocks and returns to the step boundary
+    /// after every block, so each `step(n=1)` advances exactly one block and
+    /// every interior pc is observable — matching Python angr's block-granular
+    /// `step()`. This is what lets a bare step-loop (e.g. CADET solve.py phase
+    /// 3) detect a mid-path target address that the chained interpreter would
+    /// run straight through; address-based `explore(find=...)` does not need it
+    /// because `set_find_addrs` already breaks the chain at those specific
+    /// addresses. Default `false` keeps chaining on for `explore()` and
+    /// benchmark throughput. Returns the previous value so callers (e.g. a
+    /// scoped step-loop) can restore it.
+    pub fn set_block_granular(&mut self, enabled: bool) -> bool {
+        let prev = self.block_granular;
+        self.block_granular = enabled;
+        prev
+    }
+
+    /// Whether block-granular stepping is currently enabled (angr-bmyx).
+    pub fn block_granular(&self) -> bool {
+        self.block_granular
     }
 
     /// Cumulative number of loop-exit deferred forks dropped at an
