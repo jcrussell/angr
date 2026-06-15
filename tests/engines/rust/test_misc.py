@@ -2030,6 +2030,65 @@ class TestCgcEndToEndNativeDispatch:
         )
 
 
+class TestCadetEasterEggStepLoop:
+    """End-to-end coverage for angr-ckdy: the CADET solve.py phase-3 idiom
+    (``while True: sm.step(); break if any active.addr == 0x804833E``) converges
+    under the Rust engine.
+
+    Two opt-in flags make this work together (neither alone suffices — see bd
+    memories ``block-granular-step-mode`` and
+    ``avoid-cadet-phase3-sticky-eager-retry``):
+
+    - ``set_block_granular(True)`` (angr-bmyx) — the VEX interpreter otherwise
+      chains basic blocks within one ``step(n=1)`` and runs THROUGH the egg
+      block 0x804833E without ever parking on it (observability blocker #1).
+    - ``set_materialize_unconstrained_forks(True)`` (angr-ckdy) — deferred-fork
+      mode otherwise DROPS the loop-exit forks at the unconstrained jump
+      (buffer overflow → ret goes unconstrained), collapsing the active stash
+      to empty so the step-loop spins forever. Materializing them keeps the
+      egg-reaching subtree alive.
+
+    HEAVY + env-gated: the egg sits behind a symbolic strlen loop, so it takes
+    several hundred block-granular steps to reach (active grows to ~70 before
+    the egg appears; it does NOT explode/segfault because block-granular
+    observability lets the loop break first). Skipped unless
+    ``ANGR_RUN_SLOW_CADET=1`` to keep the default suite fast and OOM-safe,
+    mirroring the buffer-overflow-only CADET tests above.
+    """
+
+    def test_cadet_easter_egg_step_loop_converges(self):
+        if os.environ.get("ANGR_RUN_SLOW_CADET") != "1":
+            pytest.skip("heavy CADET egg-hunt — set ANGR_RUN_SLOW_CADET=1 to run")
+
+        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
+        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
+        if not os.path.exists(cadet):
+            pytest.skip(f"CADET_00001 binary not found at {cadet}")
+
+        egg = 0x804833E
+        proj = angr.Project(cadet, auto_load_libs=False)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.set_block_granular(True)
+        mgr.set_materialize_unconstrained_forks(True)
+
+        found = None
+        for _ in range(1500):
+            mgr.step(n=1)
+            active = mgr.active
+            hits = [s for s in active if s.addr == egg]
+            if hits:
+                found = hits[0]
+                break
+            # Without the materialize flag the active stash collapses to empty
+            # (the bug this test guards against); with it, it never should while
+            # the egg is still reachable.
+            assert len(active) > 0, f"active stash collapsed before reaching egg; counts={mgr.stash_counts()}"
+
+        assert found is not None, f"step-loop never reached egg 0x804833E; counts={mgr.stash_counts()}"
+        crashing_input = bytes(found.posix.dumps(0))
+        assert len(crashing_input) > 0, "egg state posix.dumps(0) returned empty bytes"
+
+
 class TestDirectCallEntryMainResolution:
     """Regression for angr-027h: a "thin" entry that is a direct ``call main``
     (no ``__libc_start_main`` trampoline, e.g. DECREE/CGC binaries) has no

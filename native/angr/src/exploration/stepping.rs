@@ -508,7 +508,9 @@ impl RustExplorationManager {
                 // in deferred mode would prevent `active_empty` and defeat the
                 // phase-2 trigger (iter66 regression — see bd memory
                 // `benchmark-cadet-single-step-loop-unroll-defeats-latch`).
-                let forks = if self.exec_config.use_deferred_forks {
+                let forks = if self.exec_config.use_deferred_forks
+                    && !self.materialize_unconstrained_forks
+                {
                     // angr-ckdy: record that egg-reaching loop-exit forks were
                     // discarded so a step-driven loop (CADET solve.py phase 3)
                     // can tell `active_empty` apart from a genuine exhaustion
@@ -516,6 +518,11 @@ impl RustExplorationManager {
                     self.deferred_forks_dropped += deferred_forks.len() as u64;
                     Vec::new()
                 } else {
+                    // Either we are already in eager mode, OR the opt-in
+                    // `materialize_unconstrained_forks` flag (angr-ckdy) asks us
+                    // to keep the loop-exit forks alive even in deferred mode so
+                    // a bare step-loop keeps progressing toward a target behind
+                    // the loop exit instead of collapsing to `active_empty`.
                     let original_state_id = state.state_id();
                     let root_state_id = self
                         .sm

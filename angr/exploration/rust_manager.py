@@ -4302,6 +4302,38 @@ class RustExplorationManager(
             # Rust extension predates set_block_granular; chaining stays on.
             return False
 
+    def set_materialize_unconstrained_forks(self, enabled: bool = True) -> bool:
+        """Toggle materialization of loop-exit forks at unconstrained jumps (angr-ckdy).
+
+        In deferred-fork mode the Rust engine normally DROPS the loop-exit
+        forks accumulated when a state goes unconstrained (too many symbolic
+        jump targets). For a find-guided ``explore()`` that drop is desirable —
+        it lets the two-phase eager retry (angr-027h) detect ``active_empty``
+        and re-seed in eager mode. But a bare step-loop that bypasses
+        ``explore()`` (CADET solve.py phase 3: ``while True: sm.step(); break
+        if any active.addr == TARGET``) has no find target and no retry, so the
+        dropped forks collapse the active stash to empty and the loop spins
+        forever.
+
+        When enabled, those forks are instead materialized eagerly and routed
+        to the active stash, so the step-loop keeps progressing toward a target
+        behind the symbolic loop exit. Pair with ``set_block_granular(True)`` so
+        the target block is observable at a step boundary before the
+        materialized subtree explodes.
+
+        Args:
+            enabled: True to materialize (keep) the forks, False to drop them.
+
+        Returns:
+            The previous setting, so a scoped step-loop can restore it. Returns
+            False on a Rust extension that predates this method (no-op).
+        """
+        try:
+            return bool(self._rust_mgr.set_materialize_unconstrained_forks(bool(enabled)))
+        except AttributeError:
+            # Rust extension predates set_materialize_unconstrained_forks.
+            return False
+
     def step(self, n: int = 1, **kwargs) -> RustExplorationManager:
         """Step the exploration n times.
 

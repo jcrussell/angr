@@ -411,6 +411,19 @@ pub struct RustExplorationManager {
     /// `explore()`/benchmark step paths keep their throughput. Toggled via
     /// `set_block_granular`.
     pub(crate) block_granular: bool,
+    /// When true, loop-exit deferred forks accumulated at an
+    /// `UnconstrainedJump` are MATERIALIZED (eagerly, force_eager) and routed
+    /// to the active stash instead of being dropped while
+    /// `exec_config.use_deferred_forks` is true. This keeps the active stash
+    /// non-empty so a bare step-loop (CADET solve.py phase 3) can keep making
+    /// progress toward a target behind a symbolic loop exit instead of
+    /// collapsing to `active_empty` and spinning forever. Default `false`:
+    /// the drop behavior is what `explore()`'s two-phase eager retry
+    /// (angr-027h) relies on to detect `active_empty` and re-seed in eager
+    /// mode, so this MUST stay opt-in. Combine with `block_granular` so the
+    /// egg block is observable before the materialized subtree explodes.
+    /// Toggled via `set_materialize_unconstrained_forks` (angr-ckdy).
+    pub(crate) materialize_unconstrained_forks: bool,
     /// Whether find condition has callable predicates.
     pub(crate) find_needs_python: bool,
     /// Whether avoid condition has callable predicates.
@@ -555,6 +568,7 @@ impl RustExplorationManager {
             avoid_addrs: HashSet::new(),
             stop_addrs: HashSet::new(),
             block_granular: false,
+            materialize_unconstrained_forks: false,
             find_needs_python: false,
             avoid_needs_python: false,
             exec_config: ExecutionConfig::default(),
@@ -732,6 +746,27 @@ impl RustExplorationManager {
     /// Whether block-granular stepping is currently enabled (angr-bmyx).
     pub fn block_granular(&self) -> bool {
         self.block_granular
+    }
+
+    /// Toggle materialization of loop-exit deferred forks at an
+    /// `UnconstrainedJump` (angr-ckdy). When enabled, the forks that
+    /// deferred-fork mode would otherwise DROP are instead materialized
+    /// eagerly and routed to the active stash, so a bare step-loop that
+    /// bypasses `explore()` (CADET solve.py phase 3) keeps progressing toward
+    /// a target behind a symbolic loop exit instead of collapsing to
+    /// `active_empty` and spinning. Pair with `set_block_granular(true)` so
+    /// the target block is observable before the materialized subtree
+    /// explodes. Default `false`: dropping is what `explore()`'s two-phase
+    /// eager retry relies on, so this stays opt-in. Returns the previous value.
+    pub fn set_materialize_unconstrained_forks(&mut self, enabled: bool) -> bool {
+        let prev = self.materialize_unconstrained_forks;
+        self.materialize_unconstrained_forks = enabled;
+        prev
+    }
+
+    /// Whether unconstrained-fork materialization is enabled (angr-ckdy).
+    pub fn materialize_unconstrained_forks(&self) -> bool {
+        self.materialize_unconstrained_forks
     }
 
     /// Cumulative number of loop-exit deferred forks dropped at an
