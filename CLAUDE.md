@@ -48,7 +48,7 @@ docs reference:
 - `rust-python-boundary-audit` — what bridge code must stay Python
 - `constraint-export-no-pre-pin` — pre-pinning is dangerous; use Rust solver eval fallback
 - `characterization-vs-fix-pattern` — separate char tasks from regression bisects
-- `benchmark-bimodal-variance-rules` — handling the 3 bimodal-Z3 benches
+- `benchmark-bimodal-variance-rules` — handling the bimodal-Z3 benches (4; see `BIMODAL_BENCHMARKS`)
 - `env-venv-corruption` — venv recovery from corruption
 - `bd-update-notes-overwrites` — `bd update --notes` overwrites; never append-via-update
 - `avoid-bd-remember-without-key-flag` — `bd remember <text>` without `--key` silently clobbers
@@ -155,7 +155,8 @@ python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 # Run benchmark regression tests (7 fast-tier benchmarks)
 python tests/benchmarks/run_regression.py
 
-# Skip the three bimodal-Z3 benches (unbreakable_1 / fairlight / sokohashv2)
+# Skip the four bimodal-Z3 benches (see BIMODAL_BENCHMARKS in run_regression.py:
+# unbreakable_1 / fairlight / sokohashv2 / angry-reverser)
 # — matches the PR-time CI gate, useful when chasing a regression locally.
 python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15
 
@@ -315,7 +316,7 @@ Caveats:
 ## Key Files
 
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
-- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (mod.rs, run_loop.rs, stepping.rs, resume.rs, helpers.rs, pyapi.rs)
+- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (13 modules; entry point `mod.rs`, plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs)
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
 - **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
 - **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, helpers.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
