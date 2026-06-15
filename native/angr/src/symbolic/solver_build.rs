@@ -1,0 +1,208 @@
+//! Z3 solver construction and the per-check timing/sampling wrappers.
+//!
+//! Extracted from `context.rs` (angr-a2br.2 slice 2) along the documented
+//! "Z3 context lifecycle / constraint solving" boundary. These are free
+//! functions with no `SymContext` dependency; they read process-wide env
+//! knobs (cached via `OnceLock`) and bump the shared solver counters that
+//! live in [`super::stats`].
+//!
+//! Crate-visible surface: [`build_solver`], [`build_solver_params`],
+//! [`timed_check`], [`sample_simplify_skip`]. The env-spec helpers
+//! (`tactic_spec`, `qfbv_smart_threshold`, `simplify_sample_stride`) and the
+//! [`TacticSpec`] enum stay private to this module.
+
+use std::sync::atomic::Ordering;
+
+use super::stats::*;
+
+/// Sampling stride for `sample_simplify_skip`. Default 64; override via
+/// `ANGR_Z3_SIMPLIFY_STRIDE` (any positive integer; values <=0 / unparseable
+/// fall back to the default). Read once via `OnceLock` on first sample —
+/// matches the `tactic_spec` / `qfbv_smart_threshold` pattern. A stride of 1
+/// gives full-population sampling for a profiling spike (~`SIMPLIFY_SAMPLE_STRIDE_DEFAULT`x
+/// overhead on the simplify path; safe for offline runs only).
+#[cfg(feature = "vex-engine-z3")]
+fn simplify_sample_stride() -> u64 {
+    static STRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *STRIDE.get_or_init(|| {
+        std::env::var("ANGR_Z3_SIMPLIFY_STRIDE")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(SIMPLIFY_SAMPLE_STRIDE_DEFAULT)
+    })
+}
+
+/// angr-1joc: sampled Z3 simplify() check on a freshly-added Bool. Every
+/// Nth call (N = `simplify_sample_stride()`) runs `simplify()` and records
+/// whether the resulting Z3 AST ptr differs from the input. The ticker is
+/// shared across `assume_true`, `assume_false`, and `add_constraint_raw`.
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
+    use z3::ast::Ast;
+    let tick = SIMPLIFY_SAMPLE_TICKER.fetch_add(1, Ordering::Relaxed);
+    if !tick.is_multiple_of(simplify_sample_stride()) {
+        return;
+    }
+    BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.fetch_add(1, Ordering::Relaxed);
+    let simplified = constraint.simplify();
+    if simplified.get_z3_ast().as_ptr() != constraint.get_z3_ast().as_ptr() {
+        BRANCH_COND_SIMPLIFY_REDUCED_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Timed wrapper around solver.check() — records count, total time, and per-site stats.
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
+    let start = std::time::Instant::now();
+    let result = solver.check();
+    let elapsed_ns = start.elapsed().as_nanos() as u64;
+    Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
+    Z3_CHECK_TIME_NS.fetch_add(elapsed_ns, Ordering::Relaxed);
+    let idx = site as usize;
+    Z3_CHECK_SITE_COUNT[idx].fetch_add(1, Ordering::Relaxed);
+    Z3_CHECK_SITE_TIME_NS[idx].fetch_add(elapsed_ns, Ordering::Relaxed);
+    match result {
+        z3::SatResult::Sat => Z3_SAT_COUNT.fetch_add(1, Ordering::Relaxed),
+        z3::SatResult::Unsat => Z3_UNSAT_COUNT.fetch_add(1, Ordering::Relaxed),
+        z3::SatResult::Unknown => Z3_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed),
+    };
+    result
+}
+
+/// Build the Z3 `Params` object applied to every fresh `z3::Solver` and
+/// every `set_timeout` call. Centralizes the bv_rewriter knobs we set.
+///
+/// Two knobs enabled (Z3 disables both by default):
+/// - `bv_extract_prop`: propagates Extract inward through arithmetic.
+/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. Added in
+///   angr-ya00.1 (free bv_* sweep, 2026-05-19) — drops fairlight's bimodal
+///   slow-mode median from 21.66s to 14.46s (-33%) without regressing
+///   8 other Z3-heavy benches measured (max delta +0.8% on flareon2015_2).
+///
+/// Three sweep knobs left disabled: `bv_not_simpl`, `bv_ite2id`,
+/// `blast_eq_value` (no measurable effect across matrix). `bv_sort_ac`
+/// rejected: looked like a fairlight winner combined with mul2concat
+/// (median 8.10s) but blows up defcon2016quals_baby-re by 7x (0.50s ->
+/// 3.71s) and adds +25% to flareon2015_2.
+///
+/// Seed pinning attempted and rejected (angr-iaol.1, 2026-05-25): three
+/// param-name forms tried with the z3-0.19.7 `Params::set_u32` route:
+/// - `smt.random_seed`: corrupts the solver. `eval()` returns models
+///   that **violate the asserted constraints** (eg `x=0` for `x>=100`).
+/// - `sat.random_seed`: same corruption mode.
+/// - `random_seed` (the in-descriptor short name): is accepted without
+///   corruption but does **not** stabilize models across two fresh
+///   `RustSolverContext` instances with identical asserted constraints
+///   (eval witnesses differ run-to-run by >10^6). The order-stability
+///   test that *passed* without any seed pin now fails when this form
+///   is set.
+///
+/// So Z3 4.13 model determinism across solver instances is not
+/// reachable through `Z3_solver_set_params` for these keys; pinning
+/// must instead happen via `Z3_global_param_set` *before* the first
+/// `Solver::new` — and even that does not eliminate variable /
+/// restart heuristic latitude. Tracked in iaol.1 close-out memory
+/// `iaol1-seed-pin-empirically-broken`. AVOID `parallel.enable=true`
+/// (`avoid-z3-parallel-enable`).
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
+    let mut params = z3::Params::new();
+    params.set_u32("timeout", timeout_ms);
+    params.set_bool("bv_extract_prop", true);
+    params.set_bool("mul2concat", true);
+    params
+}
+
+/// Parsed `ANGR_Z3_TACTIC` env-var spec, cached once per process.
+///
+/// Recognized values:
+/// - unset / empty / "default" / "smt" → default `z3::Solver::new()`
+///   (Z3's smt portfolio strategy).
+/// - "qfbv_smart" → probe-conditional tactic that dispatches on
+///   `num-consts`: large problems (> 20 constants) go to `qfbv`, small ones
+///   stay on `smt`. Targets the bimodal benches (fairlight, sokohashv2,
+///   mma_howtouse) where qfbv wins big, without regressing small-problem
+///   benches like csgames2018 / flareon2015_2 where the qfbv preset's
+///   per-check overhead dominates.
+/// - any other value → colon-separated pipeline of tactic names
+///   composed via `Tactic::and_then`, e.g.
+///   `simplify:propagate-values:solve-eqs:bit-blast:sat`.
+#[cfg(feature = "vex-engine-z3")]
+#[derive(Debug, Clone)]
+enum TacticSpec {
+    Default,
+    Pipeline(Vec<String>),
+    QfbvSmart,
+}
+
+#[cfg(feature = "vex-engine-z3")]
+fn tactic_spec() -> &'static TacticSpec {
+    static SPEC: std::sync::OnceLock<TacticSpec> = std::sync::OnceLock::new();
+    SPEC.get_or_init(|| match std::env::var("ANGR_Z3_TACTIC") {
+        Ok(s) => {
+            let s = s.trim();
+            if s.is_empty() || s.eq_ignore_ascii_case("default") || s.eq_ignore_ascii_case("smt") {
+                TacticSpec::Default
+            } else if s.eq_ignore_ascii_case("qfbv_smart") {
+                TacticSpec::QfbvSmart
+            } else {
+                let names: Vec<String> = s
+                    .split(':')
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                if names.is_empty() {
+                    TacticSpec::Default
+                } else {
+                    TacticSpec::Pipeline(names)
+                }
+            }
+        }
+        Err(_) => TacticSpec::Default,
+    })
+}
+
+/// `num-consts > N` threshold used by `qfbv_smart`. Override via
+/// `ANGR_Z3_QFBV_THRESHOLD`. 20 is the empirical pivot between bimodal
+/// hash-cracker problems (winners) and CTF-style small-problem benches
+/// (regressers) — see angr-ya00 measurements in
+/// `docs/advanced-topics/rust_engine.rst`.
+#[cfg(feature = "vex-engine-z3")]
+fn qfbv_smart_threshold() -> f64 {
+    static THRESHOLD: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("ANGR_Z3_QFBV_THRESHOLD")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .unwrap_or(20.0)
+    })
+}
+
+/// Construct a fresh Z3 solver per the active [`TacticSpec`], with timeout
+/// and bv_rewriter params applied. Three sites in this file rely on this:
+/// initial creation, lazy fork materialization, and `set_timeout`.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
+    let solver = match tactic_spec() {
+        TacticSpec::Default => z3::Solver::new(),
+        TacticSpec::Pipeline(names) => {
+            let mut iter = names.iter();
+            let first = z3::Tactic::new(iter.next().expect("non-empty pipeline"));
+            let composed = iter.fold(first, |acc, name| acc.and_then(&z3::Tactic::new(name)));
+            composed.solver()
+        }
+        TacticSpec::QfbvSmart => {
+            let qfbv = z3::Tactic::new("qfbv");
+            let smt = z3::Tactic::new("smt");
+            let num_consts = z3::Probe::new("num-consts");
+            let thresh = z3::Probe::constant(qfbv_smart_threshold());
+            let cond = z3::Tactic::cond(&num_consts.gt(&thresh), &qfbv, &smt);
+            cond.solver()
+        }
+    };
+    solver.set_params(&build_solver_params(timeout_ms));
+    solver
+}
