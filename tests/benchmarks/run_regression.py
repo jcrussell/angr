@@ -68,12 +68,18 @@ TRACKED_METRICS = [
     ("steps", "steps", 0.15),  # 15% more steps
 ]
 
-# Benches exempt from the --check-counts gate. Only the four
-# BIMODAL_BENCHMARKS remain: they exercise multi-solution constraints where Z3
+# Benches exempt from the --check-counts gate. These are the four original
+# BIMODAL_BENCHMARKS: they exercise multi-solution constraints where Z3
 # model nondeterminism can shift the explored path (and therefore
 # step/callback counts), so their count baselines are not reliably stable. They
 # still gate on timing and peak memory; only the algorithmic-count check is
 # skipped.
+#
+# NOTE: BIMODAL_BENCHMARKS grew to five when CADET_00001_partial joined
+# (angr-027h), so COUNT_EXEMPT is now a strict subset, not equal to it.
+# CADET_00001_partial is intentionally omitted: its count baselines are 0/0/0,
+# so the `baseline_val > 0` guard below already makes --check-counts a no-op for
+# it — adding it to COUNT_EXEMPT would be redundant.
 #
 # The seven MEDIUM-tier benches (sym-write, flareon2015_5/10,
 # ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird, mma_howtouse)
