@@ -11,6 +11,8 @@ mod context;
 mod handle;
 #[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
+#[cfg(feature = "vex-engine-z3")]
+mod parse;
 pub mod registry;
 mod sharing;
 #[cfg(feature = "vex-engine-z3")]
