@@ -17787,6 +17787,108 @@ class TestAvoidMultivaluedOptions:
         assert (len(mgr.active) + len(mgr.deadended) + len(mgr.errored)) >= 1
 
 
+class TestConcretizationOptionPropagation:
+    """angr-1kdi: APPROXIMATE_MEMORY_INDICES / SYMBOLIC_WRITE_ADDRESSES SimOptions.
+
+    ``rust_manager._add_rust_state`` reads both options off ``state.options``
+    plus the read/write strategy ``_limit`` values off
+    ``state.memory.read_strategies`` / ``write_strategies`` and forwards all
+    six into ``_RustExplorationManager.configure_concretization_strategies``
+    via a positional call. The ``get_concretization_config`` getter (added
+    alongside these tests) reads the Rust-side concretizer config back so a
+    positional-arg swap or a strategy-sniffing regression is no longer silent.
+
+    Both options are documented Honored in
+    ``docs/advanced-topics/rust_engine.rst`` yet had zero test coverage before
+    this class.
+    """
+
+    def test_get_concretization_config_defaults(self):
+        """A fresh manager carries Python's default concretizer config:
+        all flags off, read limit 1024, write limit 128."""
+        mgr = _RustExplorationManager("amd64")
+        cfg = mgr.get_concretization_config()
+        assert cfg["use_approximate"] == 0
+        assert cfg["symbolic_write_addresses"] == 0
+        assert cfg["avoid_multivalued_reads"] == 0
+        assert cfg["avoid_multivalued_writes"] == 0
+        assert cfg["read_range_limit"] == 1024
+        assert cfg["write_range_limit"] == 128
+
+    def test_approximate_memory_indices_propagates_to_rust(self, fauxware_project):
+        """Setting APPROXIMATE_MEMORY_INDICES on a state flips the Rust
+        ``use_approximate`` flag once the state is loaded into the manager,
+        and the read range limit is bumped to the approximate minimum
+        (4096) because the sniffed default (1024) sits below it."""
+        plain = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain])
+        assert plain_mgr._rust_mgr.get_concretization_config()["use_approximate"] == 0
+
+        approx = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.APPROXIMATE_MEMORY_INDICES},
+        )
+        approx_mgr = RustExplorationManager(fauxware_project, [approx])
+        cfg = approx_mgr._rust_mgr.get_concretization_config()
+        assert cfg["use_approximate"] == 1
+        # configure_strategies bumps read_range_limit to APPROXIMATE_MIN_RANGE
+        # (4096) when approximate is on and the sniffed limit is below it.
+        assert cfg["read_range_limit"] >= 4096
+
+    def test_symbolic_write_addresses_propagates_to_rust(self, fauxware_project):
+        """Setting SYMBOLIC_WRITE_ADDRESSES on a state flips the Rust
+        ``symbolic_write_addresses`` flag."""
+        plain = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain])
+        assert plain_mgr._rust_mgr.get_concretization_config()["symbolic_write_addresses"] == 0
+
+        sym = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.SYMBOLIC_WRITE_ADDRESSES},
+        )
+        sym_mgr = RustExplorationManager(fauxware_project, [sym])
+        assert sym_mgr._rust_mgr.get_concretization_config()["symbolic_write_addresses"] == 1
+
+    def test_custom_strategy_limits_propagate_to_rust(self, fauxware_project):
+        """Non-default read/write strategy ``_limit`` values are sniffed off
+        ``state.memory.{read,write}_strategies`` and forwarded into the Rust
+        concretizer config. Guards the ``_limit`` sniffing loop against a
+        regression that would silently fall back to the 1024/128 defaults."""
+        state = fauxware_project.factory.entry_state()
+        # The default Range strategies expose ``_limit``; the sniff loop picks
+        # the first strategy carrying the attribute, so mutate index 0.
+        state.memory.read_strategies[0]._limit = 777
+        state.memory.write_strategies[0]._limit = 55
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        cfg = mgr._rust_mgr.get_concretization_config()
+        assert cfg["read_range_limit"] == 777
+        assert cfg["write_range_limit"] == 55
+
+    def test_approximate_memory_indices_smoke(self, fauxware_project):
+        """Exploration with APPROXIMATE_MEMORY_INDICES completes without
+        crashing. The approximate read strategy is engaged on symbolic-addr
+        loads in fauxware's password comparison loop."""
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.APPROXIMATE_MEMORY_INDICES},
+        )
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
+        total = len(mgr.active) + len(mgr.deadended) + len(mgr.avoid) + len(mgr.errored) + len(mgr.found)
+        assert total >= 1, f"APPROXIMATE_MEMORY_INDICES exploration lost all states; counts={mgr.stash_counts()}"
+
+    def test_symbolic_write_addresses_smoke(self, fauxware_project):
+        """Exploration with SYMBOLIC_WRITE_ADDRESSES completes without
+        crashing. Symbolic-addr writes are permitted (multi-valued) rather
+        than concretized to a single address, which can broaden reachability
+        but must not error the engine."""
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.SYMBOLIC_WRITE_ADDRESSES},
+        )
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)
+        total = len(mgr.active) + len(mgr.deadended) + len(mgr.avoid) + len(mgr.errored) + len(mgr.found)
+        assert total >= 1, f"SYMBOLIC_WRITE_ADDRESSES exploration lost all states; counts={mgr.stash_counts()}"
+
+
 class TestCounterParity:
     """angr-ah3s: contract between ``mgr.stats()`` and the bench-diff tooling.
 

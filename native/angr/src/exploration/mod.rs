@@ -754,6 +754,35 @@ impl RustExplorationManager {
         );
     }
 
+    /// Read back the current address-concretization configuration as a dict.
+    ///
+    /// Mirrors the fields set by `configure_concretization_strategies`, with
+    /// boolean flags encoded as `0`/`1`. Lets Python tests assert that
+    /// SimOption propagation (APPROXIMATE_MEMORY_INDICES / SYMBOLIC_WRITE_ADDRESSES /
+    /// AVOID_MULTIVALUED_*) and the read/write `_limit` sniffing in
+    /// `rust_manager._add_rust_state` reached the Rust-side concretizer
+    /// rather than silently no-op'ing on a positional-arg swap.
+    pub fn get_concretization_config(&self) -> HashMap<String, u64> {
+        let c = &self.memory_config.concretizer_config;
+        let mut m = HashMap::new();
+        m.insert("use_approximate".to_string(), c.use_approximate as u64);
+        m.insert(
+            "symbolic_write_addresses".to_string(),
+            c.symbolic_write_addresses as u64,
+        );
+        m.insert(
+            "avoid_multivalued_reads".to_string(),
+            c.avoid_multivalued_reads as u64,
+        );
+        m.insert(
+            "avoid_multivalued_writes".to_string(),
+            c.avoid_multivalued_writes as u64,
+        );
+        m.insert("read_range_limit".to_string(), c.read_range_limit);
+        m.insert("write_range_limit".to_string(), c.write_range_limit);
+        m
+    }
+
     /// Enable or disable Rust-side profiling.
     /// When enabled, per-step timing and counters are accumulated.
     pub fn set_profiling(&mut self, enabled: bool) {
