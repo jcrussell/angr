@@ -26,6 +26,7 @@ mod solver_build;
 mod solving_ops;
 mod stats;
 mod table;
+mod transaction_ops;
 mod value;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
