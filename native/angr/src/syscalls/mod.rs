@@ -119,9 +119,16 @@ pub trait NativeSyscall: Send + Sync {
     ) -> Result<SyscallOutcome, SyscallError>;
 }
 
-/// Registry of native syscall handlers, keyed by `(arch_name, num)`.
+/// Registry of native syscall handlers, keyed by arch name then syscall num.
+///
+/// Two-level map (`arch -> num -> handler`) so `get` resolves a runtime
+/// `&str` arch against the `&'static str` outer keys via `Borrow<str>` and
+/// then does a second hash lookup on the number — both O(1). A flat
+/// `(&'static str, u64)` key cannot be looked up from a runtime `&str`
+/// without interning, which previously forced a linear `iter().find()` over
+/// all 432 rows on every executed syscall (see angr-k95c).
 pub struct NativeSyscallRegistry {
-    handlers: HashMap<(&'static str, u64), Arc<dyn NativeSyscall>>,
+    handlers: HashMap<&'static str, HashMap<u64, Arc<dyn NativeSyscall>>>,
     enabled: bool,
 }
 
@@ -964,19 +971,16 @@ impl NativeSyscallRegistry {
     }
 
     pub fn register(&mut self, arch: &'static str, num: u64, syscall: Arc<dyn NativeSyscall>) {
-        self.handlers.insert((arch, num), syscall);
+        self.handlers.entry(arch).or_default().insert(num, syscall);
     }
 
     pub fn get(&self, arch: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
         if !self.enabled {
             return None;
         }
-        // The HashMap key is &'static str; lookup needs to compare arch by value.
-        // Iterate is fine: the registry is small (typically <20 entries).
-        self.handlers
-            .iter()
-            .find(|((a, n), _)| *a == arch && *n == num)
-            .map(|(_, h)| h)
+        // Two O(1) hash lookups: arch (`&'static str` keys borrow as `str`,
+        // so a runtime `&str` resolves directly) then syscall number.
+        self.handlers.get(arch)?.get(&num)
     }
 
     pub fn enable_all(&mut self) {
@@ -993,11 +997,11 @@ impl NativeSyscallRegistry {
 
     /// Number of registered handlers (for diagnostics / tests).
     pub fn len(&self) -> usize {
-        self.handlers.len()
+        self.handlers.values().map(HashMap::len).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
+        self.handlers.values().all(HashMap::is_empty)
     }
 }
 
