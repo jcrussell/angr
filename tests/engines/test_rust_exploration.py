@@ -4146,6 +4146,55 @@ class TestStateProxyCopySemantics:
         assert after_src == before_src
         assert after_clone == before_clone + 1
 
+    def test_proxy_add_constraints_visible_across_sub_proxies(self, fauxware_project):
+        """angr-yodz: a constraint added via ``proxy.add_constraints`` is
+        visible to the SAME proxy's posix.dumps(0) and solver reads, because
+        all sub-proxies share one forked context. It must remain view-local
+        — the underlying Rust state's solver is untouched.
+        """
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        x = claripy.BVS("yodz_stdin", 8)
+        # Wire a fake stdin var BEFORE first .posix access so the lazily-built
+        # posix sub-proxy picks it up.
+        proxy._stdin_vars = [(x, 0)]
+
+        before = mgr._rust_mgr.state_constraint_count(proxy._state_id)
+        proxy.add_constraints(x == 0x41)  # 'A'
+
+        # posix.dumps(0) evaluates stdin vars under the shared context, so it
+        # must honor the just-added constraint.
+        assert proxy.posix.dumps(0) == b"A"
+        # The solver sub-proxy reads the same value.
+        assert proxy.solver.eval(x) == 0x41
+        # View-local: the underlying state's solver gained no constraint.
+        assert mgr._rust_mgr.state_constraint_count(proxy._state_id) == before
+
+    def test_proxy_add_constraints_not_persistent_to_state(self, fauxware_project):
+        """angr-yodz: add_constraints is view-local. A freshly built proxy
+        for the same state does not see a constraint added through a prior
+        proxy (it forks a clean context from the unchanged state solver).
+        """
+        import claripy
+
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        x = claripy.BVS("yodz_viewlocal", 8)
+        proxy.add_constraints(x == 0x41)
+
+        fresh = RustStateProxy(mgr._rust_mgr, proxy._state_id, project=fauxware_project)
+        # x is unconstrained from the fresh proxy's perspective: both 0x41 and
+        # a different value are valid solutions.
+        assert fresh.solver.satisfiable(extra_constraints=[x == 0x42])
+
     def test_proxy_copy_options_isolation(self, fauxware_project):
         """Mutating the copy's options set does not mutate the source's."""
 

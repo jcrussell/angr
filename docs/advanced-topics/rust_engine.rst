@@ -218,8 +218,22 @@ Supported writes (all immediate, no queueing):
   (``int`` or concrete claripy AST). Symbolic-data writes route through
   the shared symbol cache so reads return the same Z3 AST that Rust is
   tracking.
-* ``proxy.solver.add(...)`` — forwards constraints to the forked Rust
-  solver context (unchanged from the read-only era).
+* ``proxy.solver.add(...)`` / ``proxy.add_constraints(...)`` — adds the
+  constraint to a single forked Rust solver context **shared** by the
+  proxy's ``solver``, ``memory``, and ``posix`` sub-proxies (angr-yodz).
+  A constraint added this way is therefore honored by a subsequent
+  ``proxy.posix.dumps(0)`` and by symbolic-address concretization in
+  ``proxy.memory.load(...)`` on the *same* proxy. The constraint is
+  **view-local**: it lands on the forked context, not the underlying
+  Rust state's solver, so it does not perturb live exploration and does
+  not survive into a freshly built proxy for the same state.
+
+  This contrasts with the write-through path used during SimProcedure
+  callbacks (``RustSolverProxyPlugin.add`` →
+  ``add_constraints_to_state``), which persists the constraint onto the
+  state's own solver (SimState semantics). To persist a constraint onto
+  the state from a read-through proxy, call
+  ``mgr._rust_mgr.add_constraints_to_state(state_id, [...])`` directly.
 
 Refused writes:
 

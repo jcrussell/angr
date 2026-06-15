@@ -61,14 +61,21 @@ class RustSolverProxy:
     directly to the Rust Z3 solver — no claripy frontend sync needed.
     """
 
-    def __init__(self, rust_mgr, state_id):
+    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._solver_ctx = None  # lazy — forked on first access
+        # angr-yodz: when set, returns the parent RustStateProxy's single
+        # shared forked context so a constraint added here is visible to the
+        # same proxy's memory/posix reads. None for standalone construction.
+        self._shared_ctx_getter = shared_ctx_getter
 
     def _ensure_solver(self):
         if self._solver_ctx is None:
-            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            if self._shared_ctx_getter is not None:
+                self._solver_ctx = self._shared_ctx_getter()
+            else:
+                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
 
     def satisfiable(self, extra_constraints=(), **kwargs):
         """Check if the state's constraints are satisfiable."""
@@ -1087,11 +1094,15 @@ class RustMemoryProxy:
 
     SUPPORTS_CONCRETE_LOAD: bool = False
 
-    def __init__(self, rust_mgr, state_id, arch, *, endness=None, python_mgr=None):
+    def __init__(self, rust_mgr, state_id, arch, *, endness=None, python_mgr=None, shared_ctx_getter=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # angr-yodz: shared-context getter from the parent RustStateProxy so
+        # symbolic-addr concretization honors constraints added via the same
+        # proxy's add_constraints. None for standalone construction.
+        self._shared_ctx_getter = shared_ctx_getter
         # angr-7jv5: optional Python-wrapper handle for counter bumps.
         self._python_mgr = python_mgr
         # SimMemory plugin protocol surface.
@@ -1189,7 +1200,10 @@ class RustMemoryProxy:
 
     def _ensure_solver(self):
         if self._solver_ctx is None:
-            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            if self._shared_ctx_getter is not None:
+                self._solver_ctx = self._shared_ctx_getter()
+            else:
+                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
 
     def load(self, addr, size=None, endness=None, **kwargs):
         """Load memory from the Rust state.
@@ -1730,11 +1744,15 @@ class RustPosixProxy:
     state's constraints to extract the concrete input.
     """
 
-    def __init__(self, rust_mgr, state_id, stdin_vars=None, stdout_data=None):
+    def __init__(self, rust_mgr, state_id, stdin_vars=None, stdout_data=None, shared_ctx_getter=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._stdin_vars = stdin_vars or []  # list of (claripy BVS, offset) for stdin
         self._stdout_data = stdout_data or b""  # accumulated stdout bytes
+        # angr-yodz: shared-context getter from the parent RustStateProxy so
+        # dumps(0) honors constraints added via the same proxy's
+        # add_constraints. None for standalone construction.
+        self._shared_ctx_getter = shared_ctx_getter
 
     def dumps(self, fd):
         """Dump file descriptor contents."""
@@ -1760,7 +1778,10 @@ class RustPosixProxy:
         if not self._stdin_vars:
             return b""
         try:
-            solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            if self._shared_ctx_getter is not None:
+                solver_ctx = self._shared_ctx_getter()
+            else:
+                solver_ctx = self._mgr.fork_state_solver(self._state_id)
             result = bytearray()
             for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1]):
                 val = solver_ctx.eval(var)
@@ -2693,6 +2714,11 @@ class RustStateProxy:
         self._inspect_proxy = None
         self._heap_proxy = None
         self._scratch_proxy = None
+        # angr-yodz: single forked solver context shared by this proxy's
+        # solver/memory/posix sub-proxies. Forked lazily on first solver
+        # access so add_constraints lands somewhere all three sub-proxies
+        # read from. View-local — see _get_shared_solver_ctx.
+        self._shared_solver_ctx = None
 
     @property
     def state_id(self):
@@ -2737,11 +2763,31 @@ class RustStateProxy:
         """The angr Project."""
         return self._project
 
+    def _get_shared_solver_ctx(self):
+        """Single forked solver context shared by this proxy's solver/memory/
+        posix sub-proxies.
+
+        Forking once (rather than per-sub-proxy) is what makes
+        ``proxy.add_constraints(c)`` visible to ``proxy.posix.dumps(0)`` and
+        ``proxy.memory.load(symbolic_addr)`` — they all read from this same
+        context (angr-yodz). The constraint is **view-local**: it lands on
+        this forked context, not the underlying Rust state's solver, so it
+        does not leak into the live exploration state or sibling proxies and
+        vanishes when the proxy is dropped. To persist a constraint onto the
+        state itself, use ``mgr._rust_mgr.add_constraints_to_state`` (the
+        write-through path the SimProcedure-callback plugin uses).
+        """
+        if self._shared_solver_ctx is None:
+            self._shared_solver_ctx = self._mgr.fork_state_solver(self._state_id)
+        return self._shared_solver_ctx
+
     @property
     def solver(self):
         """Solver proxy — delegates to Rust Z3 via PyO3."""
         if self._solver_proxy is None:
-            self._solver_proxy = RustSolverProxy(self._mgr, self._state_id)
+            self._solver_proxy = RustSolverProxy(
+                self._mgr, self._state_id, shared_ctx_getter=self._get_shared_solver_ctx
+            )
         return self._solver_proxy
 
     @property
@@ -2765,7 +2811,13 @@ class RustStateProxy:
     def memory(self):
         """Memory proxy — reads memory from Rust state."""
         if self._mem_proxy is None:
-            self._mem_proxy = RustMemoryProxy(self._mgr, self._state_id, self.arch, python_mgr=self._python_mgr)
+            self._mem_proxy = RustMemoryProxy(
+                self._mgr,
+                self._state_id,
+                self.arch,
+                python_mgr=self._python_mgr,
+                shared_ctx_getter=self._get_shared_solver_ctx,
+            )
         return self._mem_proxy
 
     @property
@@ -2789,6 +2841,7 @@ class RustStateProxy:
                 self._state_id,
                 stdin_vars=self._stdin_vars,
                 stdout_data=self._stdout_data,
+                shared_ctx_getter=self._get_shared_solver_ctx,
             )
         return self._posix_proxy
 
@@ -2860,7 +2913,19 @@ class RustStateProxy:
         return {}
 
     def add_constraints(self, *constraints):
-        """Add constraints to the solver."""
+        """Add constraints to this proxy's view of the solver.
+
+        angr-yodz: the constraint lands on a single forked context shared by
+        this proxy's solver / memory / posix sub-proxies, so a subsequent
+        ``proxy.posix.dumps(0)`` or ``proxy.memory.load(symbolic_addr)``
+        honors it. The constraint is **view-local** — it does NOT persist
+        onto the underlying Rust state's solver, so it neither perturbs live
+        exploration nor survives into a freshly built proxy. To persist a
+        constraint onto the state itself (SimState semantics), use
+        ``mgr._rust_mgr.add_constraints_to_state(state_id, [...])`` — the
+        write-through path used by ``RustSolverProxyPlugin`` during
+        SimProcedure callbacks.
+        """
         self.solver.add(*constraints)
 
     def satisfiable(self, **kwargs):
