@@ -1118,6 +1118,17 @@ pub struct RustSimState {
     /// See module-level `apply-state-metadata-strips-options` — same caveat
     /// as `no_ip_concretization`.
     keep_ip_symbolic: bool,
+    /// angr-027h: per-state override that forces EAGER forking (immediate
+    /// successor materialization) regardless of the manager-level
+    /// `ExecutionConfig::use_deferred_forks`. Set on the loop-exit forks that
+    /// are resumed at an UnconstrainedJump (where the deferred main chain
+    /// overflowed the saved return address and went unconstrained). Without
+    /// this, resumed forks continue in deferred mode, re-dive the symbolic
+    /// loop nest, re-overflow, and recursively diverge (iter63). Eager
+    /// resumption lets them BFS cleanly to a find target. Cloned on fork so
+    /// the whole resumed subtree stays eager. See bd memory
+    /// `benchmark-cadet-eager-reaches-egg`.
+    force_eager_forks: bool,
     /// CGC `state.cgc.allocation_base` — high-water bump pointer for the
     /// CGC `allocate(2)` syscall. Pages grow downward from this address.
     /// Default 0xB800_0000 (matches `state_plugins/cgc.py::allocation_base`).
@@ -1184,6 +1195,7 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
         })
@@ -1229,6 +1241,7 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
         }
@@ -1284,6 +1297,7 @@ impl RustSimState {
             no_ip_concretization: false,
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
+            force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
         })
@@ -1897,6 +1911,19 @@ impl RustSimState {
         self.keep_ip_symbolic
     }
 
+    /// angr-027h: force eager (immediate) forking for this state regardless of
+    /// the manager's `use_deferred_forks` setting. Set on loop-exit forks
+    /// resumed at an UnconstrainedJump so they BFS to the find target instead
+    /// of recursively re-deferring. Cloned on fork.
+    pub fn set_force_eager_forks(&mut self, enabled: bool) {
+        self.force_eager_forks = enabled;
+    }
+
+    /// Whether this state forces eager forking. See [`Self::set_force_eager_forks`].
+    pub fn force_eager_forks(&self) -> bool {
+        self.force_eager_forks
+    }
+
     /// Set the fork-time `SharedLineageSolver` materialization opt-in on
     /// this state's solver context (angr-3ms1 step 1b).
     ///
@@ -2192,6 +2219,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2233,6 +2261,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2274,6 +2303,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2323,6 +2353,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2420,6 +2451,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2591,6 +2623,10 @@ pub struct RustSimStateSnapshot {
     pub no_ip_concretization: bool,
     pub no_symbolic_jump_resolution: bool,
     pub keep_ip_symbolic: bool,
+    /// angr-027h: eager-fork override. `#[serde(default)]` keeps pre-027h
+    /// snapshots forward-compatible (restores to `false`).
+    #[serde(default)]
+    pub force_eager_forks: bool,
     /// CGC `state.cgc.allocation_base` mirror. `#[serde(default)]` keeps
     /// pre-CGC snapshots forward-compatible — restoration defaults to the
     /// canonical 0xB800_0000 bump start used by fresh CGC states.
@@ -2649,6 +2685,7 @@ impl RustSimState {
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
         }
@@ -2698,6 +2735,7 @@ impl RustSimState {
             no_ip_concretization: snap.no_ip_concretization,
             no_symbolic_jump_resolution: snap.no_symbolic_jump_resolution,
             keep_ip_symbolic: snap.keep_ip_symbolic,
+            force_eager_forks: snap.force_eager_forks,
             cgc_allocation_base: snap.cgc_allocation_base,
             cgc_sinkholes: snap.cgc_sinkholes,
         })

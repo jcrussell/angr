@@ -669,10 +669,30 @@ impl RustExplorationManager {
                         .or_default()
                         .push_back(state);
                 }
-                Err(StepError::Unconstrained(state)) => {
+                Err(StepError::Unconstrained(state, forks)) => {
                     // State has too many symbolic jump targets - move to unconstrained stash
                     log::debug!("State {} moved to unconstrained stash", state.state_id());
                     self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
+                    // angr-027h: loop-exit deferred forks materialized in eager
+                    // mode at the unconstrained jump. Route them to active (or
+                    // found/avoid) exactly like normal successors so a
+                    // find-guided search can reach a target behind the loop.
+                    for fork in forks {
+                        let spc = fork.pc();
+                        if self.find_addrs.contains(&spc) {
+                            if self.constraint_solver.lazy_solves || fork.satisfiable() {
+                                self.sm
+                                    .stashes_mut()
+                                    .entry(STASH_FOUND.to_string())
+                                    .or_default()
+                                    .push_back(fork);
+                            }
+                        } else if self.avoid_addrs.contains(&spc) {
+                            self.push_or_drop_terminal(STASH_AVOID, fork);
+                        } else {
+                            self.push_to_active_or_drop(fork);
+                        }
+                    }
                 }
             }
 

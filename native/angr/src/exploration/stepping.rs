@@ -25,8 +25,13 @@ pub(crate) enum StepError {
     Deadended(RustSimState),
     /// Error during execution.
     Error(RustSimState, String),
-    /// Unconstrained state - too many symbolic jump targets.
-    Unconstrained(RustSimState),
+    /// Unconstrained state - too many symbolic jump targets. The second field
+    /// carries any loop-exit deferred forks materialized in EAGER mode at the
+    /// unconstrained jump (angr-027h): the main state goes to the unconstrained
+    /// stash but these forks are routed back to active so a find-guided search
+    /// can still reach a target that lies behind the loop exit. Empty in the
+    /// common case (no deferred forks pending, or deferred forks disabled).
+    Unconstrained(RustSimState, Vec<RustSimState>),
 }
 
 /// Output of one interpreter run, packaged for the post-execution phase.
@@ -465,33 +470,47 @@ impl RustExplorationManager {
                 limit: _,
                 jumpkind: _,
             } => {
-                // Too many symbolic jump targets - move to unconstrained stash.
+                // Too many symbolic jump targets - the main state goes to the
+                // unconstrained stash. But its accumulated deferred forks are
+                // NOT dropped: they are materialized in EAGER mode and routed
+                // back to active so a find-guided search can still reach a
+                // target behind the loop exit.
                 //
-                // NOTE (angr-027h): `deferred_forks` are intentionally dropped
-                // here. The interpreter returns them (execution.rs
-                // UnconstrainedJump arm calls take_deferred_forks) but the
-                // manager discards them with the unconstrained main state.
-                //
-                // Why this blocks the CADET easter-egg find (confirmed iter64,
-                // full CFG of sub_80481a0 — see bd memory
-                // `benchmark-cadet-eggphase-rootcause-cfg`): the find target
+                // Why this matters for the CADET easter-egg find (confirmed
+                // iter64-65, full CFG of sub_80481a0 — see bd memories
+                // `benchmark-cadet-eggphase-rootcause-cfg` and
+                // `benchmark-cadet-eager-reaches-egg`): the find target
                 // 0x804833E sits behind a symbolic strlen loop whose exit
                 // (je 0x804826f) is a FORWARD branch, so deferred-fork mode
                 // takes the loop-continuation as the main chain and DEFERS every
                 // loop exit. The main chain dives the loop, overflows the saved
                 // return address (receive reads 0x80 bytes), and ret goes
-                // unconstrained — at which point the accumulated loop-exit forks
-                // (the only paths that can ever reach the egg) are dropped here.
-                // Net: mgr.explore(find=0x804833E) goes active=1 for ~3 steps
-                // then active=0/unconstrained=1 forever.
+                // unconstrained. The accumulated loop-exit forks are the only
+                // paths that can reach the egg.
                 //
-                // iter63 tried materializing the forks via handle_block_end:
-                // active stops collapsing but diverges (resumed forks re-enter
-                // the loop nest and re-overflow) and still never reaches the egg.
-                // The real fix is a search-order change — loop-exit forks must
-                // enter the pending stash and be explored under find guidance,
-                // not re-chained eagerly. Left as Err until that lands.
-                Err(StepError::Unconstrained(state))
+                // iter63 materialized them in DEFERRED mode: they re-dive the
+                // loop nest, re-overflow, re-go-unconstrained, and recursively
+                // diverge. iter65 PROVED eager forking converges (found at
+                // step 38, active bounded ~27). So we materialize them with
+                // `force_eager` so the resumed subtree BFSes cleanly instead of
+                // re-deferring. The flag is per-state, so the default deferred
+                // (fast) path on every other bench is untouched.
+                let original_state_id = state.state_id();
+                let root_state_id = self
+                    .sm
+                    .roots()
+                    .get(&original_state_id)
+                    .copied()
+                    .unwrap_or(original_state_id);
+                let forks = self.materialize_deferred_forks(
+                    &mut state,
+                    deferred_forks,
+                    &stored_conditions,
+                    fork_snapshots,
+                    root_state_id,
+                    true,
+                );
+                Err(StepError::Unconstrained(state, forks))
             }
             RunResult::UnmodeledCall {
                 addr,
@@ -522,7 +541,7 @@ impl RustExplorationManager {
         pc: u64,
         deferred_forks: Vec<DeferredFork>,
         stored_conditions: FxHashMap<u64, RustBV>,
-        mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         state.set_pc(pc);
 
@@ -535,9 +554,46 @@ impl RustExplorationManager {
             .copied()
             .unwrap_or(original_state_id);
 
-        // Process deferred forks with proper constraint handling
-        // P13: Track UNSAT states for pruning
-        let mut successors = vec![state];
+        // Materialize the deferred forks (continuing the main chain, deferred
+        // mode preserved) and prepend the main state as successors[0].
+        let forks = self.materialize_deferred_forks(
+            &mut state,
+            deferred_forks,
+            &stored_conditions,
+            fork_snapshots,
+            root_state_id,
+            false,
+        );
+        let mut successors = Vec::with_capacity(forks.len() + 1);
+        successors.push(state);
+        successors.extend(forks);
+
+        Ok(successors)
+    }
+
+    /// Materialize a batch of `DeferredFork`s into concrete successor states.
+    ///
+    /// `base` is the main state the forks diverge from; the taken-path
+    /// constraint of each fork is accumulated onto it (mirroring Python's
+    /// per-branch narrowing) so later in-block forks inherit earlier branch
+    /// decisions. The returned vec holds the SAT forks only — UNSAT forks are
+    /// routed to the pruned stash here. `base` itself is NOT included.
+    ///
+    /// `force_eager` (angr-027h): when true, each materialized fork is flagged
+    /// `force_eager_forks` so its subsequent steps fork eagerly regardless of
+    /// the manager `use_deferred_forks` setting. Used when resuming loop-exit
+    /// forks at an UnconstrainedJump, where leaving them in deferred mode makes
+    /// them re-dive the symbolic loop nest and recursively diverge.
+    fn materialize_deferred_forks(
+        &mut self,
+        base: &mut RustSimState,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: &FxHashMap<u64, RustBV>,
+        mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+        root_state_id: u64,
+        force_eager: bool,
+    ) -> Vec<RustSimState> {
+        let mut forks = Vec::new();
         let mut pruned_states = Vec::new();
         let deferred_fork_start = if self.profiling.profiling_enabled {
             Some(std::time::Instant::now())
@@ -554,9 +610,9 @@ impl RustExplorationManager {
                 // polluting subsequent feasibility checks within the
                 // same IRSB.
                 if fork.path_taken {
-                    successors[0].solver().borrow().assume_true(condition);
+                    base.solver().borrow().assume_true(condition);
                 } else {
-                    successors[0].solver().borrow().assume_false(condition);
+                    base.solver().borrow().assume_false(condition);
                 }
 
                 // Create forked state for the unexplored path.
@@ -568,8 +624,8 @@ impl RustExplorationManager {
                 } else {
                     None
                 };
-                let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
-                    let mut f = successors[0].fork_from_snapshot(snapshot);
+                let mut forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
+                    let mut f = base.fork_from_snapshot(snapshot);
                     if fork.path_taken {
                         f.solver().borrow().assume_false(condition);
                     } else {
@@ -578,14 +634,17 @@ impl RustExplorationManager {
                     f.set_pc(fork.unexplored_target);
                     f
                 } else if fork.path_taken {
-                    let mut f = successors[0].fork_false(condition);
+                    let mut f = base.fork_false(condition);
                     f.set_pc(fork.unexplored_target);
                     f
                 } else {
-                    let mut f = successors[0].fork_true(condition);
+                    let mut f = base.fork_true(condition);
                     f.set_pc(fork.unexplored_target);
                     f
                 };
+                if force_eager {
+                    forked.set_force_eager_forks(true);
+                }
                 if let Some(start) = fork_start {
                     self.profiling.accumulated_stats.solver_fork_time_ns +=
                         start.elapsed().as_nanos() as u64;
@@ -612,7 +671,7 @@ impl RustExplorationManager {
                             start.elapsed().as_nanos() as u64;
                         self.profiling.accumulated_stats.solver_sat_count += 1;
                     }
-                    successors.push(forked);
+                    forks.push(forked);
                 } else {
                     if let Some(start) = sat_start {
                         self.profiling.accumulated_stats.solver_sat_time_ns +=
@@ -633,15 +692,18 @@ impl RustExplorationManager {
                     fork.branch_addr,
                     fork.condition_id
                 );
-                let mut forked = successors[0].fork();
+                let mut forked = base.fork();
                 forked.set_pc(fork.unexplored_target);
+                if force_eager {
+                    forked.set_force_eager_forks(true);
+                }
                 self.sm.set_root(forked.state_id(), root_state_id);
 
                 self.dispatch_fork_inspect(forked.state_id());
 
                 // P13: Still check satisfiability
                 if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                    successors.push(forked);
+                    forks.push(forked);
                 } else {
                     log::debug!(
                         "P13: Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
@@ -662,7 +724,7 @@ impl RustExplorationManager {
             self.push_or_drop_terminal(STASH_PRUNED, s);
         }
 
-        Ok(successors)
+        forks
     }
 
     /// Handle SimProcedure: try native first, fall back to Python callback.
@@ -1106,12 +1168,18 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
         let solver_ref = solver_rc.borrow();
 
-        // Create interpreter with the state's solver
-        let mut interp = VEXInterpreter::with_config(
-            self.environment.vex_arch,
-            &solver_ref,
-            self.exec_config.clone(),
-        );
+        // Create interpreter with the state's solver.
+        //
+        // angr-027h: a state carrying `force_eager_forks` (a loop-exit fork
+        // resumed at an UnconstrainedJump) overrides the manager-level
+        // `use_deferred_forks` so it materializes successors eagerly and BFSes
+        // to the find target instead of recursively re-deferring.
+        let mut exec_config = self.exec_config.clone();
+        if state.force_eager_forks() {
+            exec_config.use_deferred_forks = false;
+        }
+        let mut interp =
+            VEXInterpreter::with_config(self.environment.vex_arch, &solver_ref, exec_config);
 
         // Propagate lazy_solves to skip Z3 feasibility checks
         interp.lazy_solves = self.constraint_solver.lazy_solves;
