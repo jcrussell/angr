@@ -498,6 +498,16 @@ pub struct RustExplorationManager {
     /// the first time `max_active_states` prunes a state — makes a runaway
     /// explosion visible in the log without spamming on tight fork loops.
     pub(crate) max_active_warned: bool,
+    /// Cumulative count of loop-exit deferred forks DROPPED at an
+    /// `UnconstrainedJump` while `exec_config.use_deferred_forks` is true
+    /// (the angr-027h phase-1 behavior). Non-zero means a step-driven run
+    /// reached `active_empty` only because egg-reaching loop-exit forks were
+    /// discarded — the precise trigger Python's `_maybe_step_eager_retry`
+    /// uses to flip to eager mode and re-seed (angr-ckdy). Always tracked
+    /// (not gated on profiling) so the bare `step()` loop in CADET's solve.py
+    /// phase 3 can read it. Read (non-resetting) via
+    /// `deferred_forks_dropped()`.
+    pub(crate) deferred_forks_dropped: u64,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
     /// Native exploration techniques that run entirely in Rust.
@@ -564,6 +574,7 @@ impl RustExplorationManager {
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,
             max_active_warned: false,
+            deferred_forks_dropped: 0,
             native_techniques: Vec::new(),
             constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),
@@ -687,6 +698,17 @@ impl RustExplorationManager {
     /// re-seeds the initial states with this set to `false`.
     pub fn set_use_deferred_forks(&mut self, enabled: bool) {
         self.exec_config.use_deferred_forks = enabled;
+    }
+
+    /// Cumulative number of loop-exit deferred forks dropped at an
+    /// `UnconstrainedJump` while deferred-fork mode was active (angr-ckdy).
+    /// Non-resetting: a step-driven `explore()`-bypassing loop (CADET solve.py
+    /// phase 3) polls this after `active_empty` to decide whether the stash
+    /// collapsed because egg-reaching forks were discarded — if so the Python
+    /// wrapper re-seeds in eager mode. Returns 0 when no forks were ever
+    /// dropped (genuine exhaustion), so a spurious eager re-run is avoided.
+    pub fn deferred_forks_dropped(&self) -> u64 {
+        self.deferred_forks_dropped
     }
 
     /// Set the Z3 solver timeout in milliseconds (default:

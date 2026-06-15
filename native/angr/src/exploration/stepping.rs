@@ -509,6 +509,11 @@ impl RustExplorationManager {
                 // phase-2 trigger (iter66 regression — see bd memory
                 // `benchmark-cadet-single-step-loop-unroll-defeats-latch`).
                 let forks = if self.exec_config.use_deferred_forks {
+                    // angr-ckdy: record that egg-reaching loop-exit forks were
+                    // discarded so a step-driven loop (CADET solve.py phase 3)
+                    // can tell `active_empty` apart from a genuine exhaustion
+                    // and re-seed in eager mode.
+                    self.deferred_forks_dropped += deferred_forks.len() as u64;
                     Vec::new()
                 } else {
                     let original_state_id = state.state_id();
