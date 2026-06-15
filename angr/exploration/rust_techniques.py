@@ -157,9 +157,41 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
             # cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.
             l.debug("BFS technique registered (default FIFO selection)")
 
-    # LoopSeer: Loop detection and handling
-    elif tech_name == "LoopSeer":
-        l.debug("LoopSeer technique registered (basic support)")
+    # LoopSeer / LocalLoopSeer: bound-only loop limiting via the native
+    # LoopBound technique. The Rust run loop never dispatches the Python
+    # successors()/step_state() hooks these techniques rely on, so without
+    # this translation a registered bound silently does nothing. We map the
+    # bound onto register_loop_bound, which moves over-bound states to the
+    # technique's discard_stash using a back-edge heuristic (any block
+    # repeated more than `bound` times in a state's history) rather than a
+    # CFG-derived trip counter.
+    elif tech_name in ("LoopSeer", "LocalLoopSeer"):
+        bound = getattr(technique, "bound", None)
+        discard_stash = getattr(technique, "discard_stash", "spinning") or "spinning"
+        if bound is None:
+            # Bound-less LoopSeer only records trip counts (no enforcement);
+            # the native loop limiter has nothing to enforce.
+            l.debug("%s registered without a bound; no native limiter applied", tech_name)
+        elif getattr(technique, "bound_reached", None) is not None:
+            # A bound_reached callback can't be invoked from the Rust loop, so
+            # honoring the bound natively would silently skip the user's hook.
+            l.warning(
+                "%s has a bound_reached callback, which the Rust engine cannot "
+                "invoke; native loop bound not applied (states will not be limited)",
+                tech_name,
+            )
+        else:
+            try:
+                mgr._rust_mgr.register_loop_bound(int(bound), discard_stash)
+                l.debug(
+                    "Registered native loop bound=%d, discard_stash=%r for %s",
+                    bound,
+                    discard_stash,
+                    tech_name,
+                )
+            except AttributeError:
+                # cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.
+                l.debug("%s registered (native loop bound not supported)", tech_name)
 
     # Explorer: Extract find/avoid addresses
     elif tech_name == "Explorer":

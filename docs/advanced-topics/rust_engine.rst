@@ -2350,21 +2350,22 @@ Caveats specific to ``step()`` dispatch:
        register list for ``X86`` / ``AMD64``; other architectures
        fall through to the Python ``filter()`` path.
    * - ``LoopSeer``
-     - **Partial (filter only)**
-     - ``filter()`` runs against ``RustStateProxy`` (cuts states whose
-       loops exceed the bound *if* the bound was already recorded), but
-       ``successors()`` — which actually populates the trip-count map
-       — is not dispatched (raises ``NotImplementedError`` if called).
-       Without it the bound check almost never fires; a registered
-       ``LoopSeer`` behaves as if disabled on most workloads. No native
-       loop bound or trip-count discount.
+     - **Native (bound-only)**
+     - A ``bound`` is translated to ``register_loop_bound(bound,
+       discard_stash)``: the Rust run loop moves states whose history
+       repeats any single block more than ``bound`` times to the
+       technique's ``discard_stash`` (default ``spinning``). This is a
+       back-edge heuristic, not the CFG-derived per-loop trip counter, so
+       ``use_header`` / ``limit_concrete_loops`` are not honored. A
+       bound-less ``LoopSeer`` (trip recording only) registers no native
+       limiter, and a ``bound_reached`` callback disables the native path
+       (it cannot be invoked from Rust) with a warning.
    * - ``LocalLoopSeer``
-     - **Silently no-op (successors hook)**
-     - Bound-checking logic lives in ``successors()`` which the Rust
-       manager does not dispatch (raises ``NotImplementedError`` if
-       called). Only ``filter()`` / ``complete()`` reach the technique,
-       so the bound is never enforced. Use ``use_rust_engine=False``
-       if you need loop bounding.
+     - **Native (bound-only)**
+     - Same translation as ``LoopSeer`` above: ``bound`` →
+       ``register_loop_bound(bound, discard_stash)`` via the back-edge
+       heuristic. ``bound_reached`` callbacks disable the native path with
+       a warning.
    * - ``MemoryWatcher``
      - **Step hook dispatched**
      - Memory check runs in ``step()`` (``psutil.virtual_memory()`` +

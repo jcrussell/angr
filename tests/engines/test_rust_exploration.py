@@ -12302,6 +12302,71 @@ class TestNativeTechniques:
         mgr.register_loop_bound(10, "spinning")
         assert mgr.native_technique_count() == 3
 
+    def test_loop_seer_via_use_technique(self, fauxware_project):
+        """LoopSeer(bound=N) routes to the native register_loop_bound."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LoopSeer
+
+        mgr.use_technique(LoopSeer(bound=8))
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+    def test_local_loop_seer_via_use_technique(self, fauxware_project):
+        """LocalLoopSeer(bound=N) routes to the native register_loop_bound."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LocalLoopSeer
+
+        mgr.use_technique(LocalLoopSeer(bound=8))
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+    def test_loop_seer_no_bound_no_native(self, fauxware_project):
+        """A bound-less LoopSeer has nothing to enforce, so no native technique."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LoopSeer
+
+        mgr.use_technique(LoopSeer())  # bound defaults to None
+        assert mgr._rust_mgr.native_technique_count() == 0
+
+    def test_loop_seer_bound_reached_callback_skips_native(self, fauxware_project):
+        """A bound_reached callback can't run in Rust, so we skip the native bound."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LoopSeer
+
+        mgr.use_technique(LoopSeer(bound=8, bound_reached=lambda seer, succ: None))
+        assert mgr._rust_mgr.native_technique_count() == 0
+
+    def test_local_loop_seer_routes_to_spinning(self, fauxware_project):
+        """LocalLoopSeer(bound=N) routes over-bound states to 'spinning'.
+
+        fauxware's authentication path revisits the same blocks (read/strcmp
+        loop) more than twice, so a tight bound=2 trips the native back-edge
+        heuristic and moves the offending state to the default 'spinning'
+        discard stash, matching the Python engine's LocalLoopSeer behavior.
+        A synthetic ``jmp $`` blob can't be used here: the uniqueness filter
+        collapses the identical repeated state before the bound is reached.
+        """
+        from angr.exploration_techniques import LocalLoopSeer
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        mgr.use_technique(LocalLoopSeer(bound=2))
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+        mgr.run(max_steps=120)
+
+        # The tight bound must have routed at least one state to 'spinning',
+        # and exploration must have drained the active stash.
+        assert len(list(mgr._rust_mgr.get_state_ids("active"))) == 0
+        assert len(list(mgr._rust_mgr.get_state_ids("spinning"))) > 0
+
 
 class TestExplorationTechniqueStepHookDispatch:
     """ExplorationTechnique.step() hook dispatch against RustStateProxy.
