@@ -380,6 +380,28 @@ The full ``ProcedureError`` enum lives in ``procedures/mod.rs``:
 ``SymbolicArgument``, ``MemoryError``, ``NotImplemented``,
 ``MaxIterations``, and ``Other``. Any of them triggers Python fallback.
 
+.. warning::
+
+   **Value-returning "unconstrained" stubs must match Python's
+   ``SYMBOLIC_INITIAL_VALUES`` gate.** Do not return a fresh symbolic
+   BVS for a stub that mimics ``angr.procedures.stubs.ReturnUnconstrained``
+   (``operator new``/``delete``, ``ostream::operator<<``, ``std::string``
+   ctors — the bulk of C++ ABI stubs). Python's ``ReturnUnconstrained``
+   calls ``state.solver.Unconstrained(name, size, key=...)``, and
+   ``SimSolver.Unconstrained`` returns a **concrete ``BVV(0)``** unless
+   ``sim_options.SYMBOLIC_INITIAL_VALUES`` is in ``state.options`` (off by
+   default — see ``angr/state_plugins/solver.py``'s ``Unconstrained``).
+   A native fast path that unconditionally writes a fresh symbolic value
+   diverges: the symbolic pointer feeds downstream null-checks and is used
+   as a store/load address, each of which forks or pays the symbolic-address
+   concretization cost, exploding the state space. An end-to-end attempt at
+   such a fast path (angr-8mjd, reverted) regressed ``csaw_wyvern`` from
+   2.7s to 86s for exactly this reason. The correct contract: when
+   ``SYMBOLIC_INITIAL_VALUES`` is absent (the common case), return
+   ``Ok(Some(BVV(0, returnty_bits)))``; only mint a symbolic value when the
+   option is set. ``void``-return stubs (``returnty == None`` →
+   ``Ok(None)``) are always safe.
+
 Argument extraction with ``declare_proc!``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
