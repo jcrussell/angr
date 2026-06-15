@@ -290,8 +290,8 @@ fn register_names_for_arch(arch_name: &str) -> Vec<String> {
 
 /// Clear the Rust-side thread-local claripy AST translation caches.
 ///
-/// Drops the four LRU/HashMaps in `claripy_bridge` (AST_CACHE,
-/// CLARIPY_AST_CACHE, EXPRESSION_CACHE, EXPRESSION_BY_OPERANDS_PTR).
+/// Drops the three LRU/HashMaps in `claripy_bridge` (AST_CACHE,
+/// CLARIPY_AST_CACHE, EXPRESSION_BY_OPERANDS_PTR).
 /// Used by `RustExplorationManager.cleanup()` to bound per-process
 /// growth in Callable-heavy workloads where many short-lived managers
 /// share the same thread (e.g. mma_howtouse's 45 invocations).

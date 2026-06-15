@@ -16,8 +16,8 @@
 //!
 //! # Cross-cache invariants
 //!
-//! Four thread-local caches sit in this module (`AST_CACHE`,
-//! `CLARIPY_AST_CACHE`, `EXPRESSION_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`),
+//! Three thread-local caches sit in this module (`AST_CACHE`,
+//! `CLARIPY_AST_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`),
 //! plus the shared `SymbolicIdentityRegistry`. Per-cache ownership /
 //! invalidation / coherence is documented at each `thread_local!` block
 //! (see angr-a2br.3, commit 9e4108df0). The invariants below cut ACROSS
@@ -29,10 +29,10 @@
 //!   are real leaf-symbol ids allocated by
 //!   `SymbolicIdentityRegistry::allocate_id`; compound `RustBV::Expression`
 //!   nodes carry `id == RustBV::EXPRESSION_ID` (the `u64::MAX` sentinel) and
-//!   route through `EXPRESSION_CACHE` / `EXPRESSION_BY_OPERANDS_PTR`
+//!   route through `EXPRESSION_BY_OPERANDS_PTR`
 //!   instead. Crossing this boundary corrupts `RustBV::Expression { id: u64 }`
-//!   semantics — a leaf id stored in an Expression cache would collide
-//!   with another Expression's hash, and vice versa. Enforced by
+//!   semantics — a leaf id stored in the Expression cache would collide
+//!   with an unrelated operands pointer, and vice versa. Enforced by
 //!   `debug_assert_ne!(symbol_id, RustBV::EXPRESSION_ID)` in
 //!   `store_claripy_ast{,_with_info}`. See `value.rs` `RustBV::Expression`
 //!   contract.
@@ -49,7 +49,7 @@
 //!   condition `global_registry().has_original(symbol_id)` is
 //!   asserted at insert time.
 //!
-//! - **C3. Unified `clear_ast_cache` invalidation.** All four
+//! - **C3. Unified `clear_ast_cache` invalidation.** All three
 //!   thread-locals are cleared together in `clear_ast_cache`; a
 //!   partial clear is never correct. The reason is C2 + the fallback
 //!   logic in `get_claripy_ast`: clearing only `AST_CACHE` would leave
@@ -59,18 +59,19 @@
 //!   the global registry; do NOT call `clear_global_registry()`
 //!   in isolation — that breaks C2.
 //!
-//! - **C4. Two-key Expression redundancy is by design.**
-//!   `EXPRESSION_CACHE` (by expression hash) and
-//!   `EXPRESSION_BY_OPERANDS_PTR` (by `Arc::as_ptr(operands) as usize`)
-//!   serve the same goal — return the original Python `Expression`
-//!   verbatim to preserve annotations (see angr-ykdq) — but key on
-//!   independent surfaces. Either hit is correct; LRU eviction may
-//!   diverge them and that is acceptable because the fallback path
-//!   rebuilds from `BVOp + operands` (losing annotations, never
-//!   correctness). `EXPRESSION_BY_OPERANDS_PTR` additionally pins the
-//!   operands `Arc` alive by storing a `RustBV` clone in the value
-//!   slot — without that, allocator reuse of the raw pointer would
-//!   produce a wrong-AST return.
+//! - **C4. Expression nodes are cached by operands pointer only.**
+//!   `EXPRESSION_BY_OPERANDS_PTR` (keyed by `Arc::as_ptr(operands) as
+//!   usize`) returns the original Python `Expression` verbatim to
+//!   preserve annotations (see angr-ykdq). It is the SOLE Rust→claripy
+//!   expression cache: the export path (`rustbv_to_claripy_memo`) has
+//!   only a `RustBV` in hand and cannot recompute the import-time
+//!   claripy `ast_hash`, so a hash-keyed cache was structurally
+//!   unreadable on export and was removed (angr-fawo). A miss falls
+//!   back to rebuilding from `BVOp + operands` (losing annotations,
+//!   never correctness). The cache additionally pins the operands
+//!   `Arc` alive by storing a `RustBV` clone in the value slot —
+//!   without that, allocator reuse of the raw pointer would produce a
+//!   wrong-AST return.
 //!
 //! - **C5. Width check is enforced ONLY on `AST_CACHE` hits.** Other
 //!   caches do not need it. `AST_CACHE` is keyed by claripy's
@@ -202,40 +203,9 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-// Thread-local LRU mapping `expression_hash → original claripy AST`.
-//
-// Direction: Rust→claripy, for compound `Expression` variants.
-// Counterpart to `CLARIPY_AST_CACHE` for non-leaf nodes. Lets
-// `rustbv_to_claripy_memo` return the imported AST verbatim instead
-// of reconstructing it from `BVOp` + operands, which would drop any
-// claripy annotations attached to the intermediate node and burn
-// allocations.
-//
-// Key: a content-derived `u64` expression hash (computed by the
-// caller from the `RustBV::Expression` structure). Hash collisions
-// are vanishingly rare given the 64-bit space; the downstream
-// consequence of a collision is a wrong-AST return, which would
-// surface as a Python-side constraint mismatch.
-//
-// Value: owned `Py<PyAny>` for the original Python expression.
-//
-// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`
-// (C3). Capacity-bounded LRU eviction (10000) beyond that — eviction
-// is safe here because Expression nodes can always be reconstructed
-// from `op + operands` (just with a fresh AST identity), so a miss
-// degrades to losing annotations but not correctness.
-//
-// Coherence with EXPRESSION_BY_OPERANDS_PTR: see cross-cache invariant
-// C4 — two redundant keys for the same payload; either hit is correct
-// and LRU divergence is acceptable.
-thread_local! {
-    static EXPRESSION_CACHE: RefCell<LruCache<u64, Py<PyAny>>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
-}
-
 // Thread-local LRU mapping `Arc::as_ptr(operands) → (RustBV pin, claripy AST)`.
 //
-// Direction: Rust→claripy, alternative key for `EXPRESSION_CACHE`.
+// Direction: Rust→claripy, for compound `Expression` variants.
 // Maps the operands `Arc<[RustBV]>` raw pointer of a freshly-imported
 // claripy `Expression` to its original Python AST. Used by
 // `rustbv_to_claripy_memo` to return the imported AST verbatim
@@ -264,8 +234,8 @@ thread_local! {
 // (C3). Capacity-bounded LRU eviction (10000) beyond that. On
 // eviction, the held `RustBV` drops its refcount, allowing the
 // operands `Arc` to be freed — safe because the evicted entry is no
-// longer reachable via this cache. The redundant `EXPRESSION_CACHE`
-// keying covers the same payload (C4).
+// longer reachable via this cache. This is the sole Rust→claripy
+// cache for compound Expression nodes (see C4).
 thread_local! {
     static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
@@ -285,7 +255,7 @@ pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
         symbol_id,
         RustBV::EXPRESSION_ID,
         "CLARIPY_AST_CACHE must not be keyed by the EXPRESSION_ID sentinel; \
-         use store_expression_ast / store_expression_ast_by_operands for compound nodes",
+         use store_expression_ast_by_operands for compound nodes",
     );
 
     tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
@@ -322,7 +292,7 @@ pub fn store_claripy_ast_with_info(
         symbol_id,
         RustBV::EXPRESSION_ID,
         "CLARIPY_AST_CACHE must not be keyed by the EXPRESSION_ID sentinel; \
-         use store_expression_ast / store_expression_ast_by_operands for compound nodes",
+         use store_expression_ast_by_operands for compound nodes",
     );
 
     tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
@@ -387,18 +357,6 @@ pub fn lookup_symbol_by_name_and_width(
     global_registry().lookup_by_name_and_width(name, width)
 }
 
-/// Store a claripy AST in the expression cache by expression hash.
-/// Called when converting claripy→RustBV for compound expressions.
-pub fn store_expression_ast(expr_hash: u64, ast: Py<PyAny>) {
-    tl_cache!(EXPRESSION_CACHE, put(expr_hash, ast));
-}
-
-/// Retrieve a claripy AST from the expression cache by expression hash.
-/// Called when converting RustBV→claripy to return the original AST.
-pub fn get_expression_ast(expr_hash: u64) -> Option<Py<PyAny>> {
-    tl_cache!(EXPRESSION_CACHE, get(&expr_hash).cloned())
-}
-
 /// Store the original claripy AST keyed by an imported Expression's
 /// operands Arc pointer. The BV clone is held alongside to pin the
 /// operands Arc alive (preventing pointer reuse on free).
@@ -423,7 +381,6 @@ pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Op
 pub fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
     tl_cache!(CLARIPY_AST_CACHE, clear());
-    tl_cache!(EXPRESSION_CACHE, clear());
     tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
 }
 
@@ -1122,15 +1079,13 @@ pub fn claripy_to_rustbv(
     if use_cache && let Ok(ref bv) = result {
         // Forward cache: claripy hash → RustBV
         tl_cache!(AST_CACHE, put(ast_hash, bv.clone()));
-        // Reverse cache: store original claripy AST for later retrieval
-        // This preserves AST identity when converting back to Python
-        // Use the ast_hash as a positive u64 key
-        let expr_key = ast_hash as u64;
-        store_expression_ast(expr_key, ast.clone().unbind());
 
-        // For Expression results, also key by the operands Arc pointer so
-        // `rustbv_to_claripy_memo` can return the original AST verbatim
-        // (preserving annotations attached at the Expression level).
+        // Reverse cache: for Expression results, key the original claripy
+        // AST by the operands Arc pointer so `rustbv_to_claripy_memo` can
+        // return it verbatim (preserving annotations attached at the
+        // Expression level). This is the only Rust→claripy expression
+        // cache — the export path has no way to recompute `ast_hash` from
+        // a RustBV, so a hash-keyed cache was structurally unreadable.
         if let RustBV::Expression { operands, .. } = bv {
             let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
             store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone().unbind());

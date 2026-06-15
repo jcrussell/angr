@@ -460,12 +460,10 @@ pub enum RustBV {
         /// claripy-side registry) and to avoid per-construction overhead.
         ///
         /// **Identity for caching purposes** is keyed by *other* fields,
-        /// not this one:
-        /// - The structural pointer `Arc::as_ptr(operands)` is the cache
-        ///   key for `EXPRESSION_BY_OPERANDS_PTR` in `claripy_bridge`
-        ///   (stable across `RustBV::clone`, which just bumps the Arc).
-        /// - A caller-computed content hash of (op, operands) keys
-        ///   `EXPRESSION_CACHE` in `claripy_bridge`.
+        /// not this one: the structural pointer `Arc::as_ptr(operands)`
+        /// is the cache key for `EXPRESSION_BY_OPERANDS_PTR` in
+        /// `claripy_bridge` (stable across `RustBV::clone`, which just
+        /// bumps the Arc).
         ///
         /// **Collision potential:** none — there is no content hash here
         /// to collide on. Two structurally distinct `Expression` values
