@@ -200,9 +200,12 @@ impl NativeSyscallRegistry {
         // lseek (8), readv (19), writev (20): FD I/O (angr-6ylm). lseek
         //   mirrors NativeLseek; readv/writev walk a struct iovec[] and
         //   reuse the read/write logic (writev is glibc stdio's flush
-        //   path). See `syscalls/fd_io.rs`. pread64/pwrite64 stay on the
-        //   Python path (positioned write needs an offset-honoring
-        //   FileSystem::write; current model is append-only).
+        //   path). See `syscalls/fd_io.rs`.
+        // pread64 (17), pwrite64 (18): positioned I/O (angr-dbb1) that does
+        //   not move the fd position. pread64 serves concrete content via
+        //   FileSystem::read_at; pwrite64 overwrites at the offset via
+        //   FileSystem::write_at (offset-honoring, unlike append-only write).
+        //   Symbolic offset / data fall back to Python.
         // uname (63), set_tid_address (218), set_robust_list (273),
         //   getrandom (318): libc/loader startup stubs (angr-6ylm). See
         //   `syscalls/startup.rs`; uname/set_tid_address mirror the
@@ -332,6 +335,8 @@ impl NativeSyscallRegistry {
                 (15, signals::NativeRtSigreturnSyscall),
                 (8, fd_io::NativeLseekSyscall),
                 (16, file_descriptor::NativeIoctlSyscall),
+                (17, fd_io::NativePread64Syscall),
+                (18, fd_io::NativePwrite64Syscall),
                 (19, fd_io::NativeReadvSyscall),
                 (20, fd_io::NativeWritevSyscall),
                 (21, file_path::NativeAccessSyscall),
@@ -516,6 +521,18 @@ impl NativeSyscallRegistry {
                 (331, file_descriptor::NativePipe2Syscall),
                 (340, rlimit::NativePrlimit64Syscall),
                 (353, directory::NativeRenameat2Syscall),
+                // angr-dbb1: FD I/O + libc-startup handlers shared with AMD64,
+                // i386 numbers from <asm/unistd_32.h>. getrandom (355) is
+                // present in angr's i386 table (absent on ARM/ARM64/MIPS).
+                (19, fd_io::NativeLseekSyscall),
+                (122, startup::NativeUnameSyscall),
+                (145, fd_io::NativeReadvSyscall),
+                (146, fd_io::NativeWritevSyscall),
+                (180, fd_io::NativePread64Syscall),
+                (181, fd_io::NativePwrite64Syscall),
+                (258, startup::NativeSetTidAddressSyscall),
+                (311, startup::NativeSetRobustListSyscall),
+                (355, startup::NativeGetrandomSyscall),
             ]
         );
 
@@ -609,6 +626,17 @@ impl NativeSyscallRegistry {
                 (358, file_descriptor::NativeDup3Syscall),
                 (359, file_descriptor::NativePipe2Syscall),
                 (369, rlimit::NativePrlimit64Syscall),
+                // angr-dbb1: FD I/O + libc-startup handlers shared with AMD64,
+                // ARM EABI numbers from <arm/asm/unistd-eabi.h>. getrandom is
+                // absent from angr's ARM table, so it is not registered.
+                (19, fd_io::NativeLseekSyscall),
+                (122, startup::NativeUnameSyscall),
+                (145, fd_io::NativeReadvSyscall),
+                (146, fd_io::NativeWritevSyscall),
+                (180, fd_io::NativePread64Syscall),
+                (181, fd_io::NativePwrite64Syscall),
+                (256, startup::NativeSetTidAddressSyscall),
+                (338, startup::NativeSetRobustListSyscall),
             ]
         );
 
@@ -690,6 +718,17 @@ impl NativeSyscallRegistry {
                 (231, memory_extras::NativeMunlockallSyscall),
                 (233, memory_extras::NativeMadviseSyscall),
                 (261, rlimit::NativePrlimit64Syscall),
+                // angr-dbb1: FD I/O + libc-startup handlers shared with AMD64,
+                // asm-generic numbers from <asm-generic/unistd.h>. getrandom
+                // is absent from angr's AArch64 table, so it is not registered.
+                (62, fd_io::NativeLseekSyscall),
+                (65, fd_io::NativeReadvSyscall),
+                (66, fd_io::NativeWritevSyscall),
+                (67, fd_io::NativePread64Syscall),
+                (68, fd_io::NativePwrite64Syscall),
+                (96, startup::NativeSetTidAddressSyscall),
+                (99, startup::NativeSetRobustListSyscall),
+                (160, startup::NativeUnameSyscall),
             ]
         );
 
@@ -776,6 +815,17 @@ impl NativeSyscallRegistry {
                 (4327, file_descriptor::NativeDup3Syscall),
                 (4328, file_descriptor::NativePipe2Syscall),
                 (4338, rlimit::NativePrlimit64Syscall),
+                // angr-dbb1: FD I/O + libc-startup handlers shared with AMD64,
+                // MIPS32 O32 numbers from <asm/unistd_o32.h> (4000-based).
+                // getrandom is absent from angr's MIPS-O32 table.
+                (4019, fd_io::NativeLseekSyscall),
+                (4122, startup::NativeUnameSyscall),
+                (4145, fd_io::NativeReadvSyscall),
+                (4146, fd_io::NativeWritevSyscall),
+                (4200, fd_io::NativePread64Syscall),
+                (4201, fd_io::NativePwrite64Syscall),
+                (4252, startup::NativeSetTidAddressSyscall),
+                (4309, startup::NativeSetRobustListSyscall),
             ]
         );
 
@@ -861,6 +911,17 @@ impl NativeSyscallRegistry {
                 (5286, file_descriptor::NativeDup3Syscall),
                 (5287, file_descriptor::NativePipe2Syscall),
                 (5297, rlimit::NativePrlimit64Syscall),
+                // angr-dbb1: FD I/O + libc-startup handlers shared with AMD64,
+                // MIPS64 N64 numbers from <asm/unistd_n64.h> (5000-based).
+                // getrandom is absent from angr's MIPS-N64 table.
+                (5008, fd_io::NativeLseekSyscall),
+                (5016, fd_io::NativePread64Syscall),
+                (5017, fd_io::NativePwrite64Syscall),
+                (5018, fd_io::NativeReadvSyscall),
+                (5019, fd_io::NativeWritevSyscall),
+                (5061, startup::NativeUnameSyscall),
+                (5212, startup::NativeSetTidAddressSyscall),
+                (5268, startup::NativeSetRobustListSyscall),
             ]
         );
 
@@ -1240,6 +1301,43 @@ mod tests {
             r.get("MIPS64", 5070).is_some(),
             "MIPS64 fcntl (5070) should be registered"
         );
+    }
+
+    #[test]
+    fn dbb1_fd_io_and_startup_handlers_route_per_arch() {
+        // angr-dbb1: lseek/readv/writev/uname/set_tid_address/set_robust_list
+        // + pread64/pwrite64 registered on every arch with per-arch numbers;
+        // getrandom only on AMD64 + X86 (absent from angr's other tables).
+        let r = NativeSyscallRegistry::new();
+        // (arch, lseek, readv, writev, uname, set_tid, set_robust, pread, pwrite)
+        let table = [
+            ("AMD64", 8, 19, 20, 63, 218, 273, 17, 18),
+            ("X86", 19, 145, 146, 122, 258, 311, 180, 181),
+            ("ARM", 19, 145, 146, 122, 256, 338, 180, 181),
+            ("ARM64", 62, 65, 66, 160, 96, 99, 67, 68),
+            ("MIPS32", 4019, 4145, 4146, 4122, 4252, 4309, 4200, 4201),
+            ("MIPS64", 5008, 5018, 5019, 5061, 5212, 5268, 5016, 5017),
+        ];
+        for &(arch, lseek, readv, writev, uname, set_tid, set_robust, pread, pwrite) in &table {
+            for (num, name) in [
+                (lseek, "lseek"),
+                (readv, "readv"),
+                (writev, "writev"),
+                (uname, "uname"),
+                (set_tid, "set_tid_address"),
+                (set_robust, "set_robust_list"),
+                (pread, "pread64"),
+                (pwrite, "pwrite64"),
+            ] {
+                let h = r
+                    .get(arch, num)
+                    .unwrap_or_else(|| panic!("{arch} {name} ({num}) should be registered"));
+                assert_eq!(h.name(), name, "{arch} {num} routed to wrong handler");
+            }
+        }
+        // getrandom: present on AMD64 (318) + X86 (355); absent elsewhere.
+        assert_eq!(r.get("AMD64", 318).unwrap().name(), "getrandom");
+        assert_eq!(r.get("X86", 355).unwrap().name(), "getrandom");
     }
 
     #[test]

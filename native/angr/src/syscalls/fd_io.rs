@@ -20,9 +20,13 @@
 //! concrete byte across all segments *before* touching the fd buffer — a
 //! symbolic byte aborts with `SymbolicArgument` and leaves the fd untouched.
 //!
-//! Not handled here (deferred to Python, see angr-6ylm follow-up): `pread64`
-//! / `pwrite64`. Positioned writes need an offset-honoring `FileSystem::write`
-//! (the current model is append-only), so they stay on the Python path.
+//!   - `pread64(fd, buf, nbyte, offset)` / `pwrite64(fd, buf, nbyte, offset)`
+//!     (angr-dbb1) mirror `posix/pread64.py` / `pwrite64.py`: positioned I/O
+//!     that does NOT disturb the fd's current position. `pread64` serves
+//!     concrete `FileSystem` content via `read_at`; `pwrite64` overwrites at
+//!     the offset via the offset-honoring `FileSystem::write_at` (unlike the
+//!     append-only `write`). Symbolic offset / symbolic data / fds not open
+//!     natively fall back to Python.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -281,6 +285,142 @@ impl NativeSyscall for NativeReadvSyscall {
                 break; // EOF — stop scattering further segments.
             }
         }
+        Ok(SyscallOutcome::Continue { ret: total })
+    }
+}
+
+/// `pread64(fd, buf, nbyte, offset)` — positioned read; file position
+/// unaffected. Mirrors `posix/pread64.py`.
+pub struct NativePread64Syscall;
+
+impl NativeSyscall for NativePread64Syscall {
+    fn name(&self) -> &'static str {
+        "pread64"
+    }
+
+    fn num_args(&self) -> usize {
+        4
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.len() < 4 {
+            return Err(SyscallError::Other(format!(
+                "pread64 expected 4 args, got {}",
+                args.len()
+            )));
+        }
+        let fd = extract_concrete_arg(&args[0], "pread64 fd")?;
+        let buf = extract_concrete_arg(&args[1], "pread64 buf")?;
+        let nbyte = extract_concrete_arg(&args[2], "pread64 nbyte")?;
+        // Symbolic offset is unsupported by Python's pread64 (raises
+        // SimPosixError); fall back so Python produces the authoritative error.
+        let offset = extract_concrete_arg(&args[3], "pread64 offset")?;
+        if nbyte > MAX_IO_SIZE {
+            return Err(SyscallError::Other(format!(
+                "pread64 nbyte {nbyte} exceeds limit"
+            )));
+        }
+        // stdin (fd=0) is owned by Python's symbolic-packet model; positioned
+        // reads of it are unusual — defer rather than fabricate.
+        if fd == 0 {
+            return Err(SyscallError::Other(
+                "pread64 from fd=0 (stdin) falls back to Python".to_string(),
+            ));
+        }
+        let (open, content_len) = match state.file_system_ref().fd_info(fd as u32) {
+            Some((_, _, _, len, is_open)) => (is_open, len),
+            None => (false, 0),
+        };
+        if !open {
+            return Err(SyscallError::Other(format!(
+                "pread64 from fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
+        }
+        if content_len == 0 {
+            return Err(SyscallError::Other(format!(
+                "pread64 from fd={fd} has no concrete content; falling back to Python"
+            )));
+        }
+
+        let bytes = state
+            .file_system_ref()
+            .read_at(fd as u32, offset, nbyte as usize);
+        let n = bytes.len() as u64;
+        for (i, b) in bytes.iter().enumerate() {
+            state.memory_store(buf.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
+        }
+        Ok(SyscallOutcome::Continue { ret: n })
+    }
+}
+
+/// `pwrite64(fd, buf, nbyte, offset)` — positioned write; file position
+/// unaffected. Mirrors `posix/pwrite64.py`. Uses the offset-honoring
+/// `FileSystem::write_at` (overwrite at offset) rather than append-only
+/// `write`.
+pub struct NativePwrite64Syscall;
+
+impl NativeSyscall for NativePwrite64Syscall {
+    fn name(&self) -> &'static str {
+        "pwrite64"
+    }
+
+    fn num_args(&self) -> usize {
+        4
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.len() < 4 {
+            return Err(SyscallError::Other(format!(
+                "pwrite64 expected 4 args, got {}",
+                args.len()
+            )));
+        }
+        let fd = extract_concrete_arg(&args[0], "pwrite64 fd")?;
+        let buf = extract_concrete_arg(&args[1], "pwrite64 buf")?;
+        let nbyte = extract_concrete_arg(&args[2], "pwrite64 nbyte")?;
+        let offset = extract_concrete_arg(&args[3], "pwrite64 offset")?;
+        if fd == 0 {
+            return Err(SyscallError::Other(
+                "pwrite64 to fd=0 (stdin) falls back to Python".to_string(),
+            ));
+        }
+        if !state.file_system_ref().is_open(fd as u32) {
+            return Err(SyscallError::Other(format!(
+                "pwrite64 to fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
+        }
+        if nbyte > MAX_IO_SIZE {
+            return Err(SyscallError::Other(format!(
+                "pwrite64 nbyte {nbyte} exceeds limit"
+            )));
+        }
+
+        // Gather every concrete byte BEFORE mutating the fd — a symbolic byte
+        // must leave the fd untouched so the Python fallback produces the
+        // single authoritative write (same discipline as writev).
+        let mut bytes: Vec<u8> = Vec::with_capacity(nbyte as usize);
+        for i in 0..nbyte {
+            let bv = state.memory_load(buf.wrapping_add(i), 1)?;
+            match bv.as_u64() {
+                Some(v) => bytes.push(v as u8),
+                None => {
+                    return Err(SyscallError::SymbolicArgument(format!(
+                        "symbolic byte in pwrite64 buf+{i}"
+                    )));
+                }
+            }
+        }
+
+        let total = bytes.len() as u64;
+        state.file_system().write_at(fd as u32, offset, &bytes);
         Ok(SyscallOutcome::Continue { ret: total })
     }
 }
@@ -561,6 +701,141 @@ mod tests {
                     RustBV::concrete(9, 64),
                     RustBV::concrete(0x2000, 64),
                     RustBV::concrete(1, 64),
+                ],
+            )
+            .expect_err("fallback");
+        assert!(matches!(err, SyscallError::Other(_)));
+    }
+
+    #[test]
+    fn pread64_reads_at_offset_without_moving_position() {
+        let mut state = fresh_state();
+        state.file_system().open_with_content(
+            "in".to_string(),
+            FdFlags::ReadOnly,
+            b"abcdefgh".to_vec(),
+        );
+        // pread64(fd=3, buf=0x3000, nbyte=3, offset=2) -> "cde"
+        let out = NativePread64Syscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(2, 64),
+                ],
+            )
+            .expect("ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+            _ => panic!("expected Continue"),
+        }
+        for (i, &b) in b"cde".iter().enumerate() {
+            assert_eq!(
+                state.memory_load(0x3000 + i as u64, 1).unwrap().as_u64(),
+                Some(b as u64)
+            );
+        }
+        // Position must be untouched: a subsequent read starts at byte 0.
+        assert_eq!(state.file_system().read(3, 3), b"abc");
+    }
+
+    #[test]
+    fn pread64_symbolic_offset_falls_back() {
+        let mut state = fresh_state();
+        state.file_system().open_with_content(
+            "in".to_string(),
+            FdFlags::ReadOnly,
+            b"abcd".to_vec(),
+        );
+        let sym = {
+            let ctx = state.solver().borrow();
+            RustBV::symbolic(&ctx, "off", 64)
+        };
+        let err = NativePread64Syscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(2, 64),
+                    sym,
+                ],
+            )
+            .expect_err("fallback");
+        assert!(matches!(
+            err,
+            SyscallError::SymbolicArgument(_) | SyscallError::Other(_)
+        ));
+    }
+
+    #[test]
+    fn pwrite64_overwrites_at_offset_without_moving_position() {
+        let mut state = fresh_state();
+        state.file_system().open_with_content(
+            "out".to_string(),
+            FdFlags::ReadWrite,
+            b"AAAAAA".to_vec(),
+        );
+        state.map_memory_data(0x3000, b"xy", Permission::RWX);
+        // pwrite64(fd=3, buf=0x3000, nbyte=2, offset=2) -> "AAxyAA"
+        let out = NativePwrite64Syscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(2, 64),
+                    RustBV::concrete(2, 64),
+                ],
+            )
+            .expect("ok");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 2),
+            _ => panic!("expected Continue"),
+        }
+        assert_eq!(state.file_system_ref().fd_content(3), b"AAxyAA");
+        // Position untouched: a read still starts at byte 0.
+        assert_eq!(state.file_system().read(3, 2), b"AA");
+    }
+
+    #[test]
+    fn pwrite64_extends_past_eof() {
+        let mut state = fresh_state();
+        state.file_system().open_with_content(
+            "out".to_string(),
+            FdFlags::ReadWrite,
+            b"ab".to_vec(),
+        );
+        state.map_memory_data(0x3000, b"Z", Permission::RWX);
+        // offset 4 is past EOF (len 2): zero-fill gap, write 'Z' at index 4.
+        NativePwrite64Syscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(1, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .expect("ok");
+        assert_eq!(state.file_system_ref().fd_content(3), b"ab\0\0Z");
+    }
+
+    #[test]
+    fn pwrite64_unknown_fd_falls_back() {
+        let mut state = fresh_state();
+        state.map_memory_data(0x3000, b"x", Permission::RWX);
+        let err = NativePwrite64Syscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(9, 64),
+                    RustBV::concrete(0x3000, 64),
+                    RustBV::concrete(1, 64),
+                    RustBV::concrete(0, 64),
                 ],
             )
             .expect_err("fallback");

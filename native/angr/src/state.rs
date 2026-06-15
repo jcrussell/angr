@@ -494,6 +494,41 @@ impl FileSystem {
         Some(new_pos)
     }
 
+    /// Positioned read: read up to `count` bytes starting at absolute
+    /// `offset`, WITHOUT touching the fd's current position. Mirrors POSIX
+    /// `pread` (the file offset is unaffected). Returns the bytes read
+    /// (empty if `offset` is past EOF or the fd is absent).
+    pub fn read_at(&self, fd: u32, offset: u64, count: usize) -> Vec<u8> {
+        match self.fds.get(&fd) {
+            Some(desc) => {
+                let pos = offset as usize;
+                if pos >= desc.content.len() {
+                    return Vec::new();
+                }
+                let n = count.min(desc.content.len() - pos);
+                desc.content[pos..pos + n].to_vec()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Positioned write: overwrite `data` at absolute `offset`, WITHOUT
+    /// touching the fd's current position. Mirrors POSIX `pwrite` (the file
+    /// offset is unaffected). Extends the content buffer (zero-filling any
+    /// gap) when `offset` is at or past EOF, so it is not append-only like
+    /// `write`. Creates the fd entry if missing, matching `write`.
+    pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) {
+        let desc = Arc::make_mut(&mut self.fds)
+            .entry(fd)
+            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
+        let start = offset as usize;
+        let end = start + data.len();
+        if end > desc.content.len() {
+            desc.content.resize(end, 0);
+        }
+        desc.content[start..end].copy_from_slice(data);
+    }
+
     /// Get the content buffer for a file descriptor (read-only).
     pub fn fd_content(&self, fd: u32) -> &[u8] {
         self.fds
