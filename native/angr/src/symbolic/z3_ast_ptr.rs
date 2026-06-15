@@ -79,6 +79,40 @@ impl Z3AstPtr {
         &self.ctx
     }
 
+    /// Query the Z3 sort kind of the wrapped AST.
+    ///
+    /// A pure metadata read. Consumers use it to verify the sort before
+    /// wrapping the raw AST as a [`z3::ast::BV`] / [`z3::ast::Bool`]:
+    /// wrapping a Bool node as a BV (or vice-versa) and then operating on
+    /// it trips Z3's error handler, which aborts the process rather than
+    /// returning a recoverable error.
+    ///
+    /// Returns [`SortKind::Unknown`] if Z3 cannot resolve the AST's sort
+    /// (should not happen for a live AST, but keeps the call total).
+    pub fn sort_kind(&self) -> z3_sys::SortKind {
+        let raw_ctx = self.ctx.get_z3_context();
+        // SAFETY: `self.ptr` is a live `Z3_ast` in `self.ctx` (we hold a
+        // ref taken in `from_borrowed_raw`/`clone_ref`). `Z3_get_sort` on a
+        // live AST yields a live `Z3_sort` in the same context, and
+        // `Z3_get_sort_kind` is a pure metadata read on it.
+        unsafe {
+            match z3_sys::Z3_get_sort(raw_ctx, self.ptr) {
+                Some(sort) => z3_sys::Z3_get_sort_kind(raw_ctx, sort),
+                None => z3_sys::SortKind::Unknown,
+            }
+        }
+    }
+
+    /// Whether the wrapped AST is Bool-sorted.
+    pub fn is_bool(&self) -> bool {
+        self.sort_kind() == z3_sys::SortKind::Bool
+    }
+
+    /// Whether the wrapped AST is bit-vector-sorted.
+    pub fn is_bv(&self) -> bool {
+        self.sort_kind() == z3_sys::SortKind::BV
+    }
+
     /// Duplicate the handle by taking another reference. Cheaper than
     /// rebuilding the AST but still costs one FFI call.
     pub fn clone_ref(&self) -> Self {

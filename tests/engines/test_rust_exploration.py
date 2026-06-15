@@ -6870,6 +6870,42 @@ class TestSolverOperations:
         val = ctx1.eval(x)
         assert 0 <= val <= 100
 
+    def test_eval_fp_comparison_bool_no_panic(self):
+        """eval()/eval_upto() of a Bool-sorted AST that claripy_to_rustbv
+        cannot lower (an fpEQ float comparison) must return a 0/1 value,
+        never BV-wrap the Bool node.
+
+        Regression for angr-58ks: extract_z3_ast_ptr returns a raw Z3_ast
+        with no sort check; the eval fast paths used to BV::wrap it
+        unconditionally (width defaulting to 64). For a Bool-sorted node
+        that is a wrong-sort Z3 call, which trips Z3's error handler
+        (process abort), not a recoverable PyErr. The fix lowers a Bool to
+        a 1-bit BV via ite(1, 0) before evaluating.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        a = claripy.FPS("a", claripy.FSORT_DOUBLE)
+        b = claripy.FPS("b", claripy.FSORT_DOUBLE)
+        eq = claripy.fpEQ(a, b)  # Bool, not lowered by claripy_to_rustbv
+
+        ctx = RustSolverContext()
+        # Unconstrained: the model may make the comparison true or false,
+        # but the call must complete (no abort) and yield a 0/1 int.
+        val = ctx.eval(eq)
+        assert val in (0, 1), f"eval of Bool AST should be 0/1, got {val!r}"
+
+        results = ctx.eval_upto(eq, 5)
+        assert set(results) <= {0, 1}, f"eval_upto of Bool AST should be 0/1, got {results!r}"
+
+        # Constrain the comparison true (also exercises the add_constraint
+        # Bool fast path) and confirm eval now reports 1.
+        ctx2 = RustSolverContext()
+        ctx2.add_constraint_ast(eq)
+        assert ctx2.satisfiable()
+        assert ctx2.eval(eq) == 1
+        assert 1 in ctx2.eval_upto(eq, 5)
+
     def test_fork_constraint_bidirectional_isolation(self):
         """Bidirectional fork isolation: parent and sibling constraints
         added after fork() must not leak across.

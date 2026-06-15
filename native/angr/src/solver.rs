@@ -149,7 +149,15 @@ impl RustSolverContext {
         // divergence that causes 3-7x slower Z3 solving.
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
+            // angr-58ks: `add_constraint_raw` Bool-wraps its input by
+            // contract; a non-Bool AST would trip Z3's process-aborting
+            // error handler. Only take the raw fast path for Bool-sorted
+            // ASTs. A non-Bool (e.g. a BV used as a truthiness constraint)
+            // falls through to the slow path below, which lowers it to a
+            // proper `!= 0` Bool — preserving semantics without the panic.
+            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
+                && z3_ast.is_bool()
+            {
                 ctx.add_constraint_raw(z3_ast);
                 // Also track in RustBV for export (best-effort, non-critical)
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
@@ -194,8 +202,12 @@ impl RustSolverContext {
             let mut all_raw = true;
             for ast in asts.iter() {
                 let ptr = match extract_z3_ast_ptr(py, &ast) {
-                    Ok(p) => p,
-                    Err(_) => {
+                    Ok(p) if p.is_bool() => p,
+                    // angr-58ks: a non-Bool AST cannot go through the raw
+                    // batch (add_constraints_raw_batch Bool-wraps by
+                    // contract); drop to the per-constraint slow path which
+                    // lowers it correctly.
+                    Ok(_) | Err(_) => {
                         all_raw = false;
                         break;
                     }
@@ -371,18 +383,48 @@ impl RustSolverContext {
                 {
                     use z3::ast::Ast;
                     if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
-                        // SAFETY: `z3_ast` is a live Z3_ast (Z3AstPtr holds
-                        // its own ref); width comes from claripy and matches
-                        // the BV sort. `BV::wrap` takes its own ref.
-                        let z3_bv = unsafe {
-                            let z3_ctx = z3::Context::thread_local();
-                            z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
-                        };
-                        RustBV::Symbolic {
-                            id: 0,
-                            ast: z3_bv,
-                            width,
-                            name: Arc::from(""),
+                        // angr-58ks: verify the Z3 sort before wrapping (see
+                        // eval_z3_ast_ptr). A Bool-sorted AST must be lowered
+                        // to a 1-bit BV, never BV-wrapped — the latter trips
+                        // Z3's process-aborting error handler.
+                        if z3_ast.is_bool() {
+                            // SAFETY: `z3_ast` is a live Bool-sorted Z3_ast
+                            // (verified via `is_bool()`). `Bool::wrap` takes
+                            // its own ref; `ite` lowers it to a 1-bit BV.
+                            unsafe {
+                                let z3_ctx = z3::Context::thread_local();
+                                let z3_bool = z3::ast::Bool::wrap(&z3_ctx, z3_ast.as_z3_ast());
+                                let as_bv = z3_bool.ite(
+                                    &z3::ast::BV::from_u64(1, 1),
+                                    &z3::ast::BV::from_u64(0, 1),
+                                );
+                                RustBV::Symbolic {
+                                    id: 0,
+                                    ast: as_bv,
+                                    width: 1,
+                                    name: Arc::from(""),
+                                }
+                            }
+                        } else if z3_ast.is_bv() {
+                            // SAFETY: `z3_ast` is a live BV-sorted Z3_ast
+                            // (verified via `is_bv()`); width comes from
+                            // claripy and matches the BV sort. `BV::wrap`
+                            // takes its own ref.
+                            let z3_bv = unsafe {
+                                let z3_ctx = z3::Context::thread_local();
+                                z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
+                            };
+                            RustBV::Symbolic {
+                                id: 0,
+                                ast: z3_bv,
+                                width,
+                                name: Arc::from(""),
+                            }
+                        } else {
+                            return Err(PyRuntimeError::new_err(format!(
+                                "eval_upto: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
+                                z3_ast.sort_kind()
+                            )));
                         }
                     } else {
                         return Ok(result_list.into());
@@ -1095,16 +1137,50 @@ impl RustSolverContext {
         use z3::ast::Ast;
         let ctx = self.inner.ctx();
 
+        // angr-58ks: verify the Z3 sort before wrapping. A Bool-sorted AST
+        // (e.g. an fpEQ comparison that `claripy_to_rustbv` cannot lower and
+        // so reaches this raw path with claripy `length == None`) must NOT be
+        // BV-wrapped — operating on the mis-sorted node trips Z3's error
+        // handler, which aborts the process instead of returning a PyErr.
+        // Lower a Bool to a 1-bit BV (1 when true, 0 when false) and eval it.
+        if z3_ast.is_bool() {
+            // SAFETY: `z3_ast` is a live Bool-sorted Z3_ast (verified via
+            // `is_bool()`; the Z3AstPtr holds an active ref). `Bool::wrap`
+            // takes its own ref; `ite` lowers it to a 1-bit BV.
+            let bv = unsafe {
+                let z3_ctx = z3::Context::thread_local();
+                let z3_bool = z3::ast::Bool::wrap(&z3_ctx, z3_ast.as_z3_ast());
+                let as_bv = z3_bool.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1));
+                RustBV::Symbolic {
+                    id: 0,
+                    ast: as_bv,
+                    width: 1,
+                    name: Arc::from(""),
+                }
+            };
+            return match ctx.eval(&bv) {
+                Some(v) => Ok(Some(v.into_pyobject(py)?.into())),
+                None => Ok(None),
+            };
+        }
+        if !z3_ast.is_bv() {
+            return Err(PyRuntimeError::new_err(format!(
+                "eval: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
+                z3_ast.sort_kind()
+            )));
+        }
+
         // Get the bit width from claripy
         let width: u32 = match ast.getattr("length") {
             Ok(l) => l.extract().unwrap_or(64),
             Err(_) => 64,
         };
 
-        // SAFETY: `z3_ast` is a live `Z3_ast` (Z3AstPtr holds an active
-        // ref). The width came from claripy's `length` attribute, which
-        // matches the BV-sortedness of the underlying AST in claripy's
-        // z3 backend. `BV::wrap` takes its own ref.
+        // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (verified via
+        // `is_bv()` above; Z3AstPtr holds an active ref). The width came from
+        // claripy's `length` attribute, which matches the BV-sortedness of
+        // the underlying AST in claripy's z3 backend. `BV::wrap` takes its
+        // own ref.
         let z3_bv = unsafe {
             let z3_ctx = z3::Context::thread_local();
             z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
