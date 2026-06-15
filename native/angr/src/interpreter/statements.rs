@@ -1239,13 +1239,26 @@ impl<'a> VEXInterpreter<'a> {
                 let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
             }
             Ok(())
-        } else {
-            // Fast path: buffer for batch processing
-            let data_bytes = bv_to_bytes(&data_val);
-            // Track symbolic values for load forwarding
-            if data_val.is_symbolic() {
-                self.pending_symbolic_stores.insert(addr_concrete, data_val);
+        } else if data_val.is_symbolic() {
+            // Symbolic fast path: record the value for exact + overlap load
+            // forwarding. Do NOT push zero placeholder bytes into
+            // pending_stores — bv_to_bytes yields all-zeros for symbolic data
+            // (see the comment in store_concrete), which would make an offset
+            // load inside the store return concrete 0 (angr-ofyh). The symbolic
+            // maps (incl. overlap) are consulted before the concrete buffer on
+            // load.
+            self.pending_symbolic_stores.insert(addr_concrete, data_val);
+            if self.pending_symbolic_stores.len() >= self.max_pending_stores {
+                self.flush_stores(py, callbacks)?;
             }
+            Ok(())
+        } else {
+            // Concrete fast path: evict any stale symbolic shadow this store
+            // overwrites (angr-ofyh) so a later load can't return the old
+            // symbolic value, then buffer the bytes for batch processing.
+            let size_bytes = (data_val.width() / 8) as usize;
+            self.evict_overlapping_symbolic_stores(addr_concrete, size_bytes);
+            let data_bytes = bv_to_bytes(&data_val);
             self.pending_stores.push(addr_concrete, data_bytes);
 
             if self.pending_stores.len() >= self.max_pending_stores {
@@ -1253,6 +1266,28 @@ impl<'a> VEXInterpreter<'a> {
             }
             Ok(())
         }
+    }
+
+    /// Remove symbolic store entries (pending and flushed) whose byte range
+    /// overlaps `[addr, addr + size)`. A concrete store overwriting (part of) a
+    /// prior symbolic store must drop the symbolic shadow, otherwise a later
+    /// load at the same address would return the stale symbolic value instead
+    /// of the concrete bytes (angr-ofyh). Short-circuits when no symbolic
+    /// stores are buffered, so the all-concrete hot path pays nothing.
+    fn evict_overlapping_symbolic_stores(&mut self, addr: u64, size: usize) {
+        if self.pending_symbolic_stores.is_empty() && self.all_flushed_symbolic_stores.is_empty() {
+            return;
+        }
+        let lo = addr;
+        let hi = addr.saturating_add(size as u64);
+        let overlaps = |s_addr: u64, bv: &RustBV| {
+            let s_hi = s_addr.saturating_add((bv.width() / 8) as u64);
+            s_addr < hi && lo < s_hi
+        };
+        self.pending_symbolic_stores
+            .retain(|&s_addr, bv| !overlaps(s_addr, bv));
+        self.all_flushed_symbolic_stores
+            .retain(|&s_addr, bv| !overlaps(s_addr, bv));
     }
 
     /// Symbolic-address store path. Clears the prefetch cache, flushes the
@@ -2156,5 +2191,41 @@ mod tests {
             let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
             assert!(res.is_ok(), "high-offset Put should not overflow");
         });
+    }
+
+    // angr-ofyh: a concrete store overwriting a prior symbolic store must evict
+    // the stale symbolic shadow from both the pending and flushed maps so a
+    // later load returns the concrete bytes, not the old symbolic value.
+    #[test]
+    fn evict_overlapping_symbolic_stores_drops_shadowed_entries() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp
+            .pending_symbolic_stores
+            .insert(0x2000, RustBV::symbolic(&ctx, "p", 64));
+        interp
+            .all_flushed_symbolic_stores
+            .insert(0x2000, RustBV::symbolic(&ctx, "f", 64));
+        // 8-byte concrete store at 0x2000 fully overwrites both shadows.
+        interp.evict_overlapping_symbolic_stores(0x2000, 8);
+        assert!(!interp.pending_symbolic_stores.contains_key(&0x2000));
+        assert!(!interp.all_flushed_symbolic_stores.contains_key(&0x2000));
+    }
+
+    #[test]
+    fn evict_overlapping_symbolic_stores_keeps_disjoint_entries() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        // [0x3000,0x3004) and [0x3008,0x300c).
+        interp
+            .pending_symbolic_stores
+            .insert(0x3000, RustBV::symbolic(&ctx, "a", 32));
+        interp
+            .pending_symbolic_stores
+            .insert(0x3008, RustBV::symbolic(&ctx, "b", 32));
+        // Concrete store [0x3002,0x3006) overlaps only the first entry.
+        interp.evict_overlapping_symbolic_stores(0x3002, 4);
+        assert!(!interp.pending_symbolic_stores.contains_key(&0x3000));
+        assert!(interp.pending_symbolic_stores.contains_key(&0x3008));
     }
 }

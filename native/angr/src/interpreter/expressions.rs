@@ -1,6 +1,7 @@
 use super::helpers::{build_balanced_ite, bytes_to_bv};
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
+use rustc_hash::FxHashMap;
 
 impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
@@ -157,6 +158,38 @@ impl<'a> VEXInterpreter<'a> {
         Ok(value)
     }
 
+    /// Find a buffered symbolic store in `map` whose byte range fully covers
+    /// `[addr, addr + size)` and extract the covered bytes. Handles offset loads
+    /// into a wider symbolic store that the exact-address hash lookups miss
+    /// (angr-ofyh). Mirrors the low-bit extraction convention of those lookups:
+    /// byte `k` of the stored value is bits `[k*8, k*8+8)`, so a load at offset
+    /// `o = addr - s_addr` returns bits `[o*8, (o+size)*8)`. Short-circuits when
+    /// no symbolic stores are buffered so the common all-concrete load pays
+    /// nothing.
+    fn symbolic_overlap_load(
+        &self,
+        map: &FxHashMap<u64, RustBV>,
+        addr: u64,
+        size: usize,
+    ) -> Option<RustBV> {
+        if map.is_empty() {
+            return None;
+        }
+        let load_hi = addr.checked_add(size as u64)?;
+        for (&s_addr, bv) in map.iter() {
+            if s_addr > addr {
+                continue;
+            }
+            let s_hi = s_addr.saturating_add((bv.width() / 8) as u64);
+            if load_hi <= s_hi {
+                let off_bits = (addr - s_addr) * 8;
+                let hi_bit = (off_bits + (size as u64) * 8 - 1) as u32;
+                return Some(bv.extract(hi_bit, off_bits as u32, self.ctx));
+            }
+        }
+        None
+    }
+
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
     /// and concrete-memory caches before falling back to the Python callback.
     fn load_concrete_addr(
@@ -171,13 +204,23 @@ impl<'a> VEXInterpreter<'a> {
         // We must check this buffer before falling through to Python
         // callbacks, which have stale state.
 
-        // First check symbolic stores (preserves symbolic values)
+        // First check symbolic stores (preserves symbolic values).
+        // Exact-address hit is O(1); an offset/overlap load into a wider
+        // symbolic store (e.g. a 4-byte load at X+4 inside an 8-byte symbolic
+        // store at X) is missed by the hash lookup and — since symbolic stores
+        // no longer push zero placeholder bytes (angr-ofyh) — by the concrete
+        // buffer too, so fall back to an overlap scan that extracts the covered
+        // bytes from the covering store.
         if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
             if sym_val.width() == (size * 8) as u32 {
                 return Ok(sym_val.clone());
             } else if sym_val.width() > (size * 8) as u32 {
                 return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
             }
+        } else if let Some(sym_val) =
+            self.symbolic_overlap_load(&self.pending_symbolic_stores, addr_concrete, size)
+        {
+            return Ok(sym_val);
         }
 
         // Then check concrete stores via the indexed buffer.
@@ -188,13 +231,18 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
 
-        // Also check previously flushed symbolic stores (cross-block)
+        // Also check previously flushed symbolic stores (cross-block), with the
+        // same exact-then-overlap fallback as the pending map above.
         if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
             if sym_val.width() == (size * 8) as u32 {
                 return Ok(sym_val.clone());
             } else if sym_val.width() > (size * 8) as u32 {
                 return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
             }
+        } else if let Some(sym_val) =
+            self.symbolic_overlap_load(&self.all_flushed_symbolic_stores, addr_concrete, size)
+        {
+            return Ok(sym_val);
         }
 
         // Also check previously flushed concrete stores (cross-block)
@@ -1377,5 +1425,55 @@ mod tests {
         let truncated = interp.apply_loadg_conversion(IRLoadGOp::Identity, val, 16);
         assert_eq!(truncated.width(), 16);
         assert_eq!(truncated.as_u64(), Some(0xbeef));
+    }
+
+    // angr-ofyh: an offset load fully inside a wider symbolic store must
+    // extract the covered bytes as a symbolic value, never the concrete-0
+    // placeholder that bv_to_bytes used to push into the concrete buffer.
+    #[test]
+    fn symbolic_overlap_load_returns_symbolic_for_offset_load() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp
+            .pending_symbolic_stores
+            .insert(0x1000, RustBV::symbolic(&ctx, "v", 64));
+        // 4-byte load at offset 4 is fully covered by the 8-byte store.
+        let bv = interp
+            .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x1004, 4)
+            .expect("overlap load should cover [0x1004,0x1008)");
+        assert_eq!(bv.width(), 32);
+        assert!(
+            bv.is_symbolic(),
+            "offset load into symbolic store must stay symbolic, not concrete 0"
+        );
+    }
+
+    #[test]
+    fn symbolic_overlap_load_misses_when_not_fully_covered() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        // 4-byte store at 0x1000.
+        interp
+            .pending_symbolic_stores
+            .insert(0x1000, RustBV::symbolic(&ctx, "v", 32));
+        // Load straddling the end of the store is not fully covered.
+        assert!(
+            interp
+                .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x1002, 4)
+                .is_none()
+        );
+        // Load entirely before the store is not covered.
+        assert!(
+            interp
+                .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x0ffc, 4)
+                .is_none()
+        );
+        // Empty map short-circuits to None.
+        let empty = new_interp(&ctx);
+        assert!(
+            empty
+                .symbolic_overlap_load(&empty.pending_symbolic_stores, 0x1000, 4)
+                .is_none()
+        );
     }
 }
