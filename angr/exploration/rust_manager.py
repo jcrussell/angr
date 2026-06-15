@@ -4126,7 +4126,13 @@ class RustExplorationManager(
             any_stash = active_set | found_set
 
         live = active_set | found_set
-        live.update(self._state_roots.get(sid, sid) for sid in live)
+        # Materialize the root lookups into a separate set before updating
+        # `live`: feeding a generator that reads `live` straight into
+        # `live.update()` mutates the set mid-iteration ("Set changed size
+        # during iteration") whenever a root ID is not already present — which
+        # happens once forking produces enough distinct roots (reliably under
+        # eager-fork mode, latent otherwise). See angr-027h.
+        live.update({self._state_roots.get(sid, sid) for sid in live})
         # Always keep root state cache entries: a forked state can fire its
         # first Python callback without itself or its (Rust-only) ancestors
         # being in cache; the only way to avoid the blank-state fallback is

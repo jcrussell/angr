@@ -339,6 +339,10 @@ def _run_in_child(
             }
         except Exception as e:
             sys.stdout = original_stdout
+            if os.environ.get("ANGR_DEBUG_TB"):
+                import traceback
+
+                traceback.print_exc()
             elapsed = time.perf_counter() - start
             stats, perf_report, peak_memory_mb = _collect_rust_diagnostics()
             return {
