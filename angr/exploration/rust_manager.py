@@ -2831,11 +2831,21 @@ class RustExplorationManager(
         """Load binary code regions for native lifting."""
         regions = []
 
+        main_object = self._project.loader.main_object
         for obj in self._project.loader.all_objects:
             # Skip cle pseudo-objects (externs/tls/kernel) — their `binary`
             # is a synthetic string like 'cle##externs', not None, so the
             # plain None check below is not enough.
-            if obj.binary is None:
+            #
+            # `binary is None` also matches stream-backed real objects such as
+            # the Blob produced by `load_shellcode` (and `Project(BytesIO(...),
+            # backend='blob')`). Those carry the actual code, so we must NOT
+            # skip the main object on a None binary — doing so left the Rust
+            # engine with zero concrete regions, so every block resolved its
+            # successor to 0x0 and deadended on the first step (angr-1lzq).
+            # Non-main None-binary objects (kernel/tls pseudo-objects) stay
+            # skipped to preserve the original behavior.
+            if obj.binary is None and obj is not main_object:
                 continue
             if isinstance(obj.binary, str) and obj.binary.startswith("cle##"):
                 continue
@@ -2850,7 +2860,14 @@ class RustExplorationManager(
 
             for region in executable_ranges:
                 try:
-                    data = self._project.loader.memory.load(region.min_addr, region.max_addr - region.min_addr)
+                    # cle's Region.max_addr is INCLUSIVE (last valid byte), so the
+                    # byte count is max_addr - min_addr + 1. Omitting the +1 drops
+                    # the final byte of every executable region; harmless on real
+                    # binaries (trailing padding) but fatal for tiny blobs, where
+                    # it truncated a 5-byte load_shellcode to 4 bytes and left the
+                    # native lifter with a half-decoded instruction (angr-1lzq).
+                    size = region.max_addr - region.min_addr + 1
+                    data = self._project.loader.memory.load(region.min_addr, size)
                     regions.append((region.min_addr, bytes(data)))
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: executable region not loaded into Rust;

@@ -1681,6 +1681,33 @@ class TestRustEdgeCases:
 
         _setup_shared_z3_context()
 
+    def test_load_shellcode_blob_in_binary_control_flow(self):
+        """In-blob jump targets in a load_shellcode/blob must resolve, not deadend.
+
+        Regression for angr-1lzq. The Blob main object produced by
+        ``load_shellcode`` has ``binary is None`` (stream-backed, no file path),
+        so ``_load_binary_regions`` skipped it and the Rust engine received zero
+        concrete regions. With no region, ``is_in_binary`` was false for every
+        in-blob address, so an in-bounds jump was misclassified as an unmodeled
+        call and the successor IP collapsed to 0x0 ("Lift error at 0x0"),
+        deadending after one step. A second latent bug truncated the last byte
+        of every executable region (cle's ``max_addr`` is inclusive, so the byte
+        count is ``max_addr - min_addr + 1``).
+
+        ``\xeb\xfe`` is ``jmp $`` (self-loop). Once the blob region is registered
+        the state must stay active at the loop address across steps instead of
+        deadending to 0x0.
+        """
+        proj = angr.load_shellcode(b"\xeb\xfe", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+
+        for _ in range(3):
+            mgr.step(n=1)
+            active = mgr.active_proxies()
+            assert len(active) == 1, f"expected the self-loop to stay active, got {mgr.stash_counts()}"
+            assert active[0].addr == 0x1000, f"self-loop drifted off 0x1000 to {hex(active[0].addr)}"
+
     def test_page_boundary_store_load(self):
         """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""
         state = RustSimState("amd64")
