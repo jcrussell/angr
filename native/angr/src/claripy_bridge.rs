@@ -1213,6 +1213,69 @@ pub fn rustbv_to_claripy(
     rustbv_to_claripy_memo(py, bv, claripy_mod, &mut memo)
 }
 
+/// angr-acoq: build a sound claripy encoding for a symbolic clz/ctz/popcount
+/// whose single operand has already been converted to `operand` (a claripy BV
+/// of the same `width`). The result width equals `width`, matching the
+/// concrete fast path (`BVV(result, width)`). Only valid for `width <= 64`.
+///
+/// Encodings (all tied to `operand`, so Python-side eval stays consistent with
+/// the Rust engine's value):
+///   - clz: nested `If(bit[w-1-i]==1, i, ...)` from LSB to MSB so the MSB test
+///     is outermost; default `w` when no bit is set.
+///   - ctz: nested `If(bit[i]==1, i, ...)` from MSB to LSB so the LSB test is
+///     outermost; default `w` when no bit is set.
+///   - popcount: sum of `ZeroExt(w-1, bit[i])` over all `i`.
+fn build_sound_bitcount(
+    _py: Python<'_>,
+    claripy_mod: &Bound<'_, PyAny>,
+    op: &crate::symbolic::BVOp,
+    operand: &Bound<'_, PyAny>,
+    width: u32,
+) -> PyResult<Py<PyAny>> {
+    use crate::symbolic::BVOp;
+
+    let extract_bit = |pos: u32| -> PyResult<Bound<'_, PyAny>> {
+        claripy_mod.call_method1("Extract", (pos, pos, operand))
+    };
+
+    match op {
+        BVOp::Popcount => {
+            // sum of zero-extended individual bits; result fits in `width`.
+            let mut acc: Bound<'_, PyAny> = if width > 1 {
+                claripy_mod.call_method1("ZeroExt", (width - 1, extract_bit(0)?))?
+            } else {
+                extract_bit(0)?
+            };
+            for pos in 1..width {
+                let ext = claripy_mod.call_method1("ZeroExt", (width - 1, extract_bit(pos)?))?;
+                acc = acc.call_method1("__add__", (ext,))?;
+            }
+            Ok(acc.into())
+        }
+        BVOp::Clz | BVOp::Ctz => {
+            let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
+            let mut result = claripy_mod.call_method1("BVV", (width as i64, width))?;
+            // For clz, iterate positions LSB->MSB so the MSB test is outermost.
+            // For ctz, iterate MSB->LSB so the LSB test is outermost.
+            let positions: Vec<u32> = match op {
+                BVOp::Clz => (0..width).collect(),
+                _ => (0..width).rev().collect(),
+            };
+            for pos in positions {
+                let cond = extract_bit(pos)?.call_method1("__eq__", (&one,))?;
+                let leading_count = match op {
+                    BVOp::Clz => width - 1 - pos,
+                    _ => pos, // ctz: trailing zeros == bit index of lowest set bit
+                };
+                let val = claripy_mod.call_method1("BVV", (leading_count as i64, width))?;
+                result = claripy_mod.call_method1("If", (cond, val, result))?;
+            }
+            Ok(result.into())
+        }
+        _ => unreachable!("build_sound_bitcount only handles clz/ctz/popcount"),
+    }
+}
+
 fn rustbv_to_claripy_memo(
     py: Python<'_>,
     bv: &RustBV,
@@ -1707,14 +1770,34 @@ fn rustbv_to_claripy_memo(
                             .map(|o| o.into());
                     }
 
-                    // For symbolic input, create fresh variable (limitation - no constraint relationship)
-                    log::debug!(
-                        "Creating unconstrained {} result for symbolic input (constraint relationship lost)",
-                        op_name
-                    );
-                    claripy_mod
-                        .call_method1("BVS", (format!("{}_result", op_name), width))
-                        .map(|o| o.into())
+                    // Symbolic input. For width<=64 emit a sound encoding tied
+                    // to the operand AST (angr-acoq); otherwise fall back to a
+                    // fresh unconstrained BVS and flag it.
+                    let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+                    let ast_res: PyResult<Py<PyAny>> = if width <= 64 {
+                        crate::symbolic::record_export_sound_clz();
+                        build_sound_bitcount(py, claripy_mod, op, args[0].bind(py), width)
+                    } else {
+                        crate::symbolic::record_export_unconstrained_clz();
+                        log::debug!(
+                            "Creating unconstrained {} result for symbolic width>64 input (constraint relationship lost)",
+                            op_name
+                        );
+                        claripy_mod
+                            .call_method1("BVS", (format!("{}_result", op_name), width))
+                            .map(|o| o.into())
+                    };
+                    // Stabilize identity: repeated exports of the same RustBV
+                    // (same operands Arc) return the identical claripy AST via
+                    // the EXPRESSION_BY_OPERANDS_PTR lookup at the top of this fn.
+                    if let Ok(ref ast) = ast_res {
+                        store_expression_ast_by_operands(
+                            operands_ptr,
+                            bv.clone(),
+                            ast.clone_ref(py),
+                        );
+                    }
+                    ast_res
                 }
                 // Float ops: claripy's fpAdd/fpSub etc. need an FSort argument
                 // and rounding mode; round-tripping a Z3 FP expression through
@@ -1726,10 +1809,21 @@ fn rustbv_to_claripy_memo(
                 // solver still sees the FP terms.
                 BVOp::Float { kind, prec } => {
                     let width = kind.result_bits(*prec);
+                    let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+                    crate::symbolic::record_export_unconstrained_fp();
                     let name = format!("fp_{:?}_{:?}_result", kind, prec);
-                    claripy_mod
+                    let ast_res: PyResult<Py<PyAny>> = claripy_mod
                         .call_method1("BVS", (name, width))
-                        .map(|o| o.into())
+                        .map(|o| o.into());
+                    // Stabilize identity across repeated exports (angr-acoq).
+                    if let Ok(ref ast) = ast_res {
+                        store_expression_ast_by_operands(
+                            operands_ptr,
+                            bv.clone(),
+                            ast.clone_ref(py),
+                        );
+                    }
+                    ast_res
                 }
             }
         }
@@ -1984,6 +2078,121 @@ mod tests {
             // x must still be present.
             let vars = ast.getattr("variables").unwrap();
             assert_eq!(vars.len().unwrap(), 1);
+        });
+    }
+
+    /// angr-acoq soundness: a symbolic clz/ctz/popcount with width<=64 must
+    /// export as an encoding tied to the operand, so Python-side eval matches
+    /// the true bit-count for every concrete operand value. Pre-fix this was a
+    /// fresh unconstrained BVS that could yield Rust-infeasible values.
+    #[test]
+    fn test_export_symbolic_bitcount_is_sound() {
+        use crate::symbolic::BVOp;
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let claripy = match py.import("claripy") {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let ctx = SymContext::new_mock();
+            let width: u32 = 8;
+
+            // Evaluate `ast` with its single BVS leaf pinned to `v`.
+            let eval_with = |ast: &Bound<'_, PyAny>, leaf: &Bound<'_, PyAny>, v: u128| -> u128 {
+                let bvv = claripy.call_method1("BVV", (v as i64, width)).unwrap();
+                let cond = leaf.call_method1("__eq__", (&bvv,)).unwrap();
+                let s = claripy.call_method0("Solver").unwrap();
+                s.call_method1("add", (cond,)).unwrap();
+                let res = s.call_method1("eval", (ast, 1u32)).unwrap();
+                res.get_item(0).unwrap().extract().unwrap()
+            };
+            // Pull the single BVS leaf out of an exported encoding.
+            let bvs_leaf = |ast: &Bound<'_, PyAny>| -> Py<PyAny> {
+                let leaves = ast.call_method0("leaf_asts").unwrap();
+                for leaf in leaves.try_iter().unwrap() {
+                    let leaf = leaf.unwrap();
+                    let op: String = leaf.getattr("op").unwrap().extract().unwrap();
+                    if op == "BVS" {
+                        return leaf.unbind();
+                    }
+                }
+                panic!("no BVS leaf found in exported encoding");
+            };
+
+            for op in [BVOp::Clz, BVOp::Ctz, BVOp::Popcount] {
+                let x = RustBV::symbolic(&ctx, "x", width);
+                let expr = match op {
+                    BVOp::Clz => x.clz(&ctx),
+                    BVOp::Ctz => x.ctz(&ctx),
+                    BVOp::Popcount => x.popcount(&ctx),
+                    _ => unreachable!(),
+                };
+                let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
+                let ast = ast.bind(py);
+                let leaf = bvs_leaf(ast);
+                let leaf = leaf.bind(py);
+                for v in [0u128, 1, 2, 0x80, 0x0F, 0xF0, 0xAA, 0xFF] {
+                    let got = eval_with(ast, leaf, v);
+                    let b = v as u8;
+                    let expected = match op {
+                        BVOp::Clz => b.leading_zeros() as u128,
+                        BVOp::Ctz => {
+                            if b == 0 {
+                                8
+                            } else {
+                                b.trailing_zeros() as u128
+                            }
+                        }
+                        BVOp::Popcount => b.count_ones() as u128,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(got, expected, "{:?}({:#x}) width=8", op, v);
+                }
+            }
+        });
+    }
+
+    /// angr-acoq identity: exporting the same symbolic clz/popcount or Float
+    /// RustBV twice returns the identical claripy AST (stabilized via the
+    /// EXPRESSION_BY_OPERANDS_PTR cache). Pre-fix each call minted a fresh BVS.
+    #[test]
+    fn test_export_symbolic_clz_and_fp_identity_stable() {
+        use crate::symbolic::{BVOp, FloatOpKind, FloatPrec};
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let claripy = match py.import("claripy") {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let ctx = SymContext::new_mock();
+
+            // popcount (sound encoding path)
+            let x = RustBV::symbolic(&ctx, "x", 32);
+            let pc = x.popcount(&ctx);
+            let a1 = rustbv_to_claripy(py, &pc, claripy.as_any()).unwrap();
+            let a2 = rustbv_to_claripy(py, &pc, claripy.as_any()).unwrap();
+            assert!(
+                a1.bind(py).is(a2.bind(py)),
+                "repeated popcount export must return the identical claripy AST"
+            );
+
+            // Float result (unconstrained-but-stable BVS path)
+            let y = RustBV::symbolic(&ctx, "y", 64);
+            let fp = RustBV::Expression {
+                id: RustBV::EXPRESSION_ID,
+                width: 64,
+                op: BVOp::Float {
+                    kind: FloatOpKind::Add,
+                    prec: FloatPrec::F64,
+                },
+                operands: Arc::<[RustBV]>::from(vec![y.clone(), y]),
+            };
+            let f1 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
+            let f2 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
+            assert!(
+                f1.bind(py).is(f2.bind(py)),
+                "repeated Float export must return the identical claripy AST"
+            );
         });
     }
 }

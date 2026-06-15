@@ -145,6 +145,20 @@ pub(crate) static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+// angr-acoq: claripy-export soundness counters for symbolic Clz/Ctz/Popcount
+// and Float results. Bumped from `claripy_bridge::rustbv_to_claripy_memo`.
+//   - SOUND_CLZ: width<=64 clz/ctz/popcount exported as a sound ITE/sum
+//     encoding tied to the operand (no constraint relationship lost).
+//   - UNCONSTRAINED_CLZ: width>64 clz/ctz/popcount fell back to a fresh BVS
+//     (sound encoding declined for width).
+//   - UNCONSTRAINED_FP: Float result exported as a fresh BVS (Z3 FP term kept
+//     in-engine; the claripy-side value is unconstrained by design).
+// The unconstrained counters surface "Python eval may see a Rust-infeasible
+// value" risk in --dump-counters.
+pub(crate) static EXPORT_SOUND_CLZ_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static EXPORT_UNCONSTRAINED_CLZ_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static EXPORT_UNCONSTRAINED_FP_COUNT: AtomicU64 = AtomicU64::new(0);
+
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
 // (threshold: any >=10% wins a follow-up bead). See bd memory
@@ -429,6 +443,19 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "zext_cmp_trivial_decide_count".into(),
         ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed),
     );
+    // angr-acoq: claripy-export soundness counters.
+    stats.insert(
+        "rust_export_sound_clz".into(),
+        EXPORT_SOUND_CLZ_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "rust_export_unconstrained_clz".into(),
+        EXPORT_UNCONSTRAINED_CLZ_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "rust_export_unconstrained_fp".into(),
+        EXPORT_UNCONSTRAINED_FP_COUNT.load(Ordering::Relaxed),
+    );
     // angr-1joc: constraint-dedup measurement counters.
     stats.insert(
         "rustbv_commutative_canonicalize_count".into(),
@@ -551,6 +578,9 @@ pub fn reset_solver_stats() {
     BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
     ZEXT_CMP_COLLAPSE_COUNT.store(0, Ordering::Relaxed);
     ZEXT_CMP_TRIVIAL_DECIDE_COUNT.store(0, Ordering::Relaxed);
+    EXPORT_SOUND_CLZ_COUNT.store(0, Ordering::Relaxed);
+    EXPORT_UNCONSTRAINED_CLZ_COUNT.store(0, Ordering::Relaxed);
+    EXPORT_UNCONSTRAINED_FP_COUNT.store(0, Ordering::Relaxed);
     // angr-1joc constraint-dedup measurement counters.
     RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.store(0, Ordering::Relaxed);
     RUSTBV_COMMUTATIVE_SWAP_COUNT.store(0, Ordering::Relaxed);
@@ -763,6 +793,27 @@ pub fn record_zext_cmp_collapse() {
 #[inline]
 pub fn record_zext_cmp_trivial_decide() {
     ZEXT_CMP_TRIVIAL_DECIDE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-acoq: record a sound clz/ctz/popcount export (width<=64, encoded as
+/// an ITE/sum tied to the operand).
+#[inline]
+pub fn record_export_sound_clz() {
+    EXPORT_SOUND_CLZ_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-acoq: record an unconstrained clz/ctz/popcount export (width>64 fresh
+/// BVS fallback — constraint relationship lost).
+#[inline]
+pub fn record_export_unconstrained_clz() {
+    EXPORT_UNCONSTRAINED_CLZ_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-acoq: record an unconstrained Float export (fresh BVS — Z3 FP term
+/// kept in-engine, claripy-side value unconstrained).
+#[inline]
+pub fn record_export_unconstrained_fp() {
+    EXPORT_UNCONSTRAINED_FP_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// angr-1joc: record a `canonicalize_commutative` invocation. `swapped` is
