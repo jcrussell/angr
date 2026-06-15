@@ -212,8 +212,11 @@ small but non-trivial Rust → Python → Rust resume overhead on
 SimProcedure returns. A future optimization that eliminates
 Python-side page re-initialization on SimProcedure resume (e.g. by
 keeping the Python ``state`` cached in the page registry across
-the round trip) would directly attack the bottleneck — see
-``RustStateProxy.copy()`` CoW fork bead ``angr-d1dr``.
+the round trip) would directly attack the bottleneck — tracked as
+``angr-dxpd``. The ``RustStateProxy.copy()`` CoW fork bead
+``angr-d1dr`` (closed, commit ``be05cf9f8``) built the Rust-side
+CoW machinery but addressed proxy ``copy()`` semantics, *not* this
+page-init-on-resume path.
 
 Tooling caveat:
 ``cargo-flamegraph`` / ``py-spy`` were unavailable in the offline
