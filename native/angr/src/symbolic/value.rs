@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::SymContext;
-use super::context::{
+use super::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
     record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
 };
@@ -2078,7 +2078,7 @@ impl RustBV {
     /// lazy evaluation approach).
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast(&self) -> z3::ast::BV {
-        super::context::record_z3_ast_build();
+        super::stats::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
         self.to_z3_ast_cached(&mut cache)
     }
@@ -2098,10 +2098,10 @@ impl RustBV {
         // (Arc-shared sub-expressions will have the same pointer)
         let cache_key = self as *const RustBV as usize;
         if let Some(cached) = cache.get(&cache_key) {
-            super::context::record_z3_ast_cache_hit();
+            super::stats::record_z3_ast_cache_hit();
             return cached.clone();
         }
-        super::context::record_z3_ast_cache_miss();
+        super::stats::record_z3_ast_cache_miss();
         let result = match self {
             RustBV::Concrete { value, width } => {
                 if *width <= 64 {
@@ -2140,7 +2140,7 @@ impl RustBV {
     /// `._eq(BV(1,1))`. Saves 3 Z3 AST nodes per comparison constraint.
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool(&self) -> z3::ast::Bool {
-        super::context::record_z3_ast_build();
+        super::stats::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
         self.to_z3_bool_cached(&mut cache)
     }
