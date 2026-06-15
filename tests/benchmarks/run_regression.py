@@ -134,6 +134,17 @@ FAST_SUITE = [
     # See bd memory ``bench-cmu-binary-bomb-broken`` and the wrapper
     # docstring for the full per-flag rationale.
     ("cmu_binary_bomb_partial", 30, "bfs", True),
+    # CoW fork-scaling synthetic benchmark (angr-vx8p.2, from angr-uf0g).
+    # Lives in tests/benchmarks/synthetic_examples/ as a prebuilt x86_64
+    # fork-tree binary (fork_tree_8) that reads 16 symbolic stdin bytes and
+    # runs them through 8 independent branches, forking to 256 leaf states.
+    # Unlike the rest of the corpus (28/30 entries have state_creations==0)
+    # this bench deliberately forks hundreds of states, so it is the only
+    # regression gate over the engine's core O(1) CoW-fork claim
+    # (im::OrdMap structural sharing) — state_creations/steps carry signal
+    # here. Marked rust_only=True: the Python engine OOMs past N=8 in the
+    # uf0g sweep, so no Python comparison is recorded.
+    ("cow_fork_scaling", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full
