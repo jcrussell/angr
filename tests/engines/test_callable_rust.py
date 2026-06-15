@@ -32,57 +32,13 @@ import angr
 from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
-    RustExplorationManager,
+    RustFactoryPatch,
 )
 
 HOWTOUSE_DLL = os.path.join(EXAMPLES_DIR, "mma_howtouse", "howtouse.dll")
 HOWTOUSE_BASE_ADDR = 0x10000000
 HOWTOUSE_FUNC_ADDR = 0x10001130
 EXPECTED_FLAG = "MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}"
-
-
-class _RustSimManagerFactoryPatch:
-    """Context manager that routes ``factory.simulation_manager(...)`` to
-    :class:`RustExplorationManager` for the duration of the ``with`` block.
-
-    Mirrors the patch installed by ``tests/benchmarks/run_single.py`` so that
-    code paths invoking ``factory.simulation_manager`` internally (such as
-    :meth:`Callable.perform_call`) end up exercising the Rust engine.
-    """
-
-    def __init__(self, project: angr.Project):
-        self._project = project
-        self._original_sm = None
-        self._original_simgr = None
-
-    def __enter__(self):
-        from angr.factory import AngrObjectFactory
-
-        self._original_sm = AngrObjectFactory.simulation_manager
-        self._original_simgr = AngrObjectFactory.simgr
-
-        def rust_simulation_manager(factory_self, thing=None, **kwargs):
-            # Callable passes ``techniques=...``; RustExplorationManager
-            # doesn't accept it — strip silently for the smoke test.
-            kwargs.pop("techniques", None)
-            kwargs.pop("use_rust_engine", None)
-            if thing is None:
-                states = [factory_self.entry_state()]
-            elif isinstance(thing, (list, tuple)):
-                states = list(thing)
-            else:
-                states = [thing]
-            return RustExplorationManager(factory_self.project, active_states=states)
-
-        AngrObjectFactory.simulation_manager = rust_simulation_manager
-        AngrObjectFactory.simgr = rust_simulation_manager
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        from angr.factory import AngrObjectFactory
-
-        AngrObjectFactory.simulation_manager = self._original_sm
-        AngrObjectFactory.simgr = self._original_simgr
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
@@ -110,7 +66,7 @@ class TestCallableRust:
         n_calls = 5
         expected = EXPECTED_FLAG[:n_calls]
 
-        with _RustSimManagerFactoryPatch(proj):
+        with RustFactoryPatch():
             howtouse = proj.factory.callable(HOWTOUSE_FUNC_ADDR)
             for i in range(n_calls):
                 ret = howtouse(i)

@@ -6,6 +6,7 @@ comparing correctness and checking for severe performance regressions.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
@@ -19,7 +20,7 @@ from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
     BufferedStringIO,
-    RustExplorationManager,
+    RustFactoryPatch,
 )
 
 # Each entry: (name, expected_substring, timeout_s, uses_callable_predicate)
@@ -44,8 +45,6 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 
     Returns (success, stdout_output, elapsed_seconds).
     """
-    import angr
-
     solve_script = os.path.join(EXAMPLES_DIR, example_name, "solve.py")
     if not os.path.exists(solve_script):
         return False, f"solve.py not found: {solve_script}", 0.0
@@ -54,34 +53,12 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
     original_dir = os.getcwd()
     original_path = sys.path[:]
 
-    # Monkey-patch factory for Rust engine
-    original_simgr = None
-    original_sm = None
-    if engine == "rust":
-        original_sm = angr.factory.AngrObjectFactory.simulation_manager
-        original_simgr = angr.factory.AngrObjectFactory.simgr
-
-        def patched_simulation_manager(factory_self, thing=None, **kwargs):
-            # Fall through to the original simulation_manager when called from
-            # angr internals (CFG jumptable resolver, exploration techniques)
-            # whose internal SimState carries SimOptions like DO_RET_EMULATION
-            # that RustExplorationManager._check_raise_options rejects.
-            import traceback
-
-            caller_frames = traceback.extract_stack()
-            for frame in caller_frames[:-1]:
-                if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
-                    return original_sm(factory_self, thing, **kwargs)
-            if thing is None:
-                states = [factory_self.entry_state()]
-            elif isinstance(thing, (list, tuple)):
-                states = list(thing)
-            else:
-                states = [thing]
-            return RustExplorationManager(factory_self.project, states)
-
-        angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
-        angr.factory.AngrObjectFactory.simgr = patched_simulation_manager
+    # Route factory.simulation_manager() to the Rust engine for the example
+    # run. fallback_to_python is load-bearing here: angr internals (CFG
+    # jumptable resolver, exploration techniques) build SimStates carrying
+    # SimOptions that RustExplorationManager rejects, so those calls fall
+    # through to the original Python manager.
+    patch_cm = RustFactoryPatch(fallback_to_python=True) if engine == "rust" else contextlib.nullcontext()
 
     try:
         os.chdir(example_dir)
@@ -97,7 +74,8 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 
         start = time.perf_counter()
         try:
-            spec.loader.exec_module(module)
+            with patch_cm:
+                spec.loader.exec_module(module)
         finally:
             sys.stdout = original_stdout
 
@@ -112,9 +90,6 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
     finally:
         os.chdir(original_dir)
         sys.path[:] = original_path
-        if original_sm is not None:
-            angr.factory.AngrObjectFactory.simulation_manager = original_sm
-            angr.factory.AngrObjectFactory.simgr = original_simgr
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

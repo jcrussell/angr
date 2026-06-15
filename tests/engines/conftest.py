@@ -78,3 +78,73 @@ def fauxware_project():
     if not os.path.exists(binary_path):
         pytest.skip("fauxware binary not found")
     return angr.Project(binary_path, auto_load_libs=False)
+
+
+# --- Factory monkey-patch -------------------------------------------------
+class RustFactoryPatch:
+    """Route ``factory.simulation_manager(...)`` / ``simgr(...)`` to
+    :class:`RustExplorationManager` for the duration of a ``with`` block.
+
+    Consolidates the two previously-duplicated monkey-patch implementations
+    (``test_rust_integration._run_example`` and the
+    ``_RustSimManagerFactoryPatch`` from ``test_callable_rust``) into one
+    shared context manager (angr-k8pc).
+
+    Args:
+        fallback_to_python: when ``True``, calls originating from angr
+            internals (analyses, exploration techniques) fall through to the
+            original Python ``simulation_manager``. This is **load-bearing**
+            for integration runs: the CFG jumptable resolver and exploration
+            techniques build internal ``SimState`` objects carrying SimOptions
+            like ``DO_RET_EMULATION`` that
+            ``RustExplorationManager._check_raise_options`` rejects. When
+            ``False`` (default — the callable smoke-test behavior), every call
+            is routed to the Rust engine.
+
+    Both behaviors strip the ``techniques`` / ``use_rust_engine`` kwargs that
+    :meth:`Callable.perform_call` passes but ``RustExplorationManager`` does
+    not accept; this is a harmless superset for the integration path (those
+    kwargs are absent there).
+    """
+
+    def __init__(self, fallback_to_python: bool = False):
+        self._fallback = fallback_to_python
+        self._original_sm = None
+        self._original_simgr = None
+
+    def __enter__(self):
+        from angr.factory import AngrObjectFactory
+
+        self._original_sm = AngrObjectFactory.simulation_manager
+        self._original_simgr = AngrObjectFactory.simgr
+        original_sm = self._original_sm
+        fallback = self._fallback
+
+        def rust_simulation_manager(factory_self, thing=None, **kwargs):
+            if fallback:
+                import traceback
+
+                for frame in traceback.extract_stack()[:-1]:
+                    if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
+                        return original_sm(factory_self, thing, **kwargs)
+            # Callable passes techniques=...; RustExplorationManager doesn't
+            # accept it — strip silently for the smoke test.
+            kwargs.pop("techniques", None)
+            kwargs.pop("use_rust_engine", None)
+            if thing is None:
+                states = [factory_self.entry_state()]
+            elif isinstance(thing, (list, tuple)):
+                states = list(thing)
+            else:
+                states = [thing]
+            return RustExplorationManager(factory_self.project, active_states=states)
+
+        AngrObjectFactory.simulation_manager = rust_simulation_manager
+        AngrObjectFactory.simgr = rust_simulation_manager
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        from angr.factory import AngrObjectFactory
+
+        AngrObjectFactory.simulation_manager = self._original_sm
+        AngrObjectFactory.simgr = self._original_simgr
