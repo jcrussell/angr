@@ -60,8 +60,9 @@ At a glance
      - Python flame = Z3 + claripy; Rust flame = Z3.
      - **Partially confirmed.**
      - sym-write fits the model. mma_howtouse is dominated
-       by Python page-init under *both* engines, plus a small
-       Rust resume_after_simprocedure layer (0.35 s of 9.7 s wall).
+       by Python page-init under *both* engines — driven by 45
+       ``Callable`` invocations, *not* the Rust resume layer (re-measured
+       2026-06-15: callback path 8.4 ms of wall).
      - ``angr-trsg`` — see :doc:`rust_engine_flame_comparison`.
 
 .. _rust-engine-characterization-cow-fork:
@@ -200,23 +201,40 @@ equivalent work into two PyO3 calls — exactly the workload the
 Rust engine is built to win. On mma_howtouse, both engines pay
 ~24 % of wall in a single Python function
 (``page_backer_mixins._initialize_page``) and ~43 % across the
-full page-init stack: the bench creates ~92,700 ultra pages and
-SimProcedure callbacks still run in Python, so Rust pays the same
-Python-side cost *plus* a 0.35 s
-``RustExplorationManager.resume_after_simprocedure`` layer for the
-45 callback resumes.
+full page-init stack.
 
-**Implication.** Callback-heavy benches lose not to "Z3 overhead in
-Python", but to angr's Python-side page initialization, plus a
-small but non-trivial Rust → Python → Rust resume overhead on
-SimProcedure returns. A future optimization that eliminates
-Python-side page re-initialization on SimProcedure resume (e.g. by
-keeping the Python ``state`` cached in the page registry across
-the round trip) would directly attack the bottleneck — tracked as
-``angr-dxpd``. The ``RustStateProxy.copy()`` CoW fork bead
+**Re-measurement (2026-06-15, post-d1dr) corrects the mechanism.**
+The driver is *not* SimProcedure resumes. ``mma_howtouse``'s
+``solve.py`` runs a :class:`~angr.callable.Callable` **45 times**;
+``angr/callable.py:88 (Callable.__call__)`` is 88 % of cProfile
+wall and each invocation calls ``factory.call_state()``
+(``angr/factory.py:164``, 5.4 s cumulative), which builds a *fresh*
+state. Lazy page backing then re-initializes ~2,060 ultra pages
+per call — **92,700** ``_initialize_page`` calls total, with 1.96 s
+*tottime* concentrated in ``DictBackerMixin._initialize_page``
+(``page_backer_mixins.py:240``), which linearly scans the
+``_dict_memory_backer`` once per page. Both engines pay this
+identically. The SimProcedure callback path is negligible here:
+``callback_count=1`` and the entire callback/resume path measures
+8.4 ms of a 5.94 s run — ``resume_after_simprocedure`` is no longer
+a measurable layer for this bench.
+
+**Implication (corrected).** The earlier "45 callback resumes /
+cache the Python state across SimProcedure round-trips" framing was
+wrong: the 45 are ``Callable`` invocations, not SimProcedure
+callbacks, and the page re-init lives in ``factory.call_state()``,
+not the Rust resume layer. The true lever — reusing the
+``call_state`` base or memoizing CLE page backing across
+``Callable`` invocations — is a general angr-core optimization
+shared by *both* engines; it would lower absolute time for both
+equally and so would **not** change the 0.65× ratio. It is outside
+the rust-symex engine's scope. The residual Rust-vs-Python gap on
+this bench comes from per-invocation execution/manager overhead
+across the 45 runs, not page-init. Tracked as ``angr-dxpd`` (closed
+with this finding). The ``RustStateProxy.copy()`` CoW fork bead
 ``angr-d1dr`` (closed, commit ``be05cf9f8``) built the Rust-side
 CoW machinery but addressed proxy ``copy()`` semantics, *not* this
-page-init-on-resume path.
+page-init path.
 
 Tooling caveat:
 ``cargo-flamegraph`` / ``py-spy`` were unavailable in the offline
