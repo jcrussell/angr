@@ -1646,6 +1646,40 @@ class TestRustExplorationPython:
         assert "found_count" in report
         assert "elapsed_seconds" in report
 
+    def test_progress_callback_deadended_count(self, fauxware_project):
+        """deadended_count in the progress payload must match the actual stash.
+
+        Regression for angr-8mln: the payload read counts.get("deadened", 0)
+        but the Rust stash key is "deadended", so deadended_count was always 0.
+        """
+        progress_reports = []
+
+        def on_progress(info):
+            progress_reports.append(info)
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_progress_callback(on_progress, interval_steps=1)
+        # A never-matching find predicate routes through the predicate path,
+        # which keeps terminal states (drop_terminal_states=False), so the
+        # deadended stash fills up and the progress callback can observe it.
+        # Exploration runs until the active stash drains.
+        mgr.explore(find=lambda s: False)
+
+        assert len(progress_reports) > 0, "progress callback never fired"
+        # Every tick must carry the deadended_count key...
+        assert all("deadended_count" in r for r in progress_reports)
+        # ...and fauxware deadends states, so at least one tick must report
+        # a nonzero count (the typo made this permanently 0).
+        assert max(r["deadended_count"] for r in progress_reports) > 0, (
+            "deadended_count never went nonzero — stash-key typo regression"
+        )
+        # The deadended stash only grows during run(), so each report's count
+        # must be consistent with the final live stash size.
+        final_deadended = len(mgr._rust_mgr.get_state_ids("deadended"))
+        assert final_deadended > 0
+        assert progress_reports[-1]["deadended_count"] <= final_deadended
+
 
 class TestExplorationEvent:
     """Tests for ExplorationEvent class."""

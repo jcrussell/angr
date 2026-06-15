@@ -3620,7 +3620,7 @@ class RustExplorationManager(
                             "step_count": steps_taken,
                             "active_count": counts.get("active", 0),
                             "found_count": counts.get("found", 0),
-                            "deadended_count": counts.get("deadened", 0),
+                            "deadended_count": counts.get("deadended", 0),
                             "elapsed_seconds": time.time() - start_time,
                         }
                     )
