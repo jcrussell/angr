@@ -7,6 +7,8 @@
 //! - `RustSymbolTable`: Registry mapping handles to RustBV values
 //! - `SymbolicIdentityRegistry`: Preserves symbolic identity across Python<->Rust
 
+#[cfg(feature = "vex-engine-z3")]
+mod bv_codec;
 mod context;
 mod handle;
 #[cfg(feature = "vex-engine-z3")]

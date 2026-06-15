@@ -87,11 +87,12 @@ use super::stats::*;
 // for the solving paths below (and, via `use super::*`, the test module).
 #[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
-// Z3 BV-string numeral parsers live in `parse.rs` (angr-a2br.2 slice 4). The
-// glob brings the five `parse_*` helpers into scope for the concretization
-// paths (`extract_bv_value_from_string`, `extract_bv_value_wide`) below.
+// Concrete-value <-> Z3 BV codec helpers live in `bv_codec.rs` (angr-a2br.2
+// slice 5). The glob brings the three `extract_bv_value*` decoders and the two
+// `make_bv_*` encoders into scope for the eval / min / max solving paths below.
+// (`bv_codec` itself re-uses the `parse.rs` numeral helpers from slice 4.)
 #[cfg(feature = "vex-engine-z3")]
-use super::parse::*;
+use super::bv_codec::*;
 
 /// Snapshot of a [`SymContext`]'s path-constraint state.
 ///
@@ -1332,7 +1333,7 @@ impl SymContext {
             if let Some(ref model) = *cache {
                 let ast = bv.to_z3_ast();
                 if let Some(result) = model.eval(&ast, true) {
-                    return Self::extract_bv_value(&result);
+                    return extract_bv_value(&result);
                 }
             }
         }
@@ -1356,7 +1357,7 @@ impl SymContext {
             let model = solver.get_model()?;
             let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
-            let value = Self::extract_bv_value(&result);
+            let value = extract_bv_value(&result);
             *self.model_cache.borrow_mut() = Some(model);
             value
         })
@@ -1376,7 +1377,7 @@ impl SymContext {
         let cache = self.model_cache.borrow();
         let model = cache.as_ref()?;
         let result = model.eval(ast, true)?;
-        Self::extract_bv_value(&result)
+        extract_bv_value(&result)
     }
 
     /// Evaluate a bitvector to bytes (for values > 128 bits).
@@ -1418,56 +1419,8 @@ impl SymContext {
             let model = solver.get_model()?;
             let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
-            Self::extract_bv_value_wide(&result, width)
+            extract_bv_value_wide(&result, width)
         })
-    }
-
-    /// Extract a u128 value from a Z3 BV result.
-    /// For values > 128 bits, returns the low 128 bits (caller should use
-    /// extract_bv_value_wide for arbitrarily large values).
-    #[cfg(feature = "vex-engine-z3")]
-    fn extract_bv_value(bv: &z3::ast::BV) -> Option<u128> {
-        // Try as u64 first (fast path for <= 64-bit)
-        if let Some(v) = bv.as_u64() {
-            return Some(v as u128);
-        }
-        // For larger values, parse the string representation
-        Self::extract_bv_value_from_string(bv)
-    }
-
-    /// Extract a BV value by parsing its string representation.
-    /// Handles arbitrarily large values, returns low 128 bits.
-    #[cfg(feature = "vex-engine-z3")]
-    fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
-        let s = format!("{}", bv);
-        // Z3 uses formats: #xHEXDIGITS, #bBINARY, or decimal
-        if let Some(hex_str) = s.strip_prefix("#x") {
-            // Parse as hex, taking low 128 bits
-            parse_wide_hex_low128(hex_str)
-        } else if let Some(bin_str) = s.strip_prefix("#b") {
-            // Parse as binary, taking low 128 bits
-            parse_wide_binary_low128(bin_str)
-        } else {
-            // Try decimal
-            s.parse::<u128>().ok()
-        }
-    }
-
-    /// Extract an arbitrarily large BV value as a Vec<u8> (big-endian).
-    /// Used for values > 128 bits where we need the full value.
-    #[cfg(feature = "vex-engine-z3")]
-    fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<u8>> {
-        let s = format!("{}", bv);
-        if let Some(hex_str) = s.strip_prefix("#x") {
-            // Parse full hex value to bytes
-            parse_hex_to_bytes(hex_str, width)
-        } else if let Some(bin_str) = s.strip_prefix("#b") {
-            // Parse full binary value to bytes
-            parse_binary_to_bytes(bin_str, width)
-        } else {
-            // Decimal - parse and convert
-            parse_decimal_to_bytes(&s, width)
-        }
     }
 
     /// Evaluate a bitvector and return up to n solutions.
@@ -1498,7 +1451,7 @@ impl SymContext {
                     z3::SatResult::Sat => {
                         if let Some(model) = solver.get_model() {
                             if let Some(result) = model.eval(&ast, true) {
-                                if let Some(value) = Self::extract_bv_value(&result) {
+                                if let Some(value) = extract_bv_value(&result) {
                                     results.push(value);
                                     // Add constraint to exclude this value
                                     let val_ast = if bv.width() <= 64 {
@@ -1571,10 +1524,10 @@ impl SymContext {
                     z3::SatResult::Sat => {
                         if let Some(model) = solver.get_model() {
                             if let Some(result) = model.eval(&ast, true) {
-                                if let Some(bytes) = Self::extract_bv_value_wide(&result, width) {
+                                if let Some(bytes) = extract_bv_value_wide(&result, width) {
                                     // Exclude this value from future solutions
                                     // Build Z3 constant from bytes for full-precision exclusion
-                                    let val_ast = Self::make_bv_from_bytes(&bytes, width);
+                                    let val_ast = make_bv_from_bytes(&bytes, width);
                                     solver.assert(ast.eq(&val_ast).not());
                                     results.push(bytes);
                                 } else {
@@ -1594,59 +1547,6 @@ impl SymContext {
             solver.pop(1);
         });
         results
-    }
-
-    /// Create a Z3 BV constant from a u128 value.
-    #[cfg(feature = "vex-engine-z3")]
-    fn make_bv_const(value: u128, width: u32) -> z3::ast::BV {
-        if width <= 64 {
-            z3::ast::BV::from_u64(value as u64, width)
-        } else {
-            let lo = z3::ast::BV::from_u64(value as u64, 64);
-            let hi = z3::ast::BV::from_u64((value >> 64) as u64, width - 64);
-            hi.concat(&lo)
-        }
-    }
-
-    /// Create a Z3 BV constant from big-endian bytes.
-    /// Handles arbitrary widths by building 64-bit chunks and concatenating.
-    #[cfg(feature = "vex-engine-z3")]
-    fn make_bv_from_bytes(bytes: &[u8], width: u32) -> z3::ast::BV {
-        if width <= 64 {
-            let mut val: u64 = 0;
-            for &b in bytes {
-                val = (val << 8) | (b as u64);
-            }
-            return z3::ast::BV::from_u64(val, width);
-        }
-
-        // Build from 64-bit chunks (big-endian)
-        let byte_len = bytes.len();
-        let mut result: Option<z3::ast::BV> = None;
-        let mut bits_remaining = width;
-        let mut pos = 0;
-
-        while bits_remaining > 0 {
-            let chunk_bits = std::cmp::min(bits_remaining, 64);
-            let chunk_bytes = chunk_bits.div_ceil(8) as usize;
-            let mut val: u64 = 0;
-            for i in 0..chunk_bytes {
-                if pos + i < byte_len {
-                    val = (val << 8) | (bytes[pos + i] as u64);
-                } else {
-                    val <<= 8;
-                }
-            }
-            let chunk = z3::ast::BV::from_u64(val, chunk_bits);
-            result = Some(match result {
-                Some(prev) => prev.concat(&chunk),
-                None => chunk,
-            });
-            pos += chunk_bytes;
-            bits_remaining -= chunk_bits;
-        }
-
-        result.unwrap_or_else(|| z3::ast::BV::from_u64(0, width))
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
@@ -1720,7 +1620,7 @@ impl SymContext {
                     true
                 } else {
                     solver.push();
-                    let zero = Self::make_bv_const(0, width);
+                    let zero = make_bv_const(0, width);
                     solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
                     let r = matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
                     solver.pop(1);
@@ -1759,7 +1659,7 @@ impl SymContext {
                 let mid = lo + (hi - lo) / 2;
 
                 solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
+                let mid_ast = make_bv_const(mid, width);
                 if signed {
                     solver.assert(ast.bvsle(&mid_ast));
                 } else {
@@ -1847,7 +1747,7 @@ impl SymContext {
                     true
                 } else {
                     solver.push();
-                    let zero = Self::make_bv_const(0, width);
+                    let zero = make_bv_const(0, width);
                     solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
                     let r = matches!(timed_check(solver, CheckSite::MaxInit), z3::SatResult::Sat);
                     solver.pop(1);
@@ -1888,7 +1788,7 @@ impl SymContext {
                 let mid = lo + (hi - lo).div_ceil(2);
 
                 solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
+                let mid_ast = make_bv_const(mid, width);
                 if signed {
                     solver.assert(ast.bvsge(&mid_ast));
                 } else {
@@ -1973,7 +1873,7 @@ impl SymContext {
             while lo < hi {
                 let mid = lo + (hi - lo) / 2;
                 solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
+                let mid_ast = make_bv_const(mid, width);
                 solver.assert(ast.bvule(&mid_ast));
                 let can_be_le_mid = matches!(
                     timed_check(solver, CheckSite::MinSearch),
@@ -1994,7 +1894,7 @@ impl SymContext {
             while lo < hi {
                 let mid = lo + (hi - lo).div_ceil(2);
                 solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
+                let mid_ast = make_bv_const(mid, width);
                 solver.assert(ast.bvuge(&mid_ast));
                 let can_be_ge_mid = matches!(
                     timed_check(solver, CheckSite::MaxSearch),
