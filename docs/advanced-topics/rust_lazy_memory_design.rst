@@ -390,7 +390,7 @@ Phase 2 — Multi cell STORE path (angr-qh5u)
    ``memory_store_symbolic_full`` callback wiring in
    ``rust_manager.py`` — only the ``TooLarge`` / ``Failed`` cases
    need Python fallback now.
-4. Re-run all 22 angr-examples + 2 synthetic benches. Treat any
+4. Re-run the full ``baseline_timings.json`` bench corpus. Treat any
    regression >15 % on a non-bimodal benchmark as a blocker. Treat
    ``sym-write`` failing to improve by ≥ 2× as a soft blocker —
    keep the work behind a SimOption rather than enabling by default.

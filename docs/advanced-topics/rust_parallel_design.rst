@@ -18,8 +18,9 @@ the GO/NOGO decision for the parent bead.
 Why this work
 -------------
 
-The Rust engine outperforms Python on most of the 22 angr-examples
-benchmarks (see the table in ``CLAUDE.md``), but the single-threaded
+The Rust engine outperforms Python on most of the angr-examples
+benchmarks (``tests/benchmarks/baseline_timings.json`` is the
+authoritative list), but the single-threaded
 ceiling is real: the slowest benches today are dominated by Z3 wall
 time (``securityfest_fairlight``, ``ekopartyctf2016_sokohashv2``,
 ``hackcon2016_angry-reverser``), and the engine pins exactly one core.

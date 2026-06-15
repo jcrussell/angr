@@ -292,19 +292,19 @@ below "Supported" as experimental.
    * - AMD64
      - ~110+
      - ~268 (fauxware)
-     - 21/22
+     - 16
      - SystemV, MS x64
      - Supported (gs_const at archinfo offset 1032; sseround at 216)
    * - x86 (32-bit)
      - 4
      - 2 (Cdecl ret reg, LE blob)
-     - 8 (3 FAST + 5 MEDIUM)
+     - 9 (8 rust + CADET_00001 python-only)
      - Cdecl
      - Supported (selectors: CS/DS/ES/FS/GS/SS; bases: LDT/GDT + FS_CONST/GS_CONST placeholders)
    * - ARM (32-bit)
      - 2
      - 3 (LE validate, LE native-proc, BE blob)
-     - 1 (arm_le_branch synthetic)
+     - 2 (arm_le_branch synthetic + android_arm_license_validation real ELF)
      - ARMEABI
      - Supported
    * - ARM64
@@ -325,6 +325,14 @@ below "Supported" as experimental.
      - 2 (mips64_le_branch + mips64_be_branch synthetics)
      - MipsN64
      - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
+
+The per-arch *Benchmarks* counts above are a snapshot of
+``tests/benchmarks/baseline_timings.json`` at the time of writing (31
+entries total: 16 AMD64, 9 x86, 2 ARM, 1 ARM64, 1 MIPS32, 2 MIPS64).
+That corpus grows over time (see the ``angr-vx8p`` bench-expansion epic),
+so treat these as indicative — run
+``jq 'keys | length' tests/benchmarks/baseline_timings.json`` for the
+live total.
 
 Status meanings:
 
