@@ -34,8 +34,12 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21.3
         env:
-          # Linux x86_64 only for the prototype. CPython 3.10–3.13.
-          CIBW_BUILD: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          # Linux x86_64 only for the prototype. abi3-py310 (pinned in
+          # native/angr/Cargo.toml) collapses the matrix to ONE wheel covering
+          # CPython 3.10+ — build on 3.10, the limited-ABI tag (cp310-abi3) is
+          # forward-compatible. Compile-verified clean against the full pyo3
+          # surface (py-clone + all #[pymethods]); see angr-6f0i.
+          CIBW_BUILD: "cp310-manylinux_x86_64"
           # build.rs needs the Rust toolchain + z3 headers + z3-solver's libz3.so.
           # Headers are BUILD-TIME ONLY; they never enter the wheel.
           CIBW_BEFORE_ALL_LINUX: >

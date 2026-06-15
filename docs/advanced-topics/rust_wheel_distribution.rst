@@ -53,8 +53,11 @@ Observed facts (this checkout)
   ``native/angr/build.rs::find_z3_lib_dir`` (prefers the active venv's ``z3``
   package). That absolute RUNPATH is correct for an editable dev install but
   **non-portable** in a distributed wheel.
-* ``pyo3 = "0.27.2"`` is configured **without** the ``abi3`` feature, so today's
-  build is CPython-version-specific (``cpython-312``).
+* ``pyo3 = "0.27.2"`` carries the ``abi3-py310`` feature (added 2026-06-15,
+  angr-6f0i), so the distributed wheel is a single limited-ABI artifact covering
+  CPython 3.10+ rather than one per minor version. The editable dev ``.so`` is
+  still copied to a versioned name by ``tools/rebuild-rust.sh``, so local
+  development is unaffected.
 
 Decision: link, do not bundle
 -----------------------------
@@ -91,15 +94,17 @@ abi3 vs per-CPython matrix
 
 Two ways to cover supported interpreters (CPython 3.10+):
 
-* **abi3 (preferred if it compiles):** add the ``abi3-py310`` feature to the
+* **abi3 (CHOSEN, 2026-06-15, angr-6f0i):** the ``abi3-py310`` feature on the
   ``pyo3`` dependency. One ``rustylib.abi3.so`` then covers 3.10–3.13+, cutting
-  the build matrix to a single wheel per platform. Risk: the engine uses
-  ``features = ["py-clone"]`` and a broad PyO3 surface; some APIs are
-  unavailable under the limited ABI. This must be **compile-verified** before
-  committing to abi3.
-* **Per-version matrix (fallback):** ``cibuildwheel`` builds one wheel per
-  CPython tag. More artifacts, no PyO3-surface risk. Use this if abi3 fails to
-  build.
+  the build matrix to a single wheel per platform. The risk — that the engine's
+  ``features = ["py-clone"]`` plus its broad ``#[pymethods]`` surface might touch
+  an API unavailable under the limited ABI — was **compile-verified clean**:
+  ``cargo clippy --all-targets`` and a full ``--cargo-only`` rebuild both
+  succeed, the limited-ABI ``.so`` imports, and ``tests/engines/rust`` passes.
+  ``wheels.yml`` builds a single ``cp310-manylinux_x86_64`` (abi3) wheel.
+* **Per-version matrix (fallback, NOT used):** ``cibuildwheel`` builds one wheel
+  per CPython tag. More artifacts, no PyO3-surface risk. Kept documented in case
+  a future PyO3-surface addition breaks the limited ABI.
 
 Prototype CI job
 ----------------
@@ -134,9 +139,11 @@ Open blockers (filed as beads)
    libz3.so`` + ``$ORIGIN/../z3/lib`` runpath), and that the installed wheel
    passes ``make test-quick`` in a clean venv **in CI** (cannot run locally —
    no Docker/network).
-#. Decide abi3 vs per-version: add ``abi3-py310`` to ``pyo3`` and confirm the
-   crate still compiles with the current PyO3 surface (``py-clone`` + all
-   ``#[pymethods]``). If it fails, keep the per-version matrix.
+#. **RESOLVED (2026-06-15, angr-6f0i):** abi3 vs per-version decided in favour
+   of abi3 — ``abi3-py310`` added to ``pyo3``, crate compiles clean against the
+   full PyO3 surface (``py-clone`` + all ``#[pymethods]``), limited-ABI ``.so``
+   imports and passes ``tests/engines/rust``. ``wheels.yml`` collapsed to a
+   single abi3 wheel.
 #. Confirm AST passthrough actually works through a repaired wheel (the whole
    point): a clean-venv smoke test that mints a Z3 AST in ``claripy`` and reads
    it back through the Rust engine, proving both resolved the **same**
