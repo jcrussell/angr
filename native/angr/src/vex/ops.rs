@@ -4867,6 +4867,123 @@ pub enum OpError {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // SIMD lane-test helpers (angr-ec82).
+    //
+    // The ~57 packed-SIMD tests below all share the same plumbing: pack lane
+    // values little-endian into a u128, call VEXOps::binop/unop, then unpack
+    // and assert per lane. These helpers move ONLY that mechanical pack/unpack/
+    // assert skeleton out of the individual tests. Expected-value arrays stay
+    // inline at each call site — they are independent reference constants, never
+    // derived from the code under test (vacuous-test audit, 2026-06-12), and the
+    // helpers must preserve that property (they never compute an expected value).
+    // =========================================================================
+
+    /// Pack f32 lanes little-endian into a u128 (lane `i` occupies bits
+    /// `i*32 .. i*32+32`).
+    fn pack_lanes_f32(lanes: &[f32]) -> u128 {
+        let mut v: u128 = 0;
+        for (i, &x) in lanes.iter().enumerate() {
+            v |= (x.to_bits() as u128) << (i as u32 * 32);
+        }
+        v
+    }
+
+    /// Pack f64 lanes little-endian into a u128 (lane `i` occupies bits
+    /// `i*64 .. i*64+64`).
+    fn pack_lanes_f64(lanes: &[f64]) -> u128 {
+        let mut v: u128 = 0;
+        for (i, &x) in lanes.iter().enumerate() {
+            v |= (x.to_bits() as u128) << (i as u32 * 64);
+        }
+        v
+    }
+
+    /// Pack integer lanes of `lane_bits` width little-endian into a u128. Each
+    /// value is masked to `lane_bits` before being shifted in, so callers may
+    /// pass sign-extended values (e.g. `i16 as u16 as u128`) directly.
+    fn pack_lanes_uint(lanes: &[u128], lane_bits: u32) -> u128 {
+        let mask = lane_mask(lane_bits);
+        let mut v: u128 = 0;
+        for (i, &x) in lanes.iter().enumerate() {
+            v |= (x & mask) << (i as u32 * lane_bits);
+        }
+        v
+    }
+
+    /// Low `lane_bits`-bit mask (`u128::MAX` when `lane_bits >= 128`).
+    fn lane_mask(lane_bits: u32) -> u128 {
+        if lane_bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << lane_bits) - 1
+        }
+    }
+
+    /// Extract the raw bits of lane `i` (`lane_bits` wide) from a packed u128.
+    fn unpack_lane(got: u128, i: usize, lane_bits: u32) -> u128 {
+        (got >> (i as u32 * lane_bits)) & lane_mask(lane_bits)
+    }
+
+    /// Extract lane `i` as an f32 from a packed u128.
+    fn unpack_lane_f32(got: u128, i: usize) -> f32 {
+        f32::from_bits(unpack_lane(got, i, 32) as u32)
+    }
+
+    /// Extract lane `i` as an f64 from a packed u128.
+    fn unpack_lane_f64(got: u128, i: usize) -> f64 {
+        f64::from_bits(unpack_lane(got, i, 64) as u64)
+    }
+
+    /// Assert each f32 lane of `got` is within `tol` of the matching `exp`.
+    fn assert_f32_lanes_approx(got: u128, exp: &[f32], tol: f32) {
+        for (i, &expected) in exp.iter().enumerate() {
+            let lane = unpack_lane_f32(got, i);
+            assert!(
+                (lane - expected).abs() < tol,
+                "lane {i} expected {expected}, got {lane}"
+            );
+        }
+    }
+
+    /// Assert each f64 lane of `got` is within `tol` of the matching `exp`.
+    fn assert_f64_lanes_approx(got: u128, exp: &[f64], tol: f64) {
+        for (i, &expected) in exp.iter().enumerate() {
+            let lane = unpack_lane_f64(got, i);
+            assert!(
+                (lane - expected).abs() < tol,
+                "lane {i} expected {expected}, got {lane}"
+            );
+        }
+    }
+
+    /// Assert each f32 lane of `got` is bit-identical to the matching `exp`
+    /// (use for sign/NaN-sensitive ops like VFAbs where `==` is too lax).
+    fn assert_f32_lanes_bits(got: u128, exp: &[f32]) {
+        for (i, &expected) in exp.iter().enumerate() {
+            let lane = unpack_lane_f32(got, i);
+            assert_eq!(
+                lane.to_bits(),
+                expected.to_bits(),
+                "lane {i} expected {expected}, got {lane}"
+            );
+        }
+    }
+
+    /// Assert each integer lane (`lane_bits` wide) of `got` equals the matching
+    /// `exp` entry. Callers pass masked/sign-extended expected values as u128.
+    fn assert_int_lanes_eq(got: u128, exp: &[u128], lane_bits: u32) {
+        let mask = lane_mask(lane_bits);
+        for (i, &expected) in exp.iter().enumerate() {
+            let lane = unpack_lane(got, i, lane_bits);
+            let expected = expected & mask;
+            assert_eq!(
+                lane, expected,
+                "lane {i} expected {expected:#x}, got {lane:#x}"
+            );
+        }
+    }
+
     #[test]
     fn test_add_op() {
         let ctx = SymContext::new_mock();
@@ -5992,12 +6109,8 @@ mod tests {
         let r: [i16; 8] = [-3, 200, -100, -32767, -1, 0, 32766, 3];
         let exp: [i16; 8] = [-5, 100, -100, -32768, -1, -1, 32766, -2];
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..8 {
-            lv |= ((l[i] as u16) as u128) << (i as u32 * 16);
-            rv |= ((r[i] as u16) as u128) << (i as u32 * 16);
-        }
+        let lv = pack_lanes_uint(&l.map(|x| x as u16 as u128), 16);
+        let rv = pack_lanes_uint(&r.map(|x| x as u16 as u128), 16);
         let result = VEXOps::binop(
             IROp::VMin {
                 elem: IRType::I16,
@@ -6009,15 +6122,11 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16 as i16;
-            assert_eq!(
-                lane, expected,
-                "lane {} expected {}, got {}",
-                i, expected, lane
-            );
-        }
+        assert_int_lanes_eq(
+            result.as_u128().unwrap(),
+            &exp.map(|x| x as u16 as u128),
+            16,
+        );
     }
 
     /// PMAXUB-style: unsigned max over 16x u8 lanes.
@@ -6034,12 +6143,8 @@ mod tests {
             exp[i] = if l[i] > r[i] { l[i] } else { r[i] };
         }
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..16 {
-            lv |= (l[i] as u128) << (i as u32 * 8);
-            rv |= (r[i] as u128) << (i as u32 * 8);
-        }
+        let lv = pack_lanes_uint(&l.map(|x| x as u128), 8);
+        let rv = pack_lanes_uint(&r.map(|x| x as u128), 8);
         let result = VEXOps::binop(
             IROp::VMax {
                 elem: IRType::I8,
@@ -6051,15 +6156,7 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = ((got >> (i as u32 * 8)) & 0xFF) as u8;
-            assert_eq!(
-                lane, expected,
-                "lane {} expected {:#x}, got {:#x}",
-                i, expected, lane
-            );
-        }
+        assert_int_lanes_eq(result.as_u128().unwrap(), &exp.map(|x| x as u128), 8);
     }
 
     /// PABSW-style: per-lane absolute value over 8x i16 lanes (incl. INT_MIN
@@ -6071,28 +6168,16 @@ mod tests {
         let v: [i16; 8] = [-5, 100, 0, -32768, 1, -1, 32767, -200];
         let exp: [u16; 8] = [5, 100, 0, 0x8000 /* INT_MIN stays */, 1, 1, 32767, 200];
 
-        let mut bits: u128 = 0;
-        for (i, &lane) in v.iter().enumerate() {
-            bits |= ((lane as u16) as u128) << (i as u32 * 16);
-        }
         let result = VEXOps::unop(
             IROp::VAbs {
                 elem: IRType::I16,
                 count: 8,
             },
-            RustBV::concrete(bits, 128),
+            RustBV::concrete(pack_lanes_uint(&v.map(|x| x as u16 as u128), 16), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16;
-            assert_eq!(
-                lane, expected,
-                "lane {} expected {:#x}, got {:#x}",
-                i, expected, lane
-            );
-        }
+        assert_int_lanes_eq(result.as_u128().unwrap(), &exp.map(|x| x as u128), 16);
     }
 
     // =========================================================================
@@ -6342,33 +6427,17 @@ mod tests {
         let r = [10.0f32, -2.5, 3.0, 8.0];
         let exp: [f32; 4] = [11.0, 0.0, 0.0, 8.5];
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..4u32 {
-            lv |= (l[i as usize].to_bits() as u128) << (i * 32);
-            rv |= (r[i as usize].to_bits() as u128) << (i * 32);
-        }
         let result = VEXOps::binop(
             IROp::VFAdd {
                 elem: IRType::F32,
                 count: 4,
             },
-            RustBV::concrete(lv, 128),
-            RustBV::concrete(rv, 128),
+            RustBV::concrete(pack_lanes_f32(&l), 128),
+            RustBV::concrete(pack_lanes_f32(&r), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
-            assert!(
-                (lane - expected).abs() < 1e-6,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
     }
 
     /// DIVPD-style: 2x f64 div, concrete.
@@ -6380,33 +6449,17 @@ mod tests {
         let r = [4.0f64, 2.0];
         let exp = [2.5f64, -4.0];
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..2u32 {
-            lv |= (l[i as usize].to_bits() as u128) << (i * 64);
-            rv |= (r[i as usize].to_bits() as u128) << (i * 64);
-        }
         let result = VEXOps::binop(
             IROp::VFDiv {
                 elem: IRType::F64,
                 count: 2,
             },
-            RustBV::concrete(lv, 128),
-            RustBV::concrete(rv, 128),
+            RustBV::concrete(pack_lanes_f64(&l), 128),
+            RustBV::concrete(pack_lanes_f64(&r), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
-            assert!(
-                (lane - expected).abs() < 1e-12,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f64_lanes_approx(result.as_u128().unwrap(), &exp, 1e-12);
     }
 
     /// SQRTPS-style: 4x f32 sqrt, concrete.
@@ -6417,30 +6470,16 @@ mod tests {
         let v = [4.0f32, 9.0, 16.0, 25.0];
         let exp = [2.0f32, 3.0, 4.0, 5.0];
 
-        let mut bits: u128 = 0;
-        for i in 0..4u32 {
-            bits |= (v[i as usize].to_bits() as u128) << (i * 32);
-        }
         let result = VEXOps::unop(
             IROp::VFSqrt {
                 elem: IRType::F32,
                 count: 4,
             },
-            RustBV::concrete(bits, 128),
+            RustBV::concrete(pack_lanes_f32(&v), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
-            assert!(
-                (lane - expected).abs() < 1e-6,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
     }
 
     /// Iop_Abs32Fx4-style: per-lane fabs (clears sign bit).
@@ -6451,31 +6490,16 @@ mod tests {
         let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
         let exp = [1.5f32, 2.5, 0.0, f32::INFINITY];
 
-        let mut bits: u128 = 0;
-        for i in 0..4u32 {
-            bits |= (v[i as usize].to_bits() as u128) << (i * 32);
-        }
         let result = VEXOps::unop(
             IROp::VFAbs {
                 elem: IRType::F32,
                 count: 4,
             },
-            RustBV::concrete(bits, 128),
+            RustBV::concrete(pack_lanes_f32(&v), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
-            assert_eq!(
-                lane.to_bits(),
-                expected.to_bits(),
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
     }
 
     /// MAXPS-style: per-lane max of two f32x4 vectors.
@@ -6487,33 +6511,17 @@ mod tests {
         let r = [4.0f32, -3.0, 2.0, 0.6];
         let exp = [4.0f32, -2.0, 3.0, 0.6];
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..4u32 {
-            lv |= (l[i as usize].to_bits() as u128) << (i * 32);
-            rv |= (r[i as usize].to_bits() as u128) << (i * 32);
-        }
         let result = VEXOps::binop(
             IROp::VFMax {
                 elem: IRType::F32,
                 count: 4,
             },
-            RustBV::concrete(lv, 128),
-            RustBV::concrete(rv, 128),
+            RustBV::concrete(pack_lanes_f32(&l), 128),
+            RustBV::concrete(pack_lanes_f32(&r), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
-            assert!(
-                (lane - expected).abs() < 1e-6,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
     }
 
     /// MINPD-style: per-lane min of two f64x2 vectors.
@@ -6525,33 +6533,17 @@ mod tests {
         let r = [-1.5f64, 0.5];
         let exp = [-1.5f64, -2.5];
 
-        let mut lv: u128 = 0;
-        let mut rv: u128 = 0;
-        for i in 0..2u32 {
-            lv |= (l[i as usize].to_bits() as u128) << (i * 64);
-            rv |= (r[i as usize].to_bits() as u128) << (i * 64);
-        }
         let result = VEXOps::binop(
             IROp::VFMin {
                 elem: IRType::F64,
                 count: 2,
             },
-            RustBV::concrete(lv, 128),
-            RustBV::concrete(rv, 128),
+            RustBV::concrete(pack_lanes_f64(&l), 128),
+            RustBV::concrete(pack_lanes_f64(&r), 128),
             &ctx,
         )
         .unwrap();
-        let got = result.as_u128().unwrap();
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
-            assert!(
-                (lane - expected).abs() < 1e-12,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f64_lanes_approx(result.as_u128().unwrap(), &exp, 1e-12);
     }
 
     /// Symbolic VFAdd: build a free f32x4 left vector, constrain it so each
@@ -6562,17 +6554,10 @@ mod tests {
     fn test_vec_float_add_symbolic_f32x4() {
         let ctx = SymContext::new_mock();
 
-        let mut rv: u128 = 0;
         let consts = [2.0f32, 3.0, 4.0, 5.0];
-        for i in 0..4u32 {
-            rv |= (consts[i as usize].to_bits() as u128) << (i * 32);
-        }
-        let r = RustBV::concrete(rv, 128);
+        let r = RustBV::concrete(pack_lanes_f32(&consts), 128);
 
-        let mut lv_target: u128 = 0;
-        for i in 0..4u32 {
-            lv_target |= (1.0f32.to_bits() as u128) << (i * 32);
-        }
+        let lv_target = pack_lanes_f32(&[1.0f32; 4]);
         let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
         ctx.add_constraint(
             l.to_z3_ast()
@@ -6594,16 +6579,7 @@ mod tests {
 
         let model = ctx.eval(&result).expect("eval(result) returned None");
         let exp = [3.0f32, 4.0, 5.0, 6.0];
-        for (i, &expected) in exp.iter().enumerate() {
-            let lane = f32::from_bits(((model >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
-            assert!(
-                (lane - expected).abs() < 1e-6,
-                "lane {} expected {}, got {}",
-                i,
-                expected,
-                lane
-            );
-        }
+        assert_f32_lanes_approx(model, &exp, 1e-6);
     }
 
     // ---- Newton-Raphson FP estimate / step (angr-iyon) ----
@@ -7168,20 +7144,15 @@ mod tests {
     // ---- FCmpVecPacked (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}) ----
 
     /// Pack four f32 values into a single 128-bit vector (lane 0 first).
-    #[allow(clippy::identity_op)] // explicit lane shifts (incl. `<< 0`) keep the helper symmetric
     fn pack_4xf32(a: f32, b: f32, c: f32, d: f32) -> u128 {
-        let mut r: u128 = 0;
-        r |= (a.to_bits() as u128) << 0;
-        r |= (b.to_bits() as u128) << 32;
-        r |= (c.to_bits() as u128) << 64;
-        r |= (d.to_bits() as u128) << 96;
-        r
+        pack_lanes_f32(&[a, b, c, d])
     }
     fn pack_2xf64(a: f64, b: f64) -> u128 {
-        ((b.to_bits() as u128) << 64) | (a.to_bits() as u128)
+        pack_lanes_f64(&[a, b])
     }
+    /// Pack two f32 lanes into the low 64 bits (lane 0 first).
     fn pack_2xf32_64(a: f32, b: f32) -> u128 {
-        ((b.to_bits() as u128) << 32) | (a.to_bits() as u128)
+        pack_lanes_f32(&[a, b])
     }
 
     #[test]
