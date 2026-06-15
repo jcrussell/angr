@@ -171,7 +171,13 @@ jobs:
         #   initial soak so allocator/page-cache RSS variance can't redden a PR.
         #   The nightly gate runs it as a hard fail. Promote to a hard PR gate
         #   after a clean soak (see bd angr-wcxi follow-up).
-        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --memory-warn-only
+        # --check-counts: enforce the TRACKED_METRICS algorithmic-count gate
+        #   (callback_count/state_creations/steps). --skip-bimodal scopes this
+        #   to the fast tier, whose count baselines were soak-validated as
+        #   deterministic (0% variance / 5 runs, angr-bq9v). Hard fail — there
+        #   is no warn-only mode, but the counts are deterministic so warmup
+        #   variance can't false-positive the way RSS can.
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --memory-warn-only --check-counts
         timeout-minutes: 5
 
   property_fuzzer_quick:

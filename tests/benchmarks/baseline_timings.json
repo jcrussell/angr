@@ -8,12 +8,12 @@
     "steps": 0
   },
   "ais3_crackme": {
-    "callback_count": 47,
+    "callback_count": 0,
     "peak_memory_mb": 366.8,
     "python_time": 2.476,
     "rust_time": 1.11,
     "state_creations": 0,
-    "steps": 47
+    "steps": 94
   },
   "android_arm_license_validation": {
     "callback_count": 0,
@@ -72,12 +72,12 @@
     "steps": 3
   },
   "csgames2018": {
-    "callback_count": 208,
+    "callback_count": 185,
     "peak_memory_mb": 292.3,
     "python_time": 1.567,
     "rust_time": 0.958,
-    "state_creations": 23,
-    "steps": 162
+    "state_creations": 0,
+    "steps": 185
   },
   "defcamp_r100": {
     "callback_count": 0,
@@ -96,12 +96,12 @@
     "steps": 2
   },
   "defcon2016quals_baby-re": {
-    "callback_count": 26,
+    "callback_count": 13,
     "peak_memory_mb": 282.8,
     "python_time": 1.455,
     "rust_time": 0.722,
     "state_creations": 0,
-    "steps": 27
+    "steps": 40
   },
   "ekopartyctf2016_rev250": {
     "callback_count": 5,
@@ -125,7 +125,7 @@
     "python_time": 0.379,
     "rust_time": 0.28,
     "state_creations": 0,
-    "steps": 3
+    "steps": 7
   },
   "flareon2015_10": {
     "callback_count": 2,
@@ -232,12 +232,12 @@
     "steps": 18
   },
   "unmapped_analysis": {
-    "callback_count": 3,
+    "callback_count": 2,
     "peak_memory_mb": 269.8,
     "python_time": 0.958,
     "rust_time": 1.07,
     "state_creations": 0,
-    "steps": 19
+    "steps": 20
   },
   "whitehatvn2015_re400": {
     "callback_count": 2,

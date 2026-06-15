@@ -135,11 +135,16 @@ jobs:
         # signal still reflects the first measurement of each bench.
         # timeout-minutes bumped 8 → 12 to absorb worst-case MEDIUM tier
         # runtime (~96s baseline + 219s worst-case bimodal retries).
+        # --check-counts: hard-enforce the TRACKED_METRICS algorithmic-count
+        # gate. The bimodal + MEDIUM-tier benches are exempted in-script
+        # (COUNT_EXEMPT in run_regression.py) until they get their own
+        # counter-stability soak; the fast tier is soak-validated (angr-bq9v).
         run: |
           uv run python tests/benchmarks/run_regression.py \
             --full \
             --rust-only \
             --retry-failures 2 \
+            --check-counts \
             --history-record bench_history_record.json
         timeout-minutes: 12
       - name: Upload benchmark history record

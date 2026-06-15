@@ -53,11 +53,46 @@ BASELINE_COUNTERS_FILE = os.path.join(os.path.dirname(__file__), "baseline_count
 
 # Tracked metrics beyond timing. Each entry: (key_in_stats, key_in_baseline, regression_threshold_pct)
 # A regression is flagged when the metric INCREASES by more than threshold_pct.
+# Only fires under --check-counts (off by default historically; nightly + PR
+# gate now pass it — see ci.yml / nightly-ci.yml). The baseline_val > 0 guard
+# in the gate body skips any metric whose baseline is 0, so the many corpus
+# entries that legitimately record 0 (the *_branch synthetic arches,
+# flareon2015_2, etc.) are no-ops rather than false alarms. ``state_creations``
+# in particular is 0 for essentially every fast-tier bench (only sym-write/
+# csgames2018 ever recorded a nonzero value historically, and csgames2018 has
+# since dropped to 0), so it almost never gates — it is kept tracked for the
+# rare bench that does fork during exploration.
 TRACKED_METRICS = [
     ("callback_count", "callback_count", 0.10),  # 10% more callbacks = algorithmic regression
     ("state_creations", "state_creations", 0.10),
     ("steps", "steps", 0.15),  # 15% more steps
 ]
+
+# Benches exempt from the --check-counts gate. The fast-tier baselines were
+# soak-validated as deterministic (0% variance across 5 runs/bench, angr-bq9v
+# 2026-06-15), but these entries were NOT: the four BIMODAL_BENCHMARKS exercise
+# multi-solution constraints where Z3 model nondeterminism can shift the
+# explored path (and therefore step/callback counts), and the MEDIUM-tier
+# benches have not yet had a counter-stability soak. They still gate on timing
+# and peak memory; only the algorithmic-count check is skipped. Re-measure and
+# remove from this set before relying on their count baselines.
+COUNT_EXEMPT = frozenset(
+    {
+        # bimodal (Z3 multi-solution → potential count nondeterminism)
+        "google2016_unbreakable_1",
+        "securityfest_fairlight",
+        "ekopartyctf2016_sokohashv2",
+        "hackcon2016_angry-reverser",
+        # medium tier — not yet soak-validated for counter stability
+        "sym-write",
+        "flareon2015_5",
+        "flareon2015_10",
+        "ekopartyctf2016_rev250",
+        "csaw_wyvern",
+        "codegate_2017-angrybird",
+        "mma_howtouse",
+    }
+)
 
 # Tiered benchmark suites. Each entry: (name, timeout_seconds, [strategy, [rust_only]])
 # strategy: "bfs" (default) or "dfs"
@@ -521,7 +556,7 @@ def main():
                     retry_candidates.append((failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key))
 
             # Check algorithmic metric regressions
-            if args.check_counts:
+            if args.check_counts and baseline_key not in COUNT_EXEMPT:
                 for stat_key, bl_key, threshold_pct in TRACKED_METRICS:
                     current_val = rust_stats.get(stat_key)
                     baseline_val = baseline[baseline_key].get(bl_key)
