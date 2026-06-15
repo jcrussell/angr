@@ -17794,5 +17794,101 @@ class TestDirectCallEntryMainResolution:
         )
 
 
+class TestRustSimOptionMatrixConsistency:
+    """Cross-check the SimOption coverage matrix in
+    ``docs/advanced-topics/rust_engine.rst`` against the live
+    ``_RAISE_OPTION_NAMES`` / ``_REJECTED_OPTION_NAMES`` frozensets.
+
+    rust_engine.rst is the declared single source of truth for SimOption
+    compatibility, but the doc table and the Python sets drift independently
+    (angr-tfic implemented AVOID_MULTIVALUED but the row still said
+    "implement"; angr-fkvt demoted TRACK_ACTION_HISTORY but the row still
+    said "raise"). This mirrors ``TestRustInspectAllowlistConsistency``:
+    parse the doc, classify every row, and assert the classifications match
+    the code. angr-fgs3.
+    """
+
+    @staticmethod
+    def _parse_matrix():
+        """Return (raise_opts, reject_opts) parsed from the rst matrix.
+
+        Each is a set of option names whose status cell is classified
+        "(c) raise NotImplementedError" or "(b) explicitly reject".
+        """
+        import pathlib
+        import re
+
+        rst = pathlib.Path(__file__).resolve().parents[2] / "docs" / "advanced-topics" / "rust_engine.rst"
+        lines = rst.read_text().splitlines()
+
+        raise_opts: set[str] = set()
+        reject_opts: set[str] = set()
+        # Walk list-table rows: a row begins with '* - ' (option cell);
+        # subsequent '- ' lines are the description / status cells.
+        cur: list[str] | None = None
+
+        def flush(row):
+            if not row:
+                return
+            opts = re.findall(r"``([A-Z_]+)``", row[0])
+            if not opts:
+                return
+            status = " ".join(row[2:]) if len(row) >= 3 else ""
+            if "raise NotImplementedError" in status:
+                raise_opts.update(opts)
+            elif "explicitly reject" in status:
+                reject_opts.update(opts)
+
+        for ln in lines:
+            if re.match(r"\s*\* - ", ln):
+                flush(cur)
+                cur = [ln.strip()[4:].strip()]
+            elif re.match(r"\s+- ", ln) and cur is not None:
+                cur.append(ln.strip()[2:].strip())
+            elif cur is not None and cur:
+                cur[-1] += " " + ln.strip()
+        flush(cur)
+        return raise_opts, reject_opts
+
+    def test_doc_raise_rows_match_raise_set(self):
+        """Every option the matrix classifies "(c) raise" must be in
+        ``_RAISE_OPTION_NAMES`` and vice-versa — an exact match. A drift in
+        either direction means a user reading the doc would predict the
+        wrong behavior."""
+        from angr.exploration.rust_manager import _RAISE_OPTION_NAMES
+
+        doc_raise, _ = self._parse_matrix()
+        assert doc_raise == set(_RAISE_OPTION_NAMES), (
+            "SimOption matrix 'raise' rows disagree with _RAISE_OPTION_NAMES.\n"
+            f"  doc-only:  {sorted(doc_raise - set(_RAISE_OPTION_NAMES))}\n"
+            f"  code-only: {sorted(set(_RAISE_OPTION_NAMES) - doc_raise)}"
+        )
+
+    def test_doc_reject_rows_cover_reject_set(self):
+        """Every member of ``_REJECTED_OPTION_NAMES`` must appear as a
+        "(b) explicitly reject" row. The doc may legitimately mark a few
+        extra options reject — those handled via warn-on-read rather than
+        an add()-time reject because they ship in the default ``symbolic``
+        bundle — but never the reverse."""
+        from angr import sim_options as o
+        from angr.exploration.rust_manager import _REJECTED_OPTION_NAMES
+
+        _, doc_reject = self._parse_matrix()
+
+        missing = set(_REJECTED_OPTION_NAMES) - doc_reject
+        assert not missing, f"_REJECTED_OPTION_NAMES not documented as reject: {sorted(missing)}"
+
+        # Extra doc-reject rows must be justified: they ship in the default
+        # `symbolic` mode bundle, so they cannot be add()-time rejected
+        # without warning every entry_state() — they warn on read instead.
+        symbolic_bundle = o.modes["symbolic"]
+        for name in doc_reject - set(_REJECTED_OPTION_NAMES):
+            assert getattr(o, name, object()) in symbolic_bundle, (
+                f"matrix marks {name!r} reject but it is neither in "
+                f"_REJECTED_OPTION_NAMES nor in the default symbolic bundle — "
+                f"the matrix has drifted from the code"
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

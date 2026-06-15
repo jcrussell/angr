@@ -1686,7 +1686,11 @@ vs. Python.
        because ``get_syscall_num`` was ``unwrap_or(0)``.
    * - ``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES``
      - Returns unconstrained instead of enumerating addresses.
-     - (a) implement — Rust always enumerates within strategy limits.
+     - **Honored** as of ``angr-tfic``. Read from ``state.options`` and
+       forwarded to ``configure_concretization_strategies``
+       (``rust_manager.py``, ``_init_states`` ~:1362-1386), which
+       switches the Rust memory plugin to return an unconstrained value
+       rather than enumerate when the option is set.
    * - ``CONCRETIZE_SYMBOLIC_WRITE_SIZES``
      - Concretizes the *size* of a symbolic-sized write.
      - (a) implement — Rust concretizes addresses but not sizes the same
@@ -1748,8 +1752,14 @@ vs. Python.
        ``entry_state()``; warn-on-read via
        ``_RustOwnedSimStateHistory`` instead.
    * - ``TRACK_ACTION_HISTORY``
-     - Same, across path.
-     - **(c) raise NotImplementedError**.
+     - Metadata flag toggled around preconstraint; not a
+       ``TRACK_*_ACTIONS`` recording gate.
+     - **Honored silently** (demoted from raise in ``angr-fkvt``). Unlike
+       its ``TRACK_*_ACTIONS`` siblings it does not gate action recording;
+       its only consumer is ``preconstrainer.py`` which clears/restores it
+       to suppress action recording during preconstraint — a vacuous
+       no-op under Rust, which never records actions. Removed from
+       ``_RAISE_OPTION_NAMES`` (unblocks AEG workloads, ``angr-86c4``).
    * - ``TRACK_MEMORY_MAPPING``
      - Logs map/unmap into ``state.history``.
      - (b) explicitly reject.
@@ -2247,8 +2257,10 @@ Caveats specific to ``step()`` dispatch:
   :class:`~angr.SimSuccessors`-level introspection (``state.history``
   is the limited :class:`RustHistoryProxy`).
 * Per-state mutations (``state.regs.X = ...``,
-  ``state.solver.add(...)``) still hit the read-only proxy until the
-  write-through epic (``angr-qj30`` / ``angr-8oiw``) lands.
+  ``state.solver.add(...)``) **write through** to the live Rust state as
+  of the write-through epic (``angr-j28e`` / ``angr-qj30`` /
+  ``angr-8oiw``) — see `RustStateProxy write-through contract`_ above.
+  Symbolic-address ``memory.store`` is the one refused write.
 
 .. list-table::
    :widths: 22 16 62
@@ -2347,12 +2359,15 @@ Caveats specific to ``step()`` dispatch:
        a rewrite. Drop to ``use_rust_engine=False`` if you need
        unicorn-fallback for unsupported VEX ops.
    * - ``Tracer``
-     - **Step hook dispatched, writes to read-only proxy**
-     - Trace-following hooks run (``angr-rqvq``), but ``step_state()``
-       is still not dispatched (raises ``NotImplementedError``) and
-       writes to ``state.regs`` hit the read-only proxy. Use
-       ``use_rust_engine=False`` until the write-through epic
-       (``angr-qj30``) lands.
+     - **Incompatible — overrides ``step_state()``**
+     - Trace-following hooks run (``angr-rqvq``) and proxy writes now
+       write through (the read-only-proxy blocker is gone, write-through
+       epic ``angr-j28e`` landed). The remaining blocker is dispatch:
+       ``Tracer`` overrides ``step_state()`` (``tracer.py:361``), and
+       ``RustSimulationManagerProxy.step_state`` raises
+       ``NotImplementedError`` (``rust_state_proxy.py`` ~:3051) — the
+       Rust manager never routes the step through the technique, so the
+       trace-replay logic never executes. Use ``use_rust_engine=False``.
    * - ``Director``
      - **Step hook dispatched, stash assignment honored**
      - Goal-prioritisation ``step()`` runs (``angr-rqvq``) and the
