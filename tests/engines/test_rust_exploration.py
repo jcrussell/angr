@@ -2312,9 +2312,56 @@ class TestRustInspectMarshalling:
     def test_rust_call_inspect_skips_when_callback_unset(self):
         """call_inspect_mem_* is a no-op when no callback is registered."""
         cbs = PythonCallbacks()
-        # No callback set — should not raise.
-        cbs.call_inspect_mem_read(-1, "before", 0x1000, 4, None, "Iend_LE")
-        cbs.call_inspect_mem_write(-1, "after", 0x1000, 4, None, "Iend_LE")
+        # No callback set — should not raise; returns None (no override).
+        assert cbs.call_inspect_mem_read(-1, "before", 0x1000, 4, None, "Iend_LE") is None
+        assert cbs.call_inspect_mem_write(-1, "after", 0x1000, 4, None, "Iend_LE") is None
+
+    def test_mem_read_expr_override_returned(self, fauxware_project):
+        """A BP that sets state.inspect.mem_read_expr surfaces the override
+        as the callback's return value (value injection — angr-uy32)."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+        injected = claripy.BVV(0xDEAD, 32)
+
+        def on_read(s):
+            s.inspect.mem_read_expr = injected
+
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
+        ret = mgr._cb_inspect_mem_read(sid, "after", 0x401234, 4, original, "Iend_LE")
+        assert ret is injected
+
+    def test_mem_read_expr_unchanged_returns_none(self, fauxware_project):
+        """A read BP that does not touch mem_read_expr leaves the value
+        unchanged — the callback returns None so the original load stands."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+
+        def on_read(s):
+            _ = s.inspect.mem_read_expr  # read only, no mutation
+
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
+        ret = mgr._cb_inspect_mem_read(sid, "after", 0x401234, 4, original, "Iend_LE")
+        assert ret is None
+
+    def test_mem_read_override_via_rust_callback(self, fauxware_project):
+        """The Rust-side call_inspect_mem_read returns the user's override
+        so the interpreter can substitute it for the loaded value."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+        injected = claripy.BVV(0xBEEF, 32)
+
+        def on_read(s):
+            s.inspect.mem_read_expr = injected
+
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
+        ret = mgr._callbacks.call_inspect_mem_read(sid, "after", 0xCAFE, 4, original, "Iend_LE")
+        assert ret is injected
 
     def test_state_proxy_inspect_routes_to_manager(self, fauxware_project):
         """RustStateProxy.inspect returns the manager-wide proxy when bound."""
@@ -2386,6 +2433,30 @@ class TestRustInspectMemReadDispatch:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
         mgr.run(max_steps=5)
+
+    def test_mem_read_expr_injection_during_exploration(self, fauxware_project):
+        """A mem_read BP_AFTER that overrides mem_read_expr drives the value
+        back through the Rust interpreter (claripy->RustBV round-trip) without
+        crashing, and exploration completes (angr-uy32 value injection)."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fired = [0]
+
+        def on_read(s):
+            fired[0] += 1
+            length = s.inspect.mem_read_length
+            # Override with a same-width concrete value so the width guard in
+            # dispatch_mem_read_inspect accepts it and substitutes it for the
+            # loaded value.
+            if isinstance(length, int) and length > 0:
+                s.inspect.mem_read_expr = claripy.BVV(0, length * 8)
+
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
+        mgr.run(max_steps=5)
+        assert fired[0] > 0, "override BP must fire at least once"
 
     def test_mem_read_reentrancy_with_proxy_access(self, fauxware_project):
         """BP action that touches the firing state via the proxy must
@@ -3301,6 +3372,40 @@ class TestRustInspectExtendedEvents:
         assert hand is handler
         assert ar == args
         assert res is result
+
+    def test_dirty_result_override_returned(self, fauxware_project):
+        """A BP that sets state.inspect.dirty_result surfaces the override
+        as _cb_inspect_dirty's return value (short-circuit — angr-uy32)."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0xDEADBEEF, 64)
+        injected = claripy.BVV(0xFEEDFACE, 64)
+
+        def on_dirty(s):
+            s.inspect.dirty_result = injected
+
+        mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
+        handler = lambda *a: None  # noqa: E731
+        args = [claripy.BVV(0x10, 64)]
+        ret = mgr._cb_inspect_dirty(sid, "after", "amd64g_dirtyhelper_RDTSC", handler, args, original)
+        assert ret is injected
+
+    def test_dirty_result_unchanged_returns_none(self, fauxware_project):
+        """A dirty BP that does not touch dirty_result returns None so the
+        handler's original return value stands."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0xDEADBEEF, 64)
+
+        def on_dirty(s):
+            _ = s.inspect.dirty_result  # read only
+
+        mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
+        handler = lambda *a: None  # noqa: E731
+        ret = mgr._cb_inspect_dirty(sid, "after", "rdtsc", handler, [], original)
+        assert ret is None
 
     def test_simprocedure_fires_during_exploration(self, fauxware_project):
         """simprocedure BP fires while running fauxware (libc procs hit)."""

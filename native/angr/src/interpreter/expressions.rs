@@ -149,7 +149,11 @@ impl<'a> VEXInterpreter<'a> {
             }
         };
 
-        self.dispatch_mem_read_inspect(py, callbacks, &addr_val, &value, size, endness);
+        if let Some(injected) =
+            self.dispatch_mem_read_inspect(py, callbacks, &addr_val, &value, size, endness)
+        {
+            return Ok(injected);
+        }
         Ok(value)
     }
 
@@ -954,6 +958,11 @@ impl<'a> VEXInterpreter<'a> {
     /// the loaded value AST as `mem_read_expr`. Errors from the Python
     /// callback are swallowed and logged on the Python side; a user BP
     /// error must not halt exploration.
+    ///
+    /// Returns `Some(bv)` when the user's BP action overrode
+    /// `state.inspect.mem_read_expr` (value injection — angr-uy32); the
+    /// caller substitutes it for the loaded value. Returns `None` when the
+    /// value is unchanged, so the original load result stands.
     fn dispatch_mem_read_inspect(
         &self,
         py: Python<'_>,
@@ -962,35 +971,39 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
         size: usize,
         endness: Endness,
-    ) {
+    ) -> Option<RustBV> {
         // MemRead = InspectEvent variant 0 — see crate::state::InspectEvent.
         if !callbacks.inspect_event_enabled(0) {
-            return;
+            return None;
         }
-        let Some(addr_u64) = addr_val.as_u64() else {
-            return;
-        };
+        let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
         };
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let _ = callbacks.call_inspect_mem_read(
-            py,
-            self.current_state_id,
-            "after",
-            addr_u64,
-            size as u32,
-            Some(&value_ast),
-            endness_str,
-        );
+        let claripy_mod = py.import("claripy").ok()?;
+        let value_ast = crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()?;
+        let mutated = callbacks
+            .call_inspect_mem_read(
+                py,
+                self.current_state_id,
+                "after",
+                addr_u64,
+                size as u32,
+                Some(&value_ast),
+                endness_str,
+            )
+            .ok()??;
+        // The user injected a new value via state.inspect.mem_read_expr.
+        // Convert it back to a RustBV; reject a width mismatch defensively
+        // so a bad override can't silently corrupt downstream ops.
+        let bound = mutated.bind(py);
+        let bv = crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()?;
+        if bv.width() == (size * 8) as u32 {
+            Some(bv)
+        } else {
+            None
+        }
     }
 
     /// Fire a `reg_read` inspect callback into Python for a VEX `Get`.

@@ -964,7 +964,7 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<Py<PyAny>>,
         endness: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<Py<PyAny>>> {
         self.call_inspect_mem_read(py, state_id, when, addr, size, value_ast.as_ref(), endness)
     }
 
@@ -981,7 +981,7 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<Py<PyAny>>,
         endness: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<Py<PyAny>>> {
         self.call_inspect_mem_write(py, state_id, when, addr, size, value_ast.as_ref(), endness)
     }
 
@@ -1310,6 +1310,12 @@ impl PythonCallbacks {
     /// Caller is expected to gate this on `inspect_event_enabled(0)` for
     /// the common no-breakpoint case. Errors propagate so the engine can
     /// surface user-action failures rather than swallowing them.
+    ///
+    /// Returns the value the user's BP action left in `state.inspect.
+    /// mem_read_expr` when it differs from what we passed in (value
+    /// injection — angr-uy32); `None` when unchanged, no breakpoint fired,
+    /// or no callback is registered. The caller converts a returned AST
+    /// back to a `RustBV` and substitutes it for the loaded value.
     #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_read(
         &self,
@@ -1320,20 +1326,26 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<Py<PyAny>>> {
         let cb = match self.inspect_mem_read.as_ref() {
             Some(cb) => cb,
-            None => return Ok(()),
+            None => return Ok(None),
         };
         let value_obj: Py<PyAny> = match value_ast {
             Some(v) => v.clone_ref(py),
             None => py.None(),
         };
-        cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
-        Ok(())
+        let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+        if ret.is_none(py) {
+            Ok(None)
+        } else {
+            Ok(Some(ret))
+        }
     }
 
     /// Invoke the Python inspect mem_write callback. See `call_inspect_mem_read`.
+    /// The mem_write event currently fires `when='after'` (post-store), so the
+    /// returned value is informational only — see `dispatch_mem_write_inspect`.
     #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_write(
         &self,
@@ -1344,17 +1356,21 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<Py<PyAny>>> {
         let cb = match self.inspect_mem_write.as_ref() {
             Some(cb) => cb,
-            None => return Ok(()),
+            None => return Ok(None),
         };
         let value_obj: Py<PyAny> = match value_ast {
             Some(v) => v.clone_ref(py),
             None => py.None(),
         };
-        cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
-        Ok(())
+        let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+        if ret.is_none(py) {
+            Ok(None)
+        } else {
+            Ok(Some(ret))
+        }
     }
 
     /// Invoke the Python inspect reg_read callback.

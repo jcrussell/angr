@@ -2010,14 +2010,48 @@ resolved Ijk_Call target (call) or the popped frame's ``callee_addr``
 from Python — they fire from the existing callback handlers in
 ``rust_callback_dispatch.py`` (``_handle_simprocedure_callback`` /
 ``_handle_syscall_callback_inner``) and ``rust_manager._cb_dirty_call``.
-The BP fires with the engine's chosen handler / args / result, but
-user mutations to those attributes in BP_BEFORE actions do NOT
-influence the engine — Python's ``_inspect_getattr`` override path
-(e.g., overriding ``dirty_result`` to short-circuit the call) is not
-honored. ``simprocedure_result`` is ``None`` on both BEFORE and AFTER
+``simprocedure_result`` is ``None`` on both BEFORE and AFTER
 in this MVP because capturing the proc's raw return value would
 require wrapping ``proc.execute`` to observe the inner
 ``inst.run_func`` return.
+
+BP attribute write-back
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Python angr's ``_inspect`` semantics let a breakpoint action *override*
+certain attributes to inject a value or short-circuit a computation.
+The Rust engine honors a curated subset of these write-backs
+(angr-uy32); the rest fire read-only (mutations are ignored).
+
+**Honored (write-back applied):**
+
+* ``mem_read_expr`` — a ``mem_read`` BP_AFTER that assigns
+  ``state.inspect.mem_read_expr`` substitutes the new value for the
+  loaded result. The override is converted back to a ``RustBV`` via
+  ``claripy_to_rustbv`` and used in place of the load. A width mismatch
+  (the override's bit-width ≠ ``mem_read_length * 8``) is rejected
+  defensively and the original value stands.
+* ``dirty_result`` — a ``dirty`` BP_AFTER that assigns
+  ``state.inspect.dirty_result`` replaces the dirty handler's return
+  value before it is concretized and handed back to the interpreter.
+
+The write-back uses an identity check: only a BP that actually swaps the
+attribute object triggers the round-trip, so an untouched read costs
+nothing extra. The Python callback returns the mutated attribute to the
+Rust dispatch site (``call_inspect_mem_read`` /
+``dispatch_mem_read_inspect``), which applies it.
+
+**Read-only (mutations ignored — file a follow-up if you need these):**
+
+* ``mem_write_expr`` — the ``mem_write`` event fires ``when='after'``,
+  i.e. *after* the store has committed, so overriding the value does not
+  retroactively change what was written. Honoring it would require a
+  pre-store ``when='before'`` dispatch (tracked as a follow-up).
+* ``reg_read_expr`` / ``reg_write_expr`` — register events fire
+  ``when='after'`` and are read-only.
+* ``expr_result`` — the ``expr`` event is read-only (see below).
+* ``simprocedure_result`` — always ``None``; not capturable in this MVP.
+* All remaining attributes on every other event are read-only.
 
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
@@ -2085,8 +2119,10 @@ this document so callers can find these workarounds in order:
 
 2. **Drop back to the Python engine** for analyses that fundamentally
    depend on an unsupported event (``constraints``, ``vex_lift``, …)
-   or on an unsupported behavior of a supported event (e.g.,
-   overriding ``dirty_result`` from BP_BEFORE):
+   or on an unsupported write-back of a supported event (e.g.,
+   overriding ``mem_write_expr`` to change a committed store, or
+   ``expr_result`` — see *BP attribute write-back* above for the
+   honored vs. read-only split):
 
    .. code-block:: python
 
@@ -2202,8 +2238,9 @@ Decision history
   Fires ``when='after'`` with ``expr_result`` as the
   claripy-reconstructed value; ``expr`` is always passed as ``None``
   because Rust IRExpr doesn't round-trip cleanly into ``pyvex.IRExpr``.
-  User mutations to ``expr_result`` are not honored (same MVP gap as
-  the other inspect events).
+  User mutations to ``expr_result`` are not honored — only
+  ``mem_read_expr`` and ``dirty_result`` write-back is wired (angr-uy32);
+  see *BP attribute write-back* above.
 * ``angr-ysml`` (2026-06-03): wired ``fork`` dispatch at the
   previously-reserved bit 4. The dispatch fires from
   ``exploration/stepping.rs`` for each forked state created by the

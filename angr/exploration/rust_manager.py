@@ -1863,7 +1863,11 @@ class RustExplorationManager(
                 for c in constraints:
                     state.solver.add(c)
 
-            self._cb_inspect_dirty(sid, "after", name, handler, claripy_args, result)
+            override = self._cb_inspect_dirty(sid, "after", name, handler, claripy_args, result)
+            if override is not None:
+                # User BP set state.inspect.dirty_result — honor the override
+                # in place of the handler's return value (angr-uy32).
+                result = override
 
             if result is None:
                 return (bytes(ret_ty_bits // 8), False, None)
@@ -2280,15 +2284,21 @@ class RustExplorationManager(
 
         Per-event-type kwargs are constructed by the `_cb_inspect_*`
         callbacks — this layer is event-agnostic.
+
+        Returns the RustInspectProxy after dispatch so callers can read
+        back attributes the user's BP action may have mutated (value
+        injection — angr-uy32). Returns ``None`` when no BP fired (reentrancy
+        guard, bitmask race, or no live state), in which case nothing was
+        mutated and the caller should keep its original value.
         """
         if self._inspect_dispatch_depth > 0:
-            return  # reentrancy guard (uq4n.4)
+            return None  # reentrancy guard (uq4n.4)
         bps = self._inspect_breakpoints.get(event_type)
         if not bps:
-            return  # bitmask race — Rust fired but Python already cleared
+            return None  # bitmask race — Rust fired but Python already cleared
         state = self._make_inspect_state_for(state_id)
         if state is None:
-            return
+            return None
         proxy = self._get_inspect_proxy()
         proxy.set_state(state)
         self._inspect_dispatch_depth += 1
@@ -2296,6 +2306,7 @@ class RustExplorationManager(
             proxy.action(event_type, when, **attrs)
         finally:
             self._inspect_dispatch_depth -= 1
+        return proxy
 
     def _addr_attr_for(self, addr: int):
         """Wrap an integer address in a claripy BVV at the project's word size."""
@@ -2313,9 +2324,15 @@ class RustExplorationManager(
         value_ast,
         endness: str,
     ):
-        """PyO3 callback target for mem_read events from Rust."""
+        """PyO3 callback target for mem_read events from Rust.
+
+        Returns the possibly-mutated ``mem_read_expr`` AST when the user's
+        BP action overrode it (value injection — angr-uy32); the Rust caller
+        substitutes it for the loaded value. Returns ``None`` when unchanged,
+        so the original load result stands.
+        """
         try:
-            self._dispatch_inspect_event(
+            proxy = self._dispatch_inspect_event(
                 "mem_read",
                 state_id,
                 when,
@@ -2324,11 +2341,19 @@ class RustExplorationManager(
                 mem_read_expr=value_ast,
                 mem_read_endness=endness,
             )
+            if proxy is not None:
+                mutated = proxy.mem_read_expr
+                # Identity check: only round-trip back to Rust when the user
+                # actually swapped the object — avoids a needless AST->RustBV
+                # conversion (and its width checks) on every untouched read.
+                if mutated is not value_ast:
+                    return mutated
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: user BP action errored. Log and
             # swallow so the engine keeps stepping; the user can see the
             # warning in stderr.
             l.warning("inspect mem_read dispatch failed: %s: %s", type(e).__name__, e)
+        return None
 
     def _cb_inspect_mem_write(
         self,
@@ -2747,11 +2772,16 @@ class RustExplorationManager(
         — `dirty_name`, `dirty_handler` (the resolved handler callable),
         `dirty_args` (the actual call arguments — claripy BVVs), and
         `dirty_result` (the handler's return value on AFTER; `None` on
-        BEFORE — Python uses `NO_OVERRIDE` but the Rust dispatch doesn't
-        honor user overrides yet so `None` is unambiguous).
+        BEFORE).
+
+        Returns the possibly-mutated ``dirty_result`` when the user's BP
+        action overrode it (short-circuit / value injection — angr-uy32);
+        `_cb_dirty_call` substitutes it for the handler's result. Returns
+        ``None`` when unchanged (or no BP fired), so the original result
+        stands.
         """
         try:
-            self._dispatch_inspect_event(
+            proxy = self._dispatch_inspect_event(
                 "dirty",
                 state_id,
                 when,
@@ -2760,10 +2790,15 @@ class RustExplorationManager(
                 dirty_args=dirty_args,
                 dirty_result=dirty_result,
             )
+            if proxy is not None:
+                mutated = proxy.dirty_result
+                if mutated is not dirty_result:
+                    return mutated
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
             # dirty event is dropped (no breakpoint fired).
             l.warning("inspect dirty dispatch failed: %s: %s", type(e).__name__, e)
+        return None
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""
