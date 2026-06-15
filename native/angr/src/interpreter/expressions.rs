@@ -363,20 +363,23 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-            Err(_) => {
+            Err(e) => {
                 // Fallback for unsupported unary ops (e.g., float conversions).
-                // Return fresh symbolic if input was symbolic, else zero.
+                // Symbolic args: keep the fresh-symbolic BYPASS path.
+                // Concrete args (angr-sa3j): never fabricate 0 — propagate the
+                // typed OpError so it surfaces as RustUnsupportedVexOpError /
+                // routes to Python fallback instead of a silently-wrong value.
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_unop_fallback_count += 1;
-                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                 if arg_is_sym {
+                    let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                     Ok(RustBV::symbolic(
                         self.ctx,
                         format!("unsup_unop_{:x}", self.pc),
                         width,
                     ))
                 } else {
-                    Ok(RustBV::concrete(0, width))
+                    Err(CbExecutionError::Op(e))
                 }
             }
         }
@@ -408,8 +411,10 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-            Err(_) => {
+            Err(e) => {
                 // Fallback for unsupported binary ops (e.g., vector float ops).
+                // Concrete args (angr-sa3j): propagate the typed OpError rather
+                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_binop_fallback_count += 1;
                 if any_sym {
@@ -419,7 +424,7 @@ impl<'a> VEXInterpreter<'a> {
                         fallback_width,
                     ))
                 } else {
-                    Ok(RustBV::concrete(0, fallback_width))
+                    Err(CbExecutionError::Op(e))
                 }
             }
         }
@@ -522,7 +527,9 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-            Err(_) => {
+            Err(e) => {
+                // Concrete args (angr-sa3j): propagate the typed OpError rather
+                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_triop_fallback_count += 1;
                 if any_sym {
@@ -532,7 +539,7 @@ impl<'a> VEXInterpreter<'a> {
                         width,
                     ))
                 } else {
-                    Ok(RustBV::concrete(0, width))
+                    Err(CbExecutionError::Op(e))
                 }
             }
         }
@@ -569,7 +576,9 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-            Err(_) => {
+            Err(e) => {
+                // Concrete args (angr-sa3j): propagate the typed OpError rather
+                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_qop_fallback_count += 1;
                 if any_sym {
@@ -579,7 +588,7 @@ impl<'a> VEXInterpreter<'a> {
                         width,
                     ))
                 } else {
-                    Ok(RustBV::concrete(0, width))
+                    Err(CbExecutionError::Op(e))
                 }
             }
         }
@@ -1369,6 +1378,53 @@ mod tests {
             .eval_expr_simple(&load, &env)
             .expect_err("simple eval should not handle Load");
         assert!(matches!(err, CbExecutionError::Unsupported(_)));
+    }
+
+    #[test]
+    fn eval_unop_concrete_unsupported_propagates_error_not_zero() {
+        // angr-sa3j: a concrete-arg op that VEXOps rejects must surface the
+        // typed OpError (so the engine raises RustUnsupportedVexOpError /
+        // routes to Python fallback) instead of silently fabricating 0.
+        use crate::callbacks::PythonCallbacks;
+        Python::initialize();
+        let callbacks = PythonCallbacks::new();
+        Python::attach(|py| {
+            let ctx = SymContext::new_mock();
+            let mut interp = new_interp(&ctx);
+            let env = TypeEnv::new();
+            // Dispatch a binary op through the unary path: VEXOps::unop
+            // returns OpError::NotUnary. Arg is concrete, so the pre-fix
+            // code would have returned Ok(concrete 0).
+            let arg = IRExpr::Const(IRConst::U64(0x1234));
+            let res = interp.eval_unop(py, &callbacks, IROp::Add(IRType::I64), &arg, &env);
+            assert!(
+                matches!(res, Err(CbExecutionError::Op(OpError::NotUnary(_)))),
+                "concrete unsupported unop must propagate OpError, got {res:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn eval_binop_concrete_unsupported_propagates_error_not_zero() {
+        // angr-sa3j (binop arm): concrete-arg unsupported binop must propagate.
+        use crate::callbacks::PythonCallbacks;
+        Python::initialize();
+        let callbacks = PythonCallbacks::new();
+        Python::attach(|py| {
+            let ctx = SymContext::new_mock();
+            let mut interp = new_interp(&ctx);
+            let env = TypeEnv::new();
+            // Dispatch a unary op through the binary path: VEXOps::binop
+            // returns OpError::NotBinary.
+            let left = IRExpr::Const(IRConst::U64(0x1));
+            let right = IRExpr::Const(IRConst::U64(0x2));
+            let res =
+                interp.eval_binop(py, &callbacks, IROp::Not(IRType::I64), &left, &right, &env);
+            assert!(
+                matches!(res, Err(CbExecutionError::Op(OpError::NotBinary(_)))),
+                "concrete unsupported binop must propagate OpError, got {res:?}"
+            );
+        });
     }
 
     #[test]
