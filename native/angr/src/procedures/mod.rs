@@ -111,6 +111,9 @@ pub mod strtod;
 pub mod strtol;
 pub mod write;
 
+#[cfg(test)]
+mod test_util;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 

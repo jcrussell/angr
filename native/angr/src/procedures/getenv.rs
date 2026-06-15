@@ -239,12 +239,12 @@ mod tests {
     use crate::memory::Permission;
 
     fn setup_state() -> RustSimState {
-        let mut state = RustSimState::new("amd64").unwrap();
-        state.map_memory(0x1000, 0x1000, Permission::RWX);
-        state.map_memory(0x2000, 0x1000, Permission::RWX);
-        // Map heap region
-        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
-        state
+        // Two scratch pages plus the heap region.
+        crate::procedures::test_util::amd64_state_with_regions(&[
+            (0x1000, 0x1000),
+            (0x2000, 0x1000),
+            (0xC000_0000, 0x10000),
+        ])
     }
 
     #[test]

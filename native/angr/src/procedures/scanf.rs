@@ -330,9 +330,7 @@ mod tests {
     use crate::memory::Permission;
 
     fn setup_state() -> RustSimState {
-        let mut state = RustSimState::new("amd64").unwrap();
-        state.map_memory(0x2000, 0x1000, Permission::RWX);
-        state
+        crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)])
     }
 
     #[test]

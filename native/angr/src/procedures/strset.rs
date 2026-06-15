@@ -160,7 +160,7 @@ mod tests {
     use crate::memory::Permission;
 
     fn setup_state(s: &[u8], set: &[u8]) -> RustSimState {
-        let mut state = RustSimState::new("amd64").unwrap();
+        let mut state = crate::procedures::test_util::amd64_state();
         state.map_memory_data(0x1000, s, Permission::RWX);
         state.map_memory_data(0x2000, set, Permission::RWX);
         state
