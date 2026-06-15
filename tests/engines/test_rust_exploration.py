@@ -1708,6 +1708,35 @@ class TestRustEdgeCases:
             assert len(active) == 1, f"expected the self-loop to stay active, got {mgr.stash_counts()}"
             assert active[0].addr == 0x1000, f"self-loop drifted off 0x1000 to {hex(active[0].addr)}"
 
+    def test_load_shellcode_blob_conditional_loop_cold_flags(self):
+        """A cold conditional loop in a blob must run to completion, not deadend.
+
+        Regression for angr-g6dg. In a blank_state-backed blob, ``dec``'s VEX
+        calls ``amd64g_calculate_rflags_c`` to preserve the carry in cc_ndep.
+        For the INC/DEC cc_op category the carry is preserved from cc_ndep, but
+        the Rust ccall layer only handled Copy/Sub/Add/Logic and fell through to
+        a fresh unconstrained symbolic carry, poisoning the flags threaded into
+        later iterations.
+
+        ``mov ecx,3; dec ecx; jnz $-2; jmp $`` counts down concretely and parks
+        on the trailing ``jmp $`` self-loop pad at 0x1009. The state must reach
+        and stay active at 0x1009 across steps, never collapsing to 0x0.
+        """
+        # b9 03 00 00 00  mov ecx, 3
+        # ff c9           dec ecx          (0x1005)
+        # 75 fc           jnz 0x1005       (0x1007)
+        # eb fe           jmp $            (0x1009, self-loop landing pad)
+        shellcode = b"\xb9\x03\x00\x00\x00\xff\xc9\x75\xfc\xeb\xfe"
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+
+        for _ in range(6):
+            mgr.step(n=1)
+            active = mgr.active_proxies()
+            assert len(active) == 1, f"expected one active state, got {mgr.stash_counts()}"
+            assert active[0].addr == 0x1009, f"loop drifted off the pad to {hex(active[0].addr)}"
+
     def test_page_boundary_store_load(self):
         """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""
         state = RustSimState("amd64")

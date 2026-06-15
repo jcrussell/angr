@@ -2119,6 +2119,18 @@ pub fn handle_ccall_with_ctx(
                         Some(result.ult(&d1, sym_ctx))
                     }
                     OpCategory::Logic => Some(RustBV::concrete(0, 1)),
+                    // INC/DEC do not modify CF; VEX preserves it in cc_ndep
+                    // (args[3]). CF = (cc_ndep >> SHIFT_C) & 1 — matches the
+                    // concrete calc_flags_inc/calc_flags_dec path. Without this,
+                    // a symbolic cc_ndep (e.g. blank_state's uninitialized
+                    // flags before any flag-setting op) forced the whole ccall
+                    // to fall back to a fresh unconstrained symbolic carry,
+                    // poisoning later branch guards (angr-g6dg).
+                    OpCategory::Inc | OpCategory::Dec => Some(sym_extract_flag(
+                        &args[3],
+                        flag_shift::G_CC_SHIFT_C,
+                        sym_ctx,
+                    )),
                     _ => None,
                 };
                 if let Some(c) = cf {
@@ -2888,6 +2900,43 @@ mod tests {
                 let conc = flags_to_tuple(calc_flags_dec(nbits, d1, nd));
                 let sym = sym_flags_to_tuple(OpCategory::Dec, nbits, d1, 0, nd);
                 assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} nd={nd:x}");
+            }
+        }
+    }
+
+    /// Regression for angr-g6dg: `amd64g_calculate_rflags_c` for INC/DEC
+    /// cc_ops must derive the carry from cc_ndep (CF is preserved by INC/DEC),
+    /// even when the concrete fast-path declines because cc_dep1 is symbolic.
+    /// Before the fix this category fell through to a fresh unconstrained
+    /// symbolic carry, poisoning later branch guards in cold blocks.
+    #[test]
+    fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
+        let ctx = crate::symbolic::SymContext::new_mock();
+        let cc_ops = [
+            amd64_cc_op::G_CC_OP_INCB,
+            amd64_cc_op::G_CC_OP_INCL,
+            amd64_cc_op::G_CC_OP_INCQ,
+            amd64_cc_op::G_CC_OP_DECB,
+            amd64_cc_op::G_CC_OP_DECL,
+            amd64_cc_op::G_CC_OP_DECQ,
+        ];
+        // CF lives in bit 0 (G_CC_SHIFT_C == 0), so cc_ndep & 1 is the carry.
+        for cc_op in cc_ops {
+            for nd in [0u64, 1, 0x1234, 0xFFFF_FFFF_FFFF_FFFF] {
+                // cc_dep1 symbolic -> concrete fast-path declines, forcing the
+                // symbolic path. The carry must still resolve concretely from
+                // the concrete cc_ndep.
+                let args = vec![
+                    RustBV::concrete(cc_op as u128, 64),
+                    RustBV::symbolic(&ctx, "cc_dep1_sym", 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(nd as u128, 64),
+                ];
+                let got = handle_ccall_with_ctx("amd64g_calculate_rflags_c", &args, 64, Some(&ctx))
+                    .expect("INC/DEC rflags_c must resolve symbolically")
+                    .as_u64()
+                    .expect("carry is a function of the concrete cc_ndep");
+                assert_eq!(got, nd & 1, "cc_op={cc_op} nd={nd:x}");
             }
         }
     }
