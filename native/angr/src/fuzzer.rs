@@ -10,7 +10,7 @@ use libafl::{
     NopInputFilter, StdFuzzer,
     events::SimpleEventManager,
     feedbacks::{CrashFeedback, MaxMapFeedback},
-    inputs::{BytesInput, NopToTargetBytes},
+    inputs::{BytesInput, NopBytesConverter},
     observers::OwnedMapObserver,
     schedulers::QueueScheduler,
     stages::StdMutationalStage,
@@ -48,7 +48,7 @@ const EDGE_HITMAP_SIZE: usize = 65536;
 pub(crate) type Z = StdFuzzer<
     QueueScheduler,
     MaxMapFeedback<O, O>,
-    NopToTargetBytes,
+    NopBytesConverter,
     NopInputFilter,
     CrashFeedback,
 >;
@@ -132,7 +132,7 @@ impl Fuzzer {
         let fuzzer: StdFuzzer<
             QueueScheduler,
             MaxMapFeedback<OwnedMapObserver<u8>, OwnedMapObserver<u8>>,
-            NopToTargetBytes,
+            NopBytesConverter,
             NopInputFilter,
             CrashFeedback,
         > = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
