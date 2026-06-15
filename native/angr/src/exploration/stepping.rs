@@ -495,21 +495,38 @@ impl RustExplorationManager {
                 // `force_eager` so the resumed subtree BFSes cleanly instead of
                 // re-deferring. The flag is per-state, so the default deferred
                 // (fast) path on every other bench is untouched.
-                let original_state_id = state.state_id();
-                let root_state_id = self
-                    .sm
-                    .roots()
-                    .get(&original_state_id)
-                    .copied()
-                    .unwrap_or(original_state_id);
-                let forks = self.materialize_deferred_forks(
-                    &mut state,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
-                    root_state_id,
-                    true,
-                );
+                // angr-027h two-phase explore: in deferred mode (phase 1) the
+                // accumulated loop-exit forks are DROPPED so the active stash
+                // collapses to `active_empty`, which is the signal Python's
+                // `_explore_with_addresses` uses to re-seed the initial states
+                // in eager mode (phase 2). In eager mode (phase 2) no forks are
+                // deferred in the first place (every fork materialized during
+                // the loop dive), so `deferred_forks` is empty here and
+                // materialize is a no-op — but we still route through it so the
+                // egg-reaching subtree is handled identically if a future caller
+                // mixes the two. Routing eager forks back to active while still
+                // in deferred mode would prevent `active_empty` and defeat the
+                // phase-2 trigger (iter66 regression — see bd memory
+                // `benchmark-cadet-single-step-loop-unroll-defeats-latch`).
+                let forks = if self.exec_config.use_deferred_forks {
+                    Vec::new()
+                } else {
+                    let original_state_id = state.state_id();
+                    let root_state_id = self
+                        .sm
+                        .roots()
+                        .get(&original_state_id)
+                        .copied()
+                        .unwrap_or(original_state_id);
+                    self.materialize_deferred_forks(
+                        &mut state,
+                        deferred_forks,
+                        &stored_conditions,
+                        fork_snapshots,
+                        root_state_id,
+                        true,
+                    )
+                };
                 Err(StepError::Unconstrained(state, forks))
             }
             RunResult::UnmodeledCall {

@@ -1348,6 +1348,14 @@ class RustExplorationManager(
             # Handle single state or list of states
             if hasattr(active_states, "solver"):  # Single SimState
                 active_states = [active_states]
+            # angr-027h two-phase explore: keep references to the pristine seed
+            # states. If a find-based explore exhausts to active_empty without
+            # finding, `_explore_with_addresses` re-seeds (from copies) in eager
+            # mode. Cheap here (references only); the copy happens on the rare
+            # retry path. Skip when re-seeding (the retry passes copies and we do
+            # not want to overwrite the originals with already-consumed copies).
+            if not getattr(self, "_phase2_reseeding", False):
+                self._initial_seed_states = list(active_states)
             for state in active_states:
                 # Detect state options
                 if hasattr(state, "options"):
@@ -3702,6 +3710,9 @@ class RustExplorationManager(
             self._rust_mgr.set_find_addrs(find_addrs)
             self._rust_mgr.set_find_needs_python(callable(find))
             self._find_predicate = find if callable(find) else None
+            # angr-027h: remember whether this is an address-based find so the
+            # two-phase eager retry only fires when there is a concrete target.
+            self._explore_find_addrs = None if callable(find) else find_addrs
 
         # Set avoid addresses
         if avoid is not None:
@@ -3915,6 +3926,18 @@ class RustExplorationManager(
                         break
                     if self._rust_mgr.get_state_ids("active"):
                         continue
+                # angr-027h two-phase explore: deferred-fork mode (phase 1)
+                # exhausted without reaching the find target. Loop-exit forks
+                # behind a symbolic loop (CADET easter-egg) were dropped at the
+                # unconstrained jump, so the only egg-reaching paths never
+                # materialized. Re-seed the pristine initial states in EAGER
+                # mode (phase 2) and run again. Benches that find in phase 1
+                # (e.g. whitehatvn2015_re400) break on the `found` event before
+                # ever reaching active_empty, so they never pay the eager cost.
+                if self._maybe_phase2_eager_retry(num_find):
+                    steps_taken = 0
+                    start_time = time.time()
+                    continue
                 break
             if event.event_type == "need_callback":
                 if self._dispatch_callback(event):
@@ -3949,6 +3972,44 @@ class RustExplorationManager(
                     l.warning(f"until predicate error: {e}")
 
         return self
+
+    def _maybe_phase2_eager_retry(self, num_find):
+        """angr-027h: re-seed the initial states in eager-fork mode (phase 2).
+
+        Fires at most once per explore, only for address-based finds that
+        exhausted phase 1 (deferred) without reaching the target. Returns True
+        when a retry was seeded (the caller should reset its step/time budget and
+        continue), False otherwise.
+        """
+        if getattr(self, "_phase2_retried", False):
+            return False
+        if not getattr(self, "_explore_find_addrs", None):
+            return False
+        if self._found_count() >= num_find:
+            return False
+        seeds = getattr(self, "_initial_seed_states", None)
+        if not seeds:
+            return False
+        self._phase2_retried = True
+        l.debug(
+            "angr-027h: phase 1 (deferred) exhausted without find; re-seeding %d state(s) in eager mode", len(seeds)
+        )
+        try:
+            self._rust_mgr.set_use_deferred_forks(False)
+        except AttributeError:
+            # Rust extension predates set_use_deferred_forks; cannot retry.
+            return False
+        # Re-seed from copies so the pristine originals stay reusable.
+        self._phase2_reseeding = True
+        try:
+            self._phase_activate([s.copy() for s in seeds])
+        finally:
+            self._phase2_reseeding = False
+        self._rust_mgr.sync_state_index()
+        # Guard against a no-op re-seed (would otherwise spin active_empty).
+        if not self._rust_mgr.get_state_ids("active"):
+            return False
+        return True
 
     def get_state_options_py(self, state_id: int) -> set:
         """Return the Python-side options set for a Rust state.

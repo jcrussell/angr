@@ -677,6 +677,18 @@ impl RustExplorationManager {
         self.memory_config.zero_fill_unconstrained = enabled;
     }
 
+    /// Toggle deferred-fork mode for the whole manager (angr-027h two-phase
+    /// explore). `true` (the default) is the fast deferred path: forward-branch
+    /// loop exits are deferred and the loop-continuation is taken as the main
+    /// chain. `false` makes every fork materialize eagerly (BFS), which lets a
+    /// find-guided search reach a target behind a symbolic loop exit at the cost
+    /// of a wider active stash. Python's `_explore_with_addresses` runs phase 1
+    /// deferred and, only if it exhausts to `active_empty` without finding,
+    /// re-seeds the initial states with this set to `false`.
+    pub fn set_use_deferred_forks(&mut self, enabled: bool) {
+        self.exec_config.use_deferred_forks = enabled;
+    }
+
     /// Set the Z3 solver timeout in milliseconds (default:
     /// [`DEFAULT_SOLVER_TIMEOUT_MS`](crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS)).
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
