@@ -713,6 +713,19 @@ impl Default for SymContext {
     }
 }
 
+// a2br.2.11: SymContext unit tests, split by theme out of the former
+// monolithic `context_tests.rs` (2340 lines) to keep each file under the
+// <2000-line epic acceptance criterion. Declared as direct children of
+// `context` so `use super::*` reaches `context`'s private items.
 #[cfg(test)]
-#[path = "context_tests.rs"]
-mod tests;
+#[path = "context_tests/constraints.rs"]
+mod context_tests_constraints;
+#[cfg(test)]
+#[path = "context_tests/lineage.rs"]
+mod context_tests_lineage;
+#[cfg(test)]
+#[path = "context_tests/smtlib2_snapshot.rs"]
+mod context_tests_smtlib2_snapshot;
+#[cfg(test)]
+#[path = "context_tests/solver.rs"]
+mod context_tests_solver;
