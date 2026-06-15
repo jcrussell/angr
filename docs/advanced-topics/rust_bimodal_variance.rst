@@ -3,19 +3,27 @@
 Rust engine bimodal Z3 variance
 ===============================
 
-Four benchmarks in ``tests/benchmarks/baseline_timings.json`` have
-historically shown two distinct timing modes per run, driven by Z3
+Five benchmarks in ``tests/benchmarks/baseline_timings.json`` have
+shown two distinct timing modes per run, driven by Z3
 model nondeterminism. Their baselines are pinned at the slow mode and
 they are tagged ``rust_only=True`` in ``tests/benchmarks/run_regression.py``
 because the same nondeterminism causes output divergence vs. the
 Python engine. The PR-time gate sets ``--skip-bimodal`` to keep CI
-from flapping; nightly CI runs them.
+from flapping; nightly CI runs them. The live membership is the
+``BIMODAL_BENCHMARKS`` frozenset in ``run_regression.py``.
 
 ``hackcon2016_angry-reverser`` joined the bimodal set on 2026-06-02
 (``angr-bl0g``) after the ``angr-rbnk`` SignExt fix (commit ``4dc7fc064``)
 collapsed the asserted constraint AST by ~13x and unmasked the
 underlying Z3 SAT-search nondeterminism — see the 2026-06-02 entry
 below.
+
+``CADET_00001_partial`` joined on 2026-06-15 (``angr-027h``,
+commit ``f10ff9c7b``) when the convergent phases-1+2 subset of the
+upstream CADET solve was recorded as a synthetic-examples bench — its
+easter-egg ``explore(find=)`` over symbolic stdin hits multi-solution
+unconstrained jumps, splitting into two modes — see the 2026-06-15
+entry below.
 
 This page captures the 2026-05-13 variance campaign — 20 wall-clock
 samples per benchmark, captured with
@@ -359,7 +367,7 @@ Decisions:
   per-bench table entry.
 
 2026-06-02 — hackcon2016_angry-reverser joins the bimodal set
-------------------------------------------------------------
+-------------------------------------------------------------
 
 ``hackcon2016_angry-reverser`` had been a 0.6x outlier with tight
 variance (5-sample median 14.84s, 10-sample 30.79s ±1.33s) prior to
@@ -396,6 +404,46 @@ Decisions:
   from the PR-time gate; the nightly gate continues to track drift.
 - See bd memory ``hackcon-z3-ast-structure`` for the full spike
   writeup including the construction-site analysis.
+
+2026-06-15 — CADET_00001_partial joins the bimodal set
+------------------------------------------------------
+
+``CADET_00001_partial`` was added to ``baseline_timings.json`` as the
+convergent phases-1+2 subset of the upstream CADET_00001 solve
+(``angr-027h``, commit ``f10ff9c7b``). The upstream three-phase
+``solve.py`` is not a viable end-to-end Rust bench — its phases need
+mutually exclusive manager configs and the phase-3 step-loop is
+pathologically heavy (see the ``CADET_00001`` catalog note in
+``run_single.py`` and bd memory ``benchmark-cadet-phase3-not-a-bench``).
+The recorded subset runs phase 1 (buffer-overflow
+step-until-unconstrained) plus phase 2 (the easter-egg
+``sm.explore(find=0x804833E)``) over symbolic stdin.
+
+Phase 2 is where the bimodality comes from: the easter-egg explore
+hits multi-solution unconstrained jumps, so Z3 model nondeterminism
+shifts which crashing input is materialized and therefore the work
+the explore does. A 4-sample campaign clustered into two modes:
+
+.. code-block:: text
+
+   fast mode ~6.8s / 411 MB peak RSS
+   slow mode ~8.2s / 545 MB peak RSS
+
+Category (c) per the taxonomy — structurally Z3 model
+nondeterminism on a multi-solution explore, not an engine bug.
+
+Decisions:
+
+- ``rust_time`` baseline pinned to the slow mode (8.24s, 545 MB) so the
+  PR/nightly timing gate tolerates both modes. ``python_time`` is 11.8s
+  (Rust ~1.4x faster at the pinned slow mode; ~1.7x at the fast mode).
+- Added to ``BIMODAL_BENCHMARKS`` so ``--skip-bimodal`` excludes it from
+  the PR-time gate; the nightly gate continues to track drift. The
+  ``callback_count`` / ``state_creations`` / ``steps`` count baselines
+  are all 0 for this explore-based bench, so the ``--check-counts`` gate
+  is a no-op on it (it is therefore not also listed in ``COUNT_EXEMPT``).
+- See bd memories ``benchmark-cadet-phase3-not-a-bench`` and
+  ``benchmark-cadet-two-phase-eager-retry`` for the convergence history.
 
 Reproducing
 -----------
