@@ -20,6 +20,20 @@ This **overrides** the default Claude auto-memory instructions to
 write per-memory markdown files. Do not write those files for this
 project; they fragment across accounts and drift from bd.
 
+### Keeping memories from rotting (refactor-time rules)
+
+Memories cite code; renames silently break those citations. Two standing
+rules (full rationale in bd memory `refactor-memory-sweep-rule`):
+
+- **Rename-sweep:** any commit that renames or moves a file or public
+  symbol must `bd memories <old-name>` and repair the hits in the **same
+  commit**. Keyword search has recall gaps, so also grep a full
+  `bd memories` dump. Repair per `bd-memory-citation-repair-pattern`.
+- **Symbol-anchor convention:** when authoring a memory, anchor code
+  references to symbol names (`fn`/`struct`/`method`) rather than raw line
+  numbers. Audits find line refs drift 10–600 lines across refactors while
+  symbol anchors stay resolvable.
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then

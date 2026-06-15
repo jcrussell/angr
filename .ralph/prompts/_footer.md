@@ -24,7 +24,9 @@ For each task, follow this loop:
     - A benchmark number changed significantly? `--key benchmark-<topic>`
 
     Do NOT skip this step. Context dies between sessions; memories are the only
-    bridge.
+    bridge. **Anchor references to symbol names (fn/struct/method) instead of
+    raw line numbers** — line refs drift 10-600 lines across refactors while
+    symbol anchors stay resolvable (see `refactor-memory-sweep-rule`).
 11. If you discover new work needed: `bd create --title="<title>"
     --description="<desc>" --type=task`
 12. Append a one-paragraph entry to `.ralph/state/session.md` describing what
@@ -43,6 +45,10 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 - If a build fails, fix it before moving on
 - If tests fail, investigate and fix before closing the task
 - Store findings in `bd remember`, not in markdown files
+- **Rename-sweep:** any commit that renames/moves a file or public symbol must
+  `bd memories <old-name>` (keyword search has recall gaps — grep a full
+  `bd memories` dump too) and repair stale citations in the SAME iteration.
+  See `refactor-memory-sweep-rule` + `bd-memory-citation-repair-pattern`.
 - **CHECKPOINT:** every ~30 minutes of work, commit any working changes (even
   partial) with a WIP commit message. This prevents losing work if you hit a
   rate limit or crash.
