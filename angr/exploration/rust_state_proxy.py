@@ -3109,7 +3109,11 @@ class _StashDict:
         return self._simgr._get_stash(key)
 
     def __setitem__(self, key, value):
-        if isinstance(value, list) and len(value) == 0:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError(
+                f"_StashDict.__setitem__ expects a list of RustStateProxy objects, got {type(value).__name__}"
+            )
+        if len(value) == 0:
             # Clear the stash — common pattern: simgr.stashes['found'] = []
             try:
                 self._simgr._mgr.clear_stash(key)
@@ -3118,8 +3122,57 @@ class _StashDict:
                 # the stash to be empty afterward but it may not be. Log so
                 # this is visible under --debug.
                 l.debug("clear_stash(%r) failed: %s: %s", key, type(e).__name__, e)
-        else:
-            l.warning("_StashDict.__setitem__ only supports clearing (empty list) for key '%s'", key)
+            return
+
+        # Non-empty assignment (angr-wxuo): make the stash contain exactly the
+        # assigned proxies, in order. Used by Director (goal prioritization,
+        # writes simgr.stashes[stash] = [...]) and StochasticSearch (restart /
+        # re-weight). Stash members are RustStateProxy objects carrying
+        # Rust-side state_ids, so this is done via move_state without any
+        # SimState materialization.
+        mgr = self._simgr._mgr
+        desired_ids = []
+        seen = set()
+        for proxy in value:
+            if not isinstance(proxy, RustStateProxy):
+                raise TypeError(
+                    f"_StashDict.__setitem__ can only assign RustStateProxy objects "
+                    f"to stash '{key}', got {type(proxy).__name__}"
+                )
+            if getattr(proxy, "_mgr", None) is not mgr:
+                raise ValueError(
+                    f"_StashDict.__setitem__: state {proxy.state_id} belongs to a "
+                    f"different manager and cannot be assigned to stash '{key}'"
+                )
+            sid = proxy.state_id
+            if sid in seen:
+                raise ValueError(f"_StashDict.__setitem__: duplicate state {sid} in assignment to stash '{key}'")
+            cur = mgr.state_stash(sid)
+            if cur is None:
+                raise ValueError(
+                    f"_StashDict.__setitem__: state {sid} is not tracked by this "
+                    f"manager (already dropped?) and cannot be assigned to stash '{key}'"
+                )
+            seen.add(sid)
+            desired_ids.append((sid, cur))
+
+        # Drop current members of `key` that are not in the desired set. Matches
+        # Python angr semantics where states omitted from the new list leave the
+        # stash; here they are freed since each Rust state lives in exactly one
+        # stash.
+        for sid in mgr.get_state_ids(key):
+            if sid not in seen:
+                try:
+                    mgr.drop_state_from_stash(sid, key)
+                except Exception as e:  # pragma: no cover - defensive
+                    l.debug("drop_state_from_stash(%d, %r) failed: %s: %s", sid, key, type(e).__name__, e)
+
+        # Append desired states into `key` in order. move_state with from==to
+        # removes and re-appends, so iterating in desired order rebuilds the
+        # stash exactly (honoring caller-specified ordering for those already in
+        # `key`).
+        for sid, cur in desired_ids:
+            mgr.move_state(sid, cur, key)
 
     def __contains__(self, key):
         counts = self._simgr._mgr.stash_counts()

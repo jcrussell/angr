@@ -2237,8 +2237,12 @@ hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
 Caveats specific to ``step()`` dispatch:
 
 * Techniques that mutate stash contents via
-  ``simgr.stashes[name] = [...]`` will still not take effect — the
-  proxy's ``_StashDict`` is read-only. Use ``simgr.move(...)`` instead.
+  ``simgr.stashes[name] = [...]`` are honored (``angr-wxuo``): the
+  proxy's ``_StashDict`` makes the stash contain exactly the assigned
+  ``RustStateProxy`` objects, in order, via Rust ``move_state`` (no
+  ``SimState`` materialization). States omitted from the new list are
+  dropped from that stash; assigning non-proxy or foreign-manager states
+  raises. ``simgr.move(...)`` remains available for partial moves.
 * The proxy does not provide
   :class:`~angr.SimSuccessors`-level introspection (``state.history``
   is the limited :class:`RustHistoryProxy`).
@@ -2350,11 +2354,12 @@ Caveats specific to ``step()`` dispatch:
        ``use_rust_engine=False`` until the write-through epic
        (``angr-qj30``) lands.
    * - ``Director``
-     - **Step hook dispatched, stash assignment lost**
-     - Goal-prioritisation ``step()`` runs (``angr-rqvq``), but the
-       technique also does ``simgr.stashes[stash] = [...]`` which the
-       proxy's ``_StashDict`` ignores. Goals influence flow only when
-       expressed via ``simgr.move(...)``.
+     - **Step hook dispatched, stash assignment honored**
+     - Goal-prioritisation ``step()`` runs (``angr-rqvq``) and the
+       technique's ``simgr.stashes[stash] = [...]`` re-ordering /
+       limiting is now applied by the proxy's ``_StashDict``
+       (``angr-wxuo``) via Rust ``move_state``. Assignments of foreign
+       or non-proxy states raise.
    * - ``Slicecutor``
      - **Silently no-op (step_state/successors hooks)**
      - ``filter()`` runs and ``step()`` would dispatch, but the
@@ -2379,11 +2384,11 @@ Caveats specific to ``step()`` dispatch:
        "stub", ...)`` is supported by the proxy, so the ``stub`` stash
        populates as expected.
    * - ``Stochastic`` (``StochasticSearch``)
-     - **Step hook dispatched, relies on stash mutation**
-     - ``step()`` runs (``angr-rqvq``), but the technique sets
-       ``simgr.stashes[stash] = [...]`` to restart / re-weight — the
-       proxy's ``_StashDict`` is read-only, so the restart logic is
-       lost.
+     - **Step hook dispatched, stash mutation honored**
+     - ``step()`` runs (``angr-rqvq``) and the technique's
+       ``simgr.stashes[stash] = [...]`` restart / re-weight assignment is
+       now applied by the proxy's ``_StashDict`` (``angr-wxuo``), so the
+       restart logic takes effect.
    * - ``Bucketizer``
      - **Silently no-op (successors hook)**
      - Transition tracking via ``state.globals["transition"]`` lives

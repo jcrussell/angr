@@ -1506,6 +1506,77 @@ class TestRustExplorationPython:
         assert isinstance(avoid, list)
         assert isinstance(deadended, list)
 
+    def _proxy_with_multiple_active(self, project):
+        """Step a fauxware manager until >=2 active states exist; return
+        (mgr, RustSimulationManagerProxy)."""
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        state = project.factory.entry_state()
+        mgr = RustExplorationManager(project, [state])
+        for _ in range(20):
+            mgr.step()
+            if mgr.stash_counts().get("active", 0) >= 2:
+                break
+        proxy = RustSimulationManagerProxy(rust_mgr=mgr._rust_mgr, project=project)
+        return mgr, proxy
+
+    def test_stash_assignment_limits_subset(self, fauxware_project):
+        """simgr.stashes['active'] = [subset] keeps only the assigned proxies (angr-wxuo)."""
+        _mgr, proxy = self._proxy_with_multiple_active(fauxware_project)
+        active = proxy.stashes["active"]
+        assert len(active) >= 2, "fauxware should fork into >=2 active states"
+
+        keep = active[0]
+        proxy.stashes["active"] = [keep]
+
+        remaining = proxy.stashes["active"]
+        assert len(remaining) == 1
+        assert remaining[0].state_id == keep.state_id
+
+    def test_stash_assignment_reorders(self, fauxware_project):
+        """Assignment honors caller-specified ordering (angr-wxuo)."""
+        _mgr, proxy = self._proxy_with_multiple_active(fauxware_project)
+        active = proxy.stashes["active"]
+        assert len(active) >= 2
+
+        reversed_ids = [s.state_id for s in reversed(active)]
+        proxy.stashes["active"] = list(reversed(active))
+
+        got_ids = [s.state_id for s in proxy.stashes["active"]]
+        assert got_ids == reversed_ids
+
+    def test_stash_assignment_rejects_non_proxy(self, fauxware_project):
+        """Assigning non-RustStateProxy objects raises (angr-wxuo)."""
+        _mgr, proxy = self._proxy_with_multiple_active(fauxware_project)
+        with pytest.raises(TypeError):
+            proxy.stashes["active"] = [123]
+        with pytest.raises(TypeError):
+            proxy.stashes["active"] = "not-a-list"
+
+    def test_stash_assignment_rejects_foreign_state(self, fauxware_project):
+        """Assigning a proxy from a different manager raises (angr-wxuo)."""
+        _mgr_a, proxy_a = self._proxy_with_multiple_active(fauxware_project)
+
+        state_b = fauxware_project.factory.entry_state()
+        mgr_b = RustExplorationManager(fauxware_project, [state_b])
+        proxy_b = self._make_proxy(mgr_b, fauxware_project)
+        foreign = proxy_b.stashes["active"][0]
+
+        with pytest.raises(ValueError):
+            proxy_a.stashes["active"] = [foreign]
+
+    def _make_proxy(self, mgr, project):
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        return RustSimulationManagerProxy(rust_mgr=mgr._rust_mgr, project=project)
+
+    def test_stash_assignment_empty_clears(self, fauxware_project):
+        """Empty-list assignment still clears the stash (angr-wxuo regression)."""
+        _mgr, proxy = self._proxy_with_multiple_active(fauxware_project)
+        assert len(proxy.stashes["active"]) >= 1
+        proxy.stashes["active"] = []
+        assert proxy.stashes["active"] == []
+
     def test_max_active_states_python(self, fauxware_project):
         """Test max_active_states limit via Python wrapper."""
 
