@@ -2363,6 +2363,54 @@ class TestRustInspectMarshalling:
         ret = mgr._callbacks.call_inspect_mem_read(sid, "after", 0xCAFE, 4, original, "Iend_LE")
         assert ret is injected
 
+    def test_mem_write_expr_override_returned(self, fauxware_project):
+        """A BP_BEFORE that sets state.inspect.mem_write_expr surfaces the
+        override as the callback's return value (value injection — angr-inh0).
+        """
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+        injected = claripy.BVV(0xDEAD, 32)
+
+        def on_write(s):
+            s.inspect.mem_write_expr = injected
+
+        mgr._get_inspect_proxy().b("mem_write", when="before", action=on_write)
+        ret = mgr._cb_inspect_mem_write(sid, "before", 0x402000, 4, original, "Iend_LE")
+        assert ret is injected
+
+    def test_mem_write_expr_unchanged_returns_none(self, fauxware_project):
+        """A write BP that does not touch mem_write_expr leaves the value
+        unchanged — the callback returns None so the original store stands."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+
+        def on_write(s):
+            _ = s.inspect.mem_write_expr  # read only, no mutation
+
+        mgr._get_inspect_proxy().b("mem_write", when="before", action=on_write)
+        ret = mgr._cb_inspect_mem_write(sid, "before", 0x402000, 4, original, "Iend_LE")
+        assert ret is None
+
+    def test_mem_write_override_via_rust_callback(self, fauxware_project):
+        """The Rust-side call_inspect_mem_write returns the user's override
+        so the interpreter can substitute it for the stored value."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        original = claripy.BVV(0x1111, 32)
+        injected = claripy.BVV(0xBEEF, 32)
+
+        def on_write(s):
+            s.inspect.mem_write_expr = injected
+
+        mgr._get_inspect_proxy().b("mem_write", when="before", action=on_write)
+        ret = mgr._callbacks.call_inspect_mem_write(sid, "before", 0xCAFE, 4, original, "Iend_LE")
+        assert ret is injected
+
     def test_state_proxy_inspect_routes_to_manager(self, fauxware_project):
         """RustStateProxy.inspect returns the manager-wide proxy when bound."""
         from angr.exploration.rust_state_proxy import RustInspectProxy, RustStateProxy
@@ -2582,6 +2630,30 @@ class TestRustInspectMemWriteDispatch:
         mgr.run(max_steps=5)
 
         assert fire_count[0] > 0, "BP must fire at least once"
+
+    def test_mem_write_expr_injection_during_exploration(self, fauxware_project):
+        """A mem_write BP_BEFORE that overrides mem_write_expr drives the value
+        back through the Rust interpreter (claripy->RustBV round-trip) without
+        crashing, and exploration completes (angr-inh0 value injection)."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fired = [0]
+
+        def on_write(s):
+            fired[0] += 1
+            length = s.inspect.mem_write_length
+            # Override with a same-width concrete value so the width guard in
+            # dispatch_mem_write_inspect accepts it and substitutes it for the
+            # stored value before commit.
+            if isinstance(length, int) and length > 0:
+                s.inspect.mem_write_expr = claripy.BVV(0, length * 8)
+
+        mgr._get_inspect_proxy().b("mem_write", when="before", action=on_write)
+        mgr.run(max_steps=5)
+        assert fired[0] > 0, "override BP must fire at least once"
 
 
 class TestRustInspectExtendedEvents:

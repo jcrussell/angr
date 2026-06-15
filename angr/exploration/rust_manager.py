@@ -2364,9 +2364,16 @@ class RustExplorationManager(
         value_ast,
         endness: str,
     ):
-        """PyO3 callback target for mem_write events from Rust."""
+        """PyO3 callback target for mem_write events from Rust.
+
+        Returns the possibly-mutated ``mem_write_expr`` AST when a BP_BEFORE
+        action overrode it (value injection — angr-inh0); the Rust caller
+        substitutes it for the stored value before commit. Returns ``None``
+        when unchanged (and always for ``when='after'``, post-commit), so the
+        original store value stands.
+        """
         try:
-            self._dispatch_inspect_event(
+            proxy = self._dispatch_inspect_event(
                 "mem_write",
                 state_id,
                 when,
@@ -2375,11 +2382,19 @@ class RustExplorationManager(
                 mem_write_expr=value_ast,
                 mem_write_endness=endness,
             )
+            if proxy is not None:
+                mutated = proxy.mem_write_expr
+                # Identity check: only round-trip back to Rust when the user
+                # actually swapped the object — avoids a needless AST->RustBV
+                # conversion (and its width checks) on every untouched store.
+                if mutated is not value_ast:
+                    return mutated
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
             # mem_write event is dropped (no breakpoint fired). Exception
             # type is open since handlers are user code.
             l.warning("inspect mem_write dispatch failed: %s: %s", type(e).__name__, e)
+        return None
 
     def _cb_inspect_reg_read(
         self,

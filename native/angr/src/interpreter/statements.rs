@@ -69,10 +69,22 @@ impl<'a> VEXInterpreter<'a> {
             } => {
                 let store_start = profile_start!(self);
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let mut data_val =
+                    self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 let data_size = data_val.width().div_ceil(8) as usize;
                 if self.profiling_enabled {
                     self.stats.store_stmt_count += 1;
+                }
+
+                // angr-inh0: fire mem_write BP_BEFORE so a user BP overriding
+                // state.inspect.mem_write_expr injects the value pre-commit.
+                // The width-guarded override (if any) replaces data_val before
+                // the store; data_size is unchanged because the guard rejects a
+                // width mismatch.
+                if let Some(injected) = self.dispatch_mem_write_inspect(
+                    py, callbacks, &addr_val, &data_val, data_size, *endness, "before",
+                ) {
+                    data_val = injected;
                 }
 
                 if self.use_rust_memory
@@ -87,7 +99,7 @@ impl<'a> VEXInterpreter<'a> {
                 {
                     // SymbolicMemory::store_concrete already bumped record_mem_store.
                     self.dispatch_mem_write_inspect(
-                        py, callbacks, &addr_val, &data_val, data_size, *endness,
+                        py, callbacks, &addr_val, &data_val, data_size, *endness, "after",
                     );
                     return Ok(StmtResult::Continue);
                 }
@@ -104,7 +116,7 @@ impl<'a> VEXInterpreter<'a> {
                     data_size,
                 )?;
                 self.dispatch_mem_write_inspect(
-                    py, callbacks, &addr_val, &data_val, data_size, *endness,
+                    py, callbacks, &addr_val, &data_val, data_size, *endness, "after",
                 );
                 Ok(StmtResult::Continue)
             }
@@ -1658,11 +1670,20 @@ impl<'a> VEXInterpreter<'a> {
     /// (no breakpoints) is a single bitmask test per Store. Symbolic
     /// addresses are skipped for the MVP (uq4n.4) — only concrete
     /// addresses dispatch; symbolic-address dispatch is a follow-up.
-    /// The `when='after'` event is fired once the underlying memory
-    /// write has completed; the BP receives the stored value AST as
-    /// `mem_write_expr`. Errors from the Python callback are swallowed
-    /// and logged on the Python side; we do not surface them up the
-    /// interpreter stack so a user BP error cannot halt exploration.
+    ///
+    /// Fired twice per Store to mirror Python angr: `when='before'`
+    /// (pre-commit) so a BP overriding `state.inspect.mem_write_expr`
+    /// injects the stored value, then `when='after'` (post-commit, the
+    /// AST is informational). Errors from the Python callback are
+    /// swallowed and logged on the Python side; we do not surface them up
+    /// the interpreter stack so a user BP error cannot halt exploration.
+    ///
+    /// Returns `Some(bv)` when the user's BP_BEFORE action overrode
+    /// `state.inspect.mem_write_expr` (value injection — angr-inh0); the
+    /// caller substitutes it for the stored value. Returns `None` when
+    /// unchanged (and always for `when='after'`, post-commit), so the
+    /// original store value stands.
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_mem_write_inspect(
         &self,
         py: Python<'_>,
@@ -1671,36 +1692,42 @@ impl<'a> VEXInterpreter<'a> {
         data_val: &RustBV,
         data_size: usize,
         endness: Endness,
-    ) {
+        when: &str,
+    ) -> Option<RustBV> {
         // MemWrite = InspectEvent variant 1 — see crate::state::InspectEvent.
         if !callbacks.inspect_event_enabled(1) {
-            return;
+            return None;
         }
-        let Some(addr_u64) = addr_val.as_u64() else {
-            return;
-        };
+        let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
         };
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, data_val, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        // Swallow errors — the Python dispatcher logs BP failures itself.
-        let _ = callbacks.call_inspect_mem_write(
-            py,
-            self.current_state_id,
-            "after",
-            addr_u64,
-            data_size as u32,
-            Some(&value_ast),
-            endness_str,
-        );
+        let claripy_mod = py.import("claripy").ok()?;
+        let value_ast =
+            crate::claripy_bridge::rustbv_to_claripy(py, data_val, &claripy_mod).ok()?;
+        let mutated = callbacks
+            .call_inspect_mem_write(
+                py,
+                self.current_state_id,
+                when,
+                addr_u64,
+                data_size as u32,
+                Some(&value_ast),
+                endness_str,
+            )
+            .ok()??;
+        // The user injected a new value via state.inspect.mem_write_expr
+        // (only meaningful for when='before', pre-store — angr-inh0).
+        // Convert it back to a RustBV; reject a width mismatch defensively
+        // so a bad override can't silently corrupt the store.
+        let bound = mutated.bind(py);
+        let bv = crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()?;
+        if bv.width() == (data_size * 8) as u32 {
+            Some(bv)
+        } else {
+            None
+        }
     }
 
     /// Fire a `reg_write` inspect callback into Python for a VEX `Put`.

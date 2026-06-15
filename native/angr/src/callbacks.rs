@@ -1344,8 +1344,10 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect mem_write callback. See `call_inspect_mem_read`.
-    /// The mem_write event currently fires `when='after'` (post-store), so the
-    /// returned value is informational only — see `dispatch_mem_write_inspect`.
+    /// Fires `when='before'` (pre-store) — the returned AST, if any, is the
+    /// user's `mem_write_expr` override to substitute for the stored value
+    /// (angr-inh0) — and `when='after'` (post-store), where the return is
+    /// informational only. See `dispatch_mem_write_inspect`.
     #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_write(
         &self,

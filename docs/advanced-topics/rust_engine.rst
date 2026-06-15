@@ -1963,7 +1963,7 @@ Event          Fires when        BP attributes
 ============   ===============   ==================================================
 ``mem_read``    ``after``         ``mem_read_address``, ``mem_read_length``,
                                  ``mem_read_expr``, ``mem_read_endness``
-``mem_write``   ``after``         ``mem_write_address``, ``mem_write_length``,
+``mem_write``   ``before``/``after`` ``mem_write_address``, ``mem_write_length``,
                                  ``mem_write_expr``, ``mem_write_endness``
 ``reg_read``    ``after``         ``reg_read_offset``, ``reg_read_length``,
                                  ``reg_read_expr``
@@ -2021,7 +2021,7 @@ BP attribute write-back
 Python angr's ``_inspect`` semantics let a breakpoint action *override*
 certain attributes to inject a value or short-circuit a computation.
 The Rust engine honors a curated subset of these write-backs
-(angr-uy32); the rest fire read-only (mutations are ignored).
+(angr-uy32, angr-inh0); the rest fire read-only (mutations are ignored).
 
 **Honored (write-back applied):**
 
@@ -2031,22 +2031,27 @@ The Rust engine honors a curated subset of these write-backs
   ``claripy_to_rustbv`` and used in place of the load. A width mismatch
   (the override's bit-width ≠ ``mem_read_length * 8``) is rejected
   defensively and the original value stands.
+* ``mem_write_expr`` — a ``mem_write`` BP_BEFORE that assigns
+  ``state.inspect.mem_write_expr`` substitutes the new value for the
+  stored data *before* it is committed (angr-inh0). The ``mem_write``
+  event now fires twice per ``IRStmt::Store`` to mirror Python angr:
+  ``when='before'`` (pre-commit, injection point) and ``when='after'``
+  (post-commit, informational). The override is width-guarded against
+  ``mem_write_length * 8`` exactly like ``mem_read_expr``; a mismatch is
+  rejected and the original value is stored.
 * ``dirty_result`` — a ``dirty`` BP_AFTER that assigns
   ``state.inspect.dirty_result`` replaces the dirty handler's return
   value before it is concretized and handed back to the interpreter.
 
 The write-back uses an identity check: only a BP that actually swaps the
-attribute object triggers the round-trip, so an untouched read costs
-nothing extra. The Python callback returns the mutated attribute to the
-Rust dispatch site (``call_inspect_mem_read`` /
-``dispatch_mem_read_inspect``), which applies it.
+attribute object triggers the round-trip, so an untouched read or store
+costs nothing extra. The Python callback returns the mutated attribute to
+the Rust dispatch site (``call_inspect_mem_read`` /
+``dispatch_mem_read_inspect``, ``call_inspect_mem_write`` /
+``dispatch_mem_write_inspect``), which applies it.
 
 **Read-only (mutations ignored — file a follow-up if you need these):**
 
-* ``mem_write_expr`` — the ``mem_write`` event fires ``when='after'``,
-  i.e. *after* the store has committed, so overriding the value does not
-  retroactively change what was written. Honoring it would require a
-  pre-store ``when='before'`` dispatch (tracked as a follow-up).
 * ``reg_read_expr`` / ``reg_write_expr`` — register events fire
   ``when='after'`` and are read-only.
 * ``expr_result`` — the ``expr`` event is read-only (see below).
@@ -2120,9 +2125,8 @@ this document so callers can find these workarounds in order:
 2. **Drop back to the Python engine** for analyses that fundamentally
    depend on an unsupported event (``constraints``, ``vex_lift``, …)
    or on an unsupported write-back of a supported event (e.g.,
-   overriding ``mem_write_expr`` to change a committed store, or
-   ``expr_result`` — see *BP attribute write-back* above for the
-   honored vs. read-only split):
+   overriding ``reg_write_expr`` or ``expr_result`` — see *BP attribute
+   write-back* above for the honored vs. read-only split):
 
    .. code-block:: python
 
@@ -2239,8 +2243,8 @@ Decision history
   claripy-reconstructed value; ``expr`` is always passed as ``None``
   because Rust IRExpr doesn't round-trip cleanly into ``pyvex.IRExpr``.
   User mutations to ``expr_result`` are not honored — only
-  ``mem_read_expr`` and ``dirty_result`` write-back is wired (angr-uy32);
-  see *BP attribute write-back* above.
+  ``mem_read_expr`` / ``dirty_result`` (angr-uy32) and ``mem_write_expr``
+  (angr-inh0) write-back is wired; see *BP attribute write-back* above.
 * ``angr-ysml`` (2026-06-03): wired ``fork`` dispatch at the
   previously-reserved bit 4. The dispatch fires from
   ``exploration/stepping.rs`` for each forked state created by the
