@@ -23,6 +23,7 @@ pub mod cgc;
 pub mod concurrency;
 pub mod directory;
 pub mod exit;
+pub mod fd_io;
 pub mod file_descriptor;
 pub mod file_path;
 pub mod identity;
@@ -36,6 +37,7 @@ pub mod rlimit;
 pub mod sigaction;
 pub mod signals;
 pub mod sim_time;
+pub mod startup;
 pub mod write;
 
 use std::collections::HashMap;
@@ -195,6 +197,16 @@ impl NativeSyscallRegistry {
         // ===== amd64 (asm/unistd_64.h) =====
         // read (0): stdin (fd=0) only; symbolic bytes mirror NativeRead.
         // write (1): stdout (fd=1) and stderr (fd=2); concrete bytes only.
+        // lseek (8), readv (19), writev (20): FD I/O (angr-6ylm). lseek
+        //   mirrors NativeLseek; readv/writev walk a struct iovec[] and
+        //   reuse the read/write logic (writev is glibc stdio's flush
+        //   path). See `syscalls/fd_io.rs`. pread64/pwrite64 stay on the
+        //   Python path (positioned write needs an offset-honoring
+        //   FileSystem::write; current model is append-only).
+        // uname (63), set_tid_address (218), set_robust_list (273),
+        //   getrandom (318): libc/loader startup stubs (angr-6ylm). See
+        //   `syscalls/startup.rs`; uname/set_tid_address mirror the
+        //   linux_kernel procs, getrandom fills buf with symbolic bytes.
         // exit (60), exit_group (231): deadend.
         // mprotect (10): set page perms; -1 on misalign / unmapped.
         // brk (12): grow/query the program break.
@@ -318,7 +330,10 @@ impl NativeSyscallRegistry {
                 (12, brk::NativeBrkSyscall),
                 (13, sigaction::NativeRtSigactionSyscall),
                 (15, signals::NativeRtSigreturnSyscall),
+                (8, fd_io::NativeLseekSyscall),
                 (16, file_descriptor::NativeIoctlSyscall),
+                (19, fd_io::NativeReadvSyscall),
+                (20, fd_io::NativeWritevSyscall),
                 (21, file_path::NativeAccessSyscall),
                 (22, file_descriptor::NativePipeSyscall),
                 (25, memory_extras::NativeMremapSyscall),
@@ -331,6 +346,7 @@ impl NativeSyscallRegistry {
                 (39, identity::NativeGetpidSyscall),
                 (60, exit::NativeExitSyscall),
                 (62, signals::NativeKillSyscall),
+                (63, startup::NativeUnameSyscall),
                 (72, file_descriptor::NativeFcntlSyscall),
                 (79, directory::NativeGetcwdSyscall),
                 (80, directory::NativeChdirSyscall),
@@ -359,6 +375,7 @@ impl NativeSyscallRegistry {
                 (201, sim_time::NativeTimeSyscall),
                 (202, concurrency::NativeFutexSyscall),
                 (213, concurrency::NativeEpollCreateSyscall),
+                (218, startup::NativeSetTidAddressSyscall),
                 (228, sim_time::NativeClockGettimeSyscall),
                 (231, exit::NativeExitSyscall),
                 (232, concurrency::NativeEpollWaitSyscall),
@@ -371,6 +388,7 @@ impl NativeSyscallRegistry {
                 (264, directory::NativeRenameatSyscall),
                 (267, file_path::NativeReadlinkatSyscall),
                 (269, file_path::NativeFaccessatSyscall),
+                (273, startup::NativeSetRobustListSyscall),
                 (281, concurrency::NativeEpollPwaitSyscall),
                 (284, concurrency::NativeEventfdSyscall),
                 (290, concurrency::NativeEventfd2Syscall),
@@ -379,6 +397,7 @@ impl NativeSyscallRegistry {
                 (293, file_descriptor::NativePipe2Syscall),
                 (302, rlimit::NativePrlimit64Syscall),
                 (316, directory::NativeRenameat2Syscall),
+                (318, startup::NativeGetrandomSyscall),
             ]
         );
 
