@@ -20,6 +20,7 @@ pub mod registry;
 mod sharing;
 #[cfg(feature = "vex-engine-z3")]
 mod solver_build;
+mod solving_ops;
 mod stats;
 mod table;
 mod value;
