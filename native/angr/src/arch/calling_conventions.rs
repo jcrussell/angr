@@ -85,6 +85,20 @@ pub trait CallingConvention: Send + Sync {
         self.arg_registers()
     }
 
+    /// Stack offset (relative to SP) where syscall arguments past the register
+    /// window begin, or `None` if this ABI never spills syscall args to the
+    /// stack.
+    ///
+    /// Most Linux syscall ABIs (amd64, x86, ARM, AArch64) expose every syscall
+    /// argument we care about in registers, so a request for more args than
+    /// the register window holds is a genuine [`ExtractionError::RegisterOverflow`]
+    /// and the caller falls through to the Python syscall callback. MIPS O32 is
+    /// the exception: it passes syscall args 5+ on the stack at `sp+16` (the
+    /// same save area as the C ABI), so it overrides this to `Some(16)`.
+    fn syscall_stack_arg_offset(&self) -> Option<u64> {
+        None
+    }
+
     /// Get the register offsets used for floating-point arguments.
     fn fp_arg_registers(&self) -> &[u32];
 
@@ -481,6 +495,13 @@ impl CallingConvention for MipsO32 {
         // O32 reserves 16 bytes for $a0-$a3 in the caller's frame.
         // Stack-passed args (5+) start at [sp + 16].
         16
+    }
+
+    fn syscall_stack_arg_offset(&self) -> Option<u64> {
+        // O32 syscalls share the C ABI's 16-byte save area: args 5+ live at
+        // [sp + 16]. Enables native dispatch of 6-arg syscalls (futex 4238,
+        // epoll_pwait 4313, mmap2 4210) when SP is concrete.
+        Some(16)
     }
 
     fn endness(&self) -> Endness {

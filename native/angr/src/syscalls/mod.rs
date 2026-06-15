@@ -424,10 +424,10 @@ impl NativeSyscallRegistry {
         // registered. `old_mmap` reads six 32-bit fields from a
         // `struct mmap_arg_struct *` and dispatches to `do_mmap`;
         // `mmap2` takes 6 register args with offset in page units and
-        // scales by PAGE_SIZE. MIPS32 O32 registers only `old_mmap`
-        // (4090) — `mmap2` (4210) takes 6 args but O32 passes args 5-6
-        // on the stack which `extract_syscall_args` does not currently
-        // traverse, so MIPS32 mmap2 still falls back to Python.
+        // scales by PAGE_SIZE. MIPS32 O32 registers both `old_mmap`
+        // (4090) and `mmap2` (4210): O32 passes args 5-6 on the stack at
+        // [sp+16], which `extract_syscall_args` now traverses for concrete
+        // SP (angr-tvod).
 
         // Linux i386 (asm/unistd_32.h).
         //
@@ -734,10 +734,11 @@ impl NativeSyscallRegistry {
 
         // Linux MIPS32 O32 (asm/unistd_o32.h). Numbers start at 4000.
         // `old_mmap` (4090) registered — one struct-pointer arg, fits in
-        // $a0 (angr-6gmc). `mmap2` (4210) still skipped: it takes 6 args
-        // but O32 only passes 4 in registers ($a0-$a3); args 5-6 live on
-        // the stack and our extract_syscall_args does not currently
-        // traverse it.
+        // $a0 (angr-6gmc). `mmap2` (4210) is a 6-arg syscall; O32 passes
+        // args 1-4 in $a0-$a3 and args 5-6 on the stack at [sp+16]. Since
+        // angr-tvod taught extract_syscall_args to traverse the O32 stack
+        // save area (CallingConvention::syscall_stack_arg_offset), it now
+        // dispatches natively when SP is concrete.
         register_syscalls!(
             r,
             "MIPS32",
@@ -776,6 +777,8 @@ impl NativeSyscallRegistry {
                 (4078, sim_time::NativeGettimeofdaySyscall),
                 (4085, file_path::NativeReadlinkSyscall),
                 (4090, mmap::NativeOldMmapSyscall),
+                // angr-tvod: 6-arg, args 5-6 from [sp+16] via O32 stack path.
+                (4210, mmap::NativeMmap2Syscall),
                 (4091, munmap::NativeMunmapSyscall),
                 (4107, file_path::NativeLstatSyscall),
                 (4125, mprotect::NativeMprotectSyscall),
@@ -1242,14 +1245,14 @@ mod tests {
             );
         }
         // MIPS32 old_mmap (4090) registered (angr-6gmc). mmap2 (4210)
-        // still absent — takes 6 args but O32 only passes 4 in regs.
+        // registered (angr-tvod) — 6 args, args 5-6 read from [sp+16].
         assert!(
             r.get("MIPS32", 4090).is_some(),
             "MIPS32 old_mmap (4090) should be registered"
         );
         assert!(
-            r.get("MIPS32", 4210).is_none(),
-            "MIPS32 mmap2 (4210) intentionally absent — args 5+ live on stack"
+            r.get("MIPS32", 4210).is_some(),
+            "MIPS32 mmap2 (4210) should be registered (angr-tvod)"
         );
     }
 

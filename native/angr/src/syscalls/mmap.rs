@@ -284,9 +284,9 @@ impl NativeSyscall for NativeOldMmapSyscall {
 /// page-size units rather than bytes — multiplied by `PAGE_SIZE` here
 /// before dispatch. Mirrors `procedures/linux_kernel/mmap.py::mmap2`.
 ///
-/// Note: not registered for MIPS32 O32. The O32 ABI passes args 5-6
-/// on the stack and `extract_syscall_args` does not currently traverse
-/// it; mmap2 falls back to Python on MIPS32 for that reason.
+/// Registered for MIPS32 O32 (4210) as well as i386/ARM (192). O32 passes
+/// args 5-6 on the stack at [sp+16]; `extract_syscall_args` traverses that
+/// window for concrete SP (angr-tvod), so mmap2 dispatches natively there.
 pub struct NativeMmap2Syscall;
 
 impl NativeSyscall for NativeMmap2Syscall {
