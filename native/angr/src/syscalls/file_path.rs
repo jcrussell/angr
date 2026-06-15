@@ -786,6 +786,43 @@ mod tests {
             .expect("store NUL");
     }
 
+    /// Build an amd64 state with `path` staged (NUL-terminated) at 0x2000 —
+    /// the default staging address shared by most file_path syscall tests.
+    fn state_with_path(path: &[u8]) -> RustSimState {
+        let mut state = RustSimState::new("amd64").expect("state");
+        stage_path(&mut state, 0x2000, path);
+        state
+    }
+
+    /// Unwrap a `Continue` outcome's return value, panicking with context
+    /// otherwise.
+    fn expect_continue(outcome: SyscallOutcome) -> u64 {
+        match outcome {
+            SyscallOutcome::Continue { ret } => ret,
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// Assert that `err` is a `SymbolicArgument` whose message contains
+    /// `needle`.
+    fn assert_symbolic_arg(err: SyscallError, needle: &str) {
+        match err {
+            SyscallError::SymbolicArgument(msg) => assert!(
+                msg.contains(needle),
+                "expected SymbolicArgument message to contain {needle:?}, got {msg:?}",
+            ),
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+    }
+
+    /// Assert that `err` is a `Memory` error (message not inspected).
+    fn assert_memory_err(err: SyscallError) {
+        match err {
+            SyscallError::Memory(_) => {}
+            other => panic!("expected Memory error, got {other:?}"),
+        }
+    }
+
     // angr-0hif.1 stub-sweep deleted — every file_path stub has now
     // been promoted: faccessat (angr-6009), lstat/newfstatat (angr-poao),
     // readlink/readlinkat (angr-wv38). Per-handler semantics are pinned
@@ -793,8 +830,7 @@ mod tests {
 
     #[test]
     fn open_allocates_fresh_fd_and_records_name() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/example.txt");
+        let mut state = state_with_path(b"/tmp/example.txt");
 
         let outcome = NativeOpenSyscall
             .call(
@@ -806,10 +842,7 @@ mod tests {
                 ],
             )
             .expect("open ok");
-        let fd = match outcome {
-            SyscallOutcome::Continue { ret } => ret,
-            other => panic!("expected Continue, got {other:?}"),
-        };
+        let fd = expect_continue(outcome);
         assert_eq!(fd, 3, "first allocated fd should be 3");
         assert!(state.file_system_ref().is_open(fd as u32));
         let (name, _, _, _, _) = state.file_system_ref().fd_info(fd as u32).unwrap();
@@ -835,10 +868,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -861,15 +891,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(
-                    msg.contains("open"),
-                    "expected message to mention 'open', got {msg:?}",
-                );
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "open");
     }
 
     #[test]
@@ -885,18 +907,12 @@ mod tests {
                 &[sym_ptr, RustBV::concrete(0, 64), RustBV::concrete(0, 64)],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
     fn openat_absolute_path_allocates_fd_ignoring_dirfd() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/etc/hosts");
+        let mut state = state_with_path(b"/etc/hosts");
 
         let outcome = NativeOpenatSyscall
             .call(
@@ -920,8 +936,7 @@ mod tests {
 
     #[test]
     fn openat_relative_path_with_at_fdcwd_allocates_fd() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"flag.txt");
+        let mut state = state_with_path(b"flag.txt");
 
         let outcome = NativeOpenatSyscall
             .call(
@@ -934,16 +949,12 @@ mod tests {
                 ],
             )
             .expect("openat ok");
-        match outcome {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(outcome), 3);
     }
 
     #[test]
     fn openat_relative_path_without_at_fdcwd_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"flag.txt");
+        let mut state = state_with_path(b"flag.txt");
         let prev_next_fd = state.file_system_ref().next_fd();
 
         let outcome = NativeOpenatSyscall
@@ -957,10 +968,7 @@ mod tests {
                 ],
             )
             .expect("openat ok");
-        match outcome {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(outcome), NEG_ONE);
         // No fd should have been allocated.
         assert_eq!(state.file_system_ref().next_fd(), prev_next_fd);
     }
@@ -975,10 +983,7 @@ mod tests {
         let outcome = NativeCloseSyscall
             .call(&mut state, &[RustBV::concrete(fd as u128, 64)])
             .unwrap();
-        match outcome {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(outcome), 0);
         assert!(!state.file_system_ref().is_open(fd));
     }
 
@@ -989,10 +994,7 @@ mod tests {
         let outcome = NativeCloseSyscall
             .call(&mut state, &[RustBV::concrete(99, 64)])
             .unwrap();
-        match outcome {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(outcome), NEG_ONE);
     }
 
     #[test]
@@ -1003,18 +1005,12 @@ mod tests {
         let err = NativeCloseSyscall
             .call(&mut state, &[sym_fd])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("fd"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "fd");
     }
 
     #[test]
     fn access_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/no/such/file");
+        let mut state = state_with_path(b"/no/such/file");
 
         let out = NativeAccessSyscall
             .call(
@@ -1022,16 +1018,12 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
             )
             .expect("access ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn access_after_open_returns_zero() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/exists.txt");
+        let mut state = state_with_path(b"/tmp/exists.txt");
 
         // Open registers the path.
         NativeOpenSyscall
@@ -1055,10 +1047,7 @@ mod tests {
                 &[RustBV::concrete(0x3000, 64), RustBV::concrete(0, 64)],
             )
             .expect("access ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
     }
 
     #[test]
@@ -1077,10 +1066,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
             )
             .expect("access ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
     }
 
     #[test]
@@ -1097,10 +1083,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
             )
             .expect("access ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1119,12 +1102,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("access"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "access");
     }
 
     #[test]
@@ -1137,12 +1115,7 @@ mod tests {
         let err = NativeAccessSyscall
             .call(&mut state, &[sym_ptr, RustBV::concrete(0, 64)])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
@@ -1195,8 +1168,7 @@ mod tests {
 
     #[test]
     fn faccessat_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/no/such/file");
+        let mut state = state_with_path(b"/no/such/file");
 
         let out = NativeFaccessatSyscall
             .call(
@@ -1208,16 +1180,12 @@ mod tests {
                 ],
             )
             .expect("faccessat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn faccessat_after_open_returns_zero_with_at_fdcwd() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/fa-exists.txt");
+        let mut state = state_with_path(b"/tmp/fa-exists.txt");
 
         NativeOpenSyscall
             .call(
@@ -1240,10 +1208,7 @@ mod tests {
                 ],
             )
             .expect("faccessat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
     }
 
     #[test]
@@ -1265,10 +1230,7 @@ mod tests {
                 ],
             )
             .expect("faccessat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
     }
 
     #[test]
@@ -1293,10 +1255,7 @@ mod tests {
                 ],
             )
             .expect("faccessat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1317,10 +1276,7 @@ mod tests {
                 ],
             )
             .expect("faccessat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1343,18 +1299,12 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("faccessat"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "faccessat");
     }
 
     #[test]
     fn faccessat_symbolic_dirfd_falls_back() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/x");
+        let mut state = state_with_path(b"/tmp/x");
         let sym_dirfd = {
             let ctx = state.solver().borrow();
             RustBV::symbolic(&ctx, "dirfd", 64)
@@ -1370,12 +1320,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("dirfd"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "dirfd");
     }
 
     #[test]
@@ -1438,8 +1383,7 @@ mod tests {
 
     #[test]
     fn readlink_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/no/such/path");
+        let mut state = state_with_path(b"/no/such/path");
 
         let out = NativeReadlinkSyscall
             .call(
@@ -1451,18 +1395,14 @@ mod tests {
                 ],
             )
             .expect("readlink ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn readlink_known_path_still_returns_minus_one() {
         // Even for paths the FileSystem knows about, readlink must return
         // -1 (EINVAL — not a symlink). The FileSystem has no symlinks.
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/known");
+        let mut state = state_with_path(b"/tmp/known");
         state
             .file_system()
             .register_known_path("/tmp/known".to_string());
@@ -1477,10 +1417,7 @@ mod tests {
                 ],
             )
             .expect("readlink ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1501,18 +1438,14 @@ mod tests {
                 ],
             )
             .expect("readlink ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn readlink_buf_is_not_modified_on_failure() {
         // The buffer must NOT be written: real Linux only fills it on a
         // positive return, and we always return -1.
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/whatever");
+        let mut state = state_with_path(b"/whatever");
         // Pre-mark buf with a sentinel; after the call it must still be
         // there (we never wrote to it).
         state.map_memory(0x3000, 0x1000, Permission::RWX);
@@ -1563,12 +1496,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("readlink"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "readlink");
     }
 
     #[test]
@@ -1584,12 +1512,7 @@ mod tests {
                 &[sym_ptr, RustBV::concrete(0, 64), RustBV::concrete(0, 64)],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
@@ -1622,8 +1545,7 @@ mod tests {
 
     #[test]
     fn readlinkat_at_fdcwd_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/no/such/path");
+        let mut state = state_with_path(b"/no/such/path");
 
         let out = NativeReadlinkatSyscall
             .call(
@@ -1636,16 +1558,12 @@ mod tests {
                 ],
             )
             .expect("readlinkat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn readlinkat_known_path_still_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/known");
+        let mut state = state_with_path(b"/tmp/known");
         state
             .file_system()
             .register_known_path("/tmp/known".to_string());
@@ -1661,17 +1579,13 @@ mod tests {
                 ],
             )
             .expect("readlinkat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn readlinkat_absolute_path_ignores_dirfd() {
         // Absolute path: dirfd does not matter, still -1.
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/abs/path");
+        let mut state = state_with_path(b"/abs/path");
 
         let out = NativeReadlinkatSyscall
             .call(
@@ -1684,10 +1598,7 @@ mod tests {
                 ],
             )
             .expect("readlinkat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1695,8 +1606,7 @@ mod tests {
         // Relative path with arbitrary dirfd: still -1 (would be -1
         // anyway, but the short-circuit branch exists for symmetry with
         // faccessat / openat).
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"relative/path");
+        let mut state = state_with_path(b"relative/path");
 
         let out = NativeReadlinkatSyscall
             .call(
@@ -1709,10 +1619,7 @@ mod tests {
                 ],
             )
             .expect("readlinkat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1734,10 +1641,7 @@ mod tests {
                 ],
             )
             .expect("readlinkat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -1758,12 +1662,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("dirfd"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "dirfd");
     }
 
     #[test]
@@ -1784,12 +1683,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
@@ -1846,10 +1740,7 @@ mod tests {
                 &[RustBV::concrete(99, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("fstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
         // Buffer must NOT have been touched on the failure path
         // (read 0s from the freshly-mapped page).
         assert_eq!(read_u64_le(&state, 0x4000), 0);
@@ -1876,10 +1767,7 @@ mod tests {
                 ],
             )
             .expect("fstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // st_size at offset 0x30
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
@@ -1913,10 +1801,7 @@ mod tests {
                 ],
             )
             .expect("fstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // AArch64-specific: st_mode at 0x10 (NOT 0x18 like AMD64).
         assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFREG_0755 as u32);
@@ -1971,12 +1856,7 @@ mod tests {
         let err = NativeFstatSyscall
             .call(&mut state, &[sym_fd, RustBV::concrete(0x4000, 64)])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("fd"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "fd");
     }
 
     #[test]
@@ -1989,12 +1869,7 @@ mod tests {
         let err = NativeFstatSyscall
             .call(&mut state, &[RustBV::concrete(0, 64), sym_buf])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("statbuf"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "statbuf");
     }
 
     #[test]
@@ -2012,16 +1887,12 @@ mod tests {
             )
             .expect_err("unmapped should error");
         // The MemoryError surfaces as SyscallError via the `?` conversion.
-        match err {
-            SyscallError::Memory(_) => {}
-            other => panic!("expected Memory error, got {other:?}"),
-        }
+        assert_memory_err(err);
     }
 
     #[test]
     fn stat_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/never-registered");
+        let mut state = state_with_path(b"/tmp/never-registered");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         let out = NativeStatSyscall
@@ -2030,10 +1901,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("stat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
         // Buffer must NOT have been touched on the failure path.
         assert_eq!(read_u64_le(&state, 0x4000), 0);
     }
@@ -2053,16 +1921,12 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("stat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn stat_known_path_with_content_writes_amd64_layout() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/sized");
+        let mut state = state_with_path(b"/tmp/sized");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         // Seed an fd with 13 bytes so content_size_for_path returns Some(13).
@@ -2078,10 +1942,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("stat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // st_size at offset 0x30
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
@@ -2093,8 +1954,7 @@ mod tests {
 
     #[test]
     fn stat_registered_path_without_fd_uses_zero_size() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/etc/registered-only");
+        let mut state = state_with_path(b"/etc/registered-only");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         // Register without allocating an fd — content_size_for_path → None.
@@ -2108,10 +1968,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("stat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
         // st_size defaults to 0 when content_size_for_path is None.
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 0);
         assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
@@ -2159,12 +2016,7 @@ mod tests {
         let err = NativeStatSyscall
             .call(&mut state, &[sym_ptr, RustBV::concrete(0x4000, 64)])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
@@ -2177,18 +2029,12 @@ mod tests {
         let err = NativeStatSyscall
             .call(&mut state, &[RustBV::concrete(0x2000, 64), sym_buf])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("statbuf"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "statbuf");
     }
 
     #[test]
     fn stat_unmapped_buf_surfaces_error() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/known");
+        let mut state = state_with_path(b"/tmp/known");
         state
             .file_system()
             .register_known_path("/tmp/known".to_string());
@@ -2199,16 +2045,12 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x8000, 64)],
             )
             .expect_err("unmapped should error");
-        match err {
-            SyscallError::Memory(_) => {}
-            other => panic!("expected Memory error, got {other:?}"),
-        }
+        assert_memory_err(err);
     }
 
     #[test]
     fn stat_uses_largest_content_len_across_fds_for_same_path() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/shared");
+        let mut state = state_with_path(b"/tmp/shared");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         // Two fds for the same name with different sizes. Helper takes
@@ -2230,10 +2072,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("stat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 17);
     }
 
@@ -2246,8 +2085,7 @@ mod tests {
 
     #[test]
     fn lstat_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/never-registered");
+        let mut state = state_with_path(b"/tmp/never-registered");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         let out = NativeLstatSyscall
@@ -2256,10 +2094,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("lstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
         // Buffer must NOT have been touched on the failure path.
         assert_eq!(read_u64_le(&state, 0x4000), 0);
     }
@@ -2279,16 +2114,12 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("lstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
     fn lstat_known_path_with_content_writes_amd64_layout() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/lsized");
+        let mut state = state_with_path(b"/tmp/lsized");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         let _fd = state.file_system().open_with_content(
@@ -2303,10 +2134,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
             )
             .expect("lstat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // st_size at offset 0x30
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 3);
@@ -2357,18 +2185,12 @@ mod tests {
         let err = NativeLstatSyscall
             .call(&mut state, &[sym_ptr, RustBV::concrete(0x4000, 64)])
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
     fn lstat_unmapped_buf_surfaces_error() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/known-l");
+        let mut state = state_with_path(b"/tmp/known-l");
         state
             .file_system()
             .register_known_path("/tmp/known-l".to_string());
@@ -2379,10 +2201,7 @@ mod tests {
                 &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x8000, 64)],
             )
             .expect_err("unmapped should error");
-        match err {
-            SyscallError::Memory(_) => {}
-            other => panic!("expected Memory error, got {other:?}"),
-        }
+        assert_memory_err(err);
     }
 
     // ===== newfstatat (angr-poao) =====
@@ -2392,8 +2211,7 @@ mod tests {
 
     #[test]
     fn newfstatat_unknown_path_returns_minus_one() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/no/such/file");
+        let mut state = state_with_path(b"/no/such/file");
         state.map_memory(0x4000, 0x1000, Permission::RW);
 
         let out = NativeNewfstatatSyscall
@@ -2407,18 +2225,14 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
         // Buffer must not have been touched on the failure path.
         assert_eq!(read_u64_le(&state, 0x4000), 0);
     }
 
     #[test]
     fn newfstatat_at_fdcwd_known_path_amd64_layout() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/nfa.txt");
+        let mut state = state_with_path(b"/tmp/nfa.txt");
         state.map_memory(0x4000, 0x1000, Permission::RW);
         let _fd = state.file_system().open_with_content(
             "/tmp/nfa.txt".into(),
@@ -2437,10 +2251,7 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // AMD64-specific offsets (same as fstat/stat).
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
@@ -2473,10 +2284,7 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
 
         // ARM64-specific: st_mode at 0x10 (u32), st_nlink at 0x14, blksize is u32.
         assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFREG_0755 as u32);
@@ -2506,10 +2314,7 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), 0);
         // Empty content (registered without fd) — st_size = 0.
         assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 0);
     }
@@ -2537,10 +2342,7 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
         // Buffer must NOT have been touched on the failure path.
         assert_eq!(read_u64_le(&state, 0x4000), 0);
     }
@@ -2565,10 +2367,7 @@ mod tests {
                 ],
             )
             .expect("newfstatat ok");
-        match out {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
-            other => panic!("expected Continue, got {other:?}"),
-        }
+        assert_eq!(expect_continue(out), NEG_ONE);
     }
 
     #[test]
@@ -2605,8 +2404,7 @@ mod tests {
 
     #[test]
     fn newfstatat_symbolic_dirfd_falls_back() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/x");
+        let mut state = state_with_path(b"/tmp/x");
         let sym_dirfd = {
             let ctx = state.solver().borrow();
             RustBV::symbolic(&ctx, "dirfd", 64)
@@ -2623,12 +2421,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("dirfd"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "dirfd");
     }
 
     #[test]
@@ -2649,18 +2442,12 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        match err {
-            SyscallError::SymbolicArgument(msg) => {
-                assert!(msg.contains("pathname"), "got {msg:?}");
-            }
-            other => panic!("expected SymbolicArgument, got {other:?}"),
-        }
+        assert_symbolic_arg(err, "pathname");
     }
 
     #[test]
     fn newfstatat_unmapped_buf_surfaces_error() {
-        let mut state = RustSimState::new("amd64").expect("state");
-        stage_path(&mut state, 0x2000, b"/tmp/known-nfa");
+        let mut state = state_with_path(b"/tmp/known-nfa");
         state
             .file_system()
             .register_known_path("/tmp/known-nfa".to_string());
@@ -2676,10 +2463,7 @@ mod tests {
                 ],
             )
             .expect_err("unmapped should error");
-        match err {
-            SyscallError::Memory(_) => {}
-            other => panic!("expected Memory error, got {other:?}"),
-        }
+        assert_memory_err(err);
     }
 
     #[test]
