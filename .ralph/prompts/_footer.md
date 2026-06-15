@@ -13,7 +13,7 @@ For each task, follow this loop:
     manual `ruff check --fix <file> && ruff format <file>` before commit is the
     belt-and-suspenders.)
  6. If Rust changed: `pip install -e . --no-build-isolation --no-deps`
- 7. Test: `python -m pytest tests/engines/test_rust_exploration.py -v --tb=short`
+ 7. Test: `python -m pytest tests/engines/rust/ -v --tb=short`
  8. If tests pass: `git add <changed files> && git commit -m "<description>"`
  9. `bd close <id> --reason="<what was done>"`
 10. **MANDATORY — save what you learned.** Run `bd remember` for each that applies:

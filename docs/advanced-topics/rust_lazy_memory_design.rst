@@ -397,9 +397,9 @@ Phase 1 — Multi cell LOAD path (angr-czph)
    the upgraded store via the existing
    ``memory_store_symbolic_full`` callback bypass, gated on the
    ``MultiwriteAnnotation`` presence on the address. Confirm
-   ``tests/engines/test_rust_exploration.py`` still passes.
+   ``tests/engines/rust/`` still passes.
 
-Acceptance: ``test_rust_exploration.py`` 389/389 still passing;
+Acceptance: ``tests/engines/rust/`` 389/389 still passing;
 new ``test_multi_cell_*`` cases passing; ``ite_depth_max`` for
 ``strcpy_find`` (or the chosen workload) measurably lower than the
 eager baseline; no regression on the existing benchmark gate.

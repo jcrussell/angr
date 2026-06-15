@@ -53,7 +53,7 @@ I3. Init-cache user-symbolic gate
     the input state holds user-symbolic data. Tests rely on this so user
     stores from one test do not bleed into the next via the class-level
     `_init_cache`. See the `_isolate_class_caches` autouse fixture in
-    `TestEdgeCases` (tests/engines/test_rust_exploration.py:6601) which
+    `TestEdgeCases` (tests/engines/rust/test_annotations_edge.py) which
     clears the cache between tests as defense-in-depth.
 
 I4. `_apply_state_metadata` is an allow-list

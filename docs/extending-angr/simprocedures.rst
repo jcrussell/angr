@@ -479,7 +479,7 @@ both invoked except when native fails):
    where native was attempted and lost).
 
 Regression coverage for this contract lives at
-``tests/engines/test_rust_exploration.py`` —
+``tests/engines/rust/`` —
 ``test_python_override_bypasses_native_strlen`` (override case) and
 ``test_python_procedure_symbolic_arg_falls_back_to_python``
 (native-tried-then-Python case).

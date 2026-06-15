@@ -60,7 +60,7 @@ echo "=== verifying ==="
 "$VENV/bin/python" -c "import claripy, pyvex, archinfo, cle; print('claripy', claripy.__version__, 'pyvex', pyvex.__version__, 'archinfo', archinfo.__version__, 'cle', cle.__version__)"
 
 # Quick smoke-check (skips full suite — that's hundreds of tests).
-"$VENV/bin/python" -m pytest tests/engines/test_rust_exploration.py -k "test_fauxware or test_state_creation" --tb=short -q 2>&1 | tail -5
+"$VENV/bin/python" -m pytest tests/engines/rust/ -k "test_fauxware or test_state_creation" --tb=short -q 2>&1 | tail -5
 
 echo
 echo "venv restored at $VENV"

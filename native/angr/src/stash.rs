@@ -18,8 +18,8 @@
 //! and a freshly-mutated state can race-evict between callbacks on the
 //! same state. Regression tests:
 //! `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
-//! `..._drops_dead_states`, `..._skips_pinned` (tests/engines/
-//! test_rust_exploration.py:2017,2064,2096).
+//! `..._drops_dead_states`, `..._skips_pinned`
+//! (tests/engines/rust/test_plugins.py).
 
 use std::collections::{HashMap, VecDeque};
 

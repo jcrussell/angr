@@ -111,7 +111,7 @@ jobs:
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run Rust exploration tests
-        run: uv run pytest tests/engines/test_rust_exploration.py -v --tb=short
+        run: uv run pytest tests/engines/rust/ -v --tb=short
       - name: Run benchmark regression (fast + medium tier)
         env:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
@@ -188,7 +188,7 @@ jobs:
           ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"
           ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY: "1"
           ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST: "1"
-        run: uv run pytest tests/engines/test_rust_exploration.py --tb=short
+        run: uv run pytest tests/engines/rust/ --tb=short
         timeout-minutes: 10
 
   rss_leak_check:

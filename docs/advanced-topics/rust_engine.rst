@@ -871,7 +871,7 @@ What the flag does **not** close:
   can differ across runs even with the flag set.
 
 Coverage is exercised by
-``tests/engines/test_rust_exploration.py::TestDeterministicMode`` —
+``tests/engines/rust/test_solver_ops.py::TestDeterministicMode`` —
 fauxware ``explore(find=0x4006ed, avoid=0x4006fd)`` produces the same
 found-stash size and the same evaluated stdin across two fresh
 managers when ``deterministic=True`` is set. The std::HashMap audit
@@ -2914,7 +2914,7 @@ Both ``exploration_strategy="dfs"`` (FFI:
 ``register_length_limiter``) route through native Rust setters and
 compose without overriding each other. See
 ``TestExplorationStrategy.test_deep_loop_recipe_dfs_plus_length_limiter``
-in ``tests/engines/test_rust_exploration.py`` for the regression that
+in ``tests/engines/rust/`` for the regression that
 pins this composition.
 
 When to apply this recipe:
@@ -3603,7 +3603,7 @@ surfaces when the user opts in with
 ``set_rust_log_level("warn")`` (or higher) or ``ANGR_RUST_LOG=warn``.
 The behavior is otherwise unchanged — typos are surfaced, not
 rejected. Tested by ``TestStashNameValidation`` in
-``tests/engines/test_rust_exploration.py``.
+``tests/engines/rust/``.
 
 PyRustSimState lifetime
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -3704,7 +3704,7 @@ captured before and after a save/load round-trip may differ in the
 concrete bytes the solver picks. The ``deterministic=True``
 constructor flag narrows but does not close this gap.
 
-Round-trip test: ``tests/engines/test_rust_exploration.py::
+Round-trip test: ``tests/engines/rust/test_misc.py::
 test_dump_load_fauxware_round_trip_preserves_stash_shape`` exercises
 the structural contract on fauxware; the
 ``test_load_from_disk_*`` cases exercise the v1.0 classmethod.

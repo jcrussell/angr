@@ -22,7 +22,7 @@ PYTEST    := $(PY) -m pytest
 CARGO     ?= cargo
 MANIFEST  := $(REPO_ROOT)/native/angr/Cargo.toml
 
-RUST_TESTS := tests/engines/test_rust_exploration.py
+RUST_TESTS := tests/engines/rust/
 
 # Curated subset of vanilla angr tests that exercise the Python engine's
 # hot paths (loading, VEX lifter, hooks, sim-procedures, solver, posix,

@@ -35,7 +35,7 @@
 //!   ([`super::lineage::is_lineage_dismantled`]) has not fired. When (c) is
 //!   true `child_lineage` is set to `None` rather than `Arc::clone`'d —
 //!   `Arc::clone` would give the child a stale base. Regression guard:
-//!   `tests/engines/test_rust_exploration.py::test_lineage_minted_only_when_opted_in`
+//!   `tests/engines/rust/ :: test_lineage_minted_only_when_opted_in`
 //!   and `test_lineage_not_minted_under_bare_push`.
 //! - **fork-freeze under push** (`fork-freeze-self-invariant`):
 //!   [`fork`](SymContext::fork) only drains local→shared in place when

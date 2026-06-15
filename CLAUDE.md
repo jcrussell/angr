@@ -81,7 +81,7 @@ for the full list. Most-used targets:
 | `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
 | `make rebuild-fast` | Inner-loop rebuild via `[profile.release-fast]` (~3s warm vs ~36s). NOT for bench gates. |
 | `make check` | `cargo check --release` — fast type/borrow check. |
-| `make test` (`test-quick`) | Run `tests/engines/test_rust_exploration.py` (~1-2 min). |
+| `make test` (`test-quick`) | Run `tests/engines/rust/` (~1-2 min). |
 | `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
 | `make test-full` | Full angr test suite (long). |
 | `make bench-regression` | Fast-tier benchmark regression check. |
@@ -125,7 +125,7 @@ python3 -m venv .venv
 
 # Verify
 .venv/bin/python -c "import angr; print(angr.__file__)"
-.venv/bin/python -m pytest tests/engines/test_rust_exploration.py --tb=short -q
+.venv/bin/python -m pytest tests/engines/rust/ --tb=short -q
 ```
 
 **Note:** `pyproject.toml` pins the four angr-ecosystem deps (`archinfo`, `claripy`, `cle`, `pyvex`) to `==9.2.209`. Do not bump these pins yet. Audit (bd bead `angr-3mkf`, 2026-06-05): claripy 9.2.221 (latest on PyPI) still pins `z3-solver==4.13.0.0`, same SONAME as 9.2.209, so the shared-Z3-context concern is dormant. Two active blockers remain: (1) upstream master pins `9.2.222.dev0`, which is not on PyPI and would require source builds of all four ecosystem repos; (2) our `.venv/` is hand-assembled via cargo-direct-copy (`pip list` only shows pip / platformdirs / rust-demangler), so any pin change requires a venv rebuild rather than `pip install -U`. Re-evaluate when upstream cuts a stable 9.2.222+ release on PyPI. See bd memory `avoid-pip-install-deps`.
@@ -164,7 +164,7 @@ pip install. Pass `--keep-cargo-cache` to skip `cargo clean` (faster), or
 
 ```bash
 # Run RustExplorationManager tests (see Current Status below for live count)
-python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
+python -m pytest tests/engines/rust/ -v --tb=short
 
 # Run benchmark regression tests (7 fast-tier benchmarks)
 python tests/benchmarks/run_regression.py
@@ -338,7 +338,7 @@ Caveats:
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
 - **State export**: `angr/exploration/rust_state_export.py`
 - **State sync**: `angr/exploration/rust_state_sync.py`
-- **Tests**: `tests/engines/test_rust_exploration.py`
+- **Tests**: `tests/engines/rust/`
 
 ## Branch: rust-symex
 
@@ -377,11 +377,12 @@ ralph hook run states/clean/gate  # standalone gate hook test
 
 ## Current Status
 
-- **Tests:** several hundred `def test_` functions in
-  `tests/engines/test_rust_exploration.py`. Run
-  `grep -c 'def test_' tests/engines/test_rust_exploration.py` for the
-  live count, or
-  `pytest --collect-only -q tests/engines/test_rust_exploration.py | tail -1`
+- **Tests:** several hundred `def test_` functions in the
+  `tests/engines/rust/` package (split from the former monolithic
+  `test_rust_exploration.py`; see angr-yg2m). Run
+  `grep -rc 'def test_' tests/engines/rust/ | awk -F: '{s+=$2} END {print s}'`
+  for the live count, or
+  `pytest --collect-only -q tests/engines/rust/ | tail -1`
   for the parametrize-expanded total.
 - **Benchmarks:** `tests/benchmarks/baseline_timings.json` is the
   authoritative list. Mix of angr-examples and in-repo synthetic arch

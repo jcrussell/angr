@@ -338,7 +338,7 @@ doesn't know it yet. The end-to-end recipe:
    native/angr/Cargo.toml --release`` for the fast loop;
    ``pip install -e . --no-build-isolation --no-deps`` to refresh the
    ``.so`` (or ``make rebuild``); then
-   ``python -m pytest tests/engines/test_rust_exploration.py`` to
+   ``python -m pytest tests/engines/rust/`` to
    confirm nothing downstream regressed.
 
 If at any point the lifter's pyvex bridge is involved (e.g. you're
