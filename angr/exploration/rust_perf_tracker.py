@@ -52,6 +52,11 @@ class PerformanceTracker:
         "callback_symbolic_branch_total_ns",
         "callback_vex_fallback_count",
         "callback_vex_fallback_total_ns",
+        # angr-afbx: Python posix-plugin callback (stdin/stdout injection).
+        # Enables angr-6zxx's DEFER->GO trigger (>5% wall in posix) to be
+        # checked from any --counters-json capture.
+        "callback_posix_count",
+        "callback_posix_total_ns",
     )
 
     def __init__(self) -> None:
@@ -110,6 +115,11 @@ class PerformanceTracker:
     def record_vex_fallback_call(self, total_ns: int) -> None:
         self._stats["callback_vex_fallback_count"] += 1
         self._stats["callback_vex_fallback_total_ns"] += total_ns
+
+    def record_posix_call(self, total_ns: int) -> None:
+        """angr-afbx: one Python posix-plugin callback (stdin or stdout inject)."""
+        self._stats["callback_posix_count"] += 1
+        self._stats["callback_posix_total_ns"] += total_ns
 
     # ---- Read access (mapping-like) ----
 

@@ -1459,6 +1459,7 @@ class RustExplorationManager(
             ("Avoid predicate", "avoid_predicate"),
             ("Symbolic branch", "symbolic_branch"),
             ("Python VEX fallback", "vex_fallback"),
+            ("Posix inject", "posix"),  # angr-afbx
         ):
             count = s.get(f"callback_{key}_count", 0)
             ns = s.get(f"callback_{key}_total_ns", 0)

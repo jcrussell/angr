@@ -339,6 +339,13 @@ class RustCallbackDispatchMixin:
         method fetches that buffer and writes it into the Python state's posix
         stdout so that predicates calling state.posix.dumps(1) see the output.
         """
+        _px_start = time.perf_counter_ns()
+        try:
+            self._inject_rust_stdout_inner(state, state_id)
+        finally:
+            self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
+
+    def _inject_rust_stdout_inner(self, state, state_id):
         # Fast check: skip FFI if this state never wrote to stdout
         if not self._rust_mgr.has_state_stdout(state_id):
             return
@@ -374,6 +381,13 @@ class RustCallbackDispatchMixin:
         Must catch ALL exceptions (including AttributeError) to prevent
         propagation through @property descriptors which triggers __getattr__.
         """
+        _px_start = time.perf_counter_ns()
+        try:
+            self._inject_rust_stdin_inner(state, state_id)
+        finally:
+            self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
+
+    def _inject_rust_stdin_inner(self, state, state_id):
         try:
             if not self._rust_mgr.has_state_stdin_symbols(state_id):
                 return
