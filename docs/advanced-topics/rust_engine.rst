@@ -2280,6 +2280,19 @@ hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
 * ``setup``, ``filter``, ``complete`` — invoked per the original
   contract via ``apply_technique_filters`` /
   ``check_technique_complete`` in ``rust_techniques.py``.
+
+  **Re-filter semantics (angr-j1ue).** Rust state ids persist across
+  steps for non-forking states, so ``filter()`` is *not* re-run on a
+  fixed cadence. Instead each state's ``(addr, stdout_len)`` signature
+  is cached and the technique's ``filter()`` is re-evaluated whenever
+  that signature changes — a filter keyed on ``state.addr`` therefore
+  fires the step the address moves, not just on the state's first
+  appearance. Techniques in ``_MONOTONIC_FILTER_TECHNIQUES`` (currently
+  ``CheckUniqueness``, whose internal seen-set must not observe a state
+  twice) are exempted and evaluated at most once per id. Note that
+  ``CheckUniqueness`` normally registers *natively* and never reaches
+  the Python ``filter()`` path at all; the guard only covers the
+  register-detection fallback.
 * ``step`` — invoked once per Rust batch via
   ``dispatch_step_with_hooks`` (``angr-rqvq``). Multiple step hooks
   compose LIFO using ``HookSet`` from ``angr/misc/hookset.py``, matching

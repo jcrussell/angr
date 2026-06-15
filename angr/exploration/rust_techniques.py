@@ -32,6 +32,18 @@ _NATIVE_STEP_TECH_NAMES = {
 }
 
 
+# Techniques whose Python filter() maintains a monotonic internal set, so
+# their filter() must be evaluated AT MOST ONCE per state id. Re-running them
+# on a state-signature change would corrupt that set (e.g. CheckUniqueness's
+# seen-key set prunes a state the second time it is presented). All other
+# techniques' filter()s are re-run when a state's (addr, stdout_len) signature
+# changes, matching SimulationManager's per-step filter contract (angr-j1ue).
+# Note: CheckUniqueness is normally handled natively in Rust (_native_uniqueness)
+# and skipped in the Python loop entirely; it only reaches the Python filter
+# path as a fallback when register detection fails — this guard covers that.
+_MONOTONIC_FILTER_TECHNIQUES = frozenset({"CheckUniqueness"})
+
+
 def _has_dispatched_step_hook(tech) -> bool:
     """Return True iff `tech` overrides step() AND isn't natively handled."""
     tech_name = type(tech).__name__
@@ -373,25 +385,45 @@ def remove_technique(mgr: RustExplorationManager, technique) -> bool:
 def apply_technique_filters(mgr: RustExplorationManager):
     """Apply ExplorationTechnique filter() callbacks via proxy.
 
-    After each step, iterate NEW states through each technique's
-    filter() method. If filter() returns a stash name other than
-    'active', move the state to that stash in Rust.
+    After each step, iterate states through each technique's filter()
+    method. If filter() returns a stash name other than 'active', move the
+    state to that stash in Rust.
 
-    IMPORTANT: Only filter states that haven't been filtered yet.
-    Techniques like CheckUniqueness maintain monotonic sets — re-checking
-    already-filtered states causes them to be incorrectly pruned.
+    Re-filter semantics (angr-j1ue): Rust state ids persist across steps for
+    non-forking states, so a once-per-id skip would evaluate a filter() that
+    depends on evolving state (addr, stdout) exactly once and then ignore it —
+    silent drift from SimulationManager's per-step filter contract. Instead we
+    cache each state's (addr, stdout_len) signature and re-run filter()s when
+    the signature changes. Techniques in _MONOTONIC_FILTER_TECHNIQUES (e.g.
+    CheckUniqueness, whose internal set must not see a state twice) are still
+    evaluated at most once per id, even across signature changes.
     """
     from angr.exploration.rust_state_proxy import RustSimulationManagerProxy, RustStateProxy
 
     if not mgr._active_techniques:
         return
 
-    # Track which states have already been filtered to avoid re-checking.
-    # States moved to other stashes get new IDs or are removed from active,
-    # so they won't be re-checked. New fork children get new IDs.
-    if not hasattr(mgr, "_filtered_state_ids"):
-        mgr._filtered_state_ids = set()
+    # Cache: state_id -> (addr, stdout_len) signature at last filter sweep.
+    # A state is re-filtered (for non-monotonic techniques) when its signature
+    # changes; unchanged signatures are skipped. Presence in the dict means
+    # "seen at least once" — used to gate monotonic techniques to one eval.
+    if not hasattr(mgr, "_filter_eval_sigs"):
+        mgr._filter_eval_sigs = {}
         mgr._filtered_cleanup_counter = 0
+
+    # Bulk-collect (addr, stdout_len) signatures for change detection. Cheaper
+    # than per-state FFI; a missing sig (stash query failed) falls back to
+    # always re-running non-monotonic techniques for that state.
+    state_sigs = {}  # state_id -> (addr, stdout_len)
+    for stash in ("active", "errored", "deadended"):
+        try:
+            for sid, addr, stdout_len in mgr._rust_mgr.get_state_predicate_info(stash):
+                state_sigs[sid] = (addr, stdout_len)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: no signatures for this stash means
+            # change detection is disabled here; non-monotonic filters re-run
+            # every sweep (correct, just less efficient).
+            l.debug("get_state_predicate_info(stash=%s) failed: %s: %s", stash, type(e).__name__, e)
 
     simgr_proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
@@ -406,8 +438,15 @@ def apply_technique_filters(mgr: RustExplorationManager):
     for stash in ("active", "errored", "deadended"):
         state_ids = list(mgr._rust_mgr.get_state_ids(stash))
         for sid in state_ids:
-            if sid in mgr._filtered_state_ids:
-                continue  # Already filtered — skip to avoid duplicate pruning
+            prev_sig = mgr._filter_eval_sigs.get(sid)
+            first_seen = sid not in mgr._filter_eval_sigs
+            cur_sig = state_sigs.get(sid)
+            # Skip only when we've seen this state before AND its signature is
+            # available and unchanged. If the signature is unavailable we cannot
+            # prove it is unchanged, so we fall through and re-run (monotonic
+            # techniques are still gated below).
+            if not first_seen and cur_sig is not None and cur_sig == prev_sig:
+                continue
 
             state_proxy = RustStateProxy(
                 mgr._rust_mgr,
@@ -435,6 +474,11 @@ def apply_technique_filters(mgr: RustExplorationManager):
 
                 tech_name = type(tech).__name__
 
+                # Monotonic techniques (CheckUniqueness) must see each state id
+                # at most once — skip them on re-evaluation (signature change).
+                if not first_seen and tech_name in _MONOTONIC_FILTER_TECHNIQUES:
+                    continue
+
                 # LengthLimiter: check _filter (uses step() pattern, not filter())
                 if tech_name == "LengthLimiter" and hasattr(tech, "_filter"):
                     try:
@@ -459,8 +503,9 @@ def apply_technique_filters(mgr: RustExplorationManager):
                         # leave the state in its current stash. (User code bug.)
                         l.debug(f"Technique {tech_name}.filter() error: {e}")
 
-            # Mark as filtered regardless of outcome
-            mgr._filtered_state_ids.add(sid)
+            # Record this sweep's signature so an unchanged state is skipped
+            # next time and a changed one re-runs non-monotonic filters.
+            mgr._filter_eval_sigs[sid] = cur_sig
 
             if goto is not None and goto != stash:
                 try:
@@ -481,7 +526,7 @@ def apply_technique_filters(mgr: RustExplorationManager):
                     # stays in its current stash and the next sweep will retry.
                     l.debug(f"Failed to move state {sid} from {stash} to {goto}: {e}")
 
-    # Periodic cleanup: remove dead state IDs from _filtered_state_ids
+    # Periodic cleanup: drop dead state IDs from _filter_eval_sigs
     # to prevent unbounded growth in long-running explorations.
     mgr._filtered_cleanup_counter = getattr(mgr, "_filtered_cleanup_counter", 0) + 1
     if mgr._filtered_cleanup_counter >= 100:
@@ -490,7 +535,7 @@ def apply_technique_filters(mgr: RustExplorationManager):
             live = set()
             for stash_name in ("active", "found", "errored", "deadended", "avoid"):
                 live.update(mgr._rust_mgr.get_state_ids(stash_name))
-            mgr._filtered_state_ids &= live
+            mgr._filter_eval_sigs = {sid: sig for sid, sig in mgr._filter_eval_sigs.items() if sid in live}
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't
             # enumerate stashes the set just grows until next sweep.

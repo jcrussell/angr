@@ -12368,6 +12368,96 @@ class TestNativeTechniques:
         assert len(list(mgr._rust_mgr.get_state_ids("spinning"))) > 0
 
 
+class TestTechniqueFilterReevaluation:
+    """Re-filter semantics for ExplorationTechnique.filter() (angr-j1ue).
+
+    Rust state ids persist across steps for non-forking states, so a filter()
+    that depends on a state's evolving address/stdout must be re-evaluated on
+    each signature change — not skipped after one pass.
+    """
+
+    def test_persistent_state_refiltered_on_signature_change(self, fauxware_project):
+        """A filter is re-invoked for a persistent id once its signature changes.
+
+        Regression for angr-j1ue: under the old once-per-id contract each Rust
+        state id was filtered exactly once and never re-checked, so a filter
+        whose verdict depends on evolving state (here: how many times the same
+        id has been presented) could never fire after the first sweep. The
+        change-detection cache re-runs the filter when (addr, stdout_len) moves,
+        so the second invocation lands and the state is routed.
+        """
+        from angr.exploration_techniques import ExplorationTechnique
+
+        class _SecondSightTagger(ExplorationTechnique):
+            """Move a state to 'tagged' the SECOND time its id is filtered.
+
+            Reaching a second filter call for one id is only possible if the id
+            is re-evaluated after its first sweep — exactly the behavior the fix
+            restores.
+            """
+
+            def __init__(self):
+                super().__init__()
+                self.calls = {}
+
+            def filter(self, simgr, state, **kwargs):
+                sid = state._state_id
+                self.calls[sid] = self.calls.get(sid, 0) + 1
+                if self.calls[sid] >= 2:
+                    return "tagged"
+                return None
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        tech = _SecondSightTagger()
+        mgr.use_technique(tech)
+        # Step one block at a time so a filter sweep runs after each step (run()
+        # batches steps and would sweep too coarsely to observe a persistent id
+        # twice). The entry path stays linear for several blocks, keeping id 1.
+        for _ in range(8):
+            if not mgr._rust_mgr.has_active_states():
+                break
+            mgr.step()
+
+        # The regression would cap every id at exactly one call; the fix lets a
+        # persistent id be re-filtered after its signature changes, which both
+        # bumps a call count past 1 and routes the state to 'tagged'.
+        assert max(tech.calls.values(), default=0) >= 2, (
+            "a persistent id must be re-filtered after its signature changes"
+        )
+        assert list(mgr._rust_mgr.get_state_ids("tagged")), (
+            "the second-sight filter must have routed a state to 'tagged'"
+        )
+
+    def test_named_check_uniqueness_takes_native_path(self, fauxware_project):
+        """A technique named CheckUniqueness registers natively, bypassing the guard.
+
+        use_technique() keys native uniqueness registration on the class NAME
+        "CheckUniqueness" (the grub-style custom technique). On x86_64 it always
+        registers natively, so the Python filter() — and the
+        _MONOTONIC_FILTER_TECHNIQUES guard that protects it — never runs. This
+        is why the re-filter change cannot alter CheckUniqueness behavior.
+        """
+        from angr.exploration.rust_techniques import _MONOTONIC_FILTER_TECHNIQUES
+        from angr.exploration_techniques import ExplorationTechnique
+
+        assert "CheckUniqueness" in _MONOTONIC_FILTER_TECHNIQUES
+
+        class CheckUniqueness(ExplorationTechnique):
+            def filter(self, simgr, state, **kwargs):
+                return None
+
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        tech = CheckUniqueness()
+        mgr.use_technique(tech)
+
+        # Native registration means the Python filter (and its monotonic guard)
+        # is bypassed entirely, so the re-filter change is a no-op for it.
+        assert getattr(tech, "_native_uniqueness", False), "CheckUniqueness must register natively on x86_64"
+        mgr.run(max_steps=30)
+
+
 class TestExplorationTechniqueStepHookDispatch:
     """ExplorationTechnique.step() hook dispatch against RustStateProxy.
 
