@@ -29,6 +29,9 @@ mod stats;
 mod table;
 mod transaction_ops;
 mod value;
+mod value_ops;
+#[cfg(feature = "vex-engine-z3")]
+mod value_z3;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
 
