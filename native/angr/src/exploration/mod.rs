@@ -904,6 +904,16 @@ impl RustExplorationManager {
         }
     }
 
+    /// Unregister multiple SimProcedures (e.g. after `proj.unhook(addr)` on a
+    /// live manager). Removes each address from both the hook set and the
+    /// SimProcedure table so a stale hook no longer fires (angr-969g).
+    pub fn unregister_simprocedures(&mut self, addrs: Vec<u64>) {
+        for addr in addrs {
+            self.hooks.remove(&addr);
+            self.simprocedures.remove(&addr);
+        }
+    }
+
     /// Load binary code regions.
     pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) {
         self.environment.binary_regions = regions

@@ -47,21 +47,33 @@ class RustStateSyncMixin:
             self._stats_hook_sync_skips += 1
             return
 
-        # Fast path: if dict length hasn't changed, no new hooks were added.
-        # This avoids O(n) iteration on every step.
+        # Fast path: identical key sets -> no hooks added or removed.
+        # `set == dict_keys` compares as sets without materializing a copy of
+        # the keys, so this stays cheap for small hook tables. Replaces the old
+        # len-equality fast path, which missed equal-count remove+add swaps and
+        # never detected removals (proj.unhook on a live manager) at all
+        # (angr-969g).
         sim_procedures = self._project._sim_procedures
         registered = self._registered_hooks
-        if len(sim_procedures) == len(registered):
+        keys = sim_procedures.keys()
+        if registered == keys:
             self._stats_hook_sync_skips += 1
             return
 
-        # Slow path: iterate the dict directly and check membership against
-        # the registered set, avoiding both an O(n) set copy of the dict's
-        # keys and a separate set-difference pass.
+        # Diff registered vs current so both additions (new continuations) and
+        # removals (proj.unhook) propagate to Rust.
+        removed = [addr for addr in registered if addr not in sim_procedures]
+        if removed:
+            self._rust_mgr.unregister_simprocedures(removed)
+            registered.difference_update(removed)
+            if _DBG:
+                l.debug(f"Unregistered {len(removed)} stale hooks from Rust")
+
         procs = []
-        for addr, proc in sim_procedures.items():
+        for addr in keys:
             if addr in registered:
                 continue
+            proc = sim_procedures[addr]
             name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
             num_args = getattr(proc, "num_args", 0) or 0
             no_return = getattr(proc, "NO_RET", False)
@@ -70,13 +82,10 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
 
-        if not procs:
-            self._stats_hook_sync_skips += 1
-            return
-
-        self._rust_mgr.register_simprocedures(procs)
-        if _DBG:
-            l.debug(f"Synced {len(procs)} dynamically created hooks")
+        if procs:
+            self._rust_mgr.register_simprocedures(procs)
+            if _DBG:
+                l.debug(f"Synced {len(procs)} dynamically created hooks")
 
     def _cached_z3_ast_ptr(self, expr, z3_backend):
         """Return the Z3 AST pointer for a symbolic claripy expression.

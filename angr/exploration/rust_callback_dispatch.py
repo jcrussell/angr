@@ -463,7 +463,16 @@ class RustCallbackDispatchMixin:
         # Find the SimProcedure
         proc = self._find_simprocedure(addr, name)
         if proc is None:
-            self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            # Stale/unknown hook fired (e.g. proj.unhook raced the Rust hook
+            # table, or a hook addr with no backing proc). Resuming at addr+1
+            # would land on a misaligned PC. Instead skip the hook for this
+            # address and re-execute the real instruction at addr (angr-969g).
+            try:
+                self._rust_mgr.set_skip_hook_addr(addr)
+            except Exception as e:
+                if _DBG:
+                    l.debug(f"Could not set skip_hook_addr for stale hook 0x{addr:x}: {e}")
+            self._rust_mgr.resume_after_simprocedure(addr, None, None)
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 

@@ -202,3 +202,59 @@ class TestHooksRustSmoke:
         assert not run2_fires, (
             f"callback fired {len(run2_fires)} times after unhook(addr) — the hook was not actually removed."
         )
+
+    def test_unhook_propagates_to_live_manager(self, fauxware_project):
+        """``proj.unhook(addr)`` on a *live* manager removes the hook from
+        the Rust hook table mid-explore (angr-969g).
+
+        Distinct from :meth:`test_unhook_removes_callback`, which builds a
+        fresh manager for the post-unhook run (angr-3bz1). Here we keep
+        stepping the *same* manager across the unhook so
+        ``_sync_hooks_before_step`` must diff the registered set against the
+        project's current ``_sim_procedures`` and issue an
+        ``unregister_simprocedures`` to Rust. We assert the address leaves
+        ``_registered_hooks``, the callback stops firing, and execution
+        stays well-formed (no errored states).
+        """
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        assert main_sym is not None
+        hook_addr = main_sym.rebased_addr
+
+        fires = []
+
+        def cb(state):
+            fires.append(state.addr)
+
+        proj.hook(hook_addr, hook=cb, length=0)
+        assert proj.is_hooked(hook_addr)
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        # Step the live manager until the hook fires (registers it in Rust).
+        steps = 0
+        while not fires and mgr.active and steps < 400:
+            mgr.step()
+            steps += 1
+        assert fires, "zero-length hook never fired on the live manager before unhook"
+        assert hook_addr in mgr._registered_hooks, "hook was not registered with Rust on the live manager"
+
+        # Unhook on the LIVE manager mid-explore, then keep stepping the SAME
+        # manager. The next pre-step sync must propagate the removal.
+        proj.unhook(hook_addr)
+        assert not proj.is_hooked(hook_addr)
+        fires_at_unhook = len(fires)
+
+        extra = 0
+        while mgr.active and extra < 400:
+            mgr.step()
+            extra += 1
+
+        assert hook_addr not in mgr._registered_hooks, (
+            "live-manager unhook did not remove the address from _registered_hooks — the Rust hook table is stale."
+        )
+        assert len(fires) == fires_at_unhook, (
+            f"callback fired {len(fires) - fires_at_unhook} more times after unhook on a live manager."
+        )
+        assert not mgr.errored, f"live-manager unhook left errored states: {mgr.errored}"
