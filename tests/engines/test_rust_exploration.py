@@ -51,7 +51,7 @@ class TestRustExplorationManagerUnit:
 
         # Create a state
         state_id = mgr.create_state("active")
-        assert state_id >= 0  # State IDs can start at 0
+        assert isinstance(state_id, int)  # create_state returns a state id
         assert mgr.active_count() == 1
 
         # Create another state
@@ -1316,7 +1316,8 @@ class TestRustExplorationPython:
 
         stats = mgr.get_solver_stats()
         assert stats["z3_check_count"] >= 1, f"expected at least one solver query, got {stats['z3_check_count']}"
-        assert stats["z3_check_time_ns"] >= 0
+        # A completed check must take nonzero wall-clock time.
+        assert stats["z3_check_time_ns"] > 0
         # Sat + unsat + timeout should account for every check.
         assert (stats["z3_sat_count"] + stats["z3_unsat_count"] + stats["z3_timeout_count"]) == stats["z3_check_count"]
 
@@ -1381,8 +1382,9 @@ class TestRustExplorationPython:
         exec_stats = mgr._rust_mgr.get_execution_stats()
         for key in ("solver_fork_count", "deferred_fork_count", "solver_fork_time_ns", "deferred_fork_time_ns"):
             assert key in exec_stats, f"missing key {key}"
+            # u64 counters surface as Python ints; isinstance covers the
+            # non-negativity contract (a `>= 0` arm would be tautological).
             assert isinstance(exec_stats[key], int), f"{key} not int"
-            assert exec_stats[key] >= 0, f"{key} negative: {exec_stats[key]}"
 
     def test_analyze_constraint_sharing(self, fauxware_project):
         """angr-zdho: `analyze_constraint_sharing()` reports pointer-vs-structural
@@ -15945,8 +15947,9 @@ class TestRustManagerCleanup:
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=4)
         mgr.cleanup()
-        # Still reachable post-cleanup.
-        assert mgr.stash_counts()["active"] >= 0
+        # Contract: stash_counts() stays usable post-cleanup (no raise) and
+        # still reports the "active" stash.
+        assert "active" in mgr.stash_counts()
 
     def test_clear_caches_on_cleanup_flag_default_off(self):
         """Default constructor leaves the flag off — single-long-exploration
