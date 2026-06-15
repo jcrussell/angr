@@ -48,6 +48,7 @@ mod profiling;
 mod resume;
 mod run_loop;
 mod state_api;
+mod state_id;
 mod state_lifecycle;
 mod stats_api;
 mod stepping;
@@ -56,6 +57,7 @@ use self::constraints::{ConstraintSolver, ConstraintTracker};
 use self::execution_env::ExecutionEnvironment;
 use self::memory_config::MemoryConfiguration;
 use self::profiling::ProfilingCollector;
+use self::state_id::StateId;
 use self::stepping::StepError;
 
 // Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
@@ -408,7 +410,7 @@ pub struct RustExplorationManager {
     /// Pending state waiting for Python callback result.
     pub(crate) pending_callback: Option<PendingCallback>,
     /// ID of the state currently being stepped (for Python callbacks to identify)
-    pub(crate) current_stepping_state_id: Option<u64>,
+    pub(crate) current_stepping_state_id: Option<StateId>,
     /// Total steps executed.
     pub(crate) steps: u64,
     /// Error log: (addr, message, state_id).
@@ -1525,7 +1527,7 @@ impl RustExplorationManager {
 
     /// Get the ID of the state currently being stepped.
     pub fn get_current_stepping_state_id(&self) -> Option<u64> {
-        self.current_stepping_state_id
+        self.current_stepping_state_id.map(StateId::raw)
     }
 
     /// Load from pending callback state's Rust memory.

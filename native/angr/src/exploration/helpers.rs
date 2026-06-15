@@ -33,13 +33,14 @@ impl RustExplorationManager {
     /// Looks up the pending callback first (matching `find_state` semantics),
     /// then the stashes. Returns Err(PyValueError) when not found.
     #[inline]
-    pub(crate) fn with_state<T, F>(&self, state_id: u64, f: F) -> PyResult<T>
+    pub(crate) fn with_state<T, F>(&self, state_id: impl Into<StateId>, f: F) -> PyResult<T>
     where
         F: FnOnce(&RustSimState) -> PyResult<T>,
     {
+        let sid = state_id.into();
         let state = self
-            .find_state(state_id)
-            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
+            .find_state(sid)
+            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", sid)))?;
         f(state)
     }
 
@@ -47,13 +48,14 @@ impl RustExplorationManager {
     /// Matches `with_state`'s lookup order: pending callback first, then
     /// stashes. Returns Err(PyValueError) when not found.
     #[inline]
-    pub(crate) fn with_state_mut<T, F>(&mut self, state_id: u64, f: F) -> PyResult<T>
+    pub(crate) fn with_state_mut<T, F>(&mut self, state_id: impl Into<StateId>, f: F) -> PyResult<T>
     where
         F: FnOnce(&mut RustSimState) -> PyResult<T>,
     {
+        let sid = state_id.into();
         let state = self
-            .find_state_mut(state_id)
-            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
+            .find_state_mut(sid)
+            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", sid)))?;
         f(state)
     }
 
@@ -94,15 +96,15 @@ impl RustExplorationManager {
 
     /// Track a state in the state_index.
     #[inline]
-    pub(crate) fn index_state(&mut self, state_id: u64, stash: &str) {
-        self.sm.index(state_id, stash);
+    pub(crate) fn index_state(&mut self, state_id: impl Into<StateId>, stash: &str) {
+        self.sm.index(state_id.into().raw(), stash);
     }
 
     /// Remove a state from the state_index.
     #[allow(dead_code)]
     #[inline]
-    pub(crate) fn unindex_state(&mut self, state_id: u64) {
-        self.sm.unindex(state_id);
+    pub(crate) fn unindex_state(&mut self, state_id: impl Into<StateId>) {
+        self.sm.unindex(state_id.into().raw());
     }
 
     /// Rebuild the state_index from scratch by scanning all stashes.
@@ -113,14 +115,15 @@ impl RustExplorationManager {
 
     /// Find an immutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
-    pub(crate) fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
+    pub(crate) fn find_state(&self, state_id: impl Into<StateId>) -> Option<&RustSimState> {
+        let sid = state_id.into().raw();
         // Check pending callback state first (during find_predicate evaluation)
         if let Some(ref pending) = self.pending_callback
-            && pending.state.state_id() == state_id
+            && pending.state.state_id() == sid
         {
             return Some(&pending.state);
         }
-        self.sm.find_state(state_id)
+        self.sm.find_state(sid)
     }
 
     /// Find a mutable reference to a state by ID using the index.
@@ -133,13 +136,17 @@ impl RustExplorationManager {
     /// at angr-4scu memory / angr-qj30 registers) would fail with
     /// "state N not found" any time a Python SimProc wrote to
     /// `state.regs.<name>` or `state.memory.store(...)` during a callback.
-    pub(crate) fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
+    pub(crate) fn find_state_mut(
+        &mut self,
+        state_id: impl Into<StateId>,
+    ) -> Option<&mut RustSimState> {
+        let sid = state_id.into().raw();
         if let Some(ref mut pending) = self.pending_callback
-            && pending.state.state_id() == state_id
+            && pending.state.state_id() == sid
         {
             return Some(&mut pending.state);
         }
-        self.sm.find_state_mut(state_id)
+        self.sm.find_state_mut(sid)
     }
 
     /// Compute a hash for a state's register tuple for uniqueness checking.

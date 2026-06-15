@@ -96,7 +96,7 @@ impl RustExplorationManager {
             }) {
                 Some(s) => {
                     let sid = s.state_id();
-                    self.current_stepping_state_id = Some(sid);
+                    self.current_stepping_state_id = Some(sid.into());
                     STEPPING_STATE_ID.with(|cell| cell.set(Some(sid)));
                     s
                 }
