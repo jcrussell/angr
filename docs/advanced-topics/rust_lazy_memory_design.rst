@@ -1,26 +1,57 @@
 Rust engine: lazy symbolic memory — design
 ==========================================
 
+.. note::
+
+   **Status: implemented and shipped (angr-pogf, Phases 1–4).** This was
+   originally a design-phase deliverable; lazy symbolic memory now ships
+   and is the default store path. Read it as historical design rationale,
+   not as a description of code-to-be-written.
+
+   *What shipped, and where it deviates from the proposal below:*
+
+   - **Lazy LOAD** — Phase 1, ``angr-czph`` (commit ``ca509f925``).
+   - **Lazy STORE** — Phase 2, ``angr-qh5u`` (commit ``bce90fef4``),
+     originally landed behind a default-OFF
+     ``SymbolicMemory::use_multi_cell_stores`` gate, then **enabled by
+     default with the gate removed** in Phase 4.3, ``angr-mmdh.3``
+     (commit ``e5c594fe1``) once Phase 4.1 (wider-load cache) and Phase
+     4.2 (flush coalescing) closed the load-time/Z3 gap. Multi-cell
+     stores are now the *only* path for ``Multiple`` / ``Strided``
+     symbolic-address store results; the eager ``store_conditional_multiple``
+     helper is gone.
+   - **Architecture deviation** — the shipped code is a *sidecar*, not
+     the enum-per-byte ``Multi`` variant this document proposes. Symbolic
+     data lives in a ``multi_objects: FxHashMap<addr, MultiPayload>``
+     sidecar on ``SymbolicMemory`` (parallel to ``symbolic_objects``)
+     plus a ``multi_bitmap`` on ``MemoryPage`` (parallel to
+     ``symbolic_bitmap``). A byte is Multi when its page bit is set *and*
+     ``multi_objects`` has an entry; ``set_multi_alternatives`` is the
+     only installer. See bd memory ``lazy-memory-sidecar-architecture``.
+
 This document is the design phase deliverable for the lazy symbolic
-memory work tracked by ``angr-pogf``. It does not describe shipped
-code — at the time of writing, the Rust engine still uses eager
-concretization for symbolic-address stores. The implementation
-children are ``angr-czph`` (lazy LOAD) and ``angr-qh5u`` (lazy STORE).
+memory work tracked by ``angr-pogf``. It captured the state before any
+of the children landed — at the time of writing, the Rust engine still
+used eager concretization for symbolic-address stores. The implementation
+children were ``angr-czph`` (lazy LOAD) and ``angr-qh5u`` (lazy STORE).
 
 Audience: contributors implementing the children, and reviewers
 deciding whether to land the design or push back on it.
 
-Status: **proposed, not implemented**. Numbers in the rationale come
-from existing benchmarks in ``tests/benchmarks/baseline_timings.json``
-and from profiling memories saved against the slower Rust benches.
+Status (historical): **proposed, not implemented** at time of writing.
+Numbers in the rationale come from benchmarks in
+``tests/benchmarks/baseline_timings.json`` and from profiling memories
+saved against the slower Rust benches; some are now stale (see below).
 
 
 Why this work
 -------------
 
 The Rust engine outperforms the Python engine on most benchmarks (see
-the table in ``CLAUDE.md``), but a small set of programs remain
-slower. All of them share the same shape: a tight loop that issues
+the live ``python_time`` / ``rust_time`` ratios in
+``tests/benchmarks/baseline_timings.json``), but at design time a small
+set of programs remained slower. All of them shared the same shape: a
+tight loop that issues
 many symbolic-address stores, optionally interleaved with symbolic
 loads. The current Rust path resolves each such operation eagerly,
 producing the bottleneck described below.
@@ -28,11 +59,12 @@ producing the bottleneck described below.
 Affected benchmarks, with the dominant cost line from profiling
 memories:
 
-* ``sym-write`` — 6.9× slower than Python. 275 Z3 concretization
-  calls (one per symbolic store) build deeply nested ITE chains that
-  later operations have to walk
-  (memories ``sym-write-7s-bottleneck-is-275-z3-concretization``,
-  ``symwrite-eager-vs-lazy-memory``).
+* ``sym-write`` — was 6.9× slower than Python at design time. 275 Z3
+  concretization calls (one per symbolic store) built deeply nested ITE
+  chains that later operations had to walk. **Now resolved**: as of HEAD
+  ``sym-write`` is **2.29× faster** than Python (``python_time`` 1.0 /
+  ``rust_time`` 0.436 in ``baseline_timings.json``) after the lazy-store
+  work below plus a separate CFG fix.
 * ``strcpy_find`` — was 0.21× (now 2.3× after a separate CFG fix in
   ``angr-3tek``, but the underlying eager-store cost still bites
   symbolic-heavy variants).
