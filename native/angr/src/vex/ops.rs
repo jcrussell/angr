@@ -1499,37 +1499,9 @@ impl VEXOps {
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
-    /// Set low 32 bits of V128.
-    fn set_v128_lo32(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
-        debug_assert_eq!(vec.width(), 128);
-        debug_assert_eq!(val.width(), 32);
-
-        if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
-            let upper = v & !0xFFFFFFFFu128;
-            let result = upper | (lo & 0xFFFFFFFF);
-            return Ok(RustBV::concrete(result, 128));
-        }
-        // For symbolic, concatenate upper 96 bits with the value
-        let upper = vec.extract(127, 32, ctx);
-        let result = upper.concat(&val, ctx);
-        Ok(result)
-    }
-
-    /// Set low 64 bits of V128.
-    fn set_v128_lo64(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
-        debug_assert_eq!(vec.width(), 128);
-        debug_assert_eq!(val.width(), 64);
-
-        if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
-            let upper = v & !0xFFFFFFFFFFFFFFFFu128;
-            let result = upper | (lo & 0xFFFFFFFFFFFFFFFF);
-            return Ok(RustBV::concrete(result, 128));
-        }
-        // For symbolic, concatenate upper 64 bits with the value
-        let upper = vec.extract(127, 64, ctx);
-        let result = upper.concat(&val, ctx);
-        Ok(result)
-    }
+    // SetV128lo32 / SetV128lo64 (low-lane insertion) live in the
+    // `vec_set_lo` child module (#[path = "ops_vec_set_lo.rs"] at the bottom
+    // of this file).
 
     /// Normalize shift amount width to match the operand width.
     #[inline]
@@ -1698,6 +1670,12 @@ mod vec_compare;
 /// this file) stay visible via the descendant rule.
 #[path = "ops_vec_permute_mul.rs"]
 mod vec_permute_mul;
+
+/// V128 low-lane insertion ops (SetV128lo32 / SetV128lo64), extracted from
+/// this file (angr-cudgw.18). Declared as a child module so its `pub(super)`
+/// methods remain callable from the binop dispatch above.
+#[path = "ops_vec_set_lo.rs"]
+mod vec_set_lo;
 
 #[cfg(test)]
 #[path = "ops_tests.rs"]
