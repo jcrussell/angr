@@ -189,6 +189,16 @@ FAST_SUITE = [
     # here. Marked rust_only=True: the Python engine OOMs past N=8 in the
     # uf0g sweep, so no Python comparison is recorded.
     ("cow_fork_scaling", 30, "bfs", True),
+    # SharifCTF rev50 (angr-vx8p.4, promoted from the run_single catalog
+    # after angr-8kmjo fixed the argv gap). A real CTF reversing binary
+    # (fopen/fseek/fprintf-heavy) that both engines solve to the same flag
+    # SharifCTF{b70c59275fcfa8aebf2d5911223c6589}. rust_only=False: the
+    # solution is fully constrained, so Python and Rust emit identical
+    # output and the ~3.9x Rust speedup (Python ~3.3s, Rust ~0.84s) is a
+    # real comparison the SLA gate can track. argv ['-f','getit'] is
+    # supplied by run_single.py's EXAMPLE_CATALOG (the missing entry that
+    # angr-8kmjo previously mislabeled this bench a >60s TIMEOUT).
+    ("sharif7_rev50", 30, "bfs", False),
 ]
 
 # Medium tier: 10-60s, run with --full

@@ -254,5 +254,13 @@
     "rust_time": 1.52,
     "state_creations": 0,
     "steps": 0
+  },
+  "sharif7_rev50": {
+    "callback_count": 132,
+    "peak_memory_mb": 172.0,
+    "python_time": 3.32,
+    "rust_time": 0.84,
+    "state_creations": 0,
+    "steps": 120
   }
 }
