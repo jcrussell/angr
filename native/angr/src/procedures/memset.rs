@@ -4,7 +4,11 @@
 //!
 //! # Behavior
 //!
-//! - If the address is symbolic, falls back to Python
+//! - A concrete address takes the paths below. A symbolic address is handled
+//!   natively when its set of concrete solutions is small: each candidate
+//!   address `a` gets per-byte conditional stores `ITE(dest == a, fill,
+//!   original)`. Falls back to Python when the candidate set is unbounded, the
+//!   size is symbolic, or the total store budget is exceeded.
 //! - A concrete size takes the fast chunked path (8-byte stores).
 //! - A symbolic size is handled natively via bounded conditional stores: byte
 //!   `i` is set to `ITE(i < n, fill, original_byte)` for `i` up to the solver's
@@ -27,6 +31,19 @@ const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
 /// path and capped much lower.
 const MAX_SYMBOLIC_MEMSET_SIZE: u64 = 4096;
 
+/// Maximum number of concrete address solutions for a symbolic destination
+/// before falling back to Python. `eval_upto` is asked for one more than this
+/// so an unbounded pointer is detected and rejected.
+const MAX_SYMBOLIC_ADDR_CANDIDATES: usize = 64;
+
+/// Maximum size for a symbolic-destination memset. The per-byte ITE path runs
+/// `candidates * size` conditional stores, so the size is capped tightly.
+const MAX_SYMBOLIC_ADDR_MEMSET_SIZE: u64 = 256;
+
+/// Total conditional-store budget (`candidates * size`) for the symbolic-address
+/// path. Exceeding it falls back to Python.
+const MAX_SYMBOLIC_ADDR_STORES: u64 = 4096;
+
 crate::declare_proc! {
     /// Native memset implementation.
     ///
@@ -45,8 +62,6 @@ crate::declare_proc! {
     struct = NativeMemset,
     args = [dest_bv: bv, value_bv: bv, size_bv: bv],
     call |state| {
-        let dest = extract_concrete_arg(&dest_bv, "dest")?;
-
         // Build the 8-bit fill byte. For a concrete value it is the low byte;
         // for a symbolic value it is the low 8 bits (`extract`).
         let byte_bv = {
@@ -55,6 +70,14 @@ crate::declare_proc! {
                 Some(value) => RustBV::concrete((value & 0xFF) as u128, 8),
                 None => value_bv.extract(7, 0, &ctx),
             }
+        };
+
+        // Resolve the destination. A concrete dest takes the fast/symbolic-size
+        // paths below; a symbolic dest takes the bounded multi-candidate
+        // conditional-store path.
+        let dest = match extract_concrete_arg(&dest_bv, "dest") {
+            Ok(d) => d,
+            Err(_) => return memset_symbolic_addr(state, &dest_bv, &byte_bv, &size_bv),
         };
 
         // --- Concrete size: fast chunked path (8-byte stores). ---
@@ -136,6 +159,68 @@ crate::declare_proc! {
 
         Ok(Some(dest_bv))
     }
+}
+
+/// memset with a SYMBOLIC destination address.
+///
+/// Enumerates the (bounded) set of concrete addresses the pointer can take and,
+/// for each candidate `a`, emits per-byte conditional stores
+/// `ITE(dest == a, fill, original)`. Distinct candidates compose correctly
+/// because `dest` can equal at most one of them: a later candidate's store at a
+/// shared position layers another guarded ITE over the earlier one, and only
+/// one guard is ever true.
+///
+/// Falls back to Python (`Err`) when the size is symbolic, the candidate set is
+/// empty/unbounded, or the `candidates * size` store budget is exceeded.
+fn memset_symbolic_addr(
+    state: &mut crate::state::RustSimState,
+    dest_bv: &RustBV,
+    byte_bv: &RustBV,
+    size_bv: &RustBV,
+) -> Result<Option<RustBV>, ProcedureError> {
+    // Symbolic address + symbolic size is out of scope; require a concrete size.
+    let size = size_bv
+        .as_u64()
+        .ok_or_else(|| ProcedureError::SymbolicArgument("size".to_string()))?;
+    if size == 0 {
+        return Ok(Some(dest_bv.clone()));
+    }
+    if size > MAX_SYMBOLIC_ADDR_MEMSET_SIZE {
+        return Err(ProcedureError::SymbolicArgument("size".to_string()));
+    }
+
+    // Enumerate candidate addresses under a cap. Asking for one more than the
+    // cap lets us detect an unbounded pointer and bail.
+    let candidates = {
+        let ctx = state.solver().borrow();
+        ctx.eval_upto(dest_bv, MAX_SYMBOLIC_ADDR_CANDIDATES + 1)
+    };
+    if candidates.is_empty() || candidates.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
+        return Err(ProcedureError::SymbolicArgument("dest".to_string()));
+    }
+    // Bound total work: candidates * size conditional stores.
+    if candidates.len() as u64 * size > MAX_SYMBOLIC_ADDR_STORES {
+        return Err(ProcedureError::SymbolicArgument("dest".to_string()));
+    }
+
+    let width = dest_bv.width();
+    for a in candidates {
+        let a = a as u64;
+        let cond = {
+            let ctx = state.solver().borrow();
+            dest_bv.eq(&RustBV::concrete(a as u128, width), &ctx)
+        };
+        for i in 0..size {
+            let p = a.wrapping_add(i);
+            let orig = state.memory_load(p, 1)?;
+            let stored = {
+                let ctx = state.solver().borrow();
+                cond.ite(byte_bv, &orig, &ctx)
+            };
+            state.memory_store(p, stored)?;
+        }
+    }
+    Ok(Some(dest_bv.clone()))
 }
 
 #[cfg(test)]

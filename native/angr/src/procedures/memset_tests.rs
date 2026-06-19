@@ -176,6 +176,136 @@ fn test_memset_symbolic_size_conditional() {
 }
 
 #[test]
+fn test_memset_symbolic_addr_pinned() {
+    // A symbolic destination constrained to a single concrete address fills
+    // exactly that region — no Python fallback.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
+
+    let dest = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "p", 64)
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        dest.eq(&RustBV::concrete(0x1000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemset;
+    let result = proc
+        .call(
+            &mut state,
+            &[dest, RustBV::concrete(0x41, 64), RustBV::concrete(4, 64)],
+        )
+        .unwrap();
+    // Returns the (symbolic) dest pointer, which evals to 0x1000.
+    let ret = result.unwrap();
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.eval(&ret), Some(0x1000));
+
+    // Bytes [0,4) are pinned to 0x41 (only feasible address is 0x1000).
+    for i in 0..4u64 {
+        let b = state.memory_load(0x1000 + i, 1).unwrap();
+        assert_eq!(ctx.min(&b, false), Some(0x41));
+        assert_eq!(ctx.max(&b, false), Some(0x41));
+    }
+    // Byte at/after the region keeps its original zero.
+    let after = state.memory_load(0x1004, 1).unwrap();
+    assert_eq!(after.as_u64(), Some(0));
+}
+
+#[test]
+fn test_memset_symbolic_addr_two_candidates() {
+    // A symbolic destination with two feasible addresses fills both regions
+    // conditionally: each byte is ITE(dest == a, fill, original).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &[0u8; 32], Permission::RWX);
+
+    let dest = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "p", 64)
+    };
+    // dest ∈ {0x1000, 0x1008}.
+    let constraint = {
+        let ctx = state.solver().borrow();
+        let a = dest.eq(&RustBV::concrete(0x1000, 64), &ctx);
+        let b = dest.eq(&RustBV::concrete(0x1008, 64), &ctx);
+        a.or(&b, &ctx)
+    };
+    state.add_constraint(constraint);
+
+    let proc = NativeMemset;
+    proc.call(
+        &mut state,
+        &[dest, RustBV::concrete(0x41, 64), RustBV::concrete(4, 64)],
+    )
+    .unwrap();
+
+    let ctx = state.solver().borrow();
+    // Each region's bytes can be fill (when dest selects it) or the original
+    // zero (when dest selects the other region).
+    for base in [0x1000u64, 0x1008u64] {
+        for i in 0..4u64 {
+            let b = state.memory_load(base + i, 1).unwrap();
+            assert_eq!(ctx.min(&b, false), Some(0), "byte {base:#x}+{i} preserve");
+            assert_eq!(ctx.max(&b, false), Some(0x41), "byte {base:#x}+{i} fill");
+        }
+    }
+}
+
+#[test]
+fn test_memset_symbolic_addr_unbounded_fallback() {
+    // An unconstrained symbolic destination has too many candidate addresses,
+    // so memset falls back to Python (Err).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
+
+    let dest = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "p", 64)
+    };
+    let proc = NativeMemset;
+    let result = proc.call(
+        &mut state,
+        &[dest, RustBV::concrete(0x41, 64), RustBV::concrete(4, 64)],
+    );
+    assert!(
+        result.is_err(),
+        "unbounded symbolic address should fall back"
+    );
+}
+
+#[test]
+fn test_memset_symbolic_addr_symbolic_size_fallback() {
+    // Symbolic address combined with a symbolic size is out of scope: even a
+    // pinned address must fall back to Python when the size is symbolic.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
+
+    let dest = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "p", 64)
+    };
+    let size = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "n", 64)
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        dest.eq(&RustBV::concrete(0x1000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemset;
+    let result = proc.call(&mut state, &[dest, RustBV::concrete(0x41, 64), size]);
+    assert!(
+        result.is_err(),
+        "symbolic address + symbolic size should fall back"
+    );
+}
+
+#[test]
 fn test_memset_symbolic_size_unbounded_fallback() {
     // An unconstrained symbolic size has no useful upper bound, so memset must
     // fall back to Python (returns Err).
