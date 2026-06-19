@@ -5165,3 +5165,66 @@ fn test_vqsal_16x4_symbolic_universal_signed() {
         "VQShlSat 16x4 (signed) must match the per-lane spec for all 64-bit inputs"
     );
 }
+
+// =========================================================================
+// angr-cudgw.15: binop family-dispatch misroute degrades to OpError, not
+// panic. The top-level VEXOps::binop() routing guard and each family fn's
+// accepted op-set are two hand-maintained lists; IROp is a plain (non
+// #[non_exhaustive]) derive enum, so a guard/family drift compiles clean
+// and would otherwise hit an `unreachable!()` that aborts the whole
+// process. Each family fn now returns OpError::NotBinary on a misroute so
+// the caller falls through to the existing Python-fallback path. These
+// tests call the family fns directly with an op that belongs to a
+// DIFFERENT family, simulating that drift.
+// =========================================================================
+
+#[test]
+fn binop_arith_misroute_returns_not_binary() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::concrete(1, 32);
+    let b = RustBV::concrete(2, 32);
+    // And is bitwise, not arith — a deliberate misroute.
+    let err = VEXOps::binop_arith(IROp::And(IRType::I32), a, b, &ctx).unwrap_err();
+    assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
+}
+
+#[test]
+fn binop_bitwise_shift_cmp_misroute_returns_not_binary() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::concrete(1, 32);
+    let b = RustBV::concrete(2, 32);
+    // Add is arith, not bitwise/shift/cmp — a deliberate misroute.
+    let err =
+        VEXOps::binop_bitwise_shift_cmp(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
+}
+
+#[test]
+fn binop_float_misroute_returns_not_binary() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::concrete(1, 32);
+    let b = RustBV::concrete(2, 32);
+    // Add is scalar-int, not float — a deliberate misroute.
+    let err = VEXOps::binop_float(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
+}
+
+#[test]
+fn binop_vec_int_misroute_returns_not_binary() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::concrete(1, 32);
+    let b = RustBV::concrete(2, 32);
+    // Add is scalar-int, not vector-int — a deliberate misroute.
+    let err = VEXOps::binop_vec_int(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
+}
+
+#[test]
+fn binop_vec_float_misroute_returns_not_binary() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::concrete(1, 32);
+    let b = RustBV::concrete(2, 32);
+    // Add is scalar-int, not vector-float — a deliberate misroute.
+    let err = VEXOps::binop_vec_float(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
+}

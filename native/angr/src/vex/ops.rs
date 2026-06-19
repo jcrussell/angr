@@ -797,7 +797,11 @@ impl VEXOps {
             IROp::DivModU128to64 => Self::divmod_128_to_64(left, right, false, ctx),
             IROp::DivModS128to64 => Self::divmod_128_to_64(left, right, true, ctx),
 
-            _ => unreachable!("binop_arith called with non-arith op: {op:?}"),
+            // Misroute (a maintainer added this op to the top-level routing
+            // guard but not here, or vice-versa). Degrade to the Python
+            // fallback via the existing UnsupportedVexOp path rather than
+            // aborting the process. See angr-cudgw.15.
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
@@ -841,9 +845,9 @@ impl VEXOps {
             IROp::CmpLTU(ty) => width_binop!(left, right, ty, ult_into, ctx),
             IROp::CmpLEU(ty) => width_binop!(left, right, ty, ule_into, ctx),
 
-            _ => {
-                unreachable!("binop_bitwise_shift_cmp called with non-bitwise/shift/cmp op: {op:?}")
-            }
+            // Misroute (guard/family drift): degrade to Python fallback
+            // instead of panicking. See angr-cudgw.15.
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
@@ -885,7 +889,9 @@ impl VEXOps {
             IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
             IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
 
-            _ => unreachable!("binop_float called with non-float op: {op:?}"),
+            // Misroute (guard/family drift): degrade to Python fallback
+            // instead of panicking. See angr-cudgw.15.
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
@@ -1036,7 +1042,9 @@ impl VEXOps {
                 signed,
             } => Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx),
 
-            _ => unreachable!("binop_vec_int called with non-vec-int op: {op:?}"),
+            // Misroute (guard/family drift): degrade to Python fallback
+            // instead of panicking. See angr-cudgw.15.
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
@@ -1117,7 +1125,9 @@ impl VEXOps {
                 Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ false, ctx)
             }
 
-            _ => unreachable!("binop_vec_float called with non-vec-float op: {op:?}"),
+            // Misroute (guard/family drift): degrade to Python fallback
+            // instead of panicking. See angr-cudgw.15.
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
