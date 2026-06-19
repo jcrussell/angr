@@ -202,6 +202,45 @@ One artifact, one verification, one watch:
    seed is currently hardcoded to 12751 in solve.py, which
    helps).
 
+## Offline validation of path (b) tractability (2026-06-19, iter 11)
+
+The brief's primary unverifiable risk for path (b) was: "the chosen
+`find=` target is actually reachable in a sane step budget … vanilla
+exploration may not converge" and "wall time bounded enough to land in
+FAST/MEDIUM tier." An offline probe (`/tmp/xmllint_probe.py`, Python
+engine, symbolic 16-byte stdin, `use_sim_procedures=True`, isolated 4G
+systemd scope, hard step caps) resolves this empirically:
+
+- **No state explosion.** Through 2000 steps / ~10.5s the run stays
+  **single-state** (active==1, 0 deadended, 0 errored). The startup +
+  CLI option-parsing path is fully deterministic — no symbolic branching
+  — so the "deep call graphs may diverge / OOM" fear does **not**
+  materialize in this regime. Wall time grows ~linearly (~0.4s per 100
+  steps after a ~3s project-load + first-step warmup).
+- **`find=getenv` is trivially reachable: 185 steps, ~3.8s.** getenv is
+  hit on the deterministic startup path (xmllint reads
+  `XML_DEBUG_CATALOG`/`XML_CATALOG_FILES` early), well inside FAST tier.
+  Viable as a *mechanics smoke* bench, but it fires **before** symbolic
+  stdin is consumed, so it does NOT exercise the entity-resolution /
+  syscall-fallback paths the vx8p epic's secondary criterion wants.
+- **The read/parse callsites are NOT reached in 2000 steps / 10.5s.**
+  Targeting `fread`/`fgets`/`xmlReadFd`/`xmlReadMemory` (PLT) the run is
+  still churning deterministic CLI-option processing at the step-2000 cap
+  (cycling addrs 0x406xxx binary / 0x7b31c0 libc). Reaching the actual
+  parser needs either a much larger step budget or a `call_state`/
+  `blank_state` seeded closer to `xmlReadFd` to skip the long
+  deterministic startup. Whichever is chosen, exploration stays bounded.
+
+**Implication for the decision:** path (b) is *mechanically viable and
+safe* (bounded, no OOM, cheap). The remaining design choice is the
+`find=` target — a shallow `getenv` smoke vs. a parser-path target that
+needs a deeper budget or a seeded start state. This does NOT change the
+a/b recommendation (still lean (b) additive), and does NOT itself unblock
+75mc: the cross-repo angr-examples `solve_symex.py` PR + the
+`baseline_timings.json` add still require the human-in-the-loop /
+online iter. It removes the "won't converge / will explode" risk from
+the (b) column.
+
 ## Resolved
 
 (Pending — leave for the human-in-the-loop iter that applies
