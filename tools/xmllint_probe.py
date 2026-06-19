@@ -32,8 +32,16 @@ ACTIVE_CAP = int(os.environ.get("PROBE_ACTIVE_CAP", "60"))
 def main():
     args = [XMLLINT, "--noout", "--nonet", "--recover", "--noent", "-"]
     t0 = time.time()
-    proj = angr.Project(XMLLINT, auto_load_libs=True, use_sim_procedures=False)
-    print(f"loaded in {time.time() - t0:.1f}s; entry={hex(proj.entry)} base={hex(proj.loader.main_object.mapped_base)}")
+    # PROBE_SIM_PROCS=1 swaps in SimProcedures for libc (the viable path-b
+    # config — the no-sim-procs path dies in uninitialized-TLS glibc startup;
+    # see memory xmllint-path-b-glibc-init-wall). Default 0 preserves the
+    # iter30/31 vanilla-symex characterization.
+    use_sim_procs = os.environ.get("PROBE_SIM_PROCS", "0") == "1"
+    proj = angr.Project(XMLLINT, auto_load_libs=True, use_sim_procedures=use_sim_procs)
+    print(
+        f"loaded in {time.time() - t0:.1f}s; entry={hex(proj.entry)} "
+        f"base={hex(proj.loader.main_object.mapped_base)} sim_procs={use_sim_procs}"
+    )
 
     state = proj.factory.entry_state(
         args=args,

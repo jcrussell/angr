@@ -302,3 +302,36 @@ VEX op surface. The only viable path-b sub-choice is iter11's
 `use_sim_procedures=True` bounded harness (stubs glibc init, sidesteps
 the uninitialized-TLS wall). path-(a) (fuzzer Cargo feature) remains the
 other option. bd memory: `xmllint-path-b-glibc-init-wall`.
+
+## iter32 addendum — measured `use_sim_procedures=True` cross-engine run (angr-6d3l)
+
+iter31 established that the *vanilla* (`use_sim_procedures=False`) path
+is dead on both engines (uninitialized-TLS wall). iter32 measured the
+**viable** path-b config — `use_sim_procedures=True` — under both engines
+via `tools/xmllint_probe.py PROBE_SIM_PROCS=1 PROBE_ENGINE=rust|python`
+(new toggle; same ZERO_FILL entry state, 80-step budget, 4G nested scope).
+
+**Result — stubbing glibc init clears the iter31 wall, but the engines
+DIVERGE in control flow:**
+
+| | Rust | Python |
+|---|---|---|
+| First observed active PC | `0x406820` (main region) | `0x408a80` (`_start`) |
+| Behaviour | exits the `0x406883`↔`0x406896` main loop after ~1 iter, jumps to **stack** PC `0x7ffffffeffd0`, **deadends at step 20** | grinds the `0x406896` loop 50+ steps, still active at step 80 (BUDGET EXHAUSTED) |
+| Stash | single state throughout (no explosion) | single state throughout |
+| Peak RSS | ~370 MB | ~244 MB |
+| Wall | 3.7 s | 3.4 s |
+
+So **resource cost is comparable and bounded on both engines** (no
+explosion, no OOM) — but **control flow is NOT identical**. Python iterates
+the main-region loop many times; Rust exits early and deadends by jumping
+into the stack (`No bytes in memory for block starting at 0x7ffffffeffd0`).
+
+The divergence already shows at the very first observed PC: Rust's state
+is at `main` (`0x406820`) while Python is still at `_start` (`0x408a80`),
+pointing at a difference in the **`__libc_start_main` SimProcedure /
+entry→main stack-arg setup** rather than a mid-program op. This is a
+**candidate Rust correctness divergence on a real binary** and warrants a
+dedicated investigation bead (filed; see bd). It does NOT block the a/b
+decision — it is a 6d3l characterization finding. bd memory:
+`xmllint-simprocs-cross-engine-divergence`.
