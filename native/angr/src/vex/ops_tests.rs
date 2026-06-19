@@ -4,6 +4,10 @@
 // `use super::*` reaches `ops`'s private items.
 
 use super::*;
+// `FCmpKind` is used directly by the packed/scalar FP-compare tests; it is no
+// longer re-exported through `ops` (the compare ops moved to the `float_cmp`
+// child module — angr-cudgw.18), so import it explicitly here.
+use crate::vex::ir::FCmpKind;
 
 // =========================================================================
 // SIMD lane-test helpers (angr-ec82).
