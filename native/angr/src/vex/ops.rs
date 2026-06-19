@@ -1422,9 +1422,6 @@ pub enum OpError {
     /// Invalid float type.
     #[error("invalid float type: {0:?}")]
     InvalidFloatType(IRType),
-    /// Symbolic float operations not supported.
-    #[error("symbolic float operations not supported")]
-    SymbolicFloatUnsupported,
     /// Unsupported vector operation.
     #[error("unsupported vector operation: {0}")]
     UnsupportedVectorOp(String),

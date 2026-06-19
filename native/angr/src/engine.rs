@@ -72,7 +72,6 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
         | OpError::NotQuaternary(_)
         | OpError::TypeMismatch { .. }
         | OpError::InvalidFloatType(_)
-        | OpError::SymbolicFloatUnsupported
         | OpError::RawOpcode(_)) => RustExecError::Other(e.to_string()),
     }
 }

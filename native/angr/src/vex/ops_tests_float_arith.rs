@@ -264,3 +264,39 @@ fn test_float_sqrt_via_binop_rne_fastpath_f64() {
     assert!(!result.is_symbolic(), "RNE concrete must stay native");
     assert_eq!(result.as_u64(), Some(4.0f64.to_bits()));
 }
+
+/// Symbolic OPERAND under a concrete non-RNE rm must flow through the Z3
+/// rm-aware path, NOT collapse to a fresh unconstrained symbolic (the
+/// pre-angr-tfjl behavior cudgw.5 tracked). `a` is symbolic; FAdd(a, b)
+/// under RZ. Constraining `a == 0x3F800001` must pin the result to the
+/// RZ-truncated sum `0x40000001` (a fresh-symbolic result would leave it
+/// free, making `result == 0x40000002` satisfiable too).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_float_add_symbolic_operand_with_rm_rz_f32() {
+    let ctx = SymContext::new_mock();
+    let rm_rz = RustBV::concrete(3, 32);
+    let a = RustBV::symbolic(&ctx, "fadd_sym_a", 32);
+    let b = RustBV::concrete(0x3F800002, 32);
+
+    let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a.clone(), b, &ctx).unwrap();
+    assert!(
+        result.is_symbolic(),
+        "symbolic operand must yield a symbolic result, not a constant"
+    );
+
+    // Pin a to the inexact-sum operand; the RZ result is fully determined.
+    // If `result` were a fresh unconstrained symbolic, eval would not be
+    // pinned to the RZ-truncated sum.
+    ctx.add_constraint(
+        a.to_z3_ast()
+            .eq(RustBV::concrete(0x3F800001, 32).to_z3_ast()),
+    );
+    assert!(ctx.is_sat(), "pinned symbolic operand must keep ctx SAT");
+
+    let bits = ctx.eval(&result).expect("eval failed") as u32;
+    assert_eq!(
+        bits, 0x40000001,
+        "RZ truncates the 1.5ulp tie of the pinned symbolic operand"
+    );
+}
