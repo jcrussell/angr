@@ -143,6 +143,8 @@ class TestRustExplorationManagerUnit:
         assert exec_stats["python_vex_binop_fallback_count"] == 0
         assert exec_stats["python_vex_triop_fallback_count"] == 0
         assert exec_stats["python_vex_qop_fallback_count"] == 0
+        # Silent fabricate-fresh-symbolic BYPASS visibility counter (angr-s6miz).
+        assert exec_stats["vex_bypass_fabricate_count"] == 0
 
         fb = mgr.get_fallback_stats()
         assert fb["simprocedure_python_fallback_count"] == 0

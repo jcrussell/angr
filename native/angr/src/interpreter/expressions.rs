@@ -3,6 +3,25 @@ use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;
 
+/// The three binop families that parse to a concrete `IROp` but have no native
+/// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`): `Iop_Perm8x*`
+/// (=> `VPerm`), `Iop_Pclmul*`, and `Iop_Crc32C`. All deterministic — Python's
+/// VEX engine models them exactly — so `eval_binop` routes them to Python
+/// fallback rather than fabricating a wrong fresh symbolic. Keep this in lockstep
+/// with `opcode_map.rs` if a new must-fallback family is added.
+/// See bd `angr-s6miz` / `vex-dispatch-bypass-inventory`.
+fn is_dispatch_fabricate_family(op: &IROp) -> bool {
+    matches!(
+        op,
+        IROp::VPerm { .. }
+            | IROp::PclmulLQLQ
+            | IROp::PclmulHQHQ
+            | IROp::PclmulLQHQ
+            | IROp::PclmulHQLQ
+            | IROp::Crc32C
+    )
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
     pub(super) fn eval_expr_with_callbacks(
@@ -372,6 +391,8 @@ impl<'a> VEXInterpreter<'a> {
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_unop_fallback_count += 1;
                 if arg_is_sym {
+                    // Visibility for the otherwise-silent BYPASS (angr-s6miz).
+                    self.stats.vex_bypass_fabricate_count += 1;
                     let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                     Ok(RustBV::symbolic(
                         self.ctx,
@@ -411,6 +432,21 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // angr-s6miz: the three dispatch-fabricate families
+            // (Iop_Perm8x* => VPerm, Iop_Pclmul*, Iop_Crc32C) parse to a
+            // concrete IROp but have no native dispatch arm, so `binop` returns
+            // `NotBinary`. They are deterministic ops Python models exactly, so
+            // route the block to Python's VEX engine rather than fabricating a
+            // wrong fresh symbolic (the BYPASS arm below). Routed for BOTH
+            // symbolic and concrete args — strictly better than the old
+            // fabricate-on-sym / hard-error-on-concrete split.
+            Err(_) if is_dispatch_fabricate_family(&op) => {
+                Err(CbExecutionError::NeedPythonFallback(format!(
+                    "{} ({:?})",
+                    crate::interpreter::DISPATCH_FABRICATE_REASON,
+                    op
+                )))
+            }
             Err(e) => {
                 // Fallback for unsupported binary ops (e.g., vector float ops).
                 // Concrete args (angr-sa3j): propagate the typed OpError rather
@@ -418,6 +454,8 @@ impl<'a> VEXInterpreter<'a> {
                 self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_binop_fallback_count += 1;
                 if any_sym {
+                    // Visibility for the otherwise-silent BYPASS (angr-s6miz).
+                    self.stats.vex_bypass_fabricate_count += 1;
                     Ok(RustBV::symbolic(
                         self.ctx,
                         format!("unsup_binop_{:x}", self.pc),

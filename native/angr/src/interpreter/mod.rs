@@ -252,6 +252,17 @@ define_execution_stats! {
     python_vex_triop_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Qop`.
     python_vex_qop_fallback_count: sum,
+    /// Number of Unop/Binop evaluations that took the *silent fabricate-fresh-
+    /// symbolic* BYPASS (the `any_sym` arm of `eval_unop`/`eval_binop`): the
+    /// op returned an `OpError`, an input was symbolic, so a fresh unconstrained
+    /// symbolic stood in for the real value. A strict subset of
+    /// `python_vex_op_fallback_count` (excludes the concrete-arg arm, which
+    /// propagates a typed error). Surfaces the otherwise-invisible BYPASS so a
+    /// bench that drives a symbolic path through an undispatched op is
+    /// measurable. The three dispatch-fabricate families (VPerm/Pclmul*/Crc32C,
+    /// angr-s6miz) are routed to Python fallback *before* this point, so they do
+    /// NOT increment this counter. See bd `vex-dispatch-bypass-inventory`.
+    vex_bypass_fabricate_count: sum,
 }
 
 /// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
@@ -267,6 +278,15 @@ pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 /// See bd `angr-2iow` — prevalence drives whether to implement natively or
 /// document as a corpus-absent limitation.
 pub const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
+
+/// Reason marker for the three dispatch-fabricate binop families
+/// (`Iop_Perm8x*` => `VPerm`, `Iop_Pclmul*`, `Iop_Crc32C`). These parse to a
+/// concrete IROp but have no native dispatch arm, so `VEXOps::binop` returns
+/// `OpError::NotBinary`. Rather than fabricate a wrong fresh symbolic
+/// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine
+/// — deterministic ops Python models exactly. See bd `angr-s6miz` /
+/// `vex-dispatch-bypass-inventory`.
+pub const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
 
 /// How an error variant should be handled by the top-level interpreter loop.
 ///

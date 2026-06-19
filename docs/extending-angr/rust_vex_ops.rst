@@ -387,9 +387,10 @@ model (e.g. ``URECPE`` / ``URSQRTE`` per-lane reciprocal estimates).
 A fourth, quieter status — *parse-succeeds / dispatch-fabricates
 (BYPASS)* — is documented in its own subsection at the end of this
 matrix. It covers opcodes that parse to a concrete ``IROp`` variant
-but have no dispatch arm, so symbolic operands silently fabricate a
-fresh symbol (loud ``RustUnsupportedVexOpError`` only on *concrete*
-operands).
+but have no dispatch arm. The symbolic-operand fabricate path is now
+counted (``vex_bypass_fabricate_count``, angr-s6miz), and the three
+known families (``Perm8x*`` / ``Pclmul*`` / ``Crc32C``) route to Python
+fallback instead of fabricating.
 
 Source of truth: ``native/angr/src/vex/opcode_map.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
@@ -620,13 +621,26 @@ splits on operand concreteness:
 - **Symbolic args** → the catch-all ``Err(e)`` arm **fabricates** a
   fresh ``RustBV::symbolic("unsup_unop_<pc>" / "unsup_binop_<pc>")`` of
   the result width. This is the **BYPASS**: it loses the
-  input→output relationship entirely (a permutation, carry-less
-  product, or CRC of symbolic bytes becomes an unconstrained fresh
-  symbol). No counter fires on this path today — it is invisible in
-  ``mgr.stats()`` unlike the ``NeedPythonFallback`` reasons.
+  input→output relationship entirely.
 
-These opcodes parse (``opcode_map.rs``) but are unhandled in dispatch
-(``ops.rs``), so on symbolic args they hit the BYPASS:
+As of angr-s6miz this path is **visible**: the symbolic-args fabricate
+arm of both ``eval_unop`` and ``eval_binop`` bumps the
+``vex_bypass_fabricate_count`` ``ExecutionStats`` counter (surfaces in
+``mgr.get_execution_stats()``), so a workload that reaches a *residual*
+undispatched op with symbolic operands no longer does so invisibly.
+
+The three specific families below were also **closed** (angr-s6miz):
+``eval_binop`` now matches them (``is_dispatch_fabricate_family``) and
+routes the block to Python's VEX engine via
+``CbExecutionError::NeedPythonFallback`` (reason ``DISPATCH_FABRICATE_REASON``)
+for *both* concrete and symbolic args — strictly better than the old
+fabricate-on-sym / hard-error-on-concrete split. Because they route
+before the fabricate arm, they do **not** increment
+``vex_bypass_fabricate_count``; the counter now tracks only any *other*
+residual op that fabricates.
+
+These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
+(``ops.rs``); they are the families the Python-fallback route now covers:
 
 .. list-table::
    :header-rows: 1
@@ -675,10 +689,10 @@ families (8 opcode strings).
 
 No tracked benchmark drives a *symbolic* path through them today (x86
 crypto/shuffle code is rare in the CTF corpus and usually hooked at the
-Python layer), which is why the BYPASS has stayed inert. Promote to a
-standalone bead — and wire a ``bypass_fabricate_count`` counter per
-``invariant-vex-fallback-counter-wiring`` so the path stops being
-invisible — when a workload reaches one with symbolic operands.
+Python layer), which is why the BYPASS stayed inert long enough to be
+closed pre-emptively rather than under a regression. The Python-fallback
+route and ``vex_bypass_fabricate_count`` counter both landed in
+angr-s6miz; see bd ``vex-dispatch-bypass-inventory``.
 
 Special expressions: VECRET / GSPTR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
