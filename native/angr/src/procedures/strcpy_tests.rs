@@ -2,6 +2,8 @@
 // Split out per rust-mod-tests-sibling-extraction; included via #[cfg(test)] #[path].
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::{NativeSimProcedure, ProcedureError};
+use crate::state::RustSimState;
 
 #[test]
 fn test_strcpy_basic() {

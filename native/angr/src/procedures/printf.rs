@@ -15,37 +15,23 @@
 //! byte instead. See the format-string worked example in
 //! `docs/extending-angr/simprocedures.rst`.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_PRINTF_LEN: usize = 4096;
 
-/// Native printf implementation.
-///
-/// ```c
-/// int printf(const char *format, ...);
-/// ```
-///
-/// Returns a non-negative value (number of characters printed).
-pub struct NativePrintf;
-
-impl NativeSimProcedure for NativePrintf {
-    fn name(&self) -> &'static str {
-        "printf"
-    }
-
-    fn num_args(&self) -> usize {
-        1 // Variadic, but we only read the format string
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
-
+crate::declare_proc! {
+    /// Native printf implementation.
+    ///
+    /// ```c
+    /// int printf(const char *format, ...);
+    /// ```
+    ///
+    /// printf is variadic, but we only read the (concrete) format string.
+    /// Returns a non-negative value (number of characters printed).
+    name = "printf",
+    struct = NativePrintf,
+    args = [fmt_addr: concrete],
+    call |state| {
         // Read the format string byte-by-byte from memory
         let mut buf = Vec::new();
         for i in 0..MAX_PRINTF_LEN {

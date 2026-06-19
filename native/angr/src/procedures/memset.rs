@@ -8,40 +8,28 @@
 //! - If the size is symbolic, falls back to Python
 //! - Maximum size is 1MB (configurable)
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
+use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
 /// Maximum memset size before falling back to Python.
 const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
 
-/// Native memset implementation.
-///
-/// ```c
-/// void *memset(void *s, int c, size_t n);
-/// ```
-///
-/// Fills n bytes at s with byte value c. Returns s.
-pub struct NativeMemset;
-
-impl NativeSimProcedure for NativeMemset {
-    fn name(&self) -> &'static str {
-        "memset"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = extract_concrete_arg(&args[0], "dest")?;
-        let value = extract_concrete_arg(&args[1], "value")?;
+crate::declare_proc! {
+    /// Native memset implementation.
+    ///
+    /// ```c
+    /// void *memset(void *s, int c, size_t n);
+    /// ```
+    ///
+    /// Fills n bytes at s with byte value c. Returns s. `dest` is declared
+    /// `bv` (not `concrete`) so the original pointer BV can be returned
+    /// verbatim; it is extracted to a concrete u64 in the body.
+    name = "memset",
+    struct = NativeMemset,
+    args = [dest_bv: bv, value: concrete, size: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
         let byte_val = (value & 0xFF) as u8;
-        let size = extract_concrete_arg(&args[2], "size")?;
 
         if size > MAX_MEMSET_SIZE {
             return Err(ProcedureError::Other(format!(
@@ -51,7 +39,7 @@ impl NativeSimProcedure for NativeMemset {
         }
 
         if size == 0 {
-            return Ok(Some(args[0].clone()));
+            return Ok(Some(dest_bv));
         }
 
         // Fill memory byte-by-byte with the value
@@ -78,7 +66,7 @@ impl NativeSimProcedure for NativeMemset {
         }
 
         // Return dest pointer
-        Ok(Some(args[0].clone()))
+        Ok(Some(dest_bv))
     }
 }
 

@@ -1,5 +1,7 @@
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
 
 #[test]
 fn test_memset_basic() {

@@ -1,5 +1,7 @@
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::{NativeSimProcedure, ProcedureError};
+use crate::state::RustSimState;
 
 #[test]
 fn test_printf_basic() {

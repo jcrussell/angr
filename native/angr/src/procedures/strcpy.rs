@@ -7,35 +7,25 @@
 //! - Maximum string length is 4096 bytes
 
 use super::strings::{scan_concrete_bounded, scan_concrete_until_null};
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
+use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
 const MAX_STRLEN: usize = 4096;
 
-/// Native strcpy implementation.
-///
-/// ```c
-/// char *strcpy(char *dest, const char *src);
-/// ```
-pub struct NativeStrcpy;
-
-impl NativeSimProcedure for NativeStrcpy {
-    fn name(&self) -> &'static str {
-        "strcpy"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = extract_concrete_arg(&args[0], "dest")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
+crate::declare_proc! {
+    /// Native strcpy implementation.
+    ///
+    /// ```c
+    /// char *strcpy(char *dest, const char *src);
+    /// ```
+    ///
+    /// `dest` is declared `bv` so the original pointer BV is returned
+    /// verbatim; it is extracted to a concrete u64 in the body.
+    name = "strcpy",
+    struct = NativeStrcpy,
+    args = [dest_bv: bv, src: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
         // Read source string up to (but not including) the null terminator.
         let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
@@ -52,34 +42,24 @@ impl NativeSimProcedure for NativeStrcpy {
             RustBV::concrete(0u128, 8),
         )?;
 
-        Ok(Some(args[0].clone()))
+        Ok(Some(dest_bv))
     }
 }
 
-/// Native strncpy implementation.
-///
-/// ```c
-/// char *strncpy(char *dest, const char *src, size_t n);
-/// ```
-pub struct NativeStrncpy;
-
-impl NativeSimProcedure for NativeStrncpy {
-    fn name(&self) -> &'static str {
-        "strncpy"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = extract_concrete_arg(&args[0], "dest")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
-        let n = extract_concrete_arg(&args[2], "n")?;
+crate::declare_proc! {
+    /// Native strncpy implementation.
+    ///
+    /// ```c
+    /// char *strncpy(char *dest, const char *src, size_t n);
+    /// ```
+    ///
+    /// `dest` is declared `bv` so the original pointer BV is returned
+    /// verbatim; it is extracted to a concrete u64 in the body.
+    name = "strncpy",
+    struct = NativeStrncpy,
+    args = [dest_bv: bv, src: concrete, n: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
         if n > MAX_STRLEN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
@@ -100,36 +80,23 @@ impl NativeSimProcedure for NativeStrncpy {
             )?;
         }
 
-        Ok(Some(args[0].clone()))
+        Ok(Some(dest_bv))
     }
 }
 
-/// Native strdup implementation.
-///
-/// ```c
-/// char *strdup(const char *s);
-/// ```
-///
-/// Allocates a new string via heap_alloc, copies the source string
-/// (including null terminator), and returns pointer to the new string.
-pub struct NativeStrdup;
-
-impl NativeSimProcedure for NativeStrdup {
-    fn name(&self) -> &'static str {
-        "strdup"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let src = extract_concrete_arg(&args[0], "s")?;
-
+crate::declare_proc! {
+    /// Native strdup implementation.
+    ///
+    /// ```c
+    /// char *strdup(const char *s);
+    /// ```
+    ///
+    /// Allocates a new string via heap_alloc, copies the source string
+    /// (including null terminator), and returns pointer to the new string.
+    name = "strdup",
+    struct = NativeStrdup,
+    args = [src: concrete],
+    call |state| {
         // Read source string up to (but not including) the null terminator.
         let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 

@@ -3,31 +3,16 @@
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
 use super::strings::{find_null_addr, scan_concrete_bounded, scan_concrete_until_null};
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_STRLEN: usize = 4096;
 
-/// strcat: append src string to dest.
-pub struct NativeStrcat;
-
-impl NativeSimProcedure for NativeStrcat {
-    fn name(&self) -> &'static str {
-        "strcat"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = extract_concrete_arg(&args[0], "dest")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
-
+crate::declare_proc! {
+    /// strcat: append src string to dest.
+    name = "strcat",
+    struct = NativeStrcat,
+    args = [dest: concrete, src: concrete],
+    call |state| {
         let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
         let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
@@ -47,26 +32,12 @@ impl NativeSimProcedure for NativeStrcat {
     }
 }
 
-/// strncat: append at most n bytes from src to dest.
-pub struct NativeStrncat;
-
-impl NativeSimProcedure for NativeStrncat {
-    fn name(&self) -> &'static str {
-        "strncat"
-    }
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = extract_concrete_arg(&args[0], "dest")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
-        let n = extract_concrete_arg(&args[2], "n")?;
-
+crate::declare_proc! {
+    /// strncat: append at most n bytes from src to dest.
+    name = "strncat",
+    struct = NativeStrncat,
+    args = [dest: concrete, src: concrete, n: concrete],
+    call |state| {
         let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
         let max_copy = n.min(MAX_STRLEN as u64);
 
