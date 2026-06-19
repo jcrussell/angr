@@ -46,6 +46,54 @@ fn test_memory_endianness() {
 }
 
 #[test]
+fn test_wide_concrete_store_roundtrip_le() {
+    // 32-byte (V256) concrete store must round-trip byte-for-byte; the old
+    // u128-funnel path would corrupt bytes >=16 via a masked shift.
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let le_bytes: Vec<u8> = (0..32).map(|i| 0xA0u8 ^ i as u8).collect();
+    mem.store_concrete_le_bytes_automap_internal(0x1000u64, &le_bytes)
+        .unwrap();
+
+    // Little-endian: value byte i lands at addr+i.
+    for (i, &b) in le_bytes.iter().enumerate() {
+        let loaded = mem.load_concrete(0x1000 + i as u64, 1, &ctx).unwrap();
+        assert_eq!(loaded.as_u64(), Some(b as u64), "LE byte {i} mismatch");
+    }
+}
+
+#[test]
+fn test_wide_concrete_store_roundtrip_be() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Big);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let le_bytes: Vec<u8> = (0..32).map(|i| 0xA0u8 ^ i as u8).collect();
+    mem.store_concrete_le_bytes_automap_internal(0x1000u64, &le_bytes)
+        .unwrap();
+
+    // Big-endian: value byte i lands at addr+(len-1-i).
+    let len = le_bytes.len();
+    for (i, &b) in le_bytes.iter().enumerate() {
+        let dst = 0x1000 + (len - 1 - i) as u64;
+        let loaded = mem.load_concrete(dst, 1, &ctx).unwrap();
+        assert_eq!(loaded.as_u64(), Some(b as u64), "BE byte {i} mismatch");
+    }
+}
+
+#[test]
+fn test_wide_concrete_store_unmapped_errors() {
+    // A store into an unmapped, non-lazy region must surface an error rather
+    // than silently vanish (the old `let _ =` discarded the Result).
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    let le_bytes = vec![0xFFu8; 32];
+    let err = mem.store_concrete_le_bytes_automap_internal(0x9000u64, &le_bytes);
+    assert!(err.is_err(), "store into unmapped region should error");
+}
+
+#[test]
 fn test_memory_fork() {
     let ctx = SymContext::new_mock();
 

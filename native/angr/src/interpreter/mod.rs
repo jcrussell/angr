@@ -1248,13 +1248,9 @@ impl<'a> VEXInterpreter<'a> {
             // When Rust owns memory, flush stores to rust_memory instead of Python.
             if let Some(ref mut rust_mem) = self.rust_memory {
                 for (addr, data) in self.pending_stores.iter() {
-                    let width = (data.len() * 8) as u32;
-                    let mut val: u128 = 0;
-                    for (i, &b) in data.iter().enumerate() {
-                        val |= (b as u128) << (i * 8);
+                    if let Err(e) = rust_mem.store_concrete_le_bytes_automap_internal(*addr, data) {
+                        log::error!("dropped concrete store at {addr:#x}: {e:?}");
                     }
-                    let bv = RustBV::concrete(val, width);
-                    let _ = rust_mem.store_concrete_automap_internal(*addr, bv);
                 }
                 // Also flush symbolic stores to rust_memory so that subsequent
                 // loads via load_concrete_lazy_inner find the symbolic values
@@ -1300,13 +1296,9 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(ref mut rust_mem) = self.rust_memory {
             // Flush concrete pending stores
             for (addr, data) in self.pending_stores.drain() {
-                let width = (data.len() * 8) as u32;
-                let mut val: u128 = 0;
-                for (i, &b) in data.iter().enumerate() {
-                    val |= (b as u128) << (i * 8);
+                if let Err(e) = rust_mem.store_concrete_le_bytes_automap_internal(addr, &data) {
+                    log::error!("dropped concrete store at {addr:#x}: {e:?}");
                 }
-                let bv = RustBV::concrete(val, width);
-                let _ = rust_mem.store_concrete_automap_internal(addr, bv);
             }
             // Flush symbolic pending stores
             for (addr, bv) in self.pending_symbolic_stores.drain() {

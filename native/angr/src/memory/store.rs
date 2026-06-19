@@ -811,4 +811,59 @@ impl SymbolicMemory {
         // All pages now mapped, proceed with store
         self.store_concrete(addr, value)
     }
+
+    /// Store an arbitrarily-wide concrete value given its little-endian
+    /// value bytes (as produced by `bv_to_bytes`).
+    ///
+    /// `store_concrete` funnels the value through a single `u128`, so a store
+    /// wider than 16 bytes (e.g. a 32-byte V256/AVX register) would overflow
+    /// the shift and silently corrupt the low bytes. This helper chunks the
+    /// store into `<=16`-byte `RustBV` writes so wide values round-trip
+    /// byte-for-byte. Each chunk auto-maps lazy pages like
+    /// `store_concrete_automap_internal` and the per-chunk address is computed
+    /// so the final memory layout matches a single full-width store under
+    /// either endianness.
+    pub fn store_concrete_le_bytes_automap_internal(
+        &mut self,
+        addr: impl Into<Address>,
+        le_bytes: &[u8],
+    ) -> Result<(), MemoryError> {
+        let addr = addr.into();
+        let total = le_bytes.len();
+        if total == 0 {
+            return Ok(());
+        }
+        // Fast path: fits in a u128 — preserve the exact prior behavior.
+        if total <= 16 {
+            return self.store_concrete_automap_internal(addr, le_bytes_to_bv(le_bytes));
+        }
+        // Wide path: split into <=16-byte chunks. `store_concrete` reverses the
+        // chunk bytes under big-endian, so for big-endian we place chunks from
+        // the high value bytes (lowest data offset) at the highest addresses.
+        let mut off = 0usize;
+        while off < total {
+            let cs = (total - off).min(16);
+            let chunk_addr = match self.endness {
+                Endness::Little => addr + off as u64,
+                Endness::Big => addr + (total - off - cs) as u64,
+            };
+            self.store_concrete_automap_internal(
+                chunk_addr,
+                le_bytes_to_bv(&le_bytes[off..off + cs]),
+            )?;
+            off += cs;
+        }
+        Ok(())
+    }
+}
+
+/// Pack up to 16 little-endian value bytes into a concrete `RustBV` of width
+/// `bytes.len() * 8`.
+fn le_bytes_to_bv(bytes: &[u8]) -> RustBV {
+    debug_assert!(bytes.len() <= 16);
+    let mut val: u128 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        val |= (b as u128) << (i * 8);
+    }
+    RustBV::concrete(val, (bytes.len() * 8) as u32)
 }
