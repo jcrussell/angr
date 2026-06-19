@@ -1,0 +1,31 @@
+{
+  "dump_fingerprint": {
+    "active_addrs": [
+      "0x4006df",
+      "0x400713"
+    ],
+    "stash_counts": {
+      "active": 2,
+      "deadended": 1
+    }
+  },
+  "find_addr": "0x4006ed",
+  "restored_fingerprint": {
+    "active_addrs": [
+      "0x4006df",
+      "0x400713"
+    ],
+    "stash_counts": {
+      "active": 2,
+      "deadended": 1
+    }
+  },
+  "resumed_found": true,
+  "resumed_found_stdin_hex": "0000000000000000000f0fb9d6a40977b000000000000000000000fed600c98de4dc0000000000000000000000fed600c98de4dc0000",
+  "search_continuity": true,
+  "snapshot_bytes": 1664432,
+  "snapshot_steps": 14,
+  "snapshot_survives_process_exit": true,
+  "target": "fauxware",
+  "value_recovery_note": "fauxware's reaching input is empirically value-stable, but that rests on the search landing on the same path (the find address is reachable by multiple inputs), NOT on global constraint-uniqueness. Bit-identical result recovery is therefore an observed bonus here, not a guarantee across a restore \u2014 see angr-4n26m.4 / bd memory showcase-resume-target-classification."
+}
