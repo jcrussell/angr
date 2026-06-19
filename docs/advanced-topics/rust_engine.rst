@@ -3233,6 +3233,76 @@ The signal cannot interrupt a bench stuck inside one long ``_rust_mgr.run``
 PyO3 call (a single dominating solve), so the faulthandler dump is what
 pins the hang location for the Z3-structural cases above.
 
+Ranked optimization candidates (P3 synthesis)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Rolling up all of Phase 2 (P2a ``mma_howtouse``, P2b
+``android_arm_license_validation``, P2c very-slow tier, P2d micro-bench
+gap check) against the P1d triage table, the **headline finding is that
+the Rust symex engine is not the bottleneck anywhere in the corpus**.
+Every bucket-A "slow" bench reclassified to a non-engine root cause once
+profiled, and bucket B was a Z3 floor from the start:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Phase 2 input
+     - Verdict
+   * - P2a ``mma_howtouse`` (0.59–0.65x)
+     - **NO-OP.** 98.5% of wall is angr-core Python page init
+       (``Callable.__call__`` → ``state_blank`` → ``_initialize_page``,
+       a ``DictBackerMixin`` linear scan paid by *both* engines). The
+       Rust-attributable per-manager fixed tax is small (~12.9 ms/mgr)
+       and outside rust-symex scope.
+   * - P2b ``android_arm_license_validation`` (0.80x)
+     - **NO-OP** (``angr-w4oo3``). The 41–47 ms register sync is
+       one-time process Z3/claripy/bridge init, not a per-manager tax;
+       the recurring cost (~1.9 ms for 13 symbolic regs) already beats
+       the <10 ms target and cannot be skipped without a correctness
+       bug (``Registers::get`` zero-defaults unset offsets).
+   * - P2c very-slow tier (5 benches)
+     - **No engine lever.** Two are a Z3 ``eval``/``check()`` floor
+       (bucket B), three are catalog/bench-design artifacts.
+   * - P2d manager-sync micro-bench
+     - **Not added** (``angr-9w6ad.8``). Criterion benches are pure-Rust
+       and cannot call the Python manager-sync path; no actionable lever
+       to guard. The pure-Rust slices (``state.fork``, sym-context
+       push/pop, ``rustbv`` build) are already covered.
+
+Two code-level candidates survive from the 2026-06-18 architecture
+review, both **unmeasured and low-expected-gain** — they are kept on the
+backlog as P4 spikes, gated on a counter landing first:
+
+- **PC2 — lazy export-tracking on the single-constraint add path.**
+  ``RustSolverContext::add_constraint_ast`` (``native/angr/src/solver.rs``)
+  runs ``claripy_to_rustbv`` + ``assumed_constraints_push`` for export
+  tracking *after* the cheap raw-Z3 assert. The batch path
+  (``add_constraints``) was peer-reviewed and **also** converts per entry,
+  so it is not a free alternative. Candidate: defer the RustBV
+  materialization (``OnceCell`` / derive-from-Z3 on demand). Sound for
+  snapshot/restore because ``assumed_constraints`` is best-effort, but it
+  slightly degrades the sharing-walk/lineage view until materialized.
+  **Guardrail:** must not regress into pre-pinning concrete values on the
+  export path (``constraint-export-no-pre-pin`` — that class of fix was
+  tried and rolled back, broke ``fauxware``/``flareon2015_5``). Expected
+  gain: minor (single-adds only); **add a counter before scheduling.**
+- **PC1 — make ``_export_callback_bundle`` the default callback-resume
+  path** (``native/angr/src/exploration/pending_api.rs``) instead of
+  opt-in, to cut per-callback FFI round-trips. Only worth pursuing once a
+  state-export/page-sync micro-cost is actually demonstrated — P2a/P2d
+  found the residual sync tax small, so this is speculative.
+
+**REFUTED non-candidate:** "fork replays constraints O(n·m)."
+``SymbolicContext`` already ``Arc``-shares assertions and forks O(1) via
+``Arc::clone``, materializing the Z3 solver lazily and caching Bool
+nodes — there is no per-fork replay to remove.
+
+Net: the remaining performance surface is the **Z3-structural floor**
+(bucket B + the two P2c Z3-eval hangs), addressed by the P4 spikes
+(``angr-9w6ad.10`` deterministic Z3 seeding, ``angr-9w6ad.11``
+``LAZY_SOLVES`` engagement audit), not by engine-overhead reduction.
+
 Known slower benchmarks
 -----------------------
 
