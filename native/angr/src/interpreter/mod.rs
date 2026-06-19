@@ -303,6 +303,18 @@ pub enum FallbackStrategy {
     /// moves to the errored stash; no recovery is attempted. Used for
     /// genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
     /// callback-side failures).
+    ///
+    /// NOTE: `Op` / `TypeMismatch` / `InvalidIR` are exactly the failures
+    /// that Python's `HeavyResilienceMixin` would catch and substitute a
+    /// default for when `BYPASS_ERRORED_IROP` / `_IRCCALL` / `_IRSTMT` is
+    /// set. Because Rust terminates here instead of handing the block to
+    /// Python, those bypasses cannot fire — a silent divergence. Rather
+    /// than diverge silently, the Python wrapper raises `NotImplementedError`
+    /// at manager construction if any `BYPASS_ERRORED_*` option is set (see
+    /// `_RAISE_OPTION_NAMES` in `angr/exploration/rust_manager.py`). Wiring a
+    /// real bypass would mean routing these variants through `PythonCallback`
+    /// (and re-classifying them as recoverable) so the resilience mixin can
+    /// act; until then the raise is the contract.
     Panic,
 }
 
