@@ -253,6 +253,28 @@ BIMODAL_BENCHMARKS = frozenset(
 )
 
 
+def memory_regression_pct(baseline_mem, rust_peak_mem, threshold):
+    """Return the over-threshold peak-RSS regression percent, or ``None``.
+
+    Pure decision helper for the peak_memory_mb gate. Deliberately takes
+    ONLY the two memory measurements and the threshold — it has no
+    solve-count / stats parameter, so the gate cannot be (re)gated behind
+    "successful_solves > 0" or an empty-stats branch (angr-cudgw.2). A
+    bench that runs OK but solves nothing still reports a process-wide
+    ``ru_maxrss`` high-water mark, and that mark is what we compare.
+
+    Returns ``None`` when there is nothing to compare (no baseline, a
+    non-positive baseline, or a missing current measurement) or when the
+    current peak is within ``threshold`` of the baseline. Otherwise returns
+    the positive percent over baseline.
+    """
+    if baseline_mem is None or baseline_mem <= 0 or rust_peak_mem is None:
+        return None
+    if rust_peak_mem <= baseline_mem * (1 + threshold):
+        return None
+    return ((rust_peak_mem / baseline_mem) - 1) * 100
+
+
 def _normalize_output(output):
     """Normalize benchmark output for comparison.
 
@@ -690,13 +712,8 @@ def main():
             # ru_maxrss is a process-wide high-water mark, so the threshold
             # is intentionally generous (see --memory-threshold help).
             baseline_mem = baseline[baseline_key].get("peak_memory_mb") if not args.no_memory_check else None
-            if (
-                baseline_mem is not None
-                and baseline_mem > 0
-                and rust_peak_mem is not None
-                and rust_peak_mem > baseline_mem * (1 + args.memory_threshold)
-            ):
-                pct = ((rust_peak_mem / baseline_mem) - 1) * 100
+            pct = memory_regression_pct(baseline_mem, rust_peak_mem, args.memory_threshold)
+            if pct is not None:
                 tag = "MEMORY WARN" if args.memory_warn_only else "MEMORY REGRESSION"
                 print(f"  {tag}: peak_memory_mb {rust_peak_mem:.0f}MB vs baseline {baseline_mem:.0f}MB (+{pct:.0f}%)")
                 if not args.memory_warn_only:
