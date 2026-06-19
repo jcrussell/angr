@@ -466,6 +466,44 @@ The ``--json`` option dumps the raw timing samples for later analysis.
 Per-bench summary lines (``summary: n=20 min=… median=… …``) and a
 1s-bin ASCII histogram are printed to stdout.
 
+Corpus-wide classification (P1c)
+--------------------------------
+
+The full-corpus classification campaign (perf-campaign bead
+``angr-9w6ad.3``) runs ``classify()`` over every bench in
+``baseline_timings.json`` except two unrunnable keys — ``CADET_00001``
+(>280s timeout; see ``benchmark-cadet-phase3-not-a-bench``) and
+``defcamp_r100__dfs`` (a ``--strategy dfs`` variant of ``defcamp_r100``
+with no ``solve.py`` of its own). It runs in two passes — the bulk at
+``--runs 10`` and the five ``run_regression.BIMODAL_BENCHMARKS`` at
+``--runs 20`` (the trimodal benches are under-sampled at n=10). The full
+classification table and findings are recorded in bead ``angr-9w6ad.3``;
+the headline below summarises them. The campaign's per-bench timing
+samples (``--json`` output) are host-specific and not tracked in the
+repo — regenerate with the commands below.
+
+.. code-block:: console
+
+   $ read -r -a B <<<"$(python3 -c "import sys;sys.path.insert(0,'tests/benchmarks');import run_regression as r;print(' '.join(sorted(r.BIMODAL_BENCHMARKS)))")"
+   $ EX="CADET_00001 defcamp_r100__dfs ${B[*]}"
+   $ BULK=$(python3 -c "import json;ex=set('$EX'.split());print(' '.join(k for k in json.load(open('tests/benchmarks/baseline_timings.json')) if k not in ex))")
+   $ python tests/benchmarks/bimodal_variance.py --runs 10 --timeout 180 --benchmarks $BULK --json /tmp/bulk.json
+   $ python tests/benchmarks/bimodal_variance.py --runs 20 --timeout 180 --benchmarks "${B[@]}" --json /tmp/bimodal.json
+
+Headline finding (2026-06-19): 27 of 30 benches classify **STABLE**;
+only ``google2016_unbreakable_1`` (BIMODAL), ``securityfest_fairlight``
+(OUTLIER), and ``defcon2016quals_baby-re`` (OUTLIER, a lone cold flier
+on a 0.47s bench) carry a non-STABLE label. **The label is necessary but
+not sufficient** — ``ekopartyctf2016_sokohashv2`` (cv=0.37) and
+``hackcon2016_angry-reverser`` (cv=0.41) read STABLE because their
+slow-tail continuum has no single dominant gap for the ``SEP=1.30``
+heuristic to split, yet their single-shot timings are clearly
+untrustworthy. Downstream triage (P1d) should treat **any** bench with
+``cv`` above ~0.15 as single-shot-unreliable regardless of the
+STABLE/BIMODAL/OUTLIER label. ``CADET_00001_partial`` reads STABLE (its
+~6.8s/~8.3s modes are only 1.2x apart, below ``SEP``) but timed out on
+3/20 runs — its occasional heavy path is worth watching.
+
 Related memories
 ----------------
 
