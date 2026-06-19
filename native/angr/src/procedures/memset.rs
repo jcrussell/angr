@@ -5,16 +5,27 @@
 //! # Behavior
 //!
 //! - If the address is symbolic, falls back to Python
-//! - If the size is symbolic, falls back to Python
+//! - A concrete size takes the fast chunked path (8-byte stores).
+//! - A symbolic size is handled natively via bounded conditional stores: byte
+//!   `i` is set to `ITE(i < n, fill, original_byte)` for `i` up to the solver's
+//!   upper bound on `n`. Falls back to Python when that bound is unknown or
+//!   exceeds `MAX_SYMBOLIC_MEMSET_SIZE` (the per-byte ITE path is far costlier
+//!   than the concrete chunked path, so its cap is much smaller).
 //! - A symbolic byte `value` is handled natively: the low 8 bits are stored
 //!   (symbolically) into every byte of the region — no Python fallback.
-//! - Maximum size is 1MB (configurable)
+//! - Maximum concrete size is 1MB (configurable)
 
 use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
-/// Maximum memset size before falling back to Python.
+/// Maximum concrete memset size before falling back to Python.
 const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
+
+/// Maximum symbolic memset size before falling back to Python. The symbolic
+/// path emits one `memory_load` + `ITE` + `memory_store` per byte up to the
+/// solver's max bound on `n`, so it is far costlier than the concrete chunked
+/// path and capped much lower.
+const MAX_SYMBOLIC_MEMSET_SIZE: u64 = 4096;
 
 crate::declare_proc! {
     /// Native memset implementation.
@@ -27,65 +38,102 @@ crate::declare_proc! {
     /// `bv` (not `concrete`) so the original pointer BV can be returned
     /// verbatim; it is extracted to a concrete u64 in the body. `value` is
     /// also `bv`: a concrete byte takes the fast 8-byte-chunk path, while a
-    /// symbolic byte is stored (low 8 bits) into every byte natively.
+    /// symbolic byte is stored (low 8 bits) into every byte natively. `size`
+    /// is `bv` too: a concrete size takes the chunked path, a symbolic size
+    /// takes the bounded conditional-store path (or falls back to Python).
     name = "memset",
     struct = NativeMemset,
-    args = [dest_bv: bv, value_bv: bv, size: concrete],
+    args = [dest_bv: bv, value_bv: bv, size_bv: bv],
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if size > MAX_MEMSET_SIZE {
-            return Err(ProcedureError::Other(format!(
-                "memset size {} exceeds maximum {}",
-                size, MAX_MEMSET_SIZE
-            )));
-        }
-
-        if size == 0 {
-            return Ok(Some(dest_bv));
-        }
-
-        // Build the 8-bit fill byte and a 64-bit chunk (the byte repeated 8
-        // times). For a concrete value both are concrete; for a symbolic
-        // value the byte is the low 8 bits and the chunk concatenates 8
-        // copies of it (endianness-agnostic since every byte is identical).
-        let (byte_bv, chunk_bv) = match value_bv.as_u64() {
-            Some(value) => {
-                let byte_val = (value & 0xFF) as u8;
-                let fill_8 = {
-                    let mut val: u64 = 0;
-                    for i in 0..8 {
-                        val |= (byte_val as u64) << (i * 8);
-                    }
-                    val as u128
-                };
-                (
-                    RustBV::concrete(byte_val as u128, 8),
-                    RustBV::concrete(fill_8, 64),
-                )
-            }
-            None => {
-                let ctx = state.solver().borrow();
-                let byte = value_bv.extract(7, 0, &ctx);
-                let parts: [RustBV; 8] = core::array::from_fn(|_| byte.clone());
-                let chunk = RustBV::concat_balanced(&parts, &ctx);
-                (byte, chunk)
+        // Build the 8-bit fill byte. For a concrete value it is the low byte;
+        // for a symbolic value it is the low 8 bits (`extract`).
+        let byte_bv = {
+            let ctx = state.solver().borrow();
+            match value_bv.as_u64() {
+                Some(value) => RustBV::concrete((value & 0xFF) as u128, 8),
+                None => value_bv.extract(7, 0, &ctx),
             }
         };
 
-        // Fill memory using 8-byte chunks where possible.
-        let mut offset: u64 = 0;
-        while offset + 8 <= size {
-            state.memory_store(dest.wrapping_add(offset), chunk_bv.clone())?;
-            offset += 8;
-        }
-        // Handle remaining bytes
-        while offset < size {
-            state.memory_store(dest.wrapping_add(offset), byte_bv.clone())?;
-            offset += 1;
+        // --- Concrete size: fast chunked path (8-byte stores). ---
+        if let Some(size) = size_bv.as_u64() {
+            if size > MAX_MEMSET_SIZE {
+                return Err(ProcedureError::Other(format!(
+                    "memset size {} exceeds maximum {}",
+                    size, MAX_MEMSET_SIZE
+                )));
+            }
+            if size == 0 {
+                return Ok(Some(dest_bv));
+            }
+
+            // 64-bit chunk: the fill byte repeated 8 times. For a concrete
+            // byte this is a precomputed u64; for a symbolic byte it
+            // concatenates 8 copies (endianness-agnostic — every byte is
+            // identical).
+            let chunk_bv = match byte_bv.as_u64() {
+                Some(byte_val) => {
+                    let byte_val = byte_val as u8;
+                    let mut fill_8: u64 = 0;
+                    for i in 0..8 {
+                        fill_8 |= (byte_val as u64) << (i * 8);
+                    }
+                    RustBV::concrete(fill_8 as u128, 64)
+                }
+                None => {
+                    let ctx = state.solver().borrow();
+                    let parts: [RustBV; 8] = core::array::from_fn(|_| byte_bv.clone());
+                    RustBV::concat_balanced(&parts, &ctx)
+                }
+            };
+
+            // Fill memory using 8-byte chunks where possible.
+            let mut offset: u64 = 0;
+            while offset + 8 <= size {
+                state.memory_store(dest.wrapping_add(offset), chunk_bv.clone())?;
+                offset += 8;
+            }
+            // Handle remaining bytes
+            while offset < size {
+                state.memory_store(dest.wrapping_add(offset), byte_bv.clone())?;
+                offset += 1;
+            }
+
+            return Ok(Some(dest_bv));
         }
 
-        // Return dest pointer
+        // --- Symbolic size: bounded conditional stores. ---
+        //
+        // Determine an upper bound on `n`. The conditional-store loop must run
+        // for every byte that *could* be filled, so the bound has to be the
+        // true solver max; an unknown or too-large bound falls back to Python.
+        let max_size = {
+            let ctx = state.solver().borrow();
+            ctx.max(&size_bv, false)
+        };
+        let max_size = match max_size {
+            Some(m) if m <= MAX_SYMBOLIC_MEMSET_SIZE as u128 => m as u64,
+            _ => return Err(ProcedureError::SymbolicArgument("size".to_string())),
+        };
+        if max_size == 0 {
+            return Ok(Some(dest_bv));
+        }
+
+        // Byte `i` is set to `ITE(i < n, fill, original)`: positions past the
+        // (symbolic) length keep their prior contents.
+        let width = size_bv.width();
+        for i in 0..max_size {
+            let orig = state.memory_load(dest.wrapping_add(i), 1)?;
+            let stored = {
+                let ctx = state.solver().borrow();
+                let cond = RustBV::concrete(i as u128, width).ult(&size_bv, &ctx);
+                cond.ite(&byte_bv, &orig, &ctx)
+            };
+            state.memory_store(dest.wrapping_add(i), stored)?;
+        }
+
         Ok(Some(dest_bv))
     }
 }
