@@ -362,6 +362,30 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
+    /// Shared tail for the unsupported-op fallback in
+    /// `eval_unop`/`eval_binop`/`eval_triop`/`eval_qop`. Symbolic operands keep
+    /// the fresh-symbolic BYPASS path (visibility via `vex_bypass_fabricate_count`,
+    /// angr-s6miz); concrete operands propagate the typed `OpError` so the engine
+    /// surfaces `RustUnsupportedVexOpError` / routes to Python rather than
+    /// fabricating a silently-wrong value (angr-sa3j). The per-op
+    /// `python_vex_{unop,binop,triop,qop}_fallback_count` is bumped at the call
+    /// site; this bumps the aggregate `python_vex_op_fallback_count`.
+    fn vex_op_fallback(
+        &mut self,
+        e: OpError,
+        any_sym: bool,
+        width: u32,
+        name: String,
+    ) -> Result<RustBV, CbExecutionError> {
+        self.stats.python_vex_op_fallback_count += 1;
+        if any_sym {
+            self.stats.vex_bypass_fabricate_count += 1;
+            Ok(RustBV::symbolic(self.ctx, name, width))
+        } else {
+            Err(CbExecutionError::Op(e))
+        }
+    }
+
     fn eval_unop(
         &mut self,
         py: Python<'_>,
@@ -382,26 +406,11 @@ impl<'a> VEXInterpreter<'a> {
             // the silent fresh-symbolic fallback so the engine
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // Fallback for unsupported unary ops (e.g., float conversions).
             Err(e) => {
-                // Fallback for unsupported unary ops (e.g., float conversions).
-                // Symbolic args: keep the fresh-symbolic BYPASS path.
-                // Concrete args (angr-sa3j): never fabricate 0 — propagate the
-                // typed OpError so it surfaces as RustUnsupportedVexOpError /
-                // routes to Python fallback instead of a silently-wrong value.
-                self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_unop_fallback_count += 1;
-                if arg_is_sym {
-                    // Visibility for the otherwise-silent BYPASS (angr-s6miz).
-                    self.stats.vex_bypass_fabricate_count += 1;
-                    let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                    Ok(RustBV::symbolic(
-                        self.ctx,
-                        format!("unsup_unop_{:x}", self.pc),
-                        width,
-                    ))
-                } else {
-                    Err(CbExecutionError::Op(e))
-                }
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                self.vex_op_fallback(e, arg_is_sym, width, format!("unsup_unop_{:x}", self.pc))
             }
         }
     }
@@ -447,23 +456,15 @@ impl<'a> VEXInterpreter<'a> {
                     op
                 )))
             }
+            // Fallback for unsupported binary ops (e.g., vector float ops).
             Err(e) => {
-                // Fallback for unsupported binary ops (e.g., vector float ops).
-                // Concrete args (angr-sa3j): propagate the typed OpError rather
-                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
-                self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_binop_fallback_count += 1;
-                if any_sym {
-                    // Visibility for the otherwise-silent BYPASS (angr-s6miz).
-                    self.stats.vex_bypass_fabricate_count += 1;
-                    Ok(RustBV::symbolic(
-                        self.ctx,
-                        format!("unsup_binop_{:x}", self.pc),
-                        fallback_width,
-                    ))
-                } else {
-                    Err(CbExecutionError::Op(e))
-                }
+                self.vex_op_fallback(
+                    e,
+                    any_sym,
+                    fallback_width,
+                    format!("unsup_binop_{:x}", self.pc),
+                )
             }
         }
     }
@@ -566,19 +567,8 @@ impl<'a> VEXInterpreter<'a> {
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
             Err(e) => {
-                // Concrete args (angr-sa3j): propagate the typed OpError rather
-                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
-                self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_triop_fallback_count += 1;
-                if any_sym {
-                    Ok(RustBV::symbolic(
-                        self.ctx,
-                        format!("triop_{:x}", self.pc),
-                        width,
-                    ))
-                } else {
-                    Err(CbExecutionError::Op(e))
-                }
+                self.vex_op_fallback(e, any_sym, width, format!("unsup_triop_{:x}", self.pc))
             }
         }
     }
@@ -615,19 +605,8 @@ impl<'a> VEXInterpreter<'a> {
             // surfaces RustUnsupportedVexOpError with op + arch.
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
             Err(e) => {
-                // Concrete args (angr-sa3j): propagate the typed OpError rather
-                // than fabricating 0; symbolic args keep the BYPASS fresh-symbolic.
-                self.stats.python_vex_op_fallback_count += 1;
                 self.stats.python_vex_qop_fallback_count += 1;
-                if any_sym {
-                    Ok(RustBV::symbolic(
-                        self.ctx,
-                        format!("qop_{:x}", self.pc),
-                        width,
-                    ))
-                } else {
-                    Err(CbExecutionError::Op(e))
-                }
+                self.vex_op_fallback(e, any_sym, width, format!("unsup_qop_{:x}", self.pc))
             }
         }
     }
