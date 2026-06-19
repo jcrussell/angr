@@ -8,7 +8,7 @@
 //! arch-specific `_fileno` offset; fclose/fseek/ftell/rewind dispatch off it.
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::ProcedureError;
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -85,33 +85,19 @@ fn read_fileno(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureErro
     Ok(raw as u32 as i32)
 }
 
-/// Native open implementation.
-///
-/// ```c
-/// int open(const char *pathname, int flags, ...);
-/// ```
-///
-/// Reads the pathname string from memory, allocates a new fd in the FileSystem.
-/// Returns the new fd number, or -1 on error.
-pub struct NativeOpen;
-
-impl NativeSimProcedure for NativeOpen {
-    fn name(&self) -> &'static str {
-        "open"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let pathname_addr = extract_concrete_arg(&args[0], "pathname")?;
-        let flags = extract_concrete_arg(&args[1], "flags")?;
-
+crate::declare_proc! {
+    /// Native open implementation.
+    ///
+    /// ```c
+    /// int open(const char *pathname, int flags, ...);
+    /// ```
+    ///
+    /// Reads the pathname string from memory, allocates a new fd in the FileSystem.
+    /// Returns the new fd number, or -1 on error.
+    name = "open",
+    struct = NativeOpen,
+    args = [pathname_addr: concrete, flags: concrete],
+    call |state| {
         // Read pathname string from memory (max 256 bytes)
         let mut name = Vec::new();
         for i in 0..256u64 {
@@ -133,7 +119,7 @@ impl NativeSimProcedure for NativeOpen {
         }
 
         let pathname = String::from_utf8_lossy(&name).to_string();
-        let fd_flags = crate::state::FdFlags::from_posix(flags as u32);
+        let fd_flags = FdFlags::from_posix(flags as u32);
         let fd = state.file_system().open(pathname, fd_flags);
 
         let bits = state.arch().bits();
@@ -141,31 +127,18 @@ impl NativeSimProcedure for NativeOpen {
     }
 }
 
-/// Native close implementation.
-///
-/// ```c
-/// int close(int fd);
-/// ```
-///
-/// Marks the fd as closed. Returns 0 on success, -1 if not open.
-pub struct NativeClose;
-
-impl NativeSimProcedure for NativeClose {
-    fn name(&self) -> &'static str {
-        "close"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = extract_concrete_arg(&args[0], "fd")?;
-
+crate::declare_proc! {
+    /// Native close implementation.
+    ///
+    /// ```c
+    /// int close(int fd);
+    /// ```
+    ///
+    /// Marks the fd as closed. Returns 0 on success, -1 if not open.
+    name = "close",
+    struct = NativeClose,
+    args = [fd: concrete],
+    call |state| {
         let success = state.file_system().close(fd as u32);
         let bits = state.arch().bits();
         let ret = if success {
@@ -177,33 +150,18 @@ impl NativeSimProcedure for NativeClose {
     }
 }
 
-/// Native lseek implementation.
-///
-/// ```c
-/// off_t lseek(int fd, off_t offset, int whence);
-/// ```
-///
-/// Adjusts the file position. Returns the new position, or -1 on error.
-pub struct NativeLseek;
-
-impl NativeSimProcedure for NativeLseek {
-    fn name(&self) -> &'static str {
-        "lseek"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = extract_concrete_arg(&args[0], "fd")?;
-        let offset = extract_concrete_arg(&args[1], "offset")?;
-        let whence = extract_concrete_arg(&args[2], "whence")?;
-
+crate::declare_proc! {
+    /// Native lseek implementation.
+    ///
+    /// ```c
+    /// off_t lseek(int fd, off_t offset, int whence);
+    /// ```
+    ///
+    /// Adjusts the file position. Returns the new position, or -1 on error.
+    name = "lseek",
+    struct = NativeLseek,
+    args = [fd: concrete, offset: concrete, whence: concrete],
+    call |state| {
         let bits = state.arch().bits();
         match state
             .file_system()
@@ -218,32 +176,19 @@ impl NativeSimProcedure for NativeLseek {
     }
 }
 
-/// Native dup implementation.
-///
-/// ```c
-/// int dup(int oldfd);
-/// ```
-///
-/// Allocates a new fd that refers to the same underlying file as `oldfd`.
-/// Returns the new fd, or -1 if `oldfd` is not open.
-pub struct NativeDup;
-
-impl NativeSimProcedure for NativeDup {
-    fn name(&self) -> &'static str {
-        "dup"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
-
+crate::declare_proc! {
+    /// Native dup implementation.
+    ///
+    /// ```c
+    /// int dup(int oldfd);
+    /// ```
+    ///
+    /// Allocates a new fd that refers to the same underlying file as `oldfd`.
+    /// Returns the new fd, or -1 if `oldfd` is not open.
+    name = "dup",
+    struct = NativeDup,
+    args = [oldfd: concrete],
+    call |state| {
         let bits = state.arch().bits();
         match state.file_system().dup(oldfd as u32) {
             Some(newfd) => Ok(Some(RustBV::concrete(newfd as u128, bits))),
@@ -252,33 +197,19 @@ impl NativeSimProcedure for NativeDup {
     }
 }
 
-/// Native dup2 implementation.
-///
-/// ```c
-/// int dup2(int oldfd, int newfd);
-/// ```
-///
-/// Makes `newfd` a copy of `oldfd`, closing `newfd` first if it was open.
-/// Returns `newfd` on success, or -1 if `oldfd` is not open.
-pub struct NativeDup2;
-
-impl NativeSimProcedure for NativeDup2 {
-    fn name(&self) -> &'static str {
-        "dup2"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
-        let newfd = extract_concrete_arg(&args[1], "newfd")?;
-
+crate::declare_proc! {
+    /// Native dup2 implementation.
+    ///
+    /// ```c
+    /// int dup2(int oldfd, int newfd);
+    /// ```
+    ///
+    /// Makes `newfd` a copy of `oldfd`, closing `newfd` first if it was open.
+    /// Returns `newfd` on success, or -1 if `oldfd` is not open.
+    name = "dup2",
+    struct = NativeDup2,
+    args = [oldfd: concrete, newfd: concrete],
+    call |state| {
         let bits = state.arch().bits();
         match state.file_system().dup2(oldfd as u32, newfd as u32) {
             Some(fd) => Ok(Some(RustBV::concrete(fd as u128, bits))),
@@ -287,32 +218,19 @@ impl NativeSimProcedure for NativeDup2 {
     }
 }
 
-/// Native pipe implementation.
-///
-/// ```c
-/// int pipe(int pipefd[2]);
-/// ```
-///
-/// Creates a (read_fd, write_fd) pair and writes them as two consecutive
-/// 32-bit ints to `pipefd`. Returns 0 on success.
-pub struct NativePipe;
-
-impl NativeSimProcedure for NativePipe {
-    fn name(&self) -> &'static str {
-        "pipe"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let pipefd_addr = extract_concrete_arg(&args[0], "pipefd")?;
-
+crate::declare_proc! {
+    /// Native pipe implementation.
+    ///
+    /// ```c
+    /// int pipe(int pipefd[2]);
+    /// ```
+    ///
+    /// Creates a (read_fd, write_fd) pair and writes them as two consecutive
+    /// 32-bit ints to `pipefd`. Returns 0 on success.
+    name = "pipe",
+    struct = NativePipe,
+    args = [pipefd_addr: concrete],
+    call |state| {
         let (read_fd, write_fd) = state.file_system().pipe();
 
         // Write the two 32-bit fds as raw bytes at pipefd[0..4] and pipefd[4..8].
@@ -347,35 +265,21 @@ impl NativeSimProcedure for NativePipe {
     }
 }
 
-/// Native fopen implementation.
-///
-/// ```c
-/// FILE *fopen(const char *pathname, const char *mode);
-/// ```
-///
-/// Opens an fd, allocates an `_IO_FILE` struct on the heap, writes the fd at the
-/// arch-specific `_fileno` offset, and returns the struct pointer. Returns 0 on
-/// unrecognized modes / unsupported arches / unmapped heap pages so the Python
-/// implementation can take over.
-pub struct NativeFopen;
-
-impl NativeSimProcedure for NativeFopen {
-    fn name(&self) -> &'static str {
-        "fopen"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let path_addr = extract_concrete_arg(&args[0], "pathname")?;
-        let mode_addr = extract_concrete_arg(&args[1], "mode")?;
-
+crate::declare_proc! {
+    /// Native fopen implementation.
+    ///
+    /// ```c
+    /// FILE *fopen(const char *pathname, const char *mode);
+    /// ```
+    ///
+    /// Opens an fd, allocates an `_IO_FILE` struct on the heap, writes the fd at the
+    /// arch-specific `_fileno` offset, and returns the struct pointer. Returns 0 on
+    /// unrecognized modes / unsupported arches / unmapped heap pages so the Python
+    /// implementation can take over.
+    name = "fopen",
+    struct = NativeFopen,
+    args = [path_addr: concrete, mode_addr: concrete],
+    call |state| {
         let path = read_cstring(state, path_addr, MAX_FOPEN_PATH_LEN, "pathname")?;
         let mode = read_cstring(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
         let flags = parse_fopen_mode(&mode).ok_or_else(|| {
@@ -404,34 +308,21 @@ impl NativeSimProcedure for NativeFopen {
     }
 }
 
-/// Native fdopen implementation.
-///
-/// ```c
-/// FILE *fdopen(int fd, const char *mode);
-/// ```
-///
-/// Allocates an `_IO_FILE` struct for an already-open fd. Returns 0 if `fd` is
-/// not open in the FileSystem so the Python proc can fall back to its
-/// symbolic-fd path.
-pub struct NativeFdopen;
-
-impl NativeSimProcedure for NativeFdopen {
-    fn name(&self) -> &'static str {
-        "fdopen"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = extract_concrete_arg(&args[0], "fd")? as u32 as i32;
-        let mode_addr = extract_concrete_arg(&args[1], "mode")?;
-
+crate::declare_proc! {
+    /// Native fdopen implementation.
+    ///
+    /// ```c
+    /// FILE *fdopen(int fd, const char *mode);
+    /// ```
+    ///
+    /// Allocates an `_IO_FILE` struct for an already-open fd. Returns 0 if `fd` is
+    /// not open in the FileSystem so the Python proc can fall back to its
+    /// symbolic-fd path.
+    name = "fdopen",
+    struct = NativeFdopen,
+    args = [fd_raw: concrete, mode_addr: concrete],
+    call |state| {
+        let fd = fd_raw as u32 as i32;
         let mode = read_cstring(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
         parse_fopen_mode(&mode).ok_or_else(|| {
             ProcedureError::Other(format!(
@@ -460,31 +351,19 @@ impl NativeSimProcedure for NativeFdopen {
     }
 }
 
-/// Native fclose implementation.
-///
-/// ```c
-/// int fclose(FILE *stream);
-/// ```
-///
-/// Reads `stream->_fileno` and calls FileSystem::close. Returns 0 on success
-/// and -1 if the fd was not open.
-pub struct NativeFclose;
-
-impl NativeSimProcedure for NativeFclose {
-    fn name(&self) -> &'static str {
-        "fclose"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
+crate::declare_proc! {
+    /// Native fclose implementation.
+    ///
+    /// ```c
+    /// int fclose(FILE *stream);
+    /// ```
+    ///
+    /// Reads `stream->_fileno` and calls FileSystem::close. Returns 0 on success
+    /// and -1 if the fd was not open.
+    name = "fclose",
+    struct = NativeFclose,
+    args = [file_ptr: concrete],
+    call |state| {
         let fd = read_fileno(state, file_ptr)?;
 
         let bits = state.arch().bits();
@@ -500,34 +379,21 @@ impl NativeSimProcedure for NativeFclose {
     }
 }
 
-/// Native fseek implementation.
-///
-/// ```c
-/// int fseek(FILE *stream, long offset, int whence);
-/// ```
-///
-/// Reads `stream->_fileno` and seeks via FileSystem::seek. Returns 0 on
-/// success and -1 on failure (matching glibc).
-pub struct NativeFseek;
-
-impl NativeSimProcedure for NativeFseek {
-    fn name(&self) -> &'static str {
-        "fseek"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
-        let offset = extract_concrete_arg(&args[1], "offset")? as i64;
-        let whence = extract_concrete_arg(&args[2], "whence")? as u32;
-
+crate::declare_proc! {
+    /// Native fseek implementation.
+    ///
+    /// ```c
+    /// int fseek(FILE *stream, long offset, int whence);
+    /// ```
+    ///
+    /// Reads `stream->_fileno` and seeks via FileSystem::seek. Returns 0 on
+    /// success and -1 on failure (matching glibc).
+    name = "fseek",
+    struct = NativeFseek,
+    args = [file_ptr: concrete, offset_raw: concrete, whence_raw: concrete],
+    call |state| {
+        let offset = offset_raw as i64;
+        let whence = whence_raw as u32;
         let fd = read_fileno(state, file_ptr)?;
         let bits = state.arch().bits();
         if fd < 0 {
@@ -540,31 +406,19 @@ impl NativeSimProcedure for NativeFseek {
     }
 }
 
-/// Native ftell implementation.
-///
-/// ```c
-/// long ftell(FILE *stream);
-/// ```
-///
-/// Reads `stream->_fileno` and returns the current position via
-/// FileSystem::fd_info. Returns -1 if the fd is not tracked.
-pub struct NativeFtell;
-
-impl NativeSimProcedure for NativeFtell {
-    fn name(&self) -> &'static str {
-        "ftell"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
+crate::declare_proc! {
+    /// Native ftell implementation.
+    ///
+    /// ```c
+    /// long ftell(FILE *stream);
+    /// ```
+    ///
+    /// Reads `stream->_fileno` and returns the current position via
+    /// FileSystem::fd_info. Returns -1 if the fd is not tracked.
+    name = "ftell",
+    struct = NativeFtell,
+    args = [file_ptr: concrete],
+    call |state| {
         let fd = read_fileno(state, file_ptr)?;
 
         let bits = state.arch().bits();
@@ -578,31 +432,19 @@ impl NativeSimProcedure for NativeFtell {
     }
 }
 
-/// Native rewind implementation.
-///
-/// ```c
-/// void rewind(FILE *stream);
-/// ```
-///
-/// Equivalent to `fseek(stream, 0, SEEK_SET)` but returns void. The exploration
-/// manager handles void returns by leaving the return register untouched.
-pub struct NativeRewind;
-
-impl NativeSimProcedure for NativeRewind {
-    fn name(&self) -> &'static str {
-        "rewind"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
+crate::declare_proc! {
+    /// Native rewind implementation.
+    ///
+    /// ```c
+    /// void rewind(FILE *stream);
+    /// ```
+    ///
+    /// Equivalent to `fseek(stream, 0, SEEK_SET)` but returns void. The exploration
+    /// manager handles void returns by leaving the return register untouched.
+    name = "rewind",
+    struct = NativeRewind,
+    args = [file_ptr: concrete],
+    call |state| {
         let fd = read_fileno(state, file_ptr)?;
 
         if fd >= 0 {

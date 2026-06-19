@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 #[test]
 fn test_open_basic() {
