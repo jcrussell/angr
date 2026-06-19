@@ -131,7 +131,11 @@ fn test_memcpy_symbolic_size_pinned() {
     let result = proc
         .call(
             &mut state,
-            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64), sym],
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                sym,
+            ],
         )
         .unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
@@ -172,7 +176,11 @@ fn test_memcpy_symbolic_size_conditional() {
     let proc = NativeMemcpy;
     proc.call(
         &mut state,
-        &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64), sym],
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x1000, 64),
+            sym,
+        ],
     )
     .unwrap();
 
@@ -203,7 +211,11 @@ fn test_memcpy_symbolic_size_unbounded_fallback() {
     let proc = NativeMemcpy;
     let result = proc.call(
         &mut state,
-        &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64), sym],
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x1000, 64),
+            sym,
+        ],
     );
     assert!(result.is_err(), "unbounded symbolic size should fall back");
 }
@@ -213,7 +225,11 @@ fn test_memmove_symbolic_size_overlap() {
     // memmove with a symbolic size constrained to a single concrete value must
     // copy correctly even when src and dst overlap (snapshots source first).
     let mut state = RustSimState::new("amd64").unwrap();
-    state.map_memory_data(0x1000, b"abcdefgh\x00\x00\x00\x00\x00\x00\x00\x00", Permission::RWX);
+    state.map_memory_data(
+        0x1000,
+        b"abcdefgh\x00\x00\x00\x00\x00\x00\x00\x00",
+        Permission::RWX,
+    );
 
     let sym = {
         let ctx = state.solver().borrow();
