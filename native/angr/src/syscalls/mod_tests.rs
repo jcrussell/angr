@@ -257,6 +257,46 @@ fn mips32_syscall_numbers_route_to_handlers() {
 }
 
 #[test]
+fn mips32_at_family_uses_angr_divergent_numbers() {
+    // angr-cudgw.1 / bd memory `angr-syscall-mips-o32-table-divergence`:
+    // angr's MIPS-O32 syscall table (linux_kernel.py, `mips-o32` block)
+    // diverges from upstream Linux <asm/unistd_o32.h> for part of the
+    // *at family — several entries sit +2 above their upstream number.
+    // Native handlers MUST register against angr's numbers, because the
+    // dispatcher receives the angr-issued number when a name-based
+    // syscall fires; using the upstream number would silently
+    // de-register the handler. This test pins the divergent numbers so a
+    // naive "match upstream" edit re-reddens instead of regressing.
+    let r = NativeSyscallRegistry::new();
+    // (name, angr number, upstream number). angr == upstream for
+    // openat/readlinkat/faccessat; +2 for mkdirat/unlinkat/renameat.
+    for (name, angr_num, upstream_num) in [
+        ("openat", 4288u64, 4288u64),
+        ("mkdirat", 4289, 4287),
+        ("unlinkat", 4294, 4292),
+        ("renameat", 4295, 4293),
+        ("readlinkat", 4298, 4298),
+        ("faccessat", 4300, 4300),
+    ] {
+        assert!(
+            r.get("MIPS32", angr_num).is_some(),
+            "MIPS32 {name} must register at angr number {angr_num}",
+        );
+        if angr_num != upstream_num {
+            // The upstream slot must NOT carry this handler — a +2 edit
+            // toward upstream would land here and de-register the name.
+            // (4287/4292/4293 are unmapped in our native table; 4293 is
+            // angr's fstatat64, which we do not register natively.)
+            assert!(
+                r.get("MIPS32", upstream_num).is_none(),
+                "MIPS32 upstream number {upstream_num} ({name}) must stay \
+                 unregistered — angr's table uses {angr_num}",
+            );
+        }
+    }
+}
+
+#[test]
 fn mips64_syscall_numbers_route_to_handlers() {
     // angr-smtv: MIPS64 N64 dispatch. Numbers from asm/unistd_n64.h
     // (also mirrored in angr/procedures/definitions/linux_kernel.py
