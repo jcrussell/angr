@@ -1,4 +1,7 @@
 use super::*;
+use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_exit_no_return() {
