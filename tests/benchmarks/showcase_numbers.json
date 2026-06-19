@@ -1,0 +1,167 @@
+{
+  "repeats": 5,
+  "results": [
+    {
+      "target": "fauxware",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 0.4,
+        "min": 0.39,
+        "max": 0.41,
+        "raw": [
+          0.39,
+          0.41,
+          0.4,
+          0.4,
+          0.39
+        ]
+      },
+      "rust": {
+        "median": 0.23,
+        "min": 0.22,
+        "max": 0.23,
+        "raw": [
+          0.22,
+          0.23,
+          0.23,
+          0.23,
+          0.23
+        ]
+      },
+      "speedup_median": 1.7391304347826086
+    },
+    {
+      "target": "defcamp_r100",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 1.07,
+        "min": 1.06,
+        "max": 1.08,
+        "raw": [
+          1.07,
+          1.08,
+          1.08,
+          1.07,
+          1.06
+        ]
+      },
+      "rust": {
+        "median": 0.28,
+        "min": 0.28,
+        "max": 0.28,
+        "raw": [
+          0.28,
+          0.28,
+          0.28,
+          0.28,
+          0.28
+        ]
+      },
+      "speedup_median": 3.821428571428571
+    },
+    {
+      "target": "ais3_crackme",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 2.57,
+        "min": 2.53,
+        "max": 2.63,
+        "raw": [
+          2.59,
+          2.53,
+          2.57,
+          2.63,
+          2.55
+        ]
+      },
+      "rust": {
+        "median": 0.84,
+        "min": 0.83,
+        "max": 0.85,
+        "raw": [
+          0.84,
+          0.85,
+          0.83,
+          0.84,
+          0.85
+        ]
+      },
+      "speedup_median": 3.0595238095238093
+    },
+    {
+      "target": "sharif7_rev50",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 3.47,
+        "min": 3.43,
+        "max": 3.52,
+        "raw": [
+          3.43,
+          3.49,
+          3.44,
+          3.47,
+          3.52
+        ]
+      },
+      "rust": {
+        "median": 0.88,
+        "min": 0.86,
+        "max": 0.89,
+        "raw": [
+          0.89,
+          0.86,
+          0.86,
+          0.89,
+          0.88
+        ]
+      },
+      "speedup_median": 3.9431818181818183
+    },
+    {
+      "target": "busybox_static",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 0.47,
+        "min": 0.46,
+        "max": 0.48,
+        "raw": [
+          0.48,
+          0.48,
+          0.46,
+          0.47,
+          0.47
+        ]
+      },
+      "rust": {
+        "median": 1.42,
+        "min": 1.41,
+        "max": 1.42,
+        "raw": [
+          1.42,
+          1.42,
+          1.42,
+          1.42,
+          1.41
+        ]
+      },
+      "speedup_median": 0.33098591549295775
+    }
+  ],
+  "_meta": {
+    "generated": "2026-06-19",
+    "gate": "angr-4n26m.3",
+    "harness": "tests/benchmarks/measure_showcase.py",
+    "method": "run_single.py --both, N=5, median + [min,max] over fresh subprocess runs",
+    "host": "ralph loop box (7GB, no swap); each run RLIMIT_AS-capped by run_single",
+    "note": "Numbers are FRESH; never quote baseline_timings.json (stale by design). speedup_median = python.median / rust.median (>1 = Rust faster). busybox_static is the breadth/realism demo: a short 60-step entry_state run dominated by ~0.9s PyO3/state-export init tax, so Rust LOSES (0.33x) - this is expected and is NOT a raw-speed number. Bimodal-Z3 benches are excluded from the default set; if measured, their median understates spread - quote the range and caveat.",
+    "excluded_heavy_winners": {
+      "ekopartyctf2016_rev250": "python ~32s/run too slow for N=5 in-loop; measure on demand with small -n",
+      "flareon2015_5": "python ~57s/run too slow for N=5 in-loop"
+    }
+  }
+}
