@@ -5194,8 +5194,7 @@ fn binop_bitwise_shift_cmp_misroute_returns_not_binary() {
     let a = RustBV::concrete(1, 32);
     let b = RustBV::concrete(2, 32);
     // Add is arith, not bitwise/shift/cmp — a deliberate misroute.
-    let err =
-        VEXOps::binop_bitwise_shift_cmp(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    let err = VEXOps::binop_bitwise_shift_cmp(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
     assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
 }
 
