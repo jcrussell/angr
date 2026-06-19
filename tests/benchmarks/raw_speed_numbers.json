@@ -1,0 +1,199 @@
+{
+  "repeats": 5,
+  "quick": false,
+  "results": [
+    {
+      "target": "ekopartyctf2016_rev250",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 33.48,
+        "min": 32.87,
+        "max": 33.76,
+        "raw": [
+          33.76,
+          33.48,
+          33.64,
+          33.31,
+          32.87
+        ]
+      },
+      "rust": {
+        "median": 2.28,
+        "min": 2.25,
+        "max": 2.28,
+        "raw": [
+          2.28,
+          2.28,
+          2.25,
+          2.28,
+          2.26
+        ]
+      },
+      "speedup_median": 14.68421052631579,
+      "tier": "headline"
+    },
+    {
+      "target": "flareon2015_5",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 25.69,
+        "min": 25.39,
+        "max": 26.14,
+        "raw": [
+          25.84,
+          26.14,
+          25.69,
+          25.52,
+          25.39
+        ]
+      },
+      "rust": {
+        "median": 3.48,
+        "min": 3.23,
+        "max": 3.5,
+        "raw": [
+          3.48,
+          3.23,
+          3.34,
+          3.48,
+          3.5
+        ]
+      },
+      "speedup_median": 7.3821839080459775,
+      "tier": "headline"
+    },
+    {
+      "target": "sharif7_rev50",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 3.48,
+        "min": 3.43,
+        "max": 3.52,
+        "raw": [
+          3.44,
+          3.51,
+          3.48,
+          3.52,
+          3.43
+        ]
+      },
+      "rust": {
+        "median": 0.87,
+        "min": 0.86,
+        "max": 0.88,
+        "raw": [
+          0.86,
+          0.88,
+          0.87,
+          0.87,
+          0.87
+        ]
+      },
+      "speedup_median": 4.0,
+      "tier": "fast"
+    },
+    {
+      "target": "defcamp_r100",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 1.06,
+        "min": 1.05,
+        "max": 1.1,
+        "raw": [
+          1.05,
+          1.08,
+          1.1,
+          1.06,
+          1.05
+        ]
+      },
+      "rust": {
+        "median": 0.28,
+        "min": 0.27,
+        "max": 0.29,
+        "raw": [
+          0.28,
+          0.27,
+          0.27,
+          0.29,
+          0.28
+        ]
+      },
+      "speedup_median": 3.7857142857142856,
+      "tier": "fast"
+    },
+    {
+      "target": "ais3_crackme",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 2.63,
+        "min": 2.6,
+        "max": 2.67,
+        "raw": [
+          2.65,
+          2.67,
+          2.61,
+          2.63,
+          2.6
+        ]
+      },
+      "rust": {
+        "median": 0.86,
+        "min": 0.83,
+        "max": 0.89,
+        "raw": [
+          0.89,
+          0.86,
+          0.83,
+          0.83,
+          0.86
+        ]
+      },
+      "speedup_median": 3.058139534883721,
+      "tier": "fast"
+    },
+    {
+      "target": "busybox_static",
+      "bimodal": false,
+      "samples": 5,
+      "python": {
+        "median": 0.46,
+        "min": 0.45,
+        "max": 0.47,
+        "raw": [
+          0.47,
+          0.46,
+          0.46,
+          0.45,
+          0.46
+        ]
+      },
+      "rust": {
+        "median": 1.39,
+        "min": 1.39,
+        "max": 1.4,
+        "raw": [
+          1.4,
+          1.39,
+          1.4,
+          1.39,
+          1.39
+        ]
+      },
+      "speedup_median": 0.3309352517985612,
+      "tier": "realsoftware"
+    }
+  ],
+  "_meta": {
+    "task": "angr-4n26m.5",
+    "harness": "tests/benchmarks/show_raw_speed.py",
+    "gate": "measure_showcase.measure (angr-4n26m.3)",
+    "framing": "now practical, not newly possible",
+    "note": "before=pure-Python angr, after=Rust engine, identical workload. busybox_static is a breadth/realism row, NOT a raw-speed win (init-tax-dominated; Rust ~0.3x). Never quote baseline_timings.json."
+  }
+}
