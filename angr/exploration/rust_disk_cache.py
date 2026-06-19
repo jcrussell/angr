@@ -355,7 +355,28 @@ class RustDiskCacheManager:
            (e.g., state.regs.a0 = BVS(...)). Without this, the disk init
            cache silently replaces the user's state with a cached blank_state,
            losing the user's symbolic register mutations — see angr-g9hy.
+        4. The filesystem for user-inserted SimFiles (e.g.,
+           ``state.fs.insert(name, SimFile(...))``). The init-cache state is
+           built from a plain blank_state with an empty filesystem, and
+           ``_apply_state_metadata`` copies constraints/options/globals but
+           NOT the ``fs`` plugin. Without this guard a cache hit hands the
+           callback path a state whose ``state.fs`` is empty, so ``fopen``
+           falls into the ALL_FILES_EXIST branch and mints a fresh
+           symbolic-size SimFile. ``ftell`` then returns an unbounded
+           symbolic file size and ``fread`` over-reads, exploding into tens
+           of thousands of fill bytes (asisctffinals2015_license TIMEOUT;
+           see angr-ql3ja).
         """
+        # 4. User-inserted SimFiles can't round-trip through the cached
+        # blank_state — disable caching if the filesystem is non-empty.
+        try:
+            files = getattr(state.fs, "_files", None)
+            if files:
+                return True
+        except AttributeError:
+            # cat-(a) EXPECTED CONTROL FLOW: state has no fs plugin or it
+            # lacks ``_files``; treat as no user filesystem data.
+            pass
         _user_prefixes = ("mem_", "reg_", "unconstrained")
         try:
             sp = state.solver.eval(state.regs.sp)

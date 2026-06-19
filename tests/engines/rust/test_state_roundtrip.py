@@ -187,6 +187,25 @@ class TestInitCacheUserSymbolicGate:
         assert mgr._compute_mem_init_key(state, "") == ""
         assert mgr._compute_disk_init_key(state, "") == ""
 
+    def test_user_inserted_simfile_suppresses_keys(self, fauxware_project):
+        """A user-inserted SimFile (state.fs.insert) makes both init keys
+        empty. The init-cache state is built from a blank_state with an empty
+        filesystem and _apply_state_metadata does not carry the fs plugin, so
+        a cache hit would hand fopen an empty filesystem — minting a fresh
+        symbolic-size file and exploding fread (asisctffinals2015_license
+        TIMEOUT; angr-ql3ja)."""
+        import angr
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        fs_state = proj.factory.entry_state()
+        content = claripy.Concat(*[claripy.BVS("license_byte_%d" % i, 8) for i in range(34)])
+        fs_state.fs.insert("/home/user/license", angr.storage.file.SimFile("license", content))
+
+        assert mgr._compute_mem_init_key(fs_state, "dummy_key") == ""
+        assert mgr._compute_disk_init_key(fs_state, "dummy_key") == ""
+
 
 class TestApplyStateMetadataAllowList:
     """I4: _apply_state_metadata copies constraints + globals + a fixed option
