@@ -949,6 +949,16 @@ pub enum IROp {
         signed: bool,
     },
 
+    /// NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32, D-reg). Binary;
+    /// the FP analogue of `VPwAdd`, with the same interleave shape (first half
+    /// from `a`, second half from `b`) but per-lane FP add instead of integer
+    /// add. VEX only emits the `32Fx2` form (two F32 lanes per 64-bit reg), so
+    /// the single output pair is `[a0+a1, b0+b1]`. Returns `Ity_I64`.
+    VFPwAdd {
+        elem: IRType,
+        count: u8,
+    },
+
     /// NEON rounding halving add (a.k.a. rounding-average) —
     /// `Iop_Avg{N}{S/U}x{M}`. Binary; output has the same lane shape as the
     /// inputs. Per-lane semantics (widening to `elem+1` bits avoids overflow):
@@ -1428,7 +1438,10 @@ impl IROp {
             }
 
             // Pairwise add/min/max (non-widening): output width = elem * count.
+            // The FP pairwise add `VFPwAdd` shares the same width rule (32Fx2 →
+            // 64-bit → Ity_I64).
             IROp::VPwAdd { elem, count }
+            | IROp::VFPwAdd { elem, count }
             | IROp::VPwMin { elem, count, .. }
             | IROp::VPwMax { elem, count, .. } => {
                 let total = elem.bits() * (*count as u32);

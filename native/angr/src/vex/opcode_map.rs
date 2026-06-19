@@ -405,6 +405,12 @@ fn parse_float(op_str: &str) -> Option<IROp> {
     vec_arms!(op_str; "Iop_Min"  => VFMin  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Max"  => VFMax  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
 
+    // NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32, D-reg). The only
+    // FP variant of the `Pw*` family; the integer `Iop_PwAdd{N}x{M}` are routed
+    // in parse_vector to VPwAdd. VEX emits only the 32Fx2 shape. Matched here
+    // (parse_float runs before parse_neon_unimplemented in parse_opcode).
+    vec_arms!(op_str; "Iop_PwAdd" => VFPwAdd { "32Fx2" => (F32, 2) });
+
     // FP reciprocal estimate (1/x) — RCPPS / NEON FRECPE. F0x4 = SSE scalar.
     scalar_arms!(op_str; "Iop_RecipEst" => VFRecipEstS { "32F0x4" => F32 });
     vec_arms!(op_str; "Iop_RecipEst" => VFRecipEst {
@@ -674,7 +680,8 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     }
     // NEON pairwise add — `Iop_PwAdd{N}x{M}` (no signedness, binary). Output
     // has the same lane shape as the inputs; first half from a, second half
-    // from b. Iop_PwAdd32Fx2 is the float variant and is NOT routed here.
+    // from b. Iop_PwAdd32Fx2 is the float variant routed via parse_float to
+    // IROp::VFPwAdd, NOT here.
     vec_arms!(op_str; "Iop_PwAdd" => VPwAdd {
         "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4),
@@ -986,7 +993,16 @@ fn parse_vreverse(op_str: &str) -> Option<IROp> {
 /// for. Opcodes already handled by `parse_vector` (e.g. `Iop_Add8x8` ->
 /// `VAdd`) are deliberately excluded so we do not regress existing coverage.
 fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
-    let op = match op_str {
+    // No NEON op currently routes here: every op listed in the NOTEs below is
+    // fully implemented (the last scaffold, Iop_PwAdd32Fx2, became IROp::VFPwAdd
+    // in angr-cudgw.6). The `NeonUnimplemented` sentinel and this fn are kept as
+    // the scaffold point for the next NEON op — add
+    // `"Iop_Foo" => return Some(IROp::NeonUnimplemented("Iop_Foo")),` to a match
+    // on `op_str` here, alongside a NOTE once it graduates to a real handler.
+    let _ = op_str;
+    None
+    // Historical coverage notes (op family -> implementing bead/route):
+    /* match op_str {
         // NOTE: Iop_GetElem* / Iop_SetElem* (lane extract/insert) implemented
         // in angr-bkcs.2 — routed through parse_vector to IROp::VGetElem /
         // IROp::VSetElem above. Iop_Dup* / Iop_Widen* / Iop_Narrow{Bin,Un}* /
@@ -1016,9 +1032,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // NOTE: integer Iop_PwAdd{N}x{M}, Iop_PwAddL{N}{S/U}x{M},
         // Iop_PwMin{N}{S/U}x{M}, Iop_PwMax{N}{S/U}x{M} implemented in
         // angr-tukg.2 — routed through parse_vector to IROp::VPwAdd /
-        // VPwAddL / VPwMin / VPwMax. Iop_PwAdd32Fx2 (FP pairwise) is the
-        // only Pw* still unimplemented.
-        "Iop_PwAdd32Fx2" => "Iop_PwAdd32Fx2",
+        // VPwAddL / VPwMin / VPwMax. The FP pairwise Iop_PwAdd32Fx2 is
+        // implemented in angr-cudgw.6 — routed through parse_float to
+        // IROp::VFPwAdd. No Pw* op remains unimplemented.
 
         // NOTE: Iop_PolynomialMul8x{8,16} / Iop_PolynomialMull8x8 (NEON GF(2)
         // carry-less multiply) implemented in angr-tukg.6 — routed through
@@ -1036,8 +1052,7 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // by vector) implemented in angr-tukg.8 — routed through parse_vector
         // to IROp::VQShlSat. QShlN (shift-by-immediate) is still unimplemented.
         _ => return None,
-    };
-    Some(IROp::NeonUnimplemented(op))
+    }; */
 }
 
 /// Parse special and x86-specific operations

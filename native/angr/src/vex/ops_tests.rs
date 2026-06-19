@@ -3510,6 +3510,57 @@ fn test_vpwadd_8x16_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
+/// Iop_PwAdd32Fx2 — NEON pairwise FP add (ARM VPADD.F32, D-reg). Two F32
+/// lanes per 64-bit operand: a=[a0,a1], b=[b0,b1] → [a0+a1, b0+b1]. Output
+/// lane 0 (low) from `a`, lane 1 (high) from `b`.
+#[test]
+fn test_vfpwadd_32fx2_concrete() {
+    let ctx = SymContext::new_mock();
+    let a = [1.5f32, 2.5]; // a0+a1 = 4.0
+    let b = [-3.0f32, 0.25]; // b0+b1 = -2.75
+    let exp = [4.0f32, -2.75];
+    let result = VEXOps::binop(
+        IROp::VFPwAdd {
+            elem: IRType::F32,
+            count: 2,
+        },
+        RustBV::concrete(pack_lanes_f32(&a), 64),
+        RustBV::concrete(pack_lanes_f32(&b), 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 64);
+    assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
+}
+
+/// Symbolic Iop_PwAdd32Fx2: free `left` constrained to [1.0, 2.0], concrete
+/// `right` = [5.0, 6.0]. Expect [1.0+2.0, 5.0+6.0] = [3.0, 11.0].
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vfpwadd_32fx2_symbolic() {
+    let ctx = SymContext::new_mock();
+    let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, 6.0]), 64);
+    let l = RustBV::symbolic(&ctx, "vfpwadd_l", 64);
+    ctx.add_constraint(
+        l.to_z3_ast()
+            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast()),
+    );
+    let result = VEXOps::binop(
+        IROp::VFPwAdd {
+            elem: IRType::F32,
+            count: 2,
+        },
+        l,
+        r,
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 64);
+    assert!(ctx.is_sat(), "expected SAT");
+    let model = ctx.eval(&result).expect("eval(result) returned None");
+    assert_f32_lanes_approx(model, &[3.0f32, 11.0], 1e-6);
+}
+
 /// Iop_PwAddL8Sx8 — signed widening pairwise add. Input is 8 lanes × 8 bits;
 /// output is 4 lanes × 16 bits. Negative sources must sign-extend before
 /// adding so the sum doesn't lose its sign.
@@ -3764,7 +3815,7 @@ fn test_vpwmin_16sx4_matches_spec_replay() {
 
 /// Parse routing: Iop_PwAdd / PwAddL / PwMin / PwMax variants land on
 /// VPwAdd / VPwAddL / VPwMin / VPwMax with the expected decomposition.
-/// Iop_PwAdd32Fx2 remains in NeonUnimplemented.
+/// Iop_PwAdd32Fx2 routes to VFPwAdd (angr-cudgw.6).
 #[test]
 fn test_parse_pairwise_routing() {
     use crate::vex::opcode_map::parse_opcode;
@@ -3862,10 +3913,14 @@ fn test_parse_pairwise_routing() {
         }
     }
 
-    // Float pairwise add stays unimplemented.
+    // Float pairwise add (Iop_PwAdd32Fx2) routes to VFPwAdd via parse_float
+    // (angr-cudgw.6), not NeonUnimplemented.
     match parse_opcode("Iop_PwAdd32Fx2") {
-        IROp::NeonUnimplemented(name) => assert_eq!(name, "Iop_PwAdd32Fx2"),
-        other => panic!("Iop_PwAdd32Fx2 expected NeonUnimplemented, got {:?}", other),
+        IROp::VFPwAdd { elem, count } => {
+            assert_eq!(elem, IRType::F32, "PwAdd32Fx2: elem");
+            assert_eq!(count, 2, "PwAdd32Fx2: count");
+        }
+        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {:?}", other),
     }
 }
 

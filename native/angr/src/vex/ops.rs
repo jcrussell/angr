@@ -432,6 +432,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFAbs { .. }
         | IROp::VFMin { .. }
         | IROp::VFMax { .. }
+        | IROp::VFPwAdd { .. }
         | IROp::VFRecipEst { .. }
         | IROp::VFRecipStep { .. }
         | IROp::VFRSqrtEst { .. }
@@ -753,6 +754,7 @@ impl VEXOps {
             | IROp::VFDiv { .. }
             | IROp::VFMin { .. }
             | IROp::VFMax { .. }
+            | IROp::VFPwAdd { .. }
             | IROp::VFRecipStep { .. }
             | IROp::VFRSqrtStep { .. }
             | IROp::VFMaxS { .. }
@@ -1101,6 +1103,11 @@ impl VEXOps {
             }
             IROp::VFMax { elem, count } => {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx)
+            }
+
+            // NEON pairwise FP add (Iop_PwAdd32Fx2).
+            IROp::VFPwAdd { elem, count } => {
+                Self::vec_float_pairwise_add(left, right, elem, count, ctx)
             }
 
             // NEON Newton-Raphson reciprocal / rsqrt step. Operands consumed
@@ -3379,6 +3386,45 @@ impl VEXOps {
                 cond.ite_into(a, b, ctx)
             }
         }
+    }
+
+    /// NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32). Binary; the FP
+    /// analogue of `vec_pairwise_binop` with `PwOp::Add`, but the per-pair
+    /// combine is an FP add (via the `FAdd` `FloatLaneOp` so both the concrete
+    /// and symbolic branches stay in lockstep). Output lane shape matches the
+    /// inputs: first half from `left`, second half from `right`. For the only
+    /// VEX-emitted shape (`32Fx2`) this yields `[a0+a1, b0+b1]`.
+    fn vec_float_pairwise_add(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
+        let half = count / 2;
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        // First half from `left`, then second half from `right` (same
+        // interleave order as the integer `vec_pairwise_binop`).
+        for src in [&left, &right] {
+            for i in 0..half {
+                let lo_a = (2 * i as u32) * elem_width;
+                let hi_a = lo_a + elem_width - 1;
+                let lo_b = (2 * i as u32 + 1) * elem_width;
+                let hi_b = lo_b + elem_width - 1;
+                let a = src.extract(hi_a, lo_a, ctx);
+                let b = src.extract(hi_b, lo_b, ctx);
+                // Reuse the single-lane FP-add path (count=1) so the concrete
+                // and symbolic branches match the packed `VFAdd`.
+                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, &FAdd, ctx)?);
+            }
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// NEON rounding halving add — `Iop_Avg{N}{S/U}x{M}`. Per-lane:

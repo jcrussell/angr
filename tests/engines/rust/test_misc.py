@@ -648,7 +648,7 @@ class TestRustExecutionErrorHierarchy:
                     "tmp": 1,
                     "data": {
                         "tag": "Iex_Binop",
-                        "op": "Iop_PwAdd32Fx2",
+                        "op": "Iop_QShlNsatSU8x8",
                         "args": [
                             {"tag": "Iex_RdTmp", "tmp": 0},
                             {"tag": "Iex_RdTmp", "tmp": 0},
@@ -661,7 +661,9 @@ class TestRustExecutionErrorHierarchy:
             "offsIP": 272,
             "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
         }
-        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_PwAdd32Fx2.*arm64"):
+        # Iop_PwAdd32Fx2 graduated to IROp::VFPwAdd (angr-cudgw.6); use the
+        # still-unimplemented NEON shift-by-immediate as the unsupported probe.
+        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_QShlNsatSU8x8.*arm64"):
             execute_irsb_for_test(json.dumps(irsb), "arm64")
 
     def test_raise_unmapped_op_via_execute_irsb(self):
@@ -915,9 +917,14 @@ _UNMAPPED_VEX_OPS_REAL = (
 # Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
 # UnsupportedVexOp, but both PyErr-map to RustUnsupportedVexOpError). Updated
 # from native/angr/src/vex/opcode_map.rs::parse_neon_unimplemented.
-_NEON_UNIMPLEMENTED = [
-    "Iop_PwAdd32Fx2",
-]
+#
+# Empty as of angr-cudgw.6: the last scaffold (Iop_PwAdd32Fx2) graduated to
+# IROp::VFPwAdd, so no opcode currently routes to NeonUnimplemented. The
+# variant + parse_neon_unimplemented fn are kept as the scaffold point for the
+# next NEON op; add it here (and remove from _UNMAPPED_* if applicable) when one
+# lands. Still-unsupported NEON shift-by-immediate ops live in
+# _UNMAPPED_NEON_QSHL_IMM (they route to IROp::Unmapped).
+_NEON_UNIMPLEMENTED: list[str] = []
 
 # Linux syscall names that lack a native handler in native/angr/src/syscalls/
 # as of 2026-06-01 (campaigns angr-0hif.{1,5,6,7}). Production code returns
