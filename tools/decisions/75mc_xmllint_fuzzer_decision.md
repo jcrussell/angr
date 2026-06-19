@@ -246,3 +246,26 @@ the (b) column.
 (Pending — leave for the human-in-the-loop iter that applies
 the chosen path. Format expected: `Resolved: applied path
 <a|b> on <YYYY-MM-DD>, commit <hash>.`)
+
+## Iter 30 addendum — path-b real-glibc blocker removed
+
+Empirical follow-up to iter11. iter11 probed with
+`use_sim_procedures=True` (libc stubbed) and found exploration
+tractable. iter30 probed the **`use_sim_procedures=False`** path —
+the one that actually exercises the real syscall-fallback surface
+the vx8p epic premise wanted — and found it died at step 3 on
+`operation error: unmapped VEX opcode: Iop_GetMSBs8x16` (SSE
+PMOVMSKB inside glibc's SSE strlen/memchr during startup).
+
+Implemented the missing op (commit `af98545ea`, `VGetMSBs`:
+`Iop_GetMSBs8x{8,16}`). Post-fix, vanilla xmllint advances past the
+wall (errored 1->0, reaches step 5 then deadends). This is a real,
+generally-useful engine improvement (benefits any real-glibc binary),
+but does **not** by itself land the bench: full-glibc symex without
+sim procedures will hit a chain of further missing ops/syscalls before
+reaching the parser. The a/b decision still stands; if (b) is chosen,
+the pragmatic sub-choice is `use_sim_procedures=True` (iter11's bounded
+path) vs. continuing to grind out real-glibc op blockers.
+
+Diagnostic harness: `tools/xmllint_probe.py` (bounded steps, RLIMIT_AS,
+stash-watching). bd memory: `xmllint-vanilla-symex-probe`.
