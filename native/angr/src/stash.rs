@@ -21,6 +21,7 @@
 //! `..._drops_dead_states`, `..._skips_pinned`
 //! (tests/engines/rust/test_plugins.py).
 
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};
 
 use crate::state::RustSimState;
@@ -52,9 +53,11 @@ pub struct StashManager {
     /// Named stashes holding exploration states.
     stashes: HashMap<String, VecDeque<RustSimState>>,
     /// Index mapping state_id -> stash name for O(1) lookups.
-    state_index: HashMap<u64, String>,
+    /// `u64`-keyed → FxHashMap (faster than SipHash on the lineage hot path).
+    state_index: FxHashMap<u64, String>,
     /// Maps state_id -> root_state_id for lineage tracking.
-    state_roots: HashMap<u64, u64>,
+    /// `u64`-keyed → FxHashMap (see `state_index`).
+    state_roots: FxHashMap<u64, u64>,
     /// Whether to drop terminal states instead of storing them.
     drop_terminal_states: bool,
     /// Counters for terminal states (tracked even when dropping).
@@ -85,8 +88,8 @@ impl StashManager {
 
         StashManager {
             stashes,
-            state_index: HashMap::new(),
-            state_roots: HashMap::new(),
+            state_index: FxHashMap::default(),
+            state_roots: FxHashMap::default(),
             drop_terminal_states: false,
             avoided_count: 0,
             pruned_count: 0,
@@ -410,7 +413,7 @@ impl StashManager {
     }
 
     /// Get all state roots.
-    pub fn roots(&self) -> &HashMap<u64, u64> {
+    pub fn roots(&self) -> &FxHashMap<u64, u64> {
         &self.state_roots
     }
 
@@ -486,7 +489,7 @@ impl StashManager {
     /// state_id lookups stay consistent.
     pub fn from_snapshot(snap: StashManagerSnapshot) -> Result<Self, String> {
         let mut stashes: HashMap<String, VecDeque<RustSimState>> = HashMap::new();
-        let mut state_index: HashMap<u64, String> = HashMap::new();
+        let mut state_index: FxHashMap<u64, String> = FxHashMap::default();
         for (stash_name, state_snaps) in snap.stashes {
             let mut deque: VecDeque<RustSimState> = VecDeque::with_capacity(state_snaps.len());
             for state_snap in state_snaps {
@@ -500,7 +503,7 @@ impl StashManager {
         for name in STANDARD_STASHES {
             stashes.entry((*name).to_string()).or_default();
         }
-        let state_roots: HashMap<u64, u64> = snap.state_roots.into_iter().collect();
+        let state_roots: FxHashMap<u64, u64> = snap.state_roots.into_iter().collect();
         Ok(StashManager {
             stashes,
             state_index,

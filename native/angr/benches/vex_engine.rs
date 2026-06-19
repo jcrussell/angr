@@ -766,6 +766,72 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// StashManager u64-keyed maps (state_index / state_roots)
+// ---------------------------------------------------------------------------
+
+/// Microbench for the two `u64`-keyed maps that back lineage tracking in
+/// `StashManager`: `state_index` (HashMap<u64,String>) and `state_roots`
+/// (HashMap<u64,u64>). These are the only remaining std SipHash maps on the
+/// stash hot path (the interpreter maps are already FxHash), so this bench
+/// exists to make a potential FxHashMap swap *measurable* — the existing
+/// `state_fork` bench covers SimState fork, not Stash ops.
+///
+/// The ops exercised (`index` / `set_root` / `stash_of` / `get_root` /
+/// `unindex` / `remove_root`) take only `u64` keys, so no `RustSimState`
+/// construction is needed — the timed loops isolate pure map cost.
+fn bench_stash_index_ops(c: &mut Criterion) {
+    use rustylib::stash::{STASH_ACTIVE, StashManager};
+
+    const N: u64 = 1000;
+    // Deterministic scattered key order (defeats sequential cache locality).
+    // Multiply by a large odd constant mod N — every iteration hits a valid
+    // key; occasional repeats are fine for a lookup-cost microbench.
+    let order: Vec<u64> = (0..N * 4)
+        .map(|i| i.wrapping_mul(2_654_435_761) % N)
+        .collect();
+
+    let build = || {
+        let mut mgr = StashManager::new();
+        for i in 0..N {
+            mgr.index(i, STASH_ACTIVE);
+            mgr.set_root(i, i / 2);
+        }
+        mgr
+    };
+
+    let mut group = c.benchmark_group("stash_index_ops");
+
+    // Lookup-heavy: stash_of + get_root over a scattered key order.
+    group.bench_function("lookup_shuffled", |bench| {
+        let mgr = build();
+        bench.iter(|| {
+            for &k in &order {
+                black_box(mgr.stash_of(k));
+                black_box(mgr.get_root(k));
+            }
+        });
+    });
+
+    // Insert+remove churn: populate both maps then drain them.
+    group.bench_function("index_unindex_churn", |bench| {
+        bench.iter(|| {
+            let mut mgr = StashManager::new();
+            for i in 0..N {
+                mgr.index(i, STASH_ACTIVE);
+                mgr.set_root(i, i / 2);
+            }
+            for i in 0..N {
+                mgr.unindex(black_box(i));
+                mgr.remove_root(black_box(i));
+            }
+            black_box(&mgr);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------
 
@@ -785,5 +851,6 @@ criterion_group!(
     bench_state_fork,
     bench_rustbv_neon_ops,
     bench_lineage_push_pop_vs_per_state,
+    bench_stash_index_ops,
 );
 criterion_main!(benches);
