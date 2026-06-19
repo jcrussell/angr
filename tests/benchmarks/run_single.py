@@ -78,7 +78,12 @@ EXAMPLE_CATALOG = {
     "google2016_unbreakable_0": {"tier": "fast", "rust_ok": True, "notes": "Basic constraint solving"},
     "google2016_unbreakable_1": {"tier": "fast", "rust_ok": True, "notes": "Multi-step constraints"},
     # === New benchmark candidates (untested with Rust engine) ===
-    "sharif7_rev50": {"tier": "very_slow", "rust_ok": None, "notes": "Both engines timeout >60s"},
+    "sharif7_rev50": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "angr-8kmjo: NOT slow — the old 'both engines timeout >60s' was a catalog gap, not a real timeout. solve.py requires -f/--file (argparse required=True); without argv it raised SystemExit which escaped `except Exception` and hung the pool worker until the parent --timeout hard-killed it (mislabeled TIMEOUT). With argv: ['-f','getit'] both engines solve correctly (flag SharifCTF{b70c...}) — Py ~3.3s, Rust ~0.85s (~3.9x). Could be promoted to baseline_timings.json (vx8p) but kept medium-tier here.",
+        "argv": ["-f", "getit"],
+    },
     "defcon2016quals_baby-re": {
         "tier": "fast",
         "rust_ok": True,
@@ -378,6 +383,26 @@ def _run_in_child(
             return {
                 "ok": False,
                 "error": "MemoryError (hit memory limit)",
+                "elapsed": elapsed,
+                "stats": stats,
+                "perf_report": perf_report,
+                "peak_memory_mb": peak_memory_mb,
+            }
+        except SystemExit as e:
+            # argparse (and any sys.exit) raises SystemExit, a BaseException —
+            # it would otherwise escape the `except Exception` below, propagate
+            # out of exec_module, and leave the multiprocessing pool worker
+            # hung until the parent --timeout hard-kills it (mislabeled as
+            # TIMEOUT). Fast-fail cleanly with a clear error instead. A solve.py
+            # that needs argv should get an `argv` entry in EXAMPLE_CATALOG
+            # (e.g. sharif7_rev50 -> ["-f", "getit"]). See angr-8kmjo.
+            sys.stdout = original_stdout
+            elapsed = time.perf_counter() - start
+            stats, perf_report, peak_memory_mb = _collect_rust_diagnostics()
+            return {
+                "ok": False,
+                "error": f"SystemExit (solve.py exited, code={e.code!r}); "
+                "missing argv? add an EXAMPLE_CATALOG 'argv' entry",
                 "elapsed": elapsed,
                 "stats": stats,
                 "perf_report": perf_report,
