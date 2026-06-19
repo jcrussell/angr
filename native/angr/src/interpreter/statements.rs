@@ -773,45 +773,142 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 Ok(StmtResult::Continue)
             }
-            IRStmt::Dirty(dirty) => {
-                // Check guard if present
-                if let Some(guard) = &dirty.guard {
-                    let guard_val =
-                        self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
-                    if guard_val.is_symbolic() {
-                        // Symbolic guard: pick the taken branch if feasible,
-                        // otherwise skip. We can't fork mid-block, so we
-                        // concretize-to-taken (lossy but unblocks execution).
-                        let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
-                        if !cb_true {
-                            // Guard must be false — skip the dirty call.
-                            return Ok(StmtResult::Continue);
-                        }
-                        if cb_false {
-                            // Both feasible: pin guard true so the dirty call
-                            // runs. Loses the not-taken branch but matches
-                            // angr's existing dirty-helper concretization.
-                            log::debug!(
-                                "dirty call '{}': symbolic guard concretized to taken branch",
-                                dirty.cee.name
-                            );
-                            self.ctx.assume_true(&guard_val);
-                        }
-                        // Fall through and execute the dirty call.
-                    } else if let Some(g) = guard_val.as_u64()
-                        && g == 0
-                    {
-                        // Guard is false - skip the dirty call
+            IRStmt::Dirty(dirty) => self.handle_dirty_call(py, callbacks, dirty, irsb),
+        }
+    }
+
+    /// Execute an `IRStmt::Dirty` call: guard handling, native dirty-helper
+    /// dispatch, and the Python-callback / fresh-symbolic fallbacks. Extracted
+    /// verbatim from `execute_stmt_with_callbacks` (cudgw.18).
+    fn handle_dirty_call(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        dirty: &crate::vex::ir::IRDirty,
+        irsb: &IRSB,
+    ) -> Result<StmtResult, CbExecutionError> {
+        {
+            // Check guard if present
+            if let Some(guard) = &dirty.guard {
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                if guard_val.is_symbolic() {
+                    // Symbolic guard: pick the taken branch if feasible,
+                    // otherwise skip. We can't fork mid-block, so we
+                    // concretize-to-taken (lossy but unblocks execution).
+                    let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
+                    if !cb_true {
+                        // Guard must be false — skip the dirty call.
                         return Ok(StmtResult::Continue);
+                    }
+                    if cb_false {
+                        // Both feasible: pin guard true so the dirty call
+                        // runs. Loses the not-taken branch but matches
+                        // angr's existing dirty-helper concretization.
+                        log::debug!(
+                            "dirty call '{}': symbolic guard concretized to taken branch",
+                            dirty.cee.name
+                        );
+                        self.ctx.assume_true(&guard_val);
+                    }
+                    // Fall through and execute the dirty call.
+                } else if let Some(g) = guard_val.as_u64()
+                    && g == 0
+                {
+                    // Guard is false - skip the dirty call
+                    return Ok(StmtResult::Continue);
+                }
+            }
+
+            // Evaluate arguments. Eager-concretize symbolic args via the
+            // solver so that native dispatch + Python callback (which both
+            // expect concrete u64 args) can run; the equality constraint
+            // is added so downstream branches stay consistent.
+            let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
+            let mut all_args_concrete = true;
+            for arg in &dirty.args {
+                let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                if let Some(concrete) = val.as_u64() {
+                    arg_vals.push(concrete);
+                } else if let Some(concrete) = self.ctx.eval(&val) {
+                    let conc_bv = RustBV::concrete(concrete, val.width());
+                    let constraint = val.eq(&conc_bv, self.ctx);
+                    self.ctx.assume_true(&constraint);
+                    arg_vals.push(concrete as u64);
+                } else {
+                    // Solver couldn't produce a concrete value (e.g. UNSAT
+                    // path). Fall through to the Python/no-handler paths
+                    // so they can apply their own fallback strategy.
+                    all_args_concrete = false;
+                    break;
+                }
+            }
+
+            // Determine return type bits
+            let ret_ty_bits = if let Some(tmp) = dirty.tmp {
+                irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+            } else {
+                0 // No return value
+            };
+
+            // Try native dirty helper dispatch first
+            if all_args_concrete
+                && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
+            {
+                // Native handler succeeded!
+                log::trace!(
+                    "Native dirty call: {} (args: {:?})",
+                    dirty.cee.name,
+                    arg_vals
+                );
+
+                // Store result in temporary if specified
+                if let Some(tmp) = dirty.tmp
+                    && let Some(return_value) = result.return_value
+                {
+                    let value = RustBV::concrete(return_value as u128, ret_ty_bits);
+                    if (tmp as usize) < self.temps.len() {
+                        self.temps[tmp as usize] = Some(value);
                     }
                 }
 
-                // Evaluate arguments. Eager-concretize symbolic args via the
-                // solver so that native dispatch + Python callback (which both
-                // expect concrete u64 args) can run; the equality constraint
-                // is added so downstream branches stay consistent.
-                let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
-                let mut all_args_concrete = true;
+                // Apply any register writes from the helper
+                for (offset, value) in result.reg_writes {
+                    // Convert u64 value to RustBV and store in register
+                    let bv = RustBV::concrete(value as u128, 64);
+                    self.registers.put(offset, bv);
+                }
+
+                return Ok(StmtResult::Continue);
+            }
+
+            // No native handler matched. If Python also has no callback
+            // registered, treat the dirty call as a stub: write a fresh
+            // symbolic value into the result tmp (if any) and continue.
+            // This avoids hard-erroring on long-tail dirty helpers that
+            // neither Rust nor Python explicitly model.
+            if !callbacks.has_dirty_call() {
+                log::warn!(
+                    "dirty call '{}': no native handler and no Python callback; \
+                         stubbing with a fresh symbolic tmp",
+                    dirty.cee.name
+                );
+                if let Some(tmp) = dirty.tmp {
+                    let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
+                    let stub =
+                        RustBV::symbolic(self.ctx, format!("dirty_{}_stub", dirty.cee.name), bits);
+                    if (tmp as usize) < self.temps.len() {
+                        self.temps[tmp as usize] = Some(stub);
+                    }
+                }
+                return Ok(StmtResult::Continue);
+            }
+
+            if !all_args_concrete {
+                // First-pass loop bailed early because the solver could not
+                // produce a concrete value for one of the args. Try again,
+                // this time concretizing more aggressively; if any arg is
+                // still unrepresentable, surface a clear error.
+                arg_vals.clear();
                 for arg in &dirty.args {
                     let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                     if let Some(concrete) = val.as_u64() {
@@ -822,136 +919,48 @@ impl<'a> VEXInterpreter<'a> {
                         self.ctx.assume_true(&constraint);
                         arg_vals.push(concrete as u64);
                     } else {
-                        // Solver couldn't produce a concrete value (e.g. UNSAT
-                        // path). Fall through to the Python/no-handler paths
-                        // so they can apply their own fallback strategy.
-                        all_args_concrete = false;
-                        break;
+                        return Err(CbExecutionError::Unsupported(format!(
+                            "dirty call '{}' arg unconcretizable",
+                            dirty.cee.name
+                        )));
                     }
                 }
+            }
 
-                // Determine return type bits
-                let ret_ty_bits = if let Some(tmp) = dirty.tmp {
-                    irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+            // Call Python callback
+            self.stats.python_dirty_call_count += 1;
+            let (data, is_symbolic, _symbolic_ast) = callbacks
+                .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
+                .map_err(|e| {
+                    CbExecutionError::Callback(format!(
+                        "dirty call {} failed: {}",
+                        dirty.cee.name, e
+                    ))
+                })?;
+
+            // Store result in temporary if specified
+            if let Some(tmp) = dirty.tmp {
+                let result = if is_symbolic {
+                    // Create a symbolic value for the result
+                    RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
                 } else {
-                    0 // No return value
+                    // Convert bytes to concrete value
+                    let mut value: u128 = 0;
+                    for (i, &byte) in data.iter().enumerate() {
+                        if (i * 8) as u32 >= ret_ty_bits {
+                            break;
+                        }
+                        value |= (byte as u128) << (i * 8);
+                    }
+                    RustBV::concrete(value, ret_ty_bits)
                 };
 
-                // Try native dirty helper dispatch first
-                if all_args_concrete
-                    && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
-                {
-                    // Native handler succeeded!
-                    log::trace!(
-                        "Native dirty call: {} (args: {:?})",
-                        dirty.cee.name,
-                        arg_vals
-                    );
-
-                    // Store result in temporary if specified
-                    if let Some(tmp) = dirty.tmp
-                        && let Some(return_value) = result.return_value
-                    {
-                        let value = RustBV::concrete(return_value as u128, ret_ty_bits);
-                        if (tmp as usize) < self.temps.len() {
-                            self.temps[tmp as usize] = Some(value);
-                        }
-                    }
-
-                    // Apply any register writes from the helper
-                    for (offset, value) in result.reg_writes {
-                        // Convert u64 value to RustBV and store in register
-                        let bv = RustBV::concrete(value as u128, 64);
-                        self.registers.put(offset, bv);
-                    }
-
-                    return Ok(StmtResult::Continue);
+                if (tmp as usize) < self.temps.len() {
+                    self.temps[tmp as usize] = Some(result);
                 }
-
-                // No native handler matched. If Python also has no callback
-                // registered, treat the dirty call as a stub: write a fresh
-                // symbolic value into the result tmp (if any) and continue.
-                // This avoids hard-erroring on long-tail dirty helpers that
-                // neither Rust nor Python explicitly model.
-                if !callbacks.has_dirty_call() {
-                    log::warn!(
-                        "dirty call '{}': no native handler and no Python callback; \
-                         stubbing with a fresh symbolic tmp",
-                        dirty.cee.name
-                    );
-                    if let Some(tmp) = dirty.tmp {
-                        let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
-                        let stub = RustBV::symbolic(
-                            self.ctx,
-                            format!("dirty_{}_stub", dirty.cee.name),
-                            bits,
-                        );
-                        if (tmp as usize) < self.temps.len() {
-                            self.temps[tmp as usize] = Some(stub);
-                        }
-                    }
-                    return Ok(StmtResult::Continue);
-                }
-
-                if !all_args_concrete {
-                    // First-pass loop bailed early because the solver could not
-                    // produce a concrete value for one of the args. Try again,
-                    // this time concretizing more aggressively; if any arg is
-                    // still unrepresentable, surface a clear error.
-                    arg_vals.clear();
-                    for arg in &dirty.args {
-                        let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
-                        if let Some(concrete) = val.as_u64() {
-                            arg_vals.push(concrete);
-                        } else if let Some(concrete) = self.ctx.eval(&val) {
-                            let conc_bv = RustBV::concrete(concrete, val.width());
-                            let constraint = val.eq(&conc_bv, self.ctx);
-                            self.ctx.assume_true(&constraint);
-                            arg_vals.push(concrete as u64);
-                        } else {
-                            return Err(CbExecutionError::Unsupported(format!(
-                                "dirty call '{}' arg unconcretizable",
-                                dirty.cee.name
-                            )));
-                        }
-                    }
-                }
-
-                // Call Python callback
-                self.stats.python_dirty_call_count += 1;
-                let (data, is_symbolic, _symbolic_ast) = callbacks
-                    .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
-                    .map_err(|e| {
-                        CbExecutionError::Callback(format!(
-                            "dirty call {} failed: {}",
-                            dirty.cee.name, e
-                        ))
-                    })?;
-
-                // Store result in temporary if specified
-                if let Some(tmp) = dirty.tmp {
-                    let result = if is_symbolic {
-                        // Create a symbolic value for the result
-                        RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
-                    } else {
-                        // Convert bytes to concrete value
-                        let mut value: u128 = 0;
-                        for (i, &byte) in data.iter().enumerate() {
-                            if (i * 8) as u32 >= ret_ty_bits {
-                                break;
-                            }
-                            value |= (byte as u128) << (i * 8);
-                        }
-                        RustBV::concrete(value, ret_ty_bits)
-                    };
-
-                    if (tmp as usize) < self.temps.len() {
-                        self.temps[tmp as usize] = Some(result);
-                    }
-                }
-
-                Ok(StmtResult::Continue)
             }
+
+            Ok(StmtResult::Continue)
         }
     }
 
