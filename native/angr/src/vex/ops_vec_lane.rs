@@ -8,8 +8,9 @@
 //!
 //! Covers lane extract/insert (Iop_GetElem/SetElem), broadcast (Iop_Dup),
 //! and per-lane widen/narrow (Iop_Widen*, Iop_NarrowUn/NarrowBin). The
-//! saturating narrow (Iop_QNarrow*) family and `saturate_lane` deliberately
-//! stay in `ops` alongside the rest of the saturation helpers.
+//! saturating narrow (Iop_QNarrow*) family and `saturate_lane` live in the
+//! sibling `ops_vec_saturate` module alongside the rest of the saturation
+//! helpers.
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
