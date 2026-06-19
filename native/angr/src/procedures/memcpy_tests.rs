@@ -260,3 +260,233 @@ fn test_memmove_symbolic_size_overlap() {
         assert_eq!(ctx.max(&b, false), Some(c as u128), "byte {i}");
     }
 }
+
+#[test]
+fn test_memcpy_symbolic_dst_pinned() {
+    // A symbolic dst constrained to a single concrete address copies exactly
+    // that region from a concrete src — no Python fallback.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"ABCD", Permission::RWX); // src
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
+
+    let dst = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "d", 64)
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        dst.eq(&RustBV::concrete(0x2000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemcpy;
+    let result = proc
+        .call(
+            &mut state,
+            &[dst, RustBV::concrete(0x1000, 64), RustBV::concrete(4, 64)],
+        )
+        .unwrap();
+    let ret = result.unwrap();
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.eval(&ret), Some(0x2000));
+
+    for (i, &c) in b"ABCD".iter().enumerate() {
+        let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(ctx.min(&b, false), Some(c as u128));
+        assert_eq!(ctx.max(&b, false), Some(c as u128));
+    }
+    // Byte after the copied region keeps its original zero.
+    let after = state.memory_load(0x2004, 1).unwrap();
+    assert_eq!(after.as_u64(), Some(0));
+}
+
+#[test]
+fn test_memcpy_symbolic_src_pinned() {
+    // A symbolic src pinned to a single address copies from there to a concrete
+    // dst.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"WXYZ", Permission::RWX); // src
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
+
+    let src = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "s", 64)
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        src.eq(&RustBV::concrete(0x1000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemcpy;
+    proc.call(
+        &mut state,
+        &[RustBV::concrete(0x2000, 64), src, RustBV::concrete(4, 64)],
+    )
+    .unwrap();
+
+    let ctx = state.solver().borrow();
+    for (i, &c) in b"WXYZ".iter().enumerate() {
+        let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(ctx.min(&b, false), Some(c as u128));
+        assert_eq!(ctx.max(&b, false), Some(c as u128));
+    }
+}
+
+#[test]
+fn test_memcpy_symbolic_dst_two_candidates() {
+    // A symbolic dst with two feasible addresses copies the concrete src into
+    // both regions conditionally: each byte is ITE(dst == a, src_byte, orig).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"PQ", Permission::RWX); // src
+    state.map_memory_data(0x2000, &[0u8; 32], Permission::RWX); // dst region
+
+    let dst = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "d", 64)
+    };
+    let constraint = {
+        let ctx = state.solver().borrow();
+        let a = dst.eq(&RustBV::concrete(0x2000, 64), &ctx);
+        let b = dst.eq(&RustBV::concrete(0x2008, 64), &ctx);
+        a.or(&b, &ctx)
+    };
+    state.add_constraint(constraint);
+
+    let proc = NativeMemcpy;
+    proc.call(
+        &mut state,
+        &[dst, RustBV::concrete(0x1000, 64), RustBV::concrete(2, 64)],
+    )
+    .unwrap();
+
+    let ctx = state.solver().borrow();
+    // Each region's bytes can be the src byte (when dst selects it) or the
+    // original zero (when dst selects the other region).
+    for base in [0x2000u64, 0x2008u64] {
+        for (i, &c) in b"PQ".iter().enumerate() {
+            let b = state.memory_load(base + i as u64, 1).unwrap();
+            assert_eq!(ctx.min(&b, false), Some(0), "byte {base:#x}+{i} preserve");
+            assert_eq!(
+                ctx.max(&b, false),
+                Some(c as u128),
+                "byte {base:#x}+{i} copy"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_memcpy_symbolic_src_dst_cross_product() {
+    // Both src and dst symbolic, each pinned to one address: the (dst, src)
+    // pair guard selects the right copy.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"GH", Permission::RWX); // src
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
+
+    let (dst, src) = {
+        let ctx = state.solver().borrow();
+        (
+            RustBV::symbolic(&ctx, "d", 64),
+            RustBV::symbolic(&ctx, "s", 64),
+        )
+    };
+    {
+        let ctx = state.solver().borrow();
+        let ed = dst.eq(&RustBV::concrete(0x2000, 64), &ctx);
+        state.add_constraint(ed);
+        let es = src.eq(&RustBV::concrete(0x1000, 64), &ctx);
+        state.add_constraint(es);
+    }
+
+    let proc = NativeMemcpy;
+    proc.call(&mut state, &[dst, src, RustBV::concrete(2, 64)])
+        .unwrap();
+
+    let ctx = state.solver().borrow();
+    for (i, &c) in b"GH".iter().enumerate() {
+        let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(ctx.min(&b, false), Some(c as u128));
+        assert_eq!(ctx.max(&b, false), Some(c as u128));
+    }
+}
+
+#[test]
+fn test_memcpy_symbolic_addr_unbounded_fallback() {
+    // An unconstrained symbolic dst has too many candidate addresses, so the
+    // copy falls back to Python (Err).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"ABCD", Permission::RWX);
+
+    let dst = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "d", 64)
+    };
+    let proc = NativeMemcpy;
+    let result = proc.call(
+        &mut state,
+        &[dst, RustBV::concrete(0x1000, 64), RustBV::concrete(4, 64)],
+    );
+    assert!(result.is_err(), "unbounded symbolic dst should fall back");
+}
+
+#[test]
+fn test_memcpy_symbolic_addr_symbolic_size_fallback() {
+    // Symbolic address + symbolic size is out of scope: even a pinned dst must
+    // fall back to Python when the size is symbolic.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"ABCD", Permission::RWX);
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+
+    let (dst, size) = {
+        let ctx = state.solver().borrow();
+        (
+            RustBV::symbolic(&ctx, "d", 64),
+            RustBV::symbolic(&ctx, "n", 64),
+        )
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        dst.eq(&RustBV::concrete(0x2000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemcpy;
+    let result = proc.call(&mut state, &[dst, RustBV::concrete(0x1000, 64), size]);
+    assert!(
+        result.is_err(),
+        "symbolic address + symbolic size should fall back"
+    );
+}
+
+#[test]
+fn test_memmove_symbolic_dst_overlap() {
+    // memmove with a symbolic (pinned) dst overlapping a concrete src copies
+    // pre-store source bytes (snapshot), matching the concrete overlap test.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"abcdefgh", Permission::RWX);
+
+    let dst = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "d", 64)
+    };
+    let eq = {
+        let ctx = state.solver().borrow();
+        dst.eq(&RustBV::concrete(0x1000, 64), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let proc = NativeMemmove;
+    proc.call(
+        &mut state,
+        &[dst, RustBV::concrete(0x1002, 64), RustBV::concrete(6, 64)],
+    )
+    .unwrap();
+
+    let ctx = state.solver().borrow();
+    for (i, &c) in b"cdefgh".iter().enumerate() {
+        let b = state.memory_load(0x1000 + i as u64, 1).unwrap();
+        assert_eq!(ctx.min(&b, false), Some(c as u128), "byte {i}");
+        assert_eq!(ctx.max(&b, false), Some(c as u128), "byte {i}");
+    }
+}

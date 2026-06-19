@@ -5,7 +5,12 @@
 //!
 //! # Behavior
 //!
-//! - If `dst` or `src` is symbolic (a symbolic address), falls back to Python.
+//! - If `dst` and/or `src` is a symbolic address and `size` is concrete, the
+//!   native path enumerates the bounded candidate sets for both and emits, per
+//!   `(dst_candidate, src_candidate)` pair, conditional stores
+//!   `ITE(dst == d && src == s, src_byte, original)`. Falls back to Python when
+//!   the size is symbolic, either candidate set is unbounded, or the
+//!   `|dst| * |src| * size` store budget is exceeded.
 //! - A concrete `size` takes the fast 8-byte-chunk path.
 //! - A symbolic `size` is handled natively via bounded conditional stores: byte
 //!   `i` of `dst` is set to `ITE(i < n, src[i], dst[i])` for `i` up to the
@@ -15,9 +20,10 @@
 //! - Copies data byte-by-byte, preserving symbolic values
 //! - Maximum concrete copy size is 1MB (configurable)
 
-use super::ProcedureError;
+use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+use std::collections::HashMap;
 
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
@@ -26,6 +32,115 @@ const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
 /// emits per-byte `memory_load` + `ITE` + `memory_store`, far costlier than the
 /// concrete chunked path, so it is capped much lower (matches memset).
 const MAX_SYMBOLIC_COPY_SIZE: u64 = 4096;
+
+/// Maximum number of concrete address solutions for a symbolic `dst`/`src`
+/// before falling back to Python. `eval_upto` is asked for one more than this
+/// so an unbounded pointer is detected and rejected (matches memset).
+const MAX_SYMBOLIC_ADDR_CANDIDATES: usize = 64;
+
+/// Maximum size for a symbolic-address copy. The per-pair ITE path runs
+/// `|dst| * |src| * size` conditional stores, so the size is capped tightly.
+const MAX_SYMBOLIC_ADDR_COPY_SIZE: u64 = 256;
+
+/// Total conditional-store budget (`|dst| * |src| * size`) for the
+/// symbolic-address path. Exceeding it falls back to Python.
+const MAX_SYMBOLIC_ADDR_STORES: u64 = 4096;
+
+/// Copy `size` bytes from a SYMBOLIC `src` and/or `dst` address.
+///
+/// Both pointers may be symbolic. Each is resolved to its (bounded) set of
+/// concrete solutions; then for every `(dst_candidate d, src_candidate s)` pair
+/// and byte `i` the destination byte at `d + i` is set to
+/// `ITE(dst == d && src == s, src_byte[s + i], original)`. Distinct pairs
+/// compose correctly because `dst`/`src` can each equal at most one candidate,
+/// so at most one guard is ever true at any physical address.
+///
+/// All source bytes are snapshotted *before* any store, so overlapping `src`/
+/// `dst` regions copy pre-store values (the memmove contract) — both `memcpy`
+/// and `memmove` share this helper for that reason.
+///
+/// Falls back to Python (`Err`) when the size is symbolic, either candidate set
+/// is empty/unbounded, or the `|dst| * |src| * size` store budget is exceeded.
+fn copy_symbolic_addr(
+    state: &mut RustSimState,
+    dst_bv: &RustBV,
+    src_bv: &RustBV,
+    size_bv: &RustBV,
+) -> Result<Option<RustBV>, ProcedureError> {
+    // Symbolic address + symbolic size is out of scope; require a concrete size.
+    let size = size_bv
+        .as_u64()
+        .ok_or_else(|| ProcedureError::SymbolicArgument("size".to_string()))?;
+    if size == 0 {
+        return Ok(Some(dst_bv.clone()));
+    }
+    if size > MAX_SYMBOLIC_ADDR_COPY_SIZE {
+        return Err(ProcedureError::SymbolicArgument("size".to_string()));
+    }
+
+    // Enumerate candidate addresses under a cap. A concrete pointer yields a
+    // single-element set; asking for one more than the cap detects unbounded
+    // pointers and bails.
+    let (dst_cands, src_cands) = {
+        let ctx = state.solver().borrow();
+        let d = ctx.eval_upto(dst_bv, MAX_SYMBOLIC_ADDR_CANDIDATES + 1);
+        let s = ctx.eval_upto(src_bv, MAX_SYMBOLIC_ADDR_CANDIDATES + 1);
+        (d, s)
+    };
+    if dst_cands.is_empty() || dst_cands.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
+        return Err(ProcedureError::SymbolicArgument("dst".to_string()));
+    }
+    if src_cands.is_empty() || src_cands.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
+        return Err(ProcedureError::SymbolicArgument("src".to_string()));
+    }
+    // Bound total work: |dst| * |src| * size conditional stores.
+    let pairs = dst_cands.len() as u64 * src_cands.len() as u64;
+    if pairs.saturating_mul(size) > MAX_SYMBOLIC_ADDR_STORES {
+        return Err(ProcedureError::SymbolicArgument("dst".to_string()));
+    }
+
+    // Snapshot every source byte that could be read, BEFORE any store, so
+    // overlapping src/dst regions copy pre-store values (memmove contract).
+    let mut src_bytes: HashMap<u64, RustBV> = HashMap::new();
+    for &s in &src_cands {
+        let s = s as u64;
+        for i in 0..size {
+            let p = s.wrapping_add(i);
+            if let std::collections::hash_map::Entry::Vacant(e) = src_bytes.entry(p) {
+                e.insert(state.memory_load(p, 1)?);
+            }
+        }
+    }
+
+    let dwidth = dst_bv.width();
+    let swidth = src_bv.width();
+    for &d in &dst_cands {
+        let d = d as u64;
+        let dcond = {
+            let ctx = state.solver().borrow();
+            dst_bv.eq(&RustBV::concrete(d as u128, dwidth), &ctx)
+        };
+        for &s in &src_cands {
+            let s = s as u64;
+            let guard = {
+                let ctx = state.solver().borrow();
+                let scond = src_bv.eq(&RustBV::concrete(s as u128, swidth), &ctx);
+                dcond.and(&scond, &ctx)
+            };
+            for i in 0..size {
+                let dp = d.wrapping_add(i);
+                let src_byte = &src_bytes[&s.wrapping_add(i)];
+                let orig = state.memory_load(dp, 1)?;
+                let stored = {
+                    let ctx = state.solver().borrow();
+                    guard.ite(src_byte, &orig, &ctx)
+                };
+                state.memory_store(dp, stored)?;
+            }
+        }
+    }
+    Ok(Some(dst_bv.clone()))
+}
 
 /// Copy a symbolic-length region from `src` to `dst` via bounded conditional
 /// stores. Byte `i` of `dst` becomes `ITE(i < n, src[i], dst[i])`, so positions
@@ -107,12 +222,19 @@ crate::declare_proc! {
     /// Copies n bytes from src to dest. Returns dest.
     name = "memcpy",
     struct = NativeMemcpy,
-    args = [dst: concrete, src: concrete, size_bv: bv],
+    args = [dst_bv: bv, src_bv: bv, size_bv: bv],
     call |state| {
-        let arch_bits = state.arch().bits();
-        // `dst` is required concrete, so the returned dest pointer is the
-        // value-equivalent concrete BV (the manual impl returned args[0]).
-        let ret = RustBV::concrete(dst as u128, arch_bits);
+        // A symbolic `dst` and/or `src` takes the bounded candidate-pair path.
+        let (dst, src) = match (
+            extract_concrete_arg(&dst_bv, "dst"),
+            extract_concrete_arg(&src_bv, "src"),
+        ) {
+            (Ok(d), Ok(s)) => (d, s),
+            _ => return copy_symbolic_addr(state, &dst_bv, &src_bv, &size_bv),
+        };
+        // `dst` is concrete here, so the returned dest pointer is the
+        // value-equivalent BV (the manual impl returned args[0]).
+        let ret = dst_bv;
 
         // --- Symbolic size: bounded conditional stores. ---
         let Some(size) = size_bv.as_u64() else {
@@ -142,12 +264,20 @@ crate::declare_proc! {
     /// Like memcpy, but handles overlapping regions correctly.
     name = "memmove",
     struct = NativeMemmove,
-    args = [dst: concrete, src: concrete, size_bv: bv],
+    args = [dst_bv: bv, src_bv: bv, size_bv: bv],
     call |state| {
-        let arch_bits = state.arch().bits();
-        // `dst` is required concrete, so the returned dest pointer is the
-        // value-equivalent concrete BV (the manual impl returned args[0]).
-        let ret = RustBV::concrete(dst as u128, arch_bits);
+        // A symbolic `dst` and/or `src` takes the bounded candidate-pair path,
+        // which snapshots source bytes before storing and so is overlap-safe.
+        let (dst, src) = match (
+            extract_concrete_arg(&dst_bv, "dst"),
+            extract_concrete_arg(&src_bv, "src"),
+        ) {
+            (Ok(d), Ok(s)) => (d, s),
+            _ => return copy_symbolic_addr(state, &dst_bv, &src_bv, &size_bv),
+        };
+        // `dst` is concrete here, so the returned dest pointer is the
+        // value-equivalent BV (the manual impl returned args[0]).
+        let ret = dst_bv;
 
         // --- Symbolic size: bounded conditional stores. ---
         //
