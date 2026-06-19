@@ -1,6 +1,7 @@
 //! Tests for the strchr/strrchr/memchr SimProcedures (extracted from strchr.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 #[test]
 fn test_strchr_found() {

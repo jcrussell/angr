@@ -10,7 +10,7 @@
 //! Concrete addresses are still required (symbolic addresses fall back to
 //! Python via SymbolicArgument).
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -137,71 +137,50 @@ fn scan_for_byte(
     Ok(Some(chain))
 }
 
-/// strchr: find character in string.
-///
-/// ```c
-/// char *strchr(const char *s, int c);
-/// ```
-///
-/// Returns pointer to first occurrence of c in s, or NULL if not found.
-pub struct NativeStrchr;
-
-impl NativeSimProcedure for NativeStrchr {
-    fn name(&self) -> &'static str {
-        "strchr"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = extract_concrete_arg(&args[0], "s")?;
+crate::declare_proc! {
+    /// strchr: find character in string.
+    ///
+    /// ```c
+    /// char *strchr(const char *s, int c);
+    /// ```
+    ///
+    /// Returns pointer to first occurrence of c in s, or NULL if not found.
+    name = "strchr",
+    struct = NativeStrchr,
+    args = [addr: concrete, c: bv],
+    call |state| {
         scan_for_byte(
             state,
             addr,
-            &args[1],
+            &c,
             MAX_SCAN as u64,
             /*stop_at_null=*/ true,
         )
     }
 }
 
-/// strrchr: find last occurrence of a character in a null-terminated string.
-///
-/// ```c
-/// char *strrchr(const char *s, int c);
-/// ```
-///
-/// Returns pointer to the last occurrence of c in s, or NULL if not found.
-/// Special case (C standard): `strrchr(s, '\0')` returns a pointer to the
-/// trailing null terminator.
-///
-/// # Symbolic handling
-///
-/// Concrete address required. The target byte and individual string bytes
-/// may be symbolic — we build an ITE chain over collected loads in the
-/// *forward* direction so later matches override earlier ones (opposite of
-/// strchr, which builds backward so earlier matches win).
-pub struct NativeStrrchr;
-impl NativeSimProcedure for NativeStrrchr {
-    fn name(&self) -> &'static str {
-        "strrchr"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = extract_concrete_arg(&args[0], "s")?;
-        scan_for_byte_last(state, addr, &args[1], MAX_SCAN as u64)
+crate::declare_proc! {
+    /// strrchr: find last occurrence of a character in a null-terminated string.
+    ///
+    /// ```c
+    /// char *strrchr(const char *s, int c);
+    /// ```
+    ///
+    /// Returns pointer to the last occurrence of c in s, or NULL if not found.
+    /// Special case (C standard): `strrchr(s, '\0')` returns a pointer to the
+    /// trailing null terminator.
+    ///
+    /// # Symbolic handling
+    ///
+    /// Concrete address required. The target byte and individual string bytes
+    /// may be symbolic — we build an ITE chain over collected loads in the
+    /// *forward* direction so later matches override earlier ones (opposite of
+    /// strchr, which builds backward so earlier matches win).
+    name = "strrchr",
+    struct = NativeStrrchr,
+    args = [addr: concrete, c: bv],
+    call |state| {
+        scan_for_byte_last(state, addr, &c, MAX_SCAN as u64)
     }
 }
 
@@ -317,36 +296,25 @@ fn build_ite_chain_forward(
     result
 }
 
-/// memchr: find byte in memory region.
-///
-/// ```c
-/// void *memchr(const void *s, int c, size_t n);
-/// ```
-///
-/// Returns pointer to first occurrence of c in the first n bytes of s, or NULL.
-pub struct NativeMemchr;
-
-impl NativeSimProcedure for NativeMemchr {
-    fn name(&self) -> &'static str {
-        "memchr"
-    }
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = extract_concrete_arg(&args[0], "s")?;
-        // n must be concrete to bound the scan. Symbolic n could be handled by
-        // taking the maximum solution, but that would require a solver call we
-        // currently push onto the Python fallback path.
-        let n = extract_concrete_arg(&args[2], "n")?;
+crate::declare_proc! {
+    /// memchr: find byte in memory region.
+    ///
+    /// ```c
+    /// void *memchr(const void *s, int c, size_t n);
+    /// ```
+    ///
+    /// Returns pointer to first occurrence of c in the first n bytes of s, or NULL.
+    ///
+    /// `n` must be concrete to bound the scan. Symbolic n could be handled by
+    /// taking the maximum solution, but that would require a solver call we
+    /// currently push onto the Python fallback path.
+    name = "memchr",
+    struct = NativeMemchr,
+    args = [addr: concrete, c: bv, n: concrete],
+    call |state| {
         let scan_len = n.min(MAX_SCAN as u64);
         scan_for_byte(
-            state, addr, &args[1], scan_len, /*stop_at_null=*/ false,
+            state, addr, &c, scan_len, /*stop_at_null=*/ false,
         )
     }
 }
