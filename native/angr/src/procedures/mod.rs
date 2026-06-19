@@ -85,6 +85,7 @@ pub mod exit;
 pub mod fgets;
 pub mod fileops;
 pub mod format_common;
+pub mod fread;
 pub mod getenv;
 pub mod libc_start_main;
 pub mod malloc;
@@ -340,6 +341,12 @@ impl NativeProcedureRegistry {
         // issue described in angr-mme3 / angr-3tek no longer applies.
         registry.register(Arc::new(read::NativeRead));
         registry.register(Arc::new(write::NativeWrite));
+        // fread/fread_unlocked (angr-m674p): resolve FILE._fileno → serve
+        // concrete FS content or synthesize symbolic bytes for a
+        // natively-opened symbolic file. Avoids the Python callback round-trip
+        // that hung asisctffinals2015_license on its symbolic file size.
+        registry.register(Arc::new(fread::NativeFread));
+        registry.register(Arc::new(fread::NativeFreadUnlocked));
         // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
         // fflush / setvbuf are no-ops returning 0 (match Python procs).
         registry.register(Arc::new(stdio::NativeFwrite));
