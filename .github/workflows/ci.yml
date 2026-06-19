@@ -147,6 +147,18 @@ jobs:
         # `python3 tests/benchmarks/validate_tier.py` step, which only
         # exercises the real catalog vs real baseline integration path.
         run: uv run pytest tests/benchmarks/test_validate_tier.py -q --tb=short
+      - name: Check baseline_counters.json coverage
+        # Stdlib-only static check (~50ms, no Rust extension): fails when
+        # baseline_counters.json is missing a key for any non-bimodal
+        # fast+medium SUITE bench. baseline_counters.json is refreshed
+        # manually, so a newly-added bench silently rots its bench_diff
+        # regression report until someone reruns --update-counters; this
+        # gate surfaces that drift before the ~5-7 m Rust build. --full so
+        # MEDIUM_SUITE keys are checked too. Helper unit tests run as
+        # tests/benchmarks/test_counter_coverage.py.
+        run: uv run python tests/benchmarks/run_regression.py --check-counter-coverage --full
+      - name: Run counter-coverage unit tests
+        run: uv run pytest tests/benchmarks/test_counter_coverage.py -q --tb=short
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run fast-tier benchmark regression

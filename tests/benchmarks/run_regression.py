@@ -316,6 +316,51 @@ def save_baseline_counters(data):
     print(f"Counter baseline saved to {BASELINE_COUNTERS_FILE}")
 
 
+def _baseline_key_for(name, strategy):
+    """Map a (name, strategy) suite entry to its baseline_counters key.
+
+    Mirrors the inline derivation in main(): bfs entries key on the bare
+    name, dfs variants get a ``__dfs`` suffix so the same example can carry
+    two independent counter snapshots.
+    """
+    return f"{name}__dfs" if strategy == "dfs" else name
+
+
+def expected_counter_keys(suite, skip_bimodal=True):
+    """baseline_counters keys that ``suite`` is expected to populate.
+
+    Bimodal benches are excluded by default: their Z3-path nondeterminism
+    makes a per-counter diff pure noise, so --update-counters intentionally
+    never snapshots them (see BIMODAL_BENCHMARKS). Each entry is the same
+    (name, timeout, [strategy, [rust_only]]) tuple the suites use, so a
+    pre-normalization entry of length 2 defaults strategy to "bfs".
+    """
+    keys = set()
+    for entry in suite:
+        name = entry[0]
+        if skip_bimodal and name in BIMODAL_BENCHMARKS:
+            continue
+        strategy = entry[2] if len(entry) > 2 else "bfs"
+        keys.add(_baseline_key_for(name, strategy))
+    return keys
+
+
+def missing_counter_keys(suite=None, baseline_counters=None, skip_bimodal=True):
+    """SUITE bench keys absent from baseline_counters (sorted).
+
+    baseline_counters.json is refreshed manually (--update / --update-counters)
+    and silently rots when a bench is added but the snapshot is not rerun,
+    which quietly disables the bench_diff regression report for that bench.
+    This surfaces the gap as a hard list so a gate can fail on it. Defaults
+    to the full fast+medium suite and the on-disk snapshot.
+    """
+    if suite is None:
+        suite = FAST_SUITE + MEDIUM_SUITE
+    if baseline_counters is None:
+        baseline_counters = load_baseline_counters()
+    return sorted(expected_counter_keys(suite, skip_bimodal) - set(baseline_counters))
+
+
 def _git_revparse(*args):
     try:
         out = subprocess.run(
@@ -371,6 +416,16 @@ def main():
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
     parser.add_argument("--rust-only", action="store_true", help="Only run Rust engine (skip Python comparison)")
     parser.add_argument("--full", action="store_true", help="Run full suite (fast + medium tier)")
+    parser.add_argument(
+        "--check-counter-coverage",
+        action="store_true",
+        help="Static check (no benches run): fail with exit 2 when "
+        "baseline_counters.json is missing a key for any non-bimodal "
+        "SUITE bench. Catches the manual-refresh drift where a new bench "
+        "is added but --update-counters is never rerun, silently disabling "
+        "its bench_diff regression report. Honors --full (fast+medium) and "
+        "exits immediately.",
+    )
     parser.add_argument(
         "--check-counts",
         action="store_true",
@@ -443,6 +498,23 @@ def main():
     global REGRESSION_SUITE
     if args.full:
         REGRESSION_SUITE = FAST_SUITE + MEDIUM_SUITE
+
+    if args.check_counter_coverage:
+        suite = FAST_SUITE + MEDIUM_SUITE if args.full else FAST_SUITE
+        missing = missing_counter_keys(suite)
+        if missing:
+            print(
+                f"ERROR: baseline_counters.json missing keys for {len(missing)} SUITE bench(es): {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            print(
+                "Refresh with: python tests/benchmarks/run_regression.py "
+                f"{'--full ' if args.full else ''}--rust-only --skip-bimodal --update-counters",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        print(f"OK: baseline_counters.json covers all {len(expected_counter_keys(suite))} non-bimodal SUITE benches")
+        sys.exit(0)
 
     # Normalize suite entries to (name, timeout, strategy, rust_only)
     REGRESSION_SUITE = [
