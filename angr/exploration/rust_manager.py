@@ -4769,16 +4769,28 @@ class RustExplorationManager(
         to explore() for batch execution.
         """
         step_func = kwargs.pop("step_func", None)
-        if step_func is None:
+        n = kwargs.pop("n", None)
+
+        # A bounded `n` means SimulationManager.run(n=N) semantics: step at most
+        # N times (or until the watched stash empties), exactly like calling
+        # step() N times. explore() IGNORES `n` (it lands in **kwargs) and runs
+        # to completion, which silently over-runs the requested budget. For a
+        # script that does `sm.run(n=4); sm.step(...); sm.active[0]` (e.g.
+        # ekopartyctf2015_rev100, asisctffinals2015_license) the over-run drives
+        # the lone state into a deadend that drop_terminal_states then discards,
+        # leaving every stash empty -> IndexError on active[0]/found[0]
+        # (angr-58v9a). Only delegate to the run-to-completion explore() path
+        # when neither `n` nor step_func is given.
+        if n is None and step_func is None:
             return self.explore(**kwargs)
 
-        # step_func mode: step one at a time with step_func applied after
-        # each step, matching Python SimulationManager.run() behavior.
-        # This is used by Callable for concrete_only pruning.
-        # Keep terminal states since step_func may need deadended states.
+        # Bounded / step_func mode: step one at a time. step_func (used by
+        # Callable for concrete_only pruning) is applied after each step,
+        # matching Python SimulationManager.run() behavior. Keep terminal
+        # states so they land in their stash (deadended/errored) instead of
+        # being dropped, matching Python.
         self._rust_mgr.set_drop_terminal_states(False)
         try:
-            n = kwargs.pop("n", None)
             stash = kwargs.pop("stash", "active")
             until = kwargs.pop("until", None)
             import itertools
@@ -4787,7 +4799,8 @@ class RustExplorationManager(
                 if not self._rust_mgr.get_state_ids(stash):
                     break
                 self.step(**kwargs)
-                step_func(self)
+                if step_func is not None:
+                    step_func(self)
                 if until and until(self):
                     break
         finally:
