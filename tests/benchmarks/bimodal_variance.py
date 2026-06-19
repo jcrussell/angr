@@ -43,10 +43,12 @@ ELAPSED_RE = re.compile(r"^(OK|FAIL) rust \S+ ([0-9.]+)s", re.MULTILINE)
 FAIL_LINE_RE = re.compile(r"^FAIL rust", re.MULTILINE)
 
 
-def run_once(example: str, timeout: int = 120) -> tuple[float, str] | None:
+def run_once(example: str, timeout: int = 120, deterministic: bool = False) -> tuple[float, str] | None:
     """Return (elapsed_seconds, status) where status is 'ok' or 'fail',
     or None on TIMEOUT/subprocess crash."""
     cmd = [sys.executable, RUN_SINGLE, example, "--engine", "rust", "--timeout", str(timeout)]
+    if deterministic:
+        cmd.append("--deterministic")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
     except subprocess.TimeoutExpired:
@@ -163,9 +165,16 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=120, help="Per-run timeout in seconds")
     ap.add_argument("--bin-width", type=float, default=1.0, help="Histogram bin width in seconds")
     ap.add_argument("--json", dest="json_path", default=None, help="Write raw JSON output to PATH")
+    ap.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Pass --deterministic to run_single.py (pins Z3 smt/sat.random_seed=0). "
+        "Measures whether seed-pinning collapses the bimodal distribution (angr-9w6ad.10).",
+    )
     args = ap.parse_args()
 
-    print(f"=== bimodal variance: {len(args.benchmarks)} benchmark(s) × {args.runs} runs ===")
+    mode = "deterministic" if args.deterministic else "default"
+    print(f"=== bimodal variance ({mode}): {len(args.benchmarks)} benchmark(s) × {args.runs} runs ===")
     all_summaries = []
     overall_start = time.perf_counter()
     for bench in args.benchmarks:
@@ -173,7 +182,7 @@ def main() -> int:
         values: list[float] = []
         fail_count = 0
         for i in range(args.runs):
-            res = run_once(bench, timeout=args.timeout)
+            res = run_once(bench, timeout=args.timeout, deterministic=args.deterministic)
             if res is None:
                 print(f"  run {i + 1}/{args.runs}: TIMEOUT")
                 continue
@@ -219,7 +228,7 @@ def main() -> int:
 
     if args.json_path:
         with open(args.json_path, "w") as f:
-            json.dump({"runs": args.runs, "summaries": all_summaries}, f, indent=2)
+            json.dump({"runs": args.runs, "deterministic": args.deterministic, "summaries": all_summaries}, f, indent=2)
         print(f"wrote {args.json_path}")
 
     return 0

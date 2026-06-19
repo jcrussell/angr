@@ -169,6 +169,7 @@ def _run_in_child(
     diff_interval=1,
     diff_max_snapshots=200,
     use_shared_lineage_solver=False,
+    deterministic=False,
 ):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import importlib.util
@@ -239,6 +240,7 @@ def _run_in_child(
                 factory_self.project,
                 states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
+                deterministic=deterministic,
             )
             rust_mgr_instance.enable_profiling()
             if strategy == "dfs":
@@ -595,6 +597,7 @@ def run_example(
     dump_counters=False,
     counters_json=False,
     use_shared_lineage_solver=False,
+    deterministic=False,
 ):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
@@ -618,6 +621,7 @@ def run_example(
                 diff_interval,
                 diff_max_snapshots,
                 use_shared_lineage_solver,
+                deterministic,
             ),
         )
         result = async_result.get(timeout=timeout)
@@ -851,6 +855,15 @@ def main():
         "SharedLineageSolver materialization gate engages "
         "(angr-v5a5 slice 4c.3 step 1c canary measurement).",
     )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Rust engine only. Construct RustExplorationManager with "
+        "deterministic=True so Z3 smt.random_seed + sat.random_seed are "
+        "pinned to 0 before the first Solver::new. Measurement-hygiene "
+        "knob for the bimodal benches (angr-9w6ad.10 P4-spike-A); narrows "
+        "but does not close residual Z3 4.13 heuristic latitude.",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -881,6 +894,7 @@ def main():
                     dump_counters=args.dump_counters,
                     counters_json=args.counters_json,
                     use_shared_lineage_solver=args.use_shared_lineage_solver,
+                    deterministic=args.deterministic,
                 )
             else:
                 run_example(
@@ -892,6 +906,7 @@ def main():
                     dump_counters=args.dump_counters,
                     counters_json=args.counters_json,
                     use_shared_lineage_solver=args.use_shared_lineage_solver,
+                    deterministic=args.deterministic,
                 )
         return
 
@@ -912,6 +927,7 @@ def main():
             dump_counters=args.dump_counters,
             counters_json=args.counters_json,
             use_shared_lineage_solver=args.use_shared_lineage_solver,
+            deterministic=args.deterministic,
         )
     else:
         run_example(
@@ -923,6 +939,7 @@ def main():
             dump_counters=args.dump_counters,
             counters_json=args.counters_json,
             use_shared_lineage_solver=args.use_shared_lineage_solver,
+            deterministic=args.deterministic,
         )
 
 

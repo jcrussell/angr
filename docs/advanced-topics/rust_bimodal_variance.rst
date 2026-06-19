@@ -504,6 +504,41 @@ STABLE/BIMODAL/OUTLIER label. ``CADET_00001_partial`` reads STABLE (its
 ~6.8s/~8.3s modes are only 1.2x apart, below ``SEP``) but timed out on
 3/20 runs — its occasional heavy path is worth watching.
 
+Deterministic-seed spike (P4-spike-A, 2026-06-19)
+-------------------------------------------------
+
+``RustExplorationManager(deterministic=True)`` pins Z3
+``smt.random_seed`` + ``sat.random_seed`` to 0 via ``Z3_global_param_set``
+before the first ``Solver::new`` (infra from angr-iaol.2). P4-spike-A
+(angr-9w6ad.10) asked whether flipping that on in the benchmark harness
+would **collapse** the bimodal timing distribution — a measurement-hygiene
+win, not a speed win. To measure it, ``run_single.py`` and
+``bimodal_variance.py`` both grew a ``--deterministic`` pass-through flag.
+
+Result on ``google2016_unbreakable_1`` (the cheapest bimodal bench, N=8
+each mode):
+
+.. code-block:: text
+
+   default        : min=2.07 median=2.33 max=12.55 cv=0.97  -> OUTLIER
+   deterministic  : min=0.96 median=1.42 max=4.49  cv=0.61  -> BIMODAL
+
+Seed-pinning **narrows but does not close** the spread: cv roughly halves
+(0.97 -> 0.61) and the 12.5s slow-mode flier disappears, but the
+distribution stays multi-modal (0.96s-4.49s, still classified BIMODAL).
+This confirms the iaol.2 prediction — Z3 4.13 reserves variable / restart
+heuristic latitude that ``random_seed`` alone does not bound (see the
+``build_solver_params`` docstring in ``symbolic/solver_build.rs`` and bd
+memory ``iaol1-seed-pin-empirically-broken``).
+
+**Decision: do NOT switch the benchmark gate to deterministic mode.** It
+would not make single-shot timings trustworthy, and the residual spread
+still needs the ``--skip-bimodal`` / slow-mode-pinned-baseline /
+15%-threshold machinery. The ``--deterministic`` flag is retained as a
+diagnostic knob (reproducing a specific slow path, A/B-ing a candidate
+change with one fewer noise source), not a gating default. See bd memory
+``deterministic-seed-narrows-not-collapses``.
+
 Related memories
 ----------------
 
