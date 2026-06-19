@@ -1573,6 +1573,67 @@ mod vec_float_lane;
 #[path = "ops_vec_binop.rs"]
 mod vec_binop;
 
+// angr-9hleg: the former monolithic ops_tests.rs (5288 lines) was split by
+// family to mirror the ops_*.rs source modules. Shared SIMD lane-test helpers
+// live in ops_test_helpers.rs (pub(super)); each ops_tests_<fam>.rs sibling
+// imports them via `use super::ops_test_helpers::*`. All are children of `ops`
+// so `use super::*` reaches ops's private items.
 #[cfg(test)]
-#[path = "ops_tests.rs"]
-mod ops_tests;
+#[path = "ops_test_helpers.rs"]
+mod ops_test_helpers;
+
+#[cfg(test)]
+#[path = "ops_tests_core.rs"]
+mod tests_core;
+
+#[cfg(test)]
+#[path = "ops_tests_int_arith.rs"]
+mod tests_int_arith;
+
+#[cfg(test)]
+#[path = "ops_tests_float_arith.rs"]
+mod tests_float_arith;
+
+#[cfg(test)]
+#[path = "ops_tests_float_cmp.rs"]
+mod tests_float_cmp;
+
+#[cfg(test)]
+#[path = "ops_tests_conversions.rs"]
+mod tests_conversions;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_lane.rs"]
+mod tests_vec_lane;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_shift.rs"]
+mod tests_vec_shift;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_saturate.rs"]
+mod tests_vec_saturate;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_count.rs"]
+mod tests_vec_count;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_int_arith.rs"]
+mod tests_vec_int_arith;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_pairwise.rs"]
+mod tests_vec_pairwise;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_permute_mul.rs"]
+mod tests_vec_permute_mul;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_float_lane.rs"]
+mod tests_vec_float_lane;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_float_scalar.rs"]
+mod tests_vec_float_scalar;
