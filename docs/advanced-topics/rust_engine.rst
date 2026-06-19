@@ -3352,6 +3352,58 @@ avoids?
 **Verdict: no code change.** The Z3-structural floor stands; lazy
 engagement is not a lever (it would break Python-matching correctness).
 
+Deferral decision (P5) — buckets B and E
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is the closing decision of the ``angr-9w6ad`` perf campaign
+(``P5``). It records *why no further engine work is scheduled* for the
+non-actionable buckets so future sessions do not re-triage them. The
+campaign's headline holds: the Rust symex engine is not the bottleneck
+anywhere in the corpus, so the only "slow" benches left are a solver
+floor or a comparison artifact.
+
+**Bucket B — structural Z3-bound: DEFERRED (architectural).**
+``hackcon2016_angry-reverser``, ``securityfest_fairlight``,
+``ekopartyctf2016_sokohashv2``, ``google2016_unbreakable_1``. These are
+slower than Python because Z3 ``check()`` / ``eval_upto`` dominates
+wallclock (45–134 % z3-fraction), not because of engine overhead. Two
+independent spikes confirmed there is no lever:
+
+* ``P4-spike-A`` (``angr-9w6ad.10``) — deterministic Z3 seeding
+  *narrows but does not collapse* the bimodal variance (cv ~0.97 → 0.61
+  on ``unbreakable_1``); residual multi-modality is Z3 4.13
+  variable/restart heuristic latitude, unbound by ``random_seed``. Kept
+  as a diagnostic knob, **not** a gating default.
+* ``P4-spike-B`` (``angr-9w6ad.11``) — lazy solving is correctly
+  disengaged (matches Python's eager unsat-pruning); the Rust active
+  path already solves *less* than Python, so there is no eager-solve
+  outlier to remove.
+
+This is the same class of limit logged by the earlier optimization epic
+``angr-34w`` (``hackcon`` 0.16x, ``sym-write`` 0.13x "architectural
+limits — Z3 AST"). The deferral is permanent absent a Z3-version /
+constraint-model change; do not re-open as engine work.
+
+**Bucket E — excluded: NOT perf comparisons.** Eight entries carry a
+per-row reason in the triage table and are excluded by construction, not
+deferred for effort:
+
+* ``CADET_00001`` — times out >280 s under Rust (state leak,
+  ``angr-027h``); a correctness/leak bug, tracked separately, not a
+  speedup datapoint.
+* ``defcamp_r100__dfs`` — a ``--strategy dfs`` variant with no own
+  ``solve.py``; duplicates ``defcamp_r100``.
+* ``cow_fork_scaling`` — synthetic CoW micro-bench with no Python
+  driver; no ratio to compute.
+* five ``*_branch`` arch smoke benches (``mips64_be``, ``mips64_le``,
+  ``aarch64_le``, ``arm_le``, ``mips32_le``) — ``python_time`` is
+  ``null`` by design; they guard arch coverage, not relative speed.
+
+**Net:** A=2 routed to P2a/P2b and both reclassified NO-OP (non-engine
+root cause); B=4 deferred as a Z3 floor; C=18 already faster; D=0; E=8
+excluded by construction. The actionable engine-overhead surface is
+empty. Campaign ``angr-9w6ad`` closes here.
+
 Known slower benchmarks
 -----------------------
 
