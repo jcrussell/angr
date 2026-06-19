@@ -5,7 +5,15 @@
 //! writes the raw format string. This is sufficient for predicates that
 //! check for fixed output strings (the common CTF pattern).
 //!
-//! Falls back to Python when the format address is symbolic.
+//! Falls back to Python when the format *address* is symbolic
+//! (`extract_concrete_arg`). A symbolic format *byte* is handled
+//! differently from the rest of the family: rather than falling back, the
+//! byte loop stops at the first symbolic byte, writes the concrete prefix,
+//! and returns success. This is intentional (printf only needs the raw
+//! string for fixed-output predicates), but it is the one asymmetry in the
+//! family — scanf/sprintf raise `SymbolicArgument` on the first symbolic
+//! byte instead. See the format-string worked example in
+//! `docs/extending-angr/simprocedures.rst`.
 
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;

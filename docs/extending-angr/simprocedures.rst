@@ -658,6 +658,57 @@ Things to take away from this example:
   returns ``Ok(None)``. The bump allocator can't actually reclaim
   memory; ``heap_free`` exists for bookkeeping.
 
+Worked example 4: format strings — ``printf`` / ``scanf`` / ``sprintf``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``printf``/``scanf``/``sprintf``/``snprintf``/``sscanf`` family parses
+the format string itself, so its concreteness boundary is sharper than the
+buffer-copying procedures above. Two distinct things can be symbolic — the
+format-string *address* and the format-string *bytes* — and the family
+handles them differently:
+
+* **Symbolic format-string address.** All five extract the format pointer
+  with ``extract_concrete_arg(&args[0], "format")``; a symbolic address
+  short-circuits to ``ProcedureError::SymbolicArgument`` and Python takes
+  over. There is no fast path for a symbolic format pointer.
+
+* **Symbolic format-string bytes.** Here the family is deliberately
+  *asymmetric*:
+
+  - ``scanf``/``sscanf`` (``read_format_string``) and
+    ``sprintf``/``snprintf`` (``read_string``) call
+    ``extract_concrete_arg(&bv, ...)`` on *every* byte they read. The first
+    symbolic byte raises ``SymbolicArgument`` and the whole call falls back
+    to Python — these procedures must parse the specifiers
+    (``%d``/``%s``/``%x``/…) to mint output BVs or consume variadic args,
+    and a symbolic specifier byte makes that parse undefined.
+  - ``printf`` (``NativePrintf::call``) does **not** fall back on a symbolic
+    byte. It only copies the raw format string to the stdout buffer (no
+    specifier substitution — sufficient for the common CTF predicate that
+    greps stdout for a fixed string), so on the first symbolic byte it
+    simply **stops reading, writes the concrete prefix, and returns success**
+    with the prefix length. This is intentional, but it is the one place in
+    the family where a symbolic format string does *not* hand off to Python:
+    callers that need the full (symbolic-tail) string materialized must not
+    rely on native ``printf``.
+
+* **No symbolic-format substitution path exists.** None of the five attempt
+  to enumerate or constrain a symbolic format string into concrete cases.
+  That is the documented boundary: a format string that is symbolic *in the
+  specifiers* is out of scope for the native fast path. ``printf`` degrades
+  to a concrete-prefix write; the rest hand off to Python.
+
+Things to take away from this example:
+
+* The address-vs-bytes distinction matters: a concrete pointer into a buffer
+  with symbolic contents is the common case (a user-controlled format buffer),
+  and that is exactly what forces the ``scanf``/``sprintf`` fallback.
+* ``printf``'s truncate-and-succeed behavior is a per-procedure choice keyed
+  to what the procedure actually does with the string, not a family-wide
+  convention. When adding a new format-consuming procedure, decide explicitly
+  whether a symbolic byte should fall back (parse semantics) or truncate
+  (raw-copy semantics).
+
 Terminal procedures: ``no_return``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
