@@ -3087,6 +3087,96 @@ Migration recipe: change the clause to
 or catch ``Exception`` if the surrounding code already does broad
 recovery.
 
+Perf-campaign triage table (P1d)
+--------------------------------
+
+This table is the synthesis deliverable of the ``angr-9w6ad`` perf
+campaign's measure phase (beads ``P1a`` baseline refresh, ``P1c``
+10-run bimodal classification, ``P1d`` triage). It partitions every
+``baseline_timings.json`` entry into one of five action buckets so the
+profiling phase (``P2*``) and deferral decisions (``P5``) can target
+the small actionable set instead of the whole corpus.
+
+**How to read it.** ``rust``/``py`` are single-shot
+``baseline_timings.json`` seconds; ``med`` is the 10-run median from the
+``P1c`` campaign (the trustworthy figure when single-shot lies — see
+:doc:`rust_bimodal_variance`). ``spd`` is ``py / rust``. ``z3%`` is
+``z3_check_time_ns / rust_time`` from ``baseline_counters.json`` — the
+fraction of wallclock spent inside Z3 ``check()``; it is the primary
+signal for "engine-fixable" (low) vs "structural Z3 floor" (high). Per
+the epic's guardrails, **do not** triage from ``rust_total_time_ns``
+ratios (zero for ~23/26 benches); triage on real wallclock + absolute
+Z3 counters + documented flamegraph attribution.
+
+Buckets:
+
+* **A — actionable engine-overhead.** Slower than Python, but Z3 is
+  *not* the floor (low ``z3%``); the gap is FFI / state-sync / PyO3
+  init that the engine can shrink. The whole actionable set.
+* **B — structural Z3-bound (defer).** Slower than Python because Z3
+  ``check()`` / ``eval_upto`` dominates wallclock (documented at
+  85–95 % in the per-bench sections below). Not engine-fixable; the
+  bimodal variance here is solver nondeterminism, tracked by the
+  ``P4-spike`` Z3-seeding / ``LAZY_SOLVES`` experiments, not closed by
+  Rust work.
+* **C — already faster (verify not stale).** ``spd > 1.0`` on a
+  trustworthy (low-cv) timing. No action beyond periodic
+  re-validation; the near-parity members (~1.05–1.10x) are the ones
+  to watch for silent regression.
+* **D — stale-baseline (refresh + verify).** None. The ``P1c`` finding
+  is that low-cv baselines track their 10-run medians within noise, and
+  the bimodal slow-pins (bucket B) are intentional, not stale — so no
+  entry needs a baseline refresh on accuracy grounds.
+* **E — excluded (broken / both-fail / no comparison).** Not real
+  Rust-vs-Python speedup comparisons; carry a per-row reason.
+
+.. csv-table:: Corpus triage (snapshot at HEAD 142921f96, 2026-06-19)
+   :header: "bucket", "benchmark", "rust", "med", "py", "spd", "z3%", "note"
+   :widths: 6, 30, 7, 7, 7, 6, 6, 31
+
+   "A", "mma_howtouse", "6.51", "6.05", "4.25", "0.65", "5%", "per-Callable memory-sync tax → P2a"
+   "A", "android_arm_license_validation", "0.25", "0.25", "0.20", "0.80", "17%", "PyO3 / state-init tax → P2b"
+   "B", "hackcon2016_angry-reverser", "35.0", "24.65", "10.15", "0.29", "134%", "z3_check_time > wallclock — bimodal capture; structural"
+   "B", "securityfest_fairlight", "22.0", "11.85", "15.76", "0.72", "61%", "slow-pinned baseline; Z3 floor"
+   "B", "ekopartyctf2016_sokohashv2", "16.0", "10.46", "5.83", "0.36", "45%", "eval_upto nondeterminism; trimodal"
+   "B", "google2016_unbreakable_1", "3.50", "1.85", "1.60", "0.46", "15%", "bimodal Z3; spd~0.86 on median"
+   "C", "CADET_00001_partial", "8.24", "6.76", "11.80", "1.43", "7%", "occasional heavy path (3/20 timeouts)"
+   "C", "flareon2015_5", "5.57", "3.40", "57.16", "10.27", "20%", "big win"
+   "C", "flareon2015_10", "5.40", "2.58", "7.33", "1.36", "0%", ""
+   "C", "flareon2015_2", "3.94", "4.03", "4.21", "1.07", "40%", "near parity — watch"
+   "C", "codegate_2017-angrybird", "3.82", "3.76", "6.78", "1.78", "1%", ""
+   "C", "csaw_wyvern", "2.70", "2.73", "15.90", "5.89", "5%", "big win"
+   "C", "ekopartyctf2016_rev250", "2.02", "2.21", "31.65", "15.65", "58%", "big win despite Z3-heavy"
+   "C", "whitehatvn2015_re400", "1.52", "1.24", "3.15", "2.07", "39%", ""
+   "C", "cmu_binary_bomb_partial", "1.31", "1.32", "1.39", "1.06", "11%", "near parity — watch"
+   "C", "ais3_crackme", "1.11", "0.83", "2.48", "2.23", "23%", ""
+   "C", "google2016_unbreakable_0", "1.09", "0.92", "1.34", "1.23", "5%", ""
+   "C", "csgames2018", "0.96", "0.77", "1.57", "1.64", "35%", ""
+   "C", "unmapped_analysis", "0.91", "0.91", "0.97", "1.07", "40%", "near parity — watch"
+   "C", "defcon2016quals_baby-re", "0.72", "0.47", "1.46", "2.02", "3%", "P1c OUTLIER: 1/10 cold flier; median fine"
+   "C", "sym-write", "0.55", "0.56", "1.00", "1.82", "28%", ""
+   "C", "strcpy_find", "0.46", "0.39", "0.89", "1.93", "7%", ""
+   "C", "defcamp_r100", "0.32", "0.27", "1.01", "3.14", "15%", ""
+   "C", "fauxware", "0.28", "0.22", "0.38", "1.35", "5%", ""
+   "E", "CADET_00001", "—", "—", "22.08", "—", "—", "times out >280s under Rust (state leak, angr-027h)"
+   "E", "cow_fork_scaling", "2.28", "2.28", "—", "—", "40%", "synthetic CoW micro-bench; no Python driver"
+   "E", "defcamp_r100__dfs", "0.32", "—", "1.02", "—", "16%", "--strategy dfs variant; no own solve.py"
+   "E", "mips64_be_branch", "0.57", "0.51", "—", "—", "2%", "arch smoke bench (python_time null by design)"
+   "E", "mips64_le_branch", "0.56", "0.50", "—", "—", "2%", "arch smoke bench"
+   "E", "aarch64_le_branch", "0.51", "0.47", "—", "—", "1%", "arch smoke bench"
+   "E", "arm_le_branch", "0.39", "0.33", "—", "—", "2%", "arch smoke bench"
+   "E", "mips32_le_branch", "0.36", "0.32", "—", "—", "2%", "arch smoke bench"
+
+**Bucket tallies:** A=2, B=4, C=18, D=0, E=8 (32 entries).
+
+**Headline:** the actionable surface is exactly two benches (bucket A,
+both low-``z3%`` overhead taxes), confirming the epic's pre-campaign
+hypothesis. The four worst absolute losses (bucket B) are a Z3
+nondeterminism floor, not engine overhead, and are routed to the
+``P4-spike`` experiments rather than to engine optimization. Everything
+else is already a win (C) or not a comparison (E). Per-bench root-cause
+detail for buckets A and B follows in **Known slower benchmarks**.
+
 Known slower benchmarks
 -----------------------
 
