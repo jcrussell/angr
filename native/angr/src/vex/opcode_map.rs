@@ -733,6 +733,14 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         _ => {}
     }
 
+    // SSE byte-mask extract — `Iop_GetMSBs8x{8,16}` (x86 PMOVMSKB, unary).
+    // Reduces a vector of N bytes to an N-bit integer of their MSBs.
+    match op_str {
+        "Iop_GetMSBs8x8" => return Some(IROp::VGetMSBs { count: 8 }),
+        "Iop_GetMSBs8x16" => return Some(IROp::VGetMSBs { count: 16 }),
+        _ => {}
+    }
+
     // NEON per-lane count leading zeros — `Iop_Clz{N}x{M}` (unary). ARM CLZ
     // (DDI 0487 C7.2.57). D-reg (total=64) and Q-reg (total=128) shapes for
     // 8/16/32-bit lanes.

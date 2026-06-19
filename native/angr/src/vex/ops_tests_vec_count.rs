@@ -42,6 +42,67 @@ fn test_vcnt_8x16_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
+/// Iop_GetMSBs8x16 — PMOVMSKB over 16 bytes: bit i of the I16 result is the
+/// MSB of byte i. Covers all-set, none-set, and an alternating pattern.
+#[test]
+fn test_vgetmsbs_8x16_concrete() {
+    let ctx = SymContext::new_mock();
+    // Byte i: set its MSB iff bit i of the mask 0xA53C is set.
+    let mask: u16 = 0xA53C;
+    let mut a: u128 = 0;
+    for i in 0..16u32 {
+        if (mask >> i) & 1 == 1 {
+            a |= 0x80u128 << (i * 8); // MSB set
+        } else {
+            a |= 0x7Fu128 << (i * 8); // all low bits set, MSB clear
+        }
+    }
+    let result =
+        VEXOps::unop(IROp::VGetMSBs { count: 16 }, RustBV::concrete(a, 128), &ctx).unwrap();
+    assert_eq!(result.width(), 16);
+    assert_eq!(result.as_u128().unwrap(), mask as u128);
+}
+
+/// Iop_GetMSBs8x8 — PMOVMSKB over 8 bytes (V64 form) → I8.
+#[test]
+fn test_vgetmsbs_8x8_concrete() {
+    let ctx = SymContext::new_mock();
+    let mask: u8 = 0b1011_0010;
+    let mut a: u128 = 0;
+    for i in 0..8u32 {
+        let byte: u128 = if (mask >> i) & 1 == 1 { 0xC0 } else { 0x40 };
+        a |= byte << (i * 8);
+    }
+    let result = VEXOps::unop(IROp::VGetMSBs { count: 8 }, RustBV::concrete(a, 64), &ctx).unwrap();
+    assert_eq!(result.width(), 8);
+    assert_eq!(result.as_u128().unwrap(), mask as u128);
+}
+
+/// Symbolic universality (spec-replay): Iop_GetMSBs8x16 must equal the
+/// little-endian concat of each byte's MSB bit.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vgetmsbs_8x16_symbolic_universal() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "vgetmsbs_a", 128);
+    let got = VEXOps::unop(IROp::VGetMSBs { count: 16 }, a.clone(), &ctx).unwrap();
+
+    let mut bits = Vec::with_capacity(16);
+    for i in 0..16u32 {
+        let pos = i * 8 + 7;
+        bits.push(a.extract(pos, pos, &ctx));
+    }
+    let py = VEXOps::concat_le_elements(bits, &ctx);
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VGetMSBs 8x16 must match the per-byte-MSB reference"
+    );
+    ctx.pop();
+}
+
 /// Iop_Clz8x8 — per-byte count leading zeros.
 #[test]
 fn test_vclz_8x8_concrete() {
@@ -367,6 +428,14 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
         match parse_opcode(op) {
             IROp::VCnt { count } => assert_eq!(count, *c, "{}: count", op),
             other => panic!("{}: expected VCnt, got {:?}", op, other),
+        }
+    }
+
+    // VGetMSBs
+    for (op, c) in &[("Iop_GetMSBs8x8", 8u8), ("Iop_GetMSBs8x16", 16)] {
+        match parse_opcode(op) {
+            IROp::VGetMSBs { count } => assert_eq!(count, *c, "{}: count", op),
+            other => panic!("{}: expected VGetMSBs, got {:?}", op, other),
         }
     }
 

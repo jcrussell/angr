@@ -362,6 +362,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VPwMax { .. }
         | IROp::VAvg { .. }
         | IROp::VCnt { .. }
+        | IROp::VGetMSBs { .. }
         | IROp::VClz { .. }
         | IROp::VCls { .. }
         | IROp::VPolynomialMul { .. }
@@ -553,6 +554,9 @@ impl VEXOps {
 
             // NEON per-byte popcount — Iop_Cnt8x{8,16}.
             IROp::VCnt { count } => Self::vec_cnt(arg, count, ctx),
+
+            // SSE byte-mask extract (PMOVMSKB) — Iop_GetMSBs8x{8,16}.
+            IROp::VGetMSBs { count } => Self::vec_get_msbs(arg, count, ctx),
 
             // NEON per-lane count leading zeros — Iop_Clz{N}x{M}.
             IROp::VClz { elem, count } => {

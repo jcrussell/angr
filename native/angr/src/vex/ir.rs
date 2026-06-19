@@ -1001,6 +1001,16 @@ pub enum IROp {
         count: u8,
     },
 
+    /// SSE byte-mask extract — `Iop_GetMSBs8x{8,16}` (x86 PMOVMSKB). Unary;
+    /// reduces a vector of `count` bytes to a `count`-bit integer whose bit
+    /// `i` is the most-significant bit (bit 7) of byte `i`. Result is I8 for
+    /// the V64 (8-byte) form and I16 for the V128 (16-byte) form. Hit early in
+    /// real glibc SSE string routines (strlen/memchr); without it vanilla
+    /// symbolic execution of libc-linked binaries errors on startup (angr-75mc).
+    VGetMSBs {
+        count: u8,
+    },
+
     /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
     /// widening, `widen=false`) and `Iop_PolynomialMull8x8` (widening,
     /// `widen=true`). Per-lane carry-less multiply over GF(2): for `a*b` with
@@ -1477,6 +1487,13 @@ impl IROp {
             IROp::VCnt { count } => match *count {
                 8 => Some(IRType::I64),
                 16 => Some(IRType::V128),
+                _ => None,
+            },
+
+            // PMOVMSKB (Iop_GetMSBs8x{8,16}): reduces N bytes to an N-bit int.
+            IROp::VGetMSBs { count } => match *count {
+                8 => Some(IRType::I8),
+                16 => Some(IRType::I16),
                 _ => None,
             },
 

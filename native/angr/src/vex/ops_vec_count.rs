@@ -50,6 +50,38 @@ impl VEXOps {
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
+    /// SSE byte-mask extract — `Iop_GetMSBs8x{8,16}` (x86 PMOVMSKB). Reduces a
+    /// vector of `count` bytes (8 * count bits) to a `count`-bit integer whose
+    /// bit `i` is the most-significant bit (bit 7) of input byte `i`. Used by
+    /// glibc's SSE strlen/memchr; see angr-75mc.
+    pub(super) fn vec_get_msbs(
+        arg: RustBV,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let total = 8u32 * count as u32;
+        debug_assert_eq!(arg.width(), total);
+
+        // Concrete fast path: gather bit 7 of each byte into the result.
+        if let Some(v) = arg.as_u128() {
+            let mut result: u128 = 0;
+            for i in 0..count as u32 {
+                let msb = (v >> (i * 8 + 7)) & 1;
+                result |= msb << i;
+            }
+            return Ok(RustBV::concrete(result, count as u32));
+        }
+
+        // Symbolic: extract each byte's MSB as a 1-bit lane, concat little-end
+        // so byte 0's MSB lands at result bit 0.
+        let mut bits: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count as u32 {
+            let msb_pos = i * 8 + 7;
+            bits.push(arg.extract(msb_pos, msb_pos, ctx));
+        }
+        Ok(Self::concat_le_elements(bits, ctx))
+    }
+
     /// NEON per-lane Clz/Cls — `Iop_Clz{N}x{M}` / `Iop_Cls{N}x{M}`. Each
     /// `elem`-wide lane is replaced by:
     ///   * `Clz`: number of leading-zero bits, in `[0, N]` (all-zero → N).
