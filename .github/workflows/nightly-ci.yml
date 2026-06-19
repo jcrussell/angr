@@ -156,6 +156,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+  showcase_smoke:
+    name: Showcase Demo Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      # Rot-proofs the blog-post showcase (angr-4n26m): every show_*.py demo
+      # must still run green from a clean checkout, else the post's
+      # reproducibility claim silently breaks. --quick runs the fast subset
+      # where a demo supports one; the runner exits non-zero iff a demo
+      # genuinely regresses (a missing-corpus SKIP does not fail it).
+      - name: Run showcase demo runner
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        run: uv run python tests/benchmarks/show_all.py --quick
+        timeout-minutes: 10
+
   proxy_gates_on:
     name: Write-Through Proxy Gates On
     runs-on: ubuntu-latest
