@@ -121,6 +121,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "angr-027h: convergent subset of CADET_00001's upstream solve.py — phase 1 (buffer-overflow step-until-unconstrained) + phase 2 (easter-egg sm.explore(find=0x804833E)). Skips the upstream phase-3 raw step-loop egg hunt, which is pathological under Rust (see CADET_00001 entry). Wrapper lives in synthetic_examples/. Both phases converge: Rust ~4.2s vs Py ~10s explore-path (2.4x). The wrapper chdirs to the upstream CADET_00001 dir so ./CADET_00001 resolves.",
     },
+    "busybox_static": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "angr-4n26m.1 showcase: real-world x86-64 static software (system /usr/bin/busybox, GPLv2 distro artifact, not vendored). Bounded 60-step run from entry_state(args=['busybox','echo',<sym>]). Exercises the Rust VEX interpreter on a large stripped static-glibc binary rather than a CTF crackme. Static IFUNC/IRELATIVE relocs are resolved at load time via angr.callable.Callable -> simulation_manager; run_single's engine-swap monkeypatch excludes /angr/callable.py so those internal resolver states use the Python engine (else the Rust manager rejects their default SimOptions and the binary fails to load). Short run is init-tax-dominated: Rust ~1.4s vs Py ~0.4s (Rust loses on this length; breadth/realism demo, not a raw-speed win — that's angr-4n26m.5's longer workload).",
+    },
     "ekopartyctf2015_rev100": {
         "tier": "medium",
         "rust_ok": False,
@@ -233,7 +238,19 @@ def _run_in_child(
 
             caller_frames = traceback.extract_stack()
             for frame in caller_frames[:-1]:
-                if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
+                # callable.py: angr resolves IFUNC / IRELATIVE relocations at
+                # load time by *executing* the resolver through a Callable,
+                # which builds an internal simulation manager. Those internal
+                # resolver states carry the default SimOptions (including
+                # SYMBOL_FILL_UNCONSTRAINED_REGISTERS), which the Rust manager
+                # rejects — so a static glibc binary (busybox) would fail to
+                # even load. Route every angr-internal Callable through the
+                # Python engine, same as analyses/exploration_techniques.
+                if (
+                    "/angr/analyses/" in frame.filename
+                    or "/angr/exploration_techniques/" in frame.filename
+                    or "/angr/callable.py" in frame.filename
+                ):
                     return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
