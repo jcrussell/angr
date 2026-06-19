@@ -384,6 +384,13 @@ dispatch returns a fresh-symbolic value of the expected width — used
 for ops whose semantics are too expensive or under-specified to
 model (e.g. ``URECPE`` / ``URSQRTE`` per-lane reciprocal estimates).
 
+A fourth, quieter status — *parse-succeeds / dispatch-fabricates
+(BYPASS)* — is documented in its own subsection at the end of this
+matrix. It covers opcodes that parse to a concrete ``IROp`` variant
+but have no dispatch arm, so symbolic operands silently fabricate a
+fresh symbol (loud ``RustUnsupportedVexOpError`` only on *concrete*
+operands).
+
 Source of truth: ``native/angr/src/vex/opcode_map.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
 ``native/angr/src/vex/ops.rs`` (the dispatch arms). Refresh this
@@ -594,6 +601,85 @@ lands, prefer routing AES / SHA through SimProcedure hooks over
 adding native dispatch arms (the per-round implementations are
 large and Z3-hostile).
 
+Parse-succeeds / dispatch-fabricates (silent BYPASS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The families above are *parse-time* gaps: the opcode never reaches a
+concrete ``IROp`` variant, so dispatch surfaces
+``RustUnsupportedVexOpError`` (loud) or ``IROp::NeonUnimplemented``.
+This subsection covers a categorically different and quieter gap —
+opcodes that **do** parse to a concrete ``IROp`` variant but have **no
+dispatch arm** in ``ops.rs``. They fall through the per-family
+sub-router to its catch-all (``OpError::NotBinary`` /
+``NotUnary`` / ``NotTernary`` / ``NotQuaternary``), and
+``interpreter/expressions.rs`` (``eval_unop`` / ``eval_binop``) then
+splits on operand concreteness:
+
+- **Concrete args** → the typed ``OpError`` propagates and surfaces as
+  ``RustUnsupportedVexOpError`` (no silently-wrong value — angr-sa3j).
+- **Symbolic args** → the catch-all ``Err(e)`` arm **fabricates** a
+  fresh ``RustBV::symbolic("unsup_unop_<pc>" / "unsup_binop_<pc>")`` of
+  the result width. This is the **BYPASS**: it loses the
+  input→output relationship entirely (a permutation, carry-less
+  product, or CRC of symbolic bytes becomes an unconstrained fresh
+  symbol). No counter fires on this path today — it is invisible in
+  ``mgr.stats()`` unlike the ``NeedPythonFallback`` reasons.
+
+These opcodes parse (``opcode_map.rs``) but are unhandled in dispatch
+(``ops.rs``), so on symbolic args they hit the BYPASS:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 20 40
+
+   * - Op family
+     - Count
+     - Classification
+     - Provenance / fix path
+   * - x86 byte permute / table-shuffle
+       (``Iop_Perm8x{8,16,32}``)
+     - 3
+     - **must-fallback**
+     - Parses to ``IROp::VPerm { elem: I8 }`` (``opcode_map.rs``
+       ~line 1047) but not in the ``binop`` vector-int routing list,
+       so ``binop_misc`` returns ``NotBinary``. Deterministic shuffle —
+       fabricating drops the data dependency. Add a ``vec_perm`` arm or
+       route to Python.
+   * - x86 carry-less multiply
+       (``Iop_PclmulLQLQ`` / ``HQHQ`` / ``LQHQ`` / ``HQLQ``)
+     - 4
+     - **must-fallback**
+     - Parse to ``IROp::Pclmul*`` (``opcode_map.rs`` ~1053);
+       ``iropclass`` files them under ``Arith`` but ``binop``'s Arith
+       arm does not list them, so they reach ``binop_misc`` →
+       ``NotBinary``. Deterministic GF(2) product — must compute or
+       fall back, never fabricate.
+   * - x86 SSE4.2 CRC32
+       (``Iop_Crc32C``)
+     - 1
+     - **must-fallback**
+     - Parses to ``IROp::Crc32C`` (``opcode_map.rs`` ~1050); same
+       ``Arith``-classified-but-undispatched path as ``Pclmul*``.
+       Deterministic checksum.
+
+All three are **must-fallback** (deterministic functions of their
+inputs) — none qualify as *fabricate-ok*. The only legitimately
+*fabricate-ok* ops are the under-specified estimates already handled
+as **Stubbed-symbolic** by deliberate policy (``URECPE`` / ``URSQRTE``
+/ FP ``RecipEst`` — fresh-symbolic per lane is the correct model, and
+angr Python does the same). The audit found **no other** concrete
+``IROp`` variant that lacks a dispatch arm: every remaining variant is
+either dispatched or is a sentinel (``NeonUnimplemented`` /
+``Unmapped`` / ``Raw``). So the BYPASS surface is exactly these three
+families (8 opcode strings).
+
+No tracked benchmark drives a *symbolic* path through them today (x86
+crypto/shuffle code is rare in the CTF corpus and usually hooked at the
+Python layer), which is why the BYPASS has stayed inert. Promote to a
+standalone bead — and wire a ``bypass_fabricate_count`` counter per
+``invariant-vex-fallback-counter-wiring`` so the path stops being
+invisible — when a workload reaches one with symbolic operands.
+
 Special expressions: VECRET / GSPTR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -637,9 +723,10 @@ on a new workload:
 
 .. note::
 
-   *Last verified against commit* ``2d97a5c68`` *on 2026-06-06*
-   (angr-2iow). When you touch ``native/angr/src/vex/opcode_map.rs``
-   or ``native/angr/src/vex/ops.rs``, re-read the *Pipeline overview*,
+   *Last verified against commit* ``00073bebd`` *on 2026-06-19*
+   (angr-cudgw.9 — added the BYPASS subsection). When you touch
+   ``native/angr/src/vex/opcode_map.rs`` or
+   ``native/angr/src/vex/ops.rs``, re-read the *Pipeline overview*,
    *parse_\* family pattern*, and *Unsupported op coverage matrix*
    sections and bump this footer to the new commit hash.
 
