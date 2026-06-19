@@ -3303,6 +3303,55 @@ Net: the remaining performance surface is the **Z3-structural floor**
 (``angr-9w6ad.10`` deterministic Z3 seeding, ``angr-9w6ad.11``
 ``LAZY_SOLVES`` engagement audit), not by engine-overhead reduction.
 
+P4-spike-B — ``LAZY_SOLVES`` engagement audit (angr-9w6ad.11)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Question:** is lazy solving accidentally disengaged on the Z3-bound
+bucket B benches (``angry-reverser``, ``fairlight``, ``sokohashv2``,
+``unbreakable_1``), forcing extra eager Z3 checks the Python engine
+avoids?
+
+**Answer: no — there is no eager-solve outlier to fix.** Three findings:
+
+#. ``LAZY_SOLVES`` is **not** a default SimOption in this angr build —
+   ``blank_state`` / ``entry_state`` / ``full_init_state`` all start
+   without it. The bucket B solve scripts use defaults, so
+   ``lazy_solves`` is ``false`` and the engine performs eager
+   per-successor feasibility checks. This is **correct**, not a bug: it
+   exactly matches the Python engine, which with ``LAZY_SOLVES`` absent
+   eagerly prunes unsat successors at
+   ``angr/engines/successors.py`` (``add_successor`` →
+   ``o.LAZY_SOLVES not in state.options and not state.satisfiable()``).
+   Engaging ``lazy_solves`` in Rust would **diverge** from Python
+   semantics (unsat states would survive in ``active``), so it is not a
+   valid speedup — consistent with the campaign's "no engine lever"
+   conclusion.
+
+#. **No ungated eager solves in the step loop.** Every
+   ``.satisfiable()`` on the stepping path in
+   ``native/angr/src/exploration/`` (``run_loop.rs``, ``resume.rs``,
+   ``stepping.rs``) is guarded by ``lazy_solves || …``, and the
+   interpreter's per-fork ``check_branch_feasibility``
+   (``interpreter/statements.rs``) is short-circuited to
+   ``(true, true)`` when ``lazy_solves``. The only **ungated**
+   ``.satisfiable()`` calls are the three explicit user-facing API
+   queries in ``exploration/state_api.rs`` (correct by design) and the
+   defensive re-check on the rare *find*-successor path
+   (``run_loop.rs`` ``push`` into ``STASH_FOUND``) — necessary because a
+   find state reached via straight-line (non-forking) code is never
+   feasibility-checked by the interpreter.
+
+#. The Rust active path actually solves **less** than Python, not more:
+   straight-line successors (no new guard) are pushed via
+   ``push_to_active_or_drop`` **without** a re-solve, whereas Python
+   re-checks ``satisfiable()`` on every successor. Same constraint set
+   as the (already-feasible) parent ⇒ still SAT ⇒ the skip is safe. The
+   bucket B Z3 floor is therefore the eager feasibility checks **both**
+   engines perform at genuine fork points, not redundant Rust work.
+
+**Verdict: no code change.** The Z3-structural floor stands; lazy
+engagement is not a lever (it would break Python-matching correctness).
+
 Known slower benchmarks
 -----------------------
 
