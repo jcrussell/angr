@@ -45,8 +45,29 @@ fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstP
     // SAFETY: claripy's z3 backend returned this pointer for a live AST
     // it holds in its own cache; the AST is in the process-global Z3
     // context, which matches our thread-local context (z3-rs 0.19+).
-    unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }
-        .ok_or_else(|| PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer"))
+    //
+    // INVARIANT (claripy-AST-alive): `from_borrowed_raw` takes a fresh
+    // `Z3_inc_ref`, so the borrowed `Z3_ast` must have refcount >= 1 at
+    // this point. That holds *only* because `z3_obj` / `ast_ref` (the
+    // claripy backend result) are still in scope, keeping the AST retained
+    // in claripy's cache for the duration of `convert`. A future caller
+    // that sources `ptr` from a holder already dropped would violate this
+    // silently and inc_ref a dangling node — do not reorder the extraction
+    // below the point where the claripy result goes out of scope.
+    let handle = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.ok_or_else(|| {
+        PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer")
+    })?;
+    // Defensive liveness probe: a live, well-formed AST always resolves to
+    // a concrete sort; `Unknown` signals a dangling/garbage pointer, i.e. a
+    // violated claripy-AST-alive precondition. Debug-only — compiles out in
+    // release, so this is hardening with zero runtime cost on the hot path.
+    debug_assert!(
+        handle.sort_kind() != z3_sys::SortKind::Unknown,
+        "extract_z3_ast_ptr: borrowed Z3_ast resolved to no sort -- the \
+         claripy-AST-alive invariant was likely violated (pointer not \
+         retained by a live claripy AST at borrow time)"
+    );
+    Ok(handle)
 }
 
 /// Convert a BridgeError to a PyErr.
