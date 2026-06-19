@@ -327,6 +327,45 @@ def _run_in_child(
                         pass
             return stats_local, perf_local, peak_mb
 
+        # P2c bounded-harness soft cap (angr-9w6ad.7): an in-child wall-clock
+        # alarm that raises *inside* the bench so the existing exception path
+        # (_collect_rust_diagnostics) captures partial counters. The parent's
+        # multiprocessing timeout hard-kills the worker and drops every stat;
+        # this gives Z3-vs-engine attribution data for benches that never
+        # finish. Opt-in via ANGR_BENCH_SOFT_TIMEOUT (seconds); 0/unset = off.
+        # Fires between Rust run() batches (explore() loops in Python), so the
+        # alarm is delivered promptly without interrupting a live FFI call.
+        _soft_to_raw = os.environ.get("ANGR_BENCH_SOFT_TIMEOUT")
+        _alarm_armed = False
+        if _soft_to_raw and engine == "rust":
+            import signal
+
+            try:
+                _soft_secs = float(_soft_to_raw)
+            except ValueError:
+                _soft_secs = 0.0
+
+            class _SoftTimeout(Exception):
+                pass
+
+            def _on_soft_alarm(_signum, _frame):
+                raise _SoftTimeout(f"soft timeout after {_soft_secs:g}s")
+
+            if _soft_secs > 0:
+                signal.signal(signal.SIGALRM, _on_soft_alarm)
+                signal.setitimer(signal.ITIMER_REAL, _soft_secs)
+                _alarm_armed = True
+                # The SIGALRM handler only runs at a Python bytecode boundary,
+                # so it cannot interrupt a bench stuck inside one long PyO3
+                # _rust_mgr.run() call (a single dominating Z3 solve or VEX
+                # loop). faulthandler runs its watchdog on a *separate* thread,
+                # so it dumps the main thread's Python stack even while the
+                # main thread is blocked in C — surfacing WHERE the bench hung
+                # (last-block data) when the signal path can't fire.
+                import faulthandler
+
+                faulthandler.dump_traceback_later(_soft_secs, repeat=True, exit=False)
+
         start = time.perf_counter()
         try:
             spec.loader.exec_module(module)
@@ -362,6 +401,12 @@ def _run_in_child(
             sys.stdout = original_stdout
             if original_argv is not None:
                 sys.argv = original_argv
+            if _alarm_armed:
+                import faulthandler
+                import signal
+
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                faulthandler.cancel_dump_traceback_later()
 
         elapsed = time.perf_counter() - start
         output = captured.getvalue()

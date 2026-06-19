@@ -3177,6 +3177,62 @@ nondeterminism floor, not engine overhead, and are routed to the
 else is already a win (C) or not a comparison (E). Per-bench root-cause
 detail for buckets A and B follows in **Known slower benchmarks**.
 
+Very-slow-tier profile (P2c)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The five never-completing very-slow-tier benches were profiled under the
+bounded harness (one run each, ``--timeout 70`` ``--mem-limit 3500``, soft
+cap ``ANGR_BENCH_SOFT_TIMEOUT=20``; see *Bounded soft-timeout* below).
+None is an actionable engine-overhead surface — they split into a Z3
+``check()``/``eval`` floor (same root cause as bucket B) and two
+non-perf catalog artifacts:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 12 62
+
+   * - bench
+     - outcome
+     - where it hangs / why
+   * - ``asisctffinals2015_fake``
+     - TIMEOUT
+     - blocked in a single post-exploration ``solver.eval``
+       (``rust_state_export._rust_eval`` → ``RustSolverContext.eval``) —
+       **Z3-structural**, not stepping.
+   * - ``tumctf2016_zwiebel``
+     - TIMEOUT (bimodal)
+     - blocked in a symbolic-store address concretization ``eval`` inside
+       the ``libc memcpy`` SimProcedure
+       (``rust_callback_dispatch._with_extra_constraints``) —
+       **Z3-structural**.
+   * - ``0ctf_momo_3``
+     - TIMEOUT
+     - a brute-force loop that rebuilds the state/manager per attempt
+       (~4 s/iter, repeated ``sigaction``/page-fill setup). Many short
+       managers, **not** one dominating solve; the soft alarm fires but
+       the bench's own loop swallows it. Bench design, not an engine
+       lever.
+   * - ``sharif7_rev50``
+     - TIMEOUT*
+     - **catalog gap**: ``solve.py`` requires a ``-f/--file`` argv that
+       ``EXAMPLE_CATALOG`` does not supply, so ``argparse`` raises
+       ``SystemExit`` — which (a ``BaseException``) escapes the harness's
+       ``except Exception`` and hangs the pool worker until the parent
+       hard-timeout. Not a perf bench under ``run_single``.
+   * - ``b01lersctf2020_little_engine``
+     - FAIL 1.6s
+     - ``NotImplementedError`` on ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``
+       — unsupported-SimOption fast-fail, not a perf bug.
+
+Method note — the harness now supports an in-child soft wall-clock cap
+(``ANGR_BENCH_SOFT_TIMEOUT`` seconds, rust engine only) in
+``tests/benchmarks/run_single.py``. It arms two watchdogs: a ``SIGALRM``
+that raises into the bench so the existing exception path dumps partial
+counters, **and** a ``faulthandler`` traceback dump on a separate thread.
+The signal cannot interrupt a bench stuck inside one long ``_rust_mgr.run``
+PyO3 call (a single dominating solve), so the faulthandler dump is what
+pins the hang location for the Z3-structural cases above.
+
 Known slower benchmarks
 -----------------------
 
