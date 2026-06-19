@@ -1005,7 +1005,17 @@ impl RustBV {
 
         // Fast path for concrete values
         if let Some(v) = self.as_u128() {
-            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            // A Concrete stores its value in a u128, so any bit at position
+            // >= 128 (possible when width > 128) is logically zero. Shifting a
+            // u128 by >= 128 overflows in Rust, so guard both the shift (low)
+            // and the mask (result_width).
+            let shifted = if low >= 128 { 0 } else { v >> low };
+            let mask = if result_width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << result_width) - 1
+            };
+            let extracted = shifted & mask;
             return Self::concrete(extracted, result_width);
         }
 

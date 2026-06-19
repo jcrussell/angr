@@ -102,18 +102,22 @@ fn test_unmapped_opcode() {
 }
 
 #[test]
-fn test_neon_unimplemented_routing() {
-    // NEON-only opcodes route through IROp::NeonUnimplemented with the
-    // original opcode string captured. Dispatch in VEXOps::unop/binop
-    // panics on this variant — the scaffolding makes missing NEON
-    // coverage visible immediately instead of silently producing a
-    // fresh-symbolic value. After angr-tukg.5 the only remaining
-    // placeholder is Iop_PwAdd32Fx2 (FP pairwise add, parked).
-    for op in ["Iop_PwAdd32Fx2"] {
-        match parse_opcode(op) {
-            IROp::NeonUnimplemented(name) => assert_eq!(name, op),
-            other => panic!("{} expected NeonUnimplemented, got {:?}", op, other),
+fn test_neon_unimplemented_scaffold_is_empty() {
+    // The NeonUnimplemented scaffold (parse_neon_unimplemented) routes
+    // claimed-but-unimplemented NEON opcodes through
+    // IROp::NeonUnimplemented(name) so dispatch panics with the original
+    // opcode name instead of silently producing a fresh-symbolic value.
+    // As of angr-cudgw.6 no NEON op routes there anymore — the last
+    // placeholder, Iop_PwAdd32Fx2 (FP pairwise add), graduated to
+    // IROp::VFPwAdd. This test guards that graduation: if Iop_PwAdd32Fx2
+    // ever regresses back to the sentinel, this fails. When a future NEON
+    // op is parked via the scaffold, add a positive routing assertion here.
+    match parse_opcode("Iop_PwAdd32Fx2") {
+        IROp::VFPwAdd { elem, count } => {
+            assert_eq!(elem, IRType::F32);
+            assert_eq!(count, 2);
         }
+        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {:?}", other),
     }
 }
 
