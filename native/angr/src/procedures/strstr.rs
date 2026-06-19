@@ -5,37 +5,23 @@
 //! Symbolic arguments fall back to Python.
 
 use super::strings::scan_concrete_until_null;
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
+use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
 const MAX_SCAN: usize = 4096;
 
-/// strstr: find substring in string.
-///
-/// ```c
-/// char *strstr(const char *haystack, const char *needle);
-/// ```
-///
-/// Returns pointer to first occurrence of needle in haystack, or NULL.
-pub struct NativeStrstr;
-
-impl NativeSimProcedure for NativeStrstr {
-    fn name(&self) -> &'static str {
-        "strstr"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let haystack_addr = extract_concrete_arg(&args[0], "haystack")?;
-        let needle_addr = extract_concrete_arg(&args[1], "needle")?;
-
+crate::declare_proc! {
+    /// strstr: find substring in string.
+    ///
+    /// ```c
+    /// char *strstr(const char *haystack, const char *needle);
+    /// ```
+    ///
+    /// Returns pointer to first occurrence of needle in haystack, or NULL.
+    name = "strstr",
+    struct = NativeStrstr,
+    args = [haystack_addr: concrete, needle_addr: concrete],
+    call |state| {
         let bits = state.arch().bits();
 
         let needle = scan_concrete_until_null(state, needle_addr, MAX_SCAN, "needle")?;

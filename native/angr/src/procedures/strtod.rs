@@ -17,7 +17,7 @@
 //! written to the low 64 bits of `xmm0`. The dispatcher's default
 //! integer-return store is suppressed by returning `Ok(None)`.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -160,30 +160,24 @@ fn floating_prefix_len(bytes: &[u8]) -> usize {
     i
 }
 
-/// Native `strtod` SimProcedure.
-pub struct NativeStrtod;
-
-impl NativeSimProcedure for NativeStrtod {
-    fn name(&self) -> &'static str {
-        "strtod"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// Native `strtod` SimProcedure.
+    ///
+    /// Declared with `bv` arg modes (not `concrete`) so the amd64 calling-
+    /// convention guard runs *before* the concrete-arg extraction; the macro's
+    /// eager `concrete` extraction would otherwise reorder the symbolic-arg
+    /// Python fallback ahead of the non-amd64 `NotImplemented` path.
+    name = "strtod",
+    struct = NativeStrtod,
+    args = [nptr: bv, endptr: bv],
+    call |state| {
         // Only amd64 has a known FP-return register slot in our dispatcher.
         if state.arch().name() != "AMD64" {
             return Err(ProcedureError::NotImplemented);
         }
 
-        let nptr = extract_concrete_arg(&args[0], "nptr")?;
-        let endptr = extract_concrete_arg(&args[1], "endptr")?;
+        let nptr = extract_concrete_arg(&nptr, "nptr")?;
+        let endptr = extract_concrete_arg(&endptr, "endptr")?;
 
         let bytes = match read_concrete_cstring(state, nptr)? {
             Some(b) => b,
