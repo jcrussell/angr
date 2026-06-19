@@ -9,7 +9,7 @@
 //! - Copies data byte-by-byte, preserving symbolic values
 //! - Maximum copy size is 1MB (configurable)
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -41,32 +41,19 @@ fn copy_forward(
     Ok(())
 }
 
-/// Native memcpy implementation.
-///
-/// ```c
-/// void *memcpy(void *dest, const void *src, size_t n);
-/// ```
-///
-/// Copies n bytes from src to dest. Returns dest.
-pub struct NativeMemcpy;
-
-impl NativeSimProcedure for NativeMemcpy {
-    fn name(&self) -> &'static str {
-        "memcpy"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dst = extract_concrete_arg(&args[0], "dst")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
-        let size = extract_concrete_arg(&args[2], "size")? as usize;
+crate::declare_proc! {
+    /// Native memcpy: `void *memcpy(void *dest, const void *src, size_t n)`.
+    ///
+    /// Copies n bytes from src to dest. Returns dest.
+    name = "memcpy",
+    struct = NativeMemcpy,
+    args = [dst: concrete, src: concrete, size: concrete],
+    call |state| {
+        let size = size as usize;
+        let arch_bits = state.arch().bits();
+        // `dst` is required concrete, so the returned dest pointer is the
+        // value-equivalent concrete BV (the manual impl returned args[0]).
+        let ret = RustBV::concrete(dst as u128, arch_bits);
 
         // Check size limit
         if size > MAX_COPY_SIZE {
@@ -75,40 +62,27 @@ impl NativeSimProcedure for NativeMemcpy {
 
         // Handle zero-size copy
         if size == 0 {
-            return Ok(Some(args[0].clone()));
+            return Ok(Some(ret));
         }
 
         copy_forward(state, src, dst, size)?;
-        Ok(Some(args[0].clone()))
+        Ok(Some(ret))
     }
 }
 
-/// Native memmove implementation.
-///
-/// ```c
-/// void *memmove(void *dest, const void *src, size_t n);
-/// ```
-///
-/// Like memcpy, but handles overlapping regions correctly.
-pub struct NativeMemmove;
-
-impl NativeSimProcedure for NativeMemmove {
-    fn name(&self) -> &'static str {
-        "memmove"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let dst = extract_concrete_arg(&args[0], "dst")?;
-        let src = extract_concrete_arg(&args[1], "src")?;
-        let size = extract_concrete_arg(&args[2], "size")? as usize;
+crate::declare_proc! {
+    /// Native memmove: `void *memmove(void *dest, const void *src, size_t n)`.
+    ///
+    /// Like memcpy, but handles overlapping regions correctly.
+    name = "memmove",
+    struct = NativeMemmove,
+    args = [dst: concrete, src: concrete, size: concrete],
+    call |state| {
+        let size = size as usize;
+        let arch_bits = state.arch().bits();
+        // `dst` is required concrete, so the returned dest pointer is the
+        // value-equivalent concrete BV (the manual impl returned args[0]).
+        let ret = RustBV::concrete(dst as u128, arch_bits);
 
         // Check size limit
         if size > MAX_COPY_SIZE {
@@ -117,7 +91,7 @@ impl NativeSimProcedure for NativeMemmove {
 
         // Handle zero-size copy
         if size == 0 {
-            return Ok(Some(args[0].clone()));
+            return Ok(Some(ret));
         }
 
         // For overlapping regions, we need to copy to a temporary buffer
@@ -138,7 +112,7 @@ impl NativeSimProcedure for NativeMemmove {
         }
 
         // Return dest pointer
-        Ok(Some(args[0].clone()))
+        Ok(Some(ret))
     }
 }
 

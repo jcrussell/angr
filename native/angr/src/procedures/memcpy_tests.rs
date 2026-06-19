@@ -2,6 +2,7 @@
 // Extracted from the parent module's #[cfg(test)] block; see memcpy.rs.
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 #[test]
 fn test_memcpy_basic() {
