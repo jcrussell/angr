@@ -1,6 +1,9 @@
 //! Tests for the malloc SimProcedure (extracted from malloc.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_malloc_basic() {
