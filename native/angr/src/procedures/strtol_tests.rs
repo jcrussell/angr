@@ -376,3 +376,47 @@ fn test_strtol_base_16_symbolic_letter_digit() {
     assert_eq!(ctx.min(&result, false), Some(10));
     assert_eq!(ctx.max(&result, false), Some(10));
 }
+
+#[test]
+fn test_strtoll_ilp32_falls_back_to_python() {
+    // On ILP32 (x86 / arm32) `long long` is 64 bits while the integer return
+    // register is 32 bits (the ABI splits the result across edx:eax). The
+    // native engine cannot plumb a wide return through a single return
+    // register, so it declines with NotImplemented and lets the Python
+    // SimProcedure (which knows the split-register calling convention) take
+    // over. This test pins that intentional fallback so the guard in
+    // strtol.rs is not silently removed.
+    let mut state = RustSimState::new("x86").unwrap();
+    setup_string(&mut state, 0x1000, b"123");
+    let p = NativeStrtoll;
+    let err = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(10, 32),
+            ],
+        )
+        .unwrap_err();
+    assert!(matches!(err, ProcedureError::NotImplemented));
+}
+
+#[test]
+fn test_strtoull_ilp32_falls_back_to_python() {
+    // Unsigned sibling of the test above — same ILP32 split-return rationale.
+    let mut state = RustSimState::new("x86").unwrap();
+    setup_string(&mut state, 0x1000, b"123");
+    let p = NativeStrtoull;
+    let err = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(10, 32),
+            ],
+        )
+        .unwrap_err();
+    assert!(matches!(err, ProcedureError::NotImplemented));
+}

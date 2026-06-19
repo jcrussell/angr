@@ -348,6 +348,14 @@ crate::declare_proc! {
     /// width is 32 bits while `long long` is 64 bits; we leave that combination
     /// to the Python fallback rather than try to plumb a wide return through
     /// the integer return register (caller usually uses split eax:edx).
+    ///
+    /// This is a deliberate, tested fallback — not a TODO. The single-register
+    /// return path in the dispatcher (`run_loop.rs` / `stepping.rs`, which call
+    /// `set_register_by_offset(return_register(), rv)`) has no way to populate
+    /// the high half of a split-register result, and silently returning only
+    /// the low 32 bits would corrupt any value above 2^32. The Python
+    /// SimProcedure knows the split calling convention, so deferring is correct.
+    /// Pinned by `test_strtoll_ilp32_falls_back_to_python` in strtol_tests.rs.
     name = "strtoll",
     struct = NativeStrtoll,
     args = [nptr: concrete, endptr: concrete, base: concrete],
@@ -360,8 +368,9 @@ crate::declare_proc! {
 }
 
 crate::declare_proc! {
-    /// Native strtoull: unsigned sibling of strtoll. Same width caveat —
-    /// fall back on ILP32.
+    /// Native strtoull: unsigned sibling of strtoll. Same ILP32 split-return
+    /// caveat — deliberate Python fallback on 32-bit, pinned by
+    /// `test_strtoull_ilp32_falls_back_to_python`. See strtoll above.
     name = "strtoull",
     struct = NativeStrtoull,
     args = [nptr: concrete, endptr: concrete, base: concrete],
