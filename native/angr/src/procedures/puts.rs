@@ -11,41 +11,26 @@
 //! - Returns length + 1 (for the appended newline)
 //! - Falls back to Python if address is symbolic
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_PUTS_LEN: usize = 4096;
 
-/// Native puts implementation.
-///
-/// ```c
-/// int puts(const char *s);
-/// ```
-///
-/// Returns a non-negative value on success (we return strlen(s) + 1).
-pub struct NativePuts;
-
-impl NativeSimProcedure for NativePuts {
-    fn name(&self) -> &'static str {
-        "puts"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s_addr = extract_concrete_arg(&args[0], "s")?;
-
+crate::declare_proc! {
+    /// Native puts implementation.
+    ///
+    /// ```c
+    /// int puts(const char *s);
+    /// ```
+    ///
+    /// Returns a non-negative value on success (we return strlen(s) + 1).
+    name = "puts",
+    struct = NativePuts,
+    args = [s: concrete],
+    call |state| {
         // Read the string byte-by-byte from memory
         let mut buf = Vec::new();
         for i in 0..MAX_PUTS_LEN {
-            match state.memory_load(s_addr + i as u64, 1) {
+            match state.memory_load(s + i as u64, 1) {
                 Ok(bv) => {
                     if let Some(val) = bv.as_u64() {
                         let byte = val as u8;
@@ -71,82 +56,53 @@ impl NativeSimProcedure for NativePuts {
     }
 }
 
-/// Native putchar implementation.
-///
-/// ```c
-/// int putchar(int c);
-/// ```
-///
-/// Writes one byte to stdout. Returns the character written (as int).
-pub struct NativePutchar;
-
-impl NativeSimProcedure for NativePutchar {
-    fn name(&self) -> &'static str {
-        "putchar"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let c = extract_concrete_arg(&args[0], "c")?;
+crate::declare_proc! {
+    /// Native putchar implementation.
+    ///
+    /// ```c
+    /// int putchar(int c);
+    /// ```
+    ///
+    /// Writes one byte to stdout. Returns the character written (as int).
+    name = "putchar",
+    struct = NativePutchar,
+    args = [c: concrete],
+    call |state| {
         let byte = (c & 0xFF) as u8;
         state.write_stdout(&[byte]);
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
 
-/// Native fputc implementation.
-///
-/// ```c
-/// int fputc(int c, FILE *stream);
-/// ```
-///
-/// Writes one byte to the stream. Stream argument is ignored (treated as stdout).
-pub struct NativeFputc;
-
-impl NativeSimProcedure for NativeFputc {
-    fn name(&self) -> &'static str {
-        "fputc"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        // Delegate to putchar (ignore FILE* stream arg)
-        NativePutchar.call(state, &args[..1])
+crate::declare_proc! {
+    /// Native fputc implementation.
+    ///
+    /// ```c
+    /// int fputc(int c, FILE *stream);
+    /// ```
+    ///
+    /// Writes one byte to the stream. Stream argument is ignored (treated as
+    /// stdout); declared `bv` so a symbolic FILE* does not trigger a Python
+    /// fallback, matching the prior hand-rolled behavior.
+    name = "fputc",
+    struct = NativeFputc,
+    args = [c: concrete, _stream: bv],
+    call |state| {
+        let byte = (c & 0xFF) as u8;
+        state.write_stdout(&[byte]);
+        Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
 
-/// Native putc implementation (alias for fputc).
-pub struct NativePutc;
-
-impl NativeSimProcedure for NativePutc {
-    fn name(&self) -> &'static str {
-        "putc"
-    }
-
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        NativeFputc.call(state, args)
+crate::declare_proc! {
+    /// Native putc implementation (alias for fputc).
+    name = "putc",
+    struct = NativePutc,
+    args = [c: concrete, _stream: bv],
+    call |state| {
+        let byte = (c & 0xFF) as u8;
+        state.write_stdout(&[byte]);
+        Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
 

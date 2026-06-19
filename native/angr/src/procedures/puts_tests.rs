@@ -2,6 +2,8 @@
 // Extracted from the parent module; see the `#[path]` attr in puts.rs.
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::{NativeSimProcedure, ProcedureError};
+use crate::state::RustSimState;
 
 #[test]
 fn test_puts_basic() {
