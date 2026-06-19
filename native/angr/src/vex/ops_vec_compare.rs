@@ -1,0 +1,194 @@
+//! Vector element-wise comparison and interleave VEX op helpers.
+//!
+//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
+//! VEXOps god-file. Declared as a child module of `ops` (via `#[path]` in
+//! ops.rs), so these `pub(super)` methods stay callable from the binop
+//! dispatch in `ops`, and the shared sibling they reference
+//! (`Self::concat_le_elements`, which stays in ops.rs) stays visible via
+//! super/the descendant rule.
+//!
+//! Covers element-wise compare (Iop_Cmp{EQ,GT}{N}x{M}) and the
+//! low/high interleave (unpack) ops (Iop_Interleave{LO,HI}{N}x{M}).
+
+use super::{OpError, VEXOps};
+use crate::symbolic::{RustBV, SymContext};
+use crate::vex::ir::IRType;
+
+impl VEXOps {
+    /// Vector element-wise comparison.
+    pub(super) fn vec_cmp(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        op: &str,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // For concrete values
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+            let all_ones = elem_mask;
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let l_elem = (l >> lo) & elem_mask;
+                let r_elem = (r >> lo) & elem_mask;
+
+                let cmp_result = match op {
+                    "eq" => l_elem == r_elem,
+                    "gt" => {
+                        // Signed comparison
+                        let sign_bit = 1u128 << (elem_width - 1);
+                        let l_signed = if l_elem & sign_bit != 0 {
+                            (l_elem | !elem_mask) as i128
+                        } else {
+                            l_elem as i128
+                        };
+                        let r_signed = if r_elem & sign_bit != 0 {
+                            (r_elem | !elem_mask) as i128
+                        } else {
+                            r_elem as i128
+                        };
+                        l_signed > r_signed
+                    }
+                    _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
+                };
+
+                // Result is all 1s if true, all 0s if false
+                if cmp_result {
+                    result |= all_ones << lo;
+                }
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // For symbolic, fall back to element-wise
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+
+            let l_elem = left.extract(hi, lo, ctx);
+            let r_elem = right.extract(hi, lo, ctx);
+
+            let cmp_result = match op {
+                "eq" => l_elem.eq_into(r_elem, ctx),
+                "gt" => l_elem.sgt_into(r_elem, ctx),
+                _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
+            };
+
+            // Extend the 1-bit result to full element width (all 1s or all 0s)
+            let extended = cmp_result.sign_extend_into(elem_width, ctx);
+            elements.push(extended);
+        }
+
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Vector interleave low halves.
+    pub(super) fn vec_interleave_lo(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = left.width();
+        let count = total_width / elem_width;
+        let half_count = count / 2;
+
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+
+            for i in 0..half_count {
+                let src_lo = i * elem_width;
+                let dst_lo = i * 2 * elem_width;
+
+                let l_elem = (l >> src_lo) & elem_mask;
+                let r_elem = (r >> src_lo) & elem_mask;
+
+                // VEX InterleaveLO: right goes to even positions, left to odd
+                result |= r_elem << dst_lo;
+                result |= l_elem << (dst_lo + elem_width);
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // Symbolic case
+        let mut elements: Vec<RustBV> = Vec::new();
+
+        for i in 0..half_count {
+            let src_lo = i * elem_width;
+            let src_hi = src_lo + elem_width - 1;
+
+            let l_elem = left.extract(src_hi, src_lo, ctx);
+            let r_elem = right.extract(src_hi, src_lo, ctx);
+
+            // VEX InterleaveLO: right goes to even positions, left to odd
+            elements.push(r_elem);
+            elements.push(l_elem);
+        }
+
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Vector interleave high halves.
+    pub(super) fn vec_interleave_hi(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = left.width();
+        let count = total_width / elem_width;
+        let half_count = count / 2;
+
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+
+            for i in 0..half_count {
+                let src_lo = (half_count + i) * elem_width;
+                let dst_lo = i * 2 * elem_width;
+
+                let l_elem = (l >> src_lo) & elem_mask;
+                let r_elem = (r >> src_lo) & elem_mask;
+
+                // VEX InterleaveHI: right goes to even positions, left to odd
+                result |= r_elem << dst_lo;
+                result |= l_elem << (dst_lo + elem_width);
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // Symbolic case
+        let mut elements: Vec<RustBV> = Vec::new();
+
+        for i in 0..half_count {
+            let src_lo = (half_count + i) * elem_width;
+            let src_hi = src_lo + elem_width - 1;
+
+            let l_elem = left.extract(src_hi, src_lo, ctx);
+            let r_elem = right.extract(src_hi, src_lo, ctx);
+
+            // VEX InterleaveHI: right goes to even positions, left to odd
+            elements.push(r_elem);
+            elements.push(l_elem);
+        }
+
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+}
