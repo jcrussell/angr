@@ -1,0 +1,41 @@
+{
+  "classification": "value-reproducible (found-path pinned, search lands consistently)",
+  "classification_rationale": "concrete input is identical across fresh runs in both modes and survives a snapshot round-trip; the reaching path pins the input (found-path stdin AST is concrete). CAVEAT: the find address is reachable by other inputs, so this is value-stability of a consistently-selected path, NOT global constraint-uniqueness.",
+  "deterministic": {
+    "fresh_distinct_count": 1,
+    "fresh_stdin_hex": [
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900"
+    ],
+    "fresh_value_stable": true,
+    "roundtrip_resumed_hex": "000000000000000000534f534e45414b5900",
+    "roundtrip_uninterrupted_hex": "000000000000000000534f534e45414b5900",
+    "roundtrip_value_match": true,
+    "uniqueness_note": "found-path stdin AST is concrete (read pinned to one value)",
+    "uniqueness_solutions": 1
+  },
+  "deterministic_mode_decision": "deterministic=True is safe; the value is already stable without it for this target. Round-trip reproduced the same concrete input under deterministic=True.",
+  "find_addr": "0x4006ed",
+  "nondeterministic": {
+    "fresh_distinct_count": 1,
+    "fresh_stdin_hex": [
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900",
+      "000000000000000000534f534e45414b5900"
+    ],
+    "fresh_value_stable": true,
+    "roundtrip_resumed_hex": "000000000000000000534f534e45414b5900",
+    "roundtrip_uninterrupted_hex": "000000000000000000534f534e45414b5900",
+    "roundtrip_value_match": true,
+    "uniqueness_note": "found-path stdin AST is concrete (read pinned to one value)",
+    "uniqueness_solutions": 1
+  },
+  "samples": 5,
+  "snapshot_steps": 6,
+  "target": "fauxware"
+}
