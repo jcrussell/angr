@@ -11,41 +11,25 @@
 //! - getchar: equivalent to fgetc(stdin)
 //! - Non-stdin FILE* streams fall back to Python
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
-use crate::state::RustSimState;
+use super::{ProcedureError, symbol_counter};
 use crate::symbolic::RustBV;
 
 const MAX_FGETS_SIZE: u64 = 4096;
 
-/// Native fgets implementation.
-///
-/// ```c
-/// char *fgets(char *s, int size, FILE *stream);
-/// ```
-///
-/// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
-/// Returns the buffer address on success.
-/// The FILE* stream argument is ignored — all streams treated as stdin.
-pub struct NativeFgets;
-
-impl NativeSimProcedure for NativeFgets {
-    fn name(&self) -> &'static str {
-        "fgets"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let buf = extract_concrete_arg(&args[0], "s")?;
-        let size = extract_concrete_arg(&args[1], "size")?;
-        // args[2] is FILE* stream — ignored (treated as stdin)
-
+crate::declare_proc! {
+    /// Native fgets implementation.
+    ///
+    /// ```c
+    /// char *fgets(char *s, int size, FILE *stream);
+    /// ```
+    ///
+    /// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
+    /// Returns the buffer address on success.
+    /// The FILE* stream argument is ignored — all streams treated as stdin.
+    name = "fgets",
+    struct = NativeFgets,
+    args = [buf: concrete, size: concrete, _stream: bv],
+    call |state| {
         if size == 0 {
             // fgets with size 0 returns NULL
             let bits = state.arch().bits();
@@ -94,33 +78,19 @@ impl NativeSimProcedure for NativeFgets {
     }
 }
 
-/// Native fgetc implementation.
-///
-/// ```c
-/// int fgetc(FILE *stream);
-/// ```
-///
-/// Returns one symbolic byte zero-extended to int size.
-/// The FILE* stream argument is ignored — all streams treated as stdin.
-pub struct NativeFgetc;
-
-impl NativeSimProcedure for NativeFgetc {
-    fn name(&self) -> &'static str {
-        "fgetc"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        // args[0] is FILE* stream — ignored (treated as stdin)
-        let _ = &args[0];
-
+crate::declare_proc! {
+    /// Native fgetc implementation.
+    ///
+    /// ```c
+    /// int fgetc(FILE *stream);
+    /// ```
+    ///
+    /// Returns one symbolic byte zero-extended to int size.
+    /// The FILE* stream argument is ignored — all streams treated as stdin.
+    name = "fgetc",
+    struct = NativeFgetc,
+    args = [_stream: bv],
+    call |state| {
         let read_id = symbol_counter("fgetc");
         let name = format!("stdin_fgetc_{}", read_id);
         let result = {
@@ -135,29 +105,18 @@ impl NativeSimProcedure for NativeFgetc {
     }
 }
 
-/// Native getchar implementation.
-///
-/// ```c
-/// int getchar(void);
-/// ```
-///
-/// Equivalent to fgetc(stdin). Returns one symbolic byte zero-extended to int.
-pub struct NativeGetchar;
-
-impl NativeSimProcedure for NativeGetchar {
-    fn name(&self) -> &'static str {
-        "getchar"
-    }
-
-    fn num_args(&self) -> usize {
-        0
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        _args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// Native getchar implementation.
+    ///
+    /// ```c
+    /// int getchar(void);
+    /// ```
+    ///
+    /// Equivalent to fgetc(stdin). Returns one symbolic byte zero-extended to int.
+    name = "getchar",
+    struct = NativeGetchar,
+    args = [],
+    call |state| {
         let read_id = symbol_counter("getchar");
         let name = format!("stdin_getchar_{}", read_id);
         let result = {
@@ -172,24 +131,13 @@ impl NativeSimProcedure for NativeGetchar {
     }
 }
 
-/// Native getc implementation (alias for fgetc).
-pub struct NativeGetc;
-
-impl NativeSimProcedure for NativeGetc {
-    fn name(&self) -> &'static str {
-        "getc"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        NativeFgetc.call(state, args)
+crate::declare_proc! {
+    /// Native getc implementation (alias for fgetc).
+    name = "getc",
+    struct = NativeGetc,
+    args = [stream: bv],
+    call |state| {
+        NativeFgetc.call(state, std::slice::from_ref(&stream))
     }
 }
 

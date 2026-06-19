@@ -16,7 +16,7 @@
 //! lookup table.
 
 use super::strings::scan_concrete_until_null;
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -39,28 +39,16 @@ fn build_byte_set(
     Ok(table)
 }
 
-/// strpbrk: find first byte of `s` that is in `accept`.
-///
-/// ```c
-/// char *strpbrk(const char *s, const char *accept);
-/// ```
-pub struct NativeStrpbrk;
-
-impl NativeSimProcedure for NativeStrpbrk {
-    fn name(&self) -> &'static str {
-        "strpbrk"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s_addr = extract_concrete_arg(&args[0], "s")?;
-        let accept_addr = extract_concrete_arg(&args[1], "accept")?;
+crate::declare_proc! {
+    /// strpbrk: find first byte of `s` that is in `accept`.
+    ///
+    /// ```c
+    /// char *strpbrk(const char *s, const char *accept);
+    /// ```
+    name = "strpbrk",
+    struct = NativeStrpbrk,
+    args = [s_addr: concrete, accept_addr: concrete],
+    call |state| {
         let bits = state.arch().bits();
 
         let accept = build_byte_set(state, accept_addr, "accept")?;
@@ -80,28 +68,16 @@ impl NativeSimProcedure for NativeStrpbrk {
     }
 }
 
-/// strspn: length of prefix of `s` consisting entirely of bytes from `accept`.
-///
-/// ```c
-/// size_t strspn(const char *s, const char *accept);
-/// ```
-pub struct NativeStrspn;
-
-impl NativeSimProcedure for NativeStrspn {
-    fn name(&self) -> &'static str {
-        "strspn"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s_addr = extract_concrete_arg(&args[0], "s")?;
-        let accept_addr = extract_concrete_arg(&args[1], "accept")?;
+crate::declare_proc! {
+    /// strspn: length of prefix of `s` consisting entirely of bytes from `accept`.
+    ///
+    /// ```c
+    /// size_t strspn(const char *s, const char *accept);
+    /// ```
+    name = "strspn",
+    struct = NativeStrspn,
+    args = [s_addr: concrete, accept_addr: concrete],
+    call |state| {
         let bits = state.arch().bits();
 
         let accept = build_byte_set(state, accept_addr, "accept")?;
@@ -117,28 +93,16 @@ impl NativeSimProcedure for NativeStrspn {
     }
 }
 
-/// strcspn: length of prefix of `s` consisting entirely of bytes NOT in `reject`.
-///
-/// ```c
-/// size_t strcspn(const char *s, const char *reject);
-/// ```
-pub struct NativeStrcspn;
-
-impl NativeSimProcedure for NativeStrcspn {
-    fn name(&self) -> &'static str {
-        "strcspn"
-    }
-    fn num_args(&self) -> usize {
-        2
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s_addr = extract_concrete_arg(&args[0], "s")?;
-        let reject_addr = extract_concrete_arg(&args[1], "reject")?;
+crate::declare_proc! {
+    /// strcspn: length of prefix of `s` consisting entirely of bytes NOT in `reject`.
+    ///
+    /// ```c
+    /// size_t strcspn(const char *s, const char *reject);
+    /// ```
+    name = "strcspn",
+    struct = NativeStrcspn,
+    args = [s_addr: concrete, reject_addr: concrete],
+    call |state| {
         let bits = state.arch().bits();
 
         let reject = build_byte_set(state, reject_addr, "reject")?;

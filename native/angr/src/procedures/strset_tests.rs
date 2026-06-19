@@ -1,6 +1,7 @@
 //! Tests for the strset SimProcedure (extracted from strset.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 fn setup_state(s: &[u8], set: &[u8]) -> RustSimState {
     let mut state = crate::procedures::test_util::amd64_state();
