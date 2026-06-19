@@ -64,25 +64,12 @@ impl RustExplorationManager {
             }
         }
 
-        // Validate deferred forks reference valid conditions before processing
-        let mut missing_conditions = 0usize;
-        for fork in &pending.deferred_forks {
-            if !pending.stored_conditions.contains_key(&fork.condition_id) {
-                missing_conditions += 1;
-                log::warn!(
-                    "Deferred fork at 0x{:x} references missing condition_id={}",
-                    fork.branch_addr,
-                    fork.condition_id
-                );
-            }
-        }
-        if missing_conditions > 0 {
-            log::warn!(
-                "{} of {} deferred forks have missing conditions - will be skipped",
-                missing_conditions,
-                pending.deferred_forks.len()
-            );
-        }
+        // NOTE: deferred forks whose condition_id is absent from stored_conditions
+        // are NOT dropped — the materialization loop below reconstructs the
+        // condition from `fork.condition_ast` (P11) or, failing that, creates a
+        // conservative unconstrained fork (P15). A diagnostic loop that warned
+        // such forks "will be skipped" was removed (angr-cudgw.16): the claim was
+        // false and the loop had no side effect.
 
         // Add taken-path constraints from deferred forks to the main state.
         // Without these, the solver doesn't know which branch was taken,
