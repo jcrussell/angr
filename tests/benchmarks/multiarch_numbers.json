@@ -1,0 +1,75 @@
+{
+  "all_correct": true,
+  "claim": "correctness/parity only; NOT a speed claim",
+  "demo": "multiarch_parity",
+  "expected_input": 42,
+  "n_arches": 6,
+  "results": [
+    {
+      "arch": "AMD64",
+      "correct": true,
+      "elapsed_ms": 377.4,
+      "endness": "Iend_LE",
+      "expected_input": 42,
+      "found": true,
+      "label": "AMD64",
+      "satisfiable": true,
+      "solved_input": 42
+    },
+    {
+      "arch": "AARCH64",
+      "correct": true,
+      "elapsed_ms": 369.3,
+      "endness": "Iend_LE",
+      "expected_input": 42,
+      "found": true,
+      "label": "AARCH64",
+      "satisfiable": true,
+      "solved_input": 42
+    },
+    {
+      "arch": "ARMEL",
+      "correct": true,
+      "elapsed_ms": 173.9,
+      "endness": "Iend_BE",
+      "expected_input": 42,
+      "found": true,
+      "label": "ARMEB",
+      "satisfiable": true,
+      "solved_input": 42
+    },
+    {
+      "arch": "X86",
+      "correct": true,
+      "elapsed_ms": 151.6,
+      "endness": "Iend_LE",
+      "expected_input": 42,
+      "found": true,
+      "label": "X86",
+      "satisfiable": true,
+      "solved_input": 42
+    },
+    {
+      "arch": "MIPS32",
+      "correct": true,
+      "elapsed_ms": 213.1,
+      "endness": "Iend_LE",
+      "expected_input": 42,
+      "found": true,
+      "label": "MIPS32",
+      "satisfiable": true,
+      "solved_input": 42
+    },
+    {
+      "arch": "MIPS64",
+      "correct": true,
+      "elapsed_ms": 375.5,
+      "endness": "Iend_LE",
+      "expected_input": 42,
+      "found": true,
+      "label": "MIPS64",
+      "satisfiable": true,
+      "solved_input": 42
+    }
+  ]
+}
