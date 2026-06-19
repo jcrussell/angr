@@ -269,3 +269,36 @@ path) vs. continuing to grind out real-glibc op blockers.
 
 Diagnostic harness: `tools/xmllint_probe.py` (bounded steps, RLIMIT_AS,
 stash-watching). bd memory: `xmllint-vanilla-symex-probe`.
+
+## Iter 31 addendum — path-b dead end is uninitialized glibc, not an op chain
+
+iter30 predicted a "chain of further missing ops/syscalls" past the
+`VGetMSBs` wall. iter31 traced it (PC-by-PC, both engines, via the
+extended `tools/xmllint_probe.py` `PROBE_ENGINE=rust|python`) and the
+prediction was **wrong**: there is no further missing-op chain. The
+vanilla `use_sim_procedures=False` path runs into **unmapped/garbage
+memory** within a handful of blocks and dies — on *both* engines:
+
+- **Rust:** deadends at PC `0x6` by step 5 (Rust chains many VEX blocks
+  per `step`, so "step 5" is deep). No errored/unmapped-op; just a
+  garbage jump target.
+- **Python:** errors at unmapped `0x1043554` at step 22 (one basic block
+  per step).
+
+Root cause is **not** an engine bug — CLE prints
+`invalid tls_data_size. Skip TLS loading` at load, so glibc startup
+(`__libc_start_main`) executes against uninitialized TLS / unrelocated
+init structs and computes garbage jump targets. Verified this is *not*
+a Rust memory/relocation defect: the `call qword ptr [0x413fc0]` pointer
+in `_start` reads identically as `0x72a200` (`__libc_start_main`) under
+CLE ground truth, the Python state, **and** the Rust state. The
+step-by-step PC divergence between engines is purely block-chaining
+granularity (Rust chains; Python single-steps), not a control-flow
+correctness gap.
+
+**Implication for the a/b decision:** path-b "grind out real-glibc op
+blockers" is a mirage — the blocker is TLS/glibc-init modeling, not the
+VEX op surface. The only viable path-b sub-choice is iter11's
+`use_sim_procedures=True` bounded harness (stubs glibc init, sidesteps
+the uninitialized-TLS wall). path-(a) (fuzzer Cargo feature) remains the
+other option. bd memory: `xmllint-path-b-glibc-init-wall`.

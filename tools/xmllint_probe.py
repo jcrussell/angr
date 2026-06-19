@@ -43,17 +43,33 @@ def main():
     data = claripy.BVS("stdin", 64 * 8)
     state.posix.stdin.content = [(data, claripy.BVV(64, state.arch.bits))]
 
+    engine = os.environ.get("PROBE_ENGINE", "rust")
+    if engine == "python":
+        return _python_probe(proj, state, t0)
+
     mgr = angr.exploration.RustExplorationManager(proj, [state])
     print(f"start stash={mgr.stash_counts()}")
+
+    def pcs(stash):
+        out = []
+        for sid in mgr._rust_mgr.get_state_ids(stash):
+            pc = mgr._rust_mgr.get_state_pc_by_id(sid)
+            out.append(hex(pc) if pc is not None else f"sid{sid}?")
+        return out
+
     for i in range(MAX_STEPS):
+        before = pcs("active")
         mgr.step(n=1)
         sc = mgr.stash_counts()
         active = sc.get("active", 0)
-        if i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
+        if i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
-            print(f"step {i:3d} stash={sc} rss={rss}MB t={time.time() - t0:.1f}s")
+            print(
+                f"step {i:3d} from={before} -> active={pcs('active')} stash={sc} rss={rss}MB t={time.time() - t0:.1f}s"
+            )
         if active == 0:
             print(f"DRAINED at step {i} (no active states) — deadended/converged")
+            print(f"  deadended PCs={pcs('deadended')}")
             try:
                 for addr, message, sid in mgr._rust_mgr.get_errors():
                     print(f"  ERRORED @ {hex(addr)} (sid={sid}): {message}")
@@ -66,6 +82,35 @@ def main():
     else:
         print(f"BUDGET EXHAUSTED at {MAX_STEPS} steps, still active={mgr.stash_counts()}")
     print(f"final stash={mgr.stash_counts()} total={time.time() - t0:.1f}s")
+
+
+def _python_probe(proj, state, t0):
+    """Same workload under the vanilla Python engine (no Rust manager)."""
+    simgr = proj.factory.simulation_manager(state)
+    print(f"start stash={ {k: len(v) for k, v in simgr.stashes.items() if v} }")
+    for i in range(MAX_STEPS):
+        before = [hex(s.addr) for s in simgr.active]
+        simgr.step(num_inst=None)
+        active = len(simgr.active)
+        if i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+            cur = [hex(s.addr) for s in simgr.active]
+            print(
+                f"step {i:3d} from={before} -> active={cur} dead={len(simgr.deadended)} rss={rss}MB t={time.time() - t0:.1f}s"
+            )
+        if active == 0:
+            print(f"DRAINED at step {i} (no active states)")
+            print(f"  deadended PCs={[hex(s.addr) for s in simgr.deadended]}")
+            if simgr.errored:
+                for er in simgr.errored:
+                    print(f"  ERRORED: {er}")
+            break
+        if active > ACTIVE_CAP:
+            print(f"EXPLOSION: active={active} > cap {ACTIVE_CAP} at step {i}")
+            break
+    else:
+        print(f"BUDGET EXHAUSTED at {MAX_STEPS} steps")
+    print(f"final total={time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":
