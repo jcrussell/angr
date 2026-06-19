@@ -74,6 +74,10 @@ macro_rules! declare_proc {
                     _idx += 1;
                 )*
                 let _ = _idx;
+                // Reference `args` unconditionally so a zero-argument
+                // procedure (e.g. `clearenv`, `rand`) does not trip the
+                // unused-variable lint on the generated parameter.
+                let _ = &args;
                 $body
             }
         }

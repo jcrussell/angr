@@ -4,34 +4,20 @@
 //! this is modeled as an unconstrained 31-bit symbolic variable
 //! (zero-extended to 32 bits), matching angr's Python SimProcedure.
 
-use super::{NativeSimProcedure, ProcedureError, symbol_counter};
-use crate::state::RustSimState;
+use super::symbol_counter;
 use crate::symbolic::RustBV;
 
-/// Native rand implementation.
-///
-/// ```c
-/// int rand(void);
-/// ```
-///
-/// Returns a symbolic 31-bit value zero-extended to arch int size,
-/// matching angr's SimProcedure behavior.
-pub struct NativeRand;
-
-impl NativeSimProcedure for NativeRand {
-    fn name(&self) -> &'static str {
-        "rand"
-    }
-
-    fn num_args(&self) -> usize {
-        0
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        _args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// rand: return a symbolic 31-bit value zero-extended to arch int size,
+    /// matching angr's SimProcedure behavior.
+    ///
+    /// ```c
+    /// int rand(void);
+    /// ```
+    name = "rand",
+    struct = NativeRand,
+    args = [],
+    call |state| {
         let counter = symbol_counter("rand");
         let name = format!("rand_{}", counter);
 
@@ -47,27 +33,18 @@ impl NativeSimProcedure for NativeRand {
     }
 }
 
-/// Native srand implementation (no-op in symbolic execution).
-///
-/// ```c
-/// void srand(unsigned int seed);
-/// ```
-pub struct NativeSrand;
-
-impl NativeSimProcedure for NativeSrand {
-    fn name(&self) -> &'static str {
-        "srand"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        _state: &mut RustSimState,
-        _args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// srand: no-op in symbolic execution. The seed is ignored (declared `bv`
+    /// so a symbolic seed does NOT trigger a Python fallback — it is dropped
+    /// either way).
+    ///
+    /// ```c
+    /// void srand(unsigned int seed);
+    /// ```
+    name = "srand",
+    struct = NativeSrand,
+    args = [_seed: bv],
+    call |_state| {
         // srand just sets seed state — no-op in symbolic execution
         Ok(None)
     }

@@ -2,6 +2,8 @@
 // Split per rust-mod-tests-sibling-extraction recipe.
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
 
 #[test]
 fn test_write_stdout() {

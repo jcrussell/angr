@@ -7,7 +7,7 @@
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -31,32 +31,16 @@ fn read_cstring(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedur
     Ok(buf)
 }
 
-/// Native getenv implementation.
-///
-/// ```c
-/// char *getenv(const char *name);
-/// ```
-///
-/// Returns a pointer to the value string, or NULL if not found.
-/// The value is heap-allocated and written to memory.
-pub struct NativeGetenv;
-
-impl NativeSimProcedure for NativeGetenv {
-    fn name(&self) -> &'static str {
-        "getenv"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let name_addr = extract_concrete_arg(&args[0], "name")?;
-
+crate::declare_proc! {
+    /// getenv: look up `name`, heap-allocate the value, return a pointer (or NULL).
+    ///
+    /// ```c
+    /// char *getenv(const char *name);
+    /// ```
+    name = "getenv",
+    struct = NativeGetenv,
+    args = [name_addr: concrete],
+    call |state| {
         let key = read_cstring(state, name_addr)?;
         let bits = state.arch().bits();
 
@@ -88,33 +72,16 @@ impl NativeSimProcedure for NativeGetenv {
     }
 }
 
-/// Native setenv implementation.
-///
-/// ```c
-/// int setenv(const char *name, const char *value, int overwrite);
-/// ```
-///
-/// Returns 0 on success.
-pub struct NativeSetenv;
-
-impl NativeSimProcedure for NativeSetenv {
-    fn name(&self) -> &'static str {
-        "setenv"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let name_addr = extract_concrete_arg(&args[0], "name")?;
-        let value_addr = extract_concrete_arg(&args[1], "value")?;
-        let overwrite = extract_concrete_arg(&args[2], "overwrite")?;
-
+crate::declare_proc! {
+    /// setenv: store `name=value` in the environment map. Returns 0 on success.
+    ///
+    /// ```c
+    /// int setenv(const char *name, const char *value, int overwrite);
+    /// ```
+    name = "setenv",
+    struct = NativeSetenv,
+    args = [name_addr: concrete, value_addr: concrete, overwrite: concrete],
+    call |state| {
         let key = read_cstring(state, name_addr)?;
         let value = read_cstring(state, value_addr)?;
 
@@ -128,34 +95,20 @@ impl NativeSimProcedure for NativeSetenv {
     }
 }
 
-/// Native unsetenv implementation.
-///
-/// ```c
-/// int unsetenv(const char *name);
-/// ```
-///
-/// Removes `name` from the environment. Returns 0 on success.
-/// Per POSIX, returns 0 if the name was absent too — only sets errno
-/// for invalid names (NULL, empty, contains '='), which we do not
-/// model here. Symbolic name → Python fallback.
-pub struct NativeUnsetenv;
-
-impl NativeSimProcedure for NativeUnsetenv {
-    fn name(&self) -> &'static str {
-        "unsetenv"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let name_addr = extract_concrete_arg(&args[0], "name")?;
-
+crate::declare_proc! {
+    /// unsetenv: remove `name` from the environment. Returns 0 on success.
+    ///
+    /// ```c
+    /// int unsetenv(const char *name);
+    /// ```
+    ///
+    /// Per POSIX, returns 0 if the name was absent too — only sets errno
+    /// for invalid names (NULL, empty, contains '='), which we do not
+    /// model here. Symbolic name → Python fallback.
+    name = "unsetenv",
+    struct = NativeUnsetenv,
+    args = [name_addr: concrete],
+    call |state| {
         let key = read_cstring(state, name_addr)?;
         state.unsetenv(&key);
 
@@ -164,60 +117,32 @@ impl NativeSimProcedure for NativeUnsetenv {
     }
 }
 
-/// Native clearenv implementation.
-///
-/// ```c
-/// int clearenv(void);
-/// ```
-///
-/// Removes all environment variables. Returns 0 on success.
-pub struct NativeClearenv;
-
-impl NativeSimProcedure for NativeClearenv {
-    fn name(&self) -> &'static str {
-        "clearenv"
-    }
-
-    fn num_args(&self) -> usize {
-        0
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        _args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// clearenv: remove all environment variables. Returns 0 on success.
+    ///
+    /// ```c
+    /// int clearenv(void);
+    /// ```
+    name = "clearenv",
+    struct = NativeClearenv,
+    args = [],
+    call |state| {
         state.clearenv();
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(0, bits))) // success
     }
 }
 
-/// Native putenv implementation.
-///
-/// ```c
-/// int putenv(char *string);
-/// ```
-///
-/// Takes "KEY=VALUE" string. Stores key and value in environment.
-pub struct NativePutenv;
-
-impl NativeSimProcedure for NativePutenv {
-    fn name(&self) -> &'static str {
-        "putenv"
-    }
-
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let str_addr = extract_concrete_arg(&args[0], "string")?;
-
+crate::declare_proc! {
+    /// putenv: parse "KEY=VALUE" and store in the environment. Returns 0.
+    ///
+    /// ```c
+    /// int putenv(char *string);
+    /// ```
+    name = "putenv",
+    struct = NativePutenv,
+    args = [str_addr: concrete],
+    call |state| {
         let s = read_cstring(state, str_addr)?;
 
         // Find '=' separator

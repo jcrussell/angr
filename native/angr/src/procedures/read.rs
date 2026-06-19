@@ -23,37 +23,22 @@
 //! symbolic-file model can take over. See bd memory
 //! `invariant-rust-filesystem-no-python-sync`.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
+use super::{ProcedureError, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_READ_SIZE: u64 = 4096;
 
-/// Native read implementation.
-///
-/// ```c
-/// ssize_t read(int fd, void *buf, size_t count);
-/// ```
-pub struct NativeRead;
-
-impl NativeSimProcedure for NativeRead {
-    fn name(&self) -> &'static str {
-        "read"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = extract_concrete_arg(&args[0], "fd")?;
-        let buf = extract_concrete_arg(&args[1], "buf")?;
-        let count = extract_concrete_arg(&args[2], "count")?;
-
+crate::declare_proc! {
+    /// read: serve stdin (fd=0) symbolic bytes or concrete FS content.
+    ///
+    /// ```c
+    /// ssize_t read(int fd, void *buf, size_t count);
+    /// ```
+    name = "read",
+    struct = NativeRead,
+    args = [fd: concrete, buf: concrete, count: concrete],
+    call |state| {
         if count > MAX_READ_SIZE {
             return Err(ProcedureError::Other(format!(
                 "read count {} exceeds limit",

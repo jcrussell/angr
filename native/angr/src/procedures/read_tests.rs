@@ -1,6 +1,7 @@
 //! Tests for the read SimProcedure (extracted from read.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 #[test]
 fn test_read_stdin() {

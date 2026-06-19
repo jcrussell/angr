@@ -1,4 +1,6 @@
 use super::*;
+use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
 
 #[test]
 fn test_rand_returns_symbolic() {

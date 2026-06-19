@@ -1,6 +1,7 @@
 //! Tests for the getenv/setenv/unsetenv/clearenv/putenv SimProcedures (extracted from getenv.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeSimProcedure;
 
 fn setup_state() -> RustSimState {
     // Two scratch pages plus the heap region.

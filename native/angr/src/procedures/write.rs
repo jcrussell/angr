@@ -15,39 +15,24 @@
 //! all fall back to Python. See bd memory
 //! `invariant-rust-filesystem-no-python-sync`.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
+use super::ProcedureError;
 use crate::symbolic::RustBV;
 
 const MAX_WRITE_SIZE: u64 = 4096;
 
-/// Native write implementation.
-///
-/// ```c
-/// ssize_t write(int fd, const void *buf, size_t count);
-/// ```
-///
-/// Handles any fd that is open in the Rust `FileSystem` and is not fd=0
-/// (stdin). Symbolic bytes in `[buf, buf+count)` or counts beyond
-/// `MAX_WRITE_SIZE` fall back to Python.
-pub struct NativeWrite;
-
-impl NativeSimProcedure for NativeWrite {
-    fn name(&self) -> &'static str {
-        "write"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = extract_concrete_arg(&args[0], "fd")?;
-
+crate::declare_proc! {
+    /// write: serve any fd open in the Rust `FileSystem` (not fd=0).
+    ///
+    /// ```c
+    /// ssize_t write(int fd, const void *buf, size_t count);
+    /// ```
+    ///
+    /// Symbolic bytes in `[buf, buf+count)` or counts beyond `MAX_WRITE_SIZE`
+    /// fall back to Python.
+    name = "write",
+    struct = NativeWrite,
+    args = [fd: concrete, buf: concrete, count: concrete],
+    call |state| {
         if fd == 0 {
             return Err(ProcedureError::Other(
                 "write to fd=0 (stdin) falls back to Python".to_string(),
@@ -60,9 +45,6 @@ impl NativeSimProcedure for NativeWrite {
                 fd
             )));
         }
-
-        let buf = extract_concrete_arg(&args[1], "buf")?;
-        let count = extract_concrete_arg(&args[2], "count")?;
 
         if count > MAX_WRITE_SIZE {
             return Err(ProcedureError::Other(format!(
