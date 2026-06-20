@@ -783,6 +783,33 @@ pub(crate) fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
     (0..size).map(|i| (val >> (i * 8)) as u8).collect()
 }
 
+/// Prepare the per-callback solver context for a Python round-trip.
+///
+/// Two things every "return to Python" exit needs: (1) a pre-callback
+/// snapshot of `state`, but *only* when deferred forks need it — `state.fork()`
+/// clones the Z3 solver (~3-40ms), so we skip it otherwise; and (2) a
+/// `RustSolverContext` wrapping the state's shared solver (an O(1) `Rc` clone,
+/// not a fork) so the callback evaluates against the live constraints.
+///
+/// Returns `(pre_callback_snapshot, shared_ctx)` ready to hand to
+/// `PendingCallback::with_context`. The Hook arm in `stepping.rs` keeps its own
+/// inline copy because it interleaves fork-timing profiling around the snapshot;
+/// the symbolic-branch / VEX-fallback exits pass `(None, None)` by design and
+/// do not use this.
+pub(crate) fn prepare_shared_callback_solver(
+    state: &RustSimState,
+    deferred_forks: &[DeferredFork],
+) -> (Option<RustSimState>, RustSolverContext) {
+    let pre_callback_snapshot = if !deferred_forks.is_empty() {
+        Some(state.fork())
+    } else {
+        None
+    };
+    let solver_ref = state.solver();
+    let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+    (pre_callback_snapshot, shared_ctx)
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod tests;

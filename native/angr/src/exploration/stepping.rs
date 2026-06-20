@@ -285,14 +285,8 @@ impl RustExplorationManager {
                             .syscall_python_fallback_by_num
                             .entry(num.map(|n| n as i64).unwrap_or(-1))
                             .or_insert(0) += 1;
-                        let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                            Some(state.fork())
-                        } else {
-                            None
-                        };
-                        let solver_ref = state.solver();
-                        let shared_ctx =
-                            RustSolverContext::from_shared_sym_context(solver_ref.clone());
+                        let (pre_callback_snapshot, shared_ctx) =
+                            super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
                         return Err(StepError::NeedCallback(PendingCallback::with_context(
                             state,
                             pre_callback_snapshot,
@@ -367,15 +361,8 @@ impl RustExplorationManager {
                     .syscall_python_fallback_by_num
                     .entry(num.map(|n| n as i64).unwrap_or(-1))
                     .or_insert(0) += 1;
-                // Only snapshot if deferred forks need it
-                let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                    Some(state.fork())
-                } else {
-                    None
-                };
-                // Use shared solver (O(1) Rc clone) instead of fork
-                let solver_ref = state.solver();
-                let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+                let (pre_callback_snapshot, shared_ctx) =
+                    super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
                 Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
@@ -878,15 +865,8 @@ impl RustExplorationManager {
                 .or_insert(0) += 1;
             state.set_pc(addr);
             state.add_to_history(addr);
-            // Only snapshot if deferred forks need it
-            let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                Some(state.fork())
-            } else {
-                None
-            };
-            // Use shared solver (O(1) Rc clone) instead of fork
-            let solver_ref = state.solver();
-            let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+            let (pre_callback_snapshot, shared_ctx) =
+                super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
             Err(StepError::NeedCallback(PendingCallback::with_context(
                 state,
                 pre_callback_snapshot,
@@ -1062,15 +1042,8 @@ impl RustExplorationManager {
                     self.simprocedures
                         .insert(addr, (name.clone(), num_args, no_return));
 
-                    // Only snapshot if deferred forks need it
-                    let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                        Some(state.fork())
-                    } else {
-                        None
-                    };
-                    // Use shared solver (O(1) Rc clone) instead of fork
-                    let solver_ref = state.solver();
-                    let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+                    let (pre_callback_snapshot, shared_ctx) =
+                        super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
 
                     // Return to Python for SimProcedure execution
                     Err(StepError::NeedCallback(PendingCallback::with_context(
