@@ -163,6 +163,11 @@ impl SymContext {
             None => {
                 let solver = self.solver();
                 solver.push();
+                // Release the per-context z3::Solver guard before the
+                // lock-independent atomic so the hottest lock in the engine
+                // is not held across the fetch_add (clippy nursery
+                // significant_drop_tightening).
+                drop(solver);
                 // angr-3ms1 step 1a: track the bare push so the slice-1c
                 // fork-time materialization gate can refuse to mint a
                 // lineage while bare pushes are outstanding.
@@ -205,6 +210,11 @@ impl SymContext {
             None => {
                 let solver = self.solver();
                 solver.pop(1);
+                // Release the per-context z3::Solver guard before the
+                // lock-independent atomic + debug_assert so the hottest lock
+                // in the engine is not held across them (clippy nursery
+                // significant_drop_tightening).
+                drop(solver);
                 // angr-3ms1 step 1a: decrement after the Z3 pop succeeds.
                 // z3-rs panics on under-pop, so we never reach this on
                 // an unbalanced sequence — the counter stays in sync

@@ -247,12 +247,16 @@ impl SymbolicIdentityRegistry {
     ///
     /// This is used for cleanup when a symbol is no longer referenced.
     pub fn remove(&self, rust_id: u64) {
-        // Find and remove from all maps
+        // Find and remove from all maps. Acquire only the primary map up
+        // front; the absent-id path then takes no other write locks (and
+        // avoids the 3-lock cross-lock window). The other two write guards
+        // are bound only once the id is confirmed present.
         let mut id_to_py = self.rust_id_to_py.write();
-        let mut hash_to_id = self.py_hash_to_rust_id.write();
-        let mut name_to_info = self.name_to_info.write();
 
         if id_to_py.remove(&rust_id).is_some() {
+            let mut hash_to_id = self.py_hash_to_rust_id.write();
+            let mut name_to_info = self.name_to_info.write();
+
             // Find and remove corresponding hash entry
             let hash_to_remove: Vec<i64> = hash_to_id
                 .iter()
