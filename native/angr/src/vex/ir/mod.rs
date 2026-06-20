@@ -4,7 +4,6 @@
 //! The key difference from libVEX is that operations are parameterized by width
 //! rather than having separate opcodes for each width (DRY principle).
 
-
 /// A VEX IR Super Block (IRSB) - a sequence of statements ending in a jump.
 #[derive(Debug, Clone)]
 #[allow(non_snake_case)]

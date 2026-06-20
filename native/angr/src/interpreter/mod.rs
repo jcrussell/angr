@@ -77,6 +77,9 @@ mod pending_store;
 mod prefetch;
 mod simprocedures;
 mod statements;
+mod statements_cas;
+mod statements_inspect;
+mod statements_store;
 
 use helpers::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
