@@ -740,6 +740,38 @@ impl RustExplorationManager {
     }
 }
 
+/// Pack a concrete byte slice into 16-byte `RustBV::concrete` chunks and store
+/// each via the caller-supplied sink.
+///
+/// angr-5aj8: `RustBV::Concrete` is backed by a `u128`, so packing more than
+/// 16 bytes into a single value shift-overflows for byte indices >= 16 and the
+/// downstream `store_concrete` page-fill loop emits a 16-byte-cycle pattern
+/// across the entire `data.len()` range, corrupting memory wholesale. This is
+/// the canonical safe loop (was hand-copied into `_set_state_memory_concrete`
+/// and `_pending_memory_store`); the sink closure abstracts the only
+/// divergence between call sites (which memory API to write through, and how
+/// to map its error into a `PyErr`).
+pub(crate) fn store_concrete_bytes_chunked<F>(addr: u64, data: &[u8], mut store: F) -> PyResult<()>
+where
+    F: FnMut(u64, RustBV) -> PyResult<()>,
+{
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let remaining = data.len() - offset;
+        let chunk_size = remaining.min(16);
+        let chunk = &data[offset..offset + chunk_size];
+        let width = (chunk_size * 8) as u32;
+        let mut value: u128 = 0;
+        for (i, &b) in chunk.iter().enumerate() {
+            value |= (b as u128) << (i * 8);
+        }
+        let bv = RustBV::concrete(value, width);
+        store(addr + offset as u64, bv)?;
+        offset += chunk_size;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod tests;

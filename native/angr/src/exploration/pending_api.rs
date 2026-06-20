@@ -267,17 +267,16 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _set_pending_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+        // angr-5aj8: route through the shared 16-byte-chunk helper. The prior
+        // single-pack implementation here silently truncated/overflowed for
+        // data.len() > 16 (RustBV::concrete is u128-backed); chunking fixes it.
         self.with_pending_mut(|pending| {
-            let width = (data.len() * 8) as u32;
-            let mut value: u128 = 0;
-            for (i, &b) in data.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
-            }
-            let bv = crate::symbolic::RustBV::concrete(value, width);
-            pending
-                .state
-                .memory_store(addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+                pending
+                    .state
+                    .memory_store(chunk_addr, bv)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))
+            })
         })
     }
 
@@ -564,25 +563,13 @@ impl RustExplorationManager {
         // a 16-byte-cycle pattern across the entire claimed width. Use the safe
         // pattern from RustSimState::apply_changes.
         self.with_pending_mut(|pending| {
-            let mut offset = 0usize;
-            while offset < data.len() {
-                let remaining = data.len() - offset;
-                let chunk_size = remaining.min(16);
-                let chunk = &data[offset..offset + chunk_size];
-                let width = (chunk_size * 8) as u32;
-                let mut value: u128 = 0;
-                for (i, &b) in chunk.iter().enumerate() {
-                    value |= (b as u128) << (i * 8);
-                }
-                let bv = RustBV::concrete(value, width);
+            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 pending
                     .state
                     .memory_mut()
-                    .store_concrete(addr + offset as u64, bv)
-                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))?;
-                offset += chunk_size;
-            }
-            Ok(())
+                    .store_concrete(chunk_addr, bv)
+                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+            })
         })
     }
 

@@ -711,23 +711,11 @@ impl RustExplorationManager {
         // data.len() range — corrupting memory wholesale. Mirrors the safe
         // pattern in RustSimState::apply_changes (state.rs).
         self.with_state_mut(state_id, |state| {
-            let mut offset = 0usize;
-            while offset < data.len() {
-                let remaining = data.len() - offset;
-                let chunk_size = remaining.min(16);
-                let chunk = &data[offset..offset + chunk_size];
-                let width = (chunk_size * 8) as u32;
-                let mut value: u128 = 0;
-                for (i, &b) in chunk.iter().enumerate() {
-                    value |= (b as u128) << (i * 8);
-                }
-                let bv = crate::symbolic::RustBV::concrete(value, width);
+            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 state
-                    .memory_store(addr + offset as u64, bv)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                offset += chunk_size;
-            }
-            Ok(())
+                    .memory_store(chunk_addr, bv)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))
+            })
         })
     }
 
