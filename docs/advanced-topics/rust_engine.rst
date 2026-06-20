@@ -743,14 +743,14 @@ ordering, branch enumeration, eval answer)?"*:
      - **Not output-affecting.** Per-stash order is the VecDeque
        (FIFO/LIFO is honored). Cross-stash iteration only writes the
        same value to every state or finds a unique ``state_id``.
-   * - ``state.rs`` ``symbolic_pages`` / ``hook_symbolic_memory`` /
+    * - ``state/mod.rs`` ``symbolic_pages`` / ``hook_symbolic_memory`` /
        ``addr_to_ast``
      - Yes (``state_api.rs:_get_state_symbolic_pages`` etc. dump into
        ``PyDict``)
      - **Not output-affecting.** Python consumers read by key; the
        resulting ``PyDict`` is data-equivalent run-to-run. Iteration
        order leaks only into ``dict.__repr__`` for debug prints.
-   * - ``state.rs`` ``simprocedures`` / ``vex_fallback_addrs`` /
+    * - ``state/mod.rs`` ``simprocedures`` / ``vex_fallback_addrs`` /
        ``simprocedure_fallback_by_name``
      - Lookup-only
      - **Not output-affecting.**
@@ -911,7 +911,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
 
   * ``mem_load_count`` / ``mem_store_count`` — total load/store calls
     reaching ``SymbolicMemory::{load,store}_concrete``. Catches both
-    the public ``load(addr_bv)`` entry and the ``state.rs`` hot path
+     the public ``load(addr_bv)`` entry and the ``state/mod.rs`` hot path
     that calls ``load_concrete(addr_u64)`` directly.
   * ``mem_load_bytes`` / ``mem_store_bytes`` — cumulative bytes
     accessed.
@@ -3977,7 +3977,7 @@ A stale version byte fails the load fast with ``ValueError``
 ``STASH_SNAPSHOT_VERSION`` constant lives at
 ``native/angr/src/stash.rs`` and bumps on any breaking shape change
 to the per-state codec (``RustSimStateSnapshot`` at
-``native/angr/src/state.rs``).
+ ``native/angr/src/state/mod.rs``).
 
 What is captured:
 
@@ -4039,7 +4039,7 @@ binary entry — slow, and (for nondeterministic Z3 paths, see
 What ``RustSimState`` owns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Defined at ``native/angr/src/state.rs:948``. Roughly four buckets:
+ Defined at ``native/angr/src/state/types.rs`` (``StateChanges``). Roughly four buckets:
 
 * **Concrete, plain-data fields** — ``pc``, ``state_id``, ``parent_id``,
   ``history`` (``Vec<u64>``), ``detailed_history`` (``Vec<HistoryEntry>``),
@@ -4503,7 +4503,7 @@ are:
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
 - ``MemoryError`` (``native/angr/src/memory/mod.rs``)
 - ``CallbackReason`` (``native/angr/src/exploration/mod.rs``)
-- ``ExecutionEvent`` (``native/angr/src/state.rs``)
+- ``ExecutionEvent`` (``native/angr/src/state/types.rs``)
 - ``ExplorationEvent`` pyclass struct
   (``native/angr/src/exploration/mod.rs``) — the Python-visible event
   envelope, expected to grow ``#[pyo3(get)]`` fields as new
@@ -4554,9 +4554,9 @@ state:
   — coordinator; transitively owns the StashManager (which holds the
   per-state ``Rc<RefCell<SymContext>>``) plus thread-bound Z3 solver
   handles. The unsendable marker is correct.
-- ``PyRustSimState`` (``native/angr/src/state.rs:2703``) — wraps
+- ``PyRustSimState`` (``native/angr/src/state/mod.rs``) — wraps
   ``RustSimState`` which holds ``solver: Rc<RefCell<SymContext>>``
-  (``state.rs:960``). ``Rc`` is the binding constraint; replacing it with
+  (``state/mod.rs`` ``RustSimState``). ``Rc`` is the binding constraint; replacing it with
   ``Arc<Mutex<SymContext>>`` is necessary but **not sufficient** (see
   Z3 constraints below).
 - ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
@@ -4587,7 +4587,7 @@ GIL controls actual dereference). No refactor needed for these:
   Cheap to ship across threads but useless without the matching
   symbol-table entry, which lives inside the ``unsendable``
   ``RustSolverContext``.
-- ``ExplorationStateSnapshot`` (``native/angr/src/state.rs:3228``) —
+- ``ExplorationStateSnapshot`` (``native/angr/src/state/export.rs``) —
   the serializable snapshot type added by ``angr-zidj`` is already
   ``Send + Sync``. **This is the recommended cross-thread transport
   type** (see Recommendation below).

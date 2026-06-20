@@ -100,7 +100,7 @@ Single-threaded. The relevant pieces:
   ``z3::Context`` and the ``z3::Solver``. Constructed lazily on first
   symbolic op (``materialize_z3``) and shared by every state forked
   from the same parent through ``Arc``.
-* ``native/angr/src/state.rs:RustSimState`` carries register values,
+* ``native/angr/src/state/mod.rs`` ``RustSimState`` carries register values,
   memory pages, and a reference to the symcontext.
 * ``native/angr/src/exploration/run_loop.rs`` drives the
   ``stash → step → categorize`` loop on the calling thread.
