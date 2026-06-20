@@ -494,14 +494,25 @@ class TestStateMetadataStorage:
         # Sanity: parent entry visible.
         assert 0x9000 in mgr.get_state_addr_to_ast(parent_sid)
 
-        # The parent now has metadata, but RustExplorationManager doesn't
-        # expose a Python-callable fork. Validate the no-aliasing invariant
-        # via the standalone state path: a *fresh* manager state with no
-        # entries must not see the first manager's writes — proving each
-        # state owns its own map.
-        other_mgr = _RustExplorationManager("amd64")
-        other_sid = other_mgr.create_state("active")
-        assert dict(other_mgr.get_state_addr_to_ast(other_sid)) == {}
+        # Exercise the real fork path: ``fork_state_to_stash`` calls
+        # ``RustSimState.fork``, which must clone the parent's metadata into
+        # the child's own backing map. The child therefore sees the planted
+        # entry...
+        child_sid = mgr.fork_state_to_stash(parent_sid, "active")
+        assert 0x9000 in mgr.get_state_addr_to_ast(child_sid), (
+            "fork must clone the parent's addr_to_ast entry into the child"
+        )
+
+        # ...but the maps are independent: a write on the child must not
+        # appear on the parent, and vice-versa. A missing fork-time clone
+        # (shared HashMap) would leak each write across the boundary.
+        ast_child = claripy.BVS("child_only", 32)
+        mgr.set_state_addr_to_ast(child_sid, 0xA000, ast_child, 4)
+        assert 0xA000 not in mgr.get_state_addr_to_ast(parent_sid), "child write aliased into the parent's metadata map"
+
+        ast_parent2 = claripy.BVS("parent_only_2", 32)
+        mgr.set_state_addr_to_ast(parent_sid, 0xB000, ast_parent2, 4)
+        assert 0xB000 not in mgr.get_state_addr_to_ast(child_sid), "parent write aliased into the child's metadata map"
 
     # ------------------------------------------------------------------
     # angr-nsg9: lifecycle tests for the metadata-storage refactor.
@@ -710,26 +721,39 @@ class TestStateMetadataStorage:
             if not mgr._rust_mgr.has_active_states():
                 break
 
-        # The original entry state may have been moved/dropped, but if any
-        # fork descended from it preserved the planted metadata, we know
-        # clone_py_metadata wired the entry through the fork chain.
-        # We don't assert on every descendant (the dispatcher may evict
-        # ancestors after forking) — this test exists to catch the
-        # alias-sharing failure mode where mutation on a child silently
-        # bleeds into the parent. That mutation would manifest as garbage
-        # in the original entry's metadata; verify it didn't happen.
-        leftover = dict(mgr._rust_mgr.get_state_addr_to_ast(entry_sid))
-        # Either the entry was cleaned up (state evicted) — empty is OK —
-        # or its metadata still has only the (0x9000 -> ast) entry we put.
-        if leftover:
-            assert 0x9000 in leftover, f"parent metadata corrupted by fork-aliasing; got {leftover}"
-            recovered_ast, _ = leftover[0x9000]
-            # clone_ref preserves Python object identity, so the AST we
-            # planted should be the same object we get back.
-            assert recovered_ast is ast, (
-                "parent metadata AST replaced by an unrelated AST — "
-                "fork shared the underlying HashMap and the child wrote over it"
-            )
+        # Gather every state the run produced across all stashes. On a
+        # fauxware run the password compare forks the entry, so at least one
+        # descendant (an id other than the original entry) must exist. We
+        # read a CHILD's metadata, not just the parent's — the parent's
+        # owned-by-value map is untouched by the clone path, so checking it
+        # alone proves nothing about whether the fork wired metadata through
+        # to children.
+        all_sids = []
+        for stash in mgr._rust_mgr.stash_counts():
+            all_sids.extend(mgr._rust_mgr.get_state_ids(stash))
+        descendants = [sid for sid in all_sids if sid != entry_sid]
+        assert descendants, "fauxware run produced no forked descendant to inspect"
+
+        # Every forked descendant must carry a CLONE of the planted metadata:
+        # the same (0x9000 -> ast) entry with Python object identity
+        # preserved. If fork dropped the child's metadata (children built with
+        # empty maps) or aliased+overwrote it, no descendant carries 0x9000
+        # and this fails.
+        cloned = False
+        for sid in descendants:
+            meta = dict(mgr._rust_mgr.get_state_addr_to_ast(sid))
+            if 0x9000 in meta:
+                recovered_ast, _ = meta[0x9000]
+                # clone_ref preserves Python object identity.
+                assert recovered_ast is ast, (
+                    f"forked child {sid}'s metadata AST is not the cloned "
+                    "parent AST — fork shared the HashMap and overwrote it"
+                )
+                cloned = True
+        assert cloned, (
+            "no forked descendant carried the parent's planted metadata — "
+            "clone_py_metadata did not wire the entry through the fork chain"
+        )
 
 
 class TestStashOperations:
@@ -936,6 +960,10 @@ class TestStateManagement:
             mgr.add_state("active", state)
 
         assert mgr.active_count() == 3
+        # The "different PCs" claim is only meaningful if each PC round-trips
+        # back distinctly — active_count alone passes even if every PC were
+        # zeroed or collapsed. Read them back via get_state_pc.
+        assert [mgr.get_state_pc("active", i) for i in range(3)] == [0x1000, 0x2000, 0x3000]
 
     def test_has_active_states(self):
         """has_active_states reflects stash contents."""
