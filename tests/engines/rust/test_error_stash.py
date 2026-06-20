@@ -33,21 +33,41 @@ class TestErroredStash:
     """Tests for the errored stash and RustErrorRecord."""
 
     def test_errored_returns_error_records(self, fauxware_project):
-        """errored property returns RustErrorRecord objects with error details."""
+        """errored property returns RustErrorRecord objects with error details.
+
+        De-vacuified (angr-9drh4): the prior version explored to a find
+        address, which never populates the errored stash, so every per-record
+        assertion lived inside a never-iterated loop — the test passed for any
+        implementation. The high-level RustExplorationManager cannot be driven
+        into the errored stash by unmapped/bad accesses (those are swallowed to
+        zero buffers or routed to deadended), and loader/lazy pages are all
+        mapped RWX (perms=7), so ENABLE_NX never fires on code pages. The one
+        non-executable page the high-level sync DOES map is the stack page
+        (perms=6, see rust_state_sync.py::_sync_stack_page / _setup_stack_region).
+        Pointing the PC into the eagerly-mapped stack page with ENABLE_NX (and
+        its STRICT_PAGE_ACCESS gate) on therefore produces a deterministic NX
+        permission violation that lands in errored as a real RustErrorRecord.
+        """
+        from angr import sim_options as o
         from angr.exploration import RustErrorRecord
 
-        state = fauxware_project.factory.entry_state()
+        state = fauxware_project.factory.entry_state(add_options={o.STRICT_PAGE_ACCESS, o.ENABLE_NX})
+        # Jump into the (non-executable, perms=6) stack page. The fetch fails
+        # the NX check before lifting, stashing the state into `errored`.
+        sp = state.solver.eval(state.regs.sp)
+        state.regs.pc = sp
         mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=5)
 
-        # Explore with a valid find address
-        ACCEPTED = 0x4006ED
-        mgr.explore(find=ACCEPTED, max_steps=50000)
-
-        # errored should be a list (possibly empty for successful exploration)
         errored = mgr.errored
         assert isinstance(errored, list)
+        # Unconditional: the NX block fetch from the stack page MUST error,
+        # so the per-record assertions below are actually exercised. Without
+        # this a regression that stops populating errored (or routes NX
+        # violations elsewhere) would silently re-vacuify the test.
+        assert len(errored) >= 1, f"expected the NX stack-page fetch to error a state, got stashes={mgr.stash_counts()}"
 
-        # If there are errored states, they should be RustErrorRecord instances
+        # Errored states should be RustErrorRecord instances with full detail.
         for record in errored:
             assert isinstance(record, RustErrorRecord)
             assert hasattr(record, "state")
