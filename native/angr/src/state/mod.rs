@@ -1845,6 +1845,55 @@ impl PyRustSimState {
         Ok(())
     }
 
+    /// Behavioral probe for AVOID_MULTIVALUED_READS (angr-vkkny).
+    ///
+    /// Builds a structurally-symbolic 64-bit address pinned (via a solver
+    /// constraint) to `addr`, performs a symbolic-address load through the
+    /// same `memory_load_symbolic` path the interpreter uses, and returns the
+    /// `(min, max)` solver bounds of the loaded value. The address stays a BVS
+    /// (`as_u64()` is None) so `AddressConcretizer::should_avoid_multivalued_read`
+    /// fires when the option is set, even though the constraint pins it to a
+    /// single concrete location.
+    ///
+    /// Contract:
+    ///   * `avoid_multivalued_reads` ON  -> the load returns a fresh
+    ///     UNCONSTRAINED value, so `max > min` (NOT pinned to the concrete
+    ///     backer byte at `addr`).
+    ///   * `avoid_multivalued_reads` OFF -> the address concretizes to `addr`
+    ///     and the load reads the backer, so `min == max`.
+    ///
+    /// Deleting the `should_avoid_multivalued_read` branch in
+    /// `memory/load.rs::load_symbolic_unified` collapses the ON case to
+    /// `min == max` — exactly the regression this surface lets a Python test
+    /// catch. Returns `(min, max)` as a u128 pair (sufficient for loads up to
+    /// 8 bytes wide).
+    pub fn probe_symbolic_load_value_range(
+        &mut self,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<(u128, u128)> {
+        let sym_addr = {
+            let ctx = self.inner.solver().borrow();
+            let a = RustBV::symbolic(&ctx, "avoid_mv_probe_addr", 64);
+            let eq = a.eq(&RustBV::concrete(addr as u128, 64), &ctx);
+            ctx.assume_true(&eq);
+            a
+        };
+        let loaded = self
+            .inner
+            .memory_load_symbolic(sym_addr, size)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let lo = self
+            .inner
+            .min(&loaded, false)
+            .ok_or_else(|| PyValueError::new_err("min: unsatisfiable"))?;
+        let hi = self
+            .inner
+            .max(&loaded, false)
+            .ok_or_else(|| PyValueError::new_err("max: unsatisfiable"))?;
+        Ok((lo, hi))
+    }
+
     /// Add a lazy region.
     pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
         self.inner.add_lazy_region(start_addr, size);

@@ -1688,6 +1688,59 @@ class TestAvoidMultivaluedOptions:
         # fauxware performs under the option.
         assert (len(mgr.active) + len(mgr.deadended) + len(mgr.errored)) >= 1
 
+    def test_avoid_multivalued_read_behavioral_unconstrained_vs_pinned(self):
+        """angr-vkkny: the *behavioral* AVOID_MULTIVALUED_READS contract, via
+        the native `probe_symbolic_load_value_range` surface.
+
+        The config read-back in
+        `test_avoid_multivalued_read_returns_unconstrained_via_memory_api`
+        only proves the flag propagated. It cannot catch a deletion of the
+        `should_avoid_multivalued_read` branch in
+        `memory/load.rs::load_symbolic_unified`: the flag stays set but the
+        load pins to the backer byte. This test exercises the actual load:
+
+        * option ON  -> a symbolic-address load returns a FRESH UNCONSTRAINED
+          value spanning the full width (min == 0, max == 2**(8*size) - 1),
+          NOT pinned to the concrete backer.
+        * option OFF -> the same load concretizes the (pinned) address and
+          reads the backer, so min == max == the stored marker.
+
+        Deleting the avoid branch collapses the ON case to min == max, which
+        the `hi_on > lo_on` assertion below catches.
+        """
+        from angr.rustylib.vex_engine import RustSimState
+
+        marker_addr = 0x500500
+        marker_val = 0xCAFEBABEDEADBEEF
+        marker_bytes = marker_val.to_bytes(8, "little")
+
+        # Option ON: unconstrained load, not pinned to the backer.
+        state_on = RustSimState("amd64")
+        state_on.map_memory_data(marker_addr, marker_bytes)
+        # (use_approximate, read_limit, write_limit, sym_write_addrs,
+        #  avoid_reads, avoid_writes)
+        state_on.configure_concretization_strategies(False, None, None, False, True, False)
+        lo_on, hi_on = state_on.probe_symbolic_load_value_range(marker_addr, 8)
+        assert hi_on > lo_on, (
+            f"AVOID_MULTIVALUED_READS load was pinned (lo={lo_on:#x} hi={hi_on:#x}); "
+            "expected an unconstrained range — the should_avoid_multivalued_read "
+            "branch in memory/load.rs may have regressed"
+        )
+        # A fresh unconstrained 8-byte symbol spans the full 64-bit range.
+        assert lo_on == 0
+        assert hi_on == (1 << 64) - 1
+
+        # Option OFF: the load concretizes the pinned address and reads the
+        # backer, so it is single-valued at the marker.
+        state_off = RustSimState("amd64")
+        state_off.map_memory_data(marker_addr, marker_bytes)
+        state_off.configure_concretization_strategies(False, None, None, False, False, False)
+        lo_off, hi_off = state_off.probe_symbolic_load_value_range(marker_addr, 8)
+        assert lo_off == hi_off == marker_val, (
+            f"without AVOID_MULTIVALUED_READS the load should pin to the backer "
+            f"{marker_val:#x}; got lo={lo_off:#x} hi={hi_off:#x}"
+        )
+
 
 class TestConcretizationOptionPropagation:
     """angr-1kdi: APPROXIMATE_MEMORY_INDICES / SYMBOLIC_WRITE_ADDRESSES SimOptions.
