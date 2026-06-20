@@ -911,11 +911,18 @@ class RustCallbackDispatchMixin:
         # First successor continues in Rust
         first_succ = all_succs[0]
 
-        # When a SimProcedure uses self.call() (Ijk_Call), the continuation
-        # address is in the callstack but NOT on the stack memory. Push it
-        # so the Rust engine's `ret` instruction can find it.
-        if first_succ.history.jumpkind == "Ijk_Call":
-            self._push_continuation_address(first_succ, addr)
+        # When a SimProcedure uses self.call() (Ijk_Call), angr's
+        # ``cc.setup_callsite`` (sim_procedure.py:call -> calling_conventions.py
+        # :setup_callsite, return_addr.set_value) has ALREADY pushed the
+        # continuation address onto the stack and decremented sp, and that
+        # write is captured by the callback memory tracker, so Rust receives
+        # it. Re-pushing it here (the former ``_push_continuation_address``)
+        # was a double-push: it left the callee's stack 8 bytes low, so the
+        # callee's ``ret`` popped a garbage word and deadended (angr-aca6y,
+        # observed on xmllint's hooked pthread_once continuation). Do NOT push
+        # again. ``__libc_start_main`` avoids this entirely via the native
+        # Rust procedure, which is why the double-push only surfaced on the
+        # rarer Python continuations.
 
         # For zero-length hooks where the successor stays at the same
         # address, the hook just modified state — continue at the same
@@ -939,56 +946,6 @@ class RustCallbackDispatchMixin:
         for succ in all_succs[1:]:
             self._add_forked_state(succ, event)
         return False
-
-    def _push_continuation_address(self, first_succ, callback_addr: int) -> None:
-        """Push the SimProcedure self.call() continuation address onto the stack.
-
-        Looks up the continuation in the successor's callstack (top, then
-        top.next), falling back to _pending_procedure_data. Failures are
-        logged at debug level — Rust will still try to ret to whatever the
-        stack already holds.
-        """
-        try:
-            cont_addr = None
-            try:
-                cs = first_succ.callstack
-                for frame in [cs.top, getattr(cs.top, "next", None)]:
-                    if frame is None:
-                        continue
-                    pdata = getattr(frame, "procedure_data", None)
-                    if pdata is not None and len(pdata) >= 5:
-                        ca = pdata[4]
-                        ca_int = int(ca) if hasattr(ca, "concrete") else (ca if isinstance(ca, int) else None)
-                        if ca_int is not None and ca_int != callback_addr:
-                            cont_addr = ca_int
-                            break
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: callstack walk for continuation
-                # addr failed; fall through to the _pending_procedure_data lookup.
-                pass
-
-            # Fallback: search _pending_procedure_data if callstack didn't have it
-            if cont_addr is None:
-                for cont_a in self._pending_procedure_data:
-                    if cont_a != callback_addr:
-                        cont_addr = cont_a
-                        break
-
-            if cont_addr is None:
-                return
-            sp = first_succ.solver.eval(first_succ.regs._sp)
-            ptr_size = first_succ.arch.bytes
-            new_sp = sp - ptr_size
-            first_succ.regs._sp = new_sp
-            first_succ.memory.store(new_sp, claripy.BVV(cont_addr, ptr_size * 8), endness="Iend_LE")
-            if _DBG:
-                l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: continuation-address push to stack
-            # failed; Rust's ret will use whatever the stack already holds —
-            # may end up at a wrong address. Debug-logs.
-            if _DBG:
-                l.debug(f"Could not push continuation addr: {e}")
 
     def _handle_callback_no_successors(
         self,
