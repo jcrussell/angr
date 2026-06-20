@@ -176,9 +176,21 @@ class RustStateSyncMixin:
                     # side and any read will see an uninitialized BVS — wrong
                     # value, not a crash. Log loudly.
                     try:
-                        ast_ptr = self._cached_z3_ast_ptr(reg_val, z3_backend)
-                        if ast_ptr:
-                            rust_state.set_register_symbolic(reg_name, ast_ptr, reg_val.length)
+                        # Layer 2 (angr-21vi5): route the full claripy AST
+                        # through claripy_to_rustbv so leaf symbols (e.g. the
+                        # ecx in `state.regs.ecx = BVS('ecx')`) intern into the
+                        # shared symbol cache and round-trip back to the user's
+                        # symbol on export. The raw-Z3-ptr path
+                        # (set_register_symbolic) wraps the whole register as an
+                        # opaque id:0 symbol and mints a fresh rcx_N on the way
+                        # out — see angr-4ju9e. Fall back to the ptr path if the
+                        # AST-based method is unavailable (older .so).
+                        if hasattr(rust_state, "set_register_symbolic_ast"):
+                            rust_state.set_register_symbolic_ast(reg_name, reg_val)
+                        else:
+                            ast_ptr = self._cached_z3_ast_ptr(reg_val, z3_backend)
+                            if ast_ptr:
+                                rust_state.set_register_symbolic(reg_name, ast_ptr, reg_val.length)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic register not
                         # synced; Rust will see stale/uninit BVS for this

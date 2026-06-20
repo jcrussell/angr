@@ -2990,6 +2990,53 @@ impl PyRustSimState {
         }
     }
 
+    /// Set a register to a symbolic value from a full claripy AST.
+    ///
+    /// Unlike [`set_register_symbolic`] (which wraps a raw Z3 pointer as an
+    /// opaque `RustBV::Symbolic` with `id: 0` and so loses leaf-symbol
+    /// identity on export), this routes the claripy AST through
+    /// `claripy_to_rustbv`. That interns every leaf BVS into the shared
+    /// claripy<->Rust symbol cache, so a subregister set like
+    /// `state.regs.ecx = BVS('ecx', 32)` round-trips back to the user's
+    /// original symbol on export instead of minting a fresh `rcx_N`. This is
+    /// the Layer 2 fix for angr-4ju9e / angr-21vi5 — it mirrors the
+    /// identity-preserving import path that memory-sourced symbols already use
+    /// (`import_symbolic_to_state`).
+    pub fn set_register_symbolic_ast(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let size = self
+            .inner
+            .arch()
+            .register_size(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+        let solver = self.inner.solver().clone();
+        let bv = {
+            let ctx = solver.borrow();
+            crate::claripy_bridge::claripy_to_rustbv(py, ast, &ctx)
+                .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?
+        };
+        if bv.width() != size * 8 {
+            return Err(PyValueError::new_err(format!(
+                "width mismatch: register {} is {} bits, got {} bits",
+                name,
+                size * 8,
+                bv.width()
+            )));
+        }
+        if self.inner.set_register(name, bv) {
+            Ok(())
+        } else {
+            Err(PyValueError::new_err(format!(
+                "failed to set register: {}",
+                name
+            )))
+        }
+    }
+
     /// Map a memory region.
     #[pyo3(signature = (addr, size, permissions=7))]
     pub fn map_memory(&mut self, addr: u64, size: u64, permissions: u8) {

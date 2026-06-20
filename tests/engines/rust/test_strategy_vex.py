@@ -967,18 +967,11 @@ class TestVexBitCountInstructions:
     # export the full symbolic Iop_Clz64/Iop_Ctz64 nested-If tree (was 0 under
     # ZERO_FILL).
     #
-    # LAYER 2 (subregister symbol identity) — STILL OPEN, blocks these cases
-    # (angr-21vi5). state.regs.ecx = BVS('ecx') collapses to a Rust 'rcx' symbol
-    # with no import-cache link to the user's x; the recovered clz tree therefore
-    # references rcx_N, so s.add_constraints(edx == K) is SAT but constrains
-    # rcx_N — s.solver.eval(x) stays unconstrained and back-solving x fails.
-    # xfail (non-strict) until Layer 2 lands; drop the marker then.
-    _XFAIL_4JU9E = pytest.mark.xfail(
-        reason="angr-21vi5 (4ju9e Layer 2): subregister symbol identity lost — clz/ctz tree references rcx_N not the user's ecx, so back-solving x fails",
-        strict=False,
-    )
-
-    @_XFAIL_4JU9E
+    # LAYER 2 (subregister symbol identity) — FIXED in angr-21vi5. The
+    # Python->Rust register import now routes `state.regs.ecx = BVS('ecx')`
+    # through claripy_to_rustbv (set_register_symbolic_ast), so the ecx leaf
+    # symbol interns into the shared cache and the recovered clz/ctz tree
+    # references the user's ecx — back-solving x is sound.
     @pytest.mark.parametrize("clz_target", [0, 4, 8, 16, 23, 31])
     def test_lzcnt_symbolic_export_is_sound(self, clz_target):
         """Symbolic operand: constraining the lzcnt result back-solves a value
@@ -995,7 +988,6 @@ class TestVexBitCountInstructions:
         value = s.solver.eval(x) & 0xFFFFFFFF
         assert self._clz32(value) == clz_target
 
-    @_XFAIL_4JU9E
     @pytest.mark.parametrize("ctz_target", [0, 4, 8, 16, 31])
     def test_tzcnt_symbolic_export_is_sound(self, ctz_target):
         """Symbolic operand: constraining the tzcnt result back-solves a value
