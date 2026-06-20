@@ -213,54 +213,36 @@ impl RustExplorationManager {
     // -------------------------------------------------------------------------
 
     pub(crate) fn _set_state_solver_timeout(&self, state_id: u64, timeout_ms: u32) -> PyResult<()> {
-        let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_solver_timeout: state {} not found",
-                state_id
-            ))
-        })?;
-        state.solver().borrow().set_timeout(timeout_ms);
-        Ok(())
+        self.with_state(state_id, |state| {
+            state.solver().borrow().set_timeout(timeout_ms);
+            Ok(())
+        })
     }
 
     pub(crate) fn _get_state_solver_timeout(&self, state_id: u64) -> PyResult<u32> {
-        let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "get_state_solver_timeout: state {} not found",
-                state_id
-            ))
-        })?;
-        Ok(state.solver().borrow().timeout_ms())
+        self.with_state(state_id, |state| Ok(state.solver().borrow().timeout_ms()))
     }
 
     pub(crate) fn _get_state_mmap_base(&self, state_id: u64) -> PyResult<u64> {
-        let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("get_state_mmap_base: state {} not found", state_id))
-        })?;
-        Ok(state.mmap_base())
+        self.with_state(state_id, |state| Ok(state.mmap_base()))
     }
 
     pub(crate) fn _set_state_mmap_base(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
-        let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("set_state_mmap_base: state {} not found", state_id))
-        })?;
-        state.set_mmap_base(addr);
-        Ok(())
+        self.with_state_mut(state_id, |state| {
+            state.set_mmap_base(addr);
+            Ok(())
+        })
     }
 
     pub(crate) fn _get_state_posix_brk(&self, state_id: u64) -> PyResult<u64> {
-        let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("get_state_posix_brk: state {} not found", state_id))
-        })?;
-        Ok(state.posix_brk())
+        self.with_state(state_id, |state| Ok(state.posix_brk()))
     }
 
     pub(crate) fn _set_state_posix_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
-        let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("set_state_posix_brk: state {} not found", state_id))
-        })?;
-        state.set_posix_brk(addr);
-        Ok(())
+        self.with_state_mut(state_id, |state| {
+            state.set_posix_brk(addr);
+            Ok(())
+        })
     }
 
     // -------------------------------------------------------------------------
@@ -273,20 +255,16 @@ impl RustExplorationManager {
         state_id: u64,
         pages: &Bound<'py, PyDict>,
     ) -> PyResult<()> {
-        let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_symbolic_pages: state {} not found",
-                state_id
-            ))
-        })?;
+        let _ = py;
         let mut map: HashMap<u64, Py<PyAny>> = HashMap::with_capacity(pages.len());
         for (key, value) in pages.iter() {
             let addr: u64 = key.extract()?;
             map.insert(addr, value.unbind());
         }
-        let _ = py;
-        state.replace_symbolic_pages(map);
-        Ok(())
+        self.with_state_mut(state_id, |state| {
+            state.replace_symbolic_pages(map);
+            Ok(())
+        })
     }
 
     pub(crate) fn _get_state_symbolic_pages<'py>(
@@ -310,14 +288,10 @@ impl RustExplorationManager {
         ast: Py<PyAny>,
         size: u32,
     ) -> PyResult<()> {
-        let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_hook_symbolic_memory: state {} not found",
-                state_id
-            ))
-        })?;
-        state.set_hook_symbolic_memory(addr, ast, size);
-        Ok(())
+        self.with_state_mut(state_id, |state| {
+            state.set_hook_symbolic_memory(addr, ast, size);
+            Ok(())
+        })
     }
 
     pub(crate) fn _get_state_hook_symbolic_memory<'py>(
@@ -341,14 +315,10 @@ impl RustExplorationManager {
         ast: Py<PyAny>,
         size: u32,
     ) -> PyResult<()> {
-        let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_addr_to_ast: state {} not found",
-                state_id
-            ))
-        })?;
-        state.set_addr_to_ast(addr, ast, size);
-        Ok(())
+        self.with_state_mut(state_id, |state| {
+            state.set_addr_to_ast(addr, ast, size);
+            Ok(())
+        })
     }
 
     pub(crate) fn _get_state_addr_to_ast<'py>(
