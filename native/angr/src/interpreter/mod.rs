@@ -65,16 +65,24 @@ macro_rules! profile_add {
     };
 }
 
+mod code_invalidation;
+mod concrete_memory;
+mod concretize_cache;
 mod execution;
 mod exits;
 mod expressions;
+mod fork_state;
 mod helpers;
 mod pending_store;
 mod prefetch;
+mod simprocedures;
 mod statements;
 
 use helpers::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
+
+pub use concrete_memory::ConcreteMemoryRegion;
+pub use simprocedures::SimProcedureInfo;
 
 /// Full state snapshot at a symbolic branch point.
 /// Used by deferred forks to create correct alternate-path states
@@ -472,39 +480,6 @@ pub enum BlockResult {
     },
 }
 
-/// A concrete memory region cached locally in Rust.
-/// Uses `Arc<Vec<u8>>` for O(1) cloning — binary data is shared, not copied.
-#[derive(Clone)]
-pub struct ConcreteMemoryRegion {
-    /// Base address of the region.
-    pub base: u64,
-    /// Size of the region in bytes.
-    pub size: u64,
-    /// The concrete data (shared via Arc to avoid copying per step).
-    pub data: Arc<Vec<u8>>,
-}
-
-impl ConcreteMemoryRegion {
-    /// Check if this region contains the given address range.
-    #[inline]
-    pub fn contains(&self, addr: u64, size: u64) -> bool {
-        addr >= self.base && addr + size <= self.base + self.size
-    }
-
-    /// Read bytes from this region. Returns None if out of bounds.
-    #[inline]
-    pub fn read(&self, addr: u64, size: usize) -> Option<&[u8]> {
-        if addr < self.base {
-            return None;
-        }
-        let offset = (addr - self.base) as usize;
-        if offset + size > self.data.len() {
-            return None;
-        }
-        Some(&self.data[offset..offset + size])
-    }
-}
-
 /// Cached result of a prefetched memory load.
 #[derive(Clone)]
 pub struct PrefetchedLoad {
@@ -512,17 +487,6 @@ pub struct PrefetchedLoad {
     pub value: RustBV,
     /// Whether the value is symbolic.
     pub is_symbolic: bool,
-}
-
-/// Information about a registered SimProcedure.
-#[derive(Clone, Debug)]
-pub struct SimProcedureInfo {
-    /// Name of the SimProcedure (e.g., "strlen", "malloc").
-    pub name: String,
-    /// Number of arguments to extract.
-    pub num_args: usize,
-    /// Whether this is a no-return procedure (e.g., "exit", "abort").
-    pub no_return: bool,
 }
 
 /// Callback-aware VEX IR interpreter.
@@ -783,230 +747,12 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Get the address concretizer.
-    pub fn concretizer(&self) -> &AddressConcretizer {
-        &self.concretizer
-    }
-
-    /// Set custom concretizer settings.
-    pub fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
-        self.concretizer = concretizer;
-    }
-
-    /// Mint an unconstrained read value for the AVOID_MULTIVALUED_READS
-    /// short-circuit. Delegates to `SymbolicMemory::unconstrained_read_value`
-    /// when Rust-side memory is attached so the result honors
-    /// `zero_fill_unconstrained`; otherwise falls back to a fresh
-    /// process-unique BVS named `symbolic_read_unconstrained_N`.
-    pub(super) fn fresh_unconstrained_read(&self, size: usize) -> RustBV {
-        if let Some(rust_mem) = self.rust_memory.as_ref() {
-            return rust_mem.unconstrained_read_value(size as u32, self.ctx);
-        }
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
-        let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
-        RustBV::symbolic(
-            self.ctx,
-            format!("symbolic_read_unconstrained_{}", id),
-            (size * 8) as u32,
-        )
-    }
-
-    /// Concretize for read with per-block caching.
-    /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
-    ///
-    /// Returns an `Arc<ConcretizationResult>` so cache hits / inserts only pay an
-    /// atomic refcount bump rather than cloning a `Vec<u64>` for the Multiple variant.
-    fn concretize_cached_read(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
-        if let Some(concrete_addr) = addr.as_u64() {
-            return Arc::new(ConcretizationResult::Single(concrete_addr));
-        }
-
-        let cache_key = Self::bv_cache_key(addr);
-        // Note: read and write may produce different results for same address,
-        // but within a block they're typically used consistently for a given address.
-        // Cache the raw result and apply fallback after cache lookup.
-        if let Some(cached) = self.concretize_cache.get(&cache_key) {
-            let result = Arc::clone(cached);
-            // Apply read fallback to cached result
-            return match &*result {
-                ConcretizationResult::TooLarge { .. } if self.concretizer.read_fallback_any => {
-                    if let Some(val) = self.ctx.eval(addr) {
-                        Arc::new(ConcretizationResult::Single(val as u64))
-                    } else {
-                        result
-                    }
-                }
-                _ => result,
-            };
-        }
-
-        let conc_start = std::time::Instant::now();
-        let result = Arc::new(self.concretizer.concretize_read(addr, self.ctx));
-        let conc_elapsed = conc_start.elapsed();
-        if self.profiling_enabled {
-            self.stats.concretize_count += 1;
-            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
-        }
-        self.concretize_cache.insert(cache_key, Arc::clone(&result));
-        result
-    }
-
-    /// Concretize for write with per-block caching.
-    /// Uses write_range_limit and falls back to Max solution if range is too large.
-    ///
-    /// Returns an `Arc<ConcretizationResult>` (see `concretize_cached_read`).
-    fn concretize_cached_write(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
-        if let Some(concrete_addr) = addr.as_u64() {
-            return Arc::new(ConcretizationResult::Single(concrete_addr));
-        }
-
-        let cache_key = Self::bv_cache_key(addr);
-        if let Some(cached) = self.concretize_cache.get(&cache_key) {
-            let result = Arc::clone(cached);
-            // Apply write fallback to cached result
-            return match &*result {
-                ConcretizationResult::TooLarge { .. } if self.concretizer.write_fallback_max => {
-                    if let Some((_min, max)) = self.ctx.range(addr) {
-                        Arc::new(ConcretizationResult::Single(max as u64))
-                    } else if let Some(val) = self.ctx.eval(addr) {
-                        Arc::new(ConcretizationResult::Single(val as u64))
-                    } else {
-                        result
-                    }
-                }
-                _ => result,
-            };
-        }
-
-        let conc_start = std::time::Instant::now();
-        let result = Arc::new(self.concretizer.concretize_write(addr, self.ctx));
-        let conc_elapsed = conc_start.elapsed();
-        if self.profiling_enabled {
-            self.stats.concretize_count += 1;
-            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
-        }
-        self.concretize_cache.insert(cache_key, Arc::clone(&result));
-        result
-    }
-
-    /// Compute a cache key for a RustBV value.
-    /// Uses the symbolic id for Symbolic/Constrained, and a hash of op+operand structure for Expression.
-    fn bv_cache_key(bv: &RustBV) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        match bv {
-            RustBV::Concrete { value, .. } => *value as u64,
-            RustBV::Symbolic { id, .. } => *id,
-            RustBV::Constrained { id, .. } => *id,
-            RustBV::Expression {
-                op,
-                operands,
-                width,
-                ..
-            } => {
-                let mut hasher = DefaultHasher::new();
-                // Hash op discriminant + width + operand keys recursively (1 level deep)
-                std::mem::discriminant(op).hash(&mut hasher);
-                width.hash(&mut hasher);
-                for operand in operands.iter() {
-                    match operand {
-                        RustBV::Concrete { value, .. } => {
-                            value.hash(&mut hasher);
-                        }
-                        RustBV::Symbolic { id, .. } => {
-                            id.hash(&mut hasher);
-                        }
-                        RustBV::Constrained { id, .. } => {
-                            id.hash(&mut hasher);
-                        }
-                        RustBV::Expression {
-                            op: sub_op,
-                            width: sub_w,
-                            ..
-                        } => {
-                            std::mem::discriminant(sub_op).hash(&mut hasher);
-                            sub_w.hash(&mut hasher);
-                        }
-                    }
-                }
-                hasher.finish()
-            }
-        }
-    }
-
     /// Set the symbol table for handle-based claripy bypass.
     ///
     /// When set, Python callbacks can return RustBVHandle instead of claripy ASTs,
     /// providing significant performance improvement by bypassing AST conversion.
     pub fn set_symbol_table(&mut self, table: &'a RustSymbolTable) {
         self.symbol_table = Some(table);
-    }
-
-    /// Add a concrete memory region for fast local access.
-    ///
-    /// This allows the interpreter to read from binary sections (e.g., .text, .rodata)
-    /// without going through Python callbacks, significantly improving performance.
-    pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
-        let size = data.len() as u64;
-        Arc::make_mut(&mut self.concrete_memory).push(ConcreteMemoryRegion {
-            base,
-            size,
-            data: Arc::new(data),
-        });
-        self.concrete_memory_sorted = false;
-    }
-
-    /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
-    pub fn add_concrete_memory_shared(&mut self, base: u64, data: Arc<Vec<u8>>) {
-        let size = data.len() as u64;
-        Arc::make_mut(&mut self.concrete_memory).push(ConcreteMemoryRegion { base, size, data });
-        self.concrete_memory_sorted = false;
-    }
-
-    /// Sort concrete memory regions by base address for binary search.
-    fn sort_concrete_memory(&mut self) {
-        if !self.concrete_memory_sorted && self.concrete_memory.len() > 1 {
-            Arc::make_mut(&mut self.concrete_memory).sort_by_key(|r| r.base);
-            self.concrete_memory_sorted = true;
-        }
-    }
-
-    /// Clear all concrete memory regions.
-    pub fn clear_concrete_memory(&mut self) {
-        Arc::make_mut(&mut self.concrete_memory).clear();
-        self.concrete_memory_sorted = false;
-    }
-
-    /// Try to read from concrete memory cache using binary search.
-    /// Returns Some(data) if the address range is fully contained in a cached region.
-    #[inline]
-    fn try_read_concrete_memory(&self, addr: u64, size: usize) -> Option<&[u8]> {
-        if self.concrete_memory.is_empty() {
-            return None;
-        }
-
-        // Use binary search if we have many regions
-        if self.concrete_memory.len() > 4 && self.concrete_memory_sorted {
-            // Binary search: find the region where base <= addr
-            let idx = self.concrete_memory.partition_point(|r| r.base <= addr);
-            if idx > 0 {
-                // Check the region just before this index
-                let region = &self.concrete_memory[idx - 1];
-                if let Some(data) = region.read(addr, size) {
-                    return Some(data);
-                }
-            }
-            return None;
-        }
-
-        // Linear scan for small number of regions
-        for region in self.concrete_memory.iter() {
-            if let Some(data) = region.read(addr, size) {
-                return Some(data);
-            }
-        }
-        None
     }
 
     /// Enable or disable profiling.
@@ -1193,26 +939,6 @@ impl<'a> VEXInterpreter<'a> {
         self.config = config;
     }
 
-    /// Get the deferred forks collected during execution.
-    pub fn deferred_forks(&self) -> &[DeferredFork] {
-        &self.deferred_forks
-    }
-
-    /// Take the deferred forks, leaving an empty vector.
-    pub fn take_deferred_forks(&mut self) -> Vec<DeferredFork> {
-        std::mem::take(&mut self.deferred_forks)
-    }
-
-    /// Clear the deferred forks.
-    pub fn clear_deferred_forks(&mut self) {
-        self.deferred_forks.clear();
-    }
-
-    /// Get the number of deferred forks.
-    pub fn num_deferred_forks(&self) -> usize {
-        self.deferred_forks.len()
-    }
-
     /// Get the next condition ID.
     fn next_cond_id(&mut self) -> u64 {
         let id = self.next_condition_id;
@@ -1395,177 +1121,6 @@ impl<'a> VEXInterpreter<'a> {
         self.hook_addrs.contains(&addr)
     }
 
-    /// Check if an address is within loaded binary (concrete memory) regions.
-    /// Used to distinguish internal function calls from external/library calls.
-    pub fn is_in_binary(&self, addr: u64) -> bool {
-        self.concrete_memory
-            .iter()
-            .any(|region| addr >= region.base && addr < region.base + region.size)
-    }
-
-    /// Whether the page containing `addr` has been overwritten via a store.
-    /// Native-lift callers must avoid this page since they read from the
-    /// immutable `concrete_memory` buffer that does not see the new bytes.
-    pub fn is_code_page_dirtied(&self, addr: u64) -> bool {
-        self.dirtied_code_pages.contains(&(addr >> 12))
-    }
-
-    /// Whether any page intersecting `[addr, addr + len)` has been written.
-    pub fn is_code_range_dirtied(&self, addr: u64, len: u64) -> bool {
-        if self.dirtied_code_pages.is_empty() || len == 0 {
-            return false;
-        }
-        let first_page = addr >> 12;
-        let last_page = (addr.saturating_add(len - 1)) >> 12;
-        for page_num in first_page..=last_page {
-            if self.dirtied_code_pages.contains(&page_num) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Mark code pages overlapping `[addr, addr + size)` as dirtied and
-    /// invalidate cached IRSBs whose byte ranges cover any of those bytes.
-    /// Caller must verify the address is in a binary region first.
-    pub fn invalidate_code_at(&mut self, addr: u64, size: usize) {
-        if size == 0 {
-            return;
-        }
-        let end = addr.saturating_add(size as u64 - 1);
-        let first_page = addr >> 12;
-        let last_page = end >> 12;
-        for page_num in first_page..=last_page {
-            self.dirtied_code_pages.insert(page_num);
-        }
-        // Find cached IRSBs whose [start, start + irsb.size()) overlaps the
-        // write. LruCache::iter is O(N) but N <= BLOCK_CACHE_CAPACITY and this
-        // fires only on rare in-binary stores, so the cost is bounded.
-        let mut to_remove: Vec<u64> = Vec::new();
-        for (block_addr, irsb) in self.block_cache.iter() {
-            let block_end = block_addr.saturating_add(irsb.size() as u64);
-            if *block_addr <= end && block_end > addr {
-                to_remove.push(*block_addr);
-            }
-        }
-        for block_addr in to_remove {
-            self.block_cache.pop(&block_addr);
-        }
-    }
-
-    /// Register a SimProcedure at an address.
-    ///
-    /// This allows the interpreter to pre-extract arguments when the hook is hit,
-    /// reducing Python callback overhead.
-    pub fn register_simprocedure(
-        &mut self,
-        addr: u64,
-        name: String,
-        num_args: usize,
-        no_return: bool,
-    ) {
-        Arc::make_mut(&mut self.hook_addrs).insert(addr);
-        Arc::make_mut(&mut self.simprocedure_registry).insert(
-            addr,
-            SimProcedureInfo {
-                name,
-                num_args,
-                no_return,
-            },
-        );
-    }
-
-    /// Register multiple SimProcedures at once.
-    ///
-    /// Each tuple is (address, name, num_args, no_return).
-    pub fn register_simprocedures(&mut self, procs: &[(u64, String, usize, bool)]) {
-        let hooks = Arc::make_mut(&mut self.hook_addrs);
-        for (addr, _, _, _) in procs {
-            hooks.insert(*addr);
-        }
-        let registry = Arc::make_mut(&mut self.simprocedure_registry);
-        for (addr, name, num_args, no_return) in procs {
-            registry.insert(
-                *addr,
-                SimProcedureInfo {
-                    name: name.clone(),
-                    num_args: *num_args,
-                    no_return: *no_return,
-                },
-            );
-        }
-    }
-
-    /// Get SimProcedure info for an address, if registered.
-    pub fn get_simprocedure_info(&self, addr: u64) -> Option<&SimProcedureInfo> {
-        self.simprocedure_registry.get(&addr)
-    }
-
-    /// Clear all SimProcedure registrations.
-    pub fn clear_simprocedures(&mut self) {
-        Arc::make_mut(&mut self.simprocedure_registry).clear();
-    }
-
-    /// Extract arguments for a SimProcedure call.
-    ///
-    /// Uses the calling convention to extract arguments from registers and
-    /// stack. Returns the structured `ExtractionError` from the trait so
-    /// callers see *why* extraction failed (stack unmapped vs symbolic SP
-    /// vs missing memory view) instead of receiving silently-fabricated
-    /// placeholders.
-    pub fn extract_simprocedure_args(
-        &self,
-        num_args: usize,
-    ) -> Result<Vec<RustBV>, crate::arch::calling_conventions::ExtractionError> {
-        self.calling_convention.extract_args(
-            &self.registers,
-            self.rust_memory.as_ref(),
-            self.ctx,
-            num_args,
-        )
-    }
-
-    /// Get the return address for a function call.
-    ///
-    /// Checks pending_stores and all_flushed_stores first, since the call
-    /// instruction pushes the return address via VEX stores before the
-    /// interpreter detects the SimProcedure hook.
-    pub fn get_return_addr(&self) -> Option<u64> {
-        let ptr_size = self.calling_convention.pointer_size();
-        let sp = self
-            .registers
-            .get(self.registers.arch().sp_offset(), ptr_size, self.ctx);
-        let sp_val = sp.as_u64()?;
-
-        // Check pending_stores first (most recent writes, same block)
-        if let Some(data) = self
-            .pending_stores
-            .try_load_exact(sp_val, ptr_size as usize)
-        {
-            let mut bytes = [0u8; 8];
-            let len = std::cmp::min(ptr_size as usize, 8);
-            bytes[..len].copy_from_slice(&data[..len]);
-            return Some(u64::from_le_bytes(bytes));
-        }
-
-        // Check all_flushed_stores (cross-block within same step)
-        if let Some(data) = self.all_flushed_stores.get(&sp_val)
-            && data.len() >= ptr_size as usize
-        {
-            let mut bytes = [0u8; 8];
-            let len = std::cmp::min(ptr_size as usize, 8);
-            bytes[..len].copy_from_slice(&data[..len]);
-            return Some(u64::from_le_bytes(bytes));
-        }
-
-        // Fall back to rust_memory
-        self.calling_convention.get_return_addr(
-            &self.registers,
-            self.rust_memory.as_ref(),
-            self.ctx,
-        )
-    }
-
     /// Check if we have a cached block at the given address.
     pub fn has_cached_block(&self, addr: u64) -> bool {
         self.block_cache.contains(&addr)
@@ -1587,39 +1142,6 @@ impl<'a> VEXInterpreter<'a> {
         cache: LruCache<u64, Arc<IRSB>>,
     ) -> LruCache<u64, Arc<IRSB>> {
         std::mem::replace(&mut self.block_cache, cache)
-    }
-
-    /// Take the last branch condition, if any.
-    ///
-    /// This is set when a SymbolicBranch result is created, and can be retrieved
-    /// by callers who need to add constraints for forked states.
-    /// The condition is cleared after being retrieved.
-    pub fn take_last_branch_condition(&mut self) -> Option<RustBV> {
-        self.last_branch_condition.take()
-    }
-
-    /// Get a stored condition by ID.
-    ///
-    /// Returns the branch condition associated with the given condition ID,
-    /// if one was stored. This is used for deferred fork handling.
-    pub fn get_stored_condition(&self, condition_id: u64) -> Option<&RustBV> {
-        self.stored_conditions.get(&condition_id)
-    }
-
-    /// Take all stored conditions.
-    ///
-    /// Returns all stored conditions as a HashMap. The internal map is cleared.
-    /// This is useful for bulk retrieval when processing multiple deferred forks.
-    pub fn take_stored_conditions(&mut self) -> FxHashMap<u64, RustBV> {
-        std::mem::take(&mut self.stored_conditions)
-    }
-
-    /// Take all branch snapshots for deferred forks.
-    ///
-    /// Returns full state snapshots captured BEFORE branch constraints were added,
-    /// keyed by condition_id. Used for correct alternate-path forking.
-    pub fn take_fork_snapshots(&mut self) -> FxHashMap<u64, BranchSnapshot> {
-        std::mem::take(&mut self.fork_snapshots)
     }
 
     /// Take the symbolic IP expression recorded at the most recent default
