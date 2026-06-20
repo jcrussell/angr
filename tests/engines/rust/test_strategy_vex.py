@@ -814,9 +814,10 @@ class TestVexGetMSBsInstruction:
     """
 
     def _run_pmovmskb(self, xmm0_value):
+        import claripy
+
         import angr
         import angr.sim_options as o
-        import claripy
 
         #   66 0f d7 c0   pmovmskb eax, xmm0
         #   c3            ret
@@ -837,12 +838,7 @@ class TestVexGetMSBsInstruction:
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.run(max_steps=10)
 
-        all_states = (
-            list(mgr.found)
-            + list(mgr.active)
-            + list(mgr.deadended)
-            + list(mgr.unconstrained)
-        )
+        all_states = list(mgr.found) + list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
         assert all_states, "expected at least one state after run"
         s = all_states[0]
         # PMOVMSKB writes the 16-bit mask into eax (zero-extended to rax).
@@ -879,3 +875,130 @@ class TestVexGetMSBsInstruction:
         """Arbitrary 128-bit value matches the per-byte-MSB oracle."""
         value = 0x8001_7FFE_C3D2_E1F0_0F1E_2D3C_4B5A_6978
         assert self._run_pmovmskb(value) == self._expected_mask(value)
+
+
+class TestVexBitCountInstructions:
+    """Instruction-level coverage for scalar Iop_Clz64 / Iop_Ctz64 (lzcnt/tzcnt).
+
+    The sound symbolic-bitcount export (commit e3f46fa9a, acoq) shipped with
+    two Rust unit tests but no Python-boundary regression. Before that fix,
+    rustbv_to_claripy_memo exported a symbolic Clz/Ctz as a freshly-minted
+    *unconstrained* claripy BVS — constraint relationship lost — so a
+    Python-side eval could return a Rust-infeasible value. build_sound_bitcount
+    now emits a nested-If encoding tied to the operand AST.
+
+    x86 `lzcnt`/`tzcnt` lift to Iop_Clz64/Iop_Ctz64 (verified by lifting:
+    lzcnt edx, ecx -> ITE(ecx==0, 32, Clz64(ZeroExt(ecx) << 32)); tzcnt
+    ebx, ecx -> ITE(ecx==0, 32, Ctz64(ZeroExt(ecx)))). A binary-free shellcode
+    blob drives both ops end-to-end through the Rust interpreter; keeping the
+    operand symbolic forces the sound-export path the Cargo tests cover only
+    in isolation.
+    """
+
+    #   f3 0f bd d1   lzcnt edx, ecx
+    #   f3 0f bc d9   tzcnt ebx, ecx
+    #   c3            ret
+    _SHELLCODE = bytes.fromhex("f30fbdd1" + "f30fbcd9") + b"\xc3"
+
+    def _run(self, ecx_value):
+        import angr
+        import angr.sim_options as o
+
+        proj = angr.load_shellcode(self._SHELLCODE, arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(
+            addr=0x401000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        state.regs.ecx = ecx_value
+        # Clean return target so the ret deadends predictably.
+        state.regs.rsp = 0x7FFF_0000
+        state.memory.store(0x7FFF_0000, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=10)
+
+        all_states = list(mgr.found) + list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
+        assert all_states, "expected at least one state after run"
+        return all_states[0]
+
+    @staticmethod
+    def _clz32(v):
+        v &= 0xFFFFFFFF
+        return 32 if v == 0 else 32 - v.bit_length()
+
+    @staticmethod
+    def _ctz32(v):
+        v &= 0xFFFFFFFF
+        return 32 if v == 0 else (v & -v).bit_length() - 1
+
+    def test_lzcnt_tzcnt_concrete(self):
+        """Concrete operand: lzcnt (edx) / tzcnt (ebx) match the bit oracle."""
+        import claripy
+
+        value = 0x00F0_0F00  # clz=8, ctz=8
+        s = self._run(claripy.BVV(value, 32))
+        assert s.solver.eval(s.regs.edx) == self._clz32(value)
+        assert s.solver.eval(s.regs.ebx) == self._ctz32(value)
+
+    def test_lzcnt_tzcnt_extremes(self):
+        """Top-bit-set -> clz 0 / ctz 31; bit-0-set -> clz 31 / ctz 0."""
+        import claripy
+
+        s_hi = self._run(claripy.BVV(0x8000_0000, 32))
+        assert s_hi.solver.eval(s_hi.regs.edx) == 0
+        assert s_hi.solver.eval(s_hi.regs.ebx) == 31
+
+        s_lo = self._run(claripy.BVV(0x0000_0001, 32))
+        assert s_lo.solver.eval(s_lo.regs.edx) == 31
+        assert s_lo.solver.eval(s_lo.regs.ebx) == 0
+
+    # --- Symbolic soundness (executable spec for the open bug angr-4ju9e) ---
+    #
+    # These encode the CORRECT Python-engine behaviour: a symbolic operand must
+    # leave lzcnt/tzcnt symbolic so constraining the result back-solves a
+    # consistent operand. Today the Rust engine concretizes the symbolic
+    # Iop_Clz64/Iop_Ctz64 result to 0 *inside the interpreter* (verified:
+    # rdx/rbx export as concrete <BV...0x0>, mgr.stats['rust_export_sound_clz']
+    # stays 0 — acoq's build_sound_bitcount export, commit e3f46fa9a, never
+    # runs for this lifting). So eval(ecx) ignores the constraint and these
+    # fail. xfail (non-strict) until angr-4ju9e lands; drop the marker then.
+    _XFAIL_4JU9E = pytest.mark.xfail(
+        reason="angr-4ju9e: Rust concretizes symbolic lzcnt/tzcnt result to 0",
+        strict=False,
+    )
+
+    @_XFAIL_4JU9E
+    @pytest.mark.parametrize("clz_target", [0, 4, 8, 16, 23, 31])
+    def test_lzcnt_symbolic_export_is_sound(self, clz_target):
+        """Symbolic operand: constraining the lzcnt result back-solves a value
+        whose true clz matches. A fresh unconstrained BVS export (pre-acoq) or
+        an interpreter-level concretization (angr-4ju9e) would let eval(ecx)
+        return a Rust-infeasible value with the wrong clz.
+        """
+        import claripy
+
+        x = claripy.BVS("ecx", 32)
+        s = self._run(x)
+        s.add_constraints(s.regs.edx == clz_target)
+        assert s.satisfiable(), f"clz=={clz_target} must be satisfiable"
+        value = s.solver.eval(x) & 0xFFFFFFFF
+        assert self._clz32(value) == clz_target
+
+    @_XFAIL_4JU9E
+    @pytest.mark.parametrize("ctz_target", [0, 4, 8, 16, 31])
+    def test_tzcnt_symbolic_export_is_sound(self, ctz_target):
+        """Symbolic operand: constraining the tzcnt result back-solves a value
+        whose true ctz matches (sound Ctz export, commit e3f46fa9a; gated on
+        the interpreter-concretization fix angr-4ju9e).
+        """
+        import claripy
+
+        x = claripy.BVS("ecx", 32)
+        s = self._run(x)
+        s.add_constraints(s.regs.ebx == ctz_target)
+        assert s.satisfiable(), f"ctz=={ctz_target} must be satisfiable"
+        value = s.solver.eval(x) & 0xFFFFFFFF
+        assert self._ctz32(value) == ctz_target
