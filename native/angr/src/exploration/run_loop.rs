@@ -486,25 +486,12 @@ impl RustExplorationManager {
                                 } else {
                                     None
                                 };
-                                let forked =
-                                    if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                                        let mut f = fork_base.fork_from_snapshot(snapshot);
-                                        if fork.path_taken {
-                                            f.solver().borrow().assume_false(cond);
-                                        } else {
-                                            f.solver().borrow().assume_true(cond);
-                                        }
-                                        f.set_pc(fork.unexplored_target);
-                                        f
-                                    } else if fork.path_taken {
-                                        let mut f = fork_base.fork_false(cond);
-                                        f.set_pc(fork.unexplored_target);
-                                        f
-                                    } else {
-                                        let mut f = fork_base.fork_true(cond);
-                                        f.set_pc(fork.unexplored_target);
-                                        f
-                                    };
+                                let forked = super::helpers::build_unexplored_fork(
+                                    &fork_base,
+                                    &fork,
+                                    cond,
+                                    &mut snapshots,
+                                );
                                 if let Some(start) = fork_op_start {
                                     self.profiling.accumulated_stats.solver_fork_time_ns +=
                                         start.elapsed().as_nanos() as u64;

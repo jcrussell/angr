@@ -141,24 +141,7 @@ impl RustExplorationManager {
                 let fb = fork_base
                     .as_ref()
                     .expect("fork_base set before deferred fork processing");
-                let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                    let mut f = fb.fork_from_snapshot(snapshot);
-                    if fork.path_taken {
-                        f.solver().borrow().assume_false(cond);
-                    } else {
-                        f.solver().borrow().assume_true(cond);
-                    }
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else if fork.path_taken {
-                    let mut f = fb.fork_false(cond);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else {
-                    let mut f = fb.fork_true(cond);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                };
+                let forked = super::helpers::build_unexplored_fork(fb, &fork, cond, &mut snapshots);
 
                 // Track root state ID for this forked state
                 self.sm.set_root(forked.state_id(), root_state_id);
@@ -272,24 +255,12 @@ impl RustExplorationManager {
                     } else {
                         pending.state.solver().borrow().assume_false(cond);
                     }
-                    let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                        let mut f = fork_base.fork_from_snapshot(snapshot);
-                        if fork.path_taken {
-                            f.solver().borrow().assume_false(cond);
-                        } else {
-                            f.solver().borrow().assume_true(cond);
-                        }
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    } else if fork.path_taken {
-                        let mut f = fork_base.fork_false(cond);
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    } else {
-                        let mut f = fork_base.fork_true(cond);
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    };
+                    let forked = super::helpers::build_unexplored_fork(
+                        &fork_base,
+                        &fork,
+                        cond,
+                        &mut snapshots,
+                    );
                     self.sm.set_root(forked.state_id(), root_state_id);
                     if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         self.route_successor(forked, false);
@@ -419,24 +390,12 @@ impl RustExplorationManager {
 
                 if let Some(cond) = effective_condition {
                     // Use solver snapshot if available (from before branch constraint)
-                    let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                        let mut f = true_state.fork_from_snapshot(snapshot);
-                        if fork.path_taken {
-                            f.solver().borrow().assume_false(cond);
-                        } else {
-                            f.solver().borrow().assume_true(cond);
-                        }
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    } else if fork.path_taken {
-                        let mut f = true_state.fork_false(cond);
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    } else {
-                        let mut f = true_state.fork_true(cond);
-                        f.set_pc(fork.unexplored_target);
-                        f
-                    };
+                    let forked = super::helpers::build_unexplored_fork(
+                        &true_state,
+                        &fork,
+                        cond,
+                        &mut snapshots,
+                    );
 
                     self.sm.set_root(forked.state_id(), root_state_id);
 

@@ -810,6 +810,45 @@ pub(crate) fn prepare_shared_callback_solver(
     (pre_callback_snapshot, shared_ctx)
 }
 
+/// Build the unexplored-path fork for one deferred branch.
+///
+/// Every deferred-fork materialization site (the two `stepping.rs` helpers
+/// plus the open-coded copies in `run_loop.rs` and `resume.rs`) constructs the
+/// opposite-path state with the same byte-identical 3-way branch: prefer a
+/// pre-branch solver `snapshot` (and re-assume the *opposite* constraint onto
+/// it) when one was captured, otherwise `fork_false` / `fork_true` off `base`
+/// depending on which side the main path took. The forked state's PC is then
+/// set to `fork.unexplored_target`.
+///
+/// Callers retain their own bespoke surrounding logic — base mutation
+/// (assume taken-path constraint), `set_root` lineage, profiling counters, and
+/// SAT/UNSAT routing — and differ only in which state they fork from and which
+/// condition / snapshot map they pass in.
+pub(crate) fn build_unexplored_fork(
+    base: &RustSimState,
+    fork: &DeferredFork,
+    condition: &RustBV,
+    snapshots: &mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
+) -> RustSimState {
+    let mut forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
+        // Snapshot predates the branch constraint, so re-assume the opposite
+        // side to keep the unexplored path's constraints consistent.
+        let f = base.fork_from_snapshot(snapshot);
+        if fork.path_taken {
+            f.solver().borrow().assume_false(condition);
+        } else {
+            f.solver().borrow().assume_true(condition);
+        }
+        f
+    } else if fork.path_taken {
+        base.fork_false(condition)
+    } else {
+        base.fork_true(condition)
+    };
+    forked.set_pc(fork.unexplored_target);
+    forked
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod tests;

@@ -628,24 +628,12 @@ impl RustExplorationManager {
                 } else {
                     None
                 };
-                let mut forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
-                    let mut f = base.fork_from_snapshot(snapshot);
-                    if fork.path_taken {
-                        f.solver().borrow().assume_false(condition);
-                    } else {
-                        f.solver().borrow().assume_true(condition);
-                    }
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else if fork.path_taken {
-                    let mut f = base.fork_false(condition);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else {
-                    let mut f = base.fork_true(condition);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                };
+                let mut forked = super::helpers::build_unexplored_fork(
+                    base,
+                    &fork,
+                    condition,
+                    &mut fork_snapshots,
+                );
                 if force_eager {
                     forked.set_force_eager_forks(true);
                 }
@@ -1330,24 +1318,12 @@ impl RustExplorationManager {
                 }
 
                 // Create forked state for the unexplored path
-                let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
-                    let mut f = successors[0].fork_from_snapshot(snapshot);
-                    if fork.path_taken {
-                        f.solver().borrow().assume_false(condition);
-                    } else {
-                        f.solver().borrow().assume_true(condition);
-                    }
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else if fork.path_taken {
-                    let mut f = successors[0].fork_false(condition);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                } else {
-                    let mut f = successors[0].fork_true(condition);
-                    f.set_pc(fork.unexplored_target);
-                    f
-                };
+                let forked = super::helpers::build_unexplored_fork(
+                    &successors[0],
+                    fork,
+                    condition,
+                    &mut fork_snapshots,
+                );
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 
