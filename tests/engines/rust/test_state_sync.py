@@ -953,3 +953,62 @@ class TestStateManagement:
         assert mgr.stats()["drop_terminal_states"] is True
         mgr.set_drop_terminal_states(False)
         assert mgr.stats()["drop_terminal_states"] is False
+
+
+class TestWideConcreteMemoryRoundTrip:
+    """Python-boundary regression for the >16-byte concrete load corruption
+    fixed in commit df4bb4cd3 (bd angr-tk7yv).
+
+    ``load_concrete`` / ``concat_into`` packed concrete bytes into a u128
+    (16 bytes); for size>16 the shift wrapped mod 128 and OR-ed the high
+    chunk over the low chunk, so a 24-byte read of xmllint rodata
+    ``-maxmem\\0--debug\\0--shell\\0`` came back as
+    ``-msxmmm\\0--debug\\0-msxmmm\\0`` (chunk0 | chunk2). The Rust-side fix
+    has a unit test (``test_wide_concrete_load_exact``); this pins the
+    user-facing FFI path (``mgr.eval_memory`` -> ``get_state_memory`` ->
+    ``_get_state_memory``) that the bug actually corrupted.
+    """
+
+    def _mgr_and_oracle(self, fauxware_project):
+        """A manager over fauxware plus the loader's concrete image bytes.
+
+        eval_memory reads Rust's own state memory; the loaded binary image
+        is the reliably concrete-backed region in Rust (a Python-side
+        state.memory.store does not eagerly mirror into Rust). The loaded
+        code/rodata at the entry point is the same kind of concrete image
+        memory the original xmllint corruption was read from.
+        """
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        return mgr, sid, proj
+
+    @pytest.mark.parametrize("size", [8, 16, 17, 24, 31, 32, 48])
+    def test_eval_memory_matches_loader_image(self, fauxware_project, size):
+        """eval_memory round-trips the loaded image byte-for-byte at sizes
+        spanning the 16-byte u128 boundary. Pre-fix, size>16 wrapped the
+        u128 shift mod 128 and OR-ed the high chunk over the low chunk,
+        corrupting the leading bytes."""
+        mgr, sid, proj = self._mgr_and_oracle(fauxware_project)
+        addr = proj.entry
+        expected = proj.loader.memory.load(addr, size)
+        assert len(expected) == size
+        got = mgr.eval_memory(sid, addr, size)
+        assert got == expected, f"{size}-byte concrete read mismatch: {got!r} != {expected!r}"
+
+    def test_eval_memory_wide_read_not_chunk_or_folded(self, fauxware_project):
+        """A 24-byte read whose chunk0 and chunk1 differ must not collapse
+        to (chunk0 | chunk1...). Asserts the high bytes survive distinctly
+        rather than being OR-folded over the low 16 — the exact failure
+        mode of the pre-fix u128 packing."""
+        mgr, sid, proj = self._mgr_and_oracle(fauxware_project)
+        addr = proj.entry
+        expected = proj.loader.memory.load(addr, 24)
+        got = mgr.eval_memory(sid, addr, 24)
+        assert got == expected, f"wide read corrupted: {got!r} != {expected!r}"
+        # Guard the regression directly: bytes 16..24 are not (low | high).
+        folded = bytes(expected[i] | expected[i + 16] for i in range(8))
+        assert got[:8] == expected[:8], (
+            f"leading bytes OR-folded with high chunk: got {got[:8]!r}, OR-fold would be {folded!r}"
+        )
