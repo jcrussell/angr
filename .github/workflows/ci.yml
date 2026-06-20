@@ -175,18 +175,20 @@ jobs:
         #   `benchmark-regression-noise-floor`). Retrying clears spurious flags
         #   without touching baselines (the riskier alternative — see memory
         #   `avoid-update-baseline-without-verification`).
-        # --memory-warn-only: the peak_memory_mb regression check is on by
-        #   default, but on the fast-feedback PR path it only warns during the
-        #   initial soak so allocator/page-cache RSS variance can't redden a PR.
-        #   The nightly gate runs it as a hard fail. Promote to a hard PR gate
-        #   after a clean soak (see bd angr-wcxi follow-up).
+        # peak_memory_mb: the RSS regression check is on by default and now
+        #   hard-fails the PR gate too (angr-iwmp). It soaked warn-only on this
+        #   fast path while the nightly gate hard-failed; the soak stayed clean,
+        #   so --memory-warn-only was dropped. The 0.5 (50%) --memory-threshold
+        #   default keeps allocator/page-cache RSS variance from false-flagging;
+        #   if a future RSS-heavy change proves noisy, raise that threshold
+        #   rather than re-adding warn-only (see bd angr-iwmp / angr-wcxi).
         # --check-counts: enforce the TRACKED_METRICS algorithmic-count gate
         #   (callback_count/state_creations/steps). --skip-bimodal scopes this
         #   to the fast tier, whose count baselines were soak-validated as
         #   deterministic (0% variance / 5 runs, angr-bq9v). Hard fail — there
         #   is no warn-only mode, but the counts are deterministic so warmup
         #   variance can't false-positive the way RSS can.
-        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --memory-warn-only --check-counts
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --check-counts
         timeout-minutes: 5
 
   property_fuzzer_quick:
