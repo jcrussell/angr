@@ -90,6 +90,22 @@ impl From<BridgeError> for PyErr {
     }
 }
 
+/// Build the canonical "invalid handle id" error for a symbol-table lookup
+/// miss (`symbol_table().get(id)` / `op_*` returning `None`). Standardized on
+/// `PyValueError` (a bad argument value, mirroring `From<BridgeError>`'s
+/// `InvalidArgs` mapping) so Python callers can reliably `except ValueError`
+/// across all sites, and always names the offending id(s) — previously the 34
+/// `op_*` sites raised a bare `PyRuntimeError` with no id (angr-ghwsd.1).
+///
+/// Pass every handle id the operation dereferenced; the message reports them
+/// all since the table cannot say which one missed.
+pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
+    match ids {
+        [id] => PyValueError::new_err(format!("invalid handle id: {id}")),
+        _ => PyValueError::new_err(format!("invalid handle id (one of {ids:?})")),
+    }
+}
+
 /// Storage for SymContext: either owned or shared via Rc.
 /// Shared mode allows Python callbacks to use the pending state's solver
 /// directly (O(1)) instead of forking it (~3ms Z3 clone per callback).
@@ -762,10 +778,11 @@ impl RustSolverContext {
 
     /// Add a constraint from a handle (must be 1-bit).
     pub fn add_constraint_handle(&self, handle_id: u64) -> PyResult<()> {
-        let bv =
-            self.inner.symbol_table.get(handle_id).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("invalid handle id: {}", handle_id))
-            })?;
+        let bv = self
+            .inner
+            .symbol_table
+            .get(handle_id)
+            .ok_or_else(|| invalid_handle_id(&[handle_id]))?;
 
         #[cfg(feature = "vex-engine-z3")]
         {
@@ -825,7 +842,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_add(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Subtract two handles and return a new handle.
@@ -834,7 +851,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sub(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Multiply two handles and return a new handle.
@@ -843,7 +860,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_mul(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned division of two handles.
@@ -852,7 +869,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_udiv(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed division of two handles.
@@ -861,7 +878,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sdiv(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned remainder of two handles.
@@ -870,7 +887,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_urem(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed remainder of two handles.
@@ -879,7 +896,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_srem(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Negation of a handle.
@@ -888,7 +905,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_neg(a_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     // =========================================================================
@@ -901,7 +918,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_and(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Bitwise OR of two handles.
@@ -910,7 +927,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_or(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Bitwise XOR of two handles.
@@ -919,7 +936,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_xor(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Bitwise NOT of a handle.
@@ -928,7 +945,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_not(a_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     // =========================================================================
@@ -941,7 +958,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_shl(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Logical right shift.
@@ -950,7 +967,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_lshr(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Arithmetic right shift.
@@ -959,7 +976,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ashr(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Rotate left.
@@ -968,7 +985,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_rotl(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Rotate right.
@@ -977,7 +994,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_rotr(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     // =========================================================================
@@ -990,7 +1007,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_eq(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Inequality comparison (returns 1-bit handle).
@@ -999,7 +1016,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ne(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned less than.
@@ -1008,7 +1025,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ult(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned less than or equal.
@@ -1017,7 +1034,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ule(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned greater than.
@@ -1026,7 +1043,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ugt(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Unsigned greater than or equal.
@@ -1035,7 +1052,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_uge(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed less than.
@@ -1044,7 +1061,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_slt(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed less than or equal.
@@ -1053,7 +1070,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sle(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed greater than.
@@ -1062,7 +1079,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sgt(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// Signed greater than or equal.
@@ -1071,7 +1088,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sge(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     // =========================================================================
@@ -1084,7 +1101,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_zero_extend(a_id, to_width, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     /// Sign-extend to a wider width.
@@ -1093,7 +1110,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_sign_extend(a_id, to_width, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     /// Truncate to a narrower width.
@@ -1102,7 +1119,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_truncate(a_id, to_width, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     /// Extract bits \[high:low\] (inclusive).
@@ -1111,7 +1128,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_extract(a_id, high, low, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
     }
 
     /// Concatenate two values (a becomes high bits).
@@ -1120,7 +1137,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_concat(a_id, b_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
     }
 
     /// If-then-else: if cond then then_val else else_val.
@@ -1129,7 +1146,7 @@ impl RustSolverContext {
         self.inner
             .symbol_table
             .op_ite(cond_id, then_id, else_id, &ctx)
-            .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
+            .ok_or_else(|| invalid_handle_id(&[cond_id, then_id, else_id]))
     }
 
     // =========================================================================
