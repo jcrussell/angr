@@ -341,16 +341,27 @@ class TestAdversarial:
         assert counts.get("nonexistent_stash_42", 0) == 1
 
     def test_set_find_empty_list(self):
-        """Setting empty find/avoid lists should not crash."""
+        """Setting empty find/avoid lists clears any previously-set addrs."""
         mgr = _RustExplorationManager("amd64")
+        # Pre-seed non-empty lists so [] has something to clear; a regression
+        # that early-returns on empty (skips clearing) would leave these stale.
+        mgr.set_find_addrs([0x1000, 0x2000])
+        mgr.set_avoid_addrs([0x3000])
+        assert mgr.stats()["find_addrs"] == 2
+        assert mgr.stats()["avoid_addrs"] == 1
         mgr.set_find_addrs([])
         mgr.set_avoid_addrs([])
+        assert mgr.stats()["find_addrs"] == 0
+        assert mgr.stats()["avoid_addrs"] == 0
 
     def test_set_find_duplicate_addresses(self):
-        """Duplicate find/avoid addresses should be handled."""
+        """Duplicate find/avoid addresses should be deduplicated."""
         mgr = _RustExplorationManager("amd64")
         mgr.set_find_addrs([0x1000, 0x1000, 0x1000])
         mgr.set_avoid_addrs([0x2000, 0x2000])
+        # find/avoid sets are HashSet<u64>; duplicates collapse to one each.
+        assert mgr.stats()["find_addrs"] == 1
+        assert mgr.stats()["avoid_addrs"] == 1
 
     def test_run_with_no_callbacks(self):
         """Running without callbacks set should raise RuntimeError."""
@@ -577,16 +588,22 @@ class TestAdversarial:
         assert len(mgr.active) == 0
 
     def test_python_wrapper_explore_no_find(self, fauxware_project):
-        """Explore with no find addresses should terminate on active_empty."""
+        """Explore with no find addresses should still drive the run loop."""
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(max_steps=10)
-        # Should not crash, should have run some steps
+        # A no-op _explore_with_addresses (or a swallowed run loop) would leave
+        # steps==0; a real exploration steps the entry state at least once.
+        assert mgr.stats["steps"] > 0
 
     def test_python_wrapper_double_explore(self, fauxware_project):
-        """Calling explore() twice should not crash."""
+        """Calling explore() twice resumes and makes further progress."""
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(find=0x4006ED, max_steps=5)
-        # Run again — should continue from where it left off
+        assert mgr.stats["steps"] > 0
+        # Run again — should continue from where it left off without losing the
+        # found state. A no-op/non-resuming second call (early-return) would
+        # leave found empty or drop the previously-found target.
         mgr.explore(find=0x4006ED, max_steps=5)
+        assert any(s.addr == 0x4006ED for s in mgr.found)
