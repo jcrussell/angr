@@ -1,0 +1,324 @@
+//! Python export snapshot (`ExplorationStateSnapshot`).
+
+use super::*;
+
+// =============================================================================
+// State Snapshot for Exploration Export
+// =============================================================================
+
+/// Internal memory page data (addr, data, permissions, symbolic_offsets).
+type PageData = (u64, Vec<u8>, u8, Vec<u16>);
+
+/// Complete state snapshot for exploration export.
+///
+/// This contains all information needed to reconstruct an angr SimState
+/// from a Rust execution state.
+#[pyclass(name = "ExplorationStateSnapshot")]
+pub struct ExplorationStateSnapshot {
+    /// Unique state identifier.
+    #[pyo3(get)]
+    pub state_id: u64,
+    /// Parent state ID (for fork tracking).
+    #[pyo3(get)]
+    pub parent_id: Option<u64>,
+    /// Program counter.
+    #[pyo3(get)]
+    pub pc: u64,
+    /// Architecture name.
+    #[pyo3(get)]
+    pub arch_name: String,
+    /// Raw register bytes.
+    registers_raw: Vec<u8>,
+    /// Memory pages: (addr, data, permissions, symbolic_offsets).
+    memory_pages: Vec<PageData>,
+    /// Number of constraints in the solver.
+    #[pyo3(get)]
+    pub constraint_count: usize,
+    /// Basic block history.
+    history: Vec<u64>,
+    /// Named register values: (name, concrete_value, size_bits).
+    /// Pre-computed at export time so Python doesn't need offset tables.
+    named_registers: Vec<(String, u128, u32)>,
+    /// Names of registers that hold a SYMBOLIC value (and so were skipped
+    /// from `named_registers`). Collected for ~free in the same export loop.
+    /// Python uses this to attach a lazy register proxy on the plain-export
+    /// path so a Rust-computed symbolic register (e.g. a clz/ctz result) is
+    /// recovered on demand instead of being silently dropped (angr-4ju9e).
+    symbolic_register_names: Vec<String>,
+    /// Call stack entries: (call_site_addr, callee_addr, return_addr, stack_ptr).
+    call_stack: Vec<(u64, u64, u64, u64)>,
+    /// Detailed execution history: (addr, jumpkind, jump_target).
+    detailed_history: Vec<(u64, u8, u64)>,
+    /// Heap allocations: (addr, size) for active allocations.
+    heap_allocated: Vec<(u64, u64)>,
+    /// Heap freed addresses.
+    heap_freed: Vec<u64>,
+    /// Open file descriptors: (fd, name, position, flags, content_len, is_open).
+    open_fds: Vec<(u32, String, u64, u32, usize, bool)>,
+    /// Inspection event counts per type.
+    inspection_counts: Vec<(String, u64)>,
+    /// Inspection enabled bitmask.
+    #[pyo3(get)]
+    pub inspection_enabled: u8,
+}
+
+#[pymethods]
+impl ExplorationStateSnapshot {
+    /// Get raw register bytes.
+    pub fn get_registers_raw(&self) -> Vec<u8> {
+        self.registers_raw.clone()
+    }
+
+    /// Get named register values as a dict: {name: (value, size_bits)}.
+    ///
+    /// Pre-computed at export time using Rust's register tables,
+    /// so Python doesn't need architecture-specific offset mapping.
+    pub fn get_registers_named(&self) -> std::collections::HashMap<String, (u128, u32)> {
+        self.named_registers
+            .iter()
+            .map(|(name, value, bits)| (name.clone(), (*value, *bits)))
+            .collect()
+    }
+
+    /// Get the names of registers that hold a symbolic value (skipped from
+    /// `get_registers_named`). Python attaches a lazy register proxy when this
+    /// is non-empty so symbolic registers are recovered on demand (angr-4ju9e).
+    pub fn get_symbolic_register_names(&self) -> Vec<String> {
+        self.symbolic_register_names.clone()
+    }
+
+    /// Get history (basic block addresses visited).
+    pub fn get_history(&self) -> Vec<u64> {
+        self.history.clone()
+    }
+
+    /// Get call stack as list of (call_site_addr, callee_addr, return_addr, stack_ptr) tuples.
+    pub fn get_call_stack(&self) -> Vec<(u64, u64, u64, u64)> {
+        self.call_stack.clone()
+    }
+
+    /// Get call stack depth.
+    pub fn get_call_stack_depth(&self) -> usize {
+        self.call_stack.len()
+    }
+
+    /// Get detailed history as list of (addr, jumpkind, jump_target) tuples.
+    ///
+    /// jumpkind: 0=Boring, 1=Call, 2=Ret, 3=Syscall, 4=Other
+    pub fn get_detailed_history(&self) -> Vec<(u64, u8, u64)> {
+        self.detailed_history.clone()
+    }
+
+    /// Get detailed history with string jumpkinds.
+    ///
+    /// Returns list of (addr, jumpkind_str, jump_target) tuples.
+    pub fn get_detailed_history_str(&self) -> Vec<(u64, String, u64)> {
+        self.detailed_history
+            .iter()
+            .map(|(addr, jk, target)| (*addr, HistoryEntry::jumpkind_str(*jk).to_string(), *target))
+            .collect()
+    }
+
+    /// Get the number of memory pages.
+    pub fn page_count(&self) -> usize {
+        self.memory_pages.len()
+    }
+
+    /// Get a memory page by index.
+    /// Returns (addr, data, permissions, symbolic_offsets) or None.
+    pub fn get_page(&self, index: usize) -> Option<(u64, Vec<u8>, u8, Vec<u16>)> {
+        self.memory_pages
+            .get(index)
+            .map(|p| (p.0, p.1.clone(), p.2, p.3.clone()))
+    }
+
+    /// Get all memory page addresses.
+    pub fn page_addresses(&self) -> Vec<u64> {
+        self.memory_pages.iter().map(|p| p.0).collect()
+    }
+
+    /// Load bytes from memory at a given address.
+    /// Returns None if the address is not mapped.
+    pub fn memory_load(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        let page_addr = addr & !0xFFF;
+        let offset = (addr & 0xFFF) as usize;
+
+        // Find the page
+        for page in &self.memory_pages {
+            if page.0 == page_addr && offset + size <= page.1.len() {
+                return Some(page.1[offset..offset + size].to_vec());
+            }
+        }
+        None
+    }
+
+    /// Get heap allocations as list of (addr, size) tuples.
+    pub fn get_heap_allocated(&self) -> Vec<(u64, u64)> {
+        self.heap_allocated.clone()
+    }
+
+    /// Get heap freed addresses.
+    pub fn get_heap_freed(&self) -> Vec<u64> {
+        self.heap_freed.clone()
+    }
+
+    /// Get number of active heap allocations.
+    pub fn get_heap_alloc_count(&self) -> usize {
+        self.heap_allocated.len()
+    }
+
+    /// Get number of heap free calls.
+    pub fn get_heap_free_count(&self) -> usize {
+        self.heap_freed.len()
+    }
+
+    /// Get open file descriptors as list of (fd, name, position, flags, content_len, is_open).
+    pub fn get_open_fds(&self) -> Vec<(u32, String, u64, u32, usize, bool)> {
+        self.open_fds.clone()
+    }
+
+    /// Get the number of tracked file descriptors.
+    pub fn get_fd_count(&self) -> usize {
+        self.open_fds.len()
+    }
+
+    /// Get inspection event counts as list of (event_name, count) tuples.
+    pub fn get_inspection_counts(&self) -> Vec<(String, u64)> {
+        self.inspection_counts.clone()
+    }
+
+    /// Get symbolic byte offsets for a page.
+    /// Returns empty vec if page not found.
+    pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
+        for page in &self.memory_pages {
+            if page.0 == page_addr {
+                return page.3.clone();
+            }
+        }
+        Vec::new()
+    }
+}
+
+impl RustSimState {
+    /// Export the complete state as a snapshot.
+    ///
+    /// This creates a self-contained snapshot that can be used to
+    /// reconstruct an angr SimState.
+    pub fn export_full(&self) -> ExplorationStateSnapshot {
+        // Export registers
+        let registers_raw = self.get_registers_raw();
+
+        // Export named registers: read each GP register by name
+        let mut named_registers = Vec::new();
+        let mut symbolic_register_names = Vec::new();
+        let ctx = self.solver.borrow();
+        for &name in self.arch.register_names() {
+            if self.arch.register_size(name).is_some() {
+                let bv = self.registers.get_reg(name, &ctx);
+                if let Some(bv) = bv {
+                    if let Some(val) = bv.as_u128() {
+                        named_registers.push((
+                            name.to_string(),
+                            val,
+                            self.arch.register_size(name).unwrap() * 8,
+                        ));
+                    } else {
+                        // Symbolic register: record the name so Python can
+                        // recover the AST on demand (angr-4ju9e). Recovering
+                        // the full AST here for every export would blow up the
+                        // hot path, so we only export the cheap name list.
+                        symbolic_register_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+
+        // Flush pending writes before exporting memory pages.
+        // We need a mutable borrow, but export_full takes &self. Use an
+        // unsafe interior mutability pattern is not ideal, so we just report
+        // unflushed writes via pending_writes_count on the snapshot.
+        // Callers should call flush_pending_writes() before export_full()
+        // if they need materialized memory.
+
+        // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
+        let mut memory_pages: Vec<PageData> = Vec::new();
+        for (page_num, page) in self.memory.pages().iter() {
+            let page_addr = page_num << 12;
+            let data = page.load_concrete(0, crate::memory::PAGE_SIZE as u16);
+            let permissions = page.permissions().to_bits();
+            let symbolic_offsets = page.symbolic_offsets();
+
+            memory_pages.push((page_addr, data, permissions, symbolic_offsets));
+        }
+
+        // Get constraint count
+        let constraint_count = self.solver.borrow().num_constraints();
+
+        // Export call stack
+        let call_stack: Vec<(u64, u64, u64, u64)> = self
+            .call_stack
+            .iter()
+            .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
+            .collect();
+
+        // Export detailed history
+        let detailed_history: Vec<(u64, u8, u64)> = self
+            .detailed_history
+            .iter()
+            .map(|e| (e.addr, e.jumpkind, e.jump_target))
+            .collect();
+
+        ExplorationStateSnapshot {
+            state_id: self.state_id,
+            parent_id: self.parent_id,
+            pc: self.pc,
+            arch_name: self.arch.name().to_string(),
+            registers_raw,
+            memory_pages,
+            constraint_count,
+            history: self.history.clone(),
+            named_registers,
+            symbolic_register_names,
+            call_stack,
+            detailed_history,
+            heap_allocated: self
+                .heap_metadata
+                .allocated
+                .iter()
+                .map(|(&addr, &size)| (addr, size))
+                .collect(),
+            heap_freed: self.heap_metadata.freed.clone(),
+            open_fds: self
+                .fs
+                .all_fds()
+                .iter()
+                .filter_map(|&fd| {
+                    let info = self.fs.fd_info(fd)?;
+                    Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
+                })
+                .collect(),
+            inspection_counts: self
+                .inspection
+                .event_counts()
+                .iter()
+                .enumerate()
+                .filter(|&(_, &count)| count > 0)
+                .filter_map(|(i, &count)| {
+                    InspectEvent::from_u8(i as u8).map(|e| (e.name().to_string(), count))
+                })
+                .collect(),
+            inspection_enabled: self.inspection.enabled_mask(),
+        }
+    }
+
+    /// Flush pending writes and then export.
+    /// This materializes any deferred symbolic stores before creating the snapshot.
+    pub fn flush_and_export_full(&mut self) -> ExplorationStateSnapshot {
+        // Flush pending writes using the current solver context
+        {
+            let ctx = self.solver.borrow();
+            let _ = self.memory.flush_pending_writes(&ctx, &self.concretizer);
+        }
+        self.export_full()
+    }
+}

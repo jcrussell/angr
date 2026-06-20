@@ -84,7 +84,6 @@ use crate::symbolic::RustBV;
 /// per-load `RustBV` values.
 pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
 
-
 mod config;
 mod dispatch;
 mod events;
