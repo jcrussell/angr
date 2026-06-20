@@ -193,8 +193,25 @@ def _python_probe(proj, state, t0):
     """Same workload under the vanilla Python engine (no Rust manager)."""
     simgr = proj.factory.simulation_manager(state)
     print(f"start stash={ {k: len(v) for k, v in simgr.stashes.items() if v} }")
+    # PROBE_DUMP_REGS=1: dump rsp + 8 stack words at the same PCs the rust
+    # path dumps, to compare the continuation-frame stack layout (angr-aca6y).
+    dump_regs = os.environ.get("PROBE_DUMP_REGS", "0") == "1"
+    dump_pcs = {0x561AA6, 0x561EFA, 0x5EE070, 0x64DB12, 0x64DB78, 0x64DB95}
+
+    def py_reg_dump(s, tag):
+        rsp = s.solver.eval(s.regs.rsp)
+        words = [s.solver.eval(s.memory.load(rsp + 8 * k, 8, endness="Iend_LE")) for k in range(8)]
+        print(
+            f"[py-stack {tag}] rsp={hex(rsp)} rbp={hex(s.solver.eval(s.regs.rbp))} r12={hex(s.solver.eval(s.regs.r12))} "
+            + " ".join(f"+{8 * k:#x}={hex(w)}" for k, w in enumerate(words))
+        )
+
     for i in range(MAX_STEPS):
         before = [hex(s.addr) for s in simgr.active]
+        if dump_regs:
+            for s in simgr.active:
+                if s.addr in dump_pcs:
+                    py_reg_dump(s, f"pre-step{i}@{hex(s.addr)}")
         simgr.step(num_inst=None)
         active = len(simgr.active)
         if TRACE_ALL or i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:

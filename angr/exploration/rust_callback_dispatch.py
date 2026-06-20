@@ -912,17 +912,16 @@ class RustCallbackDispatchMixin:
         first_succ = all_succs[0]
 
         # When a SimProcedure uses self.call() (Ijk_Call), angr's
-        # ``cc.setup_callsite`` (sim_procedure.py:call -> calling_conventions.py
-        # :setup_callsite, return_addr.set_value) has ALREADY pushed the
-        # continuation address onto the stack and decremented sp, and that
-        # write is captured by the callback memory tracker, so Rust receives
-        # it. Re-pushing it here (the former ``_push_continuation_address``)
-        # was a double-push: it left the callee's stack 8 bytes low, so the
-        # callee's ``ret`` popped a garbage word and deadended (angr-aca6y,
-        # observed on xmllint's hooked pthread_once continuation). Do NOT push
-        # again. ``__libc_start_main`` avoids this entirely via the native
-        # Rust procedure, which is why the double-push only surfaced on the
-        # rarer Python continuations.
+        # ``cc.setup_callsite`` pushes the continuation return address onto the
+        # stack and decrements sp. The sp decrement rides back to Rust via
+        # ``reg_changes``, but the PUSHED BYTES are recovered separately in
+        # ``_resume_with_state`` (the Ijk_Call stack-region capture) because
+        # ``call()`` runs ``setup_callsite`` on a *copy* of the executing
+        # state, bypassing the CallbackMemoryTracker's wrapped ``store``. Do
+        # NOT manually re-push here: the former ``_push_continuation_address``
+        # (removed iter35) also re-decremented sp, leaving the callee's stack
+        # 8 bytes low so its ``ret`` popped garbage and deadended (angr-aca6y,
+        # xmllint's hooked pthread_once continuation).
 
         # For zero-length hooks where the successor stays at the same
         # address, the hook just modified state — continue at the same
@@ -1088,6 +1087,40 @@ class RustCallbackDispatchMixin:
                     existing_addrs.add(addr)
             if _DBG:
                 l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
+
+        # Capture the stack region pushed by a self.call() continuation
+        # (Ijk_Call). angr's ``SimProcedure.call()`` runs ``cc.setup_callsite``
+        # on a *copy* of the executing state, so the continuation return
+        # address it pushes bypasses the CallbackMemoryTracker's wrapped
+        # ``store`` (which only sees the tracked state). In register-snapshot
+        # mode ``_extract_memory_changes`` is skipped too, so without this the
+        # pushed continuation never reaches Rust: the callee's frame keeps a
+        # stale word and its ``ret`` jumps to garbage (angr-aca6y, xmllint's
+        # hooked pthread_once). The sp decrement itself rides in via
+        # ``reg_changes``; only the pushed bytes are missing here. We read the
+        # grown region [succ_sp, orig_sp) straight from the successor. Note:
+        # this is the correct, non-double-counting replacement for the former
+        # ``_push_continuation_address`` (removed iter35), which re-pushed AND
+        # re-decremented sp.
+        if getattr(succ_state.history, "jumpkind", None) == "Ijk_Call":
+            try:
+                orig_sp = self._snapshot_sp(orig_state)
+                sp_ast = succ_state.regs.sp
+                if orig_sp is not None and not sp_ast.symbolic:
+                    succ_sp = succ_state.solver.eval(sp_ast)
+                    grew = orig_sp - succ_sp
+                    if 0 < grew <= 256:
+                        region = succ_state.solver.eval(
+                            succ_state.memory.load(succ_sp, grew, endness="Iend_BE")
+                        ).to_bytes(grew, "big")
+                        covered = {a for a, _ in mem_changes}
+                        if not any((succ_sp + off) in covered for off in range(grew)):
+                            mem_changes.append((succ_sp, region))
+            except Exception as _e:
+                # cat-(b) FALLBACK WITH LOSS: capturing the continuation push
+                # failed; the callee may resume with a stale return slot.
+                if _DBG:
+                    l.debug(f"continuation stack capture failed: {_e!r}")
 
         # Collect all symbolic addresses to exclude from concrete memory changes
         # This prevents apply_changes from overwriting symbolic imports with concrete values

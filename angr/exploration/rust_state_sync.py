@@ -1219,6 +1219,29 @@ class RustStateSyncMixin:
                 pass
         return snapshot
 
+    def _snapshot_sp(self, state_or_snapshot) -> int | None:
+        """Return the concrete stack pointer from a SimState or register snapshot.
+
+        Accepts either a SimState or the dict produced by
+        ``_snapshot_registers`` / ``_snapshot_registers_from_bundle``
+        (reg_name -> (is_symbolic, concrete, offset, size)). Returns None if
+        the sp is symbolic or unavailable. Used by the self.call() continuation
+        capture in ``_resume_with_state`` (angr-aca6y).
+        """
+        if isinstance(state_or_snapshot, dict):
+            for _name, (is_sym, concrete, _off, _sz) in state_or_snapshot.items():
+                # offset match is the robust key, but sp/rsp/esp names cover it
+                if _name in ("rsp", "esp", "sp") and not is_sym:
+                    return concrete
+            return None
+        try:
+            sp_ast = state_or_snapshot.regs.sp
+            if sp_ast.symbolic:
+                return None
+            return state_or_snapshot.solver.eval(sp_ast)
+        except Exception:
+            return None
+
     def _snapshot_registers_from_bundle(self, bundle_regs: dict, arch) -> dict:
         """Build a register snapshot from a Rust callback bundle's registers.
 
