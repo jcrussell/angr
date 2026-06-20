@@ -14,11 +14,13 @@ engine wins, where it loses, and where the hypothesis going in did
 not hold. The point is measurement data future contributors can
 extend, not a marketing pitch.
 
-This page is a v1 partial aggregation. The xmllint section (``.2``,
-``angr-6d3l``) is a stub pending the upstream xmllint bench
-(``angr-75mc``, blocked on the optional ``fuzzer`` Cargo feature
-decision). Full closure of ``angr-p65i`` waits on that section
-landing.
+This page aggregates all four characterization slices. The xmllint
+section (``.2``, ``angr-6d3l``) documents the offline cross-engine
+*convergence* finding; the wall-clock integration into
+``baseline_timings.json`` still waits on the upstream xmllint bench
+(``angr-75mc``, gated on the optional ``fuzzer`` Cargo feature
+decision), but that integration is a benchmarking concern, not a
+characterization gap.
 
 At a glance
 -----------
@@ -44,9 +46,12 @@ At a glance
    * - ``.2``
      - xmllint same script across two engine flags; identical output
        expected.
-     - *(pending)*
-     - Blocked on ``angr-75mc`` xmllint bench landing.
-     - ``angr-6d3l``.
+     - **Confirmed (offline probe).**
+     - Both engines converge in kind on a real libc-heavy binary:
+       same option-parse loop → libxml2 init → fork/prune, full
+       budget, zero errored states. Rust ~1.5× heavier RSS/wall
+       (block-chaining granularity, not divergence).
+     - ``angr-6d3l`` — ``tools/xmllint_probe.py``.
    * - ``.3``
      - Rust's lower per-process Python+Z3 footprint → lower
        aggregate RSS at same throughput.
@@ -109,28 +114,87 @@ N=2..9 sweep captured 2026-06-03 on the ralph host.
 
 .. _rust-engine-characterization-xmllint:
 
-.2 xmllint drop-in comparison (angr-6d3l — pending)
----------------------------------------------------
+.2 xmllint drop-in comparison (angr-6d3l)
+-----------------------------------------
 
-**Status:** stub. Blocked on ``angr-75mc`` adding xmllint to
-``baseline_timings.json``. xmllint is the only real-world utility
-binary in angr-examples — heavy libc, real file I/O, deep call
-graphs — the closest thing to a real workload in the corpus.
+**Hypothesis:** running the *same* script against a real-world
+libc-heavy binary under ``use_rust_engine=False`` vs ``True`` yields
+identical control flow and solutions; any wall/RSS or correctness
+delta is the finding.
 
-The upstream ``angr-examples/examples/xmllint/solve.py`` uses the
-optional ``angr.rustylib.fuzzer`` (icicle-fuzzing, libafl) pipeline
-rather than symbolic execution, so a non-fuzzer alternative
-``solve.py`` is required before the comparison can run. See
-``angr-75mc`` for the feature-gate decision (enable the ``fuzzer``
-Cargo feature in the default build vs. write an alternative
-symbolic-exec ``solve.py`` with a defined goal).
+xmllint is the only real-world utility binary in angr-examples —
+heavy libc, real file I/O, deep call graphs — the closest thing to a
+real workload in the corpus. The upstream
+``angr-examples/examples/xmllint/solve.py`` drives the optional
+``angr.rustylib.fuzzer`` (icicle-fuzzing, libafl) pipeline rather
+than symbolic execution, so the cross-engine *symbolic* comparison
+runs through a standalone probe instead:
+``tools/xmllint_probe.py`` with ``PROBE_SIM_PROCS=1`` (libc stubbed
+via SimProcedures — the vanilla ``use_sim_procedures=False`` path
+dies identically in both engines inside uninitialised-TLS glibc
+startup, which CLE skips; see below). 120-step budget, 4 GB nested
+scope, ``PROBE_ENGINE=rust|python``.
 
-When this slice lands, the section should document: wall time +
-peak RSS per engine, identical-output property, and any divergence
-in solver fallback (xmllint is the most promising candidate for a
-nonzero ``syscall_python_fallback_count`` on the existing corpus —
-the round-1 syscall beads ``angr-8j16`` / ``angr-6009`` /
-``angr-aig2`` would gain a measurement surface).
+**Result: confirmed — the engines converge in kind.** Both grind
+the option-parse loop (``0x406883`` ↔ ``0x406896``), enter libxml2
+initialisation (the ``0x561xxx`` region), then fork and prune. Both
+run the full 120-step budget bounded to a single region with **zero
+errored states**. There is no control-flow divergence.
+
+.. list-table:: xmllint cross-engine probe (PROBE_SIM_PROCS=1, 120 steps)
+   :header-rows: 1
+   :widths: 20 20 20 40
+
+   * - Engine
+     - Peak RSS
+     - Wall
+     - Outcome
+   * - Rust
+     - ~360 MB
+     - ~4.5 s
+     - full budget, 0 errored, single-region
+   * - Python
+     - ~245 MB
+     - ~3.6 s
+     - full budget, 0 errored, single-region
+
+**Where Rust loses:** ~1.5× heavier RSS and wall on this workload.
+The gap is *not* a divergence — it is block-chaining vs single-step
+granularity (Rust chains a basic-block run where Python single-steps,
+so Rust holds more intermediate state per observed step). This is the
+expected trade-off of the chaining design on a deep-call-graph binary,
+not a regression.
+
+**Getting here took two fixes** — the convergence above is the
+*post-fix* state:
+
+- The first probe (``PROBE_SIM_PROCS=1``) diverged: Rust exited the
+  main loop after ~1 iteration and dead-ended at step 20 jumping to a
+  stack PC (``0x7ffffffeffd0``), while Python kept grinding. Root
+  cause was a lost ``__libc_start_main`` entry→main stack-arg setup in
+  the Rust ``self.call()`` continuation — bug ``angr-aca6y``, fixed in
+  the iter-46 commit series.
+- A secondary blocker surfaced post-aca6y: Rust drained at step 36
+  with two errored states on a libxml2 ``sscanf("%p", …)`` →
+  ``format_parser.interpret()`` raising *"unsupported format spec p"*
+  (the interpret/scanf path only handled ``s/d/i/u/x/c``). Fixed in
+  commit ``2f8deb4ca`` by routing ``%p`` through the base-16 atoi
+  branch, mirroring the sprintf *output* path that already did
+  ``%p``→hex.
+
+**Note on the vanilla path:** ``use_sim_procedures=False`` is not a
+viable comparison target — both engines fail identically-in-kind in
+glibc startup (unmapped/garbage reads) because CLE skips TLS loading.
+That failure is symmetric, so it is not a finding; the sim-procs path
+above is the real comparison.
+
+**Pending (benchmarking, not characterization):** wall + RSS as a
+tracked ``baseline_timings.json`` entry awaits ``angr-75mc`` (the
+``fuzzer`` Cargo-feature decision). xmllint also remains the most
+promising candidate for a nonzero ``syscall_python_fallback_count`` on
+the corpus — when the bench lands, the round-1 syscall beads
+``angr-8j16`` / ``angr-6009`` / ``angr-aig2`` gain a measurement
+surface.
 
 .. _rust-engine-characterization-fleet:
 
