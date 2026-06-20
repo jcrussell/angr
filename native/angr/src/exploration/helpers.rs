@@ -772,6 +772,17 @@ where
     Ok(())
 }
 
+/// Unpack the low `size` bytes of a `u128` into a little-endian byte vector.
+///
+/// `size` must be `<= 16`; for `i >= 16` the `val >> (i * 8)` shift wraps mod
+/// 128 and would repeat earlier bytes (callers that need wider reads chunk
+/// first — see `_get_state_memory`). This is the read-side counterpart of the
+/// pack loop in `store_concrete_bytes_chunked`, hand-copied across the eval /
+/// memory-get paths in `state_api`/`pending_api` before consolidation.
+pub(crate) fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
+    (0..size).map(|i| (val >> (i * 8)) as u8).collect()
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod tests;

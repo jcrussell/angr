@@ -448,9 +448,7 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
                 if let Some(val) = state.eval(&bv) {
-                    let bytes: Vec<u8> =
-                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
-                    return Ok(Some(bytes));
+                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
                 }
                 Ok(None)
             }
@@ -643,14 +641,10 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
                 if let Some(val) = bv.as_u128() {
-                    let bytes: Vec<u8> =
-                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
-                    return Ok(Some(bytes));
+                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
                 }
                 if let Some(val) = state.eval(&bv) {
-                    let bytes: Vec<u8> =
-                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
-                    return Ok(Some(bytes));
+                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
                 }
                 Ok(None)
             }

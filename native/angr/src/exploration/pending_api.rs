@@ -258,11 +258,10 @@ impl RustExplorationManager {
                 .memory_load(addr, size)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-            let value = bv.to_u128();
-            let bytes: Vec<u8> = (0..size as usize)
-                .map(|i| (value >> (i * 8)) as u8)
-                .collect();
-            Ok(bytes)
+            Ok(super::helpers::u128_to_le_bytes(
+                bv.to_u128(),
+                size as usize,
+            ))
         })
     }
 
