@@ -220,20 +220,32 @@ class TestRustExplorationManagerUnit:
         mgr.set_max_active_states(None)
         assert mgr.get_max_active_states() is None
 
-    def test_max_active_states_enforced(self):
-        """Test that max_active_states limit prevents adding excess states."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_max_active_states(3)
+    def test_max_active_states_enforced(self, fauxware_project):
+        """max_active_states must cap the active stash *throughout* stepping,
+        not just at the final count.
 
-        # Add states up to the limit
-        mgr.create_state("active")
-        mgr.create_state("active")
-        mgr.create_state("active")
-        assert mgr.active_count() == 3
+        create_state pushes directly to the stash and bypasses the
+        enforcement path (push_to_active_or_drop), so the limit can only be
+        exercised by driving real forks. With limit=1, fauxware's symbolic
+        auth branch must prune excess successors, and the active stash must
+        never exceed 1 at any step — gutting the enforcement to a no-op
+        would let the peak climb past the cap and leave pruned at 0.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], max_active_states=1)
 
-        # Adding beyond the limit via create_state goes directly to stash,
-        # so it bypasses push_to_active_or_drop. Verify the getter works.
-        assert mgr.get_max_active_states() == 3
+        peak_active = 0
+        for _ in range(80):
+            counts = mgr.stash_counts()
+            peak_active = max(peak_active, counts.get("active", 0))
+            if counts.get("active", 0) == 0:
+                break
+            mgr.step()
+        counts = mgr.stash_counts()
+        peak_active = max(peak_active, counts.get("active", 0))
+
+        assert peak_active <= 1, f"active stash peaked at {peak_active}, exceeding max_active_states=1"
+        assert counts.get("pruned", 0) > 0, f"enforcement never pruned a fork; counts={counts}"
 
     def test_register_python_procedure_appears_in_listing(self):
         """register_python_procedure adds the procedure to the registry."""
@@ -252,18 +264,15 @@ class TestRustExplorationManagerUnit:
         assert mgr.has_native_procedure("custom_widget_init")
         assert "custom_widget_init" in mgr.list_native_procedures()
 
-    def test_register_python_procedure_invoked_via_simprocedure_hook(self, fauxware_project):
+    def test_register_python_procedure_invoked_via_simprocedure_hook(self):
         """A Python-registered native procedure runs when its hook fires.
 
-        Simulates the dispatcher path: register a SimProcedure at an address
-        with a name matching a Python-registered native procedure. When the
-        dispatcher reaches that address, it should call the native (Python)
-        implementation and capture the return value.
+        Binds a hook address to a Python-registered native procedure, drives
+        the manager, and asserts the dispatcher actually invoked the callable
+        (capturing its args) and wrote the return value to RAX — not merely
+        that the procedure appears in the registry.
         """
-
-        proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
+        mgr = _RustExplorationManager("amd64")
 
         # Track invocations from Rust into our Python procedure.
         invocations = []
@@ -272,17 +281,36 @@ class TestRustExplorationManagerUnit:
             invocations.append(tuple(args))
             return 0xDEADBEEF
 
-        mgr._rust_mgr.register_python_procedure(
+        HOOK = 0x500500
+        EXIT_HOOK = 0x600500
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        state = self._setup_amd64_python_proc_test(
+            mgr,
+            HOOK,
             "echo_proc",
             num_args=2,
             no_return=False,
-            callable=echo_args,
+            callable_=echo_args,
+            arg_values=(0x1111, 0x2222),  # rdi, rsi
+            return_addr=EXIT_HOOK,
         )
 
-        # Verify it landed.
-        assert mgr._rust_mgr.has_native_procedure("echo_proc")
-        names = mgr._rust_mgr.list_native_procedures()
-        assert "echo_proc" in names
+        # Registration landed.
+        assert mgr.has_native_procedure("echo_proc")
+        assert "echo_proc" in mgr.list_native_procedures()
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        # Dispatcher fired: the callable ran with the two SysV arg-register
+        # values and its return value landed in RAX.
+        assert invocations == [(0x1111, 0x2222)], f"echo_proc not invoked with expected args; got {invocations}"
+        stats = mgr.native_procedure_stats()
+        assert stats["native_calls"] >= 1, f"expected native_calls>=1 after dispatch, got {stats}"
+        deadended = mgr.get_state_ids("deadended")
+        assert len(deadended) == 1, f"expected one deadended state after exit hook; stashes={mgr.stash_counts()}"
+        rax = mgr.get_state_register(deadended[0], "rax")
+        assert rax == 0xDEADBEEF, f"expected RAX=0xDEADBEEF from echo_proc return; got {rax:#x}"
 
     def test_x86_native_procedure_returns_to_eax_not_edx(self):
         """Native procedure return value must land in EAX (offset 8), not EDX
@@ -1383,6 +1411,23 @@ class TestRustExplorationPython:
             # non-negativity contract (a `>= 0` arm would be tautological).
             assert isinstance(exec_stats[key], int), f"{key} not int"
 
+        # fauxware's symbolic auth branch is guaranteed to fork, so the
+        # profiling-gated fork instrumentation must actually execute. The
+        # *_fork_time_ns timers live inside the same `if let Some(start) =
+        # ..._fork_start` blocks as the counters, so a positive timer proves
+        # the block ran — catching a regression that breaks the profiling
+        # gate (leaving the whole block dead), which the type-only checks
+        # above would miss. The *_fork_count values are intentionally NOT
+        # asserted nonzero: fauxware's forks route through the conservative
+        # `state.fork()` path that is timed but not tallied (see docstring),
+        # so the counts legitimately stay 0 here.
+        assert exec_stats["deferred_fork_time_ns"] > 0, (
+            f"deferred-fork block must have run on a branching binary; got {exec_stats['deferred_fork_time_ns']}"
+        )
+        assert exec_stats["solver_fork_time_ns"] > 0, (
+            f"solver-fork block must have run on a branching binary; got {exec_stats['solver_fork_time_ns']}"
+        )
+
     def test_analyze_constraint_sharing(self, fauxware_project):
         """angr-zdho: `analyze_constraint_sharing()` reports pointer-vs-structural
         sharing across every state's assumed-constraint RustBV graph.
@@ -1695,11 +1740,15 @@ class TestExplorationEvent:
         # Run should return an event
         event = mgr.run(1)
 
-        # Check event structure
-        assert hasattr(event, "event_type")
-        assert hasattr(event, "found_count")
-        assert hasattr(event, "active_count")
-        assert hasattr(event, "steps_taken")
+        # With no active states, run() deterministically takes the
+        # empty-active termination branch and must return an `active_empty`
+        # event with zeroed counts/steps. Assert the actual values, not just
+        # attribute presence — a run() that returned the wrong event with
+        # garbage values would pass a hasattr-only check.
+        assert event.event_type == "active_empty", f"expected active_empty on no-state run; got {event.event_type}"
+        assert event.found_count == 0, f"found_count must be 0; got {event.found_count}"
+        assert event.active_count == 0, f"active_count must be 0; got {event.active_count}"
+        assert event.steps_taken == 0, f"steps_taken must be 0 (no active states to step); got {event.steps_taken}"
 
 
 class TestRustEdgeCases:
