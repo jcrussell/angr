@@ -1346,6 +1346,7 @@ class TestSimProcForkViaRustGate:
         mgr_on.explore(find=0x4006ED)
         found_on = len(mgr_on.found)
 
+        assert found_off >= 1, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         assert found_on == found_off
 
 
