@@ -56,10 +56,34 @@ class TestMultiArchSupport:
         mgr.set_avoid_addrs([0x400100])
 
     def test_mips32_big_endian(self):
-        """MIPS32 big-endian state creation."""
-        state = RustSimState("mips32", little_endian=False)
-        state.set_register("v0", 0x12345678)
-        assert state.get_register("v0") == 0x12345678
+        """MIPS32 big-endian memory lays out multi-byte values MSB-first.
+
+        Regression for angr-a116s.7: the prior body only did an
+        endian-agnostic register round-trip (RegisterFile::put_reg/get_reg
+        are pure offset+size ops with no byte ordering), so silently
+        dropping the ``little_endian=False`` override was invisible.
+        MIPS32's arch default is little-endian, so the override is the only
+        thing that selects BE — exercise a memory store whose physical byte
+        layout differs under BE vs LE to make the override load-bearing.
+        """
+        be = RustSimState("mips32", little_endian=False)
+        be.map_memory(0x1000, 0x1000, 7)  # RWX
+        # Raw input bytes pack little-endian into the value 0x11223344,
+        # which the SymbolicMemory then lays out per its endness.
+        be.memory_store(0x1000, b"\x44\x33\x22\x11")
+        # Big-endian: most-significant byte (0x11) lands at the lowest addr.
+        assert be.memory_load(0x1000, 1)[0] == 0x11
+        # A full-width round-trip is endness-symmetric, so it still recovers
+        # the original input bytes regardless of endianness.
+        assert list(be.memory_load(0x1000, 4)) == [0x44, 0x33, 0x22, 0x11]
+
+        # Contrast with the little-endian default: LSB (0x44) at lowest addr.
+        # If the override were dropped, `be` above would behave like this and
+        # the MSB assertion would fail.
+        le = RustSimState("mips32")
+        le.map_memory(0x1000, 0x1000, 7)
+        le.memory_store(0x1000, b"\x44\x33\x22\x11")
+        assert le.memory_load(0x1000, 1)[0] == 0x44
 
     def test_mips32_fork_isolation(self):
         """MIPS32 forked states have independent registers."""
