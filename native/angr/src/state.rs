@@ -3212,6 +3212,18 @@ impl PyRustSimState {
         }
     }
 
+    /// Number of registered lazy regions (one entry per `add_lazy_region`
+    /// call). Exposed so tests can confirm a batch registration actually
+    /// landed regions rather than silently no-op'ing.
+    pub fn lazy_region_count(&self) -> usize {
+        self.inner.memory().lazy_region_count()
+    }
+
+    /// Whether a byte address falls inside any registered lazy region.
+    pub fn is_in_lazy_region(&self, addr: u64) -> bool {
+        self.inner.memory().is_addr_in_lazy_region(addr)
+    }
+
     /// Get dirty page addresses.
     pub fn get_dirty_pages(&self) -> Vec<u64> {
         self.inner.get_dirty_pages()

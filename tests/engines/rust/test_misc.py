@@ -126,13 +126,34 @@ class TestRustManagerCleanup:
     def test_cleanup_is_idempotent_and_safe(self):
         """cleanup() can be called multiple times and on a manager that
         never ran exploration; must not raise."""
+        import angr.rustylib.vex_engine as vex_engine
+
         import angr
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
         mgr = RustExplorationManager(proj, [state])
-        mgr.cleanup()
-        mgr.cleanup()
+
+        # Spy on clear_ast_cache: cleanup()'s whole point is flushing the
+        # Rust thread-local AST caches (angr-518z). A no-op regression must
+        # be caught, not silently swallowed by cleanup()'s try/except.
+        calls = {"n": 0}
+        orig = vex_engine.clear_ast_cache
+
+        def _spy(*a, **k):
+            calls["n"] += 1
+            return orig(*a, **k)
+
+        vex_engine.clear_ast_cache = _spy
+        try:
+            mgr.cleanup()
+            mgr.cleanup()
+        finally:
+            vex_engine.clear_ast_cache = orig
+
+        assert calls["n"] == 2, f"cleanup() must flush the AST cache each call; saw {calls['n']}"
+        # Manager stays usable after repeated cleanup (not left broken).
+        assert "active" in mgr.stash_counts()
 
     def test_cleanup_runs_after_short_exploration(self):
         """Run a tiny exploration, then call cleanup() — must not raise
@@ -383,7 +404,15 @@ class TestSyncExtraPagesFastPath:
         """Smoke-test the new Rust FFI surface exists and is callable."""
         rust_state = self._fresh_rust_state(fauxware_project)
         assert hasattr(rust_state, "add_lazy_regions_batch"), "Rust FFI must expose add_lazy_regions_batch (angr-b58a)"
+        before = rust_state.lazy_region_count()
         rust_state.add_lazy_regions_batch([(0x4200_0000, 0x1000), (0x4200_1000, 0x1000)])
+        # The batch must actually register both regions, not no-op.
+        assert rust_state.lazy_region_count() == before + 2
+        assert rust_state.is_in_lazy_region(0x4200_0000)
+        assert rust_state.is_in_lazy_region(0x4200_1000)
+        assert rust_state.is_in_lazy_region(0x4200_0800)  # interior byte of region 1
+        # An address outside both regions is not lazy.
+        assert not rust_state.is_in_lazy_region(0x4200_8000)
 
 
 class TestStashProxyAccessors:
@@ -1560,19 +1589,31 @@ class TestAvoidMultivaluedOptions:
         accepts the two new kwargs and stores them on the concretizer config.
         Positional ordering matches the PyO3 signature."""
         mgr = _RustExplorationManager("amd64")
-        # Positional call with all six params.
+        # Positional call with all six params: (use_approximate, read_limit,
+        # write_limit, symbolic_write_addresses, avoid_reads, avoid_writes).
         mgr.configure_concretization_strategies(False, 1024, 128, False, True, True)
-        # Keyword call — both directions, mixed defaults.
+        cfg = mgr.get_concretization_config()
+        assert cfg["avoid_multivalued_reads"] == 1
+        assert cfg["avoid_multivalued_writes"] == 1
+        # Keyword call — reads on, writes off. A transposed/dropped kwarg at
+        # the PyO3 boundary would flip these.
         mgr.configure_concretization_strategies(
             False,
             avoid_multivalued_reads=True,
             avoid_multivalued_writes=False,
         )
+        cfg = mgr.get_concretization_config()
+        assert cfg["avoid_multivalued_reads"] == 1
+        assert cfg["avoid_multivalued_writes"] == 0
+        # Keyword call — reads off, writes on.
         mgr.configure_concretization_strategies(
             False,
             avoid_multivalued_reads=False,
             avoid_multivalued_writes=True,
         )
+        cfg = mgr.get_concretization_config()
+        assert cfg["avoid_multivalued_reads"] == 0
+        assert cfg["avoid_multivalued_writes"] == 1
 
     def test_avoid_multivalued_reads_smoke(self, fauxware_project):
         """Exploration with AVOID_MULTIVALUED_READS completes without
@@ -1629,23 +1670,22 @@ class TestAvoidMultivaluedOptions:
         # so the option propagation through `_add_rust_state` has fired.
         mgr.run(max_steps=1)
 
-        # Pull the Rust-side config off the manager and confirm the option
-        # was propagated. Public API exposes the dispatch via the
-        # `configure_concretization_strategies` call — we can re-call it
-        # idempotently here as a smoke check that the kwargs are accepted.
-        mgr._rust_mgr.configure_concretization_strategies(
-            False,
-            1024,
-            128,
-            False,
-            avoid_multivalued_reads=True,
-            avoid_multivalued_writes=False,
+        # Contract: the AVOID_MULTIVALUED_READS SimOption set on the source
+        # state propagates through `_add_rust_state` and lands as
+        # avoid_multivalued_reads=1 on the Rust concretizer config. Reading
+        # the config back here (rather than re-calling configure and
+        # discarding the result) is what makes a no-op/dropped-assignment
+        # regression detectable — the original test never inspected anything.
+        cfg = mgr._rust_mgr.get_concretization_config()
+        assert cfg["avoid_multivalued_reads"] == 1, (
+            f"AVOID_MULTIVALUED_READS did not propagate to Rust config; cfg={cfg}"
         )
+        # AVOID_MULTIVALUED_WRITES was NOT set, so it must stay 0 — proves the
+        # two flags are stored independently, not coupled/transposed.
+        assert cfg["avoid_multivalued_writes"] == 0, f"avoid_multivalued_writes leaked on; cfg={cfg}"
 
-        # The functional contract — load under symbolic addr returns
-        # unconstrained — is exercised across the run loop on every
-        # symbolic-addr load fauxware encounters. The smoke assertion is
-        # that nothing crashed and we have at least one active state.
+        # The manager remains healthy after the gated symbolic-addr loads
+        # fauxware performs under the option.
         assert (len(mgr.active) + len(mgr.deadended) + len(mgr.errored)) >= 1
 
 
