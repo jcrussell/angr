@@ -1147,24 +1147,104 @@ class TestNativeReadCacheSync:
             f"expected at least one native read dispatch, got stats={stats}"
         )
 
-    def test_pending_memory_load_symbolic_page_api_exposed(self, fauxware_project):
-        """The new `pending_memory_load_symbolic_page` PyO3 method must be
-        exposed and callable (a no-pending-callback error is acceptable
-        outside a callback; what we're guarding against is a missing
-        wrapper, which would surface as AttributeError)."""
+    def test_pending_memory_load_symbolic_page_returns_page_symbols(self):
+        """`pending_memory_load_symbolic_page` must return the symbolic
+        objects on the queried page as (addr, ast) pairs AND exclude objects
+        on other pages — driven inside a live pending callback.
 
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        De-vacuifies the former existence-only test (angr-a116s.9): the old
+        body only asserted ``hasattr(...)`` plus a conditional "no pending"
+        error string, so a regression that drops the
+        ``symbolic_objects_iter()`` loop, the page filter, or the
+        ``rustbv_to_claripy`` conversion (pending_api.rs
+        ``_pending_memory_load_symbolic_page``) stayed green because the
+        method was only ever called OUTSIDE a callback, where ``with_pending``
+        short-circuits before the body runs.
 
-        # Calling outside a callback raises RuntimeError("no pending callback state")
-        # — that's fine; what we're verifying is wrapper presence.
-        assert hasattr(mgr._rust_mgr, "pending_memory_load_symbolic_page"), (
-            "pending_memory_load_symbolic_page wrapper missing on Rust manager"
+        A live ``pending_callback`` is established only by the run loop's
+        SimProcedure-Python fallback (run_loop.rs sets ``pending_callback =
+        Some(PendingCallback::with_context(...))`` immediately before emitting
+        the ``need_simprocedure`` event). A symbolic argument register forces
+        that fallback, so after ``mgr.run`` returns the event, ``with_pending``
+        succeeds and the wrapper reads ``pending.state``'s memory.
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+
+        HOOK = 0x500000
+        SYM_PAGE = 0x510000
+        SYM_ADDR = SYM_PAGE + 0x40
+        STACK_BASE = 0x7FFF0000
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
+
+        invocations = []
+
+        def proc(args):
+            invocations.append(tuple(args))
+            return 0
+
+        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+
+        state = RustSimState("amd64")
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STACK_BASE, (0xDEADC0DE).to_bytes(8, "little"))
+        state.set_register("rsp", STACK_BASE)
+        state.map_memory(SYM_PAGE, 0x1000, 7)
+        state.pc = HOOK
+
+        # Symbolic RDI → extract_concrete_arg returns SymbolicArgument → the
+        # dispatcher hands the SimProcedure to Python, which sets a live
+        # pending_callback (see docstring).
+        sym_arg = claripy.BVS("sym_arg0", 64)
+        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+
+        mgr.add_state("active", state)
+        # add_state forks the supplied state and mints a fresh monotonic id
+        # (state_lifecycle::_add_state), so state.state_id is NOT the id the
+        # manager tracks — query the active stash for the forked copy's id.
+        active_ids = mgr.get_state_ids("active")
+        assert len(active_ids) == 1, f"expected exactly one active state, got {active_ids}"
+        sid = active_ids[0]
+
+        # Store a multi-byte symbolic object at a known address on SYM_PAGE.
+        # store_concrete_automap registers it in memory.symbolic_objects (the
+        # source symbolic_objects_iter walks).
+        sym_mem = claripy.BVS("sym_mem", 64)
+        ok = mgr.state_memory_store_symbolic_multi(sid, claripy.BVV(SYM_ADDR, 64), sym_mem)
+        assert ok, "symbolic store to a concrete mapped addr must land in Rust memory"
+
+        event = mgr.run(5)
+        assert event.callback_reason == "simprocedure", (
+            f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
         )
-        try:
-            mgr._rust_mgr.pending_memory_load_symbolic_page(0x500000)
-        except RuntimeError as e:
-            assert "no pending" in str(e), f"unexpected error: {e}"
+        assert invocations == [], f"native callable must NOT run for a symbolic arg; got {invocations}"
+
+        # Inside the live pending callback: the wrapper returns the symbolic
+        # object on SYM_PAGE as an (addr, ast) pair.
+        entries = mgr.pending_memory_load_symbolic_page(SYM_PAGE)
+        by_addr = dict(entries)
+        assert SYM_ADDR in by_addr, (
+            f"symbolic object at 0x{SYM_ADDR:x} missing from page-0x{SYM_PAGE:x} replay; got {sorted(by_addr)}"
+        )
+        ast = by_addr[SYM_ADDR]
+        assert ast is not None and getattr(ast, "op", None) is not None, (
+            f"expected a converted claripy AST for the symbolic object, got {ast!r}"
+        )
+        assert ast.symbolic, "replayed object must remain symbolic (rustbv_to_claripy must not concretize it)"
+
+        # The page filter must EXCLUDE objects whose base address is not on the
+        # queried page — querying HOOK's page returns nothing for SYM_ADDR.
+        other = mgr.pending_memory_load_symbolic_page(HOOK & ~0xFFF)
+        assert SYM_ADDR not in [a for a, _ in other], (
+            f"page filter leaked 0x{SYM_ADDR:x} into the wrong page (0x{HOOK & ~0xFFF:x})"
+        )
 
 
 class TestNativeExtendedStringProcedures:
