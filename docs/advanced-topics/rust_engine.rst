@@ -3780,7 +3780,7 @@ that need an assertion should check the return value
 Callback registration
 ~~~~~~~~~~~~~~~~~~~~~
 
-``PythonCallbacks`` (``callbacks.rs:398``) holds 24 ``Option<Py<PyAny>>``
+``PythonCallbacks`` (``callbacks/mod.rs``) holds 24 ``Option<Py<PyAny>>``
 slots, one per dispatch site (memory load/store, hooks, syscall,
 lift_block, dirty_call, page fetch, six ``state.inspect`` slots,
 etc.). ``Py<PyAny>`` is an owning Python refcount, so a callback
@@ -3798,7 +3798,7 @@ keeps it alive.
   field raises ``TypeError``. The engine surfaces these as
   ``PyErr`` rather than misinterpreting bytes.
 * **GC cycle break**. ``PythonCallbacks::__traverse__`` /
-  ``__clear__`` (``callbacks.rs:1184``) walk every ``Py<PyAny>`` slot
+  ``__clear__`` (``callbacks/mod.rs``) walk every ``Py<PyAny>`` slot
   so Python GC can collect the ``mgr → _callbacks → bound-method →
   mgr`` cycle. Without this, ``RustExplorationManager`` (and its
   ``_state_cache`` of ~4030 angr pages on ``mma_howtouse``) would
@@ -4508,7 +4508,7 @@ are:
   (``native/angr/src/exploration/mod.rs``) — the Python-visible event
   envelope, expected to grow ``#[pyo3(get)]`` fields as new
   callback reasons land.
-- ``ExecutionConfig`` pyclass struct (``native/angr/src/callbacks.rs``)
+- ``ExecutionConfig`` pyclass struct (``native/angr/src/callbacks/config.rs``)
   — the Python-visible config struct, expected to grow knobs over
   time.
 
@@ -4577,8 +4577,8 @@ The plain ``#[pyclass]`` types (without ``unsendable``) are all
 GIL controls actual dereference). No refactor needed for these:
 
 - ``DeferredFork``, ``BranchPolicy``, ``ExecutionConfig``,
-  ``PythonCallbacks``, ``LoopExecutionEvent``
-  (``native/angr/src/callbacks.rs``) — value types, plus ``Py<PyAny>``
+  ``PythonCallbacks`` (``callbacks/mod.rs``), ``LoopExecutionEvent``
+  (``native/angr/src/callbacks/events.rs``) — value types, plus ``Py<PyAny>``
   callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.
 - ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —
   value type built from primitives + ``Py<PyAny>``.
