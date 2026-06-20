@@ -683,21 +683,12 @@ impl RegisterFile {
 impl Clone for Box<dyn Arch> {
     fn clone(&self) -> Self {
         // This is a bit of a hack - we rely on architectures being singletons.
-        // The match is exhaustive: every `dyn Arch` implementor is one of the
-        // six supported singletons, so PPC32/PPC64/S390X can never be the
-        // dynamic type here. We still panic loudly rather than silently
-        // mis-cloning to AMD64 should a new VexArch implementor ever appear.
-        match self.vex_arch() {
-            VexArch::X86 => Box::new(X86),
-            VexArch::AMD64 => Box::new(AMD64),
-            VexArch::ARM => Box::new(ARM),
-            VexArch::ARM64 => Box::new(ARM64),
-            VexArch::MIPS32 => Box::new(MIPS32),
-            VexArch::MIPS64 => Box::new(MIPS64),
-            other @ (VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X) => {
-                panic!("{}", unsupported_arch_msg(other))
-            }
-        }
+        // The dispatch is exhaustive: every `dyn Arch` implementor is one of
+        // the six supported singletons, so PPC32/PPC64/S390X can never be the
+        // dynamic type here. We delegate to `arch_from_vex` so the singleton
+        // lookup table lives in exactly one place; it panics loudly rather
+        // than silently mis-cloning should a new VexArch implementor appear.
+        arch_from_vex(self.vex_arch())
     }
 }
 
