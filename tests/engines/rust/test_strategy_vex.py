@@ -959,14 +959,19 @@ class TestVexBitCountInstructions:
     #
     # These encode the CORRECT Python-engine behaviour: a symbolic operand must
     # leave lzcnt/tzcnt symbolic so constraining the result back-solves a
-    # consistent operand. Today the Rust engine concretizes the symbolic
-    # Iop_Clz64/Iop_Ctz64 result to 0 *inside the interpreter* (verified:
-    # rdx/rbx export as concrete <BV...0x0>, mgr.stats['rust_export_sound_clz']
-    # stays 0 — acoq's build_sound_bitcount export, commit e3f46fa9a, never
-    # runs for this lifting). So eval(ecx) ignores the constraint and these
-    # fail. xfail (non-strict) until angr-4ju9e lands; drop the marker then.
+    # consistent operand. ROOT CAUSE (corrected, iter 56): the VEX interpreter
+    # is SOUND — it builds the symbolic Iop_Clz64/Iop_Ctz64 expression. The
+    # defect is in EXPORT: RustSimState::export_full skips symbolic registers
+    # (only concrete ones reach named_registers), so on the plain-SimState sync
+    # path the clz/ctz result is dropped and Python lazy-fills it (0 here,
+    # because _run sets ZERO_FILL_UNCONSTRAINED_REGISTERS). A second, orthogonal
+    # blocker remains even once export recovers the AST: a subregister-set symbol
+    # (state.regs.ecx = BVS) collapses to a Rust 'rcx' symbol with no import-cache
+    # identity, so the recovered AST references a fresh symbol and back-solving
+    # the original x fails. Both layers must land. xfail (non-strict) until
+    # angr-4ju9e closes; drop the marker then.
     _XFAIL_4JU9E = pytest.mark.xfail(
-        reason="angr-4ju9e: Rust concretizes symbolic lzcnt/tzcnt result to 0",
+        reason="angr-4ju9e: Rust drops symbolic lzcnt/tzcnt registers on plain-state export",
         strict=False,
     )
 
