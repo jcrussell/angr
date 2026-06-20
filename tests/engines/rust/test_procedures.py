@@ -1339,3 +1339,151 @@ class TestSimProcedureSelfCallContinuation:
             f"push lost across FFI (angr-aca6y); marks={[hex(m) for m in marks]}, "
             f"stash counts={mgr.stash_counts()}"
         )
+
+
+class TestNativeMemoryCopyAndSet:
+    """Integration tests for NativeMemcpy / NativeMemmove / NativeMemset
+    (angr-8vfnz).
+
+    `procedures/memcpy.rs` and `procedures/memset.rs` ship extensive Cargo
+    unit tests for the concrete + symbolic-byte/size/address paths, but had
+    no Python-boundary coverage — a grep of tests/engines/ found zero
+    memcpy/memset/memmove references. This class exercises the native
+    dispatch + concrete fast paths end-to-end through RustExplorationManager:
+    stub fauxware's `.ctors`, lay out concrete src/dst buffers, single-step,
+    and verify (a) native dispatch fired (call_counts), (b) the destination
+    bytes match the C contract via get_state_memory, and (c) rax holds the
+    returned destination pointer.
+
+    Pattern mirrors TestNativeExtendedStringProcedures.
+    """
+
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors
+    DEAD_ADDR = 0x4008B0
+    SRC_ADDR = 0x601100
+    DST_ADDR = 0x601200
+
+    @staticmethod
+    def _make_stub(proc_name: str):
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": 3, "run": lambda self, a0, a1, a2: 0},
+        )
+
+    def _blank_state(self, proj):
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        import claripy
+
+        state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
+        return state
+
+    def _first_state_id(self, mgr):
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return ids[0]
+        return None
+
+    def _run(self, proj, name, state):
+        """Hook `name`, single-step, return (call_count, state_id, mgr)."""
+        stub_cls = self._make_stub(name)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            stats = mgr._rust_mgr.native_procedure_stats()
+            count = stats["call_counts"].get(name, 0)
+            sid = self._first_state_id(mgr)
+            assert sid is not None, f"no state: {mgr.stash_counts()}"
+            return count, sid, mgr
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_memcpy_native_dispatch_copies_bytes(self, fauxware_project):
+        import claripy
+
+        payload = b"angr-rust!"
+        state = self._blank_state(fauxware_project)
+        for i, b in enumerate(payload):
+            state.memory.store(self.SRC_ADDR + i, claripy.BVV(b, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+        state.regs.rdx = len(payload)
+
+        count, sid, mgr = self._run(fauxware_project, "memcpy", state)
+        assert count == 1, "expected native memcpy dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(payload)))
+        assert got == payload, f"dst={got!r}"
+
+    def test_memcpy_zero_size_leaves_dst_untouched(self, fauxware_project):
+        import claripy
+
+        # Pre-seed dst with a sentinel; a zero-size memcpy must not change it.
+        state = self._blank_state(fauxware_project)
+        state.memory.store(self.SRC_ADDR, claripy.BVV(0xAA, 8))
+        state.memory.store(self.DST_ADDR, claripy.BVV(0x55, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+        state.regs.rdx = 0
+
+        count, sid, mgr = self._run(fauxware_project, "memcpy", state)
+        assert count == 1
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 1))
+        assert got == b"\x55", f"dst={got!r}"
+
+    def test_memmove_overlapping_forward(self, fauxware_project):
+        import claripy
+
+        # Overlapping move: dst = src + 2, copy 4 bytes. memmove must read the
+        # pre-store source bytes, so dst[0:4] == original src[0:4].
+        base = self.SRC_ADDR
+        original = b"ABCD"
+        state = self._blank_state(fauxware_project)
+        for i, b in enumerate(original):
+            state.memory.store(base + i, claripy.BVV(b, 8))
+        state.regs.rdi = base + 2  # dst overlaps src tail
+        state.regs.rsi = base
+        state.regs.rdx = len(original)
+
+        count, sid, mgr = self._run(fauxware_project, "memmove", state)
+        assert count == 1, "expected native memmove dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == base + 2, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, base + 2, len(original)))
+        assert got == original, f"moved={got!r}"
+
+    def test_memset_native_dispatch_fills_bytes(self, fauxware_project):
+        state = self._blank_state(fauxware_project)
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = 0x41  # fill byte 'A'
+        state.regs.rdx = 6
+
+        count, sid, mgr = self._run(fauxware_project, "memset", state)
+        assert count == 1, "expected native memset dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 6))
+        assert got == b"A" * 6, f"dst={got!r}"
+
+    def test_memset_uses_low_byte_of_value(self, fauxware_project):
+        # memset's value arg is an int; only the low 8 bits are written.
+        state = self._blank_state(fauxware_project)
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = 0x12CC  # low byte 0xCC
+        state.regs.rdx = 3
+
+        count, sid, mgr = self._run(fauxware_project, "memset", state)
+        assert count == 1
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 3))
+        assert got == b"\xcc" * 3, f"dst={got!r}"
