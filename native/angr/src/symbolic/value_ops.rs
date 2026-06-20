@@ -1117,7 +1117,13 @@ impl RustBV {
     pub fn concat_into(self, other: Self, _ctx: &SymContext) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
-            (Some(hi), Some(lo)) => {
+            // A `Concrete` value is stored in a u128, so it can hold at most
+            // 128 bits. Folding a wider result would overflow the shift
+            // (`hi << other.width()` with `other.width() >= 128` wraps the
+            // shift amount mod 128 in release builds — and panics in debug),
+            // silently corrupting the value. Keep results wider than 128 bits
+            // as a `Concat` expression so they stay exact.
+            (Some(hi), Some(lo)) if result_width <= 128 => {
                 let combined = (hi << other.width()) | lo;
                 Self::concrete(combined, result_width)
             }
@@ -1191,7 +1197,13 @@ impl RustBV {
     pub fn concat_no_ctx(&self, other: &Self) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
-            (Some(hi), Some(lo)) => {
+            // A `Concrete` value is stored in a u128, so it can hold at most
+            // 128 bits. Folding a wider result would overflow the shift
+            // (`hi << other.width()` with `other.width() >= 128` wraps the
+            // shift amount mod 128 in release builds — and panics in debug),
+            // silently corrupting the value. Keep results wider than 128 bits
+            // as a `Concat` expression so they stay exact.
+            (Some(hi), Some(lo)) if result_width <= 128 => {
                 let combined = (hi << other.width()) | lo;
                 Self::concrete(combined, result_width)
             }

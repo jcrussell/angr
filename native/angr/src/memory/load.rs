@@ -262,6 +262,30 @@ impl SymbolicMemory {
             });
         }
 
+        // A `Concrete` RustBV stores its value in a u128 (16 bytes). A wider
+        // concrete load cannot be packed into one — the u128 shift in the
+        // fast path below would wrap (mod 128) and OR high bytes back over the
+        // low bytes, silently corrupting the value (e.g. a 32-byte AVX load or
+        // a >16-byte inspection read). Assemble those as a `Concat` of per-byte
+        // concretes instead; `concat_into` keeps results wider than 128 bits as
+        // an expression rather than re-folding into a u128.
+        if size as usize > 16 {
+            let mut parts: Vec<RustBV> = bytes
+                .iter()
+                .map(|&b| RustBV::concrete(b as u128, 8))
+                .collect();
+            let result = match self.endness {
+                // concat_balanced wants parts high-bits-first. LE byte 0 is the
+                // LSB (lowest bits → last), so reverse; BE byte 0 is the MSB.
+                Endness::Little => {
+                    parts.reverse();
+                    RustBV::concat_balanced(&parts, ctx)
+                }
+                Endness::Big => RustBV::concat_balanced(&parts, ctx),
+            };
+            return Ok(result);
+        }
+
         // Convert bytes to value based on endianness
         let value = match self.endness {
             Endness::Little => {
@@ -744,6 +768,30 @@ impl SymbolicMemory {
             return Err(MemoryError::SymbolicAddress {
                 description: "symbolic bytes not fully tracked".to_string(),
             });
+        }
+
+        // A `Concrete` RustBV stores its value in a u128 (16 bytes). A wider
+        // concrete load cannot be packed into one — the u128 shift in the
+        // fast path below would wrap (mod 128) and OR high bytes back over the
+        // low bytes, silently corrupting the value (e.g. a 32-byte AVX load or
+        // a >16-byte inspection read). Assemble those as a `Concat` of per-byte
+        // concretes instead; `concat_into` keeps results wider than 128 bits as
+        // an expression rather than re-folding into a u128.
+        if size as usize > 16 {
+            let mut parts: Vec<RustBV> = bytes
+                .iter()
+                .map(|&b| RustBV::concrete(b as u128, 8))
+                .collect();
+            let result = match self.endness {
+                // concat_balanced wants parts high-bits-first. LE byte 0 is the
+                // LSB (lowest bits → last), so reverse; BE byte 0 is the MSB.
+                Endness::Little => {
+                    parts.reverse();
+                    RustBV::concat_balanced(&parts, ctx)
+                }
+                Endness::Big => RustBV::concat_balanced(&parts, ctx),
+            };
+            return Ok(result);
         }
 
         // Convert bytes to value based on endianness

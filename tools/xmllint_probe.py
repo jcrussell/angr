@@ -27,6 +27,10 @@ from angr import sim_options as so
 XMLLINT = os.path.expanduser("~/repos/angr-examples/examples/xmllint/xmllint_bin")
 MAX_STEPS = int(os.environ.get("PROBE_MAX_STEPS", "120"))
 ACTIVE_CAP = int(os.environ.get("PROBE_ACTIVE_CAP", "60"))
+# PROBE_TRACE_ALL=1 prints every step's PC transition (for localizing a
+# cross-engine control-flow divergence; see bug angr-aca6y). Default 0 keeps
+# the sparse i<8/i%10 sampling used by the convergence characterization.
+TRACE_ALL = os.environ.get("PROBE_TRACE_ALL", "0") == "1"
 
 
 def main():
@@ -65,12 +69,46 @@ def main():
             out.append(hex(pc) if pc is not None else f"sid{sid}?")
         return out
 
+    # PROBE_DUMP_ARGV=1: dump argv strings + the "-maxmem"/"--maxmem" option
+    # strings as Rust's memory sees them (localizing bug angr-aca6y — the
+    # option-parsing strcmp that diverges). r12 holds argv at main entry.
+    if os.environ.get("PROBE_DUMP_ARGV", "0") == "1":
+        sids = mgr._rust_mgr.get_state_ids("active")
+        if sids:
+            sid = sids[0]
+
+            def rd_str(addr, n=24):
+                b = mgr._rust_mgr.get_state_memory(sid, addr, n) or b""
+                z = b.find(0)
+                return b[:z] if z >= 0 else b
+
+            r12 = mgr._rust_mgr.get_state_register(sid, "r12")
+            base = proj.loader.main_object.mapped_base
+            print(f"[dump] r12(argv)={hex(r12) if r12 else None} base={hex(base)}")
+            if r12:
+                for k in range(7):
+                    ptr_b = mgr._rust_mgr.get_state_memory(sid, r12 + 8 * k, 8)
+                    ptr = int.from_bytes(ptr_b, "little") if ptr_b else None
+                    s = rd_str(ptr) if ptr else b"<sym>"
+                    print(f"[dump] argv[{k}]={hex(ptr) if ptr else None} -> {s!r}")
+            print(f"[dump] opt@0xf62c(-maxmem) = {rd_str(base + 0xF62C)!r}")
+            print(f"[dump] opt@0xf62b(--maxmem)= {rd_str(base + 0xF62B)!r}")
+            cle_b = proj.loader.memory.load(base + 0xF62C, 24)
+            print(f"[dump] cle  hex @0xf62c(24) = {cle_b.hex()}")
+            for sz in (1, 2, 4, 8, 12, 16, 24):
+                rb = mgr._rust_mgr.get_state_memory(sid, base + 0xF62C, sz) or b""
+                ok = "OK" if rb == cle_b[:sz] else "DIFF"
+                print(f"[dump] rust @0xf62c({sz:2d}) = {rb.hex()} [{ok}]")
+            # byte-by-byte via 1-byte reads (what strcmp uses)
+            bb = b"".join((mgr._rust_mgr.get_state_memory(sid, base + 0xF62C + j, 1) or b"\xff") for j in range(8))
+            print(f"[dump] rust bytewise @0xf62c = {bb.hex()}")
+
     for i in range(MAX_STEPS):
         before = pcs("active")
         mgr.step(n=1)
         sc = mgr.stash_counts()
         active = sc.get("active", 0)
-        if i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
+        if TRACE_ALL or i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
             print(
                 f"step {i:3d} from={before} -> active={pcs('active')} stash={sc} rss={rss}MB t={time.time() - t0:.1f}s"
@@ -100,7 +138,7 @@ def _python_probe(proj, state, t0):
         before = [hex(s.addr) for s in simgr.active]
         simgr.step(num_inst=None)
         active = len(simgr.active)
-        if i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
+        if TRACE_ALL or i < 8 or i % 10 == 0 or active == 0 or active > ACTIVE_CAP:
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
             cur = [hex(s.addr) for s in simgr.active]
             print(

@@ -84,6 +84,51 @@ fn test_wide_concrete_store_roundtrip_be() {
 }
 
 #[test]
+fn test_wide_concrete_load_exact() {
+    // Regression (angr-aca6y investigation): a concrete load wider than 16
+    // bytes must return the exact bytes. The old u128-funnel path OR-folded
+    // bytes >=16 back over the low bytes (`v |= byte << (i*8)` wraps the shift
+    // mod 128 in release), so a 24-byte read of "-maxmem\0--debug\0--shell\0"
+    // came back as "-msxmmm\0--debug\0-msxmmm\0". The fix assembles wide
+    // concrete loads as a Concat of per-byte concretes.
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let bytes: Vec<u8> = (0..32u32)
+        .map(|i| (0x11u8).wrapping_mul(i as u8 + 1))
+        .collect();
+    mem.store_concrete_le_bytes_automap_internal(0x1000u64, &bytes)
+        .unwrap();
+
+    // Wide loads (>16 bytes) return a Concat expression — verify byte-for-byte
+    // via per-byte extract, which would catch any shift-overflow corruption.
+    for &size in &[17u32, 24, 32] {
+        let loaded = mem.load_concrete(0x1000, size, &ctx).unwrap();
+        assert_eq!(loaded.width(), size * 8, "width for size {size}");
+        for i in 0..size {
+            let byte = loaded.extract(i * 8 + 7, i * 8, &ctx);
+            assert_eq!(
+                byte.as_u64(),
+                Some(bytes[i as usize] as u64),
+                "size {size} byte {i} corrupted"
+            );
+        }
+    }
+
+    // <=16-byte loads still take the fast u128 path and stay exact.
+    let lo16 = mem.load_concrete(0x1000, 16, &ctx).unwrap();
+    for i in 0..16u32 {
+        let byte = lo16.extract(i * 8 + 7, i * 8, &ctx);
+        assert_eq!(
+            byte.as_u64(),
+            Some(bytes[i as usize] as u64),
+            "16B byte {i}"
+        );
+    }
+}
+
+#[test]
 fn test_wide_concrete_store_unmapped_errors() {
     // A store into an unmapped, non-lazy region must surface an error rather
     // than silently vanish (the old `let _ =` discarded the Result).

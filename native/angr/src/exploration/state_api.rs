@@ -624,6 +624,22 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Option<Vec<u8>>> {
+        // The u128 reconstruction below round-trips at most 16 bytes; a wider
+        // request would truncate (`val >> (i*8)` wraps mod 128 for i >= 16).
+        // Read in <=16-byte chunks and concatenate so any size is exact.
+        if size > 16 {
+            let mut out = Vec::with_capacity(size as usize);
+            let mut off = 0u32;
+            while off < size {
+                let chunk = (size - off).min(16);
+                match self._get_state_memory(state_id, addr + off as u64, chunk)? {
+                    Some(bytes) => out.extend_from_slice(&bytes),
+                    None => return Ok(None),
+                }
+                off += chunk;
+            }
+            return Ok(Some(out));
+        }
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
                 if let Some(val) = bv.as_u128() {
