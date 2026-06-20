@@ -6,7 +6,7 @@
 //! With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
 //! to manage explicit context lifetimes.
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -70,10 +70,23 @@ fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstP
     Ok(handle)
 }
 
-/// Convert a BridgeError to a PyErr.
+/// Convert a BridgeError to a PyErr, preserving the variant's structure at
+/// the Python boundary (angr-ghwsd.2). Mirrors the per-variant mapping in
+/// `errors.rs::From<RustExecError>`: a type mismatch surfaces as `TypeError`
+/// and bad arguments / unsupported ops as `ValueError`, matching how the
+/// codebase classifies these elsewhere (e.g. `fuzzer.rs` uses `PyTypeError`).
+/// `#[non_exhaustive]` forces a wildcard arm.
 impl From<BridgeError> for PyErr {
     fn from(err: BridgeError) -> Self {
-        PyRuntimeError::new_err(err.to_string())
+        let msg = err.to_string();
+        match err {
+            BridgeError::TypeMismatch(_) => PyTypeError::new_err(msg),
+            BridgeError::InvalidArgs(_) | BridgeError::UnsupportedOp(_) => {
+                PyValueError::new_err(msg)
+            }
+            // PythonError + any future variant fall back to RuntimeError.
+            _ => PyRuntimeError::new_err(msg),
+        }
     }
 }
 

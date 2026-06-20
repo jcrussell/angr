@@ -511,17 +511,18 @@ class TestAdversarial:
 
         ``RustBV::Concrete`` stores its value in a u128, so importing
         ``BVV(1 << 200, 256)`` used to wrap to 0. extract_int_value now
-        rejects it with a RuntimeError (BridgeError::InvalidArgs). The import
-        path is exercised here via ``min`` (which propagates the conversion
-        error; ``eval``/``add_constraint_ast`` take Z3-export fast paths that
-        bypass the u128 import).
+        rejects it with a ValueError (BridgeError::InvalidArgs maps to
+        PyValueError per angr-ghwsd.2). The import path is exercised here via
+        ``min`` (which propagates the conversion error; ``eval``/
+        ``add_constraint_ast`` take Z3-export fast paths that bypass the u128
+        import).
         """
         import claripy
         import pytest
         from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError):
             ctx.min(claripy.BVV(1 << 200, 256), signed=False)
 
         # A 256-bit literal whose magnitude fits in 128 bits imports fine.
