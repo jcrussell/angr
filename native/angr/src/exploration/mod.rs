@@ -84,6 +84,7 @@ pub fn get_stepping_state_id() -> Option<u64> {
 
 pub use self::callback_types::CallbackReason;
 pub(crate) use self::callback_types::PendingCallback;
+pub(crate) use self::callback_types::apply_deferred_fork_constraints;
 pub use self::event::ExplorationEvent;
 pub(crate) use self::native_technique::NativeTechnique;
 

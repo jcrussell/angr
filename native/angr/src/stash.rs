@@ -406,6 +406,13 @@ impl StashManager {
         self.state_roots.get(&state_id).copied()
     }
 
+    /// Resolve a state's lineage root, falling back to the state itself
+    /// when no root mapping is recorded.
+    #[inline]
+    pub fn root_or_self(&self, state_id: u64) -> u64 {
+        self.get_root(state_id).unwrap_or(state_id)
+    }
+
     /// Remove a root tracking entry.
     #[inline]
     pub fn remove_root(&mut self, state_id: u64) {

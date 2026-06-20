@@ -108,3 +108,27 @@ impl PendingCallback {
         }
     }
 }
+
+/// Apply each deferred fork's taken-path constraint onto `state`'s solver.
+///
+/// Without these, the solver doesn't know which branch was taken, causing
+/// incorrect results for subsequent symbolic operations. Callers pass the
+/// state to constrain (the resumed main state, or `pending.state` before a
+/// symbolic-branch fork so both children inherit the constraints). Taken as a
+/// free fn over the two field borrows rather than a `&self` method so it works
+/// even after `pending.state` has been moved out (resume_after_simprocedure).
+pub(crate) fn apply_deferred_fork_constraints(
+    state: &RustSimState,
+    deferred_forks: &[DeferredFork],
+    stored_conditions: &FxHashMap<u64, RustBV>,
+) {
+    for fork in deferred_forks {
+        if let Some(cond) = stored_conditions.get(&fork.condition_id) {
+            if fork.path_taken {
+                state.solver().borrow().assume_true(cond);
+            } else {
+                state.solver().borrow().assume_false(cond);
+            }
+        }
+    }
+}

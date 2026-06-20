@@ -74,15 +74,11 @@ impl RustExplorationManager {
         // Add taken-path constraints from deferred forks to the main state.
         // Without these, the solver doesn't know which branch was taken,
         // causing incorrect results for subsequent symbolic operations.
-        for fork in &pending.deferred_forks {
-            if let Some(cond) = pending.stored_conditions.get(&fork.condition_id) {
-                if fork.path_taken {
-                    state.solver().borrow().assume_true(cond);
-                } else {
-                    state.solver().borrow().assume_false(cond);
-                }
-            }
-        }
+        apply_deferred_fork_constraints(
+            &state,
+            &pending.deferred_forks,
+            &pending.stored_conditions,
+        );
 
         // Process deferred forks that were stored during the step
         // These represent unexplored branches that should be added to active
@@ -105,13 +101,7 @@ impl RustExplorationManager {
 
         // Track root state ID for lineage
         // The root is inherited from the original pending state
-        let original_state_id = state.state_id();
-        let root_state_id = self
-            .sm
-            .roots()
-            .get(&original_state_id)
-            .copied()
-            .unwrap_or(original_state_id);
+        let root_state_id = self.sm.root_or_self(state.state_id());
 
         // P12: Only add main state if SAT, otherwise add to pruned list
         let (mut successors, mut pruned_states) = if main_state_unsat {
@@ -271,13 +261,7 @@ impl RustExplorationManager {
             let fork_base = pending
                 .pre_callback_snapshot
                 .unwrap_or_else(|| pending.state.fork());
-            let original_state_id = pending.state.state_id();
-            let root_state_id = self
-                .sm
-                .roots()
-                .get(&original_state_id)
-                .copied()
-                .unwrap_or(original_state_id);
+            let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
             let mut snapshots = pending.fork_snapshots;
             for fork in pending.deferred_forks {
@@ -377,24 +361,14 @@ impl RustExplorationManager {
         // independent solver copy, both true_state and false_state will
         // inherit these constraints. Without this, the solver wouldn't know
         // which deferred-fork branch was taken.
-        for fork in &pending.deferred_forks {
-            if let Some(cond) = pending.stored_conditions.get(&fork.condition_id) {
-                if fork.path_taken {
-                    pending.state.solver().borrow().assume_true(cond);
-                } else {
-                    pending.state.solver().borrow().assume_false(cond);
-                }
-            }
-        }
+        apply_deferred_fork_constraints(
+            &pending.state,
+            &pending.deferred_forks,
+            &pending.stored_conditions,
+        );
 
         // Track root state ID for lineage
-        let original_state_id = pending.state.state_id();
-        let root_state_id = self
-            .sm
-            .roots()
-            .get(&original_state_id)
-            .copied()
-            .unwrap_or(original_state_id);
+        let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();

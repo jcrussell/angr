@@ -447,13 +447,7 @@ impl RustExplorationManager {
                         let fork_base = pending
                             .pre_callback_snapshot
                             .unwrap_or_else(|| pending.state.fork());
-                        let original_state_id = pending.state.state_id();
-                        let root_state_id = self
-                            .sm
-                            .roots()
-                            .get(&original_state_id)
-                            .copied()
-                            .unwrap_or(original_state_id);
+                        let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
                         let mut snapshots = pending.fork_snapshots;
                         let cb_fork_start = if self.profiling.profiling_enabled {

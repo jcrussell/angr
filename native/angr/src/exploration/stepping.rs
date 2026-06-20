@@ -523,13 +523,7 @@ impl RustExplorationManager {
                     // to keep the loop-exit forks alive even in deferred mode so
                     // a bare step-loop keeps progressing toward a target behind
                     // the loop exit instead of collapsing to `active_empty`.
-                    let original_state_id = state.state_id();
-                    let root_state_id = self
-                        .sm
-                        .roots()
-                        .get(&original_state_id)
-                        .copied()
-                        .unwrap_or(original_state_id);
+                    let root_state_id = self.sm.root_or_self(state.state_id());
                     self.materialize_deferred_forks(
                         &mut state,
                         deferred_forks,
@@ -575,13 +569,7 @@ impl RustExplorationManager {
         state.set_pc(pc);
 
         // Track root state ID for lineage
-        let original_state_id = state.state_id();
-        let root_state_id = self
-            .sm
-            .roots()
-            .get(&original_state_id)
-            .copied()
-            .unwrap_or(original_state_id);
+        let root_state_id = self.sm.root_or_self(state.state_id());
 
         // Materialize the deferred forks (continuing the main chain, deferred
         // mode preserved) and prepend the main state as successors[0].
@@ -978,13 +966,7 @@ impl RustExplorationManager {
         let base_state = state.fork(); // Save unconstrained clone
 
         // Track root state ID for lineage
-        let original_state_id = state.state_id();
-        let root_state_id = self
-            .sm
-            .roots()
-            .get(&original_state_id)
-            .copied()
-            .unwrap_or(original_state_id);
+        let root_state_id = self.sm.root_or_self(state.state_id());
 
         let mut successors = Vec::with_capacity(targets.len());
 
@@ -1363,14 +1345,7 @@ impl RustExplorationManager {
             return;
         }
 
-        let root_state_id = {
-            let original_state_id = successors[0].state_id();
-            self.sm
-                .roots()
-                .get(&original_state_id)
-                .copied()
-                .unwrap_or(original_state_id)
-        };
+        let root_state_id = self.sm.root_or_self(successors[0].state_id());
 
         for fork in &deferred_forks {
             if let Some(condition) = stored_conditions.get(&fork.condition_id) {
