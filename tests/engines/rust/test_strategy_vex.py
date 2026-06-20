@@ -799,3 +799,83 @@ class TestVexOperationCoverage:
         x = claripy.BVS("x", 64)
         ctx.add_constraint_ast(x ^ 0xDEADBEEFCAFEBABE == 0)
         assert ctx.eval(x) == 0xDEADBEEFCAFEBABE
+
+
+class TestVexGetMSBsInstruction:
+    """Instruction-level coverage for Iop_GetMSBs8x16 (x86 PMOVMSKB).
+
+    The VGetMSBs op (commit af98545ea) shipped with Rust unit tests but no
+    Python-boundary regression. glibc's SSE strlen/memchr lift `pmovmskb`
+    to Iop_GetMSBs8x16; before the op existed, any real-glibc binary errored
+    at startup ("unmapped VEX opcode: Iop_GetMSBs8x16"). This drives the op
+    end-to-end through the Rust interpreter on a binary-free shellcode blob:
+    a single `pmovmskb eax, xmm0` that reduces the 16 bytes of xmm0 to a
+    16-bit mask whose bit i is the MSB (bit 7) of input byte i.
+    """
+
+    def _run_pmovmskb(self, xmm0_value):
+        import angr
+        import angr.sim_options as o
+        import claripy
+
+        #   66 0f d7 c0   pmovmskb eax, xmm0
+        #   c3            ret
+        shellcode = bytes.fromhex("660fd7c0") + b"\xc3"
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(
+            addr=0x401000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        state.regs.xmm0 = claripy.BVV(xmm0_value, 128)
+        # Clean return target so the ret deadends predictably.
+        state.regs.rsp = 0x7FFF_0000
+        state.memory.store(0x7FFF_0000, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=10)
+
+        all_states = (
+            list(mgr.found)
+            + list(mgr.active)
+            + list(mgr.deadended)
+            + list(mgr.unconstrained)
+        )
+        assert all_states, "expected at least one state after run"
+        s = all_states[0]
+        # PMOVMSKB writes the 16-bit mask into eax (zero-extended to rax).
+        return s.solver.eval(s.regs.rax) & 0xFFFF
+
+    @staticmethod
+    def _expected_mask(value):
+        mask = 0
+        for i in range(16):
+            if (value >> (8 * i + 7)) & 1:
+                mask |= 1 << i
+        return mask
+
+    def test_pmovmskb_recognizable_pattern(self):
+        """Hand-picked mask 0xACE1: byte i has MSB set iff bit i of the mask."""
+        mask = 0xACE1
+        value = 0
+        for i in range(16):
+            byte = 0x80 if (mask >> i) & 1 else 0x01
+            value |= byte << (8 * i)
+        assert self._run_pmovmskb(value) == mask
+
+    def test_pmovmskb_all_high(self):
+        """All 16 bytes 0x80 → mask 0xFFFF (all MSBs set)."""
+        value = int.from_bytes(b"\x80" * 16, "little")
+        assert self._run_pmovmskb(value) == 0xFFFF
+
+    def test_pmovmskb_all_low(self):
+        """All 16 bytes 0x7F → mask 0x0000 (no MSBs set)."""
+        value = int.from_bytes(b"\x7f" * 16, "little")
+        assert self._run_pmovmskb(value) == 0x0000
+
+    def test_pmovmskb_arbitrary_value_matches_oracle(self):
+        """Arbitrary 128-bit value matches the per-byte-MSB oracle."""
+        value = 0x8001_7FFE_C3D2_E1F0_0F1E_2D3C_4B5A_6978
+        assert self._run_pmovmskb(value) == self._expected_mask(value)
