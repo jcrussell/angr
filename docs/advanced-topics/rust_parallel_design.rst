@@ -377,7 +377,7 @@ If Option A is chosen, a staged rollout:
    cadence assumptions hold (>100 ms per task; <10 migrations per
    bench).
 #. **Phase 1 — per-context AST cache.** Partition
-   ``thread_local!``-driven caches in ``claripy_bridge.rs`` and the
+   ``thread_local!``-driven caches in ``claripy_bridge/cache.rs`` and the
    ``angr-518z`` Rust LRU by context identity. No threading yet.
 #. **Phase 2 — translate helper.** Implement
    ``RustBV::translate_into(target_ctx: &SymContext) -> RustBV`` plus

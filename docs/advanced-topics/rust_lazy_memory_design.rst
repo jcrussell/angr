@@ -496,7 +496,7 @@ Open questions
 * **Annotation forwarding.** When Python wraps an address in
   ``MultiwriteAnnotation`` and exports it, the Rust side currently
   loses the annotation (we strip claripy annotations at the bridge —
-  see ``claripy_bridge.rs``). Either preserve the annotation across
+  see ``claripy_bridge/import.rs``). Either preserve the annotation across
   the bridge or have ``rust_manager.py`` re-attach it on the
   Rust-side concretization config so the Phase 1 strchr path can
   detect the upgrade.

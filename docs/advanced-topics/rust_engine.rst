@@ -754,7 +754,7 @@ ordering, branch enumeration, eval answer)?"*:
        ``simprocedure_fallback_by_name``
      - Lookup-only
      - **Not output-affecting.**
-   * - ``claripy_bridge.rs`` ``CLARIPY_AST_CACHE`` + ``deepcopy_memo``
+   * - ``claripy_bridge/cache.rs`` ``CLARIPY_AST_CACHE`` + ``deepcopy_memo``
      - Lookup-only (LRU caches)
      - **Not output-affecting.** Keyed by Python id / hash.
    * - ``vex/lifter.rs`` IRSB lift cache
@@ -3833,7 +3833,7 @@ UB risk from forged or stale IDs.
 
 Claripy AST inputs (``add_constraint_ast``, ``eval``,
 ``import_symbolic_memory``, etc.) flow through ``claripy_to_rustbv``
-(``claripy_bridge.rs``). Any leaf type the bridge doesn't recognize
+(``claripy_bridge/import.rs``). Any leaf type the bridge doesn't recognize
 raises ``BridgeError`` → ``PyRuntimeError``. No malformed-AST input
 reaches the Z3 layer un-converted.
 
@@ -4497,7 +4497,7 @@ are:
 
 - ``RustExecError`` (``native/angr/src/errors.rs``) — the canonical
   Rust→Python error enum.
-- ``BridgeError`` (``native/angr/src/claripy_bridge.rs``)
+- ``BridgeError`` (``native/angr/src/claripy_bridge/mod.rs``)
 - ``SyscallError`` (``native/angr/src/syscalls/mod.rs``)
 - ``OpError`` (``native/angr/src/vex/ops.rs``)
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
@@ -4630,9 +4630,9 @@ alone — fixing any one in isolation does not enable parallelism.
    unless the per-solve cost is enormous.
 
 **3. Claripy bridge thread-local AST caches**
-   (``native/angr/src/claripy_bridge.rs:153, 200, 231, 269``). The four
+   (``native/angr/src/claripy_bridge/cache.rs``). The three
    caches documented in the ``claripy-bridge-thread-local-caches``
-   memory (``AST_CACHE``, ``CLARIPY_AST_CACHE``, ``EXPRESSION_CACHE``,
+   memory (``AST_CACHE``, ``CLARIPY_AST_CACHE``,
    ``EXPRESSION_BY_OPERANDS_PTR``) are intentionally ``thread_local!``
    to avoid lock contention on the hot path. They are **already correct
    for multi-threading** in the sense that each thread has its own
@@ -4745,20 +4745,20 @@ the lock.
 ``clear_ast_cache`` call graph
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``clear_ast_cache()`` (declared at ``native/angr/src/claripy_bridge.rs:423``,
-exposed to Python via ``native/angr/src/engine.rs::clear_ast_cache``
-(def ``:303``, registered ``:379``)) atomically clears
-all four thread-local caches in the bridge:
+``clear_ast_cache()`` (declared at
+``native/angr/src/claripy_bridge/cache.rs::clear_ast_cache``,
+exposed to Python via ``native/angr/src/engine.rs::clear_ast_cache``)
+atomically clears all three thread-local caches in the bridge:
 
-- ``AST_CACHE`` (LRU, ``claripy_bridge.rs:154``)
-- ``CLARIPY_AST_CACHE`` (unbounded ``HashMap``, ``claripy_bridge.rs:201``)
-- ``EXPRESSION_CACHE`` (LRU, ``claripy_bridge.rs:232``)
-- ``EXPRESSION_BY_OPERANDS_PTR`` (LRU, ``claripy_bridge.rs:270``)
+- ``AST_CACHE`` (LRU, ``claripy_bridge/cache.rs``)
+- ``CLARIPY_AST_CACHE`` (unbounded ``HashMap``, ``claripy_bridge/cache.rs``)
+- ``EXPRESSION_BY_OPERANDS_PTR`` (LRU, ``claripy_bridge/cache.rs``)
 
 Cross-cache invariant C3 (documented in-file) makes a partial clear
 incorrect by design; the single entry point enforces it.
 
-``clear_all_caches()`` (``claripy_bridge.rs:432``) additionally clears
+``clear_all_caches()`` (``claripy_bridge/cache.rs::clear_all_caches``)
+additionally clears
 the process-global ``SymbolicIdentityRegistry``. It is **deliberately
 not** exposed to Python because the registry is shared across all
 managers in the process — clearing it from one manager would
@@ -4798,7 +4798,7 @@ state from dec_ref'ing into a freed Python-owned context.
 Thread-local cache teardown
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The four ``claripy_bridge`` thread-locals hold ``Py<PyAny>`` values and
+The three ``claripy_bridge`` thread-locals hold ``Py<PyAny>`` values and
 (via ``RustBV::Symbolic``) ``z3::ast::BV`` values. ``Py<PyAny>::Drop``
 without the GIL is safe — PyO3 0.21+ defers the decref to the next GIL
 acquisition. The z3 AST drop, however, requires the **thread-local Z3
@@ -4806,7 +4806,7 @@ context** to still be live at TLS-destructor time.
 
 **Latent hazard (not exercised today).** Rust runs ``thread_local!``
 destructors in LIFO order of first access. If a non-main thread first
-populates the four ``claripy_bridge`` caches (registering their
+populates the three ``claripy_bridge`` caches (registering their
 destructors), then calls into z3-rs (registering z3-rs's TLS destructor
 later), at thread teardown z3-rs's TLS context drops **first** and the
 cache destructors then run with a stale TLS context. ``RustBV::Symbolic``
