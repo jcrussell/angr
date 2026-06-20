@@ -555,6 +555,131 @@ class TestNativeFileDescriptorErrorReturns:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeFreadBoundary:
+    """Python-boundary regression for native fread dispatch (angr-c42t7).
+
+    `feat(procedures/fread)` (d4d1ad1c4) shipped 7 Cargo unit tests in
+    `native/angr/src/procedures/fread_tests.rs` that call `NativeFread.call`
+    directly, but no Python-level test. The concrete-content *serving* path
+    cannot be reached from a clean Python integration test: the only seeder
+    of FS content is `FileSystem::open_with_content`, which has no Python
+    caller (native `fopen`/`open` both use the content-less `open`, and no
+    PyO3 fd-content setter is exposed). What the Cargo tests do NOT cover is
+    the FFI boundary that Python callers actually hit:
+
+      1. Name-based native dispatch of `fread` through the manager
+         (`native_procedure_stats` `call_counts['fread']` ticks).
+      2. 4-arg marshaling off the AMD64 SysV registers
+         (rdi=dst, rsi=size, rdx=nmemb, rcx=stream) — a wider arg list than
+         any other fileops proc here.
+      3. `FILE._fileno` resolution from a Python-written struct (read at the
+         AMD64 `_IO_FILE` offset 112 by `read_fileno`).
+      4. The two deterministic native-success returns that need no FS
+         content: the zero-count early return, and the invalid-`_fileno`
+         (fd < 0) "0 items read" return.
+
+    Same in-binary non-executable hook-addr pattern as
+    TestNativeFileDescriptorProcedures (see that class docstring for the
+    address-selection rationale).
+    """
+
+    HOOK_ADDR = 0x600E30  # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008B0
+    FILE_PTR = 0x601100  # past .bss, lazy-mapped: holds the _IO_FILE struct
+    DST_ADDR = 0x601300  # fread destination buffer (distinct page region)
+
+    # AMD64 _IO_FILE._fileno offset (mirrors AMD64_FILENO_OFF in
+    # native/angr/src/procedures/fread_tests.rs / io_file_for_arch).
+    FILENO_OFF = 112
+
+    @staticmethod
+    def _fread_stub():
+        """SimProcedure stub named `fread` (4 args). `run` is bypassed when
+        native dispatch fires (the expected path), but the class must exist
+        so `proj.hook` is valid and the name is forwarded to the manager."""
+        return type(
+            "fread",
+            (angr.SimProcedure,),
+            {
+                "num_args": 4,
+                "run": lambda self, dst, size, nmemb, stream: 0,
+            },
+        )
+
+    def _setup(self, proj, *, dst, size, nmemb, stream):
+        import claripy
+
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        # fread(dst, size, nmemb, stream) — AMD64 SysV argument registers.
+        state.regs.rdi = dst
+        state.regs.rsi = size
+        state.regs.rdx = nmemb
+        state.regs.rcx = stream
+        state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
+        return state
+
+    @staticmethod
+    def _run(proj, state):
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return mgr, ids[0]
+        raise AssertionError(f"no state in any stash: {mgr.stash_counts()}")
+
+    def test_fread_zero_count_returns_zero(self, fauxware_project):
+        """fread(dst, size=4, nmemb=0, stream) — total = size*nmemb = 0, so
+        the native body early-returns 0 items BEFORE touching the stream
+        pointer. Exercises dispatch + 4-arg marshaling + rax export with no
+        FS content required (a deliberately bogus stream=0 confirms the
+        early return never dereferences it)."""
+        proj = fauxware_project
+        proj.hook(self.HOOK_ADDR, self._fread_stub()(), replace=True)
+        try:
+            state = self._setup(proj, dst=self.DST_ADDR, size=4, nmemb=0, stream=0)
+            mgr, sid = self._run(proj, state)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("fread", 0) == 1, f"expected native fread dispatch, got stats={stats}"
+            assert mgr._rust_mgr.get_state_register(sid, "rax") == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_fread_invalid_fileno_returns_zero(self, fauxware_project):
+        """fread(dst, 1, 4, stream) where stream->_fileno is -1 (0xFFFFFFFF):
+        `read_fileno` resolves the 32-bit field from the Python-written FILE
+        struct, the fd < 0 branch fires, and the call returns 0 items. This
+        is the only path that round-trips the FILE._fileno memory read across
+        the FFI boundary without needing seeded FS content."""
+        import claripy
+
+        proj = fauxware_project
+        proj.hook(self.HOOK_ADDR, self._fread_stub()(), replace=True)
+        try:
+            state = self._setup(proj, dst=self.DST_ADDR, size=1, nmemb=4, stream=self.FILE_PTR)
+            # Invalid fd sentinel in the _fileno field — read_fileno returns -1.
+            state.memory.store(
+                self.FILE_PTR + self.FILENO_OFF,
+                claripy.BVV(0xFFFFFFFF, 32),
+                endness="Iend_LE",
+            )
+            mgr, sid = self._run(proj, state)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("fread", 0) == 1, f"expected native fread dispatch, got stats={stats}"
+            # fd < 0 -> 0 items read.
+            assert mgr._rust_mgr.get_state_register(sid, "rax") == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeMemoryAlignedAllocators:
     """Integration tests for NativeMemalign / NativePosixMemalign (angr-f16h.2).
 
