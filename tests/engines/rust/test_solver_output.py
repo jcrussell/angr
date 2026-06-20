@@ -502,16 +502,24 @@ class TestCallableStepFunc:
         try:
             fauxware_project.factory.simulation_manager = rust_sm
 
-            # Call authenticate(username="SOSNEAKY") which is the backdoor
+            # The fauxware backdoor keys on the SECOND arg (password == "SOSNEAKY"),
+            # not the username. Passing SOSNEAKY as username with a non-matching
+            # password does NOT take the backdoor, so authenticate() returns 0.
             # authenticate is at 0x400664
             authenticate = fauxware_project.factory.callable(
                 0x400664,
                 prototype="int authenticate(char *username, char *password)",
                 concrete_only=True,
             )
-            # This should complete without error using the Rust engine
+            # Pin the concrete return value the Callable->Rust register-export
+            # pipeline must produce (non-backdoor path -> 0). `is not None` alone
+            # would pass for a semantically inverted (1) or garbage return.
             result = authenticate(b"SOSNEAKY\x00", b"anything\x00")
             assert result is not None, "Callable should return a value"
+            assert result.concrete, f"Return should be concrete, got {result!r}"
+            assert result.concrete_value == 0, (
+                f"Non-backdoor authenticate() should return 0, got {result.concrete_value}"
+            )
         finally:
             fauxware_project.factory.simulation_manager = original_sm
 
@@ -560,11 +568,18 @@ class TestCallStackTracking:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.run(n=100)
+        mgr.explore(find=0x4006ED)
 
-        # Found states should have call stack accessible via snapshot
-        for s in mgr.found:
-            snapshot = mgr._rust_mgr.export_state(s.scratch._rust_state_id)
+        # Without a find target the found stash is empty and the loop below would
+        # never run, making the snapshot/call-stack assertions vacuous.
+        assert len(mgr.found) > 0, "expected at least one found state to snapshot"
+        # Found states should have call stack accessible via snapshot. Found
+        # proxies don't carry _rust_state_id, so resolve ids via the Rust mgr
+        # (mirrors test_call_stack_on_found_states).
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        assert len(found_ids) == len(mgr.found)
+        for state_id in found_ids:
+            snapshot = mgr._rust_mgr.export_state(state_id)
             call_stack = snapshot.get_call_stack()
             # Call stack is a list of (call_site, callee, ret_addr, sp) tuples
             assert isinstance(call_stack, list)
@@ -1158,8 +1173,13 @@ class TestExplorationTechniqueStepHookDispatch:
 
         # No exception escapes; exploration completes.
         mgr.run(max_steps=5)
-        # Active stash either advanced or drained; either way we didn't hang.
-        assert mgr._rust_mgr.stash_counts() is not None
+
+        # The fallback must keep the run loop advancing despite the raising hook.
+        # stash_counts() being non-None is true for any manager and proves
+        # nothing; on linear fauxware the single active state steps forward
+        # without forking/draining, so assert the canonical progress counter
+        # (mgr.stats["steps"]) actually advanced.
+        assert mgr.stats["steps"] > 0, f"run made no progress despite fallback: stats={mgr.stats}"
 
     def test_no_step_hook_means_no_dispatch_overhead(self, fauxware_project):
         """Techniques without step() override should NOT trigger dispatch."""
