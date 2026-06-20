@@ -1,7 +1,10 @@
 // Unit tests for claripy_bridge.rs (claripy AST <-> RustBV/RustFloat bridge).
 // Split from the parent module per rust-mod-tests-sibling-extraction.
 
+use std::sync::Arc;
+
 use super::*;
+use crate::symbolic::{RustBV, SymContext};
 
 #[test]
 fn test_extract_int_value_small() {

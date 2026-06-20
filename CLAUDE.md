@@ -337,7 +337,7 @@ Caveats:
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
 - **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (13 modules; entry point `mod.rs`, plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs)
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
-- **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
+- **Claripy bridge**: `native/angr/src/claripy_bridge/` (entry point `mod.rs` + cache.rs, import.rs, export.rs submodules)
 - **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, helpers.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
 - **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.) — contributor guide in [`docs/extending-angr/simprocedures.rst`](docs/extending-angr/simprocedures.rst) ("Native (Rust) SimProcedures" section)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
