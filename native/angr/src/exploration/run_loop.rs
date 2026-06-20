@@ -426,20 +426,7 @@ impl RustExplorationManager {
                 Ok(successors) => {
                     // Add successors to appropriate stashes, checking find/avoid
                     for successor in successors {
-                        let spc = successor.pc();
-                        if self.find_addrs.contains(&spc) {
-                            if self.constraint_solver.lazy_solves || successor.satisfiable() {
-                                self.sm
-                                    .stashes_mut()
-                                    .entry(STASH_FOUND.to_string())
-                                    .or_default()
-                                    .push_back(successor);
-                            }
-                        } else if self.avoid_addrs.contains(&spc) {
-                            self.push_or_drop_terminal(STASH_AVOID, successor);
-                        } else {
-                            self.push_to_active_or_drop(successor);
-                        }
+                        self.route_successor(successor, true);
                     }
                 }
                 Err(StepError::NeedCallback(pending)) => {
@@ -678,20 +665,7 @@ impl RustExplorationManager {
                     // found/avoid) exactly like normal successors so a
                     // find-guided search can reach a target behind the loop.
                     for fork in forks {
-                        let spc = fork.pc();
-                        if self.find_addrs.contains(&spc) {
-                            if self.constraint_solver.lazy_solves || fork.satisfiable() {
-                                self.sm
-                                    .stashes_mut()
-                                    .entry(STASH_FOUND.to_string())
-                                    .or_default()
-                                    .push_back(fork);
-                            }
-                        } else if self.avoid_addrs.contains(&spc) {
-                            self.push_or_drop_terminal(STASH_AVOID, fork);
-                        } else {
-                            self.push_to_active_or_drop(fork);
-                        }
+                        self.route_successor(fork, true);
                     }
                 }
             }

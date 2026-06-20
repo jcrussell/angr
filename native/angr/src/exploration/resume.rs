@@ -242,18 +242,7 @@ impl RustExplorationManager {
 
         // Add to active stash, checking find/avoid first
         for s in final_successors {
-            let spc = s.pc();
-            if self.find_addrs.contains(&spc) {
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_FOUND.to_string())
-                    .or_default()
-                    .push_back(s);
-            } else if self.avoid_addrs.contains(&spc) {
-                self.push_or_drop_terminal(STASH_AVOID, s);
-            } else {
-                self.push_to_active_or_drop(s);
-            }
+            self.route_successor(s, false);
         }
 
         // Add to pruned stash
@@ -319,18 +308,7 @@ impl RustExplorationManager {
                     };
                     self.sm.set_root(forked.state_id(), root_state_id);
                     if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                        let spc = forked.pc();
-                        if self.find_addrs.contains(&spc) {
-                            self.sm
-                                .stashes_mut()
-                                .entry(STASH_FOUND.to_string())
-                                .or_default()
-                                .push_back(forked);
-                        } else if self.avoid_addrs.contains(&spc) {
-                            self.push_or_drop_terminal(STASH_AVOID, forked);
-                        } else {
-                            self.push_to_active_or_drop(forked);
-                        }
+                        self.route_successor(forked, false);
                     }
                 }
             }

@@ -94,6 +94,38 @@ impl RustExplorationManager {
         true
     }
 
+    /// Route a successor state to the found/avoid/active stash by its PC.
+    ///
+    /// Centralizes the find_addrs/avoid_addrs/active triage that the
+    /// successor and deferred-fork loops in run_loop.rs and resume.rs would
+    /// otherwise open-code identically. The `find_addrs` -> STASH_FOUND and
+    /// `avoid_addrs` -> push_or_drop_terminal(STASH_AVOID) legs are byte
+    /// identical at every call site; only the FOUND-push gating varies.
+    ///
+    /// When `gate_found_on_sat` is true the FOUND push is skipped for states
+    /// that are neither `lazy_solves` nor `satisfiable()` (the run_loop
+    /// successor/loop-exit sites that have not yet filtered satisfiability).
+    /// The resume.rs sites pass false because satisfiability was already
+    /// established upstream (the whole block is gated on it), so the FOUND
+    /// push is unconditional there.
+    #[inline]
+    pub(crate) fn route_successor(&mut self, state: RustSimState, gate_found_on_sat: bool) {
+        let spc = state.pc();
+        if self.find_addrs.contains(&spc) {
+            if !gate_found_on_sat || self.constraint_solver.lazy_solves || state.satisfiable() {
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_default()
+                    .push_back(state);
+            }
+        } else if self.avoid_addrs.contains(&spc) {
+            self.push_or_drop_terminal(STASH_AVOID, state);
+        } else {
+            self.push_to_active_or_drop(state);
+        }
+    }
+
     /// Track a state in the state_index.
     #[inline]
     pub(crate) fn index_state(&mut self, state_id: impl Into<StateId>, stash: &str) {
