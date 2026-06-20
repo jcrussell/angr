@@ -179,6 +179,36 @@ fn set_z3_global_param(key: &str, value: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Read a Z3 module-level parameter back via `Z3_global_param_get`.
+///
+/// The inverse of [`set_z3_global_param`]. Returns `Some(value)` when Z3
+/// recognises the key (whether or not it was explicitly set — Z3 reports
+/// its current/default value), or `None` when the key does not exist.
+///
+/// The high-level `z3` crate exposes `set_global_param` but no getter, so
+/// this calls the raw `z3_sys::Z3_global_param_get` directly. Z3 writes the
+/// value into a thread-local buffer that the next call overwrites, so we
+/// copy it out immediately. Used by the round-trip test that pins down
+/// `deterministic=True` seed wiring (angr-a116s.11).
+#[cfg(feature = "vex-engine-z3")]
+#[pyfunction]
+fn get_z3_global_param(key: &str) -> PyResult<Option<String>> {
+    use std::ffi::{CStr, CString};
+
+    let c_key = CString::new(key).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid Z3 param key: {e}"))
+    })?;
+    let mut out: z3_sys::Z3_string = std::ptr::null();
+    let found = unsafe { z3_sys::Z3_global_param_get(c_key.as_ptr(), &mut out) };
+    if !found || out.is_null() {
+        return Ok(None);
+    }
+    let value = unsafe { CStr::from_ptr(out) }
+        .to_string_lossy()
+        .into_owned();
+    Ok(Some(value))
+}
+
 /// Stderr logger backed by an [`env_logger::filter::Filter`].
 ///
 /// Output format: `[rust:LEVEL] target: msg` (matches the pre-env_logger
@@ -372,6 +402,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
     #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(set_z3_global_param, m)?)?;
+    #[cfg(feature = "vex-engine-z3")]
+    m.add_function(pyo3::wrap_pyfunction!(get_z3_global_param, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;

@@ -497,14 +497,37 @@ class TestSolverOperations:
     def test_solver_contradictory_find_avoid(self):
         """Same address in find and avoid should avoid (avoid takes priority)."""
         mgr = _RustExplorationManager("amd64")
+        # Stub callbacks so run() doesn't raise "callbacks not set". The
+        # avoid/find classification happens at the top of the run loop
+        # *before* any lift/step, so these are never actually invoked here.
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
         mgr.set_find_addrs([0x1000])
         mgr.set_avoid_addrs([0x1000])
         state = RustSimState("amd64")
         state.pc = 0x1000
         mgr.add_state("active", state)
-        # The address is in both find and avoid — behavior is implementation-defined
-        # but should not crash
         assert mgr.active_count() == 1
+
+        # Step the manager so the run loop actually classifies the state.
+        # run_loop.rs checks avoid_addrs (line ~162) *before* find_addrs
+        # (line ~206), so a state already sitting at an address in BOTH
+        # stashes must land in "avoid", never "found". Asserting the
+        # resulting stash placement (not just no-crash) pins that priority:
+        # swapping the two classification blocks, or no-op'ing
+        # set_avoid_addrs, would flip the state into "found" and redden this.
+        mgr.run(5)
+        counts = mgr.stash_counts()
+        assert counts.get("avoid", 0) == 1, (
+            f"State at 0x1000 (in both find and avoid) should land in 'avoid' "
+            f"— avoid takes priority over find; stashes={counts}"
+        )
+        assert counts.get("found", 0) == 0, (
+            f"State at 0x1000 must NOT be found when the address is also an avoid address; stashes={counts}"
+        )
 
 
 class TestDeterministicMode:
@@ -519,14 +542,23 @@ class TestDeterministicMode:
     """
 
     def test_set_z3_global_param_smoke(self):
-        """``set_z3_global_param`` FFI accepts well-known module keys."""
-        from angr.rustylib.vex_engine import set_z3_global_param
+        """``set_z3_global_param`` FFI actually writes the Z3 module param."""
+        from angr.rustylib.vex_engine import get_z3_global_param, set_z3_global_param
 
-        # No assertion on solver behavior — just that the FFI hop succeeds
-        # and Z3 does not raise on these keys. The actual model-stability
-        # effect is exercised by the fauxware end-to-end test below.
+        # Round-trip via the getter so a no-op or arg-swapped FFI wrapper
+        # reddens this. A bare set-with-no-readback passed even when the
+        # underlying Z3_global_param_set (a void C fn that silently ignores
+        # bad keys) was gutted — masking dead deterministic-seed wiring.
         set_z3_global_param("smt.random_seed", "0")
+        assert get_z3_global_param("smt.random_seed") == "0"
+
         set_z3_global_param("sat.random_seed", "0")
+        assert get_z3_global_param("sat.random_seed") == "0"
+
+        # A non-zero value must round-trip too — guards against a wrapper
+        # that hard-codes "0" instead of forwarding the caller's value.
+        set_z3_global_param("smt.random_seed", "42")
+        assert get_z3_global_param("smt.random_seed") == "42"
 
     def test_deterministic_kwarg_accepted(self, fauxware_project):
         """``deterministic=True`` constructs cleanly + records flag on self."""
