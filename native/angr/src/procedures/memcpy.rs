@@ -20,6 +20,9 @@
 //! - Copies data byte-by-byte, preserving symbolic values
 //! - Maximum concrete copy size is 1MB (configurable)
 
+use super::mem_common::{
+    MAX_SYMBOLIC_ADDR_STORES, check_symbolic_addr_size, enumerate_addr_candidates,
+};
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -32,19 +35,6 @@ const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
 /// emits per-byte `memory_load` + `ITE` + `memory_store`, far costlier than the
 /// concrete chunked path, so it is capped much lower (matches memset).
 const MAX_SYMBOLIC_COPY_SIZE: u64 = 4096;
-
-/// Maximum number of concrete address solutions for a symbolic `dst`/`src`
-/// before falling back to Python. `eval_upto` is asked for one more than this
-/// so an unbounded pointer is detected and rejected (matches memset).
-const MAX_SYMBOLIC_ADDR_CANDIDATES: usize = 64;
-
-/// Maximum size for a symbolic-address copy. The per-pair ITE path runs
-/// `|dst| * |src| * size` conditional stores, so the size is capped tightly.
-const MAX_SYMBOLIC_ADDR_COPY_SIZE: u64 = 256;
-
-/// Total conditional-store budget (`|dst| * |src| * size`) for the
-/// symbolic-address path. Exceeding it falls back to Python.
-const MAX_SYMBOLIC_ADDR_STORES: u64 = 4096;
 
 /// Copy `size` bytes from a SYMBOLIC `src` and/or `dst` address.
 ///
@@ -68,31 +58,14 @@ fn copy_symbolic_addr(
     size_bv: &RustBV,
 ) -> Result<Option<RustBV>, ProcedureError> {
     // Symbolic address + symbolic size is out of scope; require a concrete size.
-    let size = size_bv
-        .as_u64()
-        .ok_or_else(|| ProcedureError::SymbolicArgument("size".to_string()))?;
-    if size == 0 {
-        return Ok(Some(dst_bv.clone()));
-    }
-    if size > MAX_SYMBOLIC_ADDR_COPY_SIZE {
-        return Err(ProcedureError::SymbolicArgument("size".to_string()));
-    }
-
-    // Enumerate candidate addresses under a cap. A concrete pointer yields a
-    // single-element set; asking for one more than the cap detects unbounded
-    // pointers and bails.
-    let (dst_cands, src_cands) = {
-        let ctx = state.solver().borrow();
-        let d = ctx.eval_upto(dst_bv, MAX_SYMBOLIC_ADDR_CANDIDATES + 1);
-        let s = ctx.eval_upto(src_bv, MAX_SYMBOLIC_ADDR_CANDIDATES + 1);
-        (d, s)
+    let size = match check_symbolic_addr_size(size_bv)? {
+        None => return Ok(Some(dst_bv.clone())),
+        Some(s) => s,
     };
-    if dst_cands.is_empty() || dst_cands.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
-        return Err(ProcedureError::SymbolicArgument("dst".to_string()));
-    }
-    if src_cands.is_empty() || src_cands.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
-        return Err(ProcedureError::SymbolicArgument("src".to_string()));
-    }
+
+    // Enumerate candidate addresses under a cap (unbounded pointers bail).
+    let dst_cands = enumerate_addr_candidates(state, dst_bv, "dst")?;
+    let src_cands = enumerate_addr_candidates(state, src_bv, "src")?;
     // Bound total work: |dst| * |src| * size conditional stores.
     let pairs = dst_cands.len() as u64 * src_cands.len() as u64;
     if pairs.saturating_mul(size) > MAX_SYMBOLIC_ADDR_STORES {
@@ -103,7 +76,6 @@ fn copy_symbolic_addr(
     // overlapping src/dst regions copy pre-store values (memmove contract).
     let mut src_bytes: HashMap<u64, RustBV> = HashMap::new();
     for &s in &src_cands {
-        let s = s as u64;
         for i in 0..size {
             let p = s.wrapping_add(i);
             if let std::collections::hash_map::Entry::Vacant(e) = src_bytes.entry(p) {
@@ -115,13 +87,11 @@ fn copy_symbolic_addr(
     let dwidth = dst_bv.width();
     let swidth = src_bv.width();
     for &d in &dst_cands {
-        let d = d as u64;
         let dcond = {
             let ctx = state.solver().borrow();
             dst_bv.eq(&RustBV::concrete(d as u128, dwidth), &ctx)
         };
         for &s in &src_cands {
-            let s = s as u64;
             let guard = {
                 let ctx = state.solver().borrow();
                 let scond = src_bv.eq(&RustBV::concrete(s as u128, swidth), &ctx);

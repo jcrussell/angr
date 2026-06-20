@@ -89,6 +89,7 @@ pub mod fread;
 pub mod getenv;
 pub mod libc_start_main;
 pub mod malloc;
+pub mod mem_common;
 pub mod memcmp;
 pub mod memcpy;
 pub mod memset;
