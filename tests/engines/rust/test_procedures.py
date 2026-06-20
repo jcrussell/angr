@@ -1139,3 +1139,78 @@ class TestNativeExtendedStringProcedures:
         count, rax = self._run_one(fauxware_project, "strcspn", b"abc,def", b",;", self.SET_ADDR)
         assert count == 1, "expected native strcspn dispatch"
         assert rax == 3, f"rax={rax}"
+
+
+# SimProcedure self.call() continuation constants (angr-aca6y regression).
+# Laid out inside a single load_shellcode blob so the test stays binary-free.
+_SELFCALL_LOAD = 0x400000
+_SELFCALL_HOOK = 0x400000  # entry; hooked with the self.call() procedure
+_SELFCALL_CALLEE = 0x400010  # a lone `ret` the procedure calls into
+_SELFCALL_RETTGT = 0x400020  # self-loop the top-level procedure rets to
+_SELFCALL_MARK = 0x400100  # after_call writes the sentinel here
+_SELFCALL_SENTINEL = 0xC0FFEE
+
+
+class _SelfCallContinuationProc(angr.SimProcedure):
+    """Hooked procedure that issues a ``self.call`` into a lone ``ret`` and
+    only writes the sentinel from its continuation (``after_call``).
+
+    The continuation runs iff the return address ``self.call`` pushed actually
+    reached Rust state: pre-fix (angr-aca6y) the push was lost by the
+    state-copy in ``cc.setup_callsite``, the callee's ``ret`` popped a stale
+    word and jumped to garbage, and ``after_call`` never ran.
+    """
+
+    def run(self):
+        self.call(_SELFCALL_CALLEE, [], "after_call", prototype="void x()")
+
+    def after_call(self):
+        import claripy
+
+        self.state.memory.store(_SELFCALL_MARK, claripy.BVV(_SELFCALL_SENTINEL, 64), endness="Iend_LE")
+
+
+class TestSimProcedureSelfCallContinuation:
+    """Regression for angr-aca6y: a SimProcedure ``self.call`` continuation
+    must survive the FFI boundary.
+
+    ``SimProcedure.call`` runs ``cc.setup_callsite`` on a *copy* of the
+    executing state, so the continuation return address it pushes bypasses
+    ``CallbackMemoryTracker``'s wrapped store. In register-snapshot mode the
+    pushed word never reached Rust, so the callee's ``ret`` jumped to a stale
+    value and deadended instead of re-entering ``after_call``. The fix
+    (``rust_state_sync._resume_with_state``) reads the grown stack region on an
+    ``Ijk_Call`` successor and folds it into the memory changes.
+    """
+
+    def test_self_call_continuation_reaches_after_call(self):
+        import claripy
+
+        shellcode = bytearray(b"\x90" * 0x200)
+        shellcode[_SELFCALL_CALLEE - _SELFCALL_LOAD] = 0xC3  # callee: ret
+        # Self-loop (jmp $) so the continuation's return lands on a stable,
+        # constrained PC -- a bare ret would drain to the unconstrained stash.
+        shellcode[_SELFCALL_RETTGT - _SELFCALL_LOAD] = 0xEB
+        shellcode[_SELFCALL_RETTGT - _SELFCALL_LOAD + 1] = 0xFE
+        proj = angr.load_shellcode(bytes(shellcode), arch="AMD64", load_address=_SELFCALL_LOAD)
+        proj.hook(_SELFCALL_HOOK, _SelfCallContinuationProc(), replace=True)
+        state = proj.factory.blank_state(
+            addr=_SELFCALL_HOOK,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        # Return slot for the top-level procedure (consumed after after_call).
+        state.memory.store(state.regs.rsp, claripy.BVV(_SELFCALL_RETTGT, 64), endness="Iend_LE")
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=6)
+
+        states = mgr.active + mgr.deadended + mgr.errored + mgr.unconstrained
+        marks = [s.solver.eval(s.memory.load(_SELFCALL_MARK, 8, endness="Iend_LE")) for s in states]
+        assert _SELFCALL_SENTINEL in marks, (
+            "after_call continuation never ran -> self.call() return-address "
+            f"push lost across FFI (angr-aca6y); marks={[hex(m) for m in marks]}, "
+            f"stash counts={mgr.stash_counts()}"
+        )
