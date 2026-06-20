@@ -107,15 +107,24 @@ class TestExplorationStrategy:
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
             RustExplorationManager(fauxware_project, [state], exploration_strategy="random")
 
-    def test_init_kwarg_use_shared_lineage_solver_default_off(self, fauxware_project):
-        """Default ``use_shared_lineage_solver=False`` keeps the opt-in off and
-        exploration matches an explicit ``False`` (angr-3ms1 step 1b).
+    @staticmethod
+    def _found_inputs(mgr):
+        """Order-independent multiset of concretized stdin for found states."""
+        return sorted(bytes(s.posix.dumps(0)) for s in mgr.found)
 
-        The flag is inert in this slice — slice-1c will be the first
-        consumer at fork time — so this test asserts the wiring is in
-        place (default value stored, explicit False round-trips) without
-        depending on any observable engine behavior change.
+    def test_init_kwarg_use_shared_lineage_solver_default_off(self, fauxware_project):
+        """Default ``use_shared_lineage_solver=False`` round-trips to the *same
+        concrete solution* as an explicit ``False`` (angr-3ms1 step 1b).
+
+        Asserting only the stored Python attribute is vacuous: it stays
+        ``False`` whether or not the seed-state propagation gate
+        (``_add_rust_state``) leaks. Instead we require the default and the
+        explicit-False runs to reach the find target with byte-identical
+        concretized stdin, so the default path must produce a *sound* solution
+        rather than merely a non-empty ``found`` stash.
         """
+
+        find_addr = 0x4006ED
 
         state_default = fauxware_project.factory.entry_state()
         mgr_default = RustExplorationManager(fauxware_project, [state_default])
@@ -129,35 +138,52 @@ class TestExplorationStrategy:
         )
         assert mgr_explicit._use_shared_lineage_solver is False
 
-        # The explore-to-find golden path still works when the kwarg is
-        # off — guards against an accidental gate flip in the default
-        # path.
-        find_addr = 0x4006ED
         mgr_default.explore(find=find_addr)
-        assert len(mgr_default.found) > 0
+        mgr_explicit.explore(find=find_addr)
+        default_inputs = self._found_inputs(mgr_default)
+        explicit_inputs = self._found_inputs(mgr_explicit)
+        assert default_inputs, "default-off run must reach the find target"
+        assert default_inputs == explicit_inputs, (
+            "default and explicit-False runs must produce identical concrete solutions"
+        )
 
     def test_init_kwarg_use_shared_lineage_solver_on(self, fauxware_project):
-        """``use_shared_lineage_solver=True`` is inert today but must not
-        break exploration (angr-3ms1 step 1b).
+        """``use_shared_lineage_solver=True`` must explore identically to a
+        default-off run, producing *sound* concrete solutions (angr-3ms1 step
+        1b).
 
-        Slice-1c will be the first consumer of the flag at fork time;
-        until then, an opt-in run must explore identically to a
-        default-off run. This guards against a stray gate that fires on
-        the read alone — easy to introduce by mistake while wiring
-        slice-1c later.
+        The opt-in mints a fresh ``SharedLineageSolver`` at fork time
+        (snapshot_fork_ops.rs) — a distinct constraint-solving path from the
+        default per-context solver. A lineage-seeding bug can leak unsound SAT
+        solutions on the find state while still *reaching* the target, so
+        ``len(found) > 0`` alone is vacuous. We require every found state to be
+        satisfiable AND the ON run's concretized stdin to byte-match a parallel
+        default-off run, which a dropped/duplicated constraint would break.
         """
 
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
+        find_addr = 0x4006ED
+
+        state_on = fauxware_project.factory.entry_state()
+        mgr_on = RustExplorationManager(
             fauxware_project,
-            [state],
+            [state_on],
             use_shared_lineage_solver=True,
         )
-        assert mgr._use_shared_lineage_solver is True
+        assert mgr_on._use_shared_lineage_solver is True
 
-        find_addr = 0x4006ED
-        mgr.explore(find=find_addr)
-        assert len(mgr.found) > 0, "explore() must succeed with the opt-in enabled (flag is inert today)"
+        state_off = fauxware_project.factory.entry_state()
+        mgr_off = RustExplorationManager(fauxware_project, [state_off])
+
+        mgr_on.explore(find=find_addr)
+        mgr_off.explore(find=find_addr)
+        on_inputs = self._found_inputs(mgr_on)
+        off_inputs = self._found_inputs(mgr_off)
+        assert on_inputs, "opt-in run must reach the find target"
+        for s in mgr_on.found:
+            assert s.solver.satisfiable(), "found state under opt-in must be satisfiable"
+        assert on_inputs == off_inputs, (
+            "shared-lineage-solver ON must produce the same concrete solutions as a default-off run"
+        )
 
     def test_deep_loop_recipe_dfs_plus_length_limiter(self, fauxware_project):
         """Recipe for deep-input-loop binaries (angr-smxp / angr-xel4 spike):
@@ -359,13 +385,22 @@ class TestVexOperationCoverage:
         assert ctx.eval(x) == 0xFF
 
     def test_xor_self_is_zero(self):
-        """x ^ x == 0 for any x."""
+        """XOR of two *distinct* operands constrained equal: (x ^ y) == 0 with
+        x pinned forces y to the same value.
+
+        The self-XOR form ``(x ^ x) == 0`` is structurally simplified to
+        ``0 == 0`` before it reaches the solver, so it never exercises the XOR
+        lowering. Constraining two distinct operands and reading back ``y``
+        forces a real two-operand XOR.
+        """
         import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
-        ctx.add_constraint_ast((x ^ x) == 0)
-        assert ctx.satisfiable()
+        y = claripy.BVS("y", 32)
+        ctx.add_constraint_ast((x ^ y) == 0)
+        ctx.add_constraint_ast(x == 0xCAFEBABE)
+        assert ctx.eval(y) == 0xCAFEBABE
 
     def test_xor_symbolic_inverse(self):
         """x ^ y == 0xFFFFFFFF => y == ~x."""
@@ -604,13 +639,21 @@ class TestVexOperationCoverage:
         assert ctx.satisfiable()
 
     def test_reverse_involution(self):
-        """Reverse(Reverse(x)) == x."""
+        """Reverse(Reverse(x)) == x AND the single byte-swap is pinned.
+
+        The involution form alone is a tautology: it holds for ANY
+        permutation, including the identity function. Pinning the concrete
+        single-swap value (0xCAFEBABE -> 0xBEBAFECA) makes the byte reorder
+        observable, so an identity/broken Reverse turns the second constraint
+        UNSAT and the test fails.
+        """
         import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
         ctx.add_constraint_ast(x == 0xCAFEBABE)
         ctx.add_constraint_ast(claripy.Reverse(claripy.Reverse(x)) == x)
+        ctx.add_constraint_ast(claripy.Reverse(x) == 0xBEBAFECA)
         assert ctx.satisfiable()
 
     def test_reverse_64bit(self):
