@@ -3344,6 +3344,12 @@ pub struct ExplorationStateSnapshot {
     /// Named register values: (name, concrete_value, size_bits).
     /// Pre-computed at export time so Python doesn't need offset tables.
     named_registers: Vec<(String, u128, u32)>,
+    /// Names of registers that hold a SYMBOLIC value (and so were skipped
+    /// from `named_registers`). Collected for ~free in the same export loop.
+    /// Python uses this to attach a lazy register proxy on the plain-export
+    /// path so a Rust-computed symbolic register (e.g. a clz/ctz result) is
+    /// recovered on demand instead of being silently dropped (angr-4ju9e).
+    symbolic_register_names: Vec<String>,
     /// Call stack entries: (call_site_addr, callee_addr, return_addr, stack_ptr).
     call_stack: Vec<(u64, u64, u64, u64)>,
     /// Detailed execution history: (addr, jumpkind, jump_target).
@@ -3377,6 +3383,13 @@ impl ExplorationStateSnapshot {
             .iter()
             .map(|(name, value, bits)| (name.clone(), (*value, *bits)))
             .collect()
+    }
+
+    /// Get the names of registers that hold a symbolic value (skipped from
+    /// `get_registers_named`). Python attaches a lazy register proxy when this
+    /// is non-empty so symbolic registers are recovered on demand (angr-4ju9e).
+    pub fn get_symbolic_register_names(&self) -> Vec<String> {
+        self.symbolic_register_names.clone()
     }
 
     /// Get history (basic block addresses visited).
@@ -3502,16 +3515,26 @@ impl RustSimState {
 
         // Export named registers: read each GP register by name
         let mut named_registers = Vec::new();
+        let mut symbolic_register_names = Vec::new();
         let ctx = self.solver.borrow();
         for &name in self.arch.register_names() {
-            if let Some(size) = self.arch.register_size(name) {
+            if self.arch.register_size(name).is_some() {
                 let bv = self.registers.get_reg(name, &ctx);
-                if let Some(bv) = bv
-                    && let Some(val) = bv.as_u128()
-                {
-                    named_registers.push((name.to_string(), val, size * 8));
+                if let Some(bv) = bv {
+                    if let Some(val) = bv.as_u128() {
+                        named_registers.push((
+                            name.to_string(),
+                            val,
+                            self.arch.register_size(name).unwrap() * 8,
+                        ));
+                    } else {
+                        // Symbolic register: record the name so Python can
+                        // recover the AST on demand (angr-4ju9e). Recovering
+                        // the full AST here for every export would blow up the
+                        // hot path, so we only export the cheap name list.
+                        symbolic_register_names.push(name.to_string());
+                    }
                 }
-                // Skip symbolic registers (they'll need AST recovery)
             }
         }
 
@@ -3560,6 +3583,7 @@ impl RustSimState {
             constraint_count,
             history: self.history.clone(),
             named_registers,
+            symbolic_register_names,
             call_stack,
             detailed_history,
             heap_allocated: self

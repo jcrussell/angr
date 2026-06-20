@@ -586,6 +586,9 @@ class RustStateExportMixin:
                 # (e.g. ip_at_syscall) that angr's register plugin doesn't
                 # expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
+        # Recover Rust-computed symbolic registers lazily (angr-4ju9e). No-op
+        # when the snapshot reports none — keeps the plain register hot path.
+        self._recover_symbolic_registers_from_snapshot(state, snapshot)
 
     def _sync_rust_mmap_base_to_state(self, state: angr.SimState, state_id: int):
         """Push Rust's per-state mmap_base into Python's state.heap.mmap_base.
@@ -1006,6 +1009,51 @@ class RustStateExportMixin:
                 # cat-(a) EXPECTED CONTROL FLOW: Skip VEX internal
                 # registers that angr doesn't expose (ip_at_syscall etc.).
                 pass
+        self._recover_symbolic_registers_from_snapshot(state, snapshot)
+
+    def _recover_symbolic_registers_from_snapshot(self, state: angr.SimState, snapshot):
+        """Recover Rust-computed SYMBOLIC registers onto a plain export state.
+
+        ``export_full`` writes only CONCRETE registers into ``named_registers``
+        and skips symbolic ones (state.rs::export_full). On the plain-SimState
+        export path that silently dropped a Rust-computed symbolic register
+        (e.g. an ``lzcnt``/``tzcnt`` clz/ctz result) — Python then lazy-filled
+        it to a fresh BVS, or to 0 under ``ZERO_FILL_UNCONSTRAINED_REGISTERS``,
+        producing a wrong answer (angr-4ju9e).
+
+        Fix is LAZY: when (and only when) the snapshot reports symbolic
+        registers, swap ``state.registers`` for a ``RustRegisterProxy`` bound to
+        the state id. Reads then route live into Rust and recover the symbolic
+        AST *on demand* via ``get_state_register_ast`` (identity-preserving).
+        States with no symbolic register keep the plain register file untouched,
+        so the common hot path pays nothing — an eager full-AST recovery of
+        every symbolic register here regressed flareon2015_2 ~38% (see
+        ``avoid-eager-symbolic-register-export``).
+        """
+        try:
+            symbolic_names = snapshot.get_symbolic_register_names()
+        except Exception:
+            # Old build without the FFI shim — nothing to recover.
+            return
+        if not symbolic_names:
+            return
+        state_id = getattr(snapshot, "state_id", None)
+        if state_id is None:
+            return
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+
+        try:
+            proxy = RustRegisterProxy(self._rust_mgr, state_id, state.arch, python_mgr=self)
+            state.register_plugin("registers", proxy)
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: proxy install failed; the symbolic
+            # register stays dropped (0 / fresh BVS). Warn so it is visible.
+            l.warning(
+                "RustRegisterProxy install for symbolic registers %s failed on state %s: %s — symbolic registers may read as 0",
+                symbolic_names,
+                state_id,
+                e,
+            )
 
     def _load_snapshot_pages(self, state: angr.SimState, snapshot, arch):
         """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""
