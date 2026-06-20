@@ -103,8 +103,67 @@ def main():
             bb = b"".join((mgr._rust_mgr.get_state_memory(sid, base + 0xF62C + j, 1) or b"\xff") for j in range(8))
             print(f"[dump] rust bytewise @0xf62c = {bb.hex()}")
 
+    dump_regs = os.environ.get("PROBE_DUMP_REGS", "0") == "1"
+
+    def reg_dump(tag):
+        # Dump the option-loop control regs (argc=ebp, argv=r12, idx=r15,
+        # cur-arg=r14, strcmp-ret=eax) plus the return addr on the stack to
+        # localize bug angr-aca6y's divergence at 0x406896.
+        sids = mgr._rust_mgr.get_state_ids("active")
+        if not sids:
+            return
+        sid = sids[0]
+        regs = {}
+        for r in ("rbp", "r12", "r15", "r14", "rax", "rsp", "rip"):
+            try:
+                regs[r] = mgr._rust_mgr.get_state_register(sid, r)
+            except Exception as e:
+                regs[r] = f"err:{e!r}"
+        rsp = regs.get("rsp")
+        retb = mgr._rust_mgr.get_state_memory(sid, rsp, 8) if isinstance(rsp, int) else None
+        ret = int.from_bytes(retb, "little") if retb else None
+
+        def rd(addr, n):
+            b = mgr._rust_mgr.get_state_memory(sid, addr, n) or b""
+            return int.from_bytes(b, "little") if b else None
+
+        # libxml2 init-flag globals that drive the divergent branches (base
+        # 0x500000): xmlGlobalInit flag @0x5e0cc8 (test@0x561aad),
+        # init-state @0x5e0008 (cmp 0xffffffff@0x561ace), ptr @0x5e11f0.
+        g_cc8 = rd(0x6E0CC8, 4)
+        g_008 = rd(0x6E0008, 4)
+        g_1f0 = rd(0x6E11F0, 8)
+        # GOT slot for pthread_mutex_init@plt (jmp *0x6dfe58); Rust jumps to a
+        # libxml2 fn (0x5ee070) instead of real libc — bug angr-aca6y.
+        got_pmi = rd(0x6DFE58, 8)
+        print(f"[got pthread_mutex_init@0x6dfe58]={hex(got_pmi) if got_pmi is not None else None}")
+        if isinstance(rsp, int):
+            words = [rd(rsp + 8 * k, 8) for k in range(8)]
+            print(
+                f"[stack {tag}] rsp={hex(rsp)} "
+                + " ".join(f"+{8 * k:#x}={hex(w) if w is not None else None}" for k, w in enumerate(words))
+            )
+        print(
+            f"[regs {tag}] "
+            + " ".join(f"{k}={hex(v) if isinstance(v, int) else v}" for k, v in regs.items())
+            + f" [rsp]={hex(ret) if ret else None}"
+            + f" g@0x6e0cc8={hex(g_cc8) if g_cc8 is not None else None}"
+            + f" g@0x6e0008={hex(g_008) if g_008 is not None else None}"
+            + f" g@0x6e11f0={hex(g_1f0) if g_1f0 is not None else None}"
+        )
+
     for i in range(MAX_STEPS):
         before = pcs("active")
+        if dump_regs and before in (
+            ["0x406896"],
+            ["0x561aa6"],
+            ["0x561efa"],
+            ["0x64db95"],
+            ["0x64db78"],
+            ["0x5ee070"],
+            ["0x64db12"],
+        ):
+            reg_dump(f"pre-step{i}@{before[0]}")
         mgr.step(n=1)
         sc = mgr.stash_counts()
         active = sc.get("active", 0)
