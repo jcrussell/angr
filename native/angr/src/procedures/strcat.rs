@@ -2,7 +2,7 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
-use super::strings::{find_null_addr, scan_concrete_bounded, scan_concrete_until_null};
+use super::strings::{find_null_addr, scan_concrete_bounded, scan_concrete_until_null, write_cstr};
 use crate::symbolic::RustBV;
 
 const MAX_STRLEN: usize = 4096;
@@ -16,16 +16,7 @@ crate::declare_proc! {
         let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
         let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
-        for (i, &byte) in buf.iter().enumerate() {
-            state.memory_store(
-                dest_end.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
-        state.memory_store(
-            dest_end.wrapping_add(buf.len() as u64),
-            RustBV::concrete(0u128, 8),
-        )?;
+        write_cstr(state, dest_end, &buf)?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(dest as u128, bits)))
@@ -43,18 +34,9 @@ crate::declare_proc! {
 
         // Copy at most `max_copy` non-null bytes from src.
         let (buf, _null_found) = scan_concrete_bounded(state, src, max_copy as usize, "src")?;
-        for (i, &byte) in buf.iter().enumerate() {
-            state.memory_store(
-                dest_end.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
 
         // Always null-terminate after the copied bytes.
-        state.memory_store(
-            dest_end.wrapping_add(buf.len() as u64),
-            RustBV::concrete(0u128, 8),
-        )?;
+        write_cstr(state, dest_end, &buf)?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(dest as u128, bits)))

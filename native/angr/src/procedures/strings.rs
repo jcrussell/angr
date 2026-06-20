@@ -96,6 +96,42 @@ pub fn find_null_addr(
     Err(ProcedureError::MaxIterations(max))
 }
 
+/// Write a slice of concrete bytes into memory, one 8-bit store per byte.
+///
+/// This is the write-side counterpart to the read/scan helpers above. The
+/// per-byte `memory_store(addr + i, RustBV::concrete(byte, 8))` loop is the
+/// single most-duplicated idiom across the writing procedures (strcpy,
+/// strcat, getenv, sprintf, strncpy, snprintf, fread, read). Centralizing it
+/// keeps the store boundary in one place.
+pub fn write_concrete_bytes(
+    state: &mut RustSimState,
+    addr: u64,
+    bytes: &[u8],
+) -> Result<(), ProcedureError> {
+    for (i, &byte) in bytes.iter().enumerate() {
+        state.memory_store(
+            addr.wrapping_add(i as u64),
+            RustBV::concrete(byte as u128, 8),
+        )?;
+    }
+    Ok(())
+}
+
+/// Write `bytes` followed by a trailing NUL terminator at `addr + bytes.len()`.
+///
+/// Used by the C-string-producing procedures (strcpy, strdup, strcat,
+/// strncat, getenv, sprintf, snprintf) that always null-terminate. For
+/// truncated/bounded writers that place the terminator at a caller-chosen
+/// offset, call [`write_concrete_bytes`] and store the NUL separately.
+pub fn write_cstr(state: &mut RustSimState, addr: u64, bytes: &[u8]) -> Result<(), ProcedureError> {
+    write_concrete_bytes(state, addr, bytes)?;
+    state.memory_store(
+        addr.wrapping_add(bytes.len() as u64),
+        RustBV::concrete(0u128, 8),
+    )?;
+    Ok(())
+}
+
 /// Result of [`scan_for_null_symbolic`].
 pub enum ScanOutcome {
     /// All scanned bytes were concrete; null terminator found at this length

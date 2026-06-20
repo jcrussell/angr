@@ -23,6 +23,7 @@
 //! symbolic-file model can take over. See bd memory
 //! `invariant-rust-filesystem-no-python-sync`.
 
+use super::strings::write_concrete_bytes;
 use super::{ProcedureError, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -77,9 +78,7 @@ crate::declare_proc! {
 
         let bytes = state.file_system().read(fd_u32, count as usize);
         let n = bytes.len();
-        for (i, b) in bytes.iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
-        }
+        write_concrete_bytes(state, buf, &bytes)?;
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(n as u128, bits)))
     }

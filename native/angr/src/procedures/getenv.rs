@@ -7,6 +7,7 @@
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 
+use super::strings::write_cstr;
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -49,18 +50,8 @@ crate::declare_proc! {
                 let value = value.to_vec(); // clone before mutable borrow
                 // Allocate heap space for value + NUL
                 let buf_addr = state.heap_alloc(value.len() as u64 + 1);
-                // Write value bytes
-                for (i, &byte) in value.iter().enumerate() {
-                    state.memory_store(
-                        buf_addr.wrapping_add(i as u64),
-                        RustBV::concrete(byte as u128, 8),
-                    )?;
-                }
-                // NUL terminator
-                state.memory_store(
-                    buf_addr.wrapping_add(value.len() as u64),
-                    RustBV::concrete(0, 8),
-                )?;
+                // Write value bytes + NUL terminator
+                write_cstr(state, buf_addr, &value)?;
 
                 Ok(Some(RustBV::concrete(buf_addr as u128, bits)))
             }

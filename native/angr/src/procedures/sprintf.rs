@@ -5,6 +5,7 @@
 //! Python for symbolic format strings or arguments.
 
 use super::format_common::{parse_length_modifier, parse_width_digits};
+use super::strings::write_cstr;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -370,18 +371,8 @@ impl NativeSimProcedure for NativeSprintf {
         let varargs = &args[2..];
         let output = format_string(state, &fmt, varargs)?;
 
-        // Write output to destination
-        for (i, &byte) in output.iter().enumerate() {
-            state.memory_store(
-                dest.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
-        // Null terminator
-        state.memory_store(
-            dest.wrapping_add(output.len() as u64),
-            RustBV::concrete(0, 8),
-        )?;
+        // Write output to destination, then the null terminator
+        write_cstr(state, dest, &output)?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(output.len() as u128, bits)))
@@ -420,14 +411,8 @@ impl NativeSimProcedure for NativeSnprintf {
         // Write output to destination, respecting size limit
         if size > 0 {
             let write_len = output.len().min(size - 1);
-            for (i, byte) in output.iter().enumerate().take(write_len) {
-                state.memory_store(
-                    dest.wrapping_add(i as u64),
-                    RustBV::concrete(*byte as u128, 8),
-                )?;
-            }
-            // Always null-terminate if size > 0
-            state.memory_store(dest.wrapping_add(write_len as u64), RustBV::concrete(0, 8))?;
+            // Write truncated output + always null-terminate at write_len.
+            write_cstr(state, dest, &output[..write_len])?;
         }
 
         // Return would-have-been length (not truncated)

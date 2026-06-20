@@ -6,7 +6,9 @@
 //! - If any source byte is symbolic, falls back to Python
 //! - Maximum string length is 4096 bytes
 
-use super::strings::{scan_concrete_bounded, scan_concrete_until_null};
+use super::strings::{
+    scan_concrete_bounded, scan_concrete_until_null, write_concrete_bytes, write_cstr,
+};
 use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
@@ -31,16 +33,7 @@ crate::declare_proc! {
         let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
         // Write to destination byte-by-byte, then the null terminator.
-        for (i, &byte) in buf.iter().enumerate() {
-            state.memory_store(
-                dest.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
-        state.memory_store(
-            dest.wrapping_add(buf.len() as u64),
-            RustBV::concrete(0u128, 8),
-        )?;
+        write_cstr(state, dest, &buf)?;
 
         Ok(Some(dest_bv))
     }
@@ -73,12 +66,7 @@ crate::declare_proc! {
             buf.resize(n as usize, 0);
         }
 
-        for (i, &byte) in buf.iter().enumerate() {
-            state.memory_store(
-                dest.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
+        write_concrete_bytes(state, dest, &buf)?;
 
         Ok(Some(dest_bv))
     }
@@ -103,16 +91,7 @@ crate::declare_proc! {
         // Allocate new buffer (strlen + 1 for null terminator).
         let new_addr = state.heap_alloc(buf.len() as u64 + 1);
 
-        for (i, &byte) in buf.iter().enumerate() {
-            state.memory_store(
-                new_addr.wrapping_add(i as u64),
-                RustBV::concrete(byte as u128, 8),
-            )?;
-        }
-        state.memory_store(
-            new_addr.wrapping_add(buf.len() as u64),
-            RustBV::concrete(0u128, 8),
-        )?;
+        write_cstr(state, new_addr, &buf)?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(new_addr as u128, bits)))

@@ -30,6 +30,7 @@
 //! concrete-content fread only.
 
 use super::ProcedureError;
+use super::strings::write_concrete_bytes;
 use crate::procedures::fileops::read_fileno;
 use crate::symbolic::RustBV;
 
@@ -95,9 +96,7 @@ crate::declare_proc! {
         // Serve concrete bytes from the FS buffer, advancing position.
         let bytes = state.file_system().read(fd_u32, total as usize);
         let n = bytes.len();
-        for (i, b) in bytes.iter().enumerate() {
-            state.memory_store(dst.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
-        }
+        write_concrete_bytes(state, dst, &bytes)?;
         // fread returns the number of complete items read.
         let items = (n as u64) / size;
         Ok(Some(RustBV::concrete(items as u128, bits)))
