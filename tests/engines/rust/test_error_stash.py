@@ -491,9 +491,9 @@ class TestErrorRecovery:
         ctx.add_constraint_ast(x == 5)
         ctx.add_constraint_ast(x == 10)  # contradicts
         assert not ctx.satisfiable()
-        ctx.eval(x)
-        # Should be None or 0-ish, not crash
-        # (exact behavior is implementation-defined for UNSAT)
+        # Contract (solver.rs eval / solving_ops.rs): eval on an UNSAT solver
+        # returns None rather than a spurious witness.
+        assert ctx.eval(x) is None
 
     def test_solver_min_on_unsat(self):
         """min() on UNSAT solver should return None, not crash."""
@@ -505,7 +505,8 @@ class TestErrorRecovery:
         ctx.add_constraint_ast(x == 5)
         ctx.add_constraint_ast(x == 10)
         result = ctx.min(x, signed=False)
-        assert result is None or isinstance(result, int)
+        # UNSAT must short-circuit to None, not a garbage extremum.
+        assert result is None
 
     def test_solver_eval_upto_on_unsat(self):
         """eval_upto() on UNSAT solver returns empty list, not crash."""
@@ -517,7 +518,8 @@ class TestErrorRecovery:
         ctx.add_constraint_ast(x == 5)
         ctx.add_constraint_ast(x == 10)
         results = ctx.eval_upto(x, 5)
-        assert isinstance(results, list)
+        # UNSAT yields no solutions: the list must be empty, not spurious values.
+        assert results == []
 
     def test_solver_many_constraints(self):
         """Solver handles many constraints without crashing."""
