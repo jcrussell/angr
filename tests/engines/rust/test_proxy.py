@@ -408,9 +408,10 @@ class TestRustInspectMarshalling:
     def test_dispatch_skipped_when_no_bps(self, fauxware_project):
         """Dispatch with empty BP list is a no-op (no exception, nothing fired)."""
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
-        # No BPs registered — dispatch should silently return.
-        mgr._cb_inspect_mem_read(sid, "before", 0x1000, 8, None, "Iend_LE")
-        mgr._cb_inspect_mem_write(sid, "after", 0x1000, 8, None, "Iend_LE")
+        # No BPs registered — dispatch must return None (no override) for both
+        # read and write so the Rust caller keeps the original load/store.
+        assert mgr._cb_inspect_mem_read(sid, "before", 0x1000, 8, None, "Iend_LE") is None
+        assert mgr._cb_inspect_mem_write(sid, "after", 0x1000, 8, None, "Iend_LE") is None
 
     def test_dispatch_reentrancy_guard(self, fauxware_project):
         """A BP action that triggers another inspect dispatch is suppressed.
@@ -622,6 +623,13 @@ class TestRustInspectMemReadDispatch:
 
         mgr.run(max_steps=5)
 
+        # Exploration must actually progress (a no-op run would also keep the
+        # bitmask at 0, masking a regression that short-circuits stepping).
+        assert mgr.stats["steps"] > 0
+        # Gate must stay clear across the run — no event bit gets set when no
+        # BP is registered.
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
     def test_mem_read_expr_injection_during_exploration(self, fauxware_project):
         """A mem_read BP_AFTER that overrides mem_read_expr drives the value
         back through the Rust interpreter (claripy->RustBV round-trip) without
@@ -734,6 +742,12 @@ class TestRustInspectMemWriteDispatch:
         # instrumenting the Rust side, but the dispatcher being off is
         # the contract being tested.
         mgr.run(max_steps=5)
+
+        # Exploration must actually progress (a no-op run would also keep the
+        # bitmask at 0, masking a regression that short-circuits stepping).
+        assert mgr.stats["steps"] > 0
+        # The gate stays clear across the run with no BP registered.
+        assert mgr._callbacks.get_inspect_enabled() == 0
 
     def test_mem_write_reentrancy_with_proxy_access(self, fauxware_project):
         """BP action that touches the firing state via the proxy must
@@ -1019,6 +1033,10 @@ class TestRustInspectExtendedEvents:
         mgr = RustExplorationManager(fauxware_project, [state])
         assert mgr._callbacks.get_inspect_enabled() == 0
         mgr.run(max_steps=3)
+        # Exploration must progress and the gate must stay clear across the run
+        # (a no-op run or a spuriously-set event bit would otherwise pass).
+        assert mgr.stats["steps"] > 0
+        assert mgr._callbacks.get_inspect_enabled() == 0
 
     def test_call_return_callback_slots_exposed(self):
         """angr-4ai9: PythonCallbacks gained set_inspect_{call,return}."""
@@ -1116,15 +1134,13 @@ class TestRustInspectExtendedEvents:
 
         mgr._get_inspect_proxy().b("call", when="before", action=on_call)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
-        # fauxware's _start calls __libc_start_main pretty early; bound
-        # the run so the test stays fast even if no internal call fires.
+        # fauxware's _start calls __libc_start_main almost immediately, so a
+        # bounded run is guaranteed to dispatch at least one Ijk_Call.
         mgr.run(max_steps=20)
-        # At minimum the bitmask is set; tolerate zero firings if the
-        # first 20 steps land entirely on external/SimProcedure code
-        # without re-entering the binary. Confirm the dispatcher path
-        # at least did not throw — exploration completed.
         assert mgr._callbacks.get_inspect_enabled() & (1 << 8) != 0
-        # Sanity: any addresses captured are non-zero.
+        # The call BP must actually fire during exploration (not merely be
+        # registered) and carry a real, non-zero callee address.
+        assert len(targets) > 0, "call BP never fired during exploration"
         assert all(t > 0 for t in targets)
 
     def test_return_fires_during_exploration(self, fauxware_project):
@@ -1140,7 +1156,10 @@ class TestRustInspectExtendedEvents:
         mgr._get_inspect_proxy().b("return", when="before", action=on_ret)
         assert mgr._callbacks.get_inspect_enabled() & (1 << 9) != 0
         mgr.run(max_steps=20)
-        assert all(t >= 0 for t in seen)
+        # The return BP must actually fire (Rust pops a frame) and carry a
+        # real, non-zero callee address — an empty/zero-address dispatch fails.
+        assert len(seen) >= 1, "return BP never fired during exploration"
+        assert all(t > 0 for t in seen)
 
     # ---- angr-64pi: tmp_read / tmp_write (VEX RdTmp/WrTmp) ----
 
