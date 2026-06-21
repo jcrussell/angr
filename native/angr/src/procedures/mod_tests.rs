@@ -82,3 +82,33 @@ fn test_fileops_largefile_aliases_dispatch() {
         );
     }
 }
+
+#[test]
+fn test_char_io_unlocked_aliases_dispatch() {
+    // Python angr aliases the single-char stdio variants `x_unlocked = x`
+    // (fputc.py: `fputc_unlocked = putc_unlocked = fputc`; fgetc.py:
+    // `getc = fgetc_unlocked = getc_unlocked = fgetc`; getchar.py:
+    // `getchar_unlocked = getchar`). All five `_unlocked` names resolve in
+    // SIM_PROCEDURES["libc"], so without the alias a glibc-heavy binary that
+    // emits the unlocked symbol round-trips to Python. The native impls must
+    // surface under the `_unlocked` dispatch name too.
+    let registry = NativeProcedureRegistry::new();
+    for (base, alias) in [
+        ("fputc", "fputc_unlocked"),
+        ("putc", "putc_unlocked"),
+        ("fgetc", "fgetc_unlocked"),
+        ("getc", "getc_unlocked"),
+        ("getchar", "getchar_unlocked"),
+    ] {
+        assert!(registry.has_native(base), "{base} should be native");
+        assert!(
+            registry.has_native(alias),
+            "{alias} should resolve via alias"
+        );
+        assert_eq!(
+            registry.get(alias).map(|p| p.name()),
+            registry.get(base).map(|p| p.name()),
+            "{alias} should dispatch to the {base} impl",
+        );
+    }
+}

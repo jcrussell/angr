@@ -117,6 +117,7 @@ crate::declare_proc! {
     name = "fgetc",
     struct = NativeFgetc,
     args = [stream: concrete],
+    aliases = ["fgetc_unlocked"],
     call |state| {
         let fd = read_fileno(state, stream)?;
         if fd < 0 {
@@ -154,6 +155,7 @@ crate::declare_proc! {
     name = "getchar",
     struct = NativeGetchar,
     args = [],
+    aliases = ["getchar_unlocked"],
     call |state| {
         let read_id = symbol_counter("getchar");
         let name = format!("stdin_getchar_{}", read_id);
@@ -174,6 +176,7 @@ crate::declare_proc! {
     name = "getc",
     struct = NativeGetc,
     args = [stream: bv],
+    aliases = ["getc_unlocked"],
     call |state| {
         NativeFgetc.call(state, std::slice::from_ref(&stream))
     }

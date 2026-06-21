@@ -75,6 +75,7 @@ crate::declare_proc! {
     name = "fputc",
     struct = NativeFputc,
     args = [c: concrete, stream: concrete],
+    aliases = ["fputc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
         let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
@@ -93,6 +94,7 @@ crate::declare_proc! {
     name = "putc",
     struct = NativePutc,
     args = [c: concrete, stream: concrete],
+    aliases = ["putc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
         let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
