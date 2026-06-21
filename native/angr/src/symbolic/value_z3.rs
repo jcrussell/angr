@@ -79,6 +79,49 @@ impl RustBV {
         self.to_z3_bool_cached(&mut cache)
     }
 
+    /// Map a comparison `BVOp` to its native Z3 `Bool`, building the two operand
+    /// ASTs from `operands`. Returns `None` for any non-comparison op so callers
+    /// can fall through to their own handling.
+    ///
+    /// Shared by `to_z3_bool_cached` (native Bool path) and `build_z3_ast_cached`
+    /// (which wraps the Bool in `If(cmp, BV(1,1), BV(0,1))`), so the op→bv*-method
+    /// mapping lives in exactly one place.
+    #[cfg(feature = "vex-engine-z3")]
+    fn cmp_bool_for_cached(
+        op: &BVOp,
+        operands: &[RustBV],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> Option<z3::ast::Bool> {
+        match op {
+            BVOp::Eq
+            | BVOp::Ne
+            | BVOp::Ult
+            | BVOp::Ule
+            | BVOp::Ugt
+            | BVOp::Uge
+            | BVOp::Slt
+            | BVOp::Sle
+            | BVOp::Sgt
+            | BVOp::Sge => {}
+            _ => return None,
+        }
+        let a = operands[0].to_z3_ast_cached(cache);
+        let b = operands[1].to_z3_ast_cached(cache);
+        Some(match op {
+            BVOp::Eq => a.eq(b),
+            BVOp::Ne => a.eq(b).not(),
+            BVOp::Ult => a.bvult(b),
+            BVOp::Ule => a.bvule(b),
+            BVOp::Ugt => a.bvugt(b),
+            BVOp::Uge => a.bvuge(b),
+            BVOp::Slt => a.bvslt(b),
+            BVOp::Sle => a.bvsle(b),
+            BVOp::Sgt => a.bvsgt(b),
+            BVOp::Sge => a.bvsge(b),
+            _ => unreachable!("guarded by the comparison-op match above"),
+        })
+    }
+
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool_cached(
         &self,
@@ -88,38 +131,10 @@ impl RustBV {
             RustBV::Concrete { value, .. } => z3::ast::Bool::from_bool(*value != 0),
             RustBV::Constrained { value, .. } => z3::ast::Bool::from_bool(*value != 0),
             RustBV::Expression { op, operands, .. } => {
+                if let Some(b) = Self::cmp_bool_for_cached(op, operands, cache) {
+                    return b;
+                }
                 match op {
-                    BVOp::Eq => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .eq(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ne => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .eq(operands[1].to_z3_ast_cached(cache))
-                        .not(),
-                    BVOp::Ult => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvult(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ule => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvule(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ugt => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvugt(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Uge => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvuge(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Slt => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvslt(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sle => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvsle(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sgt => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvsgt(operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sge => operands[0]
-                        .to_z3_ast_cached(cache)
-                        .bvsge(operands[1].to_z3_ast_cached(cache)),
                     // Not() on a 1-bit comparison: negate the inner bool
                     BVOp::Not if operands.len() == 1 => operands[0].to_z3_bool_cached(cache).not(),
                     // Fallback: convert BV to Bool via _eq(1)
@@ -333,65 +348,18 @@ impl RustBV {
                 .bvrotr(operands[1].to_z3_ast_cached(cache)),
 
             // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
-            BVOp::Eq => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .eq(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Ne => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .eq(operands[1].to_z3_ast_cached(cache))
-                    .not();
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Ult => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvult(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Ule => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvule(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Ugt => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvugt(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Uge => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvuge(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Slt => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvslt(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Sle => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvsle(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Sgt => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvsgt(operands[1].to_z3_ast_cached(cache));
-                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
-            }
-            BVOp::Sge => {
-                let cmp = operands[0]
-                    .to_z3_ast_cached(cache)
-                    .bvsge(operands[1].to_z3_ast_cached(cache));
+            BVOp::Eq
+            | BVOp::Ne
+            | BVOp::Ult
+            | BVOp::Ule
+            | BVOp::Ugt
+            | BVOp::Uge
+            | BVOp::Slt
+            | BVOp::Sle
+            | BVOp::Sgt
+            | BVOp::Sge => {
+                let cmp = Self::cmp_bool_for_cached(op, operands, cache)
+                    .expect("comparison op handled by cmp_bool_for_cached");
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
 
