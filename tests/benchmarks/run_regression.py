@@ -188,6 +188,16 @@ FAST_SUITE = [
     # (im::OrdMap structural sharing) — state_creations/steps carry signal
     # here. Marked rust_only=True: the Python engine OOMs past N=8 in the
     # uf0g sweep, so no Python comparison is recorded.
+    #
+    # TIMING is bimodal (angr-5cx4r): fast mode ~2.2s, slow mode ~2.7s from
+    # Z3 SAT-search nondeterminism over the 256 fork-leaf constraints. It is
+    # deliberately NOT in BIMODAL_BENCHMARKS — that set drops a bench from the
+    # whole gate, and the steps=513 count signal (the O(1) CoW-fork claim) is
+    # this bench's entire reason to exist and must stay gated. Instead the
+    # baseline_timings rust_time is pinned to the SLOW mode (2.7), so the gate
+    # tolerates both modes while keeping the count gate (same convention the
+    # CADET_00001_partial BIMODAL note uses). A doc-only iter-77 commit tripped
+    # the old 2.28 (fast-mode) baseline with three consecutive ~2.7 reads.
     ("cow_fork_scaling", 30, "bfs", True),
     # SharifCTF rev50 (angr-vx8p.4, promoted from the run_single catalog
     # after angr-8kmjo fixed the argv gap). A real CTF reversing binary
