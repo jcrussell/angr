@@ -17,56 +17,34 @@ use crate::vex::Endness;
 /// `mem.load_concrete_lazy` failed). That made real stack-setup bugs
 /// indistinguishable from intentional symbolic input. Returning an
 /// explicit error variant forces callers to decide policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExtractionError {
     /// The caller asked for stack-resident arguments but did not supply a
     /// memory view. The trait method has no way to materialise stack
     /// arguments without it.
+    #[error("extract_args: stack argument requested without a memory view")]
     MemoryUnavailable,
     /// The stack pointer is symbolic. We cannot compute the stack-slot
     /// addresses without committing to a concrete SP, which would silently
     /// pin the value of a symbol the caller may want to reason about.
+    #[error("extract_args: stack pointer is symbolic; cannot compute stack-slot addresses")]
     SpSymbolic,
     /// A specific stack slot could not be read from memory (typically
     /// unmapped page or permission failure). `arg_index` is the
     /// zero-based position of the failing argument within the full
     /// `num_args` request; `addr` is the absolute address that failed.
+    #[error("extract_args: stack argument {arg_index} at address {addr:#x} is unmapped")]
     StackUnmapped { arg_index: usize, addr: u64 },
     /// The caller requested more arguments than the ABI exposes via
     /// registers, but the ABI has no stack path (e.g. syscalls on most
     /// architectures). Indicates a SimProcedure / syscall-handler
     /// misconfiguration declaring a higher `num_args` than the kernel
     /// ABI supports.
+    #[error(
+        "extract_args: requested {requested} arguments but ABI exposes only {available} registers and no stack path"
+    )]
     RegisterOverflow { requested: usize, available: usize },
 }
-
-impl core::fmt::Display for ExtractionError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::MemoryUnavailable => write!(
-                f,
-                "extract_args: stack argument requested without a memory view",
-            ),
-            Self::SpSymbolic => write!(
-                f,
-                "extract_args: stack pointer is symbolic; cannot compute stack-slot addresses",
-            ),
-            Self::StackUnmapped { arg_index, addr } => write!(
-                f,
-                "extract_args: stack argument {arg_index} at address {addr:#x} is unmapped",
-            ),
-            Self::RegisterOverflow {
-                requested,
-                available,
-            } => write!(
-                f,
-                "extract_args: requested {requested} arguments but ABI exposes only {available} registers and no stack path",
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ExtractionError {}
 
 /// Calling convention trait for extracting function arguments.
 pub trait CallingConvention: Send + Sync {
