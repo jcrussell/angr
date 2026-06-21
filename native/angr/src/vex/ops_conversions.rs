@@ -178,13 +178,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f32::from_bits(v as u32);
-            let rounded = match m & 0x3 {
-                0 => Self::round_ties_to_even_f32(f), // nearest, ties to even
-                1 => f.floor(),                       // toward -infinity
-                2 => f.ceil(),                        // toward +infinity
-                3 => f.trunc(),                       // toward zero
-                _ => Self::round_ties_to_even_f32(f), // default to nearest
-            };
+            let rounded = Self::apply_rounding_f32(f, m as u32);
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f32 } else { rounded };
             let result = normalized.to_bits();
@@ -206,13 +200,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f64::from_bits(v as u64);
-            let rounded = match m & 0x3 {
-                0 => Self::round_ties_to_even_f64(f), // nearest, ties to even
-                1 => f.floor(),                       // toward -infinity
-                2 => f.ceil(),                        // toward +infinity
-                3 => f.trunc(),                       // toward zero
-                _ => Self::round_ties_to_even_f64(f), // default to nearest
-            };
+            let rounded = Self::apply_rounding_f64(f, m as u32);
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f64 } else { rounded };
             let result = normalized.to_bits();

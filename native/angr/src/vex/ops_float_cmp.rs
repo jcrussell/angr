@@ -18,34 +18,59 @@ use crate::symbolic::{FloatOpKind, RustBV, SymContext};
 use crate::vex::ir::{FCmpKind, IRType};
 
 impl VEXOps {
+    /// Scalar FP compare shared by Iop_FCmp{EQ,LT,LE}. The three only differ in
+    /// the concrete predicate and the symbolic `FloatOpKind`; everything else
+    /// (the F32/F64 `from_bits` split, 1-bit concrete result, and
+    /// `build_float_expr` symbolic fallback) is identical.
+    fn float_cmp_scalar(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        kind: FCmpKind,
+    ) -> Result<RustBV, OpError> {
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let truth = match ty {
+                IRType::F32 => {
+                    let lf = f32::from_bits(l as u32);
+                    let rf = f32::from_bits(r as u32);
+                    match kind {
+                        FCmpKind::Eq => lf == rf,
+                        FCmpKind::Lt => lf < rf,
+                        FCmpKind::Le => lf <= rf,
+                        _ => return Err(OpError::InvalidFloatType(ty)),
+                    }
+                }
+                IRType::F64 => {
+                    let lf = f64::from_bits(l as u64);
+                    let rf = f64::from_bits(r as u64);
+                    match kind {
+                        FCmpKind::Eq => lf == rf,
+                        FCmpKind::Lt => lf < rf,
+                        FCmpKind::Le => lf <= rf,
+                        _ => return Err(OpError::InvalidFloatType(ty)),
+                    }
+                }
+                _ => return Err(OpError::InvalidFloatType(ty)),
+            };
+            return Ok(RustBV::concrete(truth as u128, 1));
+        }
+        let op = match kind {
+            FCmpKind::Eq => FloatOpKind::CmpEq,
+            FCmpKind::Lt => FloatOpKind::CmpLt,
+            FCmpKind::Le => FloatOpKind::CmpLe,
+            _ => return Err(OpError::InvalidFloatType(ty)),
+        };
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(op, prec, vec![left, right]))
+    }
+
     pub(super) fn float_cmp_eq(
         left: RustBV,
         right: RustBV,
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    if lf == rf { 1u128 } else { 0u128 }
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    if lf == rf { 1u128 } else { 0u128 }
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, 1));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(
-            FloatOpKind::CmpEq,
-            prec,
-            vec![left, right],
-        ))
+        Self::float_cmp_scalar(left, right, ty, FCmpKind::Eq)
     }
 
     pub(super) fn float_cmp_lt(
@@ -54,28 +79,7 @@ impl VEXOps {
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    if lf < rf { 1u128 } else { 0u128 }
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    if lf < rf { 1u128 } else { 0u128 }
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, 1));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(
-            FloatOpKind::CmpLt,
-            prec,
-            vec![left, right],
-        ))
+        Self::float_cmp_scalar(left, right, ty, FCmpKind::Lt)
     }
 
     pub(super) fn float_cmp_le(
@@ -84,28 +88,7 @@ impl VEXOps {
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    if lf <= rf { 1u128 } else { 0u128 }
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    if lf <= rf { 1u128 } else { 0u128 }
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, 1));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(
-            FloatOpKind::CmpLe,
-            prec,
-            vec![left, right],
-        ))
+        Self::float_cmp_scalar(left, right, ty, FCmpKind::Le)
     }
 
     /// SSE scalar-lane FP compare (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}).
