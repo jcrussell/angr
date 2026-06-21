@@ -20,6 +20,8 @@ pub enum SnapshotError {
     EmptyEnvelope,
     #[error("snapshot version mismatch: have {found}, expected {expected}")]
     VersionMismatch { found: u8, expected: u8 },
+    #[error("unknown architecture: {name}")]
+    UnknownArch { name: String },
     #[error("decode error: {0}")]
     Decode(String),
 }
@@ -150,9 +152,10 @@ impl RustSimState {
     /// solver, sat/model caches, and `assumed_constraints` log all rebuild
     /// consistently. Bucket-D `Py<PyAny>` overlays restore to empty (see
     /// [`RustSimStateSnapshot`]).
-    pub fn from_snapshot(snap: RustSimStateSnapshot) -> Result<Self, String> {
-        let arch = arch_from_name(&snap.arch_name)
-            .ok_or_else(|| format!("unknown architecture: {}", snap.arch_name))?;
+    pub fn from_snapshot(snap: RustSimStateSnapshot) -> Result<Self, SnapshotError> {
+        let arch = arch_from_name(&snap.arch_name).ok_or_else(|| SnapshotError::UnknownArch {
+            name: snap.arch_name.clone(),
+        })?;
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
         let memory = SymbolicMemory::from_snapshot(snap.memory);
@@ -235,7 +238,7 @@ impl RustSimState {
         de.disable_recursion_limit();
         let snap: RustSimStateSnapshot = serde::Deserialize::deserialize(&mut de)
             .map_err(|e| SnapshotError::Decode(e.to_string()))?;
-        Self::from_snapshot(snap).map_err(SnapshotError::Decode)
+        Self::from_snapshot(snap)
     }
 }
 

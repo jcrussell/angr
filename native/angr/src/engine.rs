@@ -37,7 +37,6 @@ fn cb_execution_error_to_typed(err: CbExecutionError, addr: u64, arch: &str) -> 
         // a compile error and forces a decision instead of silently
         // surfacing as `Other`.
         e @ (CbExecutionError::Memory(_)
-        | CbExecutionError::TypeMismatch { .. }
         | CbExecutionError::UnknownTemp(_)
         | CbExecutionError::Callback(_)
         | CbExecutionError::LiftError(_)

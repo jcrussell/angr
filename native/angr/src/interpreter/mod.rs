@@ -356,9 +356,6 @@ pub enum CbExecutionError {
     /// symbolic exit targets mid-block).
     #[error("unsupported: {0}")]
     Unsupported(String),
-    /// Type mismatch. Strategy: [`FallbackStrategy::Panic`].
-    #[error("type mismatch: expected {expected:?}, got {got:?}")]
-    TypeMismatch { expected: IRType, got: IRType },
     /// Unknown temporary variable. Strategy: [`FallbackStrategy::Panic`].
     #[error("unknown temporary t{0}")]
     UnknownTemp(u32),
@@ -390,7 +387,6 @@ impl CbExecutionError {
             CbExecutionError::Memory(_)
             | CbExecutionError::Op(_)
             | CbExecutionError::InvalidIR(_)
-            | CbExecutionError::TypeMismatch { .. }
             | CbExecutionError::UnknownTemp(_)
             | CbExecutionError::Callback(_)
             | CbExecutionError::LiftError(_) => FallbackStrategy::Panic,

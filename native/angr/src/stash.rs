@@ -467,7 +467,7 @@ impl StashManager {
         de.disable_recursion_limit();
         let snap: StashManagerSnapshot = serde::Deserialize::deserialize(&mut de)
             .map_err(|e| crate::state::SnapshotError::Decode(e.to_string()))?;
-        Self::from_snapshot(snap).map_err(crate::state::SnapshotError::Decode)
+        Self::from_snapshot(snap)
     }
 
     /// Build a [`StashManagerSnapshot`] (in-Rust round-trip shape).
@@ -494,7 +494,7 @@ impl StashManager {
     /// Restore a [`StashManagerSnapshot`] into a fresh manager. Rebuilds
     /// the `state_index` from the dumped stash contents so cross-stash
     /// state_id lookups stay consistent.
-    pub fn from_snapshot(snap: StashManagerSnapshot) -> Result<Self, String> {
+    pub fn from_snapshot(snap: StashManagerSnapshot) -> Result<Self, crate::state::SnapshotError> {
         let mut stashes: HashMap<String, VecDeque<RustSimState>> = HashMap::new();
         let mut state_index: FxHashMap<u64, String> = FxHashMap::default();
         for (stash_name, state_snaps) in snap.stashes {
