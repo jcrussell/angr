@@ -52,6 +52,60 @@ fn test_fgets_basic() {
 }
 
 #[test]
+fn test_fgets_newline_only_at_last_byte() {
+    // A full read of (size-1) bytes cannot contain an embedded newline: real
+    // fgets stops at (and includes) the first newline. So only the final data
+    // byte may be a newline; every earlier byte must be non-newline. This
+    // prunes the infeasible newline-in-middle-of-a-full-read states the native
+    // path used to keep vs Python's SimFile model. See angr-abora.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    // size=8 => read_count=7, data bytes at 0x2000..0x2007, NUL at 0x2007.
+    NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(8, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap();
+
+    let nl = RustBV::concrete(b'\n' as u128, 8);
+    let ctx = state.solver().borrow();
+
+    // Byte 0 (not the last data byte) can NOT be a newline post-fix.
+    let b0 = state.memory_load(0x2000, 1).unwrap();
+    assert!(
+        !ctx.can_be_true(&b0.eq(&nl, &ctx)),
+        "byte 0 of a full read must not be allowed to equal newline"
+    );
+
+    // Byte 5 (still not the last) likewise can NOT be a newline.
+    let b5 = state.memory_load(0x2005, 1).unwrap();
+    assert!(
+        !ctx.can_be_true(&b5.eq(&nl, &ctx)),
+        "byte 5 must not equal newline"
+    );
+
+    // The last data byte (index 6) MAY be the terminating newline.
+    let b6 = state.memory_load(0x2006, 1).unwrap();
+    assert!(
+        ctx.can_be_true(&b6.eq(&nl, &ctx)),
+        "last data byte may legitimately be the terminating newline"
+    );
+    // ...and is not forced to a newline either.
+    assert!(
+        ctx.can_be_false(&b6.eq(&nl, &ctx)),
+        "last data byte is not forced to newline"
+    );
+}
+
+#[test]
 fn test_fgets_size_1() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);

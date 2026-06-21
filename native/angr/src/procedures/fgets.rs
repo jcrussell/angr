@@ -7,7 +7,10 @@
 //!
 //! - For stdin (resolved `_fileno == 0`): creates symbolic BVS variables
 //!   representing user input
-//! - fgets: stores up to (size-1) symbolic bytes + NUL terminator at buf
+//! - fgets: stores up to (size-1) symbolic bytes + NUL terminator at buf, and
+//!   constrains every byte but the last to be non-newline (a full read cannot
+//!   contain an embedded newline — real fgets stops at the first one). Short
+//!   reads / EOF are not modeled (would need variable-length semantics).
 //! - fgetc: returns one symbolic byte zero-extended to int
 //! - getchar: equivalent to fgetc(stdin) — always stdin, no FILE* arg
 //! - A non-stdin FILE* (resolved `_fileno > 0`) falls back to Python's SimFile
@@ -112,6 +115,26 @@ crate::declare_proc! {
                 .collect()
         };
 
+        // Newline path constraint: a *full* read of `read_count` bytes means no
+        // newline terminated the read before its final byte — real fgets stops
+        // at (and includes) the first newline, so any embedded newline followed
+        // by further data is impossible. Constrain every byte except the last
+        // to be non-newline; the last byte may legitimately be the line's
+        // terminating newline (a line exactly filling the buffer). Without this,
+        // the native path over-approximates and keeps infeasible
+        // newline-in-middle-of-a-full-read states that Python's SimFile model
+        // (procedures/libc/fgets.py) prunes. We do not model short reads / EOF
+        // here — that needs variable-length read semantics (see angr-abora).
+        let newline_conds: Vec<RustBV> = {
+            let ctx = state.solver().borrow();
+            let nl = RustBV::concrete(b'\n' as u128, 8);
+            sym_bytes
+                .iter()
+                .take((read_count as usize).saturating_sub(1))
+                .map(|b| b.ne(&nl, &ctx))
+                .collect()
+        };
+
         // Record stdin symbols for posix.dumps(0) export
         for name in &names {
             state.record_stdin_symbol(name.clone(), 8);
@@ -120,6 +143,12 @@ crate::declare_proc! {
         // Store symbolic bytes to buffer
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
             state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
+        }
+
+        // Apply the newline constraints after storing (add_constraint borrows
+        // the solver, which the byte-creation block above held).
+        for cond in newline_conds {
+            state.add_constraint(cond);
         }
 
         // Store NUL terminator
