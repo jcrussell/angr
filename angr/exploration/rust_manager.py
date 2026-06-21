@@ -483,6 +483,18 @@ def _apply_rust_log_env() -> None:
         l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 
+def _resolve_env_flag(kwarg: bool | None, env_var: str) -> bool:
+    """Resolve a boolean gate from an explicit kwarg or an env-var fallback.
+
+    Returns ``bool(kwarg)`` when the kwarg is not ``None``; otherwise reads
+    ``env_var`` and treats ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive)
+    as truthy. Centralizes the truthy-token set so a new gate can't drift.
+    """
+    if kwarg is None:
+        return os.environ.get(env_var, "").lower() in ("1", "true", "yes", "on")
+    return bool(kwarg)
+
+
 from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
 from angr.exploration.rust_disk_cache import RustDiskCacheManager
 from angr.exploration.rust_state_cache import RustStateCacheMixin
@@ -1011,11 +1023,9 @@ class RustExplorationManager(
         # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles default-on when
         # the kwarg is left at its default ``None``. Multi-session epic
         # (see bd memory boundary-4scu-simmem-spike).
-        if use_callback_memory_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "")
-            self._use_callback_memory_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_callback_memory_proxy = bool(use_callback_memory_proxy)
+        self._use_callback_memory_proxy = _resolve_env_flag(
+            use_callback_memory_proxy, "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY"
+        )
 
         # angr-qj30 (write-through .2): gate for installing
         # ``RustRegisterProxy`` as ``state.registers`` on SimProcedure
@@ -1028,11 +1038,9 @@ class RustExplorationManager(
         # extraction (writes already landed in Rust). Env var
         # ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles default-on
         # when the kwarg is left at its default ``None``.
-        if use_callback_register_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_REGISTER_PROXY", "")
-            self._use_callback_register_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_callback_register_proxy = bool(use_callback_register_proxy)
+        self._use_callback_register_proxy = _resolve_env_flag(
+            use_callback_register_proxy, "ANGR_RUST_USE_CALLBACK_REGISTER_PROXY"
+        )
 
         # angr-8oiw (write-through .3): gate for installing
         # ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
@@ -1045,11 +1053,9 @@ class RustExplorationManager(
         # directly (no parallel claripy solver). Env var
         # ``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles default-on when
         # the kwarg is left at its default ``None``.
-        if use_callback_solver_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "")
-            self._use_callback_solver_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_callback_solver_proxy = bool(use_callback_solver_proxy)
+        self._use_callback_solver_proxy = _resolve_env_flag(
+            use_callback_solver_proxy, "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY"
+        )
 
         # angr-6o9p (write-through .4): gate for installing
         # ``RustCallStackProxyPlugin`` as ``state.callstack`` on
@@ -1060,11 +1066,9 @@ class RustExplorationManager(
         # ``state_id`` via ``get_state_call_stack``. Env var
         # ``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles default-on
         # when the kwarg is left at its default ``None``.
-        if use_callback_callstack_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "")
-            self._use_callback_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_callback_callstack_proxy = bool(use_callback_callstack_proxy)
+        self._use_callback_callstack_proxy = _resolve_env_flag(
+            use_callback_callstack_proxy, "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY"
+        )
 
         # angr-yk2g (write-through boundary): gate for installing
         # ``RustCallStackProxyPlugin`` as ``state.callstack`` on every
@@ -1076,11 +1080,9 @@ class RustExplorationManager(
         # ``state_id`` via ``get_state_call_stack``. Env var
         # ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles default-on
         # when the kwarg is left at its default ``None``.
-        if use_export_callstack_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "")
-            self._use_export_callstack_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_export_callstack_proxy = bool(use_export_callstack_proxy)
+        self._use_export_callstack_proxy = _resolve_env_flag(
+            use_export_callstack_proxy, "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY"
+        )
 
         # angr-ul4k (write-through boundary): gate for installing
         # ``RustMemoryProxy`` as ``state.memory`` on every materialized
@@ -1093,11 +1095,7 @@ class RustExplorationManager(
         # ``get_state_memory_ast`` FFI. Env var
         # ``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles default-on when
         # the kwarg is left at its default ``None``.
-        if use_export_memory_proxy is None:
-            env_val = os.environ.get("ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "")
-            self._use_export_memory_proxy = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_export_memory_proxy = bool(use_export_memory_proxy)
+        self._use_export_memory_proxy = _resolve_env_flag(use_export_memory_proxy, "ANGR_RUST_USE_EXPORT_MEMORY_PROXY")
 
         # angr-t3mr (write-through boundary): gate for routing SimProcedure
         # additional successors through ``fork_state_to_stash(parent_id,
@@ -1109,11 +1107,9 @@ class RustExplorationManager(
         # ``add_constraints_to_state(new_id, ...)``. Env var
         # ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles default-on when
         # the kwarg is left at its default ``None``.
-        if use_simproc_fork_via_rust is None:
-            env_val = os.environ.get("ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "")
-            self._use_simproc_fork_via_rust = env_val.lower() in ("1", "true", "yes", "on")
-        else:
-            self._use_simproc_fork_via_rust = bool(use_simproc_fork_via_rust)
+        self._use_simproc_fork_via_rust = _resolve_env_flag(
+            use_simproc_fork_via_rust, "ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST"
+        )
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()

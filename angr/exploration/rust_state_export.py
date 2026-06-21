@@ -1261,27 +1261,12 @@ class RustStateExportMixin:
                 # through to angr's default plugin instantiation.
                 l.debug(f"Could not restore {plugin_name} plugin: {e}")
 
-        # Fix nested plugin state references for posix (stdin/stdout/stderr)
+        # Fix nested plugin state references for posix (stdin/stdout/stderr).
         # These nested SimPacketsStream objects hold weakrefs to the state that
-        # can become stale after state caching/export cycles
-        try:
-            posix = getattr(state, "posix", None)
-            if posix is not None:
-                for attr in ("stdin", "stdout", "stderr"):
-                    child = getattr(posix, attr, None)
-                    if child is not None and hasattr(child, "set_state"):
-                        child.set_state(state)
-                # Also fix fd entries
-                if hasattr(posix, "fd") and posix.fd:
-                    for fd_obj in posix.fd.values():
-                        if fd_obj is not None and hasattr(fd_obj, "set_state"):
-                            fd_obj.set_state(state)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: posix weakref refresh failed
-            # (custom posix plugin shape). Stale weakrefs may surface
-            # later as AttributeError when the user inspects stdin/
-            # stdout/stderr.
-            l.debug(f"Could not fix posix nested state refs: {e}")
+        # can become stale after state caching/export cycles. Shared helper
+        # silently absorbs failures (custom posix plugin shapes), which may
+        # surface later as AttributeError when the user inspects the streams.
+        self._fix_posix_weakrefs(state)
 
         # Promote state.history to the warn-on-read variant. Catches the
         # silent-divergence case where users rely on state.history.actions /

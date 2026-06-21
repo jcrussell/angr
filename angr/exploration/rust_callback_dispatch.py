@@ -228,18 +228,6 @@ class RustCallbackDispatchMixin:
         original_add = state.solver.add
         state.scratch._rust_solver_installed = True
 
-        def _with_extra_constraints(_ctx, fn, *args, extra=()):
-            """Run fn(*args) on _ctx, temporarily adding extra constraints via push/pop."""
-            if extra:
-                _ctx.push()
-                try:
-                    for c in extra:
-                        _ctx.add_constraint_ast(c)
-                    return fn(*args)
-                finally:
-                    _ctx.pop()
-            return fn(*args)
-
         def _rust_eval(expr, cast_to=None, **kwargs):
             _ctx = state.scratch.rust_solver_ctx
             kwargs.pop("exact", None)
@@ -1020,6 +1008,69 @@ class RustCallbackDispatchMixin:
                 pass
         self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
+    @staticmethod
+    def _resolve_next_pc(state, fallback_addr=None):
+        """Resolve a concrete next-PC from a (possibly symbolic) state IP.
+
+        Concrete IP returns ``state.addr``. A symbolic IP is concretized via
+        ``eval_one``, falling back to ``eval`` (picks any solution) when more
+        than one solution exists. If ``eval`` also raises and ``fallback_addr``
+        is given, that address is returned; otherwise the error propagates.
+        """
+        if not state.regs._ip.symbolic:
+            return state.addr
+        try:
+            return state.solver.eval_one(state.regs._ip)
+        except Exception:
+            # cat-(b) FALLBACK WITH LOSS: eval_one raised (>1 solution or
+            # solver error); pick any concrete value via eval.
+            try:
+                return state.solver.eval(state.regs._ip)
+            except Exception:
+                if fallback_addr is not None:
+                    return fallback_addr
+                raise
+
+    @staticmethod
+    def _merge_tracked_writes(mem_changes, tracked_writes):
+        """Append ``tracked_writes`` whose addr isn't already in ``mem_changes``.
+
+        Mutates and returns ``mem_changes``. Tracked writes capture symbolic
+        stores that ``_extract_memory_changes`` might miss.
+        """
+        if tracked_writes:
+            existing_addrs = {addr for addr, _ in mem_changes}
+            for addr, data in tracked_writes:
+                if addr not in existing_addrs:
+                    mem_changes.append((addr, data))
+                    existing_addrs.add(addr)
+        return mem_changes
+
+    @staticmethod
+    def _filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes):
+        """Drop concrete ``mem_changes`` at any addr covered by a symbolic import.
+
+        Prevents ``apply_changes`` from overwriting symbolic imports (from
+        ``symbolic_imports`` or ``tracked_symbolic_writes``) with concrete values.
+        """
+        all_symbolic_addrs = {addr for addr, _ in symbolic_imports}
+        if tracked_symbolic_writes:
+            all_symbolic_addrs.update(addr for addr, _ in tracked_symbolic_writes)
+        if all_symbolic_addrs:
+            return [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
+        return mem_changes
+
+    @staticmethod
+    def _merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes):
+        """Combine ``symbolic_imports`` with ``tracked_symbolic_writes``, deduped by addr."""
+        all_sym_imports = list(symbolic_imports)
+        if tracked_symbolic_writes:
+            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
+            for addr, ast in tracked_symbolic_writes:
+                if addr not in existing_sym_addrs:
+                    all_sym_imports.append((addr, ast))
+        return all_sym_imports
+
     def _resume_with_state(
         self,
         succ_state: angr.SimState,
@@ -1047,16 +1098,7 @@ class RustCallbackDispatchMixin:
             tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
         # Handle symbolic IP: pick first concrete solution if symbolic
-        if succ_state.regs._ip.symbolic:
-            try:
-                new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: eval_one on symbolic IP raised (>1
-                # solution); fall back to eval to pick any concrete value.
-                # Multiple solutions or other error - pick any valid one
-                new_pc = succ_state.solver.eval(succ_state.regs._ip)
-        else:
-            new_pc = succ_state.addr
+        new_pc = self._resolve_next_pc(succ_state)
 
         # Extract changes
         is_snapshot = isinstance(orig_state, dict)
@@ -1080,11 +1122,7 @@ class RustCallbackDispatchMixin:
 
         # Merge tracked writes with extracted memory changes
         if tracked_writes:
-            existing_addrs = {addr for addr, _ in mem_changes}
-            for addr, data in tracked_writes:
-                if addr not in existing_addrs:
-                    mem_changes.append((addr, data))
-                    existing_addrs.add(addr)
+            mem_changes = self._merge_tracked_writes(mem_changes, tracked_writes)
             if _DBG:
                 l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
 
@@ -1122,15 +1160,9 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"continuation stack capture failed: {_e!r}")
 
-        # Collect all symbolic addresses to exclude from concrete memory changes
-        # This prevents apply_changes from overwriting symbolic imports with concrete values
-        all_symbolic_addrs = {addr for addr, _ in symbolic_imports}
-        if tracked_symbolic_writes:
-            all_symbolic_addrs.update(addr for addr, _ in tracked_symbolic_writes)
-
-        # Filter out symbolic addresses from mem_changes
-        if all_symbolic_addrs:
-            mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
+        # Exclude symbolic-import addresses from concrete memory changes so
+        # apply_changes can't overwrite them with concrete values.
+        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes)
 
         # Extract any new constraints added during callback.
         # Skip when using shared solver — constraints go directly to the pending
@@ -1176,12 +1208,7 @@ class RustCallbackDispatchMixin:
         # Use import_symbolic_to_state (by state_id) since pending_callback
         # was consumed by resume_after_simprocedure.
         state_id = event.callback_state_id
-        all_sym_imports = list(symbolic_imports)
-        if tracked_symbolic_writes:
-            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
-            for addr, ast in tracked_symbolic_writes:
-                if addr not in existing_sym_addrs:
-                    all_sym_imports.append((addr, ast))
+        all_sym_imports = self._merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes)
 
         for addr, ast in all_sym_imports:
             try:
@@ -1239,20 +1266,7 @@ class RustCallbackDispatchMixin:
 
         # Extract actual next PC from the modified state
         # This handles hooks that manually set the return address (e.g., pop ret simulation)
-        if state.regs._ip.symbolic:
-            try:
-                new_pc = state.solver.eval_one(state.regs._ip)
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: eval_one on symbolic IP raised; try
-                # eval next.
-                try:
-                    new_pc = state.solver.eval(state.regs._ip)
-                except Exception:
-                    # cat-(b) FALLBACK WITH LOSS: eval also raised; fall back to the
-                    # original hook address rather than letting the resume blow up.
-                    new_pc = addr  # Fallback to original address
-        else:
-            new_pc = state.addr
+        new_pc = self._resolve_next_pc(state, fallback_addr=addr)
 
         if new_pc != addr:
             if _DBG:
@@ -1279,25 +1293,13 @@ class RustCallbackDispatchMixin:
         # Merge tracked writes with extracted memory changes
         # Tracked writes capture symbolic stores that _extract_memory_changes might miss
         if tracked_writes:
-            existing_addrs = {write_addr for write_addr, _ in mem_changes} if mem_changes else set()
-            for write_addr, data in tracked_writes:
-                if write_addr not in existing_addrs:
-                    mem_changes.append((write_addr, data))
-                    existing_addrs.add(write_addr)
+            mem_changes = self._merge_tracked_writes(mem_changes, tracked_writes)
             if _DBG:
                 l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
 
-        # Collect all symbolic addresses to exclude from concrete memory changes
-        # This prevents apply_changes from overwriting symbolic imports with concrete values
-        all_symbolic_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
-        if tracked_symbolic_writes:
-            all_symbolic_addrs.update(sym_addr for sym_addr, _ in tracked_symbolic_writes)
-
-        # Filter out symbolic addresses from mem_changes
-        if all_symbolic_addrs:
-            mem_changes = [
-                (write_addr, data) for write_addr, data in mem_changes if write_addr not in all_symbolic_addrs
-            ]
+        # Exclude symbolic-import addresses from concrete memory changes so
+        # apply_changes can't overwrite them with concrete values.
+        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes)
 
         # Extract new constraints added during hook execution
         new_constraints = None
@@ -1335,12 +1337,7 @@ class RustCallbackDispatchMixin:
 
         # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
         state_id = event.callback_state_id
-        all_sym_imports = list(symbolic_imports)
-        if tracked_symbolic_writes:
-            existing_sym_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
-            for sym_addr, ast in tracked_symbolic_writes:
-                if sym_addr not in existing_sym_addrs:
-                    all_sym_imports.append((sym_addr, ast))
+        all_sym_imports = self._merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes)
 
         for sym_addr, ast in all_sym_imports:
             try:
@@ -1627,15 +1624,7 @@ class RustCallbackDispatchMixin:
                 succ_state = all_succs[0]
 
                 # Handle symbolic IP: pick first concrete solution if symbolic
-                if succ_state.regs._ip.symbolic:
-                    try:
-                        new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
-                    except claripy.errors.ClaripyError:
-                        # cat-(a) EXPECTED CONTROL FLOW: eval_one raised due to multiple
-                        # solutions; pick any solution via eval.
-                        new_pc = succ_state.solver.eval(succ_state.regs._ip)
-                else:
-                    new_pc = succ_state.addr
+                new_pc = self._resolve_next_pc(succ_state)
 
                 # angr-qj30 (write-through .2): with the register-proxy
                 # gate on, syscall writes to ``state.regs.<name>`` already
