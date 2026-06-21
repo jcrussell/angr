@@ -14,10 +14,69 @@
 //! they are shared with the scalar/packed FP arith paths.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
 use crate::vex::ir::{FCmpKind, IRType};
 
 impl VEXOps {
+    /// Concrete IEEE-754 truth value for a single FP-compare lane, shared by the
+    /// scalar-lane and packed concrete fast paths. `l`/`r` carry the raw lane
+    /// bits (only the low `ty.bits()` are significant). All six `FCmpKind`s are
+    /// valid here; Gt/Ge/Un map to Rust's `> >= is_nan`, whose NaN behavior
+    /// matches VEX's ordered/unordered semantics.
+    fn fcmp_truth(ty: IRType, kind: FCmpKind, l: u128, r: u128) -> Result<bool, OpError> {
+        let truth = match ty {
+            IRType::F32 => {
+                let (lf, rf) = (f32::from_bits(l as u32), f32::from_bits(r as u32));
+                match kind {
+                    FCmpKind::Eq => lf == rf,
+                    FCmpKind::Lt => lf < rf,
+                    FCmpKind::Le => lf <= rf,
+                    FCmpKind::Gt => lf > rf,
+                    FCmpKind::Ge => lf >= rf,
+                    FCmpKind::Un => lf.is_nan() || rf.is_nan(),
+                }
+            }
+            IRType::F64 => {
+                let (lf, rf) = (f64::from_bits(l as u64), f64::from_bits(r as u64));
+                match kind {
+                    FCmpKind::Eq => lf == rf,
+                    FCmpKind::Lt => lf < rf,
+                    FCmpKind::Le => lf <= rf,
+                    FCmpKind::Gt => lf > rf,
+                    FCmpKind::Ge => lf >= rf,
+                    FCmpKind::Un => lf.is_nan() || rf.is_nan(),
+                }
+            }
+            _ => return Err(OpError::InvalidFloatType(ty)),
+        };
+        Ok(truth)
+    }
+
+    /// Build the 1-bit symbolic FP-compare predicate for a single lane, shared
+    /// by the scalar-lane and packed symbolic fallbacks. Gt(a,b) ≡ Lt(b,a) and
+    /// Ge(a,b) ≡ Le(b,a) (swapped operands — Z3 has no native Gt/Ge); Un is
+    /// isNaN(l) OR isNaN(r) (IsNaN is a unary primitive, so no operand clone).
+    fn fcmp_predicate_1bit(
+        kind: FCmpKind,
+        prec: FloatPrec,
+        l: RustBV,
+        r: RustBV,
+        ctx: &SymContext,
+    ) -> RustBV {
+        match kind {
+            FCmpKind::Eq => build_float_expr(FloatOpKind::CmpEq, prec, vec![l, r]),
+            FCmpKind::Lt => build_float_expr(FloatOpKind::CmpLt, prec, vec![l, r]),
+            FCmpKind::Le => build_float_expr(FloatOpKind::CmpLe, prec, vec![l, r]),
+            FCmpKind::Gt => build_float_expr(FloatOpKind::CmpLt, prec, vec![r, l]),
+            FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r, l]),
+            FCmpKind::Un => {
+                let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l]);
+                let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r]);
+                l_nan.or_into(r_nan, ctx)
+            }
+        }
+    }
+
     /// Scalar FP compare shared by Iop_FCmp{EQ,LT,LE}. The three only differ in
     /// the concrete predicate and the symbolic `FloatOpKind`; everything else
     /// (the F32/F64 `from_bits` split, 1-bit concrete result, and
@@ -117,48 +176,18 @@ impl VEXOps {
 
         // Concrete fast path
         if let (Some(l), Some(r)) = (l_lo.as_u128(), r_lo.as_u128()) {
-            let truth = match (ty, kind) {
-                (IRType::F32, FCmpKind::Eq) => f32::from_bits(l as u32) == f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Lt) => f32::from_bits(l as u32) < f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Le) => f32::from_bits(l as u32) <= f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Gt) => f32::from_bits(l as u32) > f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Ge) => f32::from_bits(l as u32) >= f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Un) => {
-                    f32::from_bits(l as u32).is_nan() || f32::from_bits(r as u32).is_nan()
-                }
-                (IRType::F64, FCmpKind::Eq) => f64::from_bits(l as u64) == f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Lt) => f64::from_bits(l as u64) < f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Le) => f64::from_bits(l as u64) <= f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Gt) => f64::from_bits(l as u64) > f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Ge) => f64::from_bits(l as u64) >= f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Un) => {
-                    f64::from_bits(l as u64).is_nan() || f64::from_bits(r as u64).is_nan()
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
+            let lane_val = if Self::fcmp_truth(ty, kind, l, r)? {
+                lane_mask
+            } else {
+                0
             };
-            let lane_val = if truth { lane_mask } else { 0 };
             let lane = RustBV::concrete(lane_val, lane_bits);
             return Ok(upper.concat_into(lane, ctx));
         }
 
         // Symbolic path: build 1-bit compare, then sign-extend to lane_bits
         // (sign-extend turns 1 → all-1s, 0 → all-0s).
-        let cmp_1bit = match kind {
-            FCmpKind::Eq => build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lo, r_lo]),
-            FCmpKind::Lt => build_float_expr(FloatOpKind::CmpLt, prec, vec![l_lo, r_lo]),
-            FCmpKind::Le => build_float_expr(FloatOpKind::CmpLe, prec, vec![l_lo, r_lo]),
-            // Gt(a,b) = Lt(b,a); Ge(a,b) = Le(b,a). Not emitted by SSE
-            // scalar-lane opcodes today, but exhaustive for the shared FCmpKind enum.
-            FCmpKind::Gt => build_float_expr(FloatOpKind::CmpLt, prec, vec![r_lo, l_lo]),
-            FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r_lo, l_lo]),
-            FCmpKind::Un => {
-                // un = isNaN(l) OR isNaN(r). IsNaN is a unary primitive so no
-                // operand clone is needed (vs. CmpEq(x, x) which doubles x).
-                let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l_lo]);
-                let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r_lo]);
-                l_nan.or_into(r_nan, ctx)
-            }
-        };
+        let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lo, r_lo, ctx);
         let lane = cmp_1bit.sign_extend_into(lane_bits, ctx);
         Ok(upper.concat_into(lane, ctx))
     }
@@ -200,48 +229,11 @@ impl VEXOps {
                 let shift = (i as u32) * elem_width;
                 let l_bits = (l >> shift) & elem_mask;
                 let r_bits = (r >> shift) & elem_mask;
-                let truth = match (elem, kind) {
-                    (IRType::F32, FCmpKind::Eq) => {
-                        f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32)
-                    }
-                    (IRType::F32, FCmpKind::Lt) => {
-                        f32::from_bits(l_bits as u32) < f32::from_bits(r_bits as u32)
-                    }
-                    (IRType::F32, FCmpKind::Le) => {
-                        f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32)
-                    }
-                    (IRType::F32, FCmpKind::Gt) => {
-                        f32::from_bits(l_bits as u32) > f32::from_bits(r_bits as u32)
-                    }
-                    (IRType::F32, FCmpKind::Ge) => {
-                        f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32)
-                    }
-                    (IRType::F32, FCmpKind::Un) => {
-                        f32::from_bits(l_bits as u32).is_nan()
-                            || f32::from_bits(r_bits as u32).is_nan()
-                    }
-                    (IRType::F64, FCmpKind::Eq) => {
-                        f64::from_bits(l_bits as u64) == f64::from_bits(r_bits as u64)
-                    }
-                    (IRType::F64, FCmpKind::Lt) => {
-                        f64::from_bits(l_bits as u64) < f64::from_bits(r_bits as u64)
-                    }
-                    (IRType::F64, FCmpKind::Le) => {
-                        f64::from_bits(l_bits as u64) <= f64::from_bits(r_bits as u64)
-                    }
-                    (IRType::F64, FCmpKind::Gt) => {
-                        f64::from_bits(l_bits as u64) > f64::from_bits(r_bits as u64)
-                    }
-                    (IRType::F64, FCmpKind::Ge) => {
-                        f64::from_bits(l_bits as u64) >= f64::from_bits(r_bits as u64)
-                    }
-                    (IRType::F64, FCmpKind::Un) => {
-                        f64::from_bits(l_bits as u64).is_nan()
-                            || f64::from_bits(r_bits as u64).is_nan()
-                    }
-                    _ => return Err(OpError::InvalidFloatType(elem)),
+                let lane_val = if Self::fcmp_truth(elem, kind, l_bits, r_bits)? {
+                    lane_mask
+                } else {
+                    0
                 };
-                let lane_val = if truth { lane_mask } else { 0 };
                 result |= lane_val << shift;
             }
             return Ok(RustBV::concrete(result, total_width));
@@ -256,21 +248,7 @@ impl VEXOps {
             let hi = lo + elem_width - 1;
             let l_lane = left.extract(hi, lo, ctx);
             let r_lane = right.extract(hi, lo, ctx);
-            let cmp_1bit = match kind {
-                FCmpKind::Eq => build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lane, r_lane]),
-                FCmpKind::Lt => build_float_expr(FloatOpKind::CmpLt, prec, vec![l_lane, r_lane]),
-                FCmpKind::Le => build_float_expr(FloatOpKind::CmpLe, prec, vec![l_lane, r_lane]),
-                // Gt(a,b) ≡ Lt(b,a); Ge(a,b) ≡ Le(b,a). Z3 has CmpLt/CmpLe;
-                // swapping operands is cheaper than introducing new variants.
-                FCmpKind::Gt => build_float_expr(FloatOpKind::CmpLt, prec, vec![r_lane, l_lane]),
-                FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r_lane, l_lane]),
-                FCmpKind::Un => {
-                    // un = isNaN(l) OR isNaN(r); IsNaN is a unary primitive.
-                    let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l_lane]);
-                    let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r_lane]);
-                    l_nan.or_into(r_nan, ctx)
-                }
-            };
+            let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lane, r_lane, ctx);
             elements.push(cmp_1bit.sign_extend_into(elem_width, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
