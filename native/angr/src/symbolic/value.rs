@@ -94,6 +94,20 @@ impl FloatPrec {
             FloatPrec::F64 => 64,
         }
     }
+
+    /// Owned Z3 floating-point `Sort` for this precision.
+    ///
+    /// Callers must bind the returned wrapper to a local before calling
+    /// `get_z3_sort()` on it: the raw `Z3_sort` handle is only valid while the
+    /// owned wrapper stays alive across subsequent unsafe Z3 calls.
+    #[cfg(feature = "vex-engine-z3")]
+    #[inline]
+    pub fn z3_sort(&self) -> z3::Sort {
+        match self {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        }
+    }
 }
 
 /// Kinds of symbolic float operations expressible via Z3 FP.

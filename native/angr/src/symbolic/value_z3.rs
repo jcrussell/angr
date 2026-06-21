@@ -582,10 +582,7 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let sort = prec.z3_sort();
         let raw_sort = sort.get_z3_sort();
 
         // Convert each BV operand to a Z3 Float wrapper. Holding the wrapper
@@ -709,10 +706,7 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let sort = prec.z3_sort();
         let raw_sort = sort.get_z3_sort();
 
         // Convert the value BV to a Z3 Float; keep the wrapper alive.
@@ -806,10 +800,7 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let sort = prec.z3_sort();
         let raw_sort = sort.get_z3_sort();
 
         // Convert FP operand BVs to Z3 Float wrappers; keep them alive across
@@ -926,10 +917,7 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let sort = prec.z3_sort();
         let raw_sort = sort.get_z3_sort();
 
         let src_z3 = src_bv.to_z3_ast_cached(cache);
@@ -991,10 +979,7 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let sort = prec.z3_sort();
         let raw_sort = sort.get_z3_sort();
 
         // Convert the operand BV to a Z3 Float; keep the wrapper alive.
@@ -1086,14 +1071,8 @@ impl RustBV {
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
-        let src_sort = match src_prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
-        let dst_sort = match prec {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        };
+        let src_sort = src_prec.z3_sort();
+        let dst_sort = prec.z3_sort();
         let src_raw_sort = src_sort.get_z3_sort();
         let dst_raw_sort = dst_sort.get_z3_sort();
 
