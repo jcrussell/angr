@@ -186,6 +186,13 @@ pub trait NativeSimProcedure: Send + Sync {
     /// Get the procedure name (e.g., "strlen", "memcpy").
     fn name(&self) -> &'static str;
 
+    /// Additional dispatch names this procedure also serves, mirroring Python
+    /// angr's `x_unlocked = x` aliasing. Defaults to none. `register()` inserts
+    /// the proc under each alias as well as its primary [`Self::name`].
+    fn aliases(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Get the number of arguments this procedure expects.
     fn num_args(&self) -> usize;
 
@@ -395,8 +402,17 @@ impl NativeProcedureRegistry {
         }
     }
 
-    /// Register a native procedure.
+    /// Register a native procedure under its primary name and every alias.
+    ///
+    /// Aliases let one impl serve several dispatch names, mirroring Python
+    /// angr's `x_unlocked = x` stdio aliasing (e.g. `fwrite_unlocked = fwrite`).
+    /// A binary that calls the `_unlocked` symbol can surface that name to the
+    /// dispatcher (see `rust_manager._cb_resolve_function`'s SIM_PROCEDURES
+    /// fallback), so without the alias it would round-trip to Python.
     pub fn register(&mut self, proc: Arc<dyn NativeSimProcedure>) {
+        for alias in proc.aliases() {
+            self.procedures.insert((*alias).to_string(), proc.clone());
+        }
         self.procedures.insert(proc.name().to_string(), proc);
     }
 

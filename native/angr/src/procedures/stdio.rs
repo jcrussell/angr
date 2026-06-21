@@ -43,6 +43,10 @@ impl NativeSimProcedure for NativeFwrite {
         "fwrite"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["fwrite_unlocked"]
+    }
+
     fn num_args(&self) -> usize {
         4
     }
@@ -121,6 +125,10 @@ pub struct NativeFflush;
 impl NativeSimProcedure for NativeFflush {
     fn name(&self) -> &'static str {
         "fflush"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["fflush_unlocked"]
     }
 
     fn num_args(&self) -> usize {
@@ -204,6 +212,10 @@ impl NativeSimProcedure for NativeFeof {
         "feof"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["feof_unlocked"]
+    }
+
     fn num_args(&self) -> usize {
         1
     }
@@ -282,6 +294,10 @@ pub struct NativeFputs;
 impl NativeSimProcedure for NativeFputs {
     fn name(&self) -> &'static str {
         "fputs"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["fputs_unlocked"]
     }
 
     fn num_args(&self) -> usize {
