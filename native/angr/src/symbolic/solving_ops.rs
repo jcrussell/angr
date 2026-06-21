@@ -48,6 +48,75 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
     }
 }
 
+/// Binary search for the minimum feasible value of `ast` in `[lo, hi]`.
+///
+/// Floor-mid bisection: assert `cmp(ast, mid)` (i.e. `ast <= mid`) and keep the
+/// lower half when satisfiable. `cmp` selects the signed (`bvsle`) vs unsigned
+/// (`bvule`) ordering. Shared by `min` and the min half of `range_seeded`; the
+/// caller owns the surrounding `with_z3_solver` push/pop frame.
+#[cfg(feature = "vex-engine-z3")]
+fn bsearch_min(
+    solver: &z3::Solver,
+    ast: &z3::ast::BV,
+    width: u32,
+    mut lo: u128,
+    mut hi: u128,
+    cmp: impl Fn(&z3::ast::BV, &z3::ast::BV) -> z3::ast::Bool,
+) -> u128 {
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        solver.push();
+        let mid_ast = make_bv_const(mid, width);
+        solver.assert(cmp(ast, &mid_ast));
+        let can_be_le_mid = matches!(
+            timed_check(solver, CheckSite::MinSearch),
+            z3::SatResult::Sat
+        );
+        solver.pop(1);
+        if can_be_le_mid {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// Binary search for the maximum feasible value of `ast` in `[lo, hi]`.
+///
+/// Ceil-mid bisection (avoids an infinite loop when `lo + 1 == hi`): assert
+/// `cmp(ast, mid)` (i.e. `ast >= mid`) and keep the upper half when
+/// satisfiable. `cmp` selects the signed (`bvsge`) vs unsigned (`bvuge`)
+/// ordering. Shared by `max` and the max half of `range_seeded`; the caller
+/// owns the surrounding `with_z3_solver` push/pop frame.
+#[cfg(feature = "vex-engine-z3")]
+fn bsearch_max(
+    solver: &z3::Solver,
+    ast: &z3::ast::BV,
+    width: u32,
+    mut lo: u128,
+    mut hi: u128,
+    cmp: impl Fn(&z3::ast::BV, &z3::ast::BV) -> z3::ast::Bool,
+) -> u128 {
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        solver.push();
+        let mid_ast = make_bv_const(mid, width);
+        solver.assert(cmp(ast, &mid_ast));
+        let can_be_ge_mid = matches!(
+            timed_check(solver, CheckSite::MaxSearch),
+            z3::SatResult::Sat
+        );
+        solver.pop(1);
+        if can_be_ge_mid {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
+}
+
 impl SymContext {
     /// Debug: dump solver state as string for comparison.
     #[cfg(feature = "vex-engine-z3")]
@@ -450,7 +519,7 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             solver.push();
 
-            let (mut lo, mut hi): (u128, u128) = if signed {
+            let (lo, hi): (u128, u128) = if signed {
                 let sign_bit = 1u128 << (width - 1);
                 let max_val = if width >= 128 {
                     u128::MAX
@@ -503,31 +572,14 @@ impl SymContext {
 
             // Common binary search loop. The signed and unsigned variants only
             // differ in the comparison operator (bvsle vs bvule).
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-
-                solver.push();
-                let mid_ast = make_bv_const(mid, width);
-                if signed {
-                    solver.assert(ast.bvsle(&mid_ast));
-                } else {
-                    solver.assert(ast.bvule(&mid_ast));
-                }
-                let can_be_le_mid = matches!(
-                    timed_check(solver, CheckSite::MinSearch),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-
-                if can_be_le_mid {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
+            let result = if signed {
+                bsearch_min(solver, &ast, width, lo, hi, |a, m| a.bvsle(m))
+            } else {
+                bsearch_min(solver, &ast, width, lo, hi, |a, m| a.bvule(m))
+            };
 
             solver.pop(1);
-            Some(lo)
+            Some(result)
         })
     }
 
@@ -578,7 +630,7 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             solver.push();
 
-            let (mut lo, mut hi): (u128, u128) = if signed {
+            let (lo, hi): (u128, u128) = if signed {
                 let sign_bit = 1u128 << (width - 1);
                 let max_val = if width >= 128 {
                     u128::MAX
@@ -631,32 +683,14 @@ impl SymContext {
 
             // Common binary search loop. The signed and unsigned variants only
             // differ in the comparison operator (bvsge vs bvuge).
-            while lo < hi {
-                // Use ceiling division to avoid infinite loop when lo + 1 == hi
-                let mid = lo + (hi - lo).div_ceil(2);
-
-                solver.push();
-                let mid_ast = make_bv_const(mid, width);
-                if signed {
-                    solver.assert(ast.bvsge(&mid_ast));
-                } else {
-                    solver.assert(ast.bvuge(&mid_ast));
-                }
-                let can_be_ge_mid = matches!(
-                    timed_check(solver, CheckSite::MaxSearch),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-
-                if can_be_ge_mid {
-                    lo = mid;
-                } else {
-                    hi = mid - 1;
-                }
-            }
+            let result = if signed {
+                bsearch_max(solver, &ast, width, lo, hi, |a, m| a.bvsge(m))
+            } else {
+                bsearch_max(solver, &ast, width, lo, hi, |a, m| a.bvuge(m))
+            };
 
             solver.pop(1);
-            Some(lo)
+            Some(result)
         })
     }
 
@@ -715,50 +749,12 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             solver.push();
 
-            // Binary search for min in [0, hi_seed].
-            let mut lo: u128 = 0;
-            let mut hi: u128 = hi_seed;
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                solver.push();
-                let mid_ast = make_bv_const(mid, width);
-                solver.assert(ast.bvule(&mid_ast));
-                let can_be_le_mid = matches!(
-                    timed_check(solver, CheckSite::MinSearch),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-                if can_be_le_mid {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-            let min_val = lo;
-
-            // Binary search for max in [lo_seed, max_val].
-            let mut lo: u128 = lo_seed;
-            let mut hi: u128 = max_val;
-            while lo < hi {
-                let mid = lo + (hi - lo).div_ceil(2);
-                solver.push();
-                let mid_ast = make_bv_const(mid, width);
-                solver.assert(ast.bvuge(&mid_ast));
-                let can_be_ge_mid = matches!(
-                    timed_check(solver, CheckSite::MaxSearch),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-                if can_be_ge_mid {
-                    lo = mid;
-                } else {
-                    hi = mid - 1;
-                }
-            }
-            let max_val = lo;
+            // Binary search for min in [0, hi_seed], then max in [lo_seed, max_val].
+            let min_val = bsearch_min(solver, &ast, width, 0, hi_seed, |a, m| a.bvule(m));
+            let max_result = bsearch_max(solver, &ast, width, lo_seed, max_val, |a, m| a.bvuge(m));
 
             solver.pop(1);
-            Some((min_val, max_val))
+            Some((min_val, max_result))
         })
     }
 
