@@ -1090,20 +1090,4 @@ impl IROp {
             IROp::Raw(_) => None,
         }
     }
-
-    /// Check if this operation is commutative.
-    pub fn is_commutative(&self) -> bool {
-        matches!(
-            self,
-            IROp::Add(_)
-                | IROp::Mul(_)
-                | IROp::MullS(_)
-                | IROp::MullU(_)
-                | IROp::And(_)
-                | IROp::Or(_)
-                | IROp::Xor(_)
-                | IROp::CmpEQ(_)
-                | IROp::CmpNE(_)
-        )
-    }
 }

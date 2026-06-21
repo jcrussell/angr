@@ -20,8 +20,6 @@ pub mod transcendentals;
 pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
 pub use lifter::{IRSBBuilder, LiftError, NativeVEXLifter, VEXLifter};
-pub use opcode_map::{
-    parse_endness, parse_jumpkind, parse_opcode, parse_opcode_from_u32, parse_type,
-};
+pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 pub use ops::{OpError, VEXOps, iropclass};
 pub use pyvex_bridge::{DeserializeError, deserialize_irsb};

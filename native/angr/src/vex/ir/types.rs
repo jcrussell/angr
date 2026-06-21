@@ -1,5 +1,3 @@
-use crate::symbolic::BitWidth;
-
 /// IR constant values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IRConst {
@@ -103,36 +101,5 @@ impl IRType {
     /// Get the size in bytes (rounded up).
     pub fn bytes(&self) -> u32 {
         self.bits().div_ceil(8)
-    }
-
-    /// Convert to BitWidth if applicable.
-    pub fn to_bit_width(&self) -> Option<BitWidth> {
-        match self {
-            IRType::I1 => Some(BitWidth::W1),
-            IRType::I8 => Some(BitWidth::W8),
-            IRType::I16 => Some(BitWidth::W16),
-            IRType::I32 => Some(BitWidth::W32),
-            IRType::I64 => Some(BitWidth::W64),
-            IRType::I128 | IRType::V128 => Some(BitWidth::W128),
-            _ => None,
-        }
-    }
-
-    /// Check if this is an integer type.
-    pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            IRType::I1 | IRType::I8 | IRType::I16 | IRType::I32 | IRType::I64 | IRType::I128
-        )
-    }
-
-    /// Check if this is a float type.
-    pub fn is_float(&self) -> bool {
-        matches!(self, IRType::F16 | IRType::F32 | IRType::F64 | IRType::F80)
-    }
-
-    /// Check if this is a vector type.
-    pub fn is_vector(&self) -> bool {
-        matches!(self, IRType::V128 | IRType::V256)
     }
 }
