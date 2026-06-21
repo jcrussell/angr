@@ -788,7 +788,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `context` is a short label included in the Unsupported error when
     /// the callback isn't wired up — e.g. "Load", "LoadG", "store".
     pub(super) fn fallback_load_symbolic_full(
-        &mut self,
+        &self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
@@ -848,7 +848,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `context` is a short label included in the Unsupported error when
     /// the callback isn't wired up.
     pub(super) fn fallback_store_symbolic_full(
-        &mut self,
+        &self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,

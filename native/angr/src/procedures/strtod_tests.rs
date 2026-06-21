@@ -11,7 +11,7 @@ fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
     state.map_memory_data(addr, &data, Permission::RWX);
 }
 
-fn read_xmm0_low64(state: &mut RustSimState) -> u64 {
+fn read_xmm0_low64(state: &RustSimState) -> u64 {
     let bv = state.get_register_by_offset(AMD64_XMM0_OFFSET, 8);
     bv.as_u64().expect("xmm0 low64 concrete")
 }
@@ -28,7 +28,7 @@ fn test_strtod_simple_decimal() {
         )
         .unwrap();
     assert!(ret.is_none(), "strtod must suppress integer-return store");
-    assert_eq!(read_xmm0_low64(&mut state), 42.5f64.to_bits());
+    assert_eq!(read_xmm0_low64(&state), 42.5f64.to_bits());
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_strtod_negative_exponent() {
         &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
     )
     .unwrap();
-    assert_eq!(read_xmm0_low64(&mut state), (-1.5e-3f64).to_bits());
+    assert_eq!(read_xmm0_low64(&state), (-1.5e-3f64).to_bits());
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn test_strtod_writes_endptr_past_parsed_prefix() {
         &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
     )
     .unwrap();
-    assert_eq!(read_xmm0_low64(&mut state), 42.0f64.to_bits());
+    assert_eq!(read_xmm0_low64(&state), 42.0f64.to_bits());
     let end = state.memory_load(0x2000, 8).unwrap();
     assert_eq!(end.as_u64(), Some(0x1000 + 4)); // past "42.0"
 }
@@ -73,7 +73,7 @@ fn test_strtod_no_conversion_returns_zero_and_endptr_at_nptr() {
         &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
     )
     .unwrap();
-    assert_eq!(read_xmm0_low64(&mut state), 0.0f64.to_bits());
+    assert_eq!(read_xmm0_low64(&state), 0.0f64.to_bits());
     let end = state.memory_load(0x2000, 8).unwrap();
     assert_eq!(end.as_u64(), Some(0x1000));
 }
@@ -88,7 +88,7 @@ fn test_strtod_leading_whitespace_skipped() {
         &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
     )
     .unwrap();
-    assert_eq!(read_xmm0_low64(&mut state), (-2.0f64).to_bits());
+    assert_eq!(read_xmm0_low64(&state), (-2.0f64).to_bits());
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn test_strtod_inf_and_nan_parsed() {
         &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
     )
     .unwrap();
-    let bits = read_xmm0_low64(&mut state);
+    let bits = read_xmm0_low64(&state);
     let val = f64::from_bits(bits);
     assert!(val.is_infinite() && val.is_sign_positive());
 }

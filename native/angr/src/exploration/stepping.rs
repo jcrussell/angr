@@ -512,7 +512,7 @@ impl RustExplorationManager {
                     // the loop exit instead of collapsing to `active_empty`.
                     let root_state_id = self.sm.root_or_self(state.state_id());
                     self.materialize_deferred_forks(
-                        &mut state,
+                        &state,
                         deferred_forks,
                         &stored_conditions,
                         fork_snapshots,
@@ -561,7 +561,7 @@ impl RustExplorationManager {
         // Materialize the deferred forks (continuing the main chain, deferred
         // mode preserved) and prepend the main state as successors[0].
         let forks = self.materialize_deferred_forks(
-            &mut state,
+            &state,
             deferred_forks,
             &stored_conditions,
             fork_snapshots,
@@ -590,7 +590,7 @@ impl RustExplorationManager {
     /// them re-dive the symbolic loop nest and recursively diverge.
     fn materialize_deferred_forks(
         &mut self,
-        base: &mut RustSimState,
+        base: &RustSimState,
         deferred_forks: Vec<DeferredFork>,
         stored_conditions: &FxHashMap<u64, RustBV>,
         mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,

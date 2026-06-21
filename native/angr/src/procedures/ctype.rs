@@ -32,7 +32,7 @@ fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustB
 
 /// tolower/toupper share the same pattern: if byte is in [lo, hi], shift by `delta`.
 fn case_shift(
-    state: &mut RustSimState,
+    state: &RustSimState,
     arg: &RustBV,
     lo: u8,
     hi: u8,
@@ -59,7 +59,7 @@ fn case_shift(
 
 /// Build a symbolic ctype predicate from a list of inclusive ranges.
 fn ranges_predicate(
-    state: &mut RustSimState,
+    state: &RustSimState,
     arg: &RustBV,
     ranges: &[(u8, u8)],
     concrete_check: fn(u8) -> bool,
@@ -87,7 +87,7 @@ fn ranges_predicate(
 
 /// Build a symbolic ctype predicate from an explicit set of bytes.
 fn set_predicate(
-    state: &mut RustSimState,
+    state: &RustSimState,
     arg: &RustBV,
     members: &[u8],
     concrete_check: fn(u8) -> bool,

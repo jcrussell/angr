@@ -21,7 +21,7 @@ const MAX_DIGITS: usize = 64;
 /// Read up to `max_len` bytes from `addr`, stopping at the first concrete
 /// null terminator (symbolic bytes do not stop the scan).
 fn read_bytes_until_null(
-    state: &mut RustSimState,
+    state: &RustSimState,
     addr: u64,
     max_len: usize,
 ) -> Result<Vec<RustBV>, ProcedureError> {

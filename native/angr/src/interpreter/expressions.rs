@@ -212,7 +212,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
     /// and concrete-memory caches before falling back to the Python callback.
     fn load_concrete_addr(
-        &mut self,
+        &self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_concrete: u64,
@@ -728,7 +728,7 @@ impl<'a> VEXInterpreter<'a> {
     /// 2. The RustBV ITE nodes stay in Rust's Z3 context
     /// 3. We can use balanced ITE trees for better solver performance
     fn build_ite_load_from_callbacks(
-        &mut self,
+        &self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
@@ -785,7 +785,7 @@ impl<'a> VEXInterpreter<'a> {
     /// This keeps the ITE construction in Rust's Z3 context, avoiding FFI round-trips
     /// for the ITE chain building that Python would otherwise do.
     pub(super) fn build_ite_store_from_callbacks(
-        &mut self,
+        &self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addrs: &[u64],

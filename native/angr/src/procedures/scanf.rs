@@ -16,7 +16,7 @@ const MAX_FMT_LEN: usize = 4096;
 const MAX_SCANF_STR_LEN: u64 = 256;
 
 /// Read a null-terminated concrete string from memory.
-fn read_format_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
+fn read_format_string(state: &RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
     let mut buf = Vec::new();
     for i in 0..MAX_FMT_LEN as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {

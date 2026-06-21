@@ -128,7 +128,7 @@ fn tiocgwinsz_for_arch(arch_name: &str) -> Option<u64> {
 /// Build the fresh-symbolic fallback return used when fcntl / ioctl /
 /// pipe* hit a `cmd` we do not handle natively. Borrows the solver
 /// context once, mirroring the `stub_syscall!` macro expansion.
-fn symbolic_return(state: &mut RustSimState, name: &'static str) -> SyscallOutcome {
+fn symbolic_return(state: &RustSimState, name: &'static str) -> SyscallOutcome {
     let bits = state.arch().bits();
     let ret = {
         let ctx = state.solver().borrow();

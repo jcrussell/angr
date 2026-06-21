@@ -59,7 +59,7 @@ impl SymbolicMemory {
     /// * `count` - Number of addresses in the pattern
     /// * `size` - Size of each access in bytes
     pub(super) fn prepare_strided_region(
-        &mut self,
+        &self,
         _base: u64,
         _stride: u64,
         _count: u64,
