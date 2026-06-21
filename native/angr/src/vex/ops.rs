@@ -726,7 +726,9 @@ impl VEXOps {
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
             // Unmapped opcode — captured at parse time, surfaces here so the
-            // engine maps it to RustUnsupportedVexOpError (angr-tkbr.2).
+            // failure carries the op name (typed RustUnsupportedVexOpError on
+            // the test path; stringified into the errored stash live —
+            // see the taxonomy note in errors.rs). (angr-tkbr.2)
             IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
                 op_name: name.to_string(),
             }),
@@ -1611,7 +1613,8 @@ pub enum OpError {
     /// Distinct from [`Self::UnsupportedVectorOp`] because the silent
     /// fresh-symbolic fallback in `interpreter::expressions` swallows
     /// generic `OpError`s — this variant is propagated explicitly so
-    /// missing NEON coverage surfaces as `RustUnsupportedVexOpError`
+    /// missing NEON coverage surfaces as a typed `RustUnsupportedVexOpError`
+    /// (test path) or a stringified errored-stash record (live exploration)
     /// instead of producing wrong results that are hard to attribute.
     /// See `invariant-neon-scaffolding-panic-not-fallback` (bd memories).
     #[error("NEON op {name} not yet implemented")]
@@ -1621,8 +1624,10 @@ pub enum OpError {
     /// Routed from `IROp::Unmapped(name)`. Like `UnsupportedNeon`, this
     /// is propagated explicitly past the silent fresh-symbolic fallback
     /// in `interpreter::expressions` so callers see the real op name
-    /// in a typed `RustUnsupportedVexOpError` instead of getting a
-    /// fresh-symbolic value of the wrong width.
+    /// (typed `RustUnsupportedVexOpError` on the test path; stringified
+    /// into the errored stash in live exploration — see the taxonomy note
+    /// in `errors.rs`) instead of getting a fresh-symbolic value of the
+    /// wrong width.
     #[error("unmapped VEX opcode: {op_name}")]
     UnsupportedVexOp { op_name: String },
     /// Raw/unimplemented opcode.

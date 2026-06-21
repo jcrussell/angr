@@ -17,6 +17,28 @@
 //!
 //! The new public types are `#[non_exhaustive]` per angr-irwe so future
 //! variants can land in minor versions without breaking downstream code.
+//!
+//! # Test-only taxonomy vs. the live exploration path (angr-ghwsd.3)
+//!
+//! The variant→subclass mapping in [`From<RustExecError> for PyErr`] is
+//! reached **only** from the test-only `#[pyfunction]` hooks
+//! `engine::execute_irsb_for_test` and `engine::_raise_typed_test_error`.
+//! Those are the only callers of `cb_execution_error_to_typed` /
+//! `op_error_to_typed`, so a `pytest.raises(RustUnsupportedVexOpError)`
+//! only matches when driving one of those test entry points.
+//!
+//! During real exploration the typed `CbExecutionError` is **stringified
+//! at the interpreter boundary** and never reaches this enum: a failing
+//! step produces `RunResult::Error { message: e.to_string(), addr }`
+//! (`interpreter/execution.rs`), which `stepping::try_step` collapses into
+//! `StepError::Error(state, String)` and `run_loop` pushes into the
+//! errored stash as a `(pc, message, state_id)` record. The concrete
+//! variant (UnsupportedVexOp vs Z3 vs Oom …) is therefore lost the moment
+//! a live step fails — only the formatted message survives, readable off
+//! the errored-stash record (`state.error`). The errored-stash string is
+//! the production contract; the typed subclasses are a test-harness
+//! affordance. Carrying the typed error through the live path is the
+//! deferred option (b) on angr-ghwsd.3.
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -100,6 +122,12 @@ pub enum RustExecError {
     Other(String),
 }
 
+/// Map a typed [`RustExecError`] to its Python exception subclass.
+///
+/// Reached only from the test-only `#[pyfunction]` hooks (see the
+/// "Test-only taxonomy vs. the live exploration path" section in the
+/// module docs). The live exploration path stringifies the error into
+/// the errored stash and never constructs a `RustExecError`.
 impl From<RustExecError> for PyErr {
     fn from(err: RustExecError) -> PyErr {
         let msg = err.to_string();

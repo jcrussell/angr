@@ -2946,6 +2946,27 @@ The hierarchy and per-variant trigger conditions are derived from
 table at lines 99–111) — if a future commit grows or renames a
 variant, this table is the first thing to update.
 
+.. warning::
+
+   **The typed taxonomy is currently a test-harness affordance, not the
+   live-exploration contract** (angr-ghwsd.3). The variant→subclass
+   mapping (``From<RustExecError> for PyErr``) is reached only from the
+   test-only ``#[pyfunction]`` hooks ``execute_irsb_for_test`` and
+   ``_raise_typed_test_error``. During a real ``mgr.run()`` / ``explore``
+   the typed ``CbExecutionError`` is **stringified at the interpreter
+   boundary** — ``RunResult::Error { message, addr }`` carries a
+   ``String`` that ``stepping`` collapses into
+   ``StepError::Error(state, String)`` and ``run_loop`` pushes into the
+   errored stash as a ``(pc, message, state_id)`` record. The concrete
+   variant is lost the moment a live step fails; only the formatted
+   message survives, readable off the errored-stash record
+   (``state.error``). A ``pytest.raises(RustUnsupportedVexOpError)``
+   against a live run therefore will **not** match — drive
+   ``execute_irsb_for_test`` to exercise the typed classes. Promoting the
+   typed error into the live path is the deferred option (b) on
+   angr-ghwsd.3. The "Where Rust raises it" column below names where each
+   variant is *constructed*, which is the test path unless noted.
+
 .. list-table:: Typed exception hierarchy
    :header-rows: 1
    :widths: 30 35 35

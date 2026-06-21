@@ -159,8 +159,11 @@ macro_rules! fcmp_scalar_arms {
 /// Returns `IROp::Unmapped(name)` (interned `&'static str`) for opcodes
 /// with no entry in the parse_* dispatch. Dispatch in
 /// `VEXOps::unop`/`binop`/`ternop`/`qop` surfaces this as
-/// `OpError::UnsupportedVexOp { op_name }`, which the engine maps to
-/// `RustUnsupportedVexOpError(op_name, arch)`. Before angr-tkbr.2 this
+/// `OpError::UnsupportedVexOp { op_name }`. On the test-only path that
+/// maps to a typed `RustUnsupportedVexOpError(op_name, arch)`; in live
+/// exploration it is stringified into the errored stash (see the
+/// "Test-only taxonomy vs. the live exploration path" note in
+/// `errors.rs`). Before angr-tkbr.2 this
 /// path silently rewrote to `IROp::Raw(0)` and `log::warn!`-ed the
 /// name, which masked missing coverage and produced fresh-symbolic
 /// results that were hard to attribute.
@@ -197,8 +200,8 @@ pub fn parse_opcode(op_str: &str) -> IROp {
         return op;
     }
 
-    // Unmapped operation — capture the name so dispatch can surface
-    // RustUnsupportedVexOpError instead of silently producing fresh
+    // Unmapped operation — capture the name so dispatch can surface a
+    // typed UnsupportedVexOp error instead of silently producing fresh
     // symbolic results. See angr-tkbr.2.
     log::warn!("Unmapped VEX operation: {}", op_str);
     IROp::Unmapped(intern_unmapped_op(op_str))
