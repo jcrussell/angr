@@ -64,12 +64,7 @@ macro_rules! define_unsigned_cmp_pair {
                     {
                         return folded;
                     }
-                    RustBV::Expression {
-                        id: Self::EXPRESSION_ID,
-                        width: 1,
-                        op: $op,
-                        operands: Arc::<[RustBV]>::from([self, other]),
-                    }
+                    Self::expr_node(1, $op, [self, other])
                 }
             }
         }
@@ -105,12 +100,7 @@ macro_rules! define_signed_cmp_pair {
                     let b_signed = sign_extend(b, self.width());
                     Self::concrete(if a_signed $cmp b_signed { 1 } else { 0 }, 1)
                 }
-                _ => RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: $op,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                },
+                _ => Self::expr_node(1, $op, [self, other]),
             }
         }
     };
@@ -171,6 +161,23 @@ impl RustBV {
         }
     }
 
+    /// Build a symbolic `Expression` node with the `EXPRESSION_ID` sentinel.
+    ///
+    /// Centralizes the 4-field struct literal that every consuming op writes
+    /// inline in its constant-fold fallthrough arm — the `id`/`operands.into()`
+    /// boilerplate that differs only in `op` and the operand slice. Any array
+    /// (`[x]`, `[lhs, rhs]`, `[c, t, e]`) coerces through `impl Into<Arc<[_]>>`,
+    /// so this one helper serves the unary/binary/ternary arities.
+    #[inline]
+    fn expr_node(width: u32, op: BVOp, operands: impl Into<Arc<[RustBV]>>) -> Self {
+        RustBV::Expression {
+            id: Self::EXPRESSION_ID,
+            width,
+            op,
+            operands: operands.into(),
+        }
+    }
+
     /// Add two bitvectors.
     #[inline]
     pub fn add(&self, other: &Self, ctx: &SymContext) -> Self {
@@ -194,12 +201,7 @@ impl RustBV {
             _ => {
                 let width = self.width();
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Add,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(width, BVOp::Add, [lhs, rhs])
             }
         }
     }
@@ -220,12 +222,7 @@ impl RustBV {
             (None, Some(0)) => self,
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Sub,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(width, BVOp::Sub, [self, other])
             }
         }
     }
@@ -263,12 +260,7 @@ impl RustBV {
             }
             _ => {
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Mul,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(width, BVOp::Mul, [lhs, rhs])
             }
         }
     }
@@ -293,12 +285,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::UDiv,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(width, BVOp::UDiv, [self, other])
             }
         }
     }
@@ -325,12 +312,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::SDiv,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(width, BVOp::SDiv, [self, other])
             }
         }
     }
@@ -355,12 +337,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::URem,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(width, BVOp::URem, [self, other])
             }
         }
     }
@@ -387,12 +364,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::SRem,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(width, BVOp::SRem, [self, other])
             }
         }
     }
@@ -419,12 +391,7 @@ impl RustBV {
                     return operands[0].clone();
                 }
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Neg,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(width, BVOp::Neg, [self])
             }
         }
     }
@@ -454,12 +421,7 @@ impl RustBV {
             _ => {
                 let width = self.width();
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::And,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(width, BVOp::And, [lhs, rhs])
             }
         }
     }
@@ -486,12 +448,7 @@ impl RustBV {
             _ => {
                 let width = self.width();
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Or,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(width, BVOp::Or, [lhs, rhs])
             }
         }
     }
@@ -514,12 +471,7 @@ impl RustBV {
             _ => {
                 let width = self.width();
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Xor,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(width, BVOp::Xor, [lhs, rhs])
             }
         }
     }
@@ -546,12 +498,7 @@ impl RustBV {
                     return operands[0].clone();
                 }
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Not,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(width, BVOp::Not, [self])
             }
         }
     }
@@ -591,12 +538,7 @@ impl RustBV {
                     return operands[0].clone();
                 }
                 record_bvop_reverse();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: w,
-                    op: BVOp::Reverse,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(w, BVOp::Reverse, [self])
             }
         }
     }
@@ -634,12 +576,7 @@ impl RustBV {
             }
             // sym << c with c >= w → 0
             (None, Some(_)) => Self::zero(width),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width,
-                op: BVOp::Shl,
-                operands: Arc::<[RustBV]>::from([self, amount]),
-            },
+            _ => Self::expr_node(width, BVOp::Shl, [self, amount]),
         }
     }
 
@@ -671,12 +608,7 @@ impl RustBV {
             }
             // sym >> c with c >= w → 0
             (None, Some(_)) => Self::zero(width),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width,
-                op: BVOp::Lshr,
-                operands: Arc::<[RustBV]>::from([self, amount]),
-            },
+            _ => Self::expr_node(width, BVOp::Lshr, [self, amount]),
         }
     }
 
@@ -710,12 +642,7 @@ impl RustBV {
                 let msb = self.extract_into(width - 1, width - 1, _ctx);
                 msb.sign_extend_into(width, _ctx)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width,
-                op: BVOp::Ashr,
-                operands: Arc::<[RustBV]>::from([self, amount]),
-            },
+            _ => Self::expr_node(width, BVOp::Ashr, [self, amount]),
         }
     }
 
@@ -738,12 +665,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::RotL,
-                    operands: Arc::<[RustBV]>::from([self, amount]),
-                }
+                Self::expr_node(width, BVOp::RotL, [self, amount])
             }
         }
     }
@@ -767,12 +689,7 @@ impl RustBV {
             }
             _ => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::RotR,
-                    operands: Arc::<[RustBV]>::from([self, amount]),
-                }
+                Self::expr_node(width, BVOp::RotR, [self, amount])
             }
         }
     }
@@ -813,12 +730,7 @@ impl RustBV {
                     return folded;
                 }
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Eq,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(1, BVOp::Eq, [lhs, rhs])
             }
         }
     }
@@ -845,12 +757,7 @@ impl RustBV {
                     return folded;
                 }
                 let (lhs, rhs) = self.canonicalize_commutative(other);
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Ne,
-                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
-                }
+                Self::expr_node(1, BVOp::Ne, [lhs, rhs])
             }
         }
     }
@@ -928,12 +835,7 @@ impl RustBV {
         let extend_bits = to_width - self.width();
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: to_width,
-                op: BVOp::ZeroExt(extend_bits),
-                operands: Arc::<[RustBV]>::from([self]),
-            },
+            None => Self::expr_node(to_width, BVOp::ZeroExt(extend_bits), [self]),
         }
     }
 
@@ -957,12 +859,7 @@ impl RustBV {
                 let extended = sign_extend_to(v, self.width(), to_width);
                 Self::concrete(extended, to_width)
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: to_width,
-                op: BVOp::SignExt(extend_bits),
-                operands: Arc::<[RustBV]>::from([self]),
-            },
+            None => Self::expr_node(to_width, BVOp::SignExt(extend_bits), [self]),
         }
     }
 
@@ -990,12 +887,7 @@ impl RustBV {
             Some(v) => Self::concrete(v, to_width),
             None => {
                 record_bvop_extract();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: to_width,
-                    op: BVOp::Extract(to_width - 1, 0),
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(to_width, BVOp::Extract(to_width - 1, 0), [self])
             }
         }
     }
@@ -1108,12 +1000,7 @@ impl RustBV {
         }
 
         record_bvop_extract();
-        RustBV::Expression {
-            id: Self::EXPRESSION_ID,
-            width: result_width,
-            op: BVOp::Extract(high, low),
-            operands: Arc::<[RustBV]>::from([self]),
-        }
+        Self::expr_node(result_width, BVOp::Extract(high, low), [self])
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
@@ -1139,12 +1026,7 @@ impl RustBV {
             }
             _ => {
                 record_bvop_concat();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: result_width,
-                    op: BVOp::Concat,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+                Self::expr_node(result_width, BVOp::Concat, [self, other])
             }
         }
     }
@@ -1166,12 +1048,7 @@ impl RustBV {
         }
 
         record_bvop_extract();
-        RustBV::Expression {
-            id: Self::EXPRESSION_ID,
-            width: result_width,
-            op: BVOp::Extract(high, low),
-            operands: Arc::<[RustBV]>::from([self.clone()]),
-        }
+        Self::expr_node(result_width, BVOp::Extract(high, low), [self.clone()])
     }
 
     /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
@@ -1219,12 +1096,7 @@ impl RustBV {
             }
             _ => {
                 record_bvop_concat();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: result_width,
-                    op: BVOp::Concat,
-                    operands: Arc::<[RustBV]>::from([self.clone(), other.clone()]),
-                }
+                Self::expr_node(result_width, BVOp::Concat, [self.clone(), other.clone()])
             }
         }
     }
@@ -1252,12 +1124,7 @@ impl RustBV {
                     else_val
                 }
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: then_val.width(),
-                op: BVOp::Ite,
-                operands: Arc::<[RustBV]>::from([self, then_val, else_val]),
-            },
+            None => Self::expr_node(then_val.width(), BVOp::Ite, [self, then_val, else_val]),
         }
     }
 
@@ -1281,12 +1148,7 @@ impl RustBV {
             }
             None => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Clz,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(width, BVOp::Clz, [self])
             }
         }
     }
@@ -1311,12 +1173,7 @@ impl RustBV {
             }
             None => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Ctz,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(width, BVOp::Ctz, [self])
             }
         }
     }
@@ -1334,12 +1191,7 @@ impl RustBV {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
             None => {
                 let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Popcount,
-                    operands: Arc::<[RustBV]>::from([self]),
-                }
+                Self::expr_node(width, BVOp::Popcount, [self])
             }
         }
     }
