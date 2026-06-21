@@ -151,6 +151,14 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
+# angr-kzjv6: symex-relevant SimOptions mirrored onto the Rust state so native
+# SimProcedures can branch on them via ``RustSimState.has_option``. Kept as the
+# raw option strings (the ``angr.sim_options`` constants are plain ``str``) to
+# avoid an import-order dependency. Add an entry here only when a native proc
+# actually consults the option; the full per-state option set otherwise stays
+# Python-side (``rust_state_proxy.options``).
+_NATIVE_SIMOPTIONS = frozenset({"SHORT_READS"})
+
 
 def _is_rust_memory_proxy(plugin) -> bool:
     """True when ``plugin`` is a ``RustMemoryProxy`` (callback-memory-proxy gate).
@@ -3037,6 +3045,12 @@ class RustExplorationManager(
                 o.NO_SYMBOLIC_JUMP_RESOLUTION,
                 o.KEEP_IP_SYMBOLIC,
                 o.TRACK_ACTION_HISTORY,
+                # angr-kzjv6: symex-relevant options that native SimProcedures
+                # consult via RustSimState.has_option (e.g. SHORT_READS). Without
+                # this they get stripped here before `_add_rust_state` mirrors
+                # them onto the Rust state. _NATIVE_SIMOPTIONS holds the raw
+                # option-name strings, which `state.options` accepts directly.
+                *_NATIVE_SIMOPTIONS,
             ):
                 if opt in src_state.options:
                     dst_state.options.add(opt)
@@ -3349,6 +3363,14 @@ class RustExplorationManager(
                     rust_state.set_no_symbolic_jump_resolution(True)
                 if o.KEEP_IP_SYMBOLIC in angr_state.options:
                     rust_state.set_keep_ip_symbolic(True)
+                # angr-kzjv6: thread the symex-relevant SimOption subset onto
+                # the Rust state so native SimProcedures can branch on them
+                # (e.g. SHORT_READS gates faithful fgets short-read/EOF). Only
+                # options a native proc actually consults are mirrored; the full
+                # option set stays Python-side (rust_state_proxy.options).
+                for _opt in _NATIVE_SIMOPTIONS:
+                    if _opt in angr_state.options:
+                        rust_state.set_option(_opt, True)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: option detection failed; Rust
                 # permission/NX enforcement and IP-handling gating stay off —

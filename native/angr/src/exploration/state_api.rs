@@ -502,6 +502,13 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.keep_ip_symbolic()))
     }
 
+    /// Whether the named symex-relevant SimOption is active on the state
+    /// (angr-kzjv6). Lets Python tests assert the option subset threaded in
+    /// `_add_rust_state` reached the Rust state.
+    pub(crate) fn _state_has_option(&self, state_id: u64, name: &str) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.has_option(name)))
+    }
+
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
             Ok(state.get_register(name).and_then(|bv| bv.as_u128()))

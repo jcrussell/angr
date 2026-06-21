@@ -93,6 +93,12 @@ pub struct RustSimStateSnapshot {
     /// freelist.
     #[serde(default)]
     pub cgc_sinkholes: Vec<(u64, u64)>,
+    /// Symex-relevant SimOption mirror (angr-kzjv6). Stored as a sorted `Vec`
+    /// for deterministic serialization (the live state holds an
+    /// `Arc<HashSet<String>>`). `#[serde(default)]` keeps pre-kzjv6 snapshots
+    /// forward-compatible — restoration defaults to an empty option set.
+    #[serde(default)]
+    pub sim_options: Vec<String>,
 }
 
 fn default_cgc_allocation_base() -> u64 {
@@ -114,6 +120,8 @@ impl RustSimState {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         environment.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut sim_options: Vec<String> = self.sim_options.iter().cloned().collect();
+        sim_options.sort_unstable();
         RustSimStateSnapshot {
             arch_name: self.arch.name().to_string(),
             vex_arch: self.vex_arch,
@@ -144,6 +152,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options,
         }
     }
 
@@ -195,6 +204,7 @@ impl RustSimState {
             force_eager_forks: snap.force_eager_forks,
             cgc_allocation_base: snap.cgc_allocation_base,
             cgc_sinkholes: snap.cgc_sinkholes,
+            sim_options: Arc::new(snap.sim_options.into_iter().collect()),
         })
     }
 

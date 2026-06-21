@@ -1251,6 +1251,41 @@ class TestRustExplorationPython:
         assert kis_ids, "expected an active state to be added"
         assert kis_mgr._rust_mgr.state_keep_ip_symbolic(kis_ids[0]) is True
 
+    def test_short_reads_option_propagates_to_rust(self, fauxware_project):
+        """A SimState with SHORT_READS should set the Rust state's
+        symex-relevant SimOption mirror so native SimProcedures can read it
+        via has_option (angr-kzjv6)."""
+        from angr import sim_options as o
+
+        # No option → has_option("SHORT_READS") is False.
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_has_option(plain_ids[0], "SHORT_READS") is False
+
+        # Option present → has_option flips on for the Rust state.
+        sr_state = fauxware_project.factory.entry_state(add_options={o.SHORT_READS})
+        sr_mgr = RustExplorationManager(fauxware_project, [sr_state])
+        sr_ids = sr_mgr._rust_mgr.get_state_ids("active")
+        assert sr_ids, "expected an active state to be added"
+        assert sr_mgr._rust_mgr.state_has_option(sr_ids[0], "SHORT_READS") is True
+
+    def test_set_option_has_option_roundtrip_and_fork(self):
+        """RustSimState.set_option / has_option roundtrip, and the option set
+        is carried across fork (angr-kzjv6)."""
+        state = RustSimState("amd64")
+        assert state.has_option("SHORT_READS") is False
+        state.set_option("SHORT_READS", True)
+        assert state.has_option("SHORT_READS") is True
+        # Forked child inherits the snapshot.
+        child = state.fork()
+        assert child.has_option("SHORT_READS") is True
+        # Removal works and is independent on the child (CoW).
+        child.set_option("SHORT_READS", False)
+        assert child.has_option("SHORT_READS") is False
+        assert state.has_option("SHORT_READS") is True
+
     def test_keep_ip_symbolic_leaves_ip_register_symbolic_after_fork(self):
         """With KEEP_IP_SYMBOLIC, after a `jmp rax` against a symbolic rax
         constrained to a small set of concrete addresses, each forked state's

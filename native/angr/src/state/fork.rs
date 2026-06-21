@@ -99,6 +99,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
         }
     }
 
@@ -141,6 +142,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
         }
     }
 
@@ -183,6 +185,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
         }
     }
 
@@ -233,6 +236,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
         }
     }
 
@@ -331,6 +335,7 @@ impl RustSimState {
             force_eager_forks: self.force_eager_forks,
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
         }
     }
 }

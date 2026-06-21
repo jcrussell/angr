@@ -369,6 +369,21 @@ pub struct RustSimState {
     /// descending, first fit" semantics in `get_max_sinkhole`).
     /// Cloned on fork.
     cgc_sinkholes: Vec<(u64, u64)>,
+    /// Symex-relevant SimOption names (e.g. `"SHORT_READS"`) mirrored from the
+    /// Python SimState option set so native SimProcedures can branch on them
+    /// via [`RustSimState::has_option`]. Only the symex-relevant subset is
+    /// threaded across the FFI (see `_add_rust_state` in `rust_manager.py`),
+    /// not the full option set — the full set stays Python-side
+    /// (`rust_state_proxy.options`). Wrapped in `Arc` for cheap fork —
+    /// copy-on-write via `Arc::make_mut` on `set_option`; option sets are
+    /// configured once at construction in typical workloads, so most forks pay
+    /// only an `Arc` refcount bump.
+    ///
+    /// See module-level `apply-state-metadata-strips-options`: like the other
+    /// option mirrors, this is NOT in the `_apply_state_metadata` allow-list,
+    /// so it must be set on the Rust state during `_add_rust_state` rather than
+    /// relying on the cached-init path to preserve it.
+    sim_options: Arc<HashSet<String>>,
 }
 
 impl RustSimState {
@@ -426,6 +441,7 @@ impl RustSimState {
             force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
+            sim_options: Arc::new(HashSet::new()),
         })
     }
 
@@ -472,6 +488,7 @@ impl RustSimState {
             force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
+            sim_options: Arc::new(HashSet::new()),
         }
     }
 
@@ -528,6 +545,7 @@ impl RustSimState {
             force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
+            sim_options: Arc::new(HashSet::new()),
         })
     }
 
@@ -1137,6 +1155,27 @@ impl RustSimState {
     /// Whether the IP register should be kept symbolic across block boundaries.
     pub fn keep_ip_symbolic(&self) -> bool {
         self.keep_ip_symbolic
+    }
+
+    /// Add or remove a symex-relevant SimOption flag (angr-kzjv6). CoW via
+    /// `Arc::make_mut` so unforked siblings keep sharing the original set.
+    /// `name` is the angr option string (e.g. `"SHORT_READS"`); only the
+    /// symex-relevant subset that native SimProcedures consult is threaded
+    /// across the FFI in `_add_rust_state`.
+    pub fn set_option(&mut self, name: &str, enabled: bool) {
+        let opts = Arc::make_mut(&mut self.sim_options);
+        if enabled {
+            opts.insert(name.to_string());
+        } else {
+            opts.remove(name);
+        }
+    }
+
+    /// Whether the named SimOption is active on this state. Lets native
+    /// SimProcedures branch on options like `SHORT_READS` (angr-kzjv6) without
+    /// the Python round-trip through `rust_state_proxy.options`.
+    pub fn has_option(&self, name: &str) -> bool {
+        self.sim_options.contains(name)
     }
 
     /// angr-027h: force eager (immediate) forking for this state regardless of
@@ -1780,6 +1819,21 @@ impl PyRustSimState {
     #[pyo3(name = "keep_ip_symbolic")]
     pub fn py_keep_ip_symbolic(&self) -> bool {
         self.inner.keep_ip_symbolic()
+    }
+
+    /// Mirror a symex-relevant SimOption onto this state so native
+    /// SimProcedures can branch on it (angr-kzjv6). `name` is the angr option
+    /// string (e.g. `"SHORT_READS"`); `enabled=False` removes it. Wired from
+    /// `_add_rust_state` for the small symex-relevant option subset.
+    #[pyo3(name = "set_option")]
+    pub fn py_set_option(&mut self, name: &str, enabled: bool) {
+        self.inner.set_option(name, enabled);
+    }
+
+    /// Whether the named SimOption is active on this state.
+    #[pyo3(name = "has_option")]
+    pub fn py_has_option(&self, name: &str) -> bool {
+        self.inner.has_option(name)
     }
 
     /// Opt this state's solver context in to fork-time

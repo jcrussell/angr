@@ -1806,6 +1806,13 @@ impl RustExplorationManager {
         self._state_keep_ip_symbolic(state_id)
     }
 
+    /// Whether the named symex-relevant SimOption (e.g. `"SHORT_READS"`) is
+    /// active on a state (angr-kzjv6). Mirrors the option subset that
+    /// `_add_rust_state` threads onto the Rust state for native SimProcedures.
+    pub fn state_has_option(&self, state_id: u64, name: &str) -> PyResult<bool> {
+        self._state_has_option(state_id, name)
+    }
+
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_state_register(state_id, name)
