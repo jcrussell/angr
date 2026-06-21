@@ -194,6 +194,59 @@ fn test_read_closed_fd_falls_back() {
 }
 
 #[test]
+fn test_read_stdin_short_reads_returns_symbolic_size() {
+    // With SHORT_READS, native stdin read returns a symbolic real_size in
+    // [0, count] (the lone fork source) rather than the concrete count,
+    // mirroring Python's storage/file.py SimPacket short-read path (angr-kf0uy).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        result.as_u64().is_none(),
+        "short-read stdin read returns symbolic real_size, not the concrete count"
+    );
+    let ctx = state.solver().borrow();
+    assert!(
+        ctx.solution(&result, 0),
+        "a zero-length short read must be reachable"
+    );
+    assert!(ctx.solution(&result, 4), "the full read must be reachable");
+    assert!(!ctx.solution(&result, 5), "real_size cannot exceed count");
+}
+
+#[test]
+fn test_read_stdin_default_returns_concrete_count() {
+    // Default path (SHORT_READS off): stdin read returns the full concrete
+    // count, byte-identical and non-forking.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(4));
+}
+
+#[test]
 fn test_read_too_large() {
     let mut state = RustSimState::new("amd64").unwrap();
     let result = NativeRead.call(

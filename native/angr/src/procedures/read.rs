@@ -3,6 +3,9 @@
 //! Handles `read(fd, buf, count)` for:
 //!   - fd=0 (stdin) by storing fresh symbolic bytes and recording the symbol
 //!     names so the Python state export can splice them into `posix.dumps(0)`.
+//!     Returns the full concrete `count` by default; under the SHORT_READS
+//!     SimOption it instead returns a symbolic size in `[0, count]` (the lone
+//!     fork source), mirroring Python's SimPacket short-read path.
 //!   - any other fd open in the Rust `FileSystem` that has remaining concrete
 //!     content (pos < content_len) — bytes are served from the FS buffer,
 //!     advancing the position.
@@ -111,6 +114,32 @@ fn read_stdin_symbolic(
     }
 
     let bits = state.arch().bits();
+
+    // Short-read model, gated behind the SHORT_READS SimOption (angr-kf0uy).
+    // Mirrors Python's storage/file.py SimPacket path: under SHORT_READS the
+    // read returns a symbolic `real_size` constrained to <= count, rather than
+    // the full count. This is the only fork source — the `count` symbolic bytes
+    // already filled into `buf` are unchanged (Python likewise generates the
+    // full packet and lets the symbolic return size tell the caller how many
+    // bytes are valid; content beyond real_size is undefined). Unlike fgets
+    // (angr-efvao) there are no newline/NUL/buffer semantics to model, so the
+    // symbolic return is the entire change. Without SHORT_READS the default
+    // below stays byte-identical and non-forking, so the perf gate is
+    // unaffected; enabling it opts into the same state multiplication Python
+    // already incurs.
+    if state.has_option("SHORT_READS") {
+        let real_size = {
+            let ctx = state.solver().borrow();
+            let real_size = RustBV::symbolic(&ctx, format!("read_realsize_{}", read_id), bits);
+            // 0 <= real_size <= count (lower bound implicit for unsigned).
+            let bound = real_size.ule(&RustBV::concrete(count as u128, bits), &ctx);
+            (real_size, bound)
+        };
+        let (real_size, bound) = real_size;
+        state.add_constraint(bound);
+        return Ok(Some(real_size));
+    }
+
     Ok(Some(RustBV::concrete(count as u128, bits)))
 }
 
