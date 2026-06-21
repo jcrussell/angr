@@ -157,6 +157,49 @@ impl SymContext {
     /// AST. The constructor of `Z3AstPtr` is `unsafe` precisely so this
     /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
     /// this method is safe to call.
+    /// Install one constraint via the active lineage mode, then run the
+    /// standard post-assert bookkeeping (constraint_count bump, sat_cache
+    /// clear, model-consistency invalidation).
+    ///
+    /// `assert_none` runs only on the non-lineage (`None`) path with the
+    /// per-context solver guard already acquired — it is where the single
+    /// real per-caller difference lives (`assert` vs `assert_and_track`).
+    /// The `Some` (shared-lineage) path mints a fresh
+    /// [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
+    /// pushes it onto `scope_path`, and calls
+    /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to); see
+    /// [`Self::add_constraint`] for why the `Some` branch can't route
+    /// through `with_z3_solver`'s closure form. Shared by
+    /// [`Self::add_constraint_raw`], [`Self::add_constraint`], and
+    /// [`Self::add_constraint_tracked_indexed`].
+    #[cfg(feature = "vex-engine-z3")]
+    fn install_constraint(
+        &self,
+        constraint: &z3::ast::Bool,
+        assert_none: impl FnOnce(&z3::Solver),
+    ) {
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                assert_none(&solver);
+            }
+            Some(lin) => {
+                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
+                let path_snapshot = {
+                    let mut sp = self.scope_path.lock();
+                    sp.push(frame);
+                    sp.clone()
+                };
+                let mut guard = lin.lock();
+                guard.switch_to(&path_snapshot);
+            }
+        }
+        self.constraint_count.fetch_add(1, Ordering::SeqCst);
+        self.sat_cache.set(None);
+        self.invalidate_model_if_inconsistent(constraint);
+    }
+
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_raw(&self, ast: super::Z3AstPtr) {
         let ctx = z3::Context::thread_local();
@@ -188,29 +231,7 @@ impl SymContext {
             // initial add).
             return;
         }
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
-        match lineage {
-            None => {
-                let solver = self.solver();
-                solver.assert(&constraint);
-            }
-            Some(lin) => {
-                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
-                let path_snapshot = {
-                    let mut sp = self.scope_path.lock();
-                    sp.push(frame);
-                    sp.clone()
-                };
-                let mut guard = lin.lock();
-                guard.switch_to(&path_snapshot);
-            }
-        }
-        self.constraint_count.fetch_add(1, Ordering::SeqCst);
-        self.sat_cache.set(None);
-        // Keep the cached model if it still satisfies the new constraint —
-        // otherwise it's invalidated. This lets check_branch_feasibility
-        // reuse the model across consecutive assume_true/assume_false calls.
-        self.invalidate_model_if_inconsistent(&constraint);
+        self.install_constraint(&constraint, |s| s.assert(&constraint));
     }
 
     /// Add a constraint (fast path: no tracking overhead).
@@ -251,28 +272,7 @@ impl SymContext {
         // mutex acquisition on constraint_trackers for every constraint.
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
-        match lineage {
-            None => {
-                let solver = self.solver();
-                solver.assert(&constraint);
-            }
-            Some(lin) => {
-                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
-                let path_snapshot = {
-                    let mut sp = self.scope_path.lock();
-                    sp.push(frame);
-                    sp.clone()
-                };
-                let mut guard = lin.lock();
-                guard.switch_to(&path_snapshot);
-            }
-        }
-        self.constraint_count.fetch_add(1, Ordering::SeqCst);
-        // Invalidate sat_cache - constraint set has changed.
-        self.sat_cache.set(None);
-        // Preserve model_cache when consistent with the new constraint.
-        self.invalidate_model_if_inconsistent(&constraint);
+        self.install_constraint(&constraint, |s| s.assert(&constraint));
     }
 
     /// Batched fast path for `add_constraint_raw`: asserts N constraints under
@@ -443,27 +443,9 @@ impl SymContext {
             i
         };
 
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
-        match lineage {
-            None => {
-                let solver = self.solver();
-                solver.assert_and_track(&constraint, &track_bool);
-            }
-            Some(lin) => {
-                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
-                let path_snapshot = {
-                    let mut sp = self.scope_path.lock();
-                    sp.push(frame);
-                    sp.clone()
-                };
-                let mut guard = lin.lock();
-                guard.switch_to(&path_snapshot);
-            }
-        }
-
-        self.constraint_count.fetch_add(1, Ordering::SeqCst);
-        self.sat_cache.set(None);
-        self.invalidate_model_if_inconsistent(&constraint);
+        self.install_constraint(&constraint, |s| {
+            s.assert_and_track(&constraint, &track_bool)
+        });
         tracker_idx
     }
 
