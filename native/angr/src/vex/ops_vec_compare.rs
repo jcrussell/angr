@@ -92,46 +92,7 @@ impl VEXOps {
         elem: IRType,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = left.width();
-        let count = total_width / elem_width;
-        let half_count = count / 2;
-
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let mut result: u128 = 0;
-            let elem_mask = Self::low_bit_mask_u128(elem_width);
-
-            for i in 0..half_count {
-                let src_lo = i * elem_width;
-                let dst_lo = i * 2 * elem_width;
-
-                let l_elem = (l >> src_lo) & elem_mask;
-                let r_elem = (r >> src_lo) & elem_mask;
-
-                // VEX InterleaveLO: right goes to even positions, left to odd
-                result |= r_elem << dst_lo;
-                result |= l_elem << (dst_lo + elem_width);
-            }
-
-            return Ok(RustBV::concrete(result, total_width));
-        }
-
-        // Symbolic case
-        let mut elements: Vec<RustBV> = Vec::new();
-
-        for i in 0..half_count {
-            let src_lo = i * elem_width;
-            let src_hi = src_lo + elem_width - 1;
-
-            let l_elem = left.extract(src_hi, src_lo, ctx);
-            let r_elem = right.extract(src_hi, src_lo, ctx);
-
-            // VEX InterleaveLO: right goes to even positions, left to odd
-            elements.push(r_elem);
-            elements.push(l_elem);
-        }
-
-        Ok(Self::concat_le_elements(elements, ctx))
+        Self::vec_interleave(left, right, elem, false, ctx)
     }
 
     /// Vector interleave high halves.
@@ -141,23 +102,38 @@ impl VEXOps {
         elem: IRType,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
+        Self::vec_interleave(left, right, elem, true, ctx)
+    }
+
+    /// Shared interleave implementation. `high` selects which half of each
+    /// operand is read: the low half (`false`, InterleaveLO) or the high half
+    /// (`true`, InterleaveHI). In both cases right goes to even output
+    /// positions and left to odd.
+    fn vec_interleave(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        high: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = left.width();
         let count = total_width / elem_width;
         let half_count = count / 2;
+        let base = if high { half_count } else { 0 };
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let mut result: u128 = 0;
             let elem_mask = Self::low_bit_mask_u128(elem_width);
 
             for i in 0..half_count {
-                let src_lo = (half_count + i) * elem_width;
+                let src_lo = (base + i) * elem_width;
                 let dst_lo = i * 2 * elem_width;
 
                 let l_elem = (l >> src_lo) & elem_mask;
                 let r_elem = (r >> src_lo) & elem_mask;
 
-                // VEX InterleaveHI: right goes to even positions, left to odd
+                // right goes to even positions, left to odd
                 result |= r_elem << dst_lo;
                 result |= l_elem << (dst_lo + elem_width);
             }
@@ -169,13 +145,13 @@ impl VEXOps {
         let mut elements: Vec<RustBV> = Vec::new();
 
         for i in 0..half_count {
-            let src_lo = (half_count + i) * elem_width;
+            let src_lo = (base + i) * elem_width;
             let src_hi = src_lo + elem_width - 1;
 
             let l_elem = left.extract(src_hi, src_lo, ctx);
             let r_elem = right.extract(src_hi, src_lo, ctx);
 
-            // VEX InterleaveHI: right goes to even positions, left to odd
+            // right goes to even positions, left to odd
             elements.push(r_elem);
             elements.push(l_elem);
         }
