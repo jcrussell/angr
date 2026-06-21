@@ -14,6 +14,34 @@ use super::page::{PAGE_SIZE, Permission};
 use super::{Address, MemoryError, SymbolicMemory};
 
 impl SymbolicMemory {
+    /// angr-jvjf partial-overwrite guard (shared by `load_concrete` and
+    /// `load_concrete_lazy_inner`). `store_concrete` clears the page bitmap
+    /// for overwritten bytes but leaves `symbolic_objects` / `symbolic_spans`
+    /// claims intact when those belong to a wider sym based at a different
+    /// address — the wider-sym fast paths would silently return that stale
+    /// claim. When a wider sym claim exists for `[addr, addr+size)` but not
+    /// every byte is bitmap-symbolic, route through `assemble_load_with_multi`
+    /// (which honors the page bitmap per byte). Returns `Some(result)` when
+    /// the guard fires, `None` to let the caller continue its fast paths.
+    pub(super) fn try_partial_overwrite_load(
+        &self,
+        addr: Address,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Option<Result<RustBV, MemoryError>> {
+        let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
+            || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
+        if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
+            let start_page = addr.page_num();
+            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            if let Err(e) = self.check_perms_range(start_page, end_page, Permission::R) {
+                return Some(Err(e));
+            }
+            return Some(self.assemble_load_with_multi(addr, size, ctx));
+        }
+        None
+    }
+
     /// Mint the unconstrained value returned by the AVOID_MULTIVALUED_READS
     /// short-circuit. Returns a zero BV when `zero_fill_unconstrained` is set
     /// (mirrors Python's `_default_value` honoring `ZERO_FILL_UNCONSTRAINED_MEMORY`),
@@ -98,13 +126,8 @@ impl SymbolicMemory {
             // signal with a per-byte bitmap scan; on mismatch, route
             // through `assemble_load_with_multi` which uses the bitmap
             // per-byte (Symbolic / Spanned / Concrete).
-            let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
-                || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
-            if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
-                let start_page = addr.page_num();
-                let end_page = (addr.raw() + size as u64 - 1) >> 12;
-                self.check_perms_range(start_page, end_page, Permission::R)?;
-                return self.assemble_load_with_multi(addr, size, ctx);
+            if let Some(r) = self.try_partial_overwrite_load(addr, size, ctx) {
+                return r;
             }
             // Check for stored symbolic object at exact address first
             if let Some(sym) = self.symbolic_objects.get(&addr) {
@@ -230,14 +253,7 @@ impl SymbolicMemory {
                 // BE: byte 0 = MSB → already high-to-low.
                 // angr-kg58: balanced fold gives an O(log N) AST instead
                 // of O(N) left-skewed chain.
-                let result = match self.endness {
-                    Endness::Little => {
-                        let high_to_low: Vec<RustBV> = parts.iter().rev().cloned().collect();
-                        RustBV::concat_balanced(&high_to_low, ctx)
-                    }
-                    Endness::Big => RustBV::concat_balanced(&parts, ctx),
-                };
-                return Ok(result);
+                return Ok(concat_bytes_endian(parts, self.endness, ctx));
             }
             // angr-uwtj: spans-first containment lookup. O(1) via the
             // reverse-span index; falls back to a linear scan over
@@ -262,49 +278,9 @@ impl SymbolicMemory {
             });
         }
 
-        // A `Concrete` RustBV stores its value in a u128 (16 bytes). A wider
-        // concrete load cannot be packed into one — the u128 shift in the
-        // fast path below would wrap (mod 128) and OR high bytes back over the
-        // low bytes, silently corrupting the value (e.g. a 32-byte AVX load or
-        // a >16-byte inspection read). Assemble those as a `Concat` of per-byte
-        // concretes instead; `concat_into` keeps results wider than 128 bits as
-        // an expression rather than re-folding into a u128.
-        if size as usize > 16 {
-            let mut parts: Vec<RustBV> = bytes
-                .iter()
-                .map(|&b| RustBV::concrete(b as u128, 8))
-                .collect();
-            let result = match self.endness {
-                // concat_balanced wants parts high-bits-first. LE byte 0 is the
-                // LSB (lowest bits → last), so reverse; BE byte 0 is the MSB.
-                Endness::Little => {
-                    parts.reverse();
-                    RustBV::concat_balanced(&parts, ctx)
-                }
-                Endness::Big => RustBV::concat_balanced(&parts, ctx),
-            };
-            return Ok(result);
-        }
-
-        // Convert bytes to value based on endianness
-        let value = match self.endness {
-            Endness::Little => {
-                let mut v: u128 = 0;
-                for (i, &byte) in bytes.iter().enumerate() {
-                    v |= (byte as u128) << (i * 8);
-                }
-                v
-            }
-            Endness::Big => {
-                let mut v: u128 = 0;
-                for &byte in &bytes {
-                    v = (v << 8) | (byte as u128);
-                }
-                v
-            }
-        };
-
-        Ok(RustBV::concrete(value, size * 8))
+        // angr-24pv4.3: endianness-aware concrete byte packing, including the
+        // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
+        Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
     }
 
     /// Load from a symbolic address with concretization support.
@@ -358,18 +334,10 @@ impl SymbolicMemory {
             ConcretizationResult::Multiple(addrs) => {
                 self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                return Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                });
-            }
-            ConcretizationResult::Failed(reason) => {
-                return Err(MemoryError::SymbolicAddress {
-                    description: reason,
-                });
+            other => {
+                return Err(other
+                    .to_symbolic_address_error()
+                    .expect("non-success concretization result"));
             }
         };
 
@@ -491,20 +459,12 @@ impl SymbolicMemory {
                 self.prepare_strided_region(base, stride, count, size);
                 self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                // Return error so caller can fall back to Python's memory model,
-                // which handles large symbolic address ranges natively.
-                return Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                });
-            }
-            ConcretizationResult::Failed(reason) => {
-                return Err(MemoryError::SymbolicAddress {
-                    description: reason,
-                });
+            // Return error so caller can fall back to Python's memory model,
+            // which handles large symbolic address ranges natively.
+            other => {
+                return Err(other
+                    .to_symbolic_address_error()
+                    .expect("non-success concretization result"));
             }
         };
 
@@ -604,13 +564,8 @@ impl SymbolicMemory {
         // `symbolic_spans[addr]` fast-path checks below and shadow the
         // page byte. Route to `assemble_load_with_multi` (which honors
         // the page bitmap per byte) on bitmap mismatch.
-        let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
-            || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
-        if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
-            let start_page = addr.page_num();
-            let end_page = (addr.raw() + size as u64 - 1) >> 12;
-            self.check_perms_range(start_page, end_page, Permission::R)?;
-            return self.assemble_load_with_multi(addr, size, ctx);
+        if let Some(r) = self.try_partial_overwrite_load(addr, size, ctx) {
+            return r;
         }
 
         // Check for stored symbolic object first
@@ -711,18 +666,7 @@ impl SymbolicMemory {
                 // Combine bytes into a single value using a balanced Concat
                 // tree (angr-kg58). byte_objects[0] is the byte at the
                 // lowest address.
-                let result = match self.endness {
-                    Endness::Little => {
-                        // LE: byte 0 = LSB → reverse so high byte is first
-                        byte_objects.reverse();
-                        RustBV::concat_balanced(&byte_objects, ctx)
-                    }
-                    Endness::Big => {
-                        // BE: byte 0 = MSB → already high-to-low
-                        RustBV::concat_balanced(&byte_objects, ctx)
-                    }
-                };
-                return Ok(result);
+                return Ok(concat_bytes_endian(byte_objects, self.endness, ctx));
             }
 
             // angr-uwtj: spans-first containment lookup. O(1) via the
@@ -741,49 +685,9 @@ impl SymbolicMemory {
             });
         }
 
-        // A `Concrete` RustBV stores its value in a u128 (16 bytes). A wider
-        // concrete load cannot be packed into one — the u128 shift in the
-        // fast path below would wrap (mod 128) and OR high bytes back over the
-        // low bytes, silently corrupting the value (e.g. a 32-byte AVX load or
-        // a >16-byte inspection read). Assemble those as a `Concat` of per-byte
-        // concretes instead; `concat_into` keeps results wider than 128 bits as
-        // an expression rather than re-folding into a u128.
-        if size as usize > 16 {
-            let mut parts: Vec<RustBV> = bytes
-                .iter()
-                .map(|&b| RustBV::concrete(b as u128, 8))
-                .collect();
-            let result = match self.endness {
-                // concat_balanced wants parts high-bits-first. LE byte 0 is the
-                // LSB (lowest bits → last), so reverse; BE byte 0 is the MSB.
-                Endness::Little => {
-                    parts.reverse();
-                    RustBV::concat_balanced(&parts, ctx)
-                }
-                Endness::Big => RustBV::concat_balanced(&parts, ctx),
-            };
-            return Ok(result);
-        }
-
-        // Convert bytes to value based on endianness
-        let value = match self.endness {
-            Endness::Little => {
-                let mut v: u128 = 0;
-                for (i, &byte) in bytes.iter().enumerate() {
-                    v |= (byte as u128) << (i * 8);
-                }
-                v
-            }
-            Endness::Big => {
-                let mut v: u128 = 0;
-                for &byte in &bytes {
-                    v = (v << 8) | (byte as u128);
-                }
-                v
-            }
-        };
-
-        Ok(RustBV::concrete(value, size * 8))
+        // angr-24pv4.3: endianness-aware concrete byte packing, including the
+        // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
+        Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
     }
 
     /// Per-byte reconstruction for loads that touch at least one Multi cell
@@ -906,13 +810,7 @@ impl SymbolicMemory {
         // Concatenate per endianness with a balanced tree (angr-kg58):
         //   LE: byte[0] is the LSB → reverse so high byte is first.
         //   BE: byte[0] is the MSB → already high-to-low.
-        let result = match self.endness {
-            Endness::Little => {
-                byte_parts.reverse();
-                RustBV::concat_balanced(&byte_parts, ctx)
-            }
-            Endness::Big => RustBV::concat_balanced(&byte_parts, ctx),
-        };
+        let result = concat_bytes_endian(byte_parts, self.endness, ctx);
 
         // Phase 4.1: cache the assembled BV when the load is fully covered
         // by Multi + Concrete bytes (fingerprint is Some). The hit path
@@ -1008,14 +906,7 @@ impl SymbolicMemory {
         // Concatenate per endianness with a balanced tree (angr-kg58):
         //   LE: byte[0] is the LSB → reverse so high byte is first.
         //   BE: byte[0] is the MSB → already high-to-low.
-        let result = match self.endness {
-            Endness::Little => {
-                byte_parts.reverse();
-                RustBV::concat_balanced(&byte_parts, ctx)
-            }
-            Endness::Big => RustBV::concat_balanced(&byte_parts, ctx),
-        };
-        Some(result)
+        Some(concat_bytes_endian(byte_parts, self.endness, ctx))
     }
 
     /// Extract the byte at `byte_offset` from a wider symbolic value,
@@ -1042,4 +933,56 @@ impl SymbolicMemory {
             ),
         })
     }
+}
+
+/// Concatenate per-byte `parts` (with `parts[0]` at the lowest address)
+/// into a single RustBV honoring `endness`, using a balanced O(log N)
+/// fold (angr-kg58). LE: byte 0 is the LSB, so reverse to high-bits-first
+/// before folding; BE: byte 0 is the MSB, already high-to-low. `parts`
+/// must be non-empty (`concat_balanced` asserts this).
+pub(super) fn concat_bytes_endian(
+    mut parts: Vec<RustBV>,
+    endness: Endness,
+    ctx: &SymContext,
+) -> RustBV {
+    if matches!(endness, Endness::Little) {
+        parts.reverse();
+    }
+    RustBV::concat_balanced(&parts, ctx)
+}
+
+/// Pack concrete `bytes` (with `bytes[0]` at the lowest address) into a
+/// RustBV of `size` bytes honoring `endness`.
+///
+/// A `Concrete` RustBV stores its value in a u128 (16 bytes). A wider
+/// concrete load cannot be packed into one — a u128 shift would wrap
+/// (mod 128) and OR high bytes back over the low bytes, silently
+/// corrupting the value (e.g. a 32-byte AVX load). Those are assembled as
+/// a balanced `Concat` of per-byte concretes instead; `<=16` bytes fold
+/// into a u128 directly.
+pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness, ctx: &SymContext) -> RustBV {
+    if size as usize > 16 {
+        let parts: Vec<RustBV> = bytes
+            .iter()
+            .map(|&b| RustBV::concrete(b as u128, 8))
+            .collect();
+        return concat_bytes_endian(parts, endness, ctx);
+    }
+    let value = match endness {
+        Endness::Little => {
+            let mut v: u128 = 0;
+            for (i, &byte) in bytes.iter().enumerate() {
+                v |= (byte as u128) << (i * 8);
+            }
+            v
+        }
+        Endness::Big => {
+            let mut v: u128 = 0;
+            for &byte in bytes {
+                v = (v << 8) | (byte as u128);
+            }
+            v
+        }
+    };
+    RustBV::concrete(value, size * 8)
 }

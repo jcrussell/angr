@@ -80,6 +80,30 @@ pub enum MemoryError {
     UnexpectedSymbolic { addr: u64 },
 }
 
+impl ConcretizationResult {
+    /// Map a *failed* concretization (`TooLarge` / `Failed`) onto the
+    /// `MemoryError::SymbolicAddress` it should surface, so callers can fall
+    /// back to Python's memory model (angr-24pv4.3). Returns `None` for the
+    /// success variants (`Single` / `Multiple` / `Strided`), which every
+    /// caller handles before delegating here. Centralizes the "address range
+    /// too large" message string that was previously copy-pasted at six load
+    /// and store concretization-dispatch sites.
+    pub(crate) fn to_symbolic_address_error(&self) -> Option<MemoryError> {
+        match self {
+            ConcretizationResult::TooLarge { min, max, .. } => Some(MemoryError::SymbolicAddress {
+                description: format!(
+                    "address range too large for concretization: 0x{:x} - 0x{:x}",
+                    min, max
+                ),
+            }),
+            ConcretizationResult::Failed(reason) => Some(MemoryError::SymbolicAddress {
+                description: reason.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// Symbolic memory model.
 ///
 /// This provides a paged memory model with:
@@ -590,20 +614,7 @@ impl SymbolicMemory {
                 ConcretizationResult::Multiple(addrs) => {
                     // Build ITE chains for each candidate address
                     for &candidate in &addrs {
-                        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
-                        let cond = pw.addr.eq(&addr_const, ctx);
-                        let effective_cond = if let Some(ref c) = pw.condition {
-                            cond.and(c, ctx)
-                        } else {
-                            cond
-                        };
-                        let current =
-                            match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
-                                Ok(v) => v,
-                                Err(_) => RustBV::concrete(0, pw.size * 8),
-                            };
-                        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
-                        self.store_concrete_lazy(candidate, ite_val)?;
+                        self.materialize_pending_ite(candidate, &pw, ctx)?;
                     }
                 }
                 ConcretizationResult::Strided {
@@ -612,21 +623,7 @@ impl SymbolicMemory {
                     count,
                 } => {
                     for i in 0..count {
-                        let candidate = base + i * stride;
-                        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
-                        let cond = pw.addr.eq(&addr_const, ctx);
-                        let effective_cond = if let Some(ref c) = pw.condition {
-                            cond.and(c, ctx)
-                        } else {
-                            cond
-                        };
-                        let current =
-                            match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
-                                Ok(v) => v,
-                                Err(_) => RustBV::concrete(0, pw.size * 8),
-                            };
-                        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
-                        self.store_concrete_lazy(candidate, ite_val)?;
+                        self.materialize_pending_ite(base + i * stride, &pw, ctx)?;
                     }
                 }
                 ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => {
@@ -635,6 +632,32 @@ impl SymbolicMemory {
             }
         }
         Ok(())
+    }
+
+    /// Materialize one candidate of a pending symbolic-address write
+    /// (angr-24pv4.3) shared by the `Multiple` and `Strided` arms of
+    /// `flush_pending_writes`. Builds `mem[candidate] = If(pw.addr ==
+    /// candidate [&& pw.condition], pw.value, current)` where `current` is
+    /// the existing value (or zero if the cell is unmapped).
+    fn materialize_pending_ite(
+        &mut self,
+        candidate: u64,
+        pw: &PendingWrite,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
+        let cond = pw.addr.eq(&addr_const, ctx);
+        let effective_cond = if let Some(ref c) = pw.condition {
+            cond.and(c, ctx)
+        } else {
+            cond
+        };
+        let current = match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
+            Ok(v) => v,
+            Err(_) => RustBV::concrete(0, pw.size * 8),
+        };
+        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
+        self.store_concrete_lazy(candidate, ite_val)
     }
 
     /// Get page count.

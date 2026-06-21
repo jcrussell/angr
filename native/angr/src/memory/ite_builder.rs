@@ -177,6 +177,7 @@ impl SymbolicMemory {
     }
 
     /// Recursive helper for balanced ITE tree with arbitrary addresses.
+    /// Leaves load via the error-propagating `load_concrete_lazy`.
     fn build_balanced_ite_load_inner(
         &self,
         addr_expr: &RustBV,
@@ -184,15 +185,35 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let mut load_leaf =
+            |m: &Self, a: u64, s: u32, c: &SymContext| m.load_concrete_lazy(a, s, c);
+        self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
+    }
+
+    /// Shared recursive ITE-tree scaffold (angr-24pv4.3) parameterized over a
+    /// `load_leaf` closure so the only difference between the lazy
+    /// (`load_concrete_lazy`, error-propagating) and unified
+    /// (`load_concrete_or_unconstrained`, counter-fed fallback) builders is
+    /// the leaf loader. Tree shape: 1-addr leaf; 2-addr `eq`-ITE with
+    /// `loads_match` dedup; N-addr midpoint split on `ult` then recurse with
+    /// identical-subtree collapse (all angr-269l).
+    fn build_ite_tree_generic(
+        &self,
+        addr_expr: &RustBV,
+        addrs: &[u64],
+        size: u32,
+        ctx: &SymContext,
+        load_leaf: &mut impl FnMut(&Self, u64, u32, &SymContext) -> Result<RustBV, MemoryError>,
+    ) -> Result<RustBV, MemoryError> {
         // Base case: single address
         if addrs.len() == 1 {
-            return self.load_concrete_lazy(addrs[0], size, ctx);
+            return load_leaf(self, addrs[0], size, ctx);
         }
 
         // Base case: two addresses - simple ITE
         if addrs.len() == 2 {
-            let left_val = self.load_concrete_lazy(addrs[0], size, ctx)?;
-            let right_val = self.load_concrete_lazy(addrs[1], size, ctx)?;
+            let left_val = load_leaf(self, addrs[0], size, ctx)?;
+            let right_val = load_leaf(self, addrs[1], size, ctx)?;
 
             // angr-269l: skip the ITE when both addresses map to the same content.
             if loads_match(&left_val, &right_val) {
@@ -214,8 +235,8 @@ impl SymbolicMemory {
         let cond = addr_expr.ult(&mid_const, ctx);
 
         // Recursively build left (addrs < mid) and right (addrs >= mid) subtrees
-        let left = self.build_balanced_ite_load_inner(addr_expr, &addrs[..mid], size, ctx)?;
-        let right = self.build_balanced_ite_load_inner(addr_expr, &addrs[mid..], size, ctx)?;
+        let left = self.build_ite_tree_generic(addr_expr, &addrs[..mid], size, ctx, load_leaf)?;
+        let right = self.build_ite_tree_generic(addr_expr, &addrs[mid..], size, ctx, load_leaf)?;
 
         // angr-269l: collapse identical subtrees so multi-address dedup
         // propagates up the tree (every leaf identical → root is the leaf).
@@ -253,7 +274,8 @@ impl SymbolicMemory {
         self.build_ite_tree_inner(addr_expr, addrs, size, ctx, &mut counter)
     }
 
-    /// Recursive helper for building ITE tree (immutable borrow).
+    /// Recursive helper for building ITE tree (immutable borrow). Leaves load
+    /// via the infallible counter-fed `load_concrete_or_unconstrained`.
     fn build_ite_tree_inner(
         &self,
         addr_expr: &RustBV,
@@ -262,37 +284,9 @@ impl SymbolicMemory {
         ctx: &SymContext,
         counter: &mut u64,
     ) -> Result<RustBV, MemoryError> {
-        if addrs.len() == 1 {
-            return Ok(self.load_concrete_or_unconstrained(addrs[0], size, ctx, counter));
-        }
-
-        if addrs.len() == 2 {
-            let left_val = self.load_concrete_or_unconstrained(addrs[0], size, ctx, counter);
-            let right_val = self.load_concrete_or_unconstrained(addrs[1], size, ctx, counter);
-            // angr-269l: dedup identical-content pair without wrapping in ITE.
-            if loads_match(&left_val, &right_val) {
-                return Ok(left_val);
-            }
-            let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
-            let cond = addr_expr.eq(&left_const, ctx);
-            return Ok(cond.ite(&left_val, &right_val, ctx));
-        }
-
-        let mid = addrs.len() / 2;
-        let mid_addr = addrs[mid];
-        let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
-        let cond = addr_expr.ult(&mid_const, ctx);
-
-        let left = self.build_ite_tree_inner(addr_expr, &addrs[..mid], size, ctx, counter)?;
-        let right = self.build_ite_tree_inner(addr_expr, &addrs[mid..], size, ctx, counter)?;
-
-        // angr-269l: propagate the "identical children → no ITE" dedup
-        // upward, collapsing entire balanced subtrees when every leaf shares
-        // the same value.
-        if loads_match(&left, &right) {
-            return Ok(left);
-        }
-
-        Ok(cond.ite(&left, &right, ctx))
+        let mut load_leaf = |m: &Self, a: u64, s: u32, c: &SymContext| {
+            Ok(m.load_concrete_or_unconstrained(a, s, c, counter))
+        };
+        self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
     }
 }

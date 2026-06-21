@@ -261,29 +261,14 @@ impl SymbolicMemory {
                 count,
             } => self.store_strided(&addr, &value, base, stride, count, ctx),
             ConcretizationResult::Multiple(addrs) => {
-                let size = value.width() / 8;
-                for &candidate in &addrs {
-                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
-                    let cond = addr.eq(&addr_const, ctx);
-                    let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
-                    let conditional_value = cond.ite(&value, &current, ctx);
-                    self.store_concrete_lazy(candidate, conditional_value)?;
-                }
-                // Phase 0 instrumentation: eager ITE chain depth = #candidates.
-                record_mem_ite_depth(addrs.len() as u32);
+                self.store_eager_ite_candidates(&addr, &value, &addrs, ctx)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(&addr, &addrs, ctx);
                 Ok(())
             }
-            ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
-                description: format!(
-                    "address range too large for concretization: 0x{:x} - 0x{:x}",
-                    min, max
-                ),
-            }),
-            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
-                description: reason,
-            }),
+            other => Err(other
+                .to_symbolic_address_error()
+                .expect("non-success concretization result")),
         }
     }
 
@@ -300,30 +285,33 @@ impl SymbolicMemory {
         count: u64,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
+        let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+        self.store_eager_ite_candidates(addr_expr, value, &addrs, ctx)
+    }
+
+    /// Shared eager-ITE conditional-store loop (angr-24pv4.3) used by the
+    /// `Multiple` arm of `store_symbolic` and by `store_strided`. For each
+    /// `candidate` builds `mem[candidate] = If(addr_expr == candidate, value,
+    /// mem[candidate])` and records the eager ITE chain depth (Phase 0
+    /// instrumentation, per memory `invariant-mem-ite-depth-counter`). The
+    /// caller is responsible for any `assert_address_disjunction` (only the
+    /// `Multiple` path hoists it; strided does not).
+    pub(super) fn store_eager_ite_candidates(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
-
-        for i in 0..count {
-            let candidate = base + i * stride;
-
-            // Build condition: addr == candidate
+        for &candidate in addrs {
             let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
             let cond = addr_expr.eq(&addr_const, ctx);
-
-            // Load current value at candidate address
             let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
-
-            // Build conditional value
             let conditional_value = cond.ite(value, &current, ctx);
-
-            // Store the conditional value
             self.store_concrete_lazy(candidate, conditional_value)?;
         }
-
-        // Phase 0 instrumentation: record the depth of the eager ITE chain
-        // produced by this strided store. Phase 1+ Multi cells will record
-        // the same metric on Multi insertion for direct comparison.
-        record_mem_ite_depth(count as u32);
-
+        record_mem_ite_depth(addrs.len() as u32);
         Ok(())
     }
 
@@ -382,19 +370,11 @@ impl SymbolicMemory {
                 self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
                 Ok(Some(result))
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                // Return error so caller can fall back to Python's memory model,
-                // which handles large symbolic address ranges natively.
-                Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                })
-            }
-            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
-                description: reason.clone(),
-            }),
+            // Return error so caller can fall back to Python's memory model,
+            // which handles large symbolic address ranges natively.
+            other => other
+                .to_symbolic_address_error()
+                .map_or(Ok(Some(result)), Err),
         }
     }
 
@@ -431,19 +411,9 @@ impl SymbolicMemory {
                 let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
                 self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                // Return error so caller can fall back to Python's memory model,
-                // which handles large symbolic address ranges natively.
-                Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                })
-            }
-            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
-                description: reason.clone(),
-            }),
+            // Return error so caller can fall back to Python's memory model,
+            // which handles large symbolic address ranges natively.
+            other => other.to_symbolic_address_error().map_or(Ok(()), Err),
         }
     }
 
@@ -695,15 +665,9 @@ impl SymbolicMemory {
                 self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
                 Ok(Some(result))
             }
-            ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
-                description: format!(
-                    "address range too large for concretization: 0x{:x} - 0x{:x}",
-                    min, max
-                ),
-            }),
-            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
-                description: reason.clone(),
-            }),
+            other => other
+                .to_symbolic_address_error()
+                .map_or(Ok(Some(result)), Err),
         }
     }
 
@@ -719,26 +683,35 @@ impl SymbolicMemory {
         // Check if pages are mapped
         let start_page = addr.page_num();
         let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
-
-        for page_num in start_page..end_page {
-            if !self.pages.contains_key(&page_num) {
-                // Page not mapped - check if it's in a lazy region
-                if self.is_in_lazy_region(page_num) {
-                    return Err(MemoryError::UnmappedPageInRegion {
-                        page_addr: page_num << 12,
-                    });
-                } else {
-                    return Err(MemoryError::Unmapped {
-                        addr: page_num << 12,
-                        size: PAGE_SIZE,
-                    });
-                }
-            }
-        }
+        self.check_pages_mapped_lazy(start_page, end_page)?;
 
         // Permission checks live in store_concrete; this wrapper only adds
         // lazy-region detection for unmapped pages.
         self.store_concrete(addr, value)
+    }
+
+    /// Verify every page in `[start_page, end_page)` is mapped, classifying
+    /// the first unmapped page as `UnmappedPageInRegion` (in a lazy region,
+    /// fetchable on-demand) or `Unmapped` (angr-24pv4.3). Shared by the
+    /// lazy-aware store wrappers `store_concrete_lazy` and
+    /// `store_concrete_automap`. NOT used by `store_concrete` (no lazy
+    /// detection, inclusive range) or `store_concrete_automap_internal`
+    /// (auto-maps lazy pages instead of erroring) — their semantics differ.
+    fn check_pages_mapped_lazy(&self, start_page: u64, end_page: u64) -> Result<(), MemoryError> {
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                let page_addr = page_num << 12;
+                return Err(if self.is_in_lazy_region(page_num) {
+                    MemoryError::UnmappedPageInRegion { page_addr }
+                } else {
+                    MemoryError::Unmapped {
+                        addr: page_addr,
+                        size: PAGE_SIZE,
+                    }
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Store to a concrete address with lazy region support.
@@ -763,20 +736,7 @@ impl SymbolicMemory {
         let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
 
         // Check all pages are mapped - do NOT auto-map
-        for page_num in start_page..end_page {
-            if !self.pages.contains_key(&page_num) {
-                let page_addr = page_num << 12;
-                if self.is_in_lazy_region(page_num) {
-                    // Return error so caller can fall back to Python
-                    return Err(MemoryError::UnmappedPageInRegion { page_addr });
-                } else {
-                    return Err(MemoryError::Unmapped {
-                        addr: page_addr,
-                        size: PAGE_SIZE,
-                    });
-                }
-            }
-        }
+        self.check_pages_mapped_lazy(start_page, end_page)?;
 
         // All pages mapped, proceed with store
         self.store_concrete(addr, value)

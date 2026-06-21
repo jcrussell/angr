@@ -24,6 +24,31 @@ const _: () = assert!(
 /// Bits per bitmap word (u64).
 const BITMAP_BITS_PER_WORD: u16 = 64;
 
+/// Clear bits `[offset, end)` in an optional page bitmap, dropping the
+/// allocation when it becomes all-zero (angr-24pv4.3). Shared by
+/// `store_concrete` (symbolic + multi clears), `clear_symbolic`, and
+/// `clear_multi`. Centralizes the word/bit decomposition and the
+/// drop-when-empty invariant that was previously copy-pasted at each site.
+fn clear_bitmap_range(slot: &mut Option<Box<[u64; BITMAP_WORDS]>>, offset: u16, end: u16) {
+    if let Some(bitmap) = slot {
+        for i in offset..end {
+            bitmap[(i / BITMAP_BITS_PER_WORD) as usize] &= !(1u64 << (i % BITMAP_BITS_PER_WORD));
+        }
+        if bitmap.iter().all(|&w| w == 0) {
+            *slot = None;
+        }
+    }
+}
+
+/// Set bits `[offset, end)` in a page bitmap (angr-24pv4.3). Setting a bit
+/// can never empty the bitmap, so there is no drop step (unlike
+/// `clear_bitmap_range`).
+fn set_bitmap_range(bitmap: &mut [u64; BITMAP_WORDS], offset: u16, end: u16) {
+    for i in offset..end {
+        bitmap[(i / BITMAP_BITS_PER_WORD) as usize] |= 1u64 << (i % BITMAP_BITS_PER_WORD);
+    }
+}
+
 /// Memory permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Permission {
@@ -224,31 +249,12 @@ impl MemoryPage {
 
         let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
         // Clear symbolic bitmap bits for overwritten bytes
-        if let Some(ref mut bitmap) = self.symbolic_bitmap {
-            for i in offset..loop_end {
-                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
-                let bit_idx = i % BITMAP_BITS_PER_WORD;
-                bitmap[word_idx] &= !(1u64 << bit_idx);
-            }
-            // If bitmap is now empty, drop it
-            if bitmap.iter().all(|&w| w == 0) {
-                self.symbolic_bitmap = None;
-            }
-        }
+        clear_bitmap_range(&mut self.symbolic_bitmap, offset, loop_end);
         // A concrete overwrite also clears any Multi-cell marker — the cell
         // is no longer carrying lazy alternatives. The owning
         // `SymbolicMemory::multi_objects` entries must be dropped by the
         // caller (the page does not own that map).
-        if let Some(ref mut bitmap) = self.multi_bitmap {
-            for i in offset..loop_end {
-                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
-                let bit_idx = i % BITMAP_BITS_PER_WORD;
-                bitmap[word_idx] &= !(1u64 << bit_idx);
-            }
-            if bitmap.iter().all(|&w| w == 0) {
-                self.multi_bitmap = None;
-            }
-        }
+        clear_bitmap_range(&mut self.multi_bitmap, offset, loop_end);
     }
 
     /// Mark bytes as symbolic.
@@ -264,11 +270,7 @@ impl MemoryPage {
             .symbolic_bitmap
             .get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
         let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
-        for i in offset..loop_end {
-            let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
-            let bit_idx = i % BITMAP_BITS_PER_WORD;
-            bitmap[word_idx] |= 1u64 << bit_idx;
-        }
+        set_bitmap_range(bitmap, offset, loop_end);
     }
 
     /// Clear symbolic bitmap bits in a range, without touching `data`.
@@ -286,17 +288,8 @@ impl MemoryPage {
             size,
             PAGE_SIZE
         );
-        if let Some(ref mut bitmap) = self.symbolic_bitmap {
-            let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
-            for i in offset..loop_end {
-                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
-                let bit_idx = i % BITMAP_BITS_PER_WORD;
-                bitmap[word_idx] &= !(1u64 << bit_idx);
-            }
-            if bitmap.iter().all(|&w| w == 0) {
-                self.symbolic_bitmap = None;
-            }
-        }
+        let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
+        clear_bitmap_range(&mut self.symbolic_bitmap, offset, loop_end);
     }
 
     /// Check if a byte is symbolic.
@@ -348,14 +341,7 @@ impl MemoryPage {
     /// `SymbolicMemory::multi_objects`. Drops the page-level bitmap when
     /// it becomes empty.
     pub fn clear_multi(&mut self, offset: u16) {
-        if let Some(ref mut bitmap) = self.multi_bitmap {
-            let word_idx = (offset / BITMAP_BITS_PER_WORD) as usize;
-            let bit_idx = offset % BITMAP_BITS_PER_WORD;
-            bitmap[word_idx] &= !(1u64 << bit_idx);
-            if bitmap.iter().all(|&w| w == 0) {
-                self.multi_bitmap = None;
-            }
-        }
+        clear_bitmap_range(&mut self.multi_bitmap, offset, offset + 1);
     }
 
     /// Fork this page (O(1) for concrete pages, bitmap clone for symbolic).
