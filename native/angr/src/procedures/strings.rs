@@ -74,6 +74,29 @@ pub fn scan_concrete_bounded(
     Ok((buf, false))
 }
 
+/// Best-effort concrete scan that never errors. Reads up to `max` bytes,
+/// stopping (and returning whatever was collected so far) at the first null
+/// terminator, the first symbolic byte, the first failed `memory_load`, or
+/// `max` — whichever comes first. The null itself is not included.
+///
+/// Used by consumers like `puts` that print whatever concrete prefix is
+/// available and have no need to distinguish the stop reasons (so, unlike
+/// [`scan_concrete_bounded`], a symbolic byte or out-of-bounds read is a quiet
+/// stop, not a `SymbolicArgument` / load error).
+pub fn scan_concrete_lossy(state: &mut RustSimState, addr: u64, max: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for i in 0..max as u64 {
+        match state.memory_load(addr.wrapping_add(i), 1) {
+            Ok(bv) => match bv.as_u64() {
+                Some(0) | None => break,
+                Some(b) => buf.push(b as u8),
+            },
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
 /// Concrete scan that returns the address of the first null terminator.
 ///
 /// Used by strcat/strncat which need the null position, not the bytes.

@@ -9,6 +9,7 @@
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
 use super::ProcedureError;
+use super::strings::scan_concrete_until_null;
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -30,27 +31,16 @@ fn io_file_for_arch(name: &str) -> Option<(u64, u64)> {
 const MAX_FOPEN_PATH_LEN: u64 = 256;
 const MAX_FOPEN_MODE_LEN: u64 = 8;
 
-/// Read a NUL-terminated string from memory up to `max_len` bytes. Concrete only.
+/// Read a NUL-terminated string from memory up to `max_len` bytes. Concrete
+/// only: a symbolic byte (or exhausting `max_len` without a null) errors and
+/// falls back to Python.
 fn read_cstring(
-    state: &RustSimState,
+    state: &mut RustSimState,
     addr: u64,
     max_len: u64,
     name: &str,
 ) -> Result<Vec<u8>, ProcedureError> {
-    let mut out = Vec::new();
-    for i in 0..max_len {
-        let bv = state.memory_load(addr.wrapping_add(i), 1)?;
-        let v = bv
-            .as_u64()
-            .ok_or_else(|| ProcedureError::SymbolicArgument(format!("symbolic byte in {name}")))?;
-        if v == 0 {
-            return Ok(out);
-        }
-        out.push(v as u8);
-    }
-    Err(ProcedureError::Other(format!(
-        "{name} not NUL-terminated within {max_len} bytes"
-    )))
+    scan_concrete_until_null(state, addr, max_len as usize, name)
 }
 
 /// Convert an fopen-style mode string (e.g. `"r"`, `"w+b"`) to FdFlags.

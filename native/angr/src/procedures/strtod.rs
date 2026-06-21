@@ -17,8 +17,8 @@
 //! written to the low 64 bits of `xmm0`. The dispatcher's default
 //! integer-return store is suppressed by returning `Ok(None)`.
 
+use super::strings::scan_concrete_bounded;
 use super::{ProcedureError, extract_concrete_arg};
-use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 /// Maximum byte scan length when reading the numeric literal. Real strings
@@ -30,29 +30,6 @@ const MAX_LEN: usize = 256;
 /// reach across modules for a single constant; if it ever moves, the
 /// `state.arch().name() == "amd64"` guard and unit tests will catch the drift.
 const AMD64_XMM0_OFFSET: u32 = 224;
-
-/// Read the C string at `addr` (up to `MAX_LEN` bytes) as concrete bytes,
-/// stopping at the first null. Returns `None` if any byte before the null
-/// is symbolic — strtod has no useful symbolic-FP story without a real
-/// floating-point solver, so we let Python handle that case.
-fn read_concrete_cstring(
-    state: &mut RustSimState,
-    addr: u64,
-) -> Result<Option<Vec<u8>>, ProcedureError> {
-    let mut bytes = Vec::with_capacity(32);
-    for i in 0..MAX_LEN {
-        let byte = state.memory_load(addr.wrapping_add(i as u64), 1)?;
-        match byte.as_u64() {
-            Some(0) => return Ok(Some(bytes)),
-            Some(b) => bytes.push(b as u8),
-            None => return Ok(None),
-        }
-    }
-    // Hit cap without finding null — treat as parseable up to here. The
-    // C contract permits parsing to stop on the first non-numeric byte
-    // long before any terminator, so this is fine.
-    Ok(Some(bytes))
-}
 
 /// Walk `bytes` from the front and return the byte index immediately past
 /// the longest prefix that looks like a C99 floating-point literal. Returns
@@ -179,14 +156,12 @@ crate::declare_proc! {
         let nptr = extract_concrete_arg(&nptr, "nptr")?;
         let endptr = extract_concrete_arg(&endptr, "endptr")?;
 
-        let bytes = match read_concrete_cstring(state, nptr)? {
-            Some(b) => b,
-            None => {
-                return Err(ProcedureError::SymbolicArgument(
-                    "strtod: symbolic byte in input string".into(),
-                ));
-            }
-        };
+        // Scan the concrete numeric prefix up to the first null (cap = MAX_LEN;
+        // hitting the cap is fine — parsing stops at the first non-numeric byte
+        // anyway). A symbolic byte propagates as `Err(SymbolicArgument)` and
+        // falls back to Python: strtod has no useful symbolic-FP story without
+        // a real floating-point solver.
+        let (bytes, _null_found) = scan_concrete_bounded(state, nptr, MAX_LEN, "nptr")?;
 
         let prefix_end = floating_prefix_len(&bytes);
         let (value, end_offset) = if prefix_end == 0 {

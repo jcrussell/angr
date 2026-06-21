@@ -3,6 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::state::RustSimState;
 
 fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
     let mut data = s.to_vec();

@@ -27,25 +27,9 @@ crate::declare_proc! {
     struct = NativePuts,
     args = [s: concrete],
     call |state| {
-        // Read the string byte-by-byte from memory
-        let mut buf = Vec::new();
-        for i in 0..MAX_PUTS_LEN {
-            match state.memory_load(s + i as u64, 1) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u64() {
-                        let byte = val as u8;
-                        if byte == 0 {
-                            break;
-                        }
-                        buf.push(byte);
-                    } else {
-                        // Symbolic byte — stop reading, append what we have
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
+        // Read the concrete prefix byte-by-byte; a symbolic byte, failed load,
+        // or the cap quietly stops the scan (puts prints what it has).
+        let buf = crate::procedures::strings::scan_concrete_lossy(state, s, MAX_PUTS_LEN);
 
         // Append string + newline to stdout buffer
         state.write_stdout(&buf);
