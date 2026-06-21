@@ -603,3 +603,96 @@ fn test_bvop_counters_fire_on_symbolic_construction() {
     assert!(stats.get("bvop_concat_count").copied().unwrap() > base_cat);
     assert!(stats.get("bvop_extract_count").copied().unwrap() > base_ext);
 }
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_seeded_constrained_interval() {
+    // range_seeded must recover the true [min, max] of a constrained BV
+    // from valid seeds, leaving the Z3 scope stack balanced afterward.
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "x_range_seeded", 32);
+    // 10 <= x <= 200
+    ctx.assume_true(&x.uge(&RustBV::concrete(10, 32), &ctx));
+    ctx.assume_true(&x.ule(&RustBV::concrete(200, 32), &ctx));
+
+    // Interior seeds (both valid solutions): min searched in [0, 50],
+    // max searched in [150, 2^32-1]. Must still find the true bounds.
+    assert_eq!(ctx.range_seeded(&x, 50, 150), Some((10, 200)));
+
+    // Seeds exactly at the extrema must also work.
+    assert_eq!(ctx.range_seeded(&x, 10, 200), Some((10, 200)));
+
+    // Scope balance: follow-up min/max must still see the same bounds,
+    // proving range_seeded left no stray push frames on the solver.
+    assert_eq!(ctx.min(&x, false), Some(10));
+    assert_eq!(ctx.max(&x, false), Some(200));
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_seeded_concrete_fast_path() {
+    // A concrete BV short-circuits to (v, v) regardless of the seeds and
+    // without consulting the solver.
+    let ctx = SymContext::new();
+    let c = RustBV::concrete(42, 32);
+    assert_eq!(ctx.range_seeded(&c, 0, 1000), Some((42, 42)));
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_seeded_unsat_returns_none() {
+    // An UNSAT context returns None before running either binary search.
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "x_range_unsat", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(200, 32), &ctx));
+    ctx.assume_true(&x.ult(&RustBV::concrete(10, 32), &ctx));
+    assert!(!ctx.is_sat());
+    assert_eq!(ctx.range_seeded(&x, 5, 5), None);
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_merge_guards_each_branch_under_its_condition() {
+    // Two contexts with disjoint constraints (x==5, x==9). The merged
+    // context must admit each branch's value under its own merge flag and
+    // reject a value satisfying neither (Or(merge_conditions) forces at
+    // least one branch active).
+    let s1 = SymContext::new();
+    let x1 = RustBV::symbolic(&s1, "x_merge", 32);
+    s1.assume_true(&x1.eq(&RustBV::concrete(5, 32), &s1));
+
+    let s2 = SymContext::new();
+    // Same name => same Z3 variable, mirroring forked-state identity.
+    let x2 = RustBV::symbolic(&s2, "x_merge", 32);
+    s2.assume_true(&x2.eq(&RustBV::concrete(9, 32), &s2));
+
+    // One 1-bit merge flag per context (self first, then others).
+    let f0 = RustBV::symbolic(&s1, "merge_flag_0", 1);
+    let f1 = RustBV::symbolic(&s1, "merge_flag_1", 1);
+    let merged = s1.merge(&[&s2], &[f0, f1]);
+
+    let x = RustBV::symbolic(&merged, "x_merge", 32);
+    assert!(
+        merged.solution(&x, 5),
+        "branch s1 (x==5) must be admissible"
+    );
+    assert!(
+        merged.solution(&x, 9),
+        "branch s2 (x==9) must be admissible"
+    );
+    assert!(
+        !merged.solution(&x, 7),
+        "value in neither branch must be rejected"
+    );
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+#[should_panic(expected = "merge_conditions must have one entry per context")]
+fn test_merge_panics_on_condition_count_mismatch() {
+    let s1 = SymContext::new();
+    let s2 = SymContext::new();
+    // others.len() + 1 == 2, but only one condition is supplied.
+    let f0 = RustBV::symbolic(&s1, "merge_flag_bad", 1);
+    let _ = s1.merge(&[&s2], &[f0]);
+}
