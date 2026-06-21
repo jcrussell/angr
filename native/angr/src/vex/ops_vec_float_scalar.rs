@@ -52,8 +52,7 @@ impl VEXOps {
                         FloatOpKind::Div => l0 / r0,
                         _ => unreachable!(),
                     };
-                    let upper = l & !0xFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
+                    Self::splice_lane0_u128(l, res0.to_bits() as u128, 32)
                 }
                 IRType::F64 => {
                     let l0 = f64::from_bits(l as u64);
@@ -65,8 +64,7 @@ impl VEXOps {
                         FloatOpKind::Div => l0 / r0,
                         _ => unreachable!(),
                     };
-                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
+                    Self::splice_lane0_u128(l, res0.to_bits() as u128, 64)
                 }
                 _ => return Err(OpError::InvalidFloatType(elem)),
             };
@@ -88,16 +86,12 @@ impl VEXOps {
                 IRType::F32 => {
                     let val = f32::from_bits(v as u32);
                     let res = val.sqrt();
-                    // Keep upper 96 bits, replace lower 32 bits with result
-                    let upper = v & !0xFFFFFFFFu128;
-                    upper | (res.to_bits() as u128)
+                    Self::splice_lane0_u128(v, res.to_bits() as u128, 32)
                 }
                 IRType::F64 => {
                     let val = f64::from_bits(v as u64);
                     let res = val.sqrt();
-                    // Keep upper 64 bits, replace lower 64 bits with result
-                    let upper = v & !0xFFFFFFFFFFFFFFFFu128;
-                    upper | (res.to_bits() as u128)
+                    Self::splice_lane0_u128(v, res.to_bits() as u128, 64)
                 }
                 _ => return Err(OpError::InvalidFloatType(elem)),
             };
@@ -196,8 +190,7 @@ impl VEXOps {
                     } else {
                         r0
                     };
-                    let upper = l & !0xFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
+                    Self::splice_lane0_u128(l, res0.to_bits() as u128, 32)
                 }
                 IRType::F64 => {
                     let l0 = f64::from_bits(l as u64);
@@ -209,8 +202,7 @@ impl VEXOps {
                     } else {
                         r0
                     };
-                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
+                    Self::splice_lane0_u128(l, res0.to_bits() as u128, 64)
                 }
                 _ => return Err(OpError::InvalidFloatType(elem)),
             };

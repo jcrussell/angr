@@ -168,11 +168,7 @@ impl VEXOps {
         let r_lo = right.extract(lane_bits - 1, 0, ctx);
         let upper = left.extract(127, lane_bits, ctx);
 
-        let lane_mask: u128 = if lane_bits == 32 {
-            0xFFFF_FFFF
-        } else {
-            0xFFFF_FFFF_FFFF_FFFF
-        };
+        let lane_mask = Self::low_bit_mask_u128(lane_bits);
 
         // Concrete fast path
         if let (Some(l), Some(r)) = (l_lo.as_u128(), r_lo.as_u128()) {
@@ -208,13 +204,10 @@ impl VEXOps {
         debug_assert_eq!(left.width(), total_width);
         debug_assert_eq!(right.width(), total_width);
 
-        let lane_mask: u128 = if elem_width == 32 {
-            0xFFFF_FFFF
-        } else if elem_width == 64 {
-            0xFFFF_FFFF_FFFF_FFFF
-        } else {
+        if elem_width != 32 && elem_width != 64 {
             return Err(OpError::InvalidFloatType(elem));
-        };
+        }
+        let lane_mask = Self::low_bit_mask_u128(elem_width);
 
         // Concrete fast path: extract each lane, compare, repack. The concrete
         // truth-table for Gt/Ge follows the IEEE 754 ordered semantics — Rust's

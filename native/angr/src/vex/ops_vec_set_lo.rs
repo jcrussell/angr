@@ -13,20 +13,27 @@ use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
 
 impl VEXOps {
+    /// Splice the low `lane_bits` of `lane` into lane 0 of the packed 128-bit
+    /// vector `orig`, preserving the upper `128 - lane_bits` bits. Shared
+    /// concrete path for every SSE scalar-in-V128 op that overwrites lane 0 and
+    /// passes the rest through (SetV128lo32/64, ADDSS/SUBSS/MULSS/DIVSS + F64,
+    /// SQRTSS/SQRTSD, MAXSS/MINSS). `lane`'s significant bits are assumed to fit
+    /// in `lane_bits`; the `& mask` makes that explicit and harmless.
+    #[inline]
+    pub(super) fn splice_lane0_u128(orig: u128, lane: u128, lane_bits: u32) -> u128 {
+        let mask = Self::low_bit_mask_u128(lane_bits);
+        (orig & !mask) | (lane & mask)
+    }
+
     /// Insert a `val.width()`-bit scalar into the low lane of a 128-bit vector,
     /// preserving the upper `128 - val.width()` bits. Backs Iop_SetV128lo32
     /// (`val` 32-bit) and Iop_SetV128lo64 (`val` 64-bit).
     fn set_v128_lo(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
         debug_assert_eq!(vec.width(), 128);
         let k = val.width();
-        let mask: u128 = if k >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << k) - 1
-        };
 
         if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
-            let result = (v & !mask) | (lo & mask);
+            let result = Self::splice_lane0_u128(v, lo, k);
             return Ok(RustBV::concrete(result, 128));
         }
         // For symbolic, concatenate the preserved upper bits with the value.
