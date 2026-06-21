@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import claripy
 
+from angr.errors import SimUnsatError
 from angr.state_plugins.history import SimStateHistory
 
 if TYPE_CHECKING:
@@ -235,10 +236,19 @@ class RustSolverFallback:
             result = rust_ctx.min(expr, signed=kwargs.get("signed", False))
             if result is not None:
                 return result
+            # Rust gave no bound: unsat vs width>128. On unsat, claripy would
+            # only re-derive the same unsat — raise now rather than waste a
+            # Python solve to reach the identical failure (satisfiable() is
+            # cached from the min() above). width>128 falls through to claripy's
+            # big-int solver, which CAN bound it.
+            unsat = not rust_ctx.satisfiable()
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust min failed; Python solver
             # is the fallback. Same constraint set.
             l.debug("Rust min failed, falling back to Python: %s", e)
+            unsat = False
+        if unsat:
+            raise SimUnsatError("Rust solver context is unsat (min)")
         return self._original_min(expr, **kwargs)
 
     def max(self, expr, **kwargs):
@@ -247,10 +257,17 @@ class RustSolverFallback:
             result = rust_ctx.max(expr, signed=kwargs.get("signed", False))
             if result is not None:
                 return result
+            # Same unsat-vs-width>128 disambiguation as min(): raise on a known
+            # unsat instead of round-tripping to claripy to re-derive it;
+            # width>128 falls through to the big-int Python solver.
+            unsat = not rust_ctx.satisfiable()
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust max failed; Python solver
             # is the fallback. Same constraint set.
             l.debug("Rust max failed, falling back to Python: %s", e)
+            unsat = False
+        if unsat:
+            raise SimUnsatError("Rust solver context is unsat (max)")
         return self._original_max(expr, **kwargs)
 
     def satisfiable(self, **kwargs):

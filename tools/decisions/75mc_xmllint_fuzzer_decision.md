@@ -335,3 +335,60 @@ entry→main stack-arg setup** rather than a mid-program op. This is a
 dedicated investigation bead (filed; see bd). It does NOT block the a/b
 decision — it is a 6d3l characterization finding. bd memory:
 `xmllint-simprocs-cross-engine-divergence`.
+
+## 2026-06-21 addendum — path (b) DEEP target empirically NOT viable (post-aca6y)
+
+Decision was: apply path (b) and invest in a deep, parser-reaching target
+(`xmlReadFd@plt`/`fread@plt`/`xmlParseDocument@plt`) instead of the shallow
+`getenv` smoke. Drove it with `simgr.explore(find=<rebased plt addr>)` — the
+mechanism the bench would actually use (ad-hoc probes: `use_sim_procedures=True`,
+ZERO_FILL entry state, symbolic vs concrete stdin, 3.5 GB RLIMIT_AS; pattern
+reusable from `tools/xmllint_probe.py`). Result:
+**neither engine reaches the parser; both blow up well before it, with concrete
+XML stdin (no symbolic input at all):**
+
+- **Python engine:** `z3.z3types.Z3Exception: out of memory` inside a `satisfiable()`
+  check — constraint explosion. (Consistent with iter-11: getenv reachable at 185
+  steps, but the parser callsites never reached.)
+- **Rust engine:** `TypeError: unsupported operand for -: NoneType - NoneType` in
+  `concretization_strategies/range.py` (`mx - mn`, both `None`) via the Python
+  address-concretization fallback — crashes **before even `getenv@plt`**, within
+  ~60 s while RSS climbs past 1.2 GB, states forking to 22 active / 187 deadended
+  (many deadends at PC `0x0`).
+
+**Root cause:** with `use_sim_procedures=True`, stubbed libc returns *unconstrained
+symbolic* values that propagate into pointers and branch conditions → state +
+constraint explosion → Z3 OOM (Python) / symbolic-pointer concretization that
+returns `None` bounds (Rust fallback). This is independent of stdin: concrete XML
+on stdin crashes identically. The only thing that has ever driven xmllint's parser
+is the **fuzzer (concrete execution, no symbolic branching)** — i.e. path (a).
+
+**Implications:**
+1. A deep *symbolic* xmllint bench is not achievable on either engine without first
+   taming the SimProcedure-injected-symbolic explosion (large, open-ended work).
+2. Even a *shallow* symbolic bench is not viable on the **Rust** engine — it crashes
+   before `getenv`. So the iter-11 "getenv smoke" fallback only ever worked under
+   Python.
+3. The Rust `mx - mn None` concretization-fallback crash is a genuine robustness
+   bug surfaced by a real binary — worth its own bead regardless of the bench.
+
+Net: the path-(b) deep-target route is a dead end as plain symex. Realistic routes
+to a deep xmllint workload are (a) the fuzzer feature (concrete execution) or a
+pivot to a different/smaller real binary for the vx8p syscall-surface goal.
+(Reproduce with an `explore(find=rebased_plt)` probe à la `tools/xmllint_probe.py`,
+symbolic or concrete stdin — both explode.)
+
+**Rust crash (item 3) FIXED — angr-8iv6j.** Root cause: the callback solver shim
+`_rust_min`/`_rust_max` (`rust_callback_dispatch.py`, and the sibling
+`RustSolverFallback` in `rust_state_export.py`) only fell back to claripy on an
+*exception*, but `RustSolverContext.min`/`max` *return* `None` (Option) for an
+unsat ctx or `width > 128` (solving_ops.rs). The `None` reached `range.py`'s
+`mx - mn` → `TypeError`. Fix disambiguates the two `None` causes instead of blindly
+falling back: **width>128** → fall back to claripy (its big-int solver can bound it);
+**unsat** → raise `SimUnsatError` directly (the state is dead and claripy would only
+re-derive the same unsat — round-tripping to Python is wasted work; the sat result is
+cached so the check is free). Regression tests:
+`tests/engines/rust/test_procedures.py::TestCallbackSolverConcretizationFallback`
+(width>128 fallback + unsat-raises-without-Python-round-trip). This only removes the
+Rust hard-crash; xmllint plain symex still explodes (Z3 OOM) on both engines, so it
+remains unviable as a symbolic bench.

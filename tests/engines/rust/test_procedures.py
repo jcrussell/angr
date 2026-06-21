@@ -307,6 +307,153 @@ class TestSymbolicLibcProcedures:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestCallbackSolverConcretizationFallback:
+    """Regression: callback solver min()/max() must handle a ``None`` return
+    from the Rust solver context (it only returns ``Option<u128>``), not just an
+    exception.
+
+    Surfaced on real-binary symex of xmllint: a SimProcedure (sscanf→strtol on
+    the unconstrained-symbolic ``getenv()`` return) dereferenced a value the
+    forked Rust ctx could not bound. The callback solver shim's ``_rust_min``/
+    ``_rust_max`` (rust_callback_dispatch.py) only fell back on an *exception*,
+    but ``rust_ctx.min()`` *returns None* (solving_ops.rs) when the ctx is unsat
+    or the expr width > 128. That ``None`` reached the range concretization
+    strategy's ``mx - mn`` → ``None - None`` TypeError, aborting ``explore()``.
+
+    The two ``None`` causes are handled differently (also in the
+    state-export ``RustSolverFallback`` shim):
+      - **width > 128** — ``u128`` can't hold the extremum but claripy's big-int
+        solver can: fall back to Python.
+      - **unsat** — the state is dead; claripy would only re-derive the same
+        unsat. Raise ``SimUnsatError`` directly (the sat result is cached, so
+        the check is free) instead of wasting a Python solve.
+    """
+
+    HOOK_ADDR = 0x4008C0  # fauxware .fini area (mapped, not normally executed)
+    RET_ADDR = 0x4008B0
+
+    def test_min_max_fall_back_when_rust_returns_none(self, fauxware_project):
+        """During a callback, ``state.solver.min``/``max`` on an expression the
+        Rust ctx cannot bound (``rust_ctx.min`` returns ``None``, not raises)
+        must fall back to claripy, not return ``None``.
+
+        Deterministic trigger: a >128-bit BVS — ``RustSolverContext.min``/``max``
+        return ``None`` for ``width > 128`` (solving_ops.rs, angr-cxw7), the same
+        ``None`` contract the production trigger (an unconstrained ``getenv()``
+        symbol unknown to the forked Rust ctx) hits. Pre-fix the shim returned
+        that ``None`` straight through, which crashed the range concretization
+        strategy on ``mx - mn``. Asserts (a) the trigger is real (Rust returns
+        ``None``) and (b) the shim recovers the true claripy bounds.
+        """
+        import claripy
+
+        proj = fauxware_project
+        captured = {}
+
+        class CallMinMaxWideSym(angr.SimProcedure):
+            def run(self):
+                wide = claripy.BVS("wide_gt128", 160)
+                # Sanity: confirm the Rust ctx really returns None here, so a
+                # green test proves the *fallback* (not Rust) produced the bound.
+                captured["rust_min"] = self.state.scratch.rust_solver_ctx.min(wide)
+                # The shimmed solver.min/max — must not propagate the None.
+                captured["mn"] = self.state.solver.min(wide)
+                captured["mx"] = self.state.solver.max(wide)
+                self.state.regs.rax = claripy.BVV(0, 64)
+
+        try:
+            proj.hook(self.HOOK_ADDR, CallMinMaxWideSym(), replace=True)
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64), endness="Iend_LE")
+
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=1)
+
+            # Trigger is genuine: the Rust ctx could not bound the wide symbol.
+            assert captured.get("rust_min") is None, (
+                f"expected rust_ctx.min None for >128-bit BVS, got {captured.get('rust_min')}"
+            )
+            # The fix: shimmed min/max fell back to claripy's true bounds, not None.
+            assert captured["mn"] == 0, f"min fell through as {captured['mn']!r}"
+            assert captured["mx"] == (1 << 160) - 1, f"max fell through as {captured['mx']!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_unsat_raises_without_python_round_trip(self, fauxware_project):
+        """On an unsat callback ctx, ``state.solver.min`` must raise
+        ``SimUnsatError`` *natively* — without round-tripping to the Python
+        claripy solver just to re-derive the same (known) unsat.
+
+        Distinguishes the refined fix from a naive "fall back on any None":
+        the naive version reaches the same ``SimUnsatError`` but only after a
+        wasted Python solve. The spy on the Python frontend's ``min`` asserts
+        it is never consulted.
+        """
+        import claripy
+
+        from angr.errors import SimUnsatError
+
+        proj = fauxware_project
+        captured = {}
+
+        class MinOnUnsatCtx(angr.SimProcedure):
+            def run(self):
+                x = claripy.BVS("unsat_x", 64)
+                # Forwarded to the Rust ctx via the _rust_add shim -> unsat.
+                self.state.solver.add(x == 1)
+                self.state.solver.add(x == 2)
+                # Spy: flip a flag if the Python claripy frontend's min is hit.
+                py_frontend = self.state.solver._solver
+                orig_py_min = py_frontend.min
+
+                def spy_min(*a, **k):
+                    captured["py_min_called"] = True
+                    return orig_py_min(*a, **k)
+
+                py_frontend.min = spy_min
+                try:
+                    try:
+                        self.state.solver.min(x)
+                        captured["raised"] = None
+                    except SimUnsatError:
+                        captured["raised"] = "SimUnsatError"
+                    except Exception as e:
+                        captured["raised"] = type(e).__name__
+                finally:
+                    py_frontend.min = orig_py_min
+                self.state.regs.rax = claripy.BVV(0, 64)
+
+        try:
+            proj.hook(self.HOOK_ADDR, MinOnUnsatCtx(), replace=True)
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64), endness="Iend_LE")
+
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=1)
+
+            assert captured.get("raised") == "SimUnsatError", (
+                f"expected SimUnsatError on unsat ctx, got {captured.get('raised')!r}"
+            )
+            # The optimization: no wasted Python solve to re-derive the unsat.
+            assert captured.get("py_min_called") is not True, (
+                "shim round-tripped to the Python solver on a known-unsat ctx"
+            )
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFileDescriptorProcedures:
     """Integration test for native pipe/dup/dup2 dispatched through the Rust manager.
 

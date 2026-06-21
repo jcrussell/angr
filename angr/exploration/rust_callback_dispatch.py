@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import claripy
 
+from angr.errors import SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
 
 if TYPE_CHECKING:
@@ -266,24 +267,55 @@ class RustCallbackDispatchMixin:
             kwargs.pop("exact", None)
             kwargs.pop("extra_constraints", None)
             kwargs.pop("signed", None)
+            _ctx = state.scratch.rust_solver_ctx
             try:
-                return state.scratch.rust_solver_ctx.min(expr, signed=False)
+                result = _ctx.min(expr, signed=False)
+                if result is not None:
+                    return result
+                # Rust returned no bound (None). Two disjoint causes
+                # (solving_ops.rs min()): the ctx is unsat, or expr width > 128.
+                #  - unsat: the state is dead; claripy would only re-derive the
+                #    same unsat and raise. Raise SimUnsatError now rather than
+                #    waste a full Python solve to reach the identical failure.
+                #    satisfiable() is cached by the min() call above, so it's free.
+                #  - width > 128: the u128 result can't hold the extremum, but
+                #    claripy's big-int solver can — fall through to it (below).
+                unsat = not _ctx.satisfiable()
+            except claripy.errors.UnsatError:
+                # cat-(a) EXPECTED CONTROL FLOW: propagate a genuine unsat.
+                raise
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver min() raised; fall back
                 # to Python claripy. Concretization strategies may pick a different
                 # minimum than Rust would.
-                return original_min(expr, **kwargs)
+                unsat = False
+            if unsat:
+                raise SimUnsatError("Rust solver context is unsat (callback min)")
+            return original_min(expr, **kwargs)
 
         def _rust_max(expr, **kwargs):
             kwargs.pop("exact", None)
             kwargs.pop("extra_constraints", None)
             kwargs.pop("signed", None)
+            _ctx = state.scratch.rust_solver_ctx
             try:
-                return state.scratch.rust_solver_ctx.max(expr, signed=False)
+                result = _ctx.max(expr, signed=False)
+                if result is not None:
+                    return result
+                # Same None disambiguation as _rust_min: unsat -> raise now
+                # (avoid a wasted Python solve to re-derive the dead state);
+                # width > 128 -> fall through to claripy's big-int solver.
+                unsat = not _ctx.satisfiable()
+            except claripy.errors.UnsatError:
+                # cat-(a) EXPECTED CONTROL FLOW: propagate a genuine unsat.
+                raise
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver max() raised; fall back
                 # to Python claripy. Same divergence risk as min().
-                return original_max(expr, **kwargs)
+                unsat = False
+            if unsat:
+                raise SimUnsatError("Rust solver context is unsat (callback max)")
+            return original_max(expr, **kwargs)
 
         def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
             _ctx = state.scratch.rust_solver_ctx
