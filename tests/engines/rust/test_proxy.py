@@ -1489,6 +1489,93 @@ class TestRustInspectExtendedEvents:
         assert size == 32
         assert expr is expr_ast
 
+    # ---- angr-1c88c: end-to-end Rust dispatch (not the Python relay) ----
+
+    def test_address_concretization_fires_end_to_end_from_rust(self):
+        """angr-1c88c: drive the *native* dispatch site
+        ``expressions.rs::dispatch_address_concretization_inspect`` end to end.
+
+        The existing ``test_dispatch_address_concretization_*`` tests invoke
+        ``mgr._cb_inspect_address_concretization`` directly — they cover the
+        Python relay but never prove the Rust interpreter reaches the gate(17)
+        + ``rustbv_to_claripy`` marshalling on its own. This test steps a real
+        IRSB containing a load from a *symbolic* address that concretizes to an
+        unmapped page: that is the only path that returns ``None`` from
+        ``try_rust_memory_load`` (memory-layer ``load_symbolic_unified`` errors
+        ``Unmapped``) and so falls through to the interpreter's
+        ``load_symbolic_addr`` → ``dispatch_address_concretization_inspect``.
+
+        Shellcode: ``mov rax, [rbx] ; ret`` with ``rbx`` a BVS constrained to
+        a single unmapped address. The BP must fire with a claripy-AST ``expr``
+        (proves the round-trip back through ``inspect_ast``), a BEFORE event
+        carrying ``result is None`` and an AFTER event carrying the concretized
+        address list.
+        """
+        import claripy
+
+        import angr
+
+        unmapped = 0xDEAD0000
+        # mov rax, [rbx] ; ret
+        proj = angr.load_shellcode(b"\x48\x8b\x03\xc3", "amd64")
+        state = proj.factory.blank_state(addr=proj.entry)
+        sym_addr = claripy.BVS("sym_load_addr", 64)
+        state.solver.add(sym_addr == unmapped)
+        state.regs.rbx = sym_addr
+
+        mgr = RustExplorationManager(proj, [state])
+        events = []
+
+        def _on_before(s):
+            events.append(
+                (
+                    "before",
+                    s.inspect.address_concretization_action,
+                    s.inspect.address_concretization_expr,
+                    s.inspect.address_concretization_result,
+                )
+            )
+
+        def _on_after(s):
+            events.append(
+                (
+                    "after",
+                    s.inspect.address_concretization_action,
+                    s.inspect.address_concretization_expr,
+                    s.inspect.address_concretization_result,
+                )
+            )
+
+        ins = mgr._get_inspect_proxy()
+        ins.b("address_concretization", when="before", action=_on_before)
+        ins.b("address_concretization", when="after", action=_on_after)
+        # Registering the BP must flip bit 17 so the native gate opens.
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 17) != 0
+
+        mgr.run(max_steps=1)
+
+        befores = [e for e in events if e[0] == "before"]
+        afters = [e for e in events if e[0] == "after"]
+        assert befores, f"native BP_BEFORE never fired; events={len(events)}"
+        assert afters, f"native BP_AFTER never fired; events={len(events)}"
+
+        # BEFORE: action="load", expr is a real claripy AST (marshalled back
+        # from the Rust BV), result is None (concretizer has not run yet).
+        _, b_action, b_expr, b_result = befores[0]
+        assert b_action == "load"
+        assert isinstance(b_expr, claripy.ast.Base), f"expr not claripy AST: {type(b_expr)}"
+        assert b_expr.size() == 64
+        assert b_result is None
+
+        # AFTER: result carries the concretized address list (single unmapped
+        # solution). This proves the Rust→Python result marshalling, not just
+        # the expr round-trip.
+        _, a_action, a_expr, a_result = afters[0]
+        assert a_action == "load"
+        assert isinstance(a_expr, claripy.ast.Base)
+        assert a_result is not None
+        assert unmapped in a_result, f"concretized result missing target: {a_result}"
+
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 
     def test_python_dispatched_events_have_no_rust_slot(self):
