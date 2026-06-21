@@ -256,11 +256,11 @@
     "steps": 0
   },
   "sharif7_rev50": {
-    "callback_count": 132,
+    "callback_count": 175,
     "peak_memory_mb": 172.0,
     "python_time": 3.32,
-    "rust_time": 0.84,
+    "rust_time": 0.90,
     "state_creations": 0,
-    "steps": 120
+    "steps": 77
   }
 }
