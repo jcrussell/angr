@@ -496,13 +496,7 @@ impl SymContext {
         }
         // Falls through to add False constraint (UNSAT)
         let ast = bv.to_z3_ast();
-        let val_ast = if bv.width() <= 64 {
-            z3::ast::BV::from_u64(value as u64, bv.width())
-        } else {
-            let lo = z3::ast::BV::from_u64(value as u64, 64);
-            let hi = z3::ast::BV::from_u64((value >> 64) as u64, bv.width() - 64);
-            hi.concat(&lo)
-        };
+        let val_ast = super::bv_codec::make_bv_const(value, bv.width());
         let constraint = ast.eq(&val_ast);
         self.add_constraint(constraint);
     }

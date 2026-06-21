@@ -318,16 +318,7 @@ impl SymContext {
                                 if let Some(value) = extract_bv_value(&result) {
                                     results.push(value);
                                     // Add constraint to exclude this value
-                                    let val_ast = if bv.width() <= 64 {
-                                        z3::ast::BV::from_u64(value as u64, bv.width())
-                                    } else {
-                                        let lo = z3::ast::BV::from_u64(value as u64, 64);
-                                        let hi = z3::ast::BV::from_u64(
-                                            (value >> 64) as u64,
-                                            bv.width() - 64,
-                                        );
-                                        hi.concat(&lo)
-                                    };
+                                    let val_ast = make_bv_const(value, bv.width());
                                     solver.assert(ast.eq(&val_ast).not());
                                 } else {
                                     break;
@@ -797,13 +788,7 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        let val_ast = if width <= 64 {
-            z3::ast::BV::from_u64(value as u64, width)
-        } else {
-            let lo = z3::ast::BV::from_u64(value as u64, 64);
-            let hi = z3::ast::BV::from_u64((value >> 64) as u64, width - 64);
-            hi.concat(&lo)
-        };
+        let val_ast = make_bv_const(value, width);
 
         let constraint = ast.eq(&val_ast);
 

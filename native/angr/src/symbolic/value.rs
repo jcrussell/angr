@@ -552,26 +552,9 @@ impl From<RustBVData> for RustBV {
         match data {
             RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
             RustBVData::Symbolic { id, width, name } => {
-                #[cfg(feature = "vex-engine-z3")]
-                {
-                    // Rebuild the Z3 AST in the active thread-local context.
-                    // Callers must be inside with_z3_context when this runs.
-                    let ast = z3::ast::BV::new_const(name.as_str(), width);
-                    RustBV::Symbolic {
-                        id,
-                        width,
-                        name: Arc::<str>::from(name),
-                        ast,
-                    }
-                }
-                #[cfg(not(feature = "vex-engine-z3"))]
-                {
-                    RustBV::Symbolic {
-                        id,
-                        width,
-                        name: Arc::<str>::from(name),
-                    }
-                }
+                // Rebuilds the Z3 AST in the active thread-local context (z3
+                // feature); callers must be inside with_z3_context when this runs.
+                RustBV::from_parts(id, Arc::<str>::from(name), width)
             }
             RustBVData::Constrained { id, value, width } => {
                 RustBV::Constrained { id, value, width }
@@ -643,14 +626,16 @@ impl RustBV {
         }
     }
 
-    /// Create a symbolic bitvector variable.
+    /// Build a `Symbolic` node from its parts, rebuilding the cfg-gated Z3 AST.
     ///
-    /// Accepts anything String-like via `AsRef<str>`. The internal name is
-    /// stored as `Arc<str>` so cloning a Symbolic is alloc-free, which matters
-    /// on the RdTmp path where a temp slot is read multiple times per block.
-    pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
-        let id = ctx.next_id();
-        let name: Arc<str> = Arc::from(name.as_ref());
+    /// Single source of truth for the `#[cfg(vex-engine-z3)]` ast-rebuild +
+    /// `Symbolic` construction shared by `symbolic`, `symbolic_with_id`, and the
+    /// `From<RustBVData>` deserialize arm — keeps the three in lockstep so the
+    /// deserialize path can't drift from the constructors. Callers must be inside
+    /// `with_z3_context` when the z3 feature is enabled (BV::new_const reads the
+    /// active thread-local context).
+    #[inline]
+    pub(super) fn from_parts(id: u64, name: Arc<str>, width: u32) -> Self {
         #[cfg(feature = "vex-engine-z3")]
         {
             let ast = z3::ast::BV::new_const(&*name, width);
@@ -667,27 +652,22 @@ impl RustBV {
         }
     }
 
+    /// Create a symbolic bitvector variable.
+    ///
+    /// Accepts anything String-like via `AsRef<str>`. The internal name is
+    /// stored as `Arc<str>` so cloning a Symbolic is alloc-free, which matters
+    /// on the RdTmp path where a temp slot is read multiple times per block.
+    pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
+        RustBV::from_parts(ctx.next_id(), Arc::from(name.as_ref()), width)
+    }
+
     /// Create a symbolic bitvector variable with a specific ID.
     ///
     /// This is used for identity preservation when the same symbol
     /// was previously imported from Python. By reusing the same ID,
     /// we ensure that constraints on the original symbol apply correctly.
     pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {
-        let name: Arc<str> = Arc::from(name.as_ref());
-        #[cfg(feature = "vex-engine-z3")]
-        {
-            let ast = z3::ast::BV::new_const(&*name, width);
-            RustBV::Symbolic {
-                id,
-                width,
-                name,
-                ast,
-            }
-        }
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            RustBV::Symbolic { id, width, name }
-        }
+        RustBV::from_parts(id, Arc::from(name.as_ref()), width)
     }
 
     // =========================================================================

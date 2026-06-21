@@ -51,24 +51,10 @@ impl RustBV {
         }
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
-            RustBV::Concrete { value, width } => {
-                if *width <= 64 {
-                    z3::ast::BV::from_u64(*value as u64, *width)
-                } else {
-                    let lo = z3::ast::BV::from_u64(*value as u64, 64);
-                    let hi = z3::ast::BV::from_u64((*value >> 64) as u64, *width - 64);
-                    hi.concat(&lo)
-                }
-            }
+            RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
             RustBV::Symbolic { ast, .. } => ast.clone(),
             RustBV::Constrained { value, width, .. } => {
-                if *width <= 64 {
-                    z3::ast::BV::from_u64(*value as u64, *width)
-                } else {
-                    let lo = z3::ast::BV::from_u64(*value as u64, 64);
-                    let hi = z3::ast::BV::from_u64((*value >> 64) as u64, *width - 64);
-                    hi.concat(&lo)
-                }
+                super::bv_codec::make_bv_const(*value, *width)
             }
             RustBV::Expression {
                 op,
@@ -184,12 +170,7 @@ impl RustBV {
         // never sees Extract over a literal.
         if let Some(v) = inner.as_u128() {
             let extracted = (v >> low) & ((1u128 << result_width) - 1);
-            if result_width <= 64 {
-                return z3::ast::BV::from_u64(extracted as u64, result_width);
-            }
-            let lo = z3::ast::BV::from_u64(extracted as u64, 64);
-            let hi = z3::ast::BV::from_u64((extracted >> 64) as u64, result_width - 64);
-            return hi.concat(&lo);
+            return super::bv_codec::make_bv_const(extracted, result_width);
         }
 
         if let RustBV::Expression { op, operands, .. } = inner {
