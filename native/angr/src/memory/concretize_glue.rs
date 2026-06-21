@@ -58,13 +58,7 @@ impl SymbolicMemory {
     /// * `stride` - Stride between consecutive addresses
     /// * `count` - Number of addresses in the pattern
     /// * `size` - Size of each access in bytes
-    pub(super) fn prepare_strided_region(
-        &self,
-        _base: u64,
-        _stride: u64,
-        _count: u64,
-        _size: u32,
-    ) {
+    pub(super) fn prepare_strided_region(&self, _base: u64, _stride: u64, _count: u64, _size: u32) {
         // No longer auto-maps zero pages.
         // The interpreter will fall back to Python callback which can provide
         // actual backer data instead of speculative zeros.
