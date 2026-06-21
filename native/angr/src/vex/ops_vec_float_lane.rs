@@ -40,11 +40,20 @@ impl VEXOps {
                     return Err(OpError::InvalidFloatType(elem));
                 }
                 let arity = concrete.len();
+                // Hardened from a `debug_assert!` (angr-j60q0.2): `buf32`/`buf64`
+                // are fixed `FLOAT_LANE_OP_MAX_ARITY`-wide and indexed `[idx]`
+                // for `idx in 0..arity` below, so an over-arity caller would be
+                // an index-panic process abort in release. Return a typed error
+                // instead.
+                if arity > FLOAT_LANE_OP_MAX_ARITY {
+                    return Err(OpError::UnsupportedVectorOp(format!(
+                        "vec_float_lane_op arity {arity} exceeds max {FLOAT_LANE_OP_MAX_ARITY}"
+                    )));
+                }
                 let mut result: u128 = 0;
                 let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
                 let mut buf32 = [0f32; FLOAT_LANE_OP_MAX_ARITY];
                 let mut buf64 = [0f64; FLOAT_LANE_OP_MAX_ARITY];
-                debug_assert!(arity <= FLOAT_LANE_OP_MAX_ARITY);
                 for i in 0..count {
                     let shift = (i as u32) * elem_width;
                     let lane_bits = match elem {
@@ -60,7 +69,10 @@ impl VEXOps {
                             }
                             op.concrete_f64(&buf64[..arity]).to_bits() as u128
                         }
-                        _ => unreachable!(),
+                        // Hardened from `unreachable!()` (angr-j60q0.2): `elem`
+                        // is validated F32|F64 above, but keep the contract in
+                        // release should a future caller bypass that guard.
+                        _ => return Err(OpError::InvalidFloatType(elem)),
                     };
                     result |= lane_bits << shift;
                 }

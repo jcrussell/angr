@@ -50,7 +50,15 @@ impl VEXOps {
                         FloatOpKind::Sub => l0 - r0,
                         FloatOpKind::Mul => l0 * r0,
                         FloatOpKind::Div => l0 / r0,
-                        _ => unreachable!(),
+                        // Hardened from `unreachable!()` (angr-j60q0.2): `kind`
+                        // is contractually Add/Sub/Mul/Div, but return a typed
+                        // error in release should a future caller forward an
+                        // attacker-derived FloatOpKind.
+                        _ => {
+                            return Err(OpError::UnsupportedVectorOp(format!(
+                                "vec_float_scalar_op expects Add/Sub/Mul/Div, got {kind:?}"
+                            )));
+                        }
                     };
                     Self::splice_lane0_u128(l, res0.to_bits() as u128, 32)
                 }
@@ -62,7 +70,15 @@ impl VEXOps {
                         FloatOpKind::Sub => l0 - r0,
                         FloatOpKind::Mul => l0 * r0,
                         FloatOpKind::Div => l0 / r0,
-                        _ => unreachable!(),
+                        // Hardened from `unreachable!()` (angr-j60q0.2): `kind`
+                        // is contractually Add/Sub/Mul/Div, but return a typed
+                        // error in release should a future caller forward an
+                        // attacker-derived FloatOpKind.
+                        _ => {
+                            return Err(OpError::UnsupportedVectorOp(format!(
+                                "vec_float_scalar_op expects Add/Sub/Mul/Div, got {kind:?}"
+                            )));
+                        }
                     };
                     Self::splice_lane0_u128(l, res0.to_bits() as u128, 64)
                 }
