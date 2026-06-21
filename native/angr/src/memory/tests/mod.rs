@@ -13,5 +13,6 @@
 
 mod basic;
 mod ite_dedup;
+mod merge_prefetch;
 mod multi;
 mod symbolic;
