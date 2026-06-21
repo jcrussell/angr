@@ -32,7 +32,8 @@ fn fd_offset_for_arch(name: &str) -> Option<u64> {
 /// ```
 ///
 /// Resolves `stream->_fileno` from the FILE struct and writes the payload
-/// to the matching fd buffer (only fds 1/2 handled — others fall back).
+/// to the matching fd buffer. Any non-negative fd is handled inline (like
+/// `NativeFputs`); a negative `_fileno` propagates -1.
 /// Returns `size * nmemb` on success, matching angr's Python fwrite
 /// (which delegates to SimFileDescriptor.write and returns byte count).
 pub struct NativeFwrite;
@@ -82,11 +83,11 @@ impl NativeSimProcedure for NativeFwrite {
             // FILE not backed by a real fd — propagate -1 per fwrite spec.
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
         }
-        if fd_signed != 1 && fd_signed != 2 {
-            return Err(ProcedureError::Other(format!(
-                "fwrite to fd={fd_signed} not supported natively"
-            )));
-        }
+        // Any non-negative fd is serviced via write_fd (FileSystem::write
+        // appends to the fd's content buffer), matching NativeFputs and
+        // Python fwrite's `simfd.write` for an arbitrary fd. No fd-1/2
+        // narrowing — that was a stale holdover from when fwrite only reused
+        // the stdout/stderr NativeWrite path.
 
         let mut bytes = Vec::with_capacity(total as usize);
         for i in 0..total {
@@ -273,9 +274,9 @@ const MAX_FPUTS_LEN: u64 = 4096;
 /// success and -1 on a closed/negative fd (matching the Python proc's `-1`
 /// short-circuit when `simfd is None`).
 ///
-/// Only stdout (1) and stderr (2) are handled inline — other fds fall back to
-/// the FileSystem write path the same way fwrite does so the bytes land in
-/// the tracked fd buffer regardless of underlying backing.
+/// Any non-negative fd is handled inline: the bytes are appended to the
+/// tracked fd buffer via `write_fd` (`FileSystem::write`), regardless of
+/// underlying backing. `NativeFwrite` writes the same way.
 pub struct NativeFputs;
 
 impl NativeSimProcedure for NativeFputs {

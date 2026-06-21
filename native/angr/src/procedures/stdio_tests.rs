@@ -58,22 +58,29 @@ fn test_fwrite_stderr_nmemb_times_size() {
 }
 
 #[test]
-fn test_fwrite_unsupported_fd_falls_back() {
+fn test_fwrite_arbitrary_fd_writes_to_buffer() {
+    // fd 5 (a non-stdout/stderr fd) is serviced inline via write_fd, matching
+    // NativeFputs and Python fwrite's `simfd.write` for an arbitrary fd —
+    // no Python fallback.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc", Permission::RWX);
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, 5);
 
-    let result = NativeFwrite.call(
-        &mut state,
-        &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(1, 64),
-            RustBV::concrete(3, 64),
-            RustBV::concrete(file_ptr as u128, 64),
-        ],
-    );
-    assert!(result.is_err());
+    let result = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(3, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(3));
+    assert_eq!(state.fd_buffer(5), b"abc");
 }
 
 #[test]
