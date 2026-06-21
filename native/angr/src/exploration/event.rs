@@ -5,7 +5,7 @@
 //! constructor helpers live here; `register_exploration` in `mod.rs` still owns
 //! the `m.add_class::<ExplorationEvent>()` registration line.
 
-use crate::stash::{STASH_DEADENDED, STASH_ERRORED, STASH_FOUND};
+use crate::stash::{STASH_ERRORED, STASH_FOUND};
 use pyo3::prelude::*;
 
 /// Event returned from exploration to Python.
@@ -90,11 +90,6 @@ impl ExplorationEvent {
 
     pub(crate) fn found(found_count: usize, active_count: usize, steps: u64) -> Self {
         Self::base(STASH_FOUND, found_count, active_count, steps)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn deadended(found_count: usize, active_count: usize, steps: u64) -> Self {
-        Self::base(STASH_DEADENDED, found_count, active_count, steps)
     }
 
     pub(crate) fn active_empty(found_count: usize, steps: u64) -> Self {

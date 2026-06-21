@@ -132,13 +132,6 @@ impl RustExplorationManager {
         self.sm.index(state_id.into().raw(), stash);
     }
 
-    /// Remove a state from the state_index.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn unindex_state(&mut self, state_id: impl Into<StateId>) {
-        self.sm.unindex(state_id.into().raw());
-    }
-
     /// Rebuild the state_index from scratch by scanning all stashes.
     /// Called after run() to ensure index is up to date for Python API calls.
     pub(crate) fn rebuild_state_index(&mut self) {
