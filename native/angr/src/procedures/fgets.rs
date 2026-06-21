@@ -19,9 +19,38 @@
 
 use super::{ProcedureError, symbol_counter};
 use crate::procedures::fileops::read_fileno;
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_FGETS_SIZE: u64 = 4096;
+
+/// Resolve a `FILE *stream` argument to its backing fd for a read-side stdio
+/// procedure (`fgets`/`fgetc`).
+///
+/// Mirrors Python's `stream->_fileno` resolution with one pragmatic carve-out:
+/// the cle-provided standard streams (`stdin`/`stdout`/`stderr`) live in the
+/// `cle##externs` object, which is mapped lazily in Rust and is *not fetchable
+/// from a SimProcedure context* (only the VEX interpreter can fetch lazy pages).
+/// So `read_fileno` hits an unmapped page and errors for the very common
+/// `fgets(buf, n, stdin)` call, forcing a ~100ms Python fallback per call
+/// (angr-defcamp_r100 regressed 88% after the native fd-resolution landed).
+///
+/// A `FILE *` whose struct is unmapped in Rust can only be a cle standard
+/// stream — `fopen`'d files allocate their `_IO_FILE` in Rust memory (native
+/// `fopen`), so their `_fileno` resolves normally. For a read like `fgets`, a
+/// cle standard stream is overwhelmingly stdin (reading from stdout/stderr is a
+/// programming error that does not occur in practice), and Python resolves
+/// stdin's `_fileno` to 0. So on a *memory* error we serve fd 0 natively,
+/// matching Python's stdin path. A *symbolic* `_fileno` still falls back to
+/// Python (we cannot pick a branch).
+fn resolve_stream_fd(state: &RustSimState, stream: u64) -> Result<i32, ProcedureError> {
+    match read_fileno(state, stream) {
+        Ok(fd) => Ok(fd),
+        // FILE struct not in Rust memory => cle standard stream => stdin.
+        Err(ProcedureError::Memory(_)) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
 
 crate::declare_proc! {
     /// Native fgets implementation.
@@ -33,7 +62,7 @@ crate::declare_proc! {
     /// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
     /// Returns the buffer address on success.
     ///
-    /// Resolves the backing fd from `stream->_fileno`: only stdin (fd 0) uses
+    /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) uses
     /// this native symbolic-stdin path. A non-stdin file stream falls back to
     /// Python, an invalid fd returns -1, and a symbolic FILE*/`_fileno` falls
     /// back to Python.
@@ -55,7 +84,7 @@ crate::declare_proc! {
         }
 
         // Resolve the backing fd. Only stdin (fd 0) is served natively.
-        let fd = read_fileno(state, stream)?;
+        let fd = resolve_stream_fd(state, stream)?;
         if fd < 0 {
             // Invalid stream: Python fgets returns -1 (missing SimFileDescriptor).
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
@@ -110,16 +139,16 @@ crate::declare_proc! {
     ///
     /// Returns one symbolic byte zero-extended to int size.
     ///
-    /// Resolves `stream->_fileno`: only stdin (fd 0) is served natively. A
-    /// non-stdin stream falls back to Python, an invalid fd returns -1 (EOF
-    /// sentinel, matching Python `fgetc`), and a symbolic FILE*/`_fileno`
-    /// falls back to Python.
+    /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) is
+    /// served natively. A non-stdin stream falls back to Python, an invalid fd
+    /// returns -1 (EOF sentinel, matching Python `fgetc`), and a symbolic
+    /// FILE*/`_fileno` falls back to Python.
     name = "fgetc",
     struct = NativeFgetc,
     args = [stream: concrete],
     aliases = ["fgetc_unlocked"],
     call |state| {
-        let fd = read_fileno(state, stream)?;
+        let fd = resolve_stream_fd(state, stream)?;
         if fd < 0 {
             // Invalid stream: Python fgetc returns -1 (missing descriptor).
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
