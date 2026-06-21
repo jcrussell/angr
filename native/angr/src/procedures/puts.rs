@@ -65,27 +65,41 @@ crate::declare_proc! {
     /// int fputc(int c, FILE *stream);
     /// ```
     ///
-    /// Writes one byte to the stream. Stream argument is ignored (treated as
-    /// stdout); declared `bv` so a symbolic FILE* does not trigger a Python
-    /// fallback, matching the prior hand-rolled behavior.
+    /// Resolves `stream->_fileno` and appends the low byte to that fd's
+    /// buffer via `write_fd`, matching Python `fputc` (which writes `c[7:0]`
+    /// to the resolved SimFileDescriptor). Returns `c & 0xFF` on success and
+    /// -1 on a closed/negative fd. A symbolic FILE* (concrete extraction
+    /// fails) falls back to Python. Mirrors NativeFputs / NativeFwrite, which
+    /// also route any non-negative fd through `write_fd` rather than assuming
+    /// stdout.
     name = "fputc",
     struct = NativeFputc,
-    args = [c: concrete, _stream: bv],
+    args = [c: concrete, stream: concrete],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        state.write_stdout(&[byte]);
+        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        if fd < 0 {
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
+        }
+        state.write_fd(fd as u32, &[byte]);
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
 
 crate::declare_proc! {
     /// Native putc implementation (alias for fputc).
+    ///
+    /// `putc` is a macro alias for `fputc` in glibc — same fd resolution.
     name = "putc",
     struct = NativePutc,
-    args = [c: concrete, _stream: bv],
+    args = [c: concrete, stream: concrete],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        state.write_stdout(&[byte]);
+        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        if fd < 0 {
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
+        }
+        state.write_fd(fd as u32, &[byte]);
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }

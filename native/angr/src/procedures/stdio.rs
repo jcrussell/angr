@@ -176,7 +176,10 @@ impl NativeSimProcedure for NativeSetvbuf {
 /// Read a 32-bit fd from a FILE struct on the given arch. Returns the signed
 /// fd (so -1 sentinels are preserved). Mirrors fileops.rs::read_fileno so the
 /// stdio shims don't need to depend on private helpers there.
-fn read_fileno_for_stream(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureError> {
+pub(crate) fn read_fileno_for_stream(
+    state: &RustSimState,
+    file_ptr: u64,
+) -> Result<i32, ProcedureError> {
     let arch_name = state.arch().name();
     let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
         ProcedureError::Other(format!("no _IO_FILE fd offset for arch {arch_name}"))

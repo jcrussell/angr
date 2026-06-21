@@ -86,15 +86,98 @@ fn test_putchar_symbolic() {
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
 
+/// Map a FILE struct at `file_ptr` whose `_fileno` field holds `fd`. The
+/// AMD64 `_IO_FILE._fileno` byte offset is 112 (see `fd_offset_for_arch`).
+fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
+    const AMD64_FD_OFFSET: u64 = 112;
+    state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
+    let fd_bv = RustBV::concrete(fd as u32 as u128, 32);
+    state
+        .memory_store(file_ptr + AMD64_FD_OFFSET, fd_bv)
+        .unwrap();
+}
+
 #[test]
 fn test_fputc_basic() {
+    // FILE* with _fileno=1 (stdout) — fputc resolves the fd, not assumes stdout.
     let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 1);
     let result = NativeFputc
         .call(
             &mut state,
-            &[RustBV::concrete(b'X' as u128, 32), RustBV::concrete(0, 64)],
+            &[
+                RustBV::concrete(b'X' as u128, 32),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
         )
         .unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(b'X' as u64));
     assert_eq!(state.stdout_buffer(), b"X");
+}
+
+#[test]
+fn test_fputc_writes_to_stderr_fd() {
+    // fputc(c, stderr) must land on fd 2, not stdout — the bug this fixes.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 2);
+    NativeFputc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(b'E' as u128, 32),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(state.fd_buffer(2), b"E");
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn test_putc_writes_to_arbitrary_fd() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 7);
+    NativePutc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(b'q' as u128, 32),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(state.fd_buffer(7), b"q");
+}
+
+#[test]
+fn test_fputc_negative_fd_returns_minus_one() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, -1);
+    let result = NativeFputc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(b'Z' as u128, 32),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0xFFFFFFFF));
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn test_fputc_symbolic_stream_falls_back() {
+    // A symbolic FILE* can't be resolved to an fd — must error so the Python
+    // proc handles it (was previously serviced as stdout via the `bv` arg).
+    let mut state = RustSimState::new("amd64").unwrap();
+    let ctx = state.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    drop(ctx);
+    let result = NativeFputc.call(&mut state, &[RustBV::concrete(b'A' as u128, 32), sym]);
+    assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
