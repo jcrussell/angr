@@ -41,7 +41,7 @@ impl VEXOps {
                 }
                 let arity = concrete.len();
                 let mut result: u128 = 0;
-                let elem_mask: u128 = (1u128 << elem_width) - 1;
+                let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
                 let mut buf32 = [0f32; FLOAT_LANE_OP_MAX_ARITY];
                 let mut buf64 = [0f64; FLOAT_LANE_OP_MAX_ARITY];
                 debug_assert!(arity <= FLOAT_LANE_OP_MAX_ARITY);

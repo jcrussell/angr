@@ -212,7 +212,7 @@ impl VEXOps {
             && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = (1u128 << elem_width) - 1;
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
             for i in 0..count {
                 let shift = (i as u32) * elem_width;
                 let l_bits = (l >> shift) & elem_mask;

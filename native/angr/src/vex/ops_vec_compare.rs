@@ -33,7 +33,7 @@ impl VEXOps {
         // For concrete values
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
+            let elem_mask = Self::low_bit_mask_u128(elem_width);
             let all_ones = elem_mask;
 
             for i in 0..count {
@@ -45,17 +45,8 @@ impl VEXOps {
                     "eq" => l_elem == r_elem,
                     "gt" => {
                         // Signed comparison
-                        let sign_bit = 1u128 << (elem_width - 1);
-                        let l_signed = if l_elem & sign_bit != 0 {
-                            (l_elem | !elem_mask) as i128
-                        } else {
-                            l_elem as i128
-                        };
-                        let r_signed = if r_elem & sign_bit != 0 {
-                            (r_elem | !elem_mask) as i128
-                        } else {
-                            r_elem as i128
-                        };
+                        let l_signed = Self::sign_extend_low_to_i128(l_elem, elem_width);
+                        let r_signed = Self::sign_extend_low_to_i128(r_elem, elem_width);
                         l_signed > r_signed
                     }
                     _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
@@ -108,7 +99,7 @@ impl VEXOps {
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
+            let elem_mask = Self::low_bit_mask_u128(elem_width);
 
             for i in 0..half_count {
                 let src_lo = i * elem_width;
@@ -157,7 +148,7 @@ impl VEXOps {
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
+            let elem_mask = Self::low_bit_mask_u128(elem_width);
 
             for i in 0..half_count {
                 let src_lo = (half_count + i) * elem_width;

@@ -25,17 +25,8 @@ impl VEXOps {
         let out_width = in_width * 2;
 
         // Extend both operands
-        let (left_ext, right_ext) = if signed {
-            (
-                left.sign_extend_into(out_width, ctx),
-                right.sign_extend_into(out_width, ctx),
-            )
-        } else {
-            (
-                left.zero_extend_into(out_width, ctx),
-                right.zero_extend_into(out_width, ctx),
-            )
-        };
+        let left_ext = left.extend_into(out_width, signed, ctx);
+        let right_ext = right.extend_into(out_width, signed, ctx);
 
         Ok(left_ext.mul_into(right_ext, ctx))
     }
@@ -53,17 +44,8 @@ impl VEXOps {
         let double_width = width * 2;
 
         // Extend and multiply
-        let (left_ext, right_ext) = if signed {
-            (
-                left.sign_extend_into(double_width, ctx),
-                right.sign_extend_into(double_width, ctx),
-            )
-        } else {
-            (
-                left.zero_extend_into(double_width, ctx),
-                right.zero_extend_into(double_width, ctx),
-            )
-        };
+        let left_ext = left.extend_into(double_width, signed, ctx);
+        let right_ext = right.extend_into(double_width, signed, ctx);
 
         let product = left_ext.mul_into(right_ext, ctx);
 
@@ -139,11 +121,7 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, dividend_w));
         }
 
-        let divisor_full = if signed {
-            divisor.sign_extend_into(dividend_w, ctx)
-        } else {
-            divisor.zero_extend_into(dividend_w, ctx)
-        };
+        let divisor_full = divisor.extend_into(dividend_w, signed, ctx);
         let quotient_full = if signed {
             dividend.sdiv(&divisor_full, ctx)
         } else {
@@ -161,7 +139,7 @@ impl VEXOps {
 
     /// Mask covering the low `width` bits of a u128.
     #[inline]
-    fn low_bit_mask_u128(width: u32) -> u128 {
+    pub(super) fn low_bit_mask_u128(width: u32) -> u128 {
         if width >= 128 {
             u128::MAX
         } else {

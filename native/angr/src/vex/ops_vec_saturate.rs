@@ -28,25 +28,20 @@ impl VEXOps {
         src_signed: bool,
         dst_signed: bool,
     ) -> u128 {
-        let to_mask: u128 = (1u128 << to_width) - 1;
+        let to_mask: u128 = Self::low_bit_mask_u128(to_width);
         // Reinterpret the source lane as i128.
         let val_i: i128 = if src_signed {
             Self::sign_extend_low_to_i128(lane, from_width)
         } else {
             // unsigned source — masking width-bits into i128 keeps it
             // non-negative because from_width <= 64 in all NEON QNarrow ops.
-            (lane
-                & if from_width == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << from_width) - 1
-                }) as i128
+            (lane & Self::low_bit_mask_u128(from_width)) as i128
         };
         let (min_i, max_i): (i128, i128) = if dst_signed {
             let half = 1i128 << (to_width - 1);
             (-half, half - 1)
         } else {
-            (0i128, ((1u128 << to_width) - 1) as i128)
+            (0i128, Self::low_bit_mask_u128(to_width) as i128)
         };
         let clamped = val_i.clamp(min_i, max_i);
         (clamped as u128) & to_mask
@@ -70,11 +65,7 @@ impl VEXOps {
         if in_total <= 128
             && let Some(v) = arg.as_u128()
         {
-            let in_mask: u128 = if from_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << from_width) - 1
-            };
+            let in_mask: u128 = Self::low_bit_mask_u128(from_width);
             let mut result: u128 = 0;
             for i in 0..count {
                 let lo = (i as u32) * from_width;
@@ -121,11 +112,7 @@ impl VEXOps {
             && (to_width * count as u32) <= 128
             && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
         {
-            let in_mask: u128 = if from_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << from_width) - 1
-            };
+            let in_mask: u128 = Self::low_bit_mask_u128(from_width);
             let mut result: u128 = 0;
             for i in 0..per_input {
                 let lo = i * from_width;
@@ -182,17 +169,13 @@ impl VEXOps {
             let half = 1u128 << (to_width - 1);
             // max = 2^(to_width-1) - 1, min = -2^(to_width-1)
             // In `from_width` bits (two's complement): min = (-half) & mask
-            let from_mask = if from_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << from_width) - 1
-            };
+            let from_mask = Self::low_bit_mask_u128(from_width);
             let max = half - 1;
             let min = (!(half - 1) + 1) & from_mask; // -half in from_width bits
             (max, min)
         } else {
             // Unsigned dst: [0, 2^to_width - 1]
-            let max = (1u128 << to_width) - 1;
+            let max = Self::low_bit_mask_u128(to_width);
             (max, 0)
         };
 
@@ -268,11 +251,7 @@ impl VEXOps {
             && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
             let sign_bit: u128 = 1u128 << (elem_width - 1);
             let smax: u128 = sign_bit - 1; // 0x7F... in elem_width bits
             let smin: u128 = sign_bit; // 0x80...
@@ -286,16 +265,8 @@ impl VEXOps {
                 let sat = if signed {
                     // Sign-extend each lane to i128 to compute the true
                     // arithmetic result, then clamp into [-smax-1, smax].
-                    let a_signed = if a & sign_bit != 0 {
-                        (a | !elem_mask) as i128
-                    } else {
-                        a as i128
-                    };
-                    let b_signed = if b & sign_bit != 0 {
-                        (b | !elem_mask) as i128
-                    } else {
-                        b as i128
-                    };
+                    let a_signed = Self::sign_extend_low_to_i128(a, elem_width);
+                    let b_signed = Self::sign_extend_low_to_i128(b, elem_width);
                     let raw: i128 = if is_sub {
                         a_signed - b_signed
                     } else {
@@ -421,11 +392,7 @@ impl VEXOps {
             && let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128())
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
             let sign_bit: u128 = 1u128 << (elem_width - 1);
             let smax: u128 = sign_bit - 1; // 0x7F...
             let smin: u128 = sign_bit; // 0x80...
@@ -437,21 +404,13 @@ impl VEXOps {
                 let amt_raw = (s >> lo) & elem_mask;
                 // Sign-extend the amt lane: ARM SQSHL/UQSHL treat the
                 // shift-amount lane as signed (negative → right shift).
-                let amt_signed: i128 = if amt_raw & sign_bit != 0 {
-                    (amt_raw | !elem_mask) as i128
-                } else {
-                    amt_raw as i128
-                };
+                let amt_signed: i128 = Self::sign_extend_low_to_i128(amt_raw, elem_width);
 
                 let sat = if amt_signed >= 0 {
                     let shift_amt = amt_signed as u32;
                     if signed {
                         // Sal: signed left shift with overflow → SMAX/SMIN.
-                        let a_signed = if a & sign_bit != 0 {
-                            (a | !elem_mask) as i128
-                        } else {
-                            a as i128
-                        };
+                        let a_signed = Self::sign_extend_low_to_i128(a, elem_width);
                         let smax_i = smax as i128;
                         let smin_i = -(sign_bit as i128);
                         if shift_amt >= elem_width {

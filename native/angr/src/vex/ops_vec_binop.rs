@@ -38,7 +38,7 @@ impl VEXOps {
             for i in 0..count {
                 let lo = (i as u32) * elem_width;
                 let _hi = lo + elem_width - 1;
-                let mask = (1u128 << elem_width) - 1;
+                let mask = Self::low_bit_mask_u128(elem_width);
 
                 let l_elem = (l >> lo) & mask;
                 let r_elem = (r >> lo) & mask;

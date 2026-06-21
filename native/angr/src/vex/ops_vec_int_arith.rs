@@ -37,12 +37,7 @@ impl VEXOps {
             && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
-            let sign_bit: u128 = 1u128 << (elem_width - 1);
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
 
             for i in 0..count {
                 let lo = (i as u32) * elem_width;
@@ -51,16 +46,8 @@ impl VEXOps {
 
                 let pick_left = if signed {
                     // Sign-extend each lane to i128 for comparison.
-                    let l_signed = if l_elem & sign_bit != 0 {
-                        (l_elem | !elem_mask) as i128
-                    } else {
-                        l_elem as i128
-                    };
-                    let r_signed = if r_elem & sign_bit != 0 {
-                        (r_elem | !elem_mask) as i128
-                    } else {
-                        r_elem as i128
-                    };
+                    let l_signed = Self::sign_extend_low_to_i128(l_elem, elem_width);
+                    let r_signed = Self::sign_extend_low_to_i128(r_elem, elem_width);
                     if is_max {
                         l_signed >= r_signed
                     } else {
@@ -188,11 +175,7 @@ impl VEXOps {
             && let Some(v) = arg.as_u128()
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
             let sign_bit: u128 = 1u128 << (elem_width - 1);
 
             for i in 0..count {

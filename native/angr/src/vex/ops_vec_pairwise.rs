@@ -44,16 +44,8 @@ impl VEXOps {
             let hi_b = lo_b + elem_width - 1;
             let a_lane = arg.extract(hi_a, lo_a, ctx);
             let b_lane = arg.extract(hi_b, lo_b, ctx);
-            let a_wide = if signed {
-                a_lane.sign_extend_into(out_elem_width, ctx)
-            } else {
-                a_lane.zero_extend_into(out_elem_width, ctx)
-            };
-            let b_wide = if signed {
-                b_lane.sign_extend_into(out_elem_width, ctx)
-            } else {
-                b_lane.zero_extend_into(out_elem_width, ctx)
-            };
+            let a_wide = a_lane.extend_into(out_elem_width, signed, ctx);
+            let b_wide = b_lane.extend_into(out_elem_width, signed, ctx);
             elements.push(a_wide.add_into(b_wide, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
@@ -191,16 +183,8 @@ impl VEXOps {
             let hi = lo + elem_width - 1;
             let a_lane = left.extract(hi, lo, ctx);
             let b_lane = right.extract(hi, lo, ctx);
-            let a_wide = if signed {
-                a_lane.sign_extend_into(wide, ctx)
-            } else {
-                a_lane.zero_extend_into(wide, ctx)
-            };
-            let b_wide = if signed {
-                b_lane.sign_extend_into(wide, ctx)
-            } else {
-                b_lane.zero_extend_into(wide, ctx)
-            };
+            let a_wide = a_lane.extend_into(wide, signed, ctx);
+            let b_wide = b_lane.extend_into(wide, signed, ctx);
             let sum = a_wide.add_into(b_wide, ctx).add_into(one_wide.clone(), ctx);
             let shifted = sum.lshr_into(RustBV::concrete(1, wide), ctx);
             // Truncate to elem bits — for signed, the (elem)th bit of `shifted`

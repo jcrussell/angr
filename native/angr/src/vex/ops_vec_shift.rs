@@ -41,7 +41,7 @@ impl VEXOps {
 
             if let Some(v) = vec.as_u128() {
                 let mut result: u128 = 0;
-                let elem_mask = (1u128 << elem_width) - 1;
+                let elem_mask = Self::low_bit_mask_u128(elem_width);
 
                 for i in 0..count {
                     let lo = (i as u32) * elem_width;
@@ -111,7 +111,7 @@ impl VEXOps {
 
             if let Some(v) = vec.as_u128() {
                 let mut result: u128 = 0;
-                let elem_mask = (1u128 << elem_width) - 1;
+                let elem_mask = Self::low_bit_mask_u128(elem_width);
 
                 for i in 0..count {
                     let lo = (i as u32) * elem_width;
@@ -154,7 +154,7 @@ impl VEXOps {
 
             if let Some(v) = vec.as_u128() {
                 let mut result: u128 = 0;
-                let elem_mask = (1u128 << elem_width) - 1;
+                let elem_mask = Self::low_bit_mask_u128(elem_width);
                 let sign_bit = 1u128 << (elem_width - 1);
 
                 for i in 0..count {
@@ -230,11 +230,7 @@ impl VEXOps {
             && let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128())
         {
             let mut result: u128 = 0;
-            let elem_mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
             let sign_bit: u128 = 1u128 << (elem_width - 1);
 
             for i in 0..count {

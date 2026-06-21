@@ -42,11 +42,7 @@ impl VEXOps {
         if let (Some(v), Some(i)) = (vec.as_u128(), idx.as_u128()) {
             let lane = (i as u8) % count;
             let lo = lane as u32 * elem_width;
-            let mask = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let mask = Self::low_bit_mask_u128(elem_width);
             let result = (v >> lo) & mask;
             return Ok(RustBV::concrete(result, elem_width));
         }
@@ -96,11 +92,7 @@ impl VEXOps {
         if let (Some(v), Some(i), Some(x)) = (vec.as_u128(), idx.as_u128(), val.as_u128()) {
             let lane = (i as u8) % count;
             let lo = lane as u32 * elem_width;
-            let mask_elem = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let mask_elem = Self::low_bit_mask_u128(elem_width);
             let shifted_mask = mask_elem << lo;
             let cleared = v & !shifted_mask;
             let new_val = cleared | ((x & mask_elem) << lo);
@@ -154,11 +146,7 @@ impl VEXOps {
         if total_width <= 128
             && let Some(v) = arg.as_u128()
         {
-            let mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let mask: u128 = Self::low_bit_mask_u128(elem_width);
             let lane = v & mask;
             let mut result: u128 = 0;
             for i in 0..count {
@@ -195,16 +183,8 @@ impl VEXOps {
             && (to_width * count as u32) <= 128
             && let Some(v) = arg.as_u128()
         {
-            let in_mask: u128 = if from_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << from_width) - 1
-            };
-            let out_mask: u128 = if to_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << to_width) - 1
-            };
+            let in_mask: u128 = Self::low_bit_mask_u128(from_width);
+            let out_mask: u128 = Self::low_bit_mask_u128(to_width);
             let sign_bit: u128 = 1u128 << (from_width - 1);
             let mut result: u128 = 0;
             for i in 0..count {
@@ -228,11 +208,7 @@ impl VEXOps {
             let lo = (i as u32) * from_width;
             let hi = lo + from_width - 1;
             let lane = arg.extract(hi, lo, ctx);
-            let widened = if signed {
-                lane.sign_extend_into(to_width, ctx)
-            } else {
-                lane.zero_extend_into(to_width, ctx)
-            };
+            let widened = lane.extend_into(to_width, signed, ctx);
             elements.push(widened);
         }
         Ok(Self::concat_le_elements(elements, ctx))
@@ -255,7 +231,7 @@ impl VEXOps {
         if in_total <= 128
             && let Some(v) = arg.as_u128()
         {
-            let to_mask: u128 = (1u128 << to_width) - 1;
+            let to_mask: u128 = Self::low_bit_mask_u128(to_width);
             let mut result: u128 = 0;
             for i in 0..count {
                 let lo = (i as u32) * from_width;
@@ -298,7 +274,7 @@ impl VEXOps {
             && (to_width * count as u32) <= 128
             && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
         {
-            let to_mask: u128 = (1u128 << to_width) - 1;
+            let to_mask: u128 = Self::low_bit_mask_u128(to_width);
             let mut result: u128 = 0;
             for i in 0..per_input {
                 let lo = i * from_width;

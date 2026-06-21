@@ -966,6 +966,16 @@ impl RustBV {
         }
     }
 
+    /// Extend to `to_width` bits, choosing sign- or zero-extension by `signed`.
+    #[inline]
+    pub fn extend_into(self, to_width: u32, signed: bool, ctx: &SymContext) -> Self {
+        if signed {
+            self.sign_extend_into(to_width, ctx)
+        } else {
+            self.zero_extend_into(to_width, ctx)
+        }
+    }
+
     /// Truncate to a narrower width.
     #[inline]
     pub fn truncate(&self, to_width: u32, ctx: &SymContext) -> Self {

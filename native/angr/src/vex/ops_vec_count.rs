@@ -104,11 +104,7 @@ impl VEXOps {
 
         // Concrete fast path (lanes ≤ 32 bits — width fits in u32).
         if let Some(v) = arg.as_u128() {
-            let mask: u128 = if elem_width == 128 {
-                u128::MAX
-            } else {
-                (1u128 << elem_width) - 1
-            };
+            let mask: u128 = Self::low_bit_mask_u128(elem_width);
             let mut result: u128 = 0;
             for i in 0..count as u32 {
                 let lane = (v >> (i * elem_width)) & mask;
