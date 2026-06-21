@@ -1096,7 +1096,7 @@ fn test_memory_volume_counters_fire_on_load_store() {
     // Concrete address, 4 bytes stored, 4 bytes loaded.
     let addr = RustBV::concrete(0x2000, 64);
     let value = RustBV::concrete(0xCAFEBABE, 32);
-    mem.store(addr.clone(), value, &ctx).expect("store ok");
+    mem.store(&addr, value, &ctx).expect("store ok");
     let _ = mem.load(addr, 4, &ctx).expect("load ok");
 
     let post = get_solver_stats();

@@ -19,7 +19,7 @@ impl SymbolicMemory {
     /// Store a value to memory.
     pub fn store(
         &mut self,
-        addr: RustBV,
+        addr: &RustBV,
         value: RustBV,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
@@ -31,7 +31,7 @@ impl SymbolicMemory {
         // For symbolic addresses, we need to concretize
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
-            None => match ctx.eval(&addr) {
+            None => match ctx.eval(addr) {
                 Some(a) => a as u64,
                 None => {
                     return Err(MemoryError::SymbolicAddress {
