@@ -271,6 +271,60 @@ fn test_fgetc_nonstdin_falls_back() {
 }
 
 #[test]
+fn test_fgetc_short_reads_can_return_eof() {
+    // With SHORT_READS, native fgetc returns If(eof, -1, byte): the EOF sentinel
+    // (-1, i.e. 0xFFFFFFFF as a 32-bit int) becomes a reachable solution, while
+    // an ordinary byte is still reachable too. This mirrors Python fgetc's
+    // If(real_length == 0, -1, byte) (angr-qx81x). Without the option the result
+    // is a bare zero-extended byte in [0, 255], so -1 is unreachable (asserted in
+    // test_fgetc_default_never_eof).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    let result = NativeFgetc
+        .call(&mut state, &[RustBV::concrete(stdin as u128, 64)])
+        .unwrap()
+        .unwrap();
+
+    let ctx = state.solver().borrow();
+    assert!(
+        ctx.solution(&result, 0xFFFF_FFFF),
+        "EOF (-1) must be reachable under SHORT_READS"
+    );
+    assert!(
+        ctx.solution(&result, 0x41),
+        "an ordinary byte must still be reachable under SHORT_READS"
+    );
+}
+
+#[test]
+fn test_fgetc_default_never_eof() {
+    // Default path (SHORT_READS off): fgetc returns a bare zero-extended byte,
+    // so the value is in [0, 255] and the EOF sentinel (-1 / 0xFFFFFFFF) is
+    // never a solution. Guards the gating of the short-read EOF model.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    let result = NativeFgetc
+        .call(&mut state, &[RustBV::concrete(stdin as u128, 64)])
+        .unwrap()
+        .unwrap();
+
+    let ctx = state.solver().borrow();
+    assert!(
+        !ctx.solution(&result, 0xFFFF_FFFF),
+        "default fgetc never returns the EOF sentinel"
+    );
+    assert!(
+        ctx.solution(&result, 0x41),
+        "an ordinary byte is reachable on the default path"
+    );
+}
+
+#[test]
 fn test_fgets_short_reads_returns_symbolic_size() {
     // With SHORT_READS, native fgets models a variable-length read: it returns
     // a symbolic real_size in [0, size-1] (the downstream fork source) rather

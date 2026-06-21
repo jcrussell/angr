@@ -14,7 +14,8 @@
 //!   symbolic real_size in [0, size-1], a NUL at the real_size offset, and a
 //!   symbolic return of real_size (matching Python procedures/libc/fgets.py
 //!   case 2). Default (SHORT_READS off) stays the non-forking full read.
-//! - fgetc: returns one symbolic byte zero-extended to int
+//! - fgetc: returns one symbolic byte zero-extended to int. Under SHORT_READS,
+//!   returns `If(eof, -1, byte)` to model the EOF (-1) return.
 //! - getchar: equivalent to fgetc(stdin) — always stdin, no FILE* arg
 //! - A non-stdin FILE* (resolved `_fileno > 0`) falls back to Python's SimFile
 //!   model, which serves concrete file content and adds the EOF/newline
@@ -246,7 +247,11 @@ crate::declare_proc! {
     /// int fgetc(FILE *stream);
     /// ```
     ///
-    /// Returns one symbolic byte zero-extended to int size.
+    /// Returns one symbolic byte zero-extended to int size. With the SHORT_READS
+    /// SimOption set, instead returns `If(eof, -1, byte)` for a fresh symbolic
+    /// eof bit, modelling the EOF (-1) return of Python `fgetc`
+    /// (`If(real_length == 0, -1, byte)`). Default (SHORT_READS off) never
+    /// returns the EOF sentinel from the symbolic-stdin path.
     ///
     /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) is
     /// served natively. A non-stdin stream falls back to Python, an invalid fd
@@ -270,11 +275,24 @@ crate::declare_proc! {
         }
         let read_id = symbol_counter("fgetc");
         let name = format!("stdin_fgetc_{}", read_id);
+        let short_reads = state.has_option("SHORT_READS");
         let result = {
             let ctx = state.solver().borrow();
             let sym_byte = RustBV::symbolic(&ctx, &name, 8);
             // Zero-extend to int (32-bit, matching C int type)
-            sym_byte.zero_extend(32, &ctx)
+            let byte_ze = sym_byte.zero_extend(32, &ctx);
+            if short_reads {
+                // SHORT_READS: model the EOF return. Python fgetc returns
+                // If(real_length == 0, -1, byte) — a fresh symbolic eof bit
+                // soundly over-approximates simfd.eof() (the solver may pick
+                // eof=true to justify a zero-length read). Matches the eof
+                // handling in the fgets short-read path above (angr-qx81x).
+                let eof = RustBV::symbolic(&ctx, format!("fgetc_eof_{}", read_id), 1);
+                let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
+                eof.ite(&neg_one, &byte_ze, &ctx)
+            } else {
+                byte_ze
+            }
         };
         // Record for posix.dumps(0) export
         state.record_stdin_symbol(name, 8);
@@ -289,7 +307,8 @@ crate::declare_proc! {
     /// int getchar(void);
     /// ```
     ///
-    /// Equivalent to fgetc(stdin). Returns one symbolic byte zero-extended to int.
+    /// Equivalent to fgetc(stdin). Returns one symbolic byte zero-extended to int,
+    /// or `If(eof, -1, byte)` under the SHORT_READS SimOption (see fgetc).
     name = "getchar",
     struct = NativeGetchar,
     args = [],
@@ -297,11 +316,22 @@ crate::declare_proc! {
     call |state| {
         let read_id = symbol_counter("getchar");
         let name = format!("stdin_getchar_{}", read_id);
+        let short_reads = state.has_option("SHORT_READS");
         let result = {
             let ctx = state.solver().borrow();
             let sym_byte = RustBV::symbolic(&ctx, &name, 8);
             // Zero-extend to int (32-bit, matching C int type)
-            sym_byte.zero_extend(32, &ctx)
+            let byte_ze = sym_byte.zero_extend(32, &ctx);
+            if short_reads {
+                // SHORT_READS: model the EOF return, like fgetc above. Python
+                // getchar == fgetc(stdin) returns If(real_length == 0, -1, byte);
+                // a fresh symbolic eof bit over-approximates simfd.eof().
+                let eof = RustBV::symbolic(&ctx, format!("getchar_eof_{}", read_id), 1);
+                let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
+                eof.ite(&neg_one, &byte_ze, &ctx)
+            } else {
+                byte_ze
+            }
         };
         // Record for posix.dumps(0) export
         state.record_stdin_symbol(name, 8);
