@@ -161,9 +161,14 @@ What is **not** guaranteed — and where the honesty framing matters: this is
 "resume the **search**," not "restore the **run** bit-for-bit." Model equality
 across a restore is not guaranteed even with `deterministic=True`; the resumed
 solver may hand you a *different* satisfying input for the same path, because the
-find address is reachable by more than one input. In our `fauxware` run the
-recovered value happens to be stable (`SOSNEAKY`-shaped), but that's an
-**observed bonus**, not a contract. If you need binary-identical replay, that's a
+find address is reachable by more than one input. Concretely, two artifacts
+show the two halves of this: the headline checkpoint/resume run
+(`show_checkpoint_resume.py`) recovers a *different* satisfying input after the
+restore than it would have pre-dump — exactly the "not bit-for-bit" behavior
+above. A separate deterministic-mode probe (`show_resume_boundary.py`) *does*
+land on a stable `SOSNEAKY`-shaped value across the boundary, but treat that as
+an **observed bonus**, not a contract — it's a different run with determinism
+pinned, not the headline demo. If you need binary-identical replay, that's a
 separate guarantee we don't make here. See
 `docs/advanced-topics/rust_engine.rst` (snapshot limits) and the determinism
 boundary probe in `show_resume_boundary.py`.
