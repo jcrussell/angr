@@ -9,8 +9,11 @@
 //!   representing user input
 //! - fgets: stores up to (size-1) symbolic bytes + NUL terminator at buf, and
 //!   constrains every byte but the last to be non-newline (a full read cannot
-//!   contain an embedded newline — real fgets stops at the first one). Short
-//!   reads / EOF are not modeled (would need variable-length semantics).
+//!   contain an embedded newline — real fgets stops at the first one). With the
+//!   SHORT_READS SimOption set, instead models a variable-length read: a
+//!   symbolic real_size in [0, size-1], a NUL at the real_size offset, and a
+//!   symbolic return of real_size (matching Python procedures/libc/fgets.py
+//!   case 2). Default (SHORT_READS off) stays the non-forking full read.
 //! - fgetc: returns one symbolic byte zero-extended to int
 //! - getchar: equivalent to fgetc(stdin) — always stdin, no FILE* arg
 //! - A non-stdin FILE* (resolved `_fileno > 0`) falls back to Python's SimFile
@@ -101,6 +104,7 @@ crate::declare_proc! {
 
         let read_count = size - 1; // fgets reads at most size-1 bytes
         let read_id = symbol_counter("fgets");
+        let short_reads = state.has_option("SHORT_READS");
 
         // Create symbolic bytes and record for stdin tracking
         let names: Vec<String> = (0..read_count)
@@ -114,6 +118,87 @@ crate::declare_proc! {
                 .map(|name| RustBV::symbolic(&ctx, name, 8))
                 .collect()
         };
+
+        // Record stdin symbols for posix.dumps(0) export (shared by both paths).
+        for name in &names {
+            state.record_stdin_symbol(name.clone(), 8);
+        }
+
+        if short_reads {
+            // Variable-length / short-read model, gated behind the SHORT_READS
+            // SimOption (angr-efvao). Mirrors Python procedures/libc/fgets.py
+            // case 2: a symbolic `real_size` in [0, size-1], per-byte
+            // newline/EOF constraints, a NUL stored at the real_size offset,
+            // and a *symbolic return* of real_size — which is the actual
+            // downstream fork source (Python's fgets returns real_size, not the
+            // buffer pointer). Without SHORT_READS the default path below stays
+            // byte-identical and non-forking, so the perf gate is unaffected;
+            // enabling SHORT_READS opts into the same state multiplication it
+            // already causes Python-side.
+            let (real_size, constraints, store_bytes) = {
+                let ctx = state.solver().borrow();
+                let real_size =
+                    RustBV::symbolic(&ctx, format!("fgets_realsize_{}", read_id), bits);
+                // EOF is unknown for native symbolic stdin; a fresh symbolic
+                // bit soundly over-approximates `simfd.eof()` (the solver may
+                // pick eof=true to justify a short read, matching Python).
+                let eof = RustBV::symbolic(&ctx, format!("fgets_eof_{}", read_id), 1);
+                let nl = RustBV::concrete(b'\n' as u128, 8);
+                let nul = RustBV::concrete(0, 8);
+
+                let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
+                // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
+                constraints.push(real_size.ule(&RustBV::concrete(read_count as u128, bits), &ctx));
+
+                // For each returned byte i:
+                //   If(i+1 != real_size,            byte != '\n',
+                //      Or(i+2 == size, eof, byte == '\n'))
+                // i.e. a non-final byte cannot be a newline, and the final
+                // returned byte is justified by running out of space, EOF, or
+                // being the terminating newline.
+                for (i, byte) in sym_bytes.iter().enumerate() {
+                    let idx = i as u64;
+                    let cond = RustBV::concrete((idx + 1) as u128, bits).ne(&real_size, &ctx);
+                    let then_b = byte.ne(&nl, &ctx);
+                    let else_b = if idx + 2 == size {
+                        // i+2 == size is a concrete tautology for the last byte.
+                        RustBV::concrete(1, 1)
+                    } else {
+                        eof.or(&byte.eq(&nl, &ctx), &ctx)
+                    };
+                    constraints.push(cond.ite(&then_b, &else_b, &ctx));
+                }
+
+                // Emulate Python's `store(dst, data, size=real_size)` + NUL at
+                // dst+real_size as concrete-position ITE stores: byte p is the
+                // NUL exactly when real_size == p, else the data byte. Keeping
+                // every store at a fixed address avoids symbolic-address
+                // concretization (which would enumerate up to size-1 addresses)
+                // and stays concrete-loadable downstream. The final slot (index
+                // read_count == size-1) is the NUL of a full read; clamping it
+                // to NUL unconditionally is harmless for shorter reads (it sits
+                // beyond real_size, in undefined-content territory).
+                let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
+                for (p, byte) in sym_bytes.iter().enumerate() {
+                    let at = RustBV::concrete(p as u128, bits).eq(&real_size, &ctx);
+                    store_bytes.push(at.ite(&nul, byte, &ctx));
+                }
+                store_bytes.push(nul.clone());
+                (real_size, constraints, store_bytes)
+            };
+
+            // Store the computed bytes at fixed offsets.
+            for (i, b) in store_bytes.into_iter().enumerate() {
+                state.memory_store(buf.wrapping_add(i as u64), b)?;
+            }
+            // Apply constraints after storing (each borrows the solver).
+            for c in constraints {
+                state.add_constraint(c);
+            }
+
+            // Return symbolic real_size — the downstream fork source.
+            return Ok(Some(real_size));
+        }
 
         // Newline path constraint: a *full* read of `read_count` bytes means no
         // newline terminated the read before its final byte — real fgets stops
@@ -134,11 +219,6 @@ crate::declare_proc! {
                 .map(|b| b.ne(&nl, &ctx))
                 .collect()
         };
-
-        // Record stdin symbols for posix.dumps(0) export
-        for name in &names {
-            state.record_stdin_symbol(name.clone(), 8);
-        }
 
         // Store symbolic bytes to buffer
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {

@@ -269,3 +269,84 @@ fn test_fgetc_nonstdin_falls_back() {
     let result = NativeFgetc.call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)]);
     assert!(matches!(result, Err(ProcedureError::Other(_))));
 }
+
+#[test]
+fn test_fgets_short_reads_returns_symbolic_size() {
+    // With SHORT_READS, native fgets models a variable-length read: it returns
+    // a symbolic real_size in [0, size-1] (the downstream fork source) rather
+    // than the buffer pointer, mirroring Python procedures/libc/fgets.py case 2
+    // (angr-efvao). Without the option the return stays the concrete buffer
+    // pointer (test_fgets_basic), so the default path is unchanged.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    // size=8 => real_size in [0, 7].
+    let result = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(8, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        result.as_u64().is_none(),
+        "short-read fgets returns symbolic real_size, not the concrete buffer ptr"
+    );
+
+    let ctx = state.solver().borrow();
+    assert!(
+        ctx.solution(&result, 0),
+        "a zero-length short read must be reachable"
+    );
+    assert!(
+        ctx.solution(&result, 7),
+        "the full (size-1) read must be reachable"
+    );
+    assert!(!ctx.solution(&result, 8), "real_size cannot exceed size-1");
+}
+
+#[test]
+fn test_fgets_short_reads_nul_at_real_size() {
+    // The NUL terminator is stored at the symbolic real_size offset: pinning
+    // real_size = k forces buf+k to be NUL (proves the symbolic-position store).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    let result = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(8, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+
+    // Pin real_size = 3; the NUL terminator must then sit at buf+3.
+    let pin = {
+        let ctx = state.solver().borrow();
+        result.eq(&RustBV::concrete(3, 64), &ctx)
+    };
+    state.add_constraint(pin);
+
+    let byte3 = state.memory_load(0x2003, 1).unwrap();
+    let ctx = state.solver().borrow();
+    let zero = RustBV::concrete(0, 8);
+    assert!(
+        !ctx.can_be_true(&byte3.ne(&zero, &ctx)),
+        "byte at buf+real_size must be the NUL terminator"
+    );
+}
