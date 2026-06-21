@@ -391,6 +391,7 @@ crate::declare_proc! {
     name = "fseek",
     struct = NativeFseek,
     args = [file_ptr: concrete, offset_raw: concrete, whence_raw: concrete],
+    aliases = ["fseeko"],
     call |state| {
         let offset = offset_raw as i64;
         let whence = whence_raw as u32;
@@ -418,6 +419,7 @@ crate::declare_proc! {
     name = "ftell",
     struct = NativeFtell,
     args = [file_ptr: concrete],
+    aliases = ["ftello"],
     call |state| {
         let fd = read_fileno(state, file_ptr)?;
 

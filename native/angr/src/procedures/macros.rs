@@ -28,6 +28,11 @@
 //! An optional `no_return = true` flag overrides the default `no_return()`
 //! from the trait (terminal procedures like `exit`, `abort`).
 //!
+//! An optional `aliases = ["name", ...]` list registers the same native impl
+//! under additional names (e.g. glibc large-file variants `fseeko`/`ftello`
+//! that Python angr aliases `fseeko = fseek`). Mirrors the trait's
+//! `aliases()` default; see `NativeProcedureRegistry::register`.
+//!
 //! Registration with `NativeProcedureRegistry::new` remains hand-written;
 //! the macro only enforces the declaration-side lockstep.
 
@@ -39,6 +44,7 @@ macro_rules! declare_proc {
         struct = $struct:ident,
         args = [ $($arg:ident : $kind:ident),* $(,)? ],
         $(no_return = $no_ret:literal,)?
+        $(aliases = [ $($alias:literal),* $(,)? ],)?
         call |$state:ident| $body:block
     ) => {
         $(#[$attr])*
@@ -56,6 +62,13 @@ macro_rules! declare_proc {
             $(
                 #[inline]
                 fn no_return(&self) -> bool { $no_ret }
+            )?
+
+            $(
+                #[inline]
+                fn aliases(&self) -> &'static [&'static str] {
+                    &[ $($alias),* ]
+                }
             )?
 
             fn call(

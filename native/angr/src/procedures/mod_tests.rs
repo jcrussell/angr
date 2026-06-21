@@ -60,3 +60,25 @@ fn test_stdio_unlocked_aliases_dispatch() {
         );
     }
 }
+
+#[test]
+fn test_fileops_largefile_aliases_dispatch() {
+    // Python angr aliases the glibc large-file seek variants `fseeko = fseek`
+    // and `ftello = ftell` (same off_t-vs-long signatures on LP64). The
+    // declare_proc! `aliases = [...]` mechanism must surface the same native
+    // impl under the `o`-suffixed name so `_FILE_OFFSET_BITS=64` binaries that
+    // emit `fseeko`/`ftello` don't round-trip to Python.
+    let registry = NativeProcedureRegistry::new();
+    for (base, alias) in [("fseek", "fseeko"), ("ftell", "ftello")] {
+        assert!(registry.has_native(base), "{base} should be native");
+        assert!(
+            registry.has_native(alias),
+            "{alias} should resolve via alias"
+        );
+        assert_eq!(
+            registry.get(alias).map(|p| p.name()),
+            registry.get(base).map(|p| p.name()),
+            "{alias} should dispatch to the {base} impl",
+        );
+    }
+}
