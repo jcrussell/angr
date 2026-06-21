@@ -1576,6 +1576,78 @@ class TestRustInspectExtendedEvents:
         assert a_result is not None
         assert unmapped in a_result, f"concretized result missing target: {a_result}"
 
+    def test_symbolic_variable_fires_end_to_end_from_rust(self):
+        """angr-1c88c: drive the *native* dispatch site
+        ``expressions.rs::dispatch_symbolic_variable_inspect`` end to end.
+
+        ``test_dispatch_symbolic_variable_fires_bp`` invokes
+        ``mgr._cb_inspect_symbolic_variable`` directly — it proves the Python
+        relay but never reaches the interpreter's fresh-symbol fallback. The
+        native dispatch fires from ``mod.rs::load_from_callback`` when Python's
+        ``memory_load`` callback returns ``is_symbolic=True`` with **no** AST:
+        the engine mints a fresh ``mem_<addr>_<size>`` BVS and fires
+        ``symbolic_variable`` BP_AFTER (gated on bit 18).
+
+        Harness reuses the unmapped-symbolic-load shellcode spine (``mov rax,
+        [rbx] ; ret`` with ``rbx`` constrained to an unmapped page) so the load
+        routes ``load_symbolic_addr`` → Single → ``load_from_callback``. We
+        patch ``_cb_memory_load`` *on the class* (it is captured as a bound
+        method in ``_setup_callbacks`` at construction, so a post-construction
+        instance override is too late — see the iter-45 gotcha) to return
+        ``(bytes, True, None)`` for the unmapped target, forcing the
+        no-AST fresh-symbol fallback.
+        """
+        import claripy
+
+        import angr
+
+        unmapped = 0xDEAD0000
+        # mov rax, [rbx] ; ret
+        proj = angr.load_shellcode(b"\x48\x8b\x03\xc3", "amd64")
+        state = proj.factory.blank_state(addr=proj.entry)
+        sym_addr = claripy.BVS("sym_load_addr", 64)
+        state.solver.add(sym_addr == unmapped)
+        state.regs.rbx = sym_addr
+
+        orig_cb = RustExplorationManager._cb_memory_load
+
+        def _patched_cb(self, addr, size):
+            # Force the fresh-symbol fallback only for the unmapped target;
+            # everything else (regs/code already in Rust) keeps real behavior.
+            if addr == unmapped:
+                return (bytes(size), True, None)
+            return orig_cb(self, addr, size)
+
+        RustExplorationManager._cb_memory_load = _patched_cb
+        try:
+            mgr = RustExplorationManager(proj, [state])
+            seen = []
+
+            def on_sv(s):
+                seen.append(
+                    (
+                        s.inspect.symbolic_name,
+                        s.inspect.symbolic_size,
+                        s.inspect.symbolic_expr,
+                    )
+                )
+
+            mgr._get_inspect_proxy().b("symbolic_variable", when="after", action=on_sv)
+            # Registering the BP must flip bit 18 so the native gate opens.
+            assert mgr._callbacks.get_inspect_enabled() & (1 << 18) != 0
+
+            mgr.run(max_steps=1)
+        finally:
+            RustExplorationManager._cb_memory_load = orig_cb
+
+        assert seen, f"native symbolic_variable BP_AFTER never fired; events={len(seen)}"
+        name, size, expr = seen[0]
+        # Fresh symbol minted by load_from_callback: mem_<addr>_<bytesize>.
+        assert name == f"mem_{unmapped:x}_8", f"unexpected fresh-symbol name: {name}"
+        assert size == 64
+        assert isinstance(expr, claripy.ast.Base), f"expr not claripy AST: {type(expr)}"
+        assert expr.size() == 64
+
     # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
 
     def test_python_dispatched_events_have_no_rust_slot(self):
