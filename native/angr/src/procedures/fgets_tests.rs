@@ -6,18 +6,33 @@ use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
 use crate::state::RustSimState;
 
+/// AMD64 `_IO_FILE._fileno` byte offset (see `io_file_for_arch` in fileops.rs).
+const AMD64_FD_OFFSET: u64 = 112;
+
+/// Map a FILE struct at `file_ptr` whose `_fileno` field holds `fd`. fgets/fgetc
+/// resolve the fd from this field; only fd 0 (stdin) is served natively.
+fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
+    let fd_bv = RustBV::concrete((fd as u32) as u128, 32);
+    state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
+    state
+        .memory_store(file_ptr + AMD64_FD_OFFSET, fd_bv)
+        .unwrap();
+}
+
 #[test]
 fn test_fgets_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
 
     let result = NativeFgets
         .call(
             &mut state,
             &[
-                RustBV::concrete(0x2000, 64), // buf
-                RustBV::concrete(10, 64),     // size
-                RustBV::concrete(0, 64),      // stream (stdin)
+                RustBV::concrete(0x2000, 64),        // buf
+                RustBV::concrete(10, 64),            // size
+                RustBV::concrete(stdin as u128, 64), // stream (stdin, _fileno=0)
             ],
         )
         .unwrap();
@@ -40,14 +55,16 @@ fn test_fgets_basic() {
 fn test_fgets_size_1() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
 
     let result = NativeFgets
         .call(
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(1, 64), // size=1 means only NUL
-                RustBV::concrete(0, 64),
+                RustBV::concrete(1, 64),             // size=1 means only NUL
+                RustBV::concrete(stdin as u128, 64), // stdin
             ],
         )
         .unwrap();
@@ -94,11 +111,13 @@ fn test_fgets_symbolic_buf() {
 #[test]
 fn test_fgetc_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
 
     let result = NativeFgetc
         .call(
             &mut state,
-            &[RustBV::concrete(0, 64)], // stream (stdin)
+            &[RustBV::concrete(stdin as u128, 64)], // stream (stdin, _fileno=0)
         )
         .unwrap();
 
@@ -120,10 +139,79 @@ fn test_getchar_basic() {
 #[test]
 fn test_getc_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
 
     let result = NativeGetc
-        .call(&mut state, &[RustBV::concrete(0, 64)])
+        .call(&mut state, &[RustBV::concrete(stdin as u128, 64)])
         .unwrap();
     let val = result.unwrap();
     assert!(val.as_u64().is_none());
+}
+
+#[test]
+fn test_fgets_nonstdin_falls_back() {
+    // A real-file stream (fd > 0) must defer to Python's SimFile model, not
+    // synthesize stdin bytes.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 3);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(10, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+#[test]
+fn test_fgets_invalid_fd_returns_minus1() {
+    // _fileno < 0 (no backing descriptor): Python fgets returns -1.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, -1);
+
+    let result = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(10, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0xFFFFFFFFFFFFFFFF));
+}
+
+#[test]
+fn test_fgets_symbolic_stream_falls_back() {
+    // A symbolic FILE* can't resolve to an fd — must error so Python handles it.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let ctx = state.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    drop(ctx);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[RustBV::concrete(0x2000, 64), RustBV::concrete(10, 64), sym],
+    );
+    assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+}
+
+#[test]
+fn test_fgetc_nonstdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 3);
+
+    let result = NativeFgetc.call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
 }

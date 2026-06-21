@@ -5,13 +5,20 @@
 //!
 //! # Behavior
 //!
-//! - For stdin: creates symbolic BVS variables representing user input
+//! - For stdin (resolved `_fileno == 0`): creates symbolic BVS variables
+//!   representing user input
 //! - fgets: stores up to (size-1) symbolic bytes + NUL terminator at buf
 //! - fgetc: returns one symbolic byte zero-extended to int
-//! - getchar: equivalent to fgetc(stdin)
-//! - Non-stdin FILE* streams fall back to Python
+//! - getchar: equivalent to fgetc(stdin) — always stdin, no FILE* arg
+//! - A non-stdin FILE* (resolved `_fileno > 0`) falls back to Python's SimFile
+//!   model, which serves concrete file content and adds the EOF/newline
+//!   constraints this native path does not. An invalid stream (`_fileno < 0`)
+//!   returns the error sentinel, matching Python `fgets`/`fgetc` (which return
+//!   -1 when the backing SimFileDescriptor is missing). A symbolic FILE* or
+//!   symbolic `_fileno` also falls back to Python.
 
 use super::{ProcedureError, symbol_counter};
+use crate::procedures::fileops::read_fileno;
 use crate::symbolic::RustBV;
 
 const MAX_FGETS_SIZE: u64 = 4096;
@@ -25,14 +32,18 @@ crate::declare_proc! {
     ///
     /// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
     /// Returns the buffer address on success.
-    /// The FILE* stream argument is ignored — all streams treated as stdin.
+    ///
+    /// Resolves the backing fd from `stream->_fileno`: only stdin (fd 0) uses
+    /// this native symbolic-stdin path. A non-stdin file stream falls back to
+    /// Python, an invalid fd returns -1, and a symbolic FILE*/`_fileno` falls
+    /// back to Python.
     name = "fgets",
     struct = NativeFgets,
-    args = [buf: concrete, size: concrete, _stream: bv],
+    args = [buf: concrete, size: concrete, stream: concrete],
     call |state| {
+        let bits = state.arch().bits();
         if size == 0 {
             // fgets with size 0 returns NULL
-            let bits = state.arch().bits();
             return Ok(Some(RustBV::concrete(0, bits)));
         }
 
@@ -40,6 +51,19 @@ crate::declare_proc! {
             return Err(ProcedureError::Other(format!(
                 "fgets size {} exceeds limit",
                 size
+            )));
+        }
+
+        // Resolve the backing fd. Only stdin (fd 0) is served natively.
+        let fd = read_fileno(state, stream)?;
+        if fd < 0 {
+            // Invalid stream: Python fgets returns -1 (missing SimFileDescriptor).
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+        }
+        if fd != 0 {
+            return Err(ProcedureError::Other(format!(
+                "fgets from fd={} (non-stdin) falls back to Python",
+                fd
             )));
         }
 
@@ -73,7 +97,6 @@ crate::declare_proc! {
         state.memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))?;
 
         // Return buffer address
-        let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(buf as u128, bits)))
     }
 }
@@ -86,11 +109,26 @@ crate::declare_proc! {
     /// ```
     ///
     /// Returns one symbolic byte zero-extended to int size.
-    /// The FILE* stream argument is ignored — all streams treated as stdin.
+    ///
+    /// Resolves `stream->_fileno`: only stdin (fd 0) is served natively. A
+    /// non-stdin stream falls back to Python, an invalid fd returns -1 (EOF
+    /// sentinel, matching Python `fgetc`), and a symbolic FILE*/`_fileno`
+    /// falls back to Python.
     name = "fgetc",
     struct = NativeFgetc,
-    args = [_stream: bv],
+    args = [stream: concrete],
     call |state| {
+        let fd = read_fileno(state, stream)?;
+        if fd < 0 {
+            // Invalid stream: Python fgetc returns -1 (missing descriptor).
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
+        }
+        if fd != 0 {
+            return Err(ProcedureError::Other(format!(
+                "fgetc from fd={} (non-stdin) falls back to Python",
+                fd
+            )));
+        }
         let read_id = symbol_counter("fgetc");
         let name = format!("stdin_fgetc_{}", read_id);
         let result = {
