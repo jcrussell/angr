@@ -184,19 +184,6 @@ pub(super) struct CachedWiderLoad {
 /// memory stays in the tens of KB per state.
 pub(super) const WIDER_LOAD_CACHE_CAP: usize = 1024;
 
-impl PendingWrite {
-    /// Check if a concrete address could possibly overlap with this pending write.
-    pub fn could_overlap_page(&self, addr: impl Into<Address>) -> bool {
-        match self.page_hint {
-            Some((min_page, max_page)) => {
-                let page = addr.into().page_num();
-                page >= min_page && page <= max_page
-            }
-            None => true, // Unknown range, must assume overlap
-        }
-    }
-}
-
 impl SymbolicMemory {
     /// Create a new empty memory.
     pub fn new(endness: Endness) -> Self {
@@ -556,11 +543,6 @@ impl SymbolicMemory {
         self.pending_writes.push(write);
     }
 
-    /// Drain all pending writes (for materialization).
-    pub fn drain_pending_writes(&mut self) -> Vec<PendingWrite> {
-        std::mem::take(&mut self.pending_writes)
-    }
-
     /// Flush all pending writes by materializing ITE chains into memory.
     /// This must be called before exporting state to Python to ensure
     /// memory pages contain all written values.
@@ -654,11 +636,6 @@ impl SymbolicMemory {
         self.pages.len()
     }
 
-    /// Get total mapped size in bytes.
-    pub fn mapped_size(&self) -> u64 {
-        self.pages.len() as u64 * PAGE_SIZE
-    }
-
     /// Get list of dirty page numbers (pages modified since last clear).
     pub fn get_dirty_pages(&self) -> Vec<u64> {
         self.dirty_pages.iter().copied().collect()
@@ -690,22 +667,6 @@ impl SymbolicMemory {
     /// Clear dirty page tracking (called after sync to Python).
     pub fn clear_dirty_pages(&mut self) {
         self.dirty_pages.clear();
-    }
-
-    /// Check if a page is dirty.
-    pub fn is_page_dirty(&self, page_num: u64) -> bool {
-        self.dirty_pages.contains(&page_num)
-    }
-
-    /// Get page data for syncing to Python.
-    /// Returns (data, permissions) for the page, or None if not mapped.
-    pub fn get_page_data(&self, page_num: u64) -> Option<(Vec<u8>, u8)> {
-        self.pages.get(&page_num).map(|p| {
-            (
-                p.load_concrete(0, PAGE_SIZE as u16),
-                p.permissions().to_bits(),
-            )
-        })
     }
 
     /// Get the pages OrdMap for iteration.
@@ -764,11 +725,6 @@ impl SymbolicMemory {
     /// Check if an address is within a lazy region.
     pub fn is_addr_in_lazy_region(&self, addr: impl Into<Address>) -> bool {
         self.is_in_lazy_region(addr.into().page_num())
-    }
-
-    /// Clear all lazy regions.
-    pub fn clear_lazy_regions(&mut self) {
-        self.lazy_regions.clear();
     }
 
     /// Get the number of lazy regions.

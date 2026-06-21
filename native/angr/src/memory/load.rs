@@ -520,9 +520,6 @@ impl SymbolicMemory {
     /// but that behavior caused state divergence with Python's actual backer
     /// data. Now it propagates the UnmappedPageInRegion error so callers can
     /// fall back to Python callbacks to get correct data.
-    ///
-    /// If you need auto-mapping behavior for internal Rust operations that
-    /// don't involve Python state, use `load_concrete_automap_internal`.
     pub fn load_concrete_automap(
         &mut self,
         addr: impl Into<Address>,
@@ -531,32 +528,6 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
-        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
-    }
-
-    /// Load from a concrete address with internal auto-mapping.
-    ///
-    /// This is for internal Rust operations that don't involve Python state.
-    /// For interpreter callbacks, use `load_concrete_automap` which propagates
-    /// errors so Python can provide correct backer data.
-    pub fn load_concrete_automap_internal(
-        &mut self,
-        addr: impl Into<Address>,
-        size: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, MemoryError> {
-        let addr = addr.into();
-        // First try normal load
-        let base = match self.load_concrete_lazy_inner(addr, size, ctx) {
-            Ok(v) => v,
-            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                // Auto-map the missing page
-                self.auto_map_zero_page(page_addr);
-                // Retry the load
-                self.load_concrete_lazy_inner(addr, size, ctx)?
-            }
-            Err(e) => return Err(e),
-        };
         Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 

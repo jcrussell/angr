@@ -14,34 +14,6 @@ use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::RustBV;
 
 impl SymbolicMemory {
-    /// Get all symbolic regions for export to Python.
-    ///
-    /// Returns a list of (address, width, symbol_id) tuples where symbol_id
-    /// is the Rust symbol ID that can be used to look up the original Python AST.
-    ///
-    /// This is critical for preserving symbolic identity when syncing state
-    /// back to Python - without it, symbolic values would be recreated as
-    /// fresh symbols, losing their relationship to constraints.
-    pub fn get_symbolic_regions(&self) -> Vec<(u64, u32, Option<u64>)> {
-        let mut regions = Vec::new();
-
-        for (&addr, bv) in &self.symbolic_objects {
-            let width = bv.width();
-            // Try to get the symbol ID for Symbolic variants
-            let sym_id = match bv {
-                RustBV::Symbolic { id, .. } => Some(*id),
-                RustBV::Expression { .. } => {
-                    // For expressions, try to get the hash as an identifier
-                    None
-                }
-                _ => None,
-            };
-            regions.push((addr.raw(), width, sym_id));
-        }
-
-        regions
-    }
-
     /// Import a symbolic value with identity preservation.
     ///
     /// This stores a symbolic value at the given address and ensures the
@@ -95,11 +67,6 @@ impl SymbolicMemory {
         self.symbolic_objects.get(&addr.into())
     }
 
-    /// Check if there are any symbolic objects in memory.
-    pub fn has_symbolic_objects(&self) -> bool {
-        !self.symbolic_objects.is_empty()
-    }
-
     /// Get the count of symbolic objects.
     pub fn symbolic_object_count(&self) -> usize {
         self.symbolic_objects.len()
@@ -116,11 +83,5 @@ impl SymbolicMemory {
     /// `for (addr, bv) in ...` without borrowing the key.
     pub fn symbolic_objects_iter(&self) -> impl Iterator<Item = (Address, &RustBV)> {
         self.symbolic_objects.iter().map(|(a, b)| (*a, b))
-    }
-
-    /// Clear all symbolic objects (used when resetting state).
-    pub fn clear_symbolic_objects(&mut self) {
-        self.symbolic_objects.clear();
-        self.symbolic_spans.clear();
     }
 }
