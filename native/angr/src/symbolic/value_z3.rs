@@ -510,7 +510,7 @@ impl RustBV {
         use z3_sys::{
             Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
             Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg,
-            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
+            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv,
         };
 
         // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
@@ -648,16 +648,7 @@ impl RustBV {
             // SAFETY: `result_raw` is the fresh Z3 Float produced above;
             // `Float::wrap` takes its refcount.
             let result_fp = unsafe { Float::wrap(&z3_ctx, result_raw) };
-            // SAFETY: `result_fp` is a live Float in `z3_ctx`;
-            // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL →
-            // panic via `.expect`).
-            let ieee_bv_raw = unsafe {
-                Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
-                    .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
-            };
-            // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call
-            // above; `BV::wrap` takes its refcount.
-            unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+            float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
         }
     }
 
@@ -677,7 +668,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_round_to_integral, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv};
+        use z3_sys::{Z3_mk_fpa_round_to_integral, Z3_mk_fpa_to_fp_bv};
 
         debug_assert_eq!(operands.len(), 2);
         let rm_bv = &operands[0];
@@ -742,16 +733,7 @@ impl RustBV {
             rm_low2.eq(&zero).ite(&r0, &pick123)
         };
 
-        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
-        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
-        // via `.expect`).
-        let ieee_bv_raw = unsafe {
-            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
-                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
-        };
-        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
-        // `BV::wrap` takes its refcount.
-        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+        float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
     }
 
     /// Build the Z3 AST for an FP arithmetic op with explicit rounding mode
@@ -770,7 +752,7 @@ impl RustBV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{
             Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
-            Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
+            Z3_mk_fpa_to_fp_bv,
         };
 
         let is_unary = matches!(kind, FloatOpKind::SqrtRm);
@@ -864,16 +846,7 @@ impl RustBV {
             rm_low2.eq(&zero).ite(&r0, &pick123)
         };
 
-        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
-        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
-        // via `.expect`).
-        let ieee_bv_raw = unsafe {
-            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
-                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
-        };
-        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
-        // `BV::wrap` takes its refcount.
-        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+        float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
     }
 
     /// Build the Z3 AST for `FloatOpKind::ConvertItoF`. operand\[0\] is a BV
@@ -887,8 +860,8 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_to_fp_signed, Z3_mk_fpa_to_fp_unsigned, Z3_mk_fpa_to_ieee_bv};
+        use z3::ast::{Ast, Float, RoundingMode};
+        use z3_sys::{Z3_mk_fpa_to_fp_signed, Z3_mk_fpa_to_fp_unsigned};
 
         debug_assert_eq!(operands.len(), 1);
         let src_bv = &operands[0];
@@ -920,16 +893,7 @@ impl RustBV {
         // SAFETY: `fp_raw` is the fresh Float AST from the call above;
         // `Float::wrap` takes its refcount.
         let fp_wrap = unsafe { Float::wrap(&z3_ctx, fp_raw) };
-        // SAFETY: `fp_wrap` is a live Float in `z3_ctx`;
-        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
-        // via `.expect`).
-        let ieee_bv_raw = unsafe {
-            Z3_mk_fpa_to_ieee_bv(raw_ctx, fp_wrap.get_z3_ast())
-                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
-        };
-        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
-        // `BV::wrap` takes its refcount.
-        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+        float_to_ieee_bv(&z3_ctx, raw_ctx, &fp_wrap)
     }
 
     /// Build the Z3 AST for `FloatOpKind::ConvertFtoI` (no rm operand,
@@ -1038,7 +1002,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_fp_float, Z3_mk_fpa_to_ieee_bv};
+        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_fp_float};
 
         let (rm_bv_opt, value_bv) = if has_rm {
             debug_assert_eq!(operands.len(), 2);
@@ -1111,15 +1075,28 @@ impl RustBV {
             }
         };
 
-        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
-        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
-        // via `.expect`).
-        let ieee_bv_raw = unsafe {
-            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
-                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
-        };
-        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
-        // `BV::wrap` takes its refcount.
-        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+        float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
     }
+}
+
+/// Shared tail of the FP-op builders that return IEEE-754 bits: convert a
+/// live Z3 `Float` to its bit pattern via `Z3_mk_fpa_to_ieee_bv` and wrap
+/// the fresh BV AST, taking its refcount. `z3_ctx` / `raw_ctx` are the
+/// thread-local context and its raw handle; `fp` must be a live Float in
+/// `z3_ctx`.
+fn float_to_ieee_bv(
+    z3_ctx: &z3::Context,
+    raw_ctx: z3_sys::Z3_context,
+    fp: &z3::ast::Float,
+) -> z3::ast::BV {
+    use z3::ast::{Ast, BV};
+    use z3_sys::Z3_mk_fpa_to_ieee_bv;
+    // SAFETY: `fp` is a live Float in `z3_ctx`; `Z3_mk_fpa_to_ieee_bv`
+    // returns a fresh BV AST (or NULL → panic via `.expect`).
+    let ieee_bv_raw = unsafe {
+        Z3_mk_fpa_to_ieee_bv(raw_ctx, fp.get_z3_ast()).expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+    };
+    // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
+    // `BV::wrap` takes its refcount.
+    unsafe { BV::wrap(z3_ctx, ieee_bv_raw) }
 }
