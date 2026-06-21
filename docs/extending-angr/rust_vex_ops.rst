@@ -26,10 +26,11 @@ head as you read the worked examples below:
 
    * - File
      - Role
-   * - ``native/angr/src/vex/ir.rs``
+   * - ``native/angr/src/vex/ir/ops_def.rs``
      - Defines the ``IROp`` enum (the engine's internal opcode set,
-       parameterized by ``IRType`` width). A new op gets a variant
-       here.
+       parameterized by ``IRType`` width, which lives in
+       ``native/angr/src/vex/ir/types.rs``). Both are re-exported via
+       ``native/angr/src/vex/ir/mod.rs``. A new op gets a variant here.
    * - ``native/angr/src/vex/opcode_map.rs``
      - Translates pyvex's string opcodes (``"Iop_Add32"``) into
        ``IROp`` variants in ``parse_opcode`` and its
@@ -39,7 +40,7 @@ head as you read the worked examples below:
        ``parse_neon_unimplemented`` sub-routers. Also has a numeric
        variant ``parse_opcode_from_u32`` for the native FFI path.
    * - ``native/angr/src/vex/ops.rs``
-     - Implements the op. ``VEXOps::unop`` / ``binop`` / ``triop`` /
+     - Implements the op. ``VEXOps::unop`` / ``binop`` / ``ternop`` /
        ``qop`` dispatch on the ``IROp`` variant and produce a
        ``RustBV``. Concrete fast paths live next to their Z3 symbolic
        fallbacks.

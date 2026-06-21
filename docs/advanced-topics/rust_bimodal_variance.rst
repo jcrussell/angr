@@ -542,7 +542,7 @@ change with one fewer noise source), not a gating default. See bd memory
 Related memories
 ----------------
 
-- ``benchmark-bimodal-variance-rules`` — consolidated rules for the four
+- ``benchmark-bimodal-variance-rules`` — consolidated rules for the five
   bimodal benches and how the gate handles them (supersedes two pruned
   historical-figure memories from the 2026-06 memory prune).
 - ``pr-bench-gate-jitter-risk`` — context for why ``--skip-bimodal``

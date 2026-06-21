@@ -596,7 +596,7 @@ Soft asserts and ``assert_and_track``
 The engine has exactly **one** call site for ``assert_and_track``
 (``context.rs:2073``) reached only via
 ``SymContext::add_constraint_tracked_indexed`` →
-``RustSolverContext::add_constraint_tracked_ast`` (``solver.rs:239``).
+``RustSolverContext::add_constraint_tracked_ast`` (``solver.rs``).
 That path is the explicit "I want ``solver.get_unsat_core()`` to name
 this constraint" entry point; the Python wrapper
 (``angr/exploration/rust_manager.py``) never calls it during
@@ -777,7 +777,7 @@ ordering, branch enumeration, eval answer)?"*:
      - **Not output-affecting.**
    * - Stats / profiling maps (``ExecutionStats``,
        ``profiling::accumulated_stats``, ``analyze_constraint_sharing``,
-       ``py_get_execution_stats``, ``get_solver_stats``,
+       ``get_execution_stats``, ``get_solver_stats``,
        ``get_registers_named``)
      - Yes (returned to Python as dicts)
      - **Not exploration-affecting.** Values are summed counters or

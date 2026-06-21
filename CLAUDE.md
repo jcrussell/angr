@@ -62,7 +62,7 @@ docs reference:
 - `rust-python-boundary-audit` — what bridge code must stay Python
 - `constraint-export-no-pre-pin` — pre-pinning is dangerous; use Rust solver eval fallback
 - `characterization-vs-fix-pattern` — separate char tasks from regression bisects
-- `benchmark-bimodal-variance-rules` — handling the bimodal-Z3 benches (4; see `BIMODAL_BENCHMARKS`)
+- `benchmark-bimodal-variance-rules` — handling the bimodal-Z3 benches (5; see `BIMODAL_BENCHMARKS`)
 - `env-venv-corruption` — venv recovery from corruption
 - `bd-update-notes-overwrites` — `bd update --notes` overwrites; never append-via-update
 - `avoid-bd-remember-without-key-flag` — `bd remember <text>` without `--key` silently clobbers
@@ -169,8 +169,8 @@ python -m pytest tests/engines/rust/ -v --tb=short
 # Run benchmark regression tests (7 fast-tier benchmarks)
 python tests/benchmarks/run_regression.py
 
-# Skip the four bimodal-Z3 benches (see BIMODAL_BENCHMARKS in run_regression.py:
-# unbreakable_1 / fairlight / sokohashv2 / angry-reverser)
+# Skip the five bimodal-Z3 benches (see BIMODAL_BENCHMARKS in run_regression.py:
+# unbreakable_1 / fairlight / sokohashv2 / angry-reverser / CADET_00001_partial)
 # — matches the PR-time CI gate, useful when chasing a regression locally.
 python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15
 
