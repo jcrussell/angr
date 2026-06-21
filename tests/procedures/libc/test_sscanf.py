@@ -28,6 +28,25 @@ class TestSscanf(unittest.TestCase):
         assert val == 0xDEADBEEF
         assert len(state.solver.constraints) == 0 or state.satisfiable()
 
+    def test_sscanf_o_spec(self):
+        # Regression for the scanf interpret() path: %o reads an octal integer and
+        # must parse like the scanf-inject path (base 8) instead of raising
+        # SimProcedureError. %o was recognized everywhere except interpret().
+        # Binary-free: drive the sscanf SimProcedure directly. Bead angr-4jufb,
+        # mirrors the %p fix in commit 2f8deb4ca (bead angr-6d3l).
+        p = angr.load_shellcode(b"\x90", arch="amd64")
+        state = p.factory.blank_state()
+        src, fmt, out = 0x100000, 0x200000, 0x300000
+        state.memory.store(src, b"755\x00")
+        state.memory.store(fmt, b"%o\x00")
+
+        sscanf = angr.SIM_PROCEDURES["libc"]["sscanf"]()
+        sscanf.execute(state, arguments=[src, fmt, out])
+
+        val = state.solver.eval(state.memory.load(out, 4, endness=p.arch.memory_endness))
+        assert val == 0o755
+        assert len(state.solver.constraints) == 0 or state.satisfiable()
+
     def test_sscanf(self):
         from tests.common import bin_location
 

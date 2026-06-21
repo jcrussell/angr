@@ -281,8 +281,13 @@ class FormatString:
 
                 else:
                     # XXX: atoi only supports strings of one byte
-                    if fmt_spec.spec_type in [b"d", b"i", b"u", b"x", b"p"]:
-                        base = 16 if fmt_spec.spec_type in (b"x", b"p") else 10
+                    if fmt_spec.spec_type in [b"d", b"i", b"u", b"o", b"x", b"p"]:
+                        if fmt_spec.spec_type in (b"x", b"p"):
+                            base = 16
+                        elif fmt_spec.spec_type == b"o":
+                            base = 8
+                        else:
+                            base = 10
                         status, i, num_bytes = self.parser._sim_atoi_inner(
                             position, region, base=base, read_length=fmt_spec.length_spec
                         )
