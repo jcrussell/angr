@@ -510,7 +510,7 @@ impl RustBV {
         use z3_sys::{
             Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
             Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg,
-            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv,
+            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
         };
 
         // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
@@ -571,17 +571,7 @@ impl RustBV {
             .iter()
             .map(|bv| {
                 let bv_ast = bv.to_z3_ast_cached(cache);
-                // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
-                // `bv_ast` is a live `BV` wrapper; `raw_sort` is a live
-                // `Sort` handle. `Z3_mk_fpa_to_fp_bv` returns a fresh AST
-                // (or NULL → panic via `.expect`).
-                let raw = unsafe {
-                    Z3_mk_fpa_to_fp_bv(raw_ctx, bv_ast.get_z3_ast(), raw_sort)
-                        .expect("Z3_mk_fpa_to_fp_bv returned NULL")
-                };
-                // SAFETY: `raw` is a fresh non-null Z3_ast in `z3_ctx`
-                // with one refcount held by Z3; `Float::wrap` takes it.
-                unsafe { Float::wrap(&z3_ctx, raw) }
+                bv_to_z3_float(&z3_ctx, raw_ctx, &bv_ast, raw_sort)
             })
             .collect();
 
@@ -668,7 +658,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_round_to_integral, Z3_mk_fpa_to_fp_bv};
+        use z3_sys::Z3_mk_fpa_round_to_integral;
 
         debug_assert_eq!(operands.len(), 2);
         let rm_bv = &operands[0];
@@ -681,15 +671,7 @@ impl RustBV {
 
         // Convert the value BV to a Z3 Float; keep the wrapper alive.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
-        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
-        // `value_z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort
-        // handle; `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose refcount
-        // `Float::wrap` immediately takes.
-        let value_fp = unsafe {
-            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
-                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
-            Float::wrap(&z3_ctx, raw)
-        };
+        let value_fp = bv_to_z3_float(&z3_ctx, raw_ctx, &value_z3, raw_sort);
         let value_raw = value_fp.get_z3_ast();
 
         // Helper: round value with one concrete VEX rounding mode (0..3).
@@ -750,10 +732,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{
-            Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
-            Z3_mk_fpa_to_fp_bv,
-        };
+        use z3_sys::{Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub};
 
         let is_unary = matches!(kind, FloatOpKind::SqrtRm);
         debug_assert_eq!(operands.len(), if is_unary { 2 } else { 3 });
@@ -769,17 +748,7 @@ impl RustBV {
         let to_fp =
             |bv: &RustBV, cache: &mut std::collections::HashMap<usize, z3::ast::BV>| -> Float {
                 let z3 = bv.to_z3_ast_cached(cache);
-                // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
-                // `z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort.
-                // `Z3_mk_fpa_to_fp_bv` returns a fresh AST (or NULL →
-                // panic via `.expect`).
-                let raw = unsafe {
-                    Z3_mk_fpa_to_fp_bv(raw_ctx, z3.get_z3_ast(), raw_sort)
-                        .expect("Z3_mk_fpa_to_fp_bv returned NULL")
-                };
-                // SAFETY: `raw` is the fresh Float AST from above;
-                // `Float::wrap` takes its refcount.
-                unsafe { Float::wrap(&z3_ctx, raw) }
+                bv_to_z3_float(&z3_ctx, raw_ctx, &z3, raw_sort)
             };
         let a_fp = to_fp(&operands[1], cache);
         let b_fp = if is_unary {
@@ -909,8 +878,8 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
+        use z3::ast::{Ast, BV, RoundingMode};
+        use z3_sys::{Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
 
         let (rm_bv_opt, value_bv) = if rm_marker.is_some() {
             debug_assert_eq!(operands.len(), 2);
@@ -927,15 +896,7 @@ impl RustBV {
 
         // Convert the operand BV to a Z3 Float; keep the wrapper alive.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
-        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
-        // `value_z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort.
-        // `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose refcount
-        // `Float::wrap` immediately takes.
-        let value_fp = unsafe {
-            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
-                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
-            Float::wrap(&z3_ctx, raw)
-        };
+        let value_fp = bv_to_z3_float(&z3_ctx, raw_ctx, &value_z3, raw_sort);
         let value_raw = value_fp.get_z3_ast();
 
         // Helper: convert the value to BV using one concrete VEX rounding mode (0..3).
@@ -1002,7 +963,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Float, RoundingMode};
-        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_fp_float};
+        use z3_sys::Z3_mk_fpa_to_fp_float;
 
         let (rm_bv_opt, value_bv) = if has_rm {
             debug_assert_eq!(operands.len(), 2);
@@ -1021,15 +982,7 @@ impl RustBV {
 
         // Convert the source operand BV to a Z3 Float at src_prec.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
-        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
-        // `value_z3` is a live BV in `z3_ctx`; `src_raw_sort` is a live
-        // Sort handle. `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose
-        // refcount `Float::wrap` immediately takes.
-        let value_fp = unsafe {
-            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), src_raw_sort)
-                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
-            Float::wrap(&z3_ctx, raw)
-        };
+        let value_fp = bv_to_z3_float(&z3_ctx, raw_ctx, &value_z3, src_raw_sort);
         let value_raw = value_fp.get_z3_ast();
 
         let convert_with = |vex_rm: u8| -> Float {
@@ -1084,6 +1037,31 @@ impl RustBV {
 /// the fresh BV AST, taking its refcount. `z3_ctx` / `raw_ctx` are the
 /// thread-local context and its raw handle; `fp` must be a live Float in
 /// `z3_ctx`.
+/// Wrap a BV operand as a Z3 `Float` of sort `raw_sort` via
+/// `Z3_mk_fpa_to_fp_bv`. Centralizes the unsafe make-fp-from-bits +
+/// `Float::wrap` tail shared by every `build_fp_*` builder.
+#[cfg(feature = "vex-engine-z3")]
+fn bv_to_z3_float(
+    z3_ctx: &z3::Context,
+    raw_ctx: z3_sys::Z3_context,
+    bv: &z3::ast::BV,
+    raw_sort: z3_sys::Z3_sort,
+) -> z3::ast::Float {
+    use z3::ast::{Ast, Float};
+    use z3_sys::Z3_mk_fpa_to_fp_bv;
+    // SAFETY: `bv` is a live BV in `z3_ctx`; `raw_sort` is a live Sort
+    // handle. `Z3_mk_fpa_to_fp_bv` returns a fresh AST (or NULL → panic
+    // via `.expect`).
+    let raw = unsafe {
+        Z3_mk_fpa_to_fp_bv(raw_ctx, bv.get_z3_ast(), raw_sort)
+            .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+    };
+    // SAFETY: `raw` is the fresh non-null Float AST from above;
+    // `Float::wrap` takes its refcount.
+    unsafe { Float::wrap(z3_ctx, raw) }
+}
+
+#[cfg(feature = "vex-engine-z3")]
 fn float_to_ieee_bv(
     z3_ctx: &z3::Context,
     raw_ctx: z3_sys::Z3_context,
