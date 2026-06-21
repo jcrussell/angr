@@ -90,7 +90,7 @@ mod events;
 mod inspect;
 
 pub use config::{BranchPolicy, DeferredFork, ExecutionConfig};
-pub use events::{LoopExecutionEvent, MemoryLoadResult, RunResult};
+pub use events::{LoopExecutionEvent, MemoryLoadResult, RunErrorKind, RunResult};
 
 /// Python callback holder for the Rust VEX engine.
 ///

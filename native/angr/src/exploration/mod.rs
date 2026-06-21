@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunErrorKind, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::{
     DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON, VEXInterpreter,

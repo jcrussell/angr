@@ -404,15 +404,23 @@ impl RustExplorationManager {
                     fork_snapshots,
                 )))
             }
-            RunResult::Error { message, addr } => {
+            RunResult::Error {
+                message,
+                addr,
+                kind,
+            } => {
                 state.set_pc(addr);
-                // Treat lift errors at unmapped addresses as deadends, not errors.
-                // This matches Python engine behavior where states that reach
-                // invalid code addresses (e.g., 0x0 after exit) are deadended.
-                if message.contains("No bytes in memory") || message.contains("lift") || addr == 0 {
-                    Err(StepError::Deadended(state))
-                } else {
-                    Err(StepError::Error(state, message))
+                // Route on the typed error kind rather than substrings of the
+                // message (angr-zzju9). A `Deadend` kind is an unliftable block
+                // (the Python lift callback returned the empty-IRSB sentinel) —
+                // gracefully deadended, matching the Python engine. A jump to
+                // 0x0 (e.g. after a clean exit) is likewise a deadend, not an
+                // error. Everything else — including a genuinely malformed IRSB,
+                // now classified `Fatal` — moves to the errored stash.
+                match kind {
+                    RunErrorKind::Deadend => Err(StepError::Deadended(state)),
+                    RunErrorKind::Fatal if addr == 0 => Err(StepError::Deadended(state)),
+                    RunErrorKind::Fatal => Err(StepError::Error(state, message)),
                 }
             }
             RunResult::NeedPythonVEX { addr, reason } => {

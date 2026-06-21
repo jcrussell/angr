@@ -16,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::arch::{
     RegisterFile, arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch,
 };
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunErrorKind, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
@@ -390,6 +390,22 @@ impl CbExecutionError {
             | CbExecutionError::UnknownTemp(_)
             | CbExecutionError::Callback(_)
             | CbExecutionError::LiftError(_) => FallbackStrategy::Panic,
+        }
+    }
+
+    /// Classify this error for the exploration stepping loop (angr-zzju9).
+    ///
+    /// `LiftError` is the designed signal that a block could not be lifted —
+    /// the Python lift callback returned the empty-IRSB sentinel (e.g. on
+    /// `SimEngineError: No bytes in memory`) or the callback itself failed.
+    /// Such states gracefully deadend, matching the vanilla Python engine.
+    /// Every other `Panic`-strategy variant — including `InvalidIR`, which a
+    /// genuinely malformed IRSB now maps to — is a real error that moves the
+    /// state to the errored stash.
+    pub fn run_error_kind(&self) -> RunErrorKind {
+        match self {
+            CbExecutionError::LiftError(_) => RunErrorKind::Deadend,
+            _ => RunErrorKind::Fatal,
         }
     }
 }

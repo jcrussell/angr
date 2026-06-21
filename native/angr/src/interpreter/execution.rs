@@ -100,10 +100,12 @@ impl<'a> VEXInterpreter<'a> {
                 Ok(irsb) => irsb,
                 Err(e) => {
                     let forks = self.take_deferred_forks();
+                    let kind = e.run_error_kind();
                     return (
                         RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
+                            kind,
                         },
                         blocks_executed,
                         forks,
@@ -270,6 +272,7 @@ impl<'a> VEXInterpreter<'a> {
                                 RunResult::Error {
                                     message,
                                     addr: self.pc,
+                                    kind: RunErrorKind::Fatal,
                                 },
                                 blocks_executed,
                                 forks,
@@ -341,6 +344,7 @@ impl<'a> VEXInterpreter<'a> {
                         FallbackStrategy::Panic => RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
+                            kind: e.run_error_kind(),
                         },
                     };
                     return (result, blocks_executed, forks);
@@ -431,8 +435,21 @@ impl<'a> VEXInterpreter<'a> {
         }
         profile_add!(callback_start, self.stats.python_callback_time_ns);
 
+        // `_cb_lift_block` returns the literal "{}" sentinel when the block
+        // could not be lifted (SimEngineError/PyVEXError, e.g. "No bytes in
+        // memory"). That is a designed graceful-deadend signal, not a malformed
+        // IRSB — keep it as a LiftError so it routes to the deadended stash
+        // (RunErrorKind::Deadend). A deserialize failure on any *other* JSON is
+        // a genuinely malformed IRSB and maps to InvalidIR -> errored
+        // (MalformedIRSB), consistent with the InvalidIR sites in statements.rs
+        // (angr-zzju9).
+        if irsb_json.trim() == "{}" {
+            return Err(CbExecutionError::LiftError(
+                "unliftable block: empty IRSB sentinel".to_string(),
+            ));
+        }
         let irsb = deserialize_irsb(&irsb_json).map_err(|e| {
-            CbExecutionError::LiftError(format!("IRSB deserialization failed: {}", e))
+            CbExecutionError::InvalidIR(format!("IRSB deserialization failed: {}", e))
         })?;
 
         profile_add!(lift_start, self.stats.lift_time_ns);

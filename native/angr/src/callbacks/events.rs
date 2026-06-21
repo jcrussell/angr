@@ -9,6 +9,22 @@ use crate::symbolic::RustBV;
 
 use super::DeferredFork;
 
+/// How a [`RunResult::Error`] should be routed by the exploration stepping
+/// loop. Carried as a typed signal so routing does not depend on matching
+/// substrings of the human-readable error message (angr-zzju9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunErrorKind {
+    /// Graceful deadend: the block could not be lifted (the Python lift
+    /// callback returned the empty-IRSB sentinel, e.g. on
+    /// `SimEngineError: No bytes in memory`). Routed to the deadended stash,
+    /// matching the vanilla Python engine, which deadends states that reach
+    /// invalid/unliftable code addresses.
+    Deadend,
+    /// Genuine execution error (malformed IRSB, memory/op/temp/callback
+    /// failure). Routed to the errored stash.
+    Fatal,
+}
+
 /// Result of a memory load callback.
 #[derive(Debug, Clone)]
 pub struct MemoryLoadResult {
@@ -57,8 +73,14 @@ pub enum RunResult {
     },
     /// Normal block end.
     BlockEnd { next_addr: u64, jumpkind: String },
-    /// Error during execution.
-    Error { message: String, addr: u64 },
+    /// Error during execution. `kind` tells the stepping loop whether to
+    /// deadend the state (unliftable block) or move it to the errored stash
+    /// (genuine error), without inspecting the message text.
+    Error {
+        message: String,
+        addr: u64,
+        kind: RunErrorKind,
+    },
     /// Rust VEX interpreter hit an unsupported operation - need Python VEX engine fallback.
     NeedPythonVEX { addr: u64, reason: String },
     /// Need to lift a block at the given address.
@@ -345,7 +367,11 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::Error { message, addr } => LoopExecutionEvent {
+            RunResult::Error {
+                message,
+                addr,
+                kind: _,
+            } => LoopExecutionEvent {
                 event_type: "error".to_string(),
                 pc: Some(addr),
                 addr: Some(addr),

@@ -143,3 +143,33 @@ fn swap_block_cache_exchanges_caches() {
     assert!(old.contains(&0x4000));
     assert!(!interp.has_cached_block(0x4000));
 }
+
+// angr-zzju9: CbExecutionError::run_error_kind classifies the unliftable
+// LiftError sentinel as a graceful Deadend, and every other Panic-strategy
+// variant — crucially InvalidIR, which a genuinely malformed IRSB maps to —
+// as Fatal (errored stash). This locks the typed routing that replaced the
+// message-substring matching in exploration/stepping.rs.
+#[test]
+fn run_error_kind_lift_error_is_deadend() {
+    let e = CbExecutionError::LiftError("unliftable block: empty IRSB sentinel".to_string());
+    assert_eq!(e.run_error_kind(), RunErrorKind::Deadend);
+    // Deadend errors still carry the Panic strategy (no Python recovery).
+    assert_eq!(e.strategy(), FallbackStrategy::Panic);
+}
+
+#[test]
+fn run_error_kind_invalid_ir_is_fatal() {
+    let e = CbExecutionError::InvalidIR("IRSB deserialization failed: bad json".to_string());
+    assert_eq!(e.run_error_kind(), RunErrorKind::Fatal);
+}
+
+#[test]
+fn run_error_kind_other_panic_variants_are_fatal() {
+    for e in [
+        CbExecutionError::Memory("unmapped".to_string()),
+        CbExecutionError::UnknownTemp(3),
+        CbExecutionError::Callback("py raised".to_string()),
+    ] {
+        assert_eq!(e.run_error_kind(), RunErrorKind::Fatal);
+    }
+}
