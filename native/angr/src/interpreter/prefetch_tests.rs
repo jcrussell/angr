@@ -205,3 +205,46 @@ fn get_nearby_prefetch_list_main_page_only_without_rust_memory() {
     let pages = interp.get_nearby_prefetch_list(0x10000, 4);
     assert_eq!(pages, vec![0x10000]);
 }
+
+#[test]
+fn get_eager_prefetch_list_caps_at_max_prefetch_batch() {
+    // angr-1c88c gap 7/7: enable_eager_prefetch eager branch ->
+    // get_region_prefetch_list capped at config.max_prefetch_batch.
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    // 16-page lazy region (0x10000..0x20000), all unmapped.
+    mem.add_lazy_region(0x10000u64, 0x10000u64);
+    interp.set_rust_memory(mem);
+    interp.config.enable_eager_prefetch = true;
+    interp.config.max_prefetch_batch = 3;
+
+    let pages = interp.get_eager_prefetch_list(0x10000);
+    // The region has 16 unmapped pages but the batch cap stops enumeration at 3.
+    assert_eq!(pages.len(), 3, "must cap at max_prefetch_batch");
+    assert_eq!(pages, vec![0x10000, 0x11000, 0x12000]);
+}
+
+#[test]
+fn get_eager_prefetch_list_falls_back_to_main_page_without_region() {
+    // No lazy region containing the trigger -> get_region_prefetch_list None ->
+    // fallback to just the main page.
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mem = SymbolicMemory::new(Endness::Little);
+    interp.set_rust_memory(mem);
+    interp.config.enable_eager_prefetch = true;
+    interp.config.max_prefetch_batch = 8;
+
+    let pages = interp.get_eager_prefetch_list(0x55000);
+    assert_eq!(pages, vec![0x55000]);
+}
+
+#[test]
+fn get_eager_prefetch_list_falls_back_to_main_page_without_rust_memory() {
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    // No rust_memory attached -> fallback to the main page.
+    let pages = interp.get_eager_prefetch_list(0x22000);
+    assert_eq!(pages, vec![0x22000]);
+}
