@@ -155,6 +155,71 @@ pub fn write_cstr(state: &mut RustSimState, addr: u64, bytes: &[u8]) -> Result<(
     Ok(())
 }
 
+/// One decision of the concrete fast path inside [`scan_concrete_then_collect`].
+pub enum ConcreteStep<R> {
+    /// Byte was concrete and contributes nothing to the result; advance.
+    Continue,
+    /// Byte was concrete and terminates the scan with result `R`.
+    Stop(R),
+    /// A symbolic byte was seen; switch to collecting loads for an ITE chain.
+    BeginCollect,
+}
+
+/// Outcome of [`scan_concrete_then_collect`].
+pub enum ScanResult<R, B> {
+    /// The concrete fast path returned early with `R`.
+    Stopped(R),
+    /// The loop ran to `max` entirely in concrete mode without stopping.
+    Exhausted,
+    /// A symbolic byte was seen; here are the collected `(position, load)`
+    /// entries. The symbolic byte that triggered collection is included, and
+    /// collection halts after the first load for which `collect_stop` is true
+    /// (typically a concrete null terminator, past which positions cannot
+    /// affect the ITE chain).
+    Collected(Vec<(u64, B)>),
+}
+
+/// Generic skeleton shared by the symbolic-aware string scans
+/// (strlen/strchr/strrchr/strcmp/memchr/memcmp). It walks positions `0..max`,
+/// loading per-position data of type `B` via `load`. While still in the
+/// concrete fast path it consults `concrete` for each load; once a symbolic
+/// byte forces [`ConcreteStep::BeginCollect`] it collects every subsequent
+/// load (plus the triggering one) into a vec, stopping after the first load
+/// for which `collect_stop` returns true.
+///
+/// Centralizing the loop keeps the null-boundary edge cases — the most
+/// soundness-sensitive part of these procedures — in one tested place.
+pub fn scan_concrete_then_collect<B, R>(
+    state: &mut RustSimState,
+    max: u64,
+    mut load: impl FnMut(&mut RustSimState, u64) -> Result<B, ProcedureError>,
+    mut concrete: impl FnMut(&B, u64) -> ConcreteStep<R>,
+    mut collect_stop: impl FnMut(&B) -> bool,
+) -> Result<ScanResult<R, B>, ProcedureError> {
+    let mut collected: Vec<(u64, B)> = Vec::new();
+    let mut symbolic_seen = false;
+    for i in 0..max {
+        let loaded = load(state, i)?;
+        if !symbolic_seen {
+            match concrete(&loaded, i) {
+                ConcreteStep::Continue => continue,
+                ConcreteStep::Stop(r) => return Ok(ScanResult::Stopped(r)),
+                ConcreteStep::BeginCollect => symbolic_seen = true,
+            }
+        }
+        let stop = collect_stop(&loaded);
+        collected.push((i, loaded));
+        if stop {
+            break;
+        }
+    }
+    if symbolic_seen {
+        Ok(ScanResult::Collected(collected))
+    } else {
+        Ok(ScanResult::Exhausted)
+    }
+}
+
 /// Result of [`scan_for_null_symbolic`].
 pub enum ScanOutcome {
     /// All scanned bytes were concrete; null terminator found at this length
@@ -177,34 +242,22 @@ pub fn scan_for_null_symbolic(
     addr: u64,
     max: u64,
 ) -> Result<ScanOutcome, ProcedureError> {
-    let mut bytes: Vec<(u64, RustBV)> = Vec::new();
-    let mut symbolic_seen = false;
-
-    for i in 0..max {
-        let byte_val = state.memory_load(addr.wrapping_add(i), 1)?;
-
-        if !symbolic_seen {
-            if let Some(b) = byte_val.as_u64() {
-                if (b as u8) == 0 {
-                    return Ok(ScanOutcome::AllConcrete { length: i });
-                }
-                continue;
-            }
-            symbolic_seen = true;
-        }
-
-        let stop_scan = byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
-        bytes.push((i, byte_val));
-        if stop_scan {
-            break;
-        }
-    }
-
-    if symbolic_seen {
-        Ok(ScanOutcome::Symbolic { bytes })
-    } else {
-        Ok(ScanOutcome::AllConcrete { length: max })
-    }
+    let result = scan_concrete_then_collect(
+        state,
+        max,
+        |st, i| Ok(st.memory_load(addr.wrapping_add(i), 1)?),
+        |byte_val, i| match byte_val.as_u64() {
+            Some(b) if (b as u8) == 0 => ConcreteStep::Stop(i),
+            Some(_) => ConcreteStep::Continue,
+            None => ConcreteStep::BeginCollect,
+        },
+        |byte_val| byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false),
+    )?;
+    Ok(match result {
+        ScanResult::Stopped(length) => ScanOutcome::AllConcrete { length },
+        ScanResult::Exhausted => ScanOutcome::AllConcrete { length: max },
+        ScanResult::Collected(bytes) => ScanOutcome::Symbolic { bytes },
+    })
 }
 
 /// Build the strlen ITE chain over collected `(position, byte_8bit)` loads.

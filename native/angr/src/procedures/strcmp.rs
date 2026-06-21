@@ -18,6 +18,7 @@
 //! - Maximum compare length is 4096 bytes (configurable).
 
 use super::ProcedureError;
+use super::strings::{ConcreteStep, ScanResult, scan_concrete_then_collect};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -82,70 +83,64 @@ pub(super) fn compare_bytes(
         return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
     }
 
-    let mut pairs: Vec<(RustBV, RustBV)> = Vec::new();
-    let mut symbolic_seen = false;
-
-    for i in 0..max_len {
-        let c1_addr = s1_addr.wrapping_add(i);
-        let c2_addr = s2_addr.wrapping_add(i);
-        let c1_val = state.memory_load(c1_addr, 1)?;
-        let c2_val = state.memory_load(c2_addr, 1)?;
-
-        if !symbolic_seen {
-            match (c1_val.as_u64(), c2_val.as_u64()) {
-                (Some(b1), Some(b2)) => {
-                    let mut a = b1 as u8;
-                    let mut b = b2 as u8;
-                    if case_insensitive {
-                        if a.is_ascii_uppercase() {
-                            a += 32;
-                        }
-                        if b.is_ascii_uppercase() {
-                            b += 32;
-                        }
+    let result = scan_concrete_then_collect(
+        state,
+        max_len,
+        |st, i| {
+            let c1 = st.memory_load(s1_addr.wrapping_add(i), 1)?;
+            let c2 = st.memory_load(s2_addr.wrapping_add(i), 1)?;
+            Ok((c1, c2))
+        },
+        |(c1_val, c2_val), _i| match (c1_val.as_u64(), c2_val.as_u64()) {
+            (Some(b1), Some(b2)) => {
+                let mut a = b1 as u8;
+                let mut b = b2 as u8;
+                if case_insensitive {
+                    if a.is_ascii_uppercase() {
+                        a += 32;
                     }
-                    if a != b {
-                        let diff = (a as i32) - (b as i32);
-                        return Ok(Some(RustBV::concrete(diff as u128, 32)));
+                    if b.is_ascii_uppercase() {
+                        b += 32;
                     }
-                    if stop_at_null && a == 0 {
-                        return Ok(Some(RustBV::zero(32)));
-                    }
-                    continue;
                 }
-                _ => {
-                    symbolic_seen = true;
+                if a != b {
+                    let diff = (a as i32) - (b as i32);
+                    ConcreteStep::Stop(RustBV::concrete(diff as u128, 32))
+                } else if stop_at_null && a == 0 {
+                    ConcreteStep::Stop(RustBV::zero(32))
+                } else {
+                    ConcreteStep::Continue
                 }
             }
-        }
+            // At least one byte is symbolic — switch to ITE-chain collection.
+            _ => ConcreteStep::BeginCollect,
+        },
+        // Symbolic-mode collection stops when c1 is concretely null (positions
+        // past the null cannot affect the result for strcmp).
+        |(c1_val, _c2_val)| {
+            stop_at_null && c1_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false)
+        },
+    )?;
 
-        // Symbolic-mode collection. Stop scanning when c1 is concretely null
-        // (positions past the null cannot affect the result for strcmp).
-        let stop_scan = stop_at_null && c1_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
-        pairs.push((c1_val, c2_val));
-        if stop_scan {
-            break;
+    Ok(Some(match result {
+        ScanResult::Stopped(r) => r,
+        ScanResult::Exhausted => {
+            // Walked through max_len with all-concrete bytes and no
+            // mismatch / null hit. For strcmp/strncmp this means we ran out
+            // of room — error out (matches the prior MaxIterations behavior).
+            // For memcmp, equal-up-to-limit is the natural "0" return.
+            if stop_at_null && max_len >= MAX_STRCMP_LEN as u64 {
+                return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
+            }
+            RustBV::zero(32)
         }
-    }
-
-    if !symbolic_seen {
-        // Walked through max_len with all-concrete bytes and no
-        // mismatch / null hit. For strcmp/strncmp this means we ran out
-        // of room — error out (matches the prior MaxIterations behavior).
-        // For memcmp, equal-up-to-limit is the natural "0" return.
-        if stop_at_null && max_len >= MAX_STRCMP_LEN as u64 {
-            return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
+        ScanResult::Collected(collected) => {
+            let pairs: Vec<(RustBV, RustBV)> =
+                collected.into_iter().map(|(_, pair)| pair).collect();
+            let ctx = state.solver().borrow();
+            build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx)
         }
-        return Ok(Some(RustBV::zero(32)));
-    }
-
-    let ctx = state.solver().borrow();
-    Ok(Some(build_diff_chain(
-        &pairs,
-        stop_at_null,
-        case_insensitive,
-        &ctx,
-    )))
+    }))
 }
 
 crate::declare_proc! {
