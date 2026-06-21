@@ -457,6 +457,24 @@ fn test_fopen_binary_suffix_ignored() {
 }
 
 #[test]
+fn test_fopen_rw_plus_after_binary_order_independent() {
+    // glibc accepts the `+` and `b` flags in any order: "rb+" is read/write
+    // binary, identical to "r+b". The positional parser used to miss this.
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"rwb.txt\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"rb+\0", Permission::RWX);
+
+    NativeFopen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    // rb+ → ReadWrite (2)
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().2, 2);
+}
+
+#[test]
 fn test_fopen_unknown_mode_falls_back() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x1000, b"x.txt\0", Permission::RWX);

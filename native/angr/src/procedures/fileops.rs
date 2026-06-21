@@ -43,21 +43,31 @@ fn read_cstring(
     scan_concrete_until_null(state, addr, max_len as usize, name)
 }
 
-/// Convert an fopen-style mode string (e.g. `"r"`, `"w+b"`) to FdFlags.
+/// Convert an fopen-style mode string (e.g. `"r"`, `"w+b"`, `"rb+"`) to FdFlags.
 /// Returns None for unrecognized modes (caller falls back to Python).
+///
+/// glibc semantics: the first character selects the base access mode
+/// (`r`/`w`/`a`); the remaining flag characters (`+`, `b`, `t`, `c`, `e`, `m`,
+/// `x`) may appear in **any order**. Only `+` upgrades the access mode to
+/// read+write — the rest are buffering/sharing/exclusivity hints that do not
+/// affect the FdFlags mapping. Parsing the trailing flags positionally (only
+/// popping a trailing `b`/`t`) silently missed valid orderings like `"rb+"`.
 fn parse_fopen_mode(mode: &[u8]) -> Option<FdFlags> {
-    let mut bytes: Vec<u8> = mode.to_vec();
-    if matches!(bytes.last(), Some(b'b') | Some(b't')) {
-        bytes.pop();
+    let first = *mode.first()?;
+    // Flag characters glibc accepts after the base mode. Anything outside this
+    // set is genuinely unrecognized, so defer to Python rather than guess.
+    const FLAG_CHARS: &[u8] = b"+btcexm";
+    if mode[1..].iter().any(|c| !FLAG_CHARS.contains(c)) {
+        return None;
     }
-    bytes.retain(|c| *c != b'c' && *c != b'e');
-    match bytes.as_slice() {
-        b"r" => Some(FdFlags::ReadOnly),
-        b"r+" => Some(FdFlags::ReadWrite),
-        b"w" => Some(FdFlags::WriteOnly),
-        b"w+" => Some(FdFlags::ReadWrite),
-        b"a" => Some(FdFlags::WriteOnly),
-        b"a+" => Some(FdFlags::ReadWrite),
+    let read_write = mode[1..].contains(&b'+');
+    match (first, read_write) {
+        (b'r', false) => Some(FdFlags::ReadOnly),
+        (b'r', true) => Some(FdFlags::ReadWrite),
+        (b'w', false) => Some(FdFlags::WriteOnly),
+        (b'w', true) => Some(FdFlags::ReadWrite),
+        (b'a', false) => Some(FdFlags::WriteOnly),
+        (b'a', true) => Some(FdFlags::ReadWrite),
         _ => None,
     }
 }
