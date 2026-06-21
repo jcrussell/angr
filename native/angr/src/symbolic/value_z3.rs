@@ -487,9 +487,11 @@ impl RustBV {
     ///    `RoundingMode`, `Sort`) bound in the same scope, so Z3 holds at
     ///    least one refcount on each for the duration of the FFI call.
     /// 3. **Null handling**: Every `Z3_mk_fpa_*` is followed by
-    ///    `.expect(…)`, converting the only failure mode (NULL) into a
-    ///    panic — so any pointer that escapes the `unsafe` block is
-    ///    non-null and points at a fresh Z3 AST with one refcount.
+    ///    `.unwrap_or_else(|| fresh_unconstrained_raw(…))`, replacing the
+    ///    only failure mode (NULL — reachable only on a type-checker-precluded
+    ///    sort mismatch or OOM) with a fresh unconstrained AST of the matching
+    ///    sort — so any pointer that escapes the `unsafe` block is non-null
+    ///    and points at a fresh Z3 AST with one refcount.
     /// 4. **Refcount discipline**: Each fresh raw `Z3_ast` is immediately
     ///    handed to `Float::wrap` / `BV::wrap` / `Bool::wrap`, which takes
     ///    over the refcount Z3 added at construction. The wrapper is then
@@ -508,9 +510,9 @@ impl RustBV {
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV, Bool, Float, RoundingMode};
         use z3_sys::{
-            Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
-            Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg,
-            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
+            Z3_mk_bool_sort, Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq,
+            Z3_mk_fpa_fma, Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul,
+            Z3_mk_fpa_neg, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
         };
 
         // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
@@ -590,7 +592,7 @@ impl RustBV {
         // `rm_raw` is held by the `rm: RoundingMode` wrapper; `raw_a`,
         // `raw_b()`, `raw_c()` come from the `fp_args` Float wrappers and
         // remain live for the duration of this match. Every `Z3_mk_fpa_*`
-        // returns a fresh AST (or NULL → panic via `.expect`).
+        // returns a fresh AST (or NULL → fresh unconstrained AST via `unwrap_or_else`).
         let result_raw = unsafe {
             match kind {
                 FloatOpKind::Add => Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, raw_b()),
@@ -604,8 +606,8 @@ impl RustBV {
                 FloatOpKind::Fms => {
                     // a*b - c == a*b + (-c). Wrap neg_c in a Float so the
                     // intermediate AST is held while we build the FMA.
-                    let neg_c_raw =
-                        Z3_mk_fpa_neg(raw_ctx, raw_c()).expect("Z3_mk_fpa_neg returned NULL");
+                    let neg_c_raw = Z3_mk_fpa_neg(raw_ctx, raw_c())
+                        .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort));
                     let neg_c = Float::wrap(&z3_ctx, neg_c_raw);
                     Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, raw_b(), neg_c.get_z3_ast())
                 }
@@ -625,7 +627,17 @@ impl RustBV {
                 | FloatOpKind::DivRm
                 | FloatOpKind::SqrtRm => unreachable!("handled above"),
             }
-            .expect("Z3 FPA op returned NULL")
+            .unwrap_or_else(|| {
+                // Compares yield a Bool; every other op yields a Float at
+                // `raw_sort`. Fabricate the matching sort so the downstream
+                // wrap + tail produce a width-correct unconstrained result.
+                let fallback_sort = if kind.is_compare() {
+                    Z3_mk_bool_sort(raw_ctx).expect("Z3_mk_bool_sort returned NULL")
+                } else {
+                    raw_sort
+                };
+                fresh_unconstrained_raw(raw_ctx, fallback_sort)
+            })
         };
 
         if kind.is_compare() {
@@ -683,7 +695,7 @@ impl RustBV {
             // panic via `.expect`).
             let raw = unsafe {
                 Z3_mk_fpa_round_to_integral(raw_ctx, rm.get_z3_ast(), value_raw)
-                    .expect("Z3_mk_fpa_round_to_integral returned NULL")
+                    .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
             };
             // SAFETY: `raw` is the fresh Float AST from the call above;
             // `Float::wrap` takes its refcount.
@@ -746,7 +758,7 @@ impl RustBV {
             // live wrappers in `z3_ctx` for the duration of this closure
             // body, so `rm_raw`, `raw_a` and the `get_z3_ast()` calls on
             // `b_fp` all yield valid Z3_ast pointers. Each `Z3_mk_fpa_*`
-            // returns a fresh AST (or NULL → panic via `.expect`).
+            // returns a fresh AST (or NULL → fresh unconstrained AST via `unwrap_or_else`).
             let raw = unsafe {
                 match kind {
                     FloatOpKind::AddRm => {
@@ -764,7 +776,7 @@ impl RustBV {
                     FloatOpKind::SqrtRm => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
                     _ => unreachable!("non-Rm FP arith kind in build_fp_arith_rm_cached"),
                 }
-                .expect("Z3 FPA arith op returned NULL")
+                .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
             };
             // SAFETY: `raw` is the fresh Float AST from the call above;
             // `Float::wrap` takes its refcount.
@@ -815,10 +827,10 @@ impl RustBV {
         let fp_raw = unsafe {
             if signed {
                 Z3_mk_fpa_to_fp_signed(raw_ctx, rm_raw, src_z3.get_z3_ast(), raw_sort)
-                    .expect("Z3_mk_fpa_to_fp_signed returned NULL")
+                    .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
             } else {
                 Z3_mk_fpa_to_fp_unsigned(raw_ctx, rm_raw, src_z3.get_z3_ast(), raw_sort)
-                    .expect("Z3_mk_fpa_to_fp_unsigned returned NULL")
+                    .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
             }
         };
         // SAFETY: `fp_raw` is the fresh Float AST from the call above;
@@ -841,7 +853,7 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, BV};
-        use z3_sys::{Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
+        use z3_sys::{Z3_mk_bv_sort, Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
 
         let (rm_bv_opt, value_bv) = if rm_marker.is_some() {
             debug_assert_eq!(operands.len(), 2);
@@ -868,13 +880,20 @@ impl RustBV {
             // is held alive by `value_fp` above. The signed/unsigned
             // `Z3_mk_fpa_to_*bv` calls return a fresh BV AST (or NULL →
             // panic via `.expect`).
+            // Result is a BV of `dst_bits`; fabricate that sort on the NULL
+            // fallback path so the wrapped value keeps the correct width.
+            let bv_fallback = || unsafe {
+                let bv_sort =
+                    Z3_mk_bv_sort(raw_ctx, dst_bits as u32).expect("Z3_mk_bv_sort returned NULL");
+                fresh_unconstrained_raw(raw_ctx, bv_sort)
+            };
             let raw = unsafe {
                 if signed {
                     Z3_mk_fpa_to_sbv(raw_ctx, rm.get_z3_ast(), value_raw, dst_bits as u32)
-                        .expect("Z3_mk_fpa_to_sbv returned NULL")
+                        .unwrap_or_else(bv_fallback)
                 } else {
                     Z3_mk_fpa_to_ubv(raw_ctx, rm.get_z3_ast(), value_raw, dst_bits as u32)
-                        .expect("Z3_mk_fpa_to_ubv returned NULL")
+                        .unwrap_or_else(bv_fallback)
                 }
             };
             // SAFETY: `raw` is the fresh BV AST from the call above;
@@ -935,10 +954,10 @@ impl RustBV {
             // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
             // is held alive by `value_fp` above; `dst_raw_sort` is a live
             // Sort handle. `Z3_mk_fpa_to_fp_float` returns a fresh Float
-            // AST (or NULL → panic via `.expect`).
+            // AST (or NULL → fresh unconstrained AST via `unwrap_or_else`).
             let raw = unsafe {
                 Z3_mk_fpa_to_fp_float(raw_ctx, rm.get_z3_ast(), value_raw, dst_raw_sort)
-                    .expect("Z3_mk_fpa_to_fp_float returned NULL")
+                    .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, dst_raw_sort))
             };
             // SAFETY: `raw` is the fresh Float AST from above;
             // `Float::wrap` takes its refcount.
@@ -1029,7 +1048,7 @@ fn bv_to_z3_float(
     // via `.expect`).
     let raw = unsafe {
         Z3_mk_fpa_to_fp_bv(raw_ctx, bv.get_z3_ast(), raw_sort)
-            .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+            .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
     };
     // SAFETY: `raw` is the fresh non-null Float AST from above;
     // `Float::wrap` takes its refcount.
@@ -1043,13 +1062,58 @@ fn float_to_ieee_bv(
     fp: &z3::ast::Float,
 ) -> z3::ast::BV {
     use z3::ast::{Ast, BV};
-    use z3_sys::Z3_mk_fpa_to_ieee_bv;
-    // SAFETY: `fp` is a live Float in `z3_ctx`; `Z3_mk_fpa_to_ieee_bv`
-    // returns a fresh BV AST (or NULL → panic via `.expect`).
+    use z3_sys::{
+        Z3_fpa_get_ebits, Z3_fpa_get_sbits, Z3_get_sort, Z3_mk_bv_sort, Z3_mk_fpa_to_ieee_bv,
+    };
+    // SAFETY: `fp` is a live Float in `z3_ctx`. `Z3_mk_fpa_to_ieee_bv`
+    // returns a fresh BV AST, or NULL on the (type-checker-precluded)
+    // sort-mismatch / OOM path, where we fall back to a fresh unconstrained
+    // BV of the matching IEEE width (sign + ebits + stored mantissa =
+    // ebits + sbits) so the result keeps the correct width.
     let ieee_bv_raw = unsafe {
-        Z3_mk_fpa_to_ieee_bv(raw_ctx, fp.get_z3_ast()).expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+        Z3_mk_fpa_to_ieee_bv(raw_ctx, fp.get_z3_ast()).unwrap_or_else(|| {
+            let fp_sort = Z3_get_sort(raw_ctx, fp.get_z3_ast()).expect("Z3_get_sort returned NULL");
+            let width = Z3_fpa_get_ebits(raw_ctx, fp_sort) + Z3_fpa_get_sbits(raw_ctx, fp_sort);
+            let bv_sort = Z3_mk_bv_sort(raw_ctx, width).expect("Z3_mk_bv_sort returned NULL");
+            fresh_unconstrained_raw(raw_ctx, bv_sort)
+        })
     };
     // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
     // `BV::wrap` takes its refcount.
     unsafe { BV::wrap(z3_ctx, ieee_bv_raw) }
+}
+
+/// Fabricate a fresh unconstrained Z3 AST of `raw_sort` as a graceful
+/// fallback when a `Z3_mk_fpa_*` builder returns NULL.
+///
+/// The Z3 FPA builders return NULL only on a sort/width mismatch or on true
+/// allocation failure. Operand widths flow from VEX `IRType`, which pyvex's
+/// type-checker is expected to keep consistent, so the mismatch case should
+/// be unreachable — this is defense-in-depth. Because the crate is built with
+/// `panic = "abort"` (see `Cargo.toml`), an `.expect` here would tear down the
+/// whole process and could not be caught by any downstream `catch_unwind`.
+/// Degrading to a fresh unconstrained value of the *correct sort* instead
+/// keeps the public `to_z3_ast` / `to_z3_ast_cached` chain panic-free while
+/// letting the normal IEEE-bits tail (`float_to_ieee_bv`) produce a
+/// width-correct result.
+///
+/// # Safety
+/// `raw_ctx` and `raw_sort` must be live handles in the thread-local Z3
+/// context. The returned raw `Z3_ast` carries one refcount and must be
+/// handed to a `*::wrap` constructor by the caller, exactly like the
+/// non-fallback path.
+#[cfg(feature = "vex-engine-z3")]
+unsafe fn fresh_unconstrained_raw(
+    raw_ctx: z3_sys::Z3_context,
+    raw_sort: z3_sys::Z3_sort,
+) -> z3_sys::Z3_ast {
+    use z3_sys::Z3_mk_fresh_const;
+    let prefix: z3_sys::Z3_string = c"fpfb".as_ptr().cast();
+    // SAFETY: caller upholds the live-handle contract above.
+    // `Z3_mk_fresh_const` returns NULL only on genuine allocation failure,
+    // where aborting is the only sane outcome.
+    unsafe {
+        Z3_mk_fresh_const(raw_ctx, prefix, raw_sort)
+            .expect("Z3_mk_fresh_const returned NULL (out of memory)")
+    }
 }
