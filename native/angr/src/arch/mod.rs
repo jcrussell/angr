@@ -369,6 +369,16 @@ impl RegisterFile {
         RustBV::concrete(value, size * 8)
     }
 
+    /// Read an architectural register (at `offset`, full arch byte-width) to a
+    /// concrete `u64`, honoring the symbolic overlay. Returns `None` when the
+    /// register is symbolic / not representable as a u64. Shared by the
+    /// syscall-num and stack-pointer reads in the interpreter. Note this is
+    /// distinct from `get_sp_value`, which reads raw concrete bytes and ignores
+    /// the symbolic overlay.
+    pub fn get_offset_u64(&self, offset: u32, ctx: &crate::symbolic::SymContext) -> Option<u64> {
+        self.get(offset, self.arch.bytes(), ctx).as_u64()
+    }
+
     /// Write a register value by offset.
     pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;

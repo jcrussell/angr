@@ -812,31 +812,14 @@ impl<'a> VEXInterpreter<'a> {
                 ))
             })?;
 
-        let ast = result_ast.bind(py);
-
-        if let Some(table) = self.symbol_table
-            && let Some(bv) = try_handle_to_rustbv(ast, table)
-        {
-            return Ok(bv);
-        }
-
-        if is_claripy_ast(ast) {
-            if let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx) {
-                return Ok(bv);
-            }
-            log::warn!(
-                "{} symbolic load ({}, size={}): AST conversion failed; using fresh symbol",
-                context,
-                addr_descr,
-                size
-            );
-        }
-
-        Ok(RustBV::symbolic(
-            self.ctx,
-            format!("sym_pyref_{}_{}", addr_descr, size),
-            (size * 8) as u32,
-        ))
+        // handle fast path -> claripy slow path -> fresh symbolic. (The prior
+        // open-coded copy logged a warn! on claripy-conversion failure; that
+        // diagnostic is dropped in favor of the shared ladder.)
+        Ok(
+            self.try_convert_symbolic_value(py, Some(&result_ast), (size * 8) as u32, || {
+                format!("sym_pyref_{}_{}", addr_descr, size)
+            }),
+        )
     }
 
     /// Fall back to Python's full symbolic store callback for a store

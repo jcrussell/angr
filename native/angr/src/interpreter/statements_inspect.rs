@@ -32,17 +32,12 @@ impl<'a> VEXInterpreter<'a> {
         when: &str,
     ) -> Option<RustBV> {
         // MemWrite = InspectEvent variant 1 — see crate::state::InspectEvent.
-        if !callbacks.inspect_event_enabled(1) {
-            return None;
-        }
+        let value_ast = self.inspect_ast(py, callbacks, 1, data_val)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
         };
-        let claripy_mod = py.import("claripy").ok()?;
-        let value_ast =
-            crate::claripy_bridge::rustbv_to_claripy(py, data_val, &claripy_mod).ok()?;
         let mutated = callbacks
             .call_inspect_mem_write(
                 py,
@@ -79,16 +74,8 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
     ) {
         // RegWrite = InspectEvent variant 3.
-        if !callbacks.inspect_event_enabled(3) {
+        let Some(value_ast) = self.inspect_ast(py, callbacks, 3, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_reg_write(
             py,
@@ -115,16 +102,8 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
     ) {
         // TmpWrite bit assigned in _INSPECT_EVENT_SPECS.
-        if !callbacks.inspect_event_enabled(14) {
+        let Some(value_ast) = self.inspect_ast(py, callbacks, 14, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_tmp_write(
             py,
@@ -165,16 +144,8 @@ impl<'a> VEXInterpreter<'a> {
         guard: &RustBV,
     ) {
         // Exit = InspectEvent variant 5.
-        if !callbacks.inspect_event_enabled(5) {
+        let Some(guard_ast) = self.inspect_ast(py, callbacks, 5, guard) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let guard_ast = match crate::claripy_bridge::rustbv_to_claripy(py, guard, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_exit(
             py,

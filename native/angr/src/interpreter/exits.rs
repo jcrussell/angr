@@ -264,10 +264,8 @@ impl<'a> VEXInterpreter<'a> {
     /// `unwrap_or(0)` fallback in spirit but without silently dispatching
     /// to syscall 0.
     pub(super) fn get_syscall_num(&self) -> Option<u64> {
-        let arch = self.registers.arch();
-        let offset = arch.syscall_num_offset()?;
-        let size = arch.bytes();
-        self.registers.get(offset, size, self.ctx).as_u64()
+        let offset = self.registers.arch().syscall_num_offset()?;
+        self.registers.get_offset_u64(offset, self.ctx)
     }
 }
 

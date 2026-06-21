@@ -301,17 +301,11 @@ impl<'a> VEXInterpreter<'a> {
                     // choice with an equality constraint so a later solve cannot
                     // pick a different index, which would make this register
                     // write inconsistent with the path constraints (unsound).
-                    // Mirrors the dirty-arg eager-concretize pattern below.
-                    if let Some(concrete) = self.ctx.eval(&ix_val) {
-                        let conc_bv = RustBV::concrete(concrete, ix_val.width());
-                        let constraint = ix_val.eq(&conc_bv, self.ctx);
-                        self.ctx.assume_true(&constraint);
-                        concrete as u64
-                    } else {
-                        return Err(CbExecutionError::Unsupported(
+                    self.concretize_and_pin(&ix_val).ok_or_else(|| {
+                        CbExecutionError::Unsupported(
                             "PutI index concretization failed".to_string(),
-                        ));
-                    }
+                        )
+                    })?
                 };
 
                 // Calculate the rotating register offset:
@@ -826,11 +820,8 @@ impl<'a> VEXInterpreter<'a> {
                 let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                 if let Some(concrete) = val.as_u64() {
                     arg_vals.push(concrete);
-                } else if let Some(concrete) = self.ctx.eval(&val) {
-                    let conc_bv = RustBV::concrete(concrete, val.width());
-                    let constraint = val.eq(&conc_bv, self.ctx);
-                    self.ctx.assume_true(&constraint);
-                    arg_vals.push(concrete as u64);
+                } else if let Some(concrete) = self.concretize_and_pin(&val) {
+                    arg_vals.push(concrete);
                 } else {
                     // Solver couldn't produce a concrete value (e.g. UNSAT
                     // path). Fall through to the Python/no-handler paths
@@ -910,11 +901,8 @@ impl<'a> VEXInterpreter<'a> {
                     let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                     if let Some(concrete) = val.as_u64() {
                         arg_vals.push(concrete);
-                    } else if let Some(concrete) = self.ctx.eval(&val) {
-                        let conc_bv = RustBV::concrete(concrete, val.width());
-                        let constraint = val.eq(&conc_bv, self.ctx);
-                        self.ctx.assume_true(&constraint);
-                        arg_vals.push(concrete as u64);
+                    } else if let Some(concrete) = self.concretize_and_pin(&val) {
+                        arg_vals.push(concrete);
                     } else {
                         return Err(CbExecutionError::Unsupported(format!(
                             "dirty call '{}' arg unconcretizable",

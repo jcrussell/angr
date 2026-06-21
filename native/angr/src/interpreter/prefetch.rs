@@ -161,10 +161,8 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Get the current stack pointer value (architecture-aware).
     fn get_stack_pointer(&self) -> Option<u64> {
-        let arch = self.registers.arch();
-        let offset = arch.sp_offset();
-        let size = arch.bytes();
-        self.registers.get(offset, size, self.ctx).as_u64()
+        let offset = self.registers.arch().sp_offset();
+        self.registers.get_offset_u64(offset, self.ctx)
     }
 
     /// Check if an address is in the stack region (near current RSP).
@@ -381,7 +379,10 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Deduplicate loads (same address+size only needs to be fetched once).
-        let unique_loads = &mut self.prefetch_unique_scratch;
+        // Move the scratch buffer into an owned local so the populate loop below
+        // can call `&self` methods (try_convert_symbolic_value) while iterating;
+        // it is restored to `self` before returning to preserve its capacity.
+        let mut unique_loads = std::mem::take(&mut self.prefetch_unique_scratch);
         let seen = &mut self.prefetch_dedup_scratch;
         unique_loads.clear();
         seen.clear();
@@ -406,60 +407,13 @@ impl<'a> VEXInterpreter<'a> {
         for (i, (addr, size)) in unique_loads.iter().enumerate() {
             if let Some((data, is_symbolic, symbolic_ast)) = results.get(i) {
                 let value = if *is_symbolic {
-                    // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
-                    if let Some(ast_obj) = symbolic_ast {
-                        let ast = ast_obj.bind(py);
-
-                        // Fast path: check for RustBVHandle first
-                        if let Some(table) = self.symbol_table {
-                            if let Some(bv) = try_handle_to_rustbv(ast, table) {
-                                bv
-                            } else if is_claripy_ast(ast) {
-                                // Slow path: claripy AST conversion
-                                match claripy_to_rustbv(py, ast, self.ctx) {
-                                    Ok(bv) => bv,
-                                    Err(_) => {
-                                        // Fallback to fresh symbolic
-                                        RustBV::symbolic(
-                                            self.ctx,
-                                            format!("prefetch_{:x}_{}", addr, size),
-                                            (size * 8) as u32,
-                                        )
-                                    }
-                                }
-                            } else {
-                                RustBV::symbolic(
-                                    self.ctx,
-                                    format!("prefetch_{:x}_{}", addr, size),
-                                    (size * 8) as u32,
-                                )
-                            }
-                        } else if is_claripy_ast(ast) {
-                            match claripy_to_rustbv(py, ast, self.ctx) {
-                                Ok(bv) => bv,
-                                Err(_) => {
-                                    // Fallback to fresh symbolic
-                                    RustBV::symbolic(
-                                        self.ctx,
-                                        format!("prefetch_{:x}_{}", addr, size),
-                                        (size * 8) as u32,
-                                    )
-                                }
-                            }
-                        } else {
-                            RustBV::symbolic(
-                                self.ctx,
-                                format!("prefetch_{:x}_{}", addr, size),
-                                (size * 8) as u32,
-                            )
-                        }
-                    } else {
-                        RustBV::symbolic(
-                            self.ctx,
-                            format!("prefetch_{:x}_{}", addr, size),
-                            (size * 8) as u32,
-                        )
-                    }
+                    // handle fast path -> claripy slow path -> fresh symbolic
+                    self.try_convert_symbolic_value(
+                        py,
+                        symbolic_ast.as_ref(),
+                        (size * 8) as u32,
+                        || format!("prefetch_{:x}_{}", addr, size),
+                    )
                 } else {
                     bytes_to_bv(data, (size * 8) as u32)
                 };
@@ -474,6 +428,8 @@ impl<'a> VEXInterpreter<'a> {
             }
         }
 
+        // Restore the scratch buffer (keeps its allocated capacity for reuse).
+        self.prefetch_unique_scratch = unique_loads;
         Ok(())
     }
 }

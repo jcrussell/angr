@@ -307,16 +307,7 @@ impl<'a> VEXInterpreter<'a> {
         );
         let conc = self.concretize_cached_read(addr_val);
         // BP_AFTER carries the list of concrete addresses produced.
-        let result_addrs = match &*conc {
-            ConcretizationResult::Single(a) => Some(vec![*a]),
-            ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => Some((0..*count).map(|i| base + i * stride).collect()),
-            ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
-        };
+        let result_addrs = conc.addresses();
         self.dispatch_address_concretization_inspect(
             py,
             callbacks,
@@ -496,6 +487,22 @@ impl<'a> VEXInterpreter<'a> {
         Ok(cond_val.ite(&true_val, &false_val, self.ctx))
     }
 
+    /// Eagerly concretize a symbolic value via the solver and pin the choice
+    /// with an equality constraint so a later solve cannot pick a different
+    /// value (which would make the dependent read/arg inconsistent with the
+    /// path constraints — unsound). Returns the pinned concrete as a u64, or
+    /// None when the solver cannot produce a model (e.g. an UNSAT path). The
+    /// caller maps None to its own error/fallback. This is the shared
+    /// soundness primitive behind GetI/PutI index concretization and the
+    /// dirty-call arg loops.
+    pub(super) fn concretize_and_pin(&self, v: &RustBV) -> Option<u64> {
+        let concrete = self.ctx.eval(v)?;
+        let conc_bv = RustBV::concrete(concrete, v.width());
+        let constraint = v.eq(&conc_bv, self.ctx);
+        self.ctx.assume_true(&constraint);
+        Some(concrete as u64)
+    }
+
     fn eval_geti(
         &mut self,
         py: Python<'_>,
@@ -515,18 +522,10 @@ impl<'a> VEXInterpreter<'a> {
             // Symbolic index - concretize using the solver and pin the choice
             // with an equality constraint so a later solve cannot pick a
             // different index, which would make this register read inconsistent
-            // with the path constraints (unsound). Mirrors the dirty-arg
-            // eager-concretize pattern in statements.rs.
-            if let Some(concrete) = self.ctx.eval(&ix_val) {
-                let conc_bv = RustBV::concrete(concrete, ix_val.width());
-                let constraint = ix_val.eq(&conc_bv, self.ctx);
-                self.ctx.assume_true(&constraint);
-                concrete as u64
-            } else {
-                return Err(CbExecutionError::Unsupported(
-                    "GetI index concretization failed".to_string(),
-                ));
-            }
+            // with the path constraints (unsound).
+            self.concretize_and_pin(&ix_val).ok_or_else(|| {
+                CbExecutionError::Unsupported("GetI index concretization failed".to_string())
+            })?
         };
 
         // Calculate the rotating register offset:
@@ -690,7 +689,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Convert an optional symbolic AST to RustBV, falling back to a fresh symbolic.
     ///
     /// Order: handle-table fast path, then claripy-AST conversion, then fresh symbolic.
-    fn try_convert_symbolic_value(
+    pub(super) fn try_convert_symbolic_value(
         &self,
         py: Python<'_>,
         ast_obj: Option<&Py<PyAny>>,
@@ -1035,6 +1034,27 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
+    /// Shared prelude for the `dispatch_*_inspect` methods: gate on
+    /// `event_bit`, import claripy, and convert `value` into a claripy AST.
+    /// Returns `None` when the breakpoint is disabled or the import/convert
+    /// fails (the callers all swallow those failures — a missing claripy or a
+    /// conversion error must not halt exploration). Centralizes the
+    /// claripy-import-failure swallow policy that was previously open-coded at
+    /// every dispatch site.
+    pub(super) fn inspect_ast(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        event_bit: u8,
+        value: &RustBV,
+    ) -> Option<Py<PyAny>> {
+        if !callbacks.inspect_event_enabled(event_bit) {
+            return None;
+        }
+        let claripy_mod = py.import("claripy").ok()?;
+        crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()
+    }
+
     /// Fire a `mem_read` inspect callback into Python for this load.
     ///
     /// Mirrors `dispatch_mem_write_inspect` in `statements.rs`. Gated on
@@ -1060,16 +1080,12 @@ impl<'a> VEXInterpreter<'a> {
         endness: Endness,
     ) -> Option<RustBV> {
         // MemRead = InspectEvent variant 0 — see crate::state::InspectEvent.
-        if !callbacks.inspect_event_enabled(0) {
-            return None;
-        }
+        let value_ast = self.inspect_ast(py, callbacks, 0, value)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
         };
-        let claripy_mod = py.import("claripy").ok()?;
-        let value_ast = crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()?;
         let mutated = callbacks
             .call_inspect_mem_read(
                 py,
@@ -1108,16 +1124,8 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
     ) {
         // RegRead = InspectEvent variant 2.
-        if !callbacks.inspect_event_enabled(2) {
+        let Some(value_ast) = self.inspect_ast(py, callbacks, 2, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_reg_read(
             py,
@@ -1144,16 +1152,8 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
     ) {
         // TmpRead bit assigned in _INSPECT_EVENT_SPECS.
-        if !callbacks.inspect_event_enabled(13) {
+        let Some(value_ast) = self.inspect_ast(py, callbacks, 13, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_tmp_read(
             py,
@@ -1175,16 +1175,8 @@ impl<'a> VEXInterpreter<'a> {
     /// (Rust IRExpr doesn't round-trip cleanly into a `pyvex.IRExpr`);
     /// the BP receives `expr=None` and only the computed value.
     fn dispatch_expr_inspect(&self, py: Python<'_>, callbacks: &PythonCallbacks, value: &RustBV) {
-        if !callbacks.inspect_event_enabled(16) {
+        let Some(value_ast) = self.inspect_ast(py, callbacks, 16, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_expr(py, self.current_state_id, "after", Some(&value_ast));
     }
@@ -1207,16 +1199,8 @@ impl<'a> VEXInterpreter<'a> {
         when: &str,
         result: Option<Vec<u64>>,
     ) {
-        if !callbacks.inspect_event_enabled(17) {
+        let Some(addr_ast) = self.inspect_ast(py, callbacks, 17, addr_val) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let addr_ast = match crate::claripy_bridge::rustbv_to_claripy(py, addr_val, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_address_concretization(
             py,
@@ -1243,16 +1227,8 @@ impl<'a> VEXInterpreter<'a> {
         size_bits: u32,
         value: &RustBV,
     ) {
-        if !callbacks.inspect_event_enabled(18) {
+        let Some(expr_ast) = self.inspect_ast(py, callbacks, 18, value) else {
             return;
-        }
-        let claripy_mod = match py.import("claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let expr_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
-            Ok(v) => v,
-            Err(_) => return,
         };
         let _ = callbacks.call_inspect_symbolic_variable(
             py,

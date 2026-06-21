@@ -30,16 +30,7 @@ impl<'a> VEXInterpreter<'a> {
         // Concretize for write with per-block cache (avoids redundant Z3 calls)
         let conc_result = self.concretize_cached_write(addr_val);
         if !addr_val.is_concrete() {
-            let result_addrs = match &*conc_result {
-                ConcretizationResult::Single(a) => Some(vec![*a]),
-                ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
-                ConcretizationResult::Strided {
-                    base,
-                    stride,
-                    count,
-                } => Some((0..*count).map(|i| base + i * stride).collect()),
-                ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => None,
-            };
+            let result_addrs = conc_result.addresses();
             self.dispatch_address_concretization_inspect(
                 py,
                 callbacks,
