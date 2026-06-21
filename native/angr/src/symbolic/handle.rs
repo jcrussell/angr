@@ -53,11 +53,6 @@ impl RustBVHandle {
             concrete: Some(value),
         }
     }
-
-    /// Set the concrete value (used when a symbolic value becomes constrained).
-    pub fn set_concrete(&mut self, value: u128) {
-        self.concrete = Some(value);
-    }
 }
 
 // Accessors and Python dunders — single source of truth for both Rust and

@@ -49,6 +49,6 @@ pub use stats::{
     record_zext_cmp_trivial_decide, reset_solver_stats,
 };
 pub use table::RustSymbolTable;
-pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV, Signedness};
+pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV};
 #[cfg(feature = "vex-engine-z3")]
 pub use z3_ast_ptr::Z3AstPtr;

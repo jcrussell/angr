@@ -234,52 +234,6 @@ impl FloatOpKind {
 }
 
 impl BVOp {
-    /// Get the claripy method name for this operation.
-    pub fn claripy_method(&self) -> &'static str {
-        match self {
-            BVOp::Add => "__add__",
-            BVOp::Sub => "__sub__",
-            BVOp::Mul => "__mul__",
-            BVOp::UDiv => "UDiv",
-            BVOp::SDiv => "SDiv",
-            BVOp::URem => "URem",
-            BVOp::SRem => "SMod",
-            BVOp::Neg => "__neg__",
-            BVOp::And => "__and__",
-            BVOp::Or => "__or__",
-            BVOp::Xor => "__xor__",
-            BVOp::Not => "__invert__",
-            BVOp::Shl => "__lshift__",
-            BVOp::Lshr => "LShR",
-            BVOp::Ashr => "__rshift__",
-            BVOp::RotL => "RotateLeft",
-            BVOp::RotR => "RotateRight",
-            BVOp::ZeroExt(_) => "ZeroExt",
-            BVOp::SignExt(_) => "SignExt",
-            BVOp::Extract(_, _) => "Extract",
-            BVOp::Concat => "Concat",
-            BVOp::Eq => "__eq__",
-            BVOp::Ne => "__ne__",
-            BVOp::Ult => "ULT",
-            BVOp::Ule => "ULE",
-            BVOp::Ugt => "UGT",
-            BVOp::Uge => "UGE",
-            BVOp::Slt => "SLT",
-            BVOp::Sle => "SLE",
-            BVOp::Sgt => "SGT",
-            BVOp::Sge => "SGE",
-            BVOp::Ite => "If",
-            BVOp::Reverse => "Reverse",
-            BVOp::Clz => "clz",
-            BVOp::Ctz => "ctz",
-            BVOp::Popcount => "popcount",
-            // No clean claripy mapping — float ops returning to Python fall
-            // back to fresh symbolic in rustbv_to_claripy (constraint info
-            // stays in Z3 within the Rust engine).
-            BVOp::Float { .. } => "fpOp",
-        }
-    }
-
     /// Check if this is a unary operation.
     pub fn is_unary(&self) -> bool {
         if let BVOp::Float { kind, .. } = self {
@@ -389,13 +343,6 @@ impl BitWidth {
             BitWidth::W128 => u128::MAX,
         }
     }
-}
-
-/// Signedness for comparison and extension operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Signedness {
-    Signed,
-    Unsigned,
 }
 
 /// A bitvector value that can be concrete or symbolic.
@@ -714,12 +661,6 @@ impl RustBV {
         )
     }
 
-    /// Check if this value is an expression (compound symbolic).
-    #[inline]
-    pub fn is_expression(&self) -> bool {
-        matches!(self, RustBV::Expression { .. })
-    }
-
     /// Try to get the concrete value.
     #[inline]
     pub fn as_u128(&self) -> Option<u128> {
@@ -759,12 +700,6 @@ impl RustBV {
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_u128().map(|v| v as u64)
-    }
-
-    /// Get the concrete value as u64, panicking if symbolic or too wide.
-    #[inline]
-    pub fn to_u64(&self) -> u64 {
-        self.as_u64().expect("value is symbolic or too wide")
     }
 }
 
