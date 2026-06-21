@@ -88,7 +88,7 @@
 //!   insertions happen at import time only, and `get_claripy_ast`
 //!   short-circuits via `global_registry` first so the thread-local
 //!   is a cold fallback. The hot per-block integer-keyed maps in
-//!   `interpreter_cb/mod.rs` use `FxHashMap`; see
+//!   `interpreter/mod.rs` use `FxHashMap`; see
 //!   `fxhash-interpreter-cb-arc-maps` (commit a37018771, angr-teo2).
 //!   Switching this cache to fxhash is on the "remaining candidates"
 //!   list but provides no measurable benefit because the cache is not

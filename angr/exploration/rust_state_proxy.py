@@ -1619,7 +1619,7 @@ class RustScratchProxy:
     """
 
     # Mirrors angr's Ijk_* string convention. Indices match the u8 values
-    # produced by RustSimState::detailed_history (see exploration/mod.rs:1726).
+    # produced by RustSimState::detailed_history (native/angr/src/state/mod.rs).
     _JUMPKIND_NAMES = (
         "Ijk_Boring",
         "Ijk_Call",

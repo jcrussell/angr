@@ -265,8 +265,8 @@ _REJECTED_OPTION_NAMES = frozenset(
 # raise (angr-gmrc, 2026-05-16).
 #
 # CONSERVATIVE_WRITE_STRATEGY tells SimMemory to refuse symbolic-write
-# address concretization on range-check failure (Python: state_plugins/
-# symbolic_memory.py SimSymbolicMemory.concretize_write_addr). Rust's
+# address concretization on range-check failure (Python: storage/
+# memory_mixins/address_concretization_mixin.py concretize_write_addr). Rust's
 # SymbolicMemory always concretizes within strategy limits, so silently
 # accepting this would mask the user's intent to keep an analysis
 # conservative. Promoted to raise (angr-csmm, 2026-05-16).
@@ -313,7 +313,7 @@ _REJECTED_OPTION_NAMES = frozenset(
 # on unconstrained initial register values would simply not be explored.
 # Promoted to raise (angr-apre, 2026-05-17). The MEMORY variant
 # SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted because Rust's
-# load_concrete_lazy (native/angr/src/memory/load.rs:333-339) falls back
+# load_concrete_lazy (native/angr/src/memory/load.rs fn load_concrete_lazy) falls back
 # to a fresh `unc_mem_*` symbolic BVS when zero_fill_unconstrained is
 # unset — i.e., symbolic-fill is already Rust's default for memory.
 #

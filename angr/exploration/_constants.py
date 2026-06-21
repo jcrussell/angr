@@ -1,7 +1,7 @@
 """Memory-layout constants shared across the Rust exploration glue.
 
 PAGE_SIZE / PAGE_MASK are imported from the Rust extension so the Rust
-side (native/angr/src/memory.rs) and the Python side stay in lockstep.
+side (native/angr/src/memory/page.rs) and the Python side stay in lockstep.
 STACK_SIZE and MAX_OVERLAY_SECTION_SIZE live here because only Python
 references them.
 """
