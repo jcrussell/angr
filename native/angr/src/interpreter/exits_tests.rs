@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::state::CallStackEntry;
+use crate::vex::ir::IRType;
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)
@@ -175,6 +176,137 @@ fn handle_exit_ret_with_nonempty_call_stack_to_external_is_unmodeled() {
         }
         other => panic!("expected UnmodeledCall, got {:?}", other),
     }
+}
+
+/// angr-1c88c gap 4/7: drive `exits.rs::eval_next_addr` (the callback-aware
+/// fallthrough evaluator used for symbolic `Ist_Exit` next addresses in
+/// non-deferred fork mode).
+///
+/// Concrete next: the expression is concrete so the symbolic branch is never
+/// taken — `eval_next_addr` returns the literal value via the `as_u64()` tail.
+#[test]
+fn eval_next_addr_concrete_returns_literal() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut irsb = IRSB::new(0x1000, VexArch::AMD64);
+    irsb.next = IRExpr::Const(IRConst::U64(0x4000));
+
+    Python::initialize();
+    Python::attach(|py| {
+        let cb = PythonCallbacks::new();
+        let addr = interp
+            .eval_next_addr(py, &cb, &irsb)
+            .expect("concrete next address");
+        assert_eq!(addr, 0x4000);
+    });
+}
+
+/// Symbolic next constrained to a single value: `eval_next_addr` concretizes to
+/// `Single(addr)` and pins `next == addr` on the solver before returning the
+/// concrete target. The pin is a tautology here (the symbol is already
+/// constrained), but it exercises the `ConcretizationResult::Single` arm.
+#[test]
+fn eval_next_addr_single_concretization_returns_target() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut irsb = IRSB::new(0x1000, VexArch::AMD64);
+    irsb.tyenv.new_temp(IRType::I64);
+    irsb.next = IRExpr::RdTmp(0);
+
+    // Symbolic fallthrough target constrained to exactly 0x9000.
+    let sym = RustBV::symbolic(&ctx, "next_target", 64);
+    let pin = sym.eq(&RustBV::concrete(0x9000, 64), &ctx);
+    ctx.assume_true(&pin);
+    interp.temps.resize(1, None);
+    interp.temps[0] = Some(sym);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let cb = PythonCallbacks::new();
+        let addr = interp
+            .eval_next_addr(py, &cb, &irsb)
+            .expect("single-valued symbolic next address");
+        assert_eq!(addr, 0x9000);
+    });
+}
+
+/// Multi-valued symbolic next: an unconstrained 64-bit symbol concretizes to
+/// many targets. `eval_next_addr` cannot fork mid-block, so it surfaces
+/// `CbExecutionError::Unsupported` to route the block back to Python.
+#[test]
+fn eval_next_addr_multivalued_returns_unsupported() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut irsb = IRSB::new(0x1000, VexArch::AMD64);
+    irsb.tyenv.new_temp(IRType::I64);
+    irsb.next = IRExpr::RdTmp(0);
+
+    // Unconstrained symbolic target -> Multiple/TooLarge -> Unsupported.
+    let sym = RustBV::symbolic(&ctx, "next_target_open", 64);
+    interp.temps.resize(1, None);
+    interp.temps[0] = Some(sym);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let cb = PythonCallbacks::new();
+        let err = interp
+            .eval_next_addr(py, &cb, &irsb)
+            .expect_err("multi-valued symbolic next must be unsupported");
+        assert!(matches!(err, CbExecutionError::Unsupported(_)));
+    });
+}
+
+/// Drive the actual call site: a symbolic guard in non-deferred fork mode takes
+/// `statements.rs`'s `!use_deferred_forks` branch, which calls `eval_next_addr`
+/// for the fallthrough and returns a `SymbolicBranch` carrying both targets.
+#[test]
+fn exit_nondeferred_symbolic_guard_uses_eval_next_addr_for_fallthrough() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let cfg = crate::callbacks::ExecutionConfig {
+        use_deferred_forks: false,
+        ..Default::default()
+    };
+    interp.set_config(cfg);
+
+    let mut irsb = IRSB::new(0x1000, VexArch::AMD64);
+    irsb.tyenv.new_temp(IRType::I1);
+    // Concrete fallthrough so eval_next_addr returns it directly.
+    irsb.next = IRExpr::Const(IRConst::U64(0x4000));
+
+    // Symbolic 1-bit guard -> non-deferred symbolic-branch path.
+    let guard = RustBV::symbolic(&ctx, "exit_guard", 1);
+    interp.temps.resize(1, None);
+    interp.temps[0] = Some(guard);
+
+    let stmt = IRStmt::Exit {
+        guard: IRExpr::RdTmp(0),
+        dst: 0x9000,
+        jk: JumpKind::Boring,
+        offsIP: 184,
+    };
+
+    Python::initialize();
+    Python::attach(|py| {
+        let cb = PythonCallbacks::new();
+        let res = interp
+            .execute_stmt_with_callbacks(py, &cb, &stmt, &irsb)
+            .expect("symbolic exit");
+        match res {
+            StmtResult::SymbolicBranch {
+                true_target,
+                false_target,
+                ..
+            } => {
+                assert_eq!(true_target, 0x9000, "branch-taken target is the dst");
+                assert_eq!(
+                    false_target, 0x4000,
+                    "fallthrough came from eval_next_addr on irsb.next"
+                );
+            }
+            _ => panic!("expected SymbolicBranch from non-deferred symbolic guard"),
+        }
+    });
 }
 
 #[test]
