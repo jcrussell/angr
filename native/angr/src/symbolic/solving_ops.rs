@@ -32,6 +32,22 @@ use super::stats::*;
 #[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
+/// Render a concrete `u128` as a big-endian byte vector sized for `width`
+/// bits (`ceil(width/8)` bytes). For widths ≤ 128 the low `byte_len` bytes
+/// of the value are taken; wider widths left-pad with zeros. Shared by the
+/// concrete fast paths of `eval_wide` / `eval_upto_wide`.
+fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
+    let byte_len = width.div_ceil(8) as usize;
+    let bytes = value.to_be_bytes();
+    if byte_len <= 16 {
+        bytes[16 - byte_len..].to_vec()
+    } else {
+        let mut result = vec![0u8; byte_len];
+        result[byte_len - 16..].copy_from_slice(&bytes);
+        result
+    }
+}
+
 impl SymContext {
     /// Debug: dump solver state as string for comparison.
     #[cfg(feature = "vex-engine-z3")]
@@ -251,21 +267,7 @@ impl SymContext {
 
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            let byte_len = width.div_ceil(8) as usize;
-            let mut result = vec![0u8; byte_len];
-            let bytes = v.to_be_bytes();
-            let offset = byte_len.saturating_sub(16);
-            for (i, &_b) in bytes.iter().enumerate() {
-                let src_idx = 16 - byte_len.min(16) + i;
-                if src_idx < 16 && offset + i < byte_len {
-                    result[offset + i] = bytes[src_idx];
-                }
-            }
-            // Handle case where byte_len <= 16
-            if byte_len <= 16 {
-                result = bytes[16 - byte_len..].to_vec();
-            }
-            return Some(result);
+            return Some(u128_to_be_bytes_width(v, width));
         }
 
         // Need a fresh model — check(), get_model(), and the AST evaluation
@@ -347,16 +349,7 @@ impl SymContext {
 
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            let byte_len = width.div_ceil(8) as usize;
-            let bytes = v.to_be_bytes();
-            let result = if byte_len <= 16 {
-                bytes[16 - byte_len..].to_vec()
-            } else {
-                let mut r = vec![0u8; byte_len];
-                r[byte_len - 16..].copy_from_slice(&bytes);
-                r
-            };
-            return vec![result];
+            return vec![u128_to_be_bytes_width(v, width)];
         }
 
         if n == 0 {
@@ -844,17 +837,7 @@ impl SymContext {
     pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
         // Without Z3, can only evaluate concrete values
         let width = bv.width();
-        bv.as_u128().map(|v| {
-            let byte_len = width.div_ceil(8) as usize;
-            let bytes = v.to_be_bytes();
-            if byte_len <= 16 {
-                bytes[16 - byte_len..].to_vec()
-            } else {
-                let mut result = vec![0u8; byte_len];
-                result[byte_len - 16..].copy_from_slice(&bytes);
-                result
-            }
-        })
+        bv.as_u128().map(|v| u128_to_be_bytes_width(v, width))
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
