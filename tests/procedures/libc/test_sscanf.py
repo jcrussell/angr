@@ -47,6 +47,49 @@ class TestSscanf(unittest.TestCase):
         assert val == 0o755
         assert len(state.solver.constraints) == 0 or state.satisfiable()
 
+    def test_sscanf_X_spec(self):
+        # Regression for the scanf interpret() path: %X (uppercase hex) is
+        # recognized by _match_spec (basic_spec/int_sign) but was unhandled at
+        # the dispatch sites — the non-SimPackets interpret() path raised
+        # SimProcedureError and the SimPackets path mis-parsed it as base 10.
+        # Must parse like %x (base 16). Binary-free. Bead angr-vp1dg.
+        p = angr.load_shellcode(b"\x90", arch="amd64")
+        state = p.factory.blank_state()
+        src, fmt, out = 0x100000, 0x200000, 0x300000
+        state.memory.store(src, b"DEADBEEF\x00")
+        state.memory.store(fmt, b"%X\x00")
+
+        sscanf = angr.SIM_PROCEDURES["libc"]["sscanf"]()
+        sscanf.execute(state, arguments=[src, fmt, out])
+
+        val = state.solver.eval(state.memory.load(out, 4, endness=p.arch.memory_endness))
+        assert val == 0xDEADBEEF
+        assert len(state.solver.constraints) == 0 or state.satisfiable()
+
+    def test_sprintf_hex_octal_no_digit_strip(self):
+        # Regression for the printf replace() path: commit 129bd9e645 refactored
+        # hex(c_val)[2:] -> f"{c_val:x}"[2:] (and the octal analog). hex()/oct()
+        # carry a 2-char prefix that [2:] stripped, but the f-string forms have
+        # no prefix, so [2:] silently dropped the first two significant digits
+        # (0xFF -> ""). Also covers the new %X spec. Binary-free. Bead angr-vp1dg.
+        import claripy
+
+        p = angr.load_shellcode(b"\x90", arch="amd64")
+        fmt, out = 0x200000, 0x300000
+        sprintf = angr.SIM_PROCEDURES["libc"]["sprintf"]()
+
+        for spec, value, expected in [
+            (b"%x\x00", 0xFF, b"ff"),
+            (b"%X\x00", 0xFF, b"FF"),
+            (b"%x\x00", 0xDEAD, b"dead"),
+            (b"%o\x00", 0o755, b"755"),
+        ]:
+            state = p.factory.blank_state()
+            state.memory.store(fmt, spec)
+            sprintf.execute(state, arguments=[out, fmt, claripy.BVV(value, 64)])
+            data = state.solver.eval(state.memory.load(out, len(expected) + 1), cast_to=bytes)
+            assert data == expected + b"\x00", (spec, data)
+
     def test_sscanf(self):
         from tests.common import bin_location
 

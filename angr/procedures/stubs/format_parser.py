@@ -102,9 +102,11 @@ class FormatString:
                     elif fmt_spec.spec_type == b"c":
                         s_val = chr(c_val & 0xFF)
                     elif fmt_spec.spec_type == b"x":
-                        s_val = f"{c_val:x}"[2:]
+                        # spec_type is lowercased; preserve the original case so
+                        # %X renders uppercase hex per C semantics.
+                        s_val = f"{c_val:X}" if fmt_spec.string[-1:] == b"X" else f"{c_val:x}"
                     elif fmt_spec.spec_type == b"o":
-                        s_val = f"{c_val:o}"[2:]
+                        s_val = f"{c_val:o}"
                     elif fmt_spec.spec_type == b"p":
                         s_val = f"{c_val:x}"
                     else:
