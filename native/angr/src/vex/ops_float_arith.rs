@@ -67,30 +67,49 @@ impl VEXOps {
         Ok(build_float_expr(FloatOpKind::Sqrt, prec, vec![arg]))
     }
 
-    pub(super) fn float_add(
+    /// Shared scalar binary float-arith helper. The four public ops
+    /// (`float_add`/`sub`/`mul`/`div`) differ only in the concrete operator
+    /// (`op32`/`op64`) and the symbolic [`FloatOpKind`]; everything else — the
+    /// F32/F64 bit-cast, the `_` -> `InvalidFloatType` guard, and the symbolic
+    /// `build_float_expr` fallback — is identical, so it lives here once.
+    fn float_arith_scalar(
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        _ctx: &SymContext,
+        kind: FloatOpKind,
+        op32: fn(f32, f32) -> f32,
+        op64: fn(f64, f64) -> f64,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    (lf + rf).to_bits() as u128
+                    op32(f32::from_bits(l as u32), f32::from_bits(r as u32)).to_bits() as u128
                 }
                 IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    (lf + rf).to_bits() as u128
+                    op64(f64::from_bits(l as u64), f64::from_bits(r as u64)).to_bits() as u128
                 }
                 _ => return Err(OpError::InvalidFloatType(ty)),
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::Add, prec, vec![left, right]))
+        Ok(build_float_expr(kind, prec, vec![left, right]))
+    }
+
+    pub(super) fn float_add(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::Add,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
     }
 
     pub(super) fn float_sub(
@@ -99,24 +118,14 @@ impl VEXOps {
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    (lf - rf).to_bits() as u128
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    (lf - rf).to_bits() as u128
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, ty.bits()));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::Sub, prec, vec![left, right]))
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::Sub,
+            |a, b| a - b,
+            |a, b| a - b,
+        )
     }
 
     pub(super) fn float_mul(
@@ -125,24 +134,14 @@ impl VEXOps {
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    (lf * rf).to_bits() as u128
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    (lf * rf).to_bits() as u128
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, ty.bits()));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::Mul, prec, vec![left, right]))
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::Mul,
+            |a, b| a * b,
+            |a, b| a * b,
+        )
     }
 
     pub(super) fn float_div(
@@ -151,24 +150,14 @@ impl VEXOps {
         ty: IRType,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    (lf / rf).to_bits() as u128
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    (lf / rf).to_bits() as u128
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
-            return Ok(RustBV::concrete(result, ty.bits()));
-        }
-        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::Div, prec, vec![left, right]))
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::Div,
+            |a, b| a / b,
+            |a, b| a / b,
+        )
     }
 
     /// Fused multiply-add: a*b + c
