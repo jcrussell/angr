@@ -74,6 +74,17 @@ impl SymContext {
             local.dedup_set.extend(local_ptrs);
             local.dedup_set_seeded = true;
         }
+        Self::contains_or_insert_ptr(local, constraint)
+    }
+
+    /// Shared dedup tail: returns `true` if `constraint`'s Z3_ast ptr is
+    /// already in `local.dedup_set` (duplicate — leave state untouched);
+    /// otherwise inserts the ptr, pushes `constraint.clone()` onto
+    /// `local.z3_assertions`, and returns `false`. Counter bookkeeping stays
+    /// with the caller so each site attributes hits to its own counter.
+    #[cfg(feature = "vex-engine-z3")]
+    fn contains_or_insert_ptr(local: &mut LocalConstraints, constraint: &z3::ast::Bool) -> bool {
+        use z3::ast::Ast;
         let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
         if local.dedup_set.contains(&new_ptr) {
             true
@@ -109,16 +120,8 @@ impl SymContext {
             local.z3_assertions.push(constraint.clone());
             return false;
         }
-        use z3::ast::Ast;
-        let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
         Z3_ASSUME_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
-        if local.dedup_set.contains(&new_ptr) {
-            true
-        } else {
-            local.dedup_set.insert(new_ptr);
-            local.z3_assertions.push(constraint.clone());
-            false
-        }
+        Self::contains_or_insert_ptr(local, constraint)
     }
 
     /// Add a constraint from a typed Z3 AST handle (shared context fast path).
