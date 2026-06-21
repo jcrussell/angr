@@ -293,59 +293,38 @@ impl RustBV {
         _width: u32,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
+        // Plain binary BVOps differ only in the Z3 bv* method name; the
+        // signed/unsigned distinction is fully encoded in the method itself.
+        macro_rules! z3_binop {
+            ($m:ident) => {
+                operands[0]
+                    .to_z3_ast_cached(cache)
+                    .$m(operands[1].to_z3_ast_cached(cache))
+            };
+        }
         match op {
             // Arithmetic
-            BVOp::Add => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvadd(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Sub => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvsub(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Mul => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvmul(operands[1].to_z3_ast_cached(cache)),
-            BVOp::UDiv => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvudiv(operands[1].to_z3_ast_cached(cache)),
-            BVOp::SDiv => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvsdiv(operands[1].to_z3_ast_cached(cache)),
-            BVOp::URem => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvurem(operands[1].to_z3_ast_cached(cache)),
-            BVOp::SRem => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvsrem(operands[1].to_z3_ast_cached(cache)),
+            BVOp::Add => z3_binop!(bvadd),
+            BVOp::Sub => z3_binop!(bvsub),
+            BVOp::Mul => z3_binop!(bvmul),
+            BVOp::UDiv => z3_binop!(bvudiv),
+            BVOp::SDiv => z3_binop!(bvsdiv),
+            BVOp::URem => z3_binop!(bvurem),
+            BVOp::SRem => z3_binop!(bvsrem),
             BVOp::Neg => operands[0].to_z3_ast_cached(cache).bvneg(),
 
             // Bitwise
-            BVOp::And => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvand(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Or => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvor(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Xor => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvxor(operands[1].to_z3_ast_cached(cache)),
+            BVOp::And => z3_binop!(bvand),
+            BVOp::Or => z3_binop!(bvor),
+            BVOp::Xor => z3_binop!(bvxor),
             BVOp::Not => operands[0].to_z3_ast_cached(cache).bvnot(),
 
             // Shifts
-            BVOp::Shl => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvshl(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Lshr => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvlshr(operands[1].to_z3_ast_cached(cache)),
-            BVOp::Ashr => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvashr(operands[1].to_z3_ast_cached(cache)),
-            BVOp::RotL => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvrotl(operands[1].to_z3_ast_cached(cache)),
-            BVOp::RotR => operands[0]
-                .to_z3_ast_cached(cache)
-                .bvrotr(operands[1].to_z3_ast_cached(cache)),
+            BVOp::Shl => z3_binop!(bvshl),
+            BVOp::Lshr => z3_binop!(bvlshr),
+            BVOp::Ashr => z3_binop!(bvashr),
+            BVOp::RotL => z3_binop!(bvrotl),
+            BVOp::RotR => z3_binop!(bvrotr),
 
             // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
             BVOp::Eq
