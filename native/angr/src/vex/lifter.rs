@@ -56,7 +56,7 @@ pub trait VEXLifter {
         result.next = irsb.next.clone();
         result.jumpkind = irsb.jumpkind;
         result.offsIP = irsb.offsIP;
-        result.tyenv = irsb.tyenv.clone();
+        result.tyenv = irsb.tyenv;
 
         Ok(result)
     }

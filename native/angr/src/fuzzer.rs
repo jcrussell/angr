@@ -101,7 +101,7 @@ impl Fuzzer {
 
         // Convert Python corpus wrappers into dynamic corpus variants
         let corpus: C = if let Ok(py_ondisk) = corpus.extract::<PyOnDiskCorpus>() {
-            DynCorpus::OnDisk(py_ondisk.inner.clone())
+            DynCorpus::OnDisk(py_ondisk.inner)
         } else if let Ok(py_inmem) = corpus.extract::<PyInMemoryCorpus>() {
             DynCorpus::try_from(&py_inmem)?
         } else {
@@ -111,7 +111,7 @@ impl Fuzzer {
         };
 
         let solutions: C = if let Ok(py_ondisk) = solutions.extract::<PyOnDiskCorpus>() {
-            DynCorpus::OnDisk(py_ondisk.inner.clone())
+            DynCorpus::OnDisk(py_ondisk.inner)
         } else if let Ok(py_inmem) = solutions.extract::<PyInMemoryCorpus>() {
             DynCorpus::try_from(&py_inmem)?
         } else {

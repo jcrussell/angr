@@ -80,8 +80,8 @@ pub(super) fn arm_sym_flag_n(
             let one = RustBV::concrete(1, 32);
             d1.sub(&d2, ctx).sub(&nd.xor(&one, ctx), ctx)
         }
-        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1.clone(),
-        ARMG_CC_OP_MULL => d2.clone(),
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
+        ARMG_CC_OP_MULL => d2,
         _ => return None,
     };
     Some(res.extract(31, 31, ctx))
@@ -111,7 +111,7 @@ pub(super) fn arm_sym_flag_z(
             let one = RustBV::concrete(1, 32);
             d1.sub(&d2, ctx).sub(&nd.xor(&one, ctx), ctx)
         }
-        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1.clone(),
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
         // MULL: Z = (resLO | resHI) == 0
         ARMG_CC_OP_MULL => d1.or(&d2, ctx),
         _ => return None,

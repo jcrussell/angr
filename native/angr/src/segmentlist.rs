@@ -156,7 +156,7 @@ impl SegmentList {
         let search_range = address..end;
         // Find the lowest position among the occupied ranges
         self.map
-            .overlapping(search_range.clone())
+            .overlapping(search_range)
             .filter(|(_, sort)| !sorts.contains(sort))
             .map(|(range, _)| std::cmp::max(range.start, address))
             .next()

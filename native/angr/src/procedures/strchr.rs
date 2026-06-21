@@ -262,7 +262,7 @@ fn scan_for_byte_last(
                 // Build forward so later matches override earlier ones.
                 let seed = match last_match {
                     Some(a) => RustBV::concrete(a as u128, arch_bits),
-                    None => null_addr.clone(),
+                    None => null_addr,
                 };
                 build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &seed, &ctx)
             }

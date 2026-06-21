@@ -208,7 +208,7 @@ impl<'a> VEXInterpreter<'a> {
                     // Take the "true" path (jump to dst), defer the "false" path
                     let cond_id = self.next_cond_id();
                     // Store the Rust condition for later retrieval when processing forks
-                    self.stored_conditions.insert(cond_id, guard_val.clone());
+                    self.stored_conditions.insert(cond_id, guard_val);
 
                     // Flush pending stores before snapshotting so the memory
                     // snapshot includes all writes up to this branch point.
