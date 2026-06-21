@@ -73,8 +73,18 @@ pub(super) fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
         })
         .collect();
 
-    // Build bytes from bits (big-endian)
-    let bit_offset = byte_len * 8 - bits.len();
+    // Build bytes from bits (big-endian). The sole caller
+    // (extract_bv_value_wide in bv_codec.rs) derives `bits` and `width` from
+    // the same Z3 BV, so `bits.len() <= byte_len * 8` always holds. Guard the
+    // pub(super) contract: saturating_sub avoids an underflow-panic if a future
+    // caller passes a too-long bit string, and the debug_assert flags it in dev.
+    debug_assert!(
+        bits.len() <= byte_len * 8,
+        "parse_binary_to_bytes: {} bits exceed {} byte capacity",
+        bits.len(),
+        byte_len
+    );
+    let bit_offset = (byte_len * 8).saturating_sub(bits.len());
     for (i, &bit) in bits.iter().enumerate() {
         let bit_pos = bit_offset + i;
         let byte_idx = bit_pos / 8;

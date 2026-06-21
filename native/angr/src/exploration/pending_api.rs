@@ -259,10 +259,12 @@ impl RustExplorationManager {
                 .memory_load(addr, size)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-            Ok(super::helpers::u128_to_le_bytes(
-                bv.to_u128(),
-                size as usize,
-            ))
+            let value = bv.as_u128().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "pending memory at 0x{addr:x} is symbolic; cannot convert to concrete bytes"
+                ))
+            })?;
+            Ok(super::helpers::u128_to_le_bytes(value, size as usize))
         })
     }
 

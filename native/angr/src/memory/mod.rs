@@ -72,6 +72,12 @@ pub enum MemoryError {
     /// Out of bounds access.
     #[error("out of bounds access at 0x{addr:x} (size {size})")]
     OutOfBounds { addr: u64, size: u64 },
+    /// A concrete value was expected but the BV was symbolic. Defense-in-depth:
+    /// the concrete store path is guarded by an `is_symbolic()` early-return, so
+    /// this should be unreachable in practice — it converts a would-be panic
+    /// into a recoverable error if that guard is ever bypassed.
+    #[error("expected concrete value at 0x{addr:x}, found symbolic")]
+    UnexpectedSymbolic { addr: u64 },
 }
 
 /// Symbolic memory model.

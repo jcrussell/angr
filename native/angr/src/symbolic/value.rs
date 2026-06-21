@@ -690,12 +690,6 @@ impl RustBV {
         }
     }
 
-    /// Get the concrete value, panicking if symbolic.
-    #[inline]
-    pub fn to_u128(&self) -> u128 {
-        self.as_u128().expect("value is symbolic")
-    }
-
     /// Try to get the concrete value as u64.
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {

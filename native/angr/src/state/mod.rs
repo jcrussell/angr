@@ -1812,7 +1812,11 @@ impl PyRustSimState {
             .memory_load(addr, size)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let value = bv.to_u128();
+        let value = bv.as_u128().ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "memory_load at 0x{addr:x} returned a symbolic value; cannot convert to concrete bytes"
+            ))
+        })?;
         let bytes: Vec<u8> = (0..size as usize)
             .map(|i| (value >> (i * 8)) as u8)
             .collect();

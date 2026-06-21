@@ -119,8 +119,12 @@ impl SymbolicMemory {
             return Ok(());
         }
 
-        // Concrete store
-        let concrete_val = value.to_u128();
+        // Concrete store. Reached only on the concrete path (symbolic values
+        // early-return above); as_u128 + error keeps a bypassed guard from
+        // aborting the process.
+        let concrete_val = value
+            .as_u128()
+            .ok_or(MemoryError::UnexpectedSymbolic { addr: addr.0 })?;
 
         // Convert to bytes based on endianness
         let bytes: Vec<u8> = match self.endness {
