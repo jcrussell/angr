@@ -657,7 +657,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, Float, RoundingMode};
+        use z3::ast::{Ast, Float};
         use z3_sys::Z3_mk_fpa_round_to_integral;
 
         debug_assert_eq!(operands.len(), 2);
@@ -676,13 +676,7 @@ impl RustBV {
 
         // Helper: round value with one concrete VEX rounding mode (0..3).
         let round_with = |vex_rm: u8| -> Float {
-            let rm = match vex_rm & 0x3 {
-                0 => RoundingMode::round_nearest_ties_to_even(),
-                1 => RoundingMode::round_towards_negative(),
-                2 => RoundingMode::round_towards_positive(),
-                3 => RoundingMode::round_towards_zero(),
-                _ => unreachable!(),
-            };
+            let rm = vex_rm_to_z3(vex_rm);
             // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
             // is held alive by the `value_fp` wrapper above.
             // `Z3_mk_fpa_round_to_integral` returns a fresh AST (or NULL →
@@ -699,20 +693,7 @@ impl RustBV {
         let result_fp = if let Some(m) = rm_bv.as_u128() {
             round_with((m & 0x3) as u8)
         } else {
-            // Symbolic rm: build all 4 results and ITE on rm[1:0].
-            let r0 = round_with(0);
-            let r1 = round_with(1);
-            let r2 = round_with(2);
-            let r3 = round_with(3);
-            let rm_z3 = rm_bv.to_z3_ast_cached(cache);
-            let rm_low2 = rm_z3.extract(1, 0);
-            let zero = BV::from_u64(0, 2);
-            let one = BV::from_u64(1, 2);
-            let two = BV::from_u64(2, 2);
-            // Chain: rm==0 ? r0 : rm==1 ? r1 : rm==2 ? r2 : r3
-            let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
-            let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
-            rm_low2.eq(&zero).ite(&r0, &pick123)
+            dispatch_symbolic_rm(rm_bv, cache, round_with)
         };
 
         float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
@@ -731,7 +712,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, Float, RoundingMode};
+        use z3::ast::{Ast, Float};
         use z3_sys::{Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub};
 
         let is_unary = matches!(kind, FloatOpKind::SqrtRm);
@@ -758,13 +739,7 @@ impl RustBV {
         };
 
         let apply = |vex_rm: u8| -> Float {
-            let rm = match vex_rm & 0x3 {
-                0 => RoundingMode::round_nearest_ties_to_even(),
-                1 => RoundingMode::round_towards_negative(),
-                2 => RoundingMode::round_towards_positive(),
-                3 => RoundingMode::round_towards_zero(),
-                _ => unreachable!(),
-            };
+            let rm = vex_rm_to_z3(vex_rm);
             let rm_raw = rm.get_z3_ast();
             let raw_a = a_fp.get_z3_ast();
             // SAFETY: `rm` (RoundingMode) and `a_fp` / `b_fp` (Float) are
@@ -799,20 +774,7 @@ impl RustBV {
         let result_fp = if let Some(m) = rm_bv.as_u128() {
             apply((m & 0x3) as u8)
         } else {
-            // Symbolic rm: build all 4 results and ITE on rm[1:0]. Z3 folds
-            // dead arms during simplification.
-            let r0 = apply(0);
-            let r1 = apply(1);
-            let r2 = apply(2);
-            let r3 = apply(3);
-            let rm_z3 = rm_bv.to_z3_ast_cached(cache);
-            let rm_low2 = rm_z3.extract(1, 0);
-            let zero = BV::from_u64(0, 2);
-            let one = BV::from_u64(1, 2);
-            let two = BV::from_u64(2, 2);
-            let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
-            let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
-            rm_low2.eq(&zero).ite(&r0, &pick123)
+            dispatch_symbolic_rm(rm_bv, cache, apply)
         };
 
         float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
@@ -878,7 +840,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, RoundingMode};
+        use z3::ast::{Ast, BV};
         use z3_sys::{Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
 
         let (rm_bv_opt, value_bv) = if rm_marker.is_some() {
@@ -901,13 +863,7 @@ impl RustBV {
 
         // Helper: convert the value to BV using one concrete VEX rounding mode (0..3).
         let convert_with = |vex_rm: u8| -> BV {
-            let rm = match vex_rm & 0x3 {
-                0 => RoundingMode::round_nearest_ties_to_even(),
-                1 => RoundingMode::round_towards_negative(),
-                2 => RoundingMode::round_towards_positive(),
-                3 => RoundingMode::round_towards_zero(),
-                _ => unreachable!(),
-            };
+            let rm = vex_rm_to_z3(vex_rm);
             // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
             // is held alive by `value_fp` above. The signed/unsigned
             // `Z3_mk_fpa_to_*bv` calls return a fresh BV AST (or NULL →
@@ -934,18 +890,7 @@ impl RustBV {
                 if let Some(m) = rm_bv.as_u128() {
                     convert_with((m & 0x3) as u8)
                 } else {
-                    let r0 = convert_with(0);
-                    let r1 = convert_with(1);
-                    let r2 = convert_with(2);
-                    let r3 = convert_with(3);
-                    let rm_z3 = rm_bv.to_z3_ast_cached(cache);
-                    let rm_low2 = rm_z3.extract(1, 0);
-                    let zero = BV::from_u64(0, 2);
-                    let one = BV::from_u64(1, 2);
-                    let two = BV::from_u64(2, 2);
-                    let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
-                    let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
-                    rm_low2.eq(&zero).ite(&r0, &pick123)
+                    dispatch_symbolic_rm(rm_bv, cache, convert_with)
                 }
             }
         }
@@ -962,7 +907,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, BV, Float, RoundingMode};
+        use z3::ast::{Ast, Float};
         use z3_sys::Z3_mk_fpa_to_fp_float;
 
         let (rm_bv_opt, value_bv) = if has_rm {
@@ -986,13 +931,7 @@ impl RustBV {
         let value_raw = value_fp.get_z3_ast();
 
         let convert_with = |vex_rm: u8| -> Float {
-            let rm = match vex_rm & 0x3 {
-                0 => RoundingMode::round_nearest_ties_to_even(),
-                1 => RoundingMode::round_towards_negative(),
-                2 => RoundingMode::round_towards_positive(),
-                3 => RoundingMode::round_towards_zero(),
-                _ => unreachable!(),
-            };
+            let rm = vex_rm_to_z3(vex_rm);
             // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
             // is held alive by `value_fp` above; `dst_raw_sort` is a live
             // Sort handle. `Z3_mk_fpa_to_fp_float` returns a fresh Float
@@ -1012,24 +951,60 @@ impl RustBV {
                 if let Some(m) = rm_bv.as_u128() {
                     convert_with((m & 0x3) as u8)
                 } else {
-                    let r0 = convert_with(0);
-                    let r1 = convert_with(1);
-                    let r2 = convert_with(2);
-                    let r3 = convert_with(3);
-                    let rm_z3 = rm_bv.to_z3_ast_cached(cache);
-                    let rm_low2 = rm_z3.extract(1, 0);
-                    let zero = BV::from_u64(0, 2);
-                    let one = BV::from_u64(1, 2);
-                    let two = BV::from_u64(2, 2);
-                    let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
-                    let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
-                    rm_low2.eq(&zero).ite(&r0, &pick123)
+                    dispatch_symbolic_rm(rm_bv, cache, convert_with)
                 }
             }
         };
 
         float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
     }
+}
+
+/// Map a 2-bit VEX rounding-mode selector (0..3) to the corresponding Z3
+/// `RoundingMode`. Centralizes the 4-way match repeated by every
+/// rm-aware FP builder (round-to-int / arith-rm / f-to-i / f-to-f).
+#[cfg(feature = "vex-engine-z3")]
+fn vex_rm_to_z3(vex_rm: u8) -> z3::ast::RoundingMode {
+    use z3::ast::RoundingMode;
+    match vex_rm & 0x3 {
+        0 => RoundingMode::round_nearest_ties_to_even(),
+        1 => RoundingMode::round_towards_negative(),
+        2 => RoundingMode::round_towards_positive(),
+        3 => RoundingMode::round_towards_zero(),
+        _ => unreachable!(),
+    }
+}
+
+/// Build the symbolic-rounding-mode ITE fan-out shared by the rm-aware FP
+/// builders: evaluate `build` for all four concrete VEX rounding modes,
+/// then select on `rm_bv`'s low 2 bits via a nested `ite` chain
+/// (`rm==0 ? r0 : rm==1 ? r1 : rm==2 ? r2 : r3`). Z3 folds the dead arms
+/// away at solve time. Generic over the AST kind so the same fan-out
+/// serves both the `Float`-producing builders and the `BV`-producing
+/// f-to-i builder.
+#[cfg(feature = "vex-engine-z3")]
+fn dispatch_symbolic_rm<T, F>(
+    rm_bv: &RustBV,
+    cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    build: F,
+) -> T
+where
+    T: z3::ast::Ast,
+    F: Fn(u8) -> T,
+{
+    use z3::ast::BV;
+    let r0 = build(0);
+    let r1 = build(1);
+    let r2 = build(2);
+    let r3 = build(3);
+    let rm_z3 = rm_bv.to_z3_ast_cached(cache);
+    let rm_low2 = rm_z3.extract(1, 0);
+    let zero = BV::from_u64(0, 2);
+    let one = BV::from_u64(1, 2);
+    let two = BV::from_u64(2, 2);
+    let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
+    let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
+    rm_low2.eq(&zero).ite(&r0, &pick123)
 }
 
 /// Shared tail of the FP-op builders that return IEEE-754 bits: convert a
