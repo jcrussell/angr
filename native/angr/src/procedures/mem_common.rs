@@ -70,3 +70,66 @@ pub(crate) fn enumerate_addr_candidates(
     }
     Ok(candidates.into_iter().map(|a| a as u64).collect())
 }
+
+/// Maximum size for a native symbolic-*length* bytewise store loop before
+/// falling back to Python. The loop emits one `memory_load` + `ITE` +
+/// `memory_store` per byte up to the solver's upper bound on the length, so the
+/// bound is capped to keep the generated formula tractable. Shared by the
+/// `memset` (fill-byte) and `memcpy`/`memmove` (source-byte) symbolic-size
+/// paths, which previously kept two separate `MAX_SYMBOLIC_*_SIZE = 4096`
+/// constants.
+pub(crate) const MAX_SYMBOLIC_BYTEWISE_SIZE: u64 = 4096;
+
+/// Resolve a solver upper bound for a symbolic length, capped at
+/// [`MAX_SYMBOLIC_BYTEWISE_SIZE`].
+///
+/// - `Ok(None)` when the bound is `0` (caller should no-op).
+/// - `Ok(Some(max))` for a valid in-range bound.
+/// - `Err(SymbolicArgument("size"))` when the solver cannot bound the length or
+///   the bound exceeds the cap (triggering the Python fallback).
+///
+/// Split out from [`symbolic_size_conditional_store`] so callers that must
+/// pre-snapshot source bytes (memcpy's memmove contract) can size their
+/// snapshot to the bound before any store happens.
+pub(crate) fn bounded_symbolic_size(
+    state: &RustSimState,
+    size_bv: &RustBV,
+) -> Result<Option<u64>, ProcedureError> {
+    let max_size = {
+        let ctx = state.solver().borrow();
+        ctx.max(size_bv, false)
+    };
+    match max_size {
+        Some(0) => Ok(None),
+        Some(m) if m <= MAX_SYMBOLIC_BYTEWISE_SIZE as u128 => Ok(Some(m as u64)),
+        _ => Err(ProcedureError::SymbolicArgument("size".to_string())),
+    }
+}
+
+/// Emit the bounded conditional-store loop for a symbolic *length*. Byte `i` of
+/// `dest` becomes `ITE(i < n, values[i], original)`, so positions past the
+/// (symbolic) length `n = size_bv` keep their prior contents.
+///
+/// `max_size` is the bound from [`bounded_symbolic_size`]; `values` must be at
+/// least `max_size` long (memset passes a repeated fill byte, memcpy passes its
+/// pre-snapshotted source bytes). The caller pre-snapshots any source bytes
+/// that alias `dest` so overlapping copies observe pre-store values.
+pub(crate) fn symbolic_size_conditional_store(
+    state: &mut RustSimState,
+    dest: u64,
+    size_bv: &RustBV,
+    max_size: u64,
+    values: &[RustBV],
+) -> Result<(), ProcedureError> {
+    let width = size_bv.width();
+    for i in 0..max_size {
+        let orig = state.memory_load(dest.wrapping_add(i), 1)?;
+        let stored = {
+            let ctx = state.solver().borrow();
+            let cond = RustBV::concrete(i as u128, width).ult(size_bv, &ctx);
+            cond.ite(&values[i as usize], &orig, &ctx)
+        };
+        state.memory_store(dest.wrapping_add(i), stored)?;
+    }
+    Ok(())
+}

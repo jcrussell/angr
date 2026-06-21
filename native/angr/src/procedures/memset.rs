@@ -13,26 +13,21 @@
 //! - A symbolic size is handled natively via bounded conditional stores: byte
 //!   `i` is set to `ITE(i < n, fill, original_byte)` for `i` up to the solver's
 //!   upper bound on `n`. Falls back to Python when that bound is unknown or
-//!   exceeds `MAX_SYMBOLIC_MEMSET_SIZE` (the per-byte ITE path is far costlier
+//!   exceeds `MAX_SYMBOLIC_BYTEWISE_SIZE` (the per-byte ITE path is far costlier
 //!   than the concrete chunked path, so its cap is much smaller).
 //! - A symbolic byte `value` is handled natively: the low 8 bits are stored
 //!   (symbolically) into every byte of the region — no Python fallback.
 //! - Maximum concrete size is 1MB (configurable)
 
 use super::mem_common::{
-    MAX_SYMBOLIC_ADDR_STORES, check_symbolic_addr_size, enumerate_addr_candidates,
+    MAX_SYMBOLIC_ADDR_STORES, bounded_symbolic_size, check_symbolic_addr_size,
+    enumerate_addr_candidates, symbolic_size_conditional_store,
 };
 use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
 /// Maximum concrete memset size before falling back to Python.
 const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
-
-/// Maximum symbolic memset size before falling back to Python. The symbolic
-/// path emits one `memory_load` + `ITE` + `memory_store` per byte up to the
-/// solver's max bound on `n`, so it is far costlier than the concrete chunked
-/// path and capped much lower.
-const MAX_SYMBOLIC_MEMSET_SIZE: u64 = 4096;
 
 crate::declare_proc! {
     /// Native memset implementation.
@@ -122,30 +117,15 @@ crate::declare_proc! {
         // Determine an upper bound on `n`. The conditional-store loop must run
         // for every byte that *could* be filled, so the bound has to be the
         // true solver max; an unknown or too-large bound falls back to Python.
-        let max_size = {
-            let ctx = state.solver().borrow();
-            ctx.max(&size_bv, false)
-        };
-        let max_size = match max_size {
-            Some(m) if m <= MAX_SYMBOLIC_MEMSET_SIZE as u128 => m as u64,
-            _ => return Err(ProcedureError::SymbolicArgument("size".to_string())),
-        };
-        if max_size == 0 {
+        let Some(max_size) = bounded_symbolic_size(state, &size_bv)? else {
             return Ok(Some(dest_bv));
-        }
+        };
 
         // Byte `i` is set to `ITE(i < n, fill, original)`: positions past the
-        // (symbolic) length keep their prior contents.
-        let width = size_bv.width();
-        for i in 0..max_size {
-            let orig = state.memory_load(dest.wrapping_add(i), 1)?;
-            let stored = {
-                let ctx = state.solver().borrow();
-                let cond = RustBV::concrete(i as u128, width).ult(&size_bv, &ctx);
-                cond.ite(&byte_bv, &orig, &ctx)
-            };
-            state.memory_store(dest.wrapping_add(i), stored)?;
-        }
+        // (symbolic) length keep their prior contents. The fill byte is the
+        // same for every position.
+        let values = vec![byte_bv; max_size as usize];
+        symbolic_size_conditional_store(state, dest, &size_bv, max_size, &values)?;
 
         Ok(Some(dest_bv))
     }

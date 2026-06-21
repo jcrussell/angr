@@ -16,12 +16,13 @@
 //!   `i` of `dst` is set to `ITE(i < n, src[i], dst[i])` for `i` up to the
 //!   solver's upper bound on `n` (mirrors the memset symbolic-size path). Falls
 //!   back to Python when that bound is unknown or exceeds
-//!   `MAX_SYMBOLIC_COPY_SIZE`.
+//!   `MAX_SYMBOLIC_BYTEWISE_SIZE`.
 //! - Copies data byte-by-byte, preserving symbolic values
 //! - Maximum concrete copy size is 1MB (configurable)
 
 use super::mem_common::{
-    MAX_SYMBOLIC_ADDR_STORES, check_symbolic_addr_size, enumerate_addr_candidates,
+    MAX_SYMBOLIC_ADDR_STORES, bounded_symbolic_size, check_symbolic_addr_size,
+    enumerate_addr_candidates, symbolic_size_conditional_store,
 };
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -30,11 +31,6 @@ use std::collections::HashMap;
 
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
-
-/// Maximum symbolic copy size before falling back to Python. The symbolic path
-/// emits per-byte `memory_load` + `ITE` + `memory_store`, far costlier than the
-/// concrete chunked path, so it is capped much lower (matches memset).
-const MAX_SYMBOLIC_COPY_SIZE: u64 = 4096;
 
 /// Copy `size` bytes from a SYMBOLIC `src` and/or `dst` address.
 ///
@@ -122,7 +118,7 @@ fn copy_symbolic_addr(
 /// position already stored.
 ///
 /// Returns `Err(SymbolicArgument)` when the solver has no usable upper bound on
-/// `size_bv` or that bound exceeds `MAX_SYMBOLIC_COPY_SIZE`, triggering the
+/// `size_bv` or that bound exceeds `MAX_SYMBOLIC_BYTEWISE_SIZE`, triggering the
 /// Python fallback.
 fn copy_symbolic_size(
     state: &mut RustSimState,
@@ -130,35 +126,18 @@ fn copy_symbolic_size(
     dst: u64,
     size_bv: &RustBV,
 ) -> Result<(), ProcedureError> {
-    let max_bound = {
-        let ctx = state.solver().borrow();
-        ctx.max(size_bv, false)
-    };
-    let max_bound = match max_bound {
-        Some(m) if m <= MAX_SYMBOLIC_COPY_SIZE as u128 => m as u64,
-        _ => return Err(ProcedureError::SymbolicArgument("size".to_string())),
-    };
-    if max_bound == 0 {
+    let Some(max_bound) = bounded_symbolic_size(state, size_bv)? else {
         return Ok(());
-    }
+    };
 
-    // Snapshot every source byte that could be copied before mutating dst.
+    // Snapshot every source byte that could be copied before mutating dst, so
+    // overlapping src/dst regions observe pre-store values (memmove contract).
     let mut src_bytes = Vec::with_capacity(max_bound as usize);
     for i in 0..max_bound {
         src_bytes.push(state.memory_load(src.wrapping_add(i), 1)?);
     }
 
-    let width = size_bv.width();
-    for i in 0..max_bound {
-        let orig = state.memory_load(dst.wrapping_add(i), 1)?;
-        let stored = {
-            let ctx = state.solver().borrow();
-            let cond = RustBV::concrete(i as u128, width).ult(size_bv, &ctx);
-            cond.ite(&src_bytes[i as usize], &orig, &ctx)
-        };
-        state.memory_store(dst.wrapping_add(i), stored)?;
-    }
-    Ok(())
+    symbolic_size_conditional_store(state, dst, size_bv, max_bound, &src_bytes)
 }
 
 /// Copy `size` bytes forward from `src` to `dst` using 8-byte chunks.
