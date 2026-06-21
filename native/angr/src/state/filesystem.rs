@@ -225,13 +225,27 @@ impl FileSystem {
         }
     }
 
-    /// Write data to a file descriptor's content buffer.
+    /// Write data to a file descriptor at its current position, advancing the
+    /// position by `data.len()` (POSIX `write(2)` semantics).
+    ///
+    /// For the common sequential case (a write-only fd that is only ever
+    /// written, so `position` starts at 0 and tracks the content length) this
+    /// is byte-identical to a plain append. The position-aware path matters
+    /// only after a `seek` or an interleaved `read` moved the offset away from
+    /// EOF: there, append-only would corrupt the buffer relative to Python's
+    /// position-aware `simfd.write`. Zero-fills any gap when `position` is at or
+    /// past EOF (a sparse seek-then-write), mirroring [`write_at`].
     pub fn write(&mut self, fd: u32, data: &[u8]) {
-        Arc::make_mut(&mut self.fds)
+        let desc = Arc::make_mut(&mut self.fds)
             .entry(fd)
-            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly))
-            .content
-            .extend_from_slice(data);
+            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
+        let start = desc.position as usize;
+        let end = start + data.len();
+        if end > desc.content.len() {
+            desc.content.resize(end, 0);
+        }
+        desc.content[start..end].copy_from_slice(data);
+        desc.position = end as u64;
     }
 
     /// Read up to `count` bytes from a file descriptor at its current position.

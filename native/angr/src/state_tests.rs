@@ -207,6 +207,32 @@ fn test_filesystem_seek() {
 }
 
 #[test]
+fn test_filesystem_write_position_aware() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open("out.bin".to_string(), FdFlags::WriteOnly);
+
+    // Sequential writes (no seek): position-aware path is byte-identical to a
+    // plain append, and advances the position to EOF each time.
+    fs.write(fd, b"abc");
+    fs.write(fd, b"def");
+    assert_eq!(fs.fd_content(fd), b"abcdef");
+
+    // Seek back and overwrite in place (the case append-only would corrupt).
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
+    fs.write(fd, b"XY");
+    assert_eq!(fs.fd_content(fd), b"XYcdef");
+
+    // A subsequent write continues from the advanced position (after "XY").
+    fs.write(fd, b"Z");
+    assert_eq!(fs.fd_content(fd), b"XYZdef");
+
+    // Sparse seek past EOF zero-fills the gap, like write_at/pwrite.
+    assert_eq!(fs.seek(fd, 8, 0), Some(8));
+    fs.write(fd, b"!");
+    assert_eq!(fs.fd_content(fd), b"XYZdef\x00\x00!");
+}
+
+#[test]
 fn test_filesystem_fork_isolation() {
     let mut state = RustSimState::new("amd64").unwrap();
     state
