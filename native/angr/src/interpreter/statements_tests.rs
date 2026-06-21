@@ -262,6 +262,84 @@ fn store_to_concrete_addr_buffers_pending_store() {
     assert_eq!(data, &[0xef, 0xbe, 0xad, 0xde]);
 }
 
+/// angr-1c88c gap 3/7: drive `expressions.rs::build_ite_store_from_callbacks`.
+///
+/// This site is only reachable when `use_rust_memory == false` — during normal
+/// exploration the manager always installs `rust_memory` (stepping.rs
+/// `set_rust_memory`), and `store_with_concretization` handles a `Multiple`
+/// concretization natively (auto-maps candidate pages / silently no-ops for
+/// unmapped ones), so it never falls back to the Python store callbacks. A
+/// `disable_rust_memory` interpreter with the symbolic-value + load-batch
+/// callbacks wired up takes `handle_symbolic_store` → `dispatch_multi_store` →
+/// `build_ite_store_from_callbacks`. For each candidate `a_i` the helper builds
+/// `ITE(addr == a_i, data, mem[a_i])` in Rust's Z3 context and invokes
+/// `memory_store_symbolic_value(a_i, ite)` once per address.
+#[test]
+fn build_ite_store_invokes_per_addr_ite_callbacks() {
+    use pyo3::types::{PyDict, PyList};
+
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    // Site is below the use_rust_memory gate's fallback; the test default is
+    // already callback-mode, but assert it to document the precondition.
+    assert!(!interp.use_rust_memory);
+
+    Python::initialize();
+    Python::attach(|py| {
+        // rustbv_to_claripy imports claripy; skip when it is not importable.
+        if py.import("claripy").is_err() {
+            return;
+        }
+
+        let globals = PyDict::new(py);
+        py.run(
+            c"_rec = []
+def store_cb(addr, ast):
+    _rec.append((addr, ast.op, ast.size()))
+def load_batch(loads):
+    return [(bytes(sz), False, None) for (_a, sz) in loads]
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define recorder callbacks");
+
+        let store_cb = globals.get_item("store_cb").unwrap().unwrap();
+        let load_batch = globals.get_item("load_batch").unwrap().unwrap();
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store_symbolic_value(store_cb.unbind());
+        cb.set_memory_load_batch(load_batch.unbind());
+        assert!(cb.has_memory_store_symbolic_value());
+
+        let addr_expr = RustBV::symbolic(&ctx, "store_addr", 64);
+        let data_val = RustBV::symbolic(&ctx, "store_data", 64);
+        let addrs = [0x1000u64, 0x2000u64];
+
+        interp
+            .build_ite_store_from_callbacks(py, &cb, &addrs, &addr_expr, &data_val)
+            .expect("build_ite_store_from_callbacks");
+
+        let rec = globals.get_item("_rec").unwrap().unwrap();
+        let rec = rec.cast::<PyList>().unwrap();
+        assert_eq!(rec.len(), 2, "one symbolic-value store per candidate addr");
+
+        let mut seen_addrs = Vec::new();
+        for item in rec.iter() {
+            let tup = item.cast::<pyo3::types::PyTuple>().unwrap();
+            let addr: u64 = tup.get_item(0).unwrap().extract().unwrap();
+            let op: String = tup.get_item(1).unwrap().extract().unwrap();
+            let size: u32 = tup.get_item(2).unwrap().extract().unwrap();
+            // Each stored value is the in-Rust ITE chain marshalled to claripy.
+            assert_eq!(op, "If", "stored value must be the ITE chain");
+            assert_eq!(size, 64, "ITE store width matches the data width");
+            seen_addrs.push(addr);
+        }
+        seen_addrs.sort_unstable();
+        assert_eq!(seen_addrs, vec![0x1000, 0x2000]);
+    });
+}
+
 #[test]
 fn loadg_unknown_cvt_surfaces_invalid_ir() {
     use crate::vex::ir::IRLoadGOp;
