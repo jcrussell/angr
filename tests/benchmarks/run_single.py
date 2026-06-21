@@ -126,6 +126,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "angr-4n26m.1 showcase: real-world x86-64 static software (system /usr/bin/busybox, GPLv2 distro artifact, not vendored). Bounded 60-step run from entry_state(args=['busybox','echo',<sym>]). Exercises the Rust VEX interpreter on a large stripped static-glibc binary rather than a CTF crackme. Static IFUNC/IRELATIVE relocs are resolved at load time via angr.callable.Callable -> simulation_manager; run_single's engine-swap monkeypatch excludes /angr/callable.py so those internal resolver states use the Python engine (else the Rust manager rejects their default SimOptions and the binary fails to load). Short run is init-tax-dominated: Rust ~1.4s vs Py ~0.4s (Rust loses on this length; breadth/realism demo, not a raw-speed win — that's angr-4n26m.5's longer workload).",
     },
+    "write_stream_heavy": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "angr-csyy9: write-heavy cle-stream demonstrator. ~192 fputs/fputc/fwrite calls against the cle stdout/stderr FILE* externs on a single concrete path. Under Rust every write-side SimProcedure (puts.rs::fputs, stdio.rs::fputc/fwrite) hits an unmapped lazy page in read_fileno_for_stream -> ProcedureError::Memory -> Python fallback (~100ms/call), so Rust is EXPECTED slower than Python here (known-regression demonstrator, not a speed win). Kept OUT of baseline_timings.json so the rust<python ratio does not trip the gate. Quantifies the write-side fileno fallback cost for csyy9 blocker (2). See bd memory write-side-fileno-fallback-correct.",
+    },
     "ekopartyctf2015_rev100": {
         "tier": "medium",
         "rust_ok": False,
