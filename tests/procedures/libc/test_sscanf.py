@@ -66,6 +66,29 @@ class TestSscanf(unittest.TestCase):
         assert val == 0xDEADBEEF
         assert len(state.solver.constraints) == 0 or state.satisfiable()
 
+    def test_scanf_p_spec_simpackets(self):
+        # Regression for the OTHER interpret() dispatch site: the SimPackets
+        # (stdin packet stream) path constrains input digits in base x/o/else
+        # but lacked %p, so a scanf("%p") from stdin parsed the pointer as
+        # base 10 instead of base 16. The addr-based path got %p in 2f8deb4ca;
+        # this covers the SimPackets path. Binary-free: feed concrete stdin
+        # "10" with %2p -> base 16 yields 0x10 (16), base 10 would yield 10.
+        # Bead angr-rgcfx; see format-parser-three-dispatch-sites memory.
+        import claripy
+
+        p = angr.load_shellcode(b"\x90", arch="amd64")
+        stdin = angr.SimPackets(name="stdin", content=[b"10"], writable=False)
+        state = p.factory.entry_state(stdin=stdin)
+        fmt, out = 0x200000, 0x300000
+        state.memory.store(fmt, b"%2p\x00")
+
+        scanf = angr.SIM_PROCEDURES["libc"]["scanf"]()
+        scanf.execute(state, arguments=[fmt, out])
+
+        val = state.solver.eval(claripy.Extract(63, 0, state.memory.load(out, 8, endness=p.arch.memory_endness)))
+        assert val == 0x10, hex(val)
+        assert state.satisfiable()
+
     def test_sprintf_hex_octal_no_digit_strip(self):
         # Regression for the printf replace() path: commit 129bd9e645 refactored
         # hex(c_val)[2:] -> f"{c_val:x}"[2:] (and the octal analog). hex()/oct()

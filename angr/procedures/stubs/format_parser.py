@@ -155,7 +155,9 @@ class FormatString:
                     num_args += 1
                 else:
                     bits = component.size * 8
-                    if component.spec_type == b"x":
+                    if component.spec_type in (b"x", b"p"):
+                        # %p reads a hex pointer; match the addr-based interpret
+                        # path and the printf side (see 2f8deb4ca).
                         base = 16
                     elif component.spec_type == b"o":
                         base = 8
