@@ -5,6 +5,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 
 # Rust availability guard, binary-path resolution, and the module-scoped
@@ -608,3 +610,100 @@ class TestAdversarial:
         # leave found empty or drop the previously-found target.
         mgr.explore(find=0x4006ED, max_steps=5)
         assert any(s.addr == 0x4006ED for s in mgr.found)
+
+
+class TestBlankStateFallback:
+    """Cover ``_create_blank_state_fallback`` (angr-szg45.1).
+
+    The fallback is the last resort in ``_create_state_for_callback`` when no
+    cached angr state can be found for the callback ``state_id`` (the
+    ``"No cached state for ID"`` branch). The normal fauxware/strlen callback
+    path never produces a cache miss — states are always cached — so this
+    method is otherwise unexercised. A silent failure here is a cat-(c)
+    wrong-answer risk (the caller resumes Rust with a blank/None state), so
+    the three branches are pinned explicitly:
+
+    1. happy path — a forked Rust solver lands on ``scratch.rust_solver_ctx``
+       and registers are synced from the live pending Rust state;
+    2. ``fork_pending_solver`` raising still yields a usable (non-None) state;
+    3. ``blank_state`` raising yields ``None``.
+    """
+
+    def test_fallback_forks_solver_and_syncs_registers(self, fauxware_project):
+        """Happy path: drive a real callback so a live pending Rust state
+        exists, then call the fallback directly and assert it forked the
+        pending solver onto ``scratch`` and synced ``rsp`` from Rust.
+
+        ``_create_blank_state_fallback`` ignores its ``event`` argument
+        entirely (it rebuilds from the live pending state), so passing
+        ``None`` is faithful to its real inputs.
+        """
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        assert main_sym is not None
+        addr = main_sym.rebased_addr + 1  # 0x40071e: mov rbp, rsp
+
+        holder = {}
+        captured = {}
+
+        def hook(state):
+            mgr = holder["mgr"]
+            # Live pending Rust state is set for the duration of this callback.
+            rust_rsp = mgr._rust_mgr.get_pending_register("rsp")
+            fb_state = mgr._create_blank_state_fallback(None)
+            captured["state"] = fb_state
+            captured["rust_rsp"] = rust_rsp
+            if fb_state is not None:
+                ctx = getattr(fb_state.scratch, "rust_solver_ctx", None)
+                captured["ctx"] = ctx
+                if ctx is not None:
+                    captured["num_constraints"] = ctx.num_constraints()
+                captured["fb_rsp"] = fb_state.solver.eval(fb_state.regs.rsp)
+
+        proj.hook(addr, hook=hook, length=0)
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            holder["mgr"] = mgr
+            mgr.run(max_steps=50)
+        finally:
+            proj.unhook(addr)
+
+        assert "state" in captured, "hook never fired — could not exercise the fallback"
+        assert captured["state"] is not None, "fallback returned None on the happy path"
+        assert captured.get("ctx") is not None, "fallback did not fork a Rust solver context onto scratch"
+        assert isinstance(captured.get("num_constraints"), int)
+        assert captured["num_constraints"] >= 0
+        if captured["rust_rsp"] is not None:
+            assert captured["fb_rsp"] == captured["rust_rsp"], (
+                "fallback state rsp does not match the live pending Rust rsp"
+            )
+
+    def test_fallback_survives_solver_fork_failure(self, fauxware_project):
+        """``fork_pending_solver`` raising is caught: the blank state is still
+        returned (without a Rust solver context) rather than ``None``."""
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        fake = mock.MagicMock()
+        fake.fork_pending_solver.side_effect = RuntimeError("forced fork failure")
+        fake.get_pending_register.return_value = None
+        fake.get_pending_register_ast.return_value = None
+        mgr._rust_mgr = fake
+
+        state = mgr._create_blank_state_fallback(None)
+        assert state is not None, "fork failure must not collapse the fallback to None"
+        assert getattr(state.scratch, "rust_solver_ctx", None) is None, (
+            "no Rust solver context should be attached when the fork failed"
+        )
+
+    def test_fallback_returns_none_when_blank_state_raises(self, fauxware_project):
+        """``blank_state`` raising is the cat-(c) path: return ``None`` so the
+        caller treats it as 'no callback state' rather than using a corrupt
+        partially-built state."""
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        with mock.patch.object(proj.factory, "blank_state", side_effect=RuntimeError("forced blank_state failure")):
+            state = mgr._create_blank_state_fallback(None)
+        assert state is None, "blank_state failure must yield None, not a half-built state"
