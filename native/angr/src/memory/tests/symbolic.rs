@@ -29,7 +29,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // [0x1004, 0x100C). Bytes [0x1004, 0x1008) are written by both.
     mem.store_symbolic(addr1.clone(), sym1.clone(), &ctx, &concretizer)
         .expect("store_symbolic addr1 must succeed");
-    mem.store_symbolic(addr2.clone(), sym2.clone(), &ctx, &concretizer)
+    mem.store_symbolic(addr2, sym2, &ctx, &concretizer)
         .expect("store_symbolic addr2 must succeed");
 
     // The base context must remain satisfiable.
@@ -95,7 +95,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
 
     let addr = RustBV::concrete(0x1000, 64);
-    mem.store_symbolic(addr, sym.clone(), &ctx, &concretizer)
+    mem.store_symbolic(addr, sym, &ctx, &concretizer)
         .expect("store_symbolic must succeed");
     assert!(ctx.is_sat(), "context must remain SAT after store");
 
@@ -186,7 +186,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
 
     let addr = RustBV::concrete(0x1000, 64);
-    mem.store_symbolic(addr, sym.clone(), &ctx, &concretizer)
+    mem.store_symbolic(addr, sym, &ctx, &concretizer)
         .expect("store_symbolic must succeed");
     assert!(ctx.is_sat(), "context must remain SAT after store");
 
@@ -835,10 +835,8 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     // Store sym1 at 0x1000 (covers 0x1000..0x1008), then sym2 at
     // 0x1004 (covers 0x1004..0x100C). Bytes 0x1004..0x1008 are now
     // sym2's lower half; bytes 0x1000..0x1004 remain sym1's lower half.
-    mem.store_concrete(0x1000, sym1.clone())
-        .expect("store sym1");
-    mem.store_concrete(0x1004, sym2.clone())
-        .expect("store sym2");
+    mem.store_concrete(0x1000, sym1).expect("store sym1");
+    mem.store_concrete(0x1004, sym2).expect("store sym2");
     assert!(ctx.is_sat(), "context must remain SAT after both stores");
 
     // 8-byte load at 0x1000 must reflect both writes:
@@ -896,7 +894,7 @@ fn test_pending_write_visible_after_flush() {
 
     // Establish a baseline value at 0x1000.
     let baseline = RustBV::concrete(0xAAAA, 16);
-    mem.store_concrete(0x1000, baseline.clone()).unwrap();
+    mem.store_concrete(0x1000, baseline).unwrap();
     let pre = mem.load_concrete(0x1000, 2, &ctx).unwrap();
     assert_eq!(pre.as_u64(), Some(0xAAAA));
 
@@ -904,7 +902,7 @@ fn test_pending_write_visible_after_flush() {
     let new_val = RustBV::concrete(0xBBBB, 16);
     mem.add_pending_write(PendingWrite {
         addr: RustBV::concrete(0x1000, 64),
-        value: new_val.clone(),
+        value: new_val,
         size: 2,
         condition: None,
         page_hint: Some((1, 1)),
@@ -1217,7 +1215,7 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
 
     // Store the 64-bit sym at 0x1000 (covers 0x1000..0x1008).
-    mem.store_concrete(0x1000, sym.clone()).expect("store sym");
+    mem.store_concrete(0x1000, sym).expect("store sym");
 
     // Concrete-overwrite byte 3 (LE: byte 3 of k = 0x44) with 0xFF.
     mem.store_concrete(0x1003, RustBV::concrete(0xFF, 8))
@@ -1256,7 +1254,7 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
 
     // Wider sym at 0x1000 produces span entries at 0x1001..0x1008.
-    mem.store_concrete(0x1000, sym.clone()).expect("store sym");
+    mem.store_concrete(0x1000, sym).expect("store sym");
 
     // Concrete-overwrite byte 3 with 0xFF (the byte covered by the
     // span 0x1003 -> (0x1000, 64)).

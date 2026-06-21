@@ -64,7 +64,7 @@ fn test_smtlib2_constraint_round_trip() {
     // originals because Z3 interns named constants in the context.
     let deserialize_start = Instant::now();
     let new_solver = z3::Solver::new();
-    new_solver.from_string(serialized.clone());
+    new_solver.from_string(serialized);
     let deserialize_ns = deserialize_start.elapsed().as_nanos() as u64;
 
     // Step 3a: check_sat matches.
@@ -148,7 +148,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
 
     let deserialize_start = Instant::now();
     let new_solver = z3::Solver::new();
-    new_solver.from_string(serialized.clone());
+    new_solver.from_string(serialized);
     let deserialize_ns = deserialize_start.elapsed().as_nanos() as u64;
 
     let new_check_start = Instant::now();

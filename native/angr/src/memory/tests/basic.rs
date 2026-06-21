@@ -12,7 +12,7 @@ fn test_memory_concrete() {
     // Store and load
     let addr = RustBV::concrete(0x1000, 64);
     let value = RustBV::concrete(0x12345678, 32);
-    mem.store(&addr, value.clone(), &ctx).unwrap();
+    mem.store(&addr, value, &ctx).unwrap();
 
     let loaded = mem.load(addr, 4, &ctx).unwrap();
     assert_eq!(loaded.as_u64(), Some(0x12345678));

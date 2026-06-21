@@ -700,7 +700,7 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     );
     let value = RustBV::concrete(0xAB, 8);
 
-    mem.store_symbolic_unified(addr_var.clone(), value, &ctx, &concretizer)
+    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
         .expect("non-lazy unmapped candidate must be silently skipped");
 
     // Only the mapped candidate (0x1000) got a Multi cell.

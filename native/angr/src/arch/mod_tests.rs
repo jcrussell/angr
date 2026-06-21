@@ -80,7 +80,7 @@ fn test_register_file_symbolic() {
 
     // Write a symbolic value
     let sym = RustBV::symbolic(&ctx, "rax", 64);
-    regs.put_reg("rax", sym.clone());
+    regs.put_reg("rax", sym);
 
     // Read back
     let rax = regs.get_reg("rax", &ctx).unwrap();

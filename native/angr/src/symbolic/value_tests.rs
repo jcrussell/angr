@@ -1001,7 +1001,7 @@ fn z3_already_dedupes_structurally_equal_rustbv_trees() {
 
     // Two structurally-identical add(x, 5) trees built independently.
     let p1 = x.clone().add_into(RustBV::concrete(5, 32), &ctx);
-    let p2 = x.clone().add_into(RustBV::concrete(5, 32), &ctx);
+    let p2 = x.add_into(RustBV::concrete(5, 32), &ctx);
     let p1_ptr = p1.to_z3_ast().get_z3_ast().as_ptr();
     let p2_ptr = p2.to_z3_ast().get_z3_ast().as_ptr();
     assert_eq!(p1_ptr, p2_ptr, "Z3 should canonicalize add(x,5)");
@@ -1042,7 +1042,7 @@ fn commutative_ops_canonicalize_operand_order() {
     // add(x, c) and add(c, x) → same RustBV → same Z3 AST.
     // (concrete should sort to the right, so both become add(x, c).)
     let r3 = x.clone().add_into(c.clone(), &ctx);
-    let r4 = c.clone().add_into(x.clone(), &ctx);
+    let r4 = c.add_into(x.clone(), &ctx);
     assert_eq!(
         r3.to_z3_ast().get_z3_ast().as_ptr(),
         r4.to_z3_ast().get_z3_ast().as_ptr(),

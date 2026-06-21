@@ -23,7 +23,7 @@ fn test_comparison_ops() {
     let lt = VEXOps::binop(IROp::CmpLTU(IRType::I32), a.clone(), b.clone(), &ctx).unwrap();
     assert_eq!(lt.as_u64(), Some(1));
 
-    let eq = VEXOps::binop(IROp::CmpEQ(IRType::I32), a.clone(), b.clone(), &ctx).unwrap();
+    let eq = VEXOps::binop(IROp::CmpEQ(IRType::I32), a, b, &ctx).unwrap();
     assert_eq!(eq.as_u64(), Some(0));
 }
 

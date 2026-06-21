@@ -105,7 +105,7 @@ fn stored_conditions_take_and_lookup() {
     let mut interp = new_interp(&ctx);
     // Insert a stored condition via the private map; verify take/get behaviour.
     let cond = RustBV::symbolic(&ctx, "cond", 1);
-    interp.stored_conditions.insert(42, cond.clone());
+    interp.stored_conditions.insert(42, cond);
     assert!(interp.get_stored_condition(42).is_some());
     let taken = interp.take_stored_conditions();
     assert_eq!(taken.len(), 1);

@@ -109,7 +109,7 @@ fn test_vec_int_max_symbolic_signed() {
             count: 4,
             signed: true,
         },
-        l.clone(),
+        l,
         r,
         &ctx,
     )

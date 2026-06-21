@@ -33,7 +33,7 @@ fn test_ite_dedup_zero_page_load() {
     assert!(ctx.is_sat(), "four-solution constraint must be SAT");
 
     let loaded = mem
-        .load_symbolic_unified(addr.clone(), 8, &ctx, &concretizer)
+        .load_symbolic_unified(addr, 8, &ctx, &concretizer)
         .expect("zero-page load must succeed");
 
     // Dedup contract: identical zero loads collapse to a single Concrete leaf.
