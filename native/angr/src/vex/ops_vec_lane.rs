@@ -10,7 +10,8 @@
 //! and per-lane widen/narrow (Iop_Widen*, Iop_NarrowUn/NarrowBin). The
 //! saturating narrow (Iop_QNarrow*) family and `saturate_lane` live in the
 //! sibling `ops_vec_saturate` module alongside the rest of the saturation
-//! helpers.
+//! helpers, but both families share the `narrow_lanes` driver defined here
+//! (truncate vs saturate is just the per-lane transform closure).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
@@ -214,6 +215,64 @@ impl VEXOps {
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
+    /// Generic NEON narrow driver shared by the truncating (`Narrow*`, this
+    /// module) and saturating (`QNarrow*`, `ops_vec_saturate`) lane families.
+    ///
+    /// Each operand in `inputs` contributes `per_input` lanes of width
+    /// `from_width`; output lanes (width `to_width`) are emitted low-to-high in
+    /// operand order, giving `inputs.len() * per_input` total lanes. Unary
+    /// narrow passes one operand with `per_input = count`; binary narrow passes
+    /// two with `per_input = count / 2` (left → low half, right → high half).
+    ///
+    /// `concrete_lane` maps one `from_width`-masked input lane to its
+    /// `to_width`-bit output bit pattern (concrete fast path); `symbolic_lane`
+    /// does the same on a `from_width`-bit BV in the symbolic fallback. The
+    /// fast path engages only when every operand is a `u128` *and* both the
+    /// per-operand input width and the packed output width fit in 128 bits.
+    pub(super) fn narrow_lanes(
+        inputs: &[&RustBV],
+        from_width: u32,
+        to_width: u32,
+        per_input: u32,
+        ctx: &SymContext,
+        concrete_lane: impl Fn(u128) -> u128,
+        symbolic_lane: impl Fn(&RustBV, &SymContext) -> RustBV,
+    ) -> RustBV {
+        let total_lanes = inputs.len() as u32 * per_input;
+        let out_width = to_width * total_lanes;
+        let in_width = from_width * per_input;
+
+        // Concrete fast path: every operand must be a u128.
+        if in_width <= 128 && out_width <= 128 {
+            let concretes: Option<Vec<u128>> = inputs.iter().map(|op| op.as_u128()).collect();
+            if let Some(concretes) = concretes {
+                let from_mask = Self::low_bit_mask_u128(from_width);
+                let mut result: u128 = 0;
+                let mut out_lane: u32 = 0;
+                for v in concretes {
+                    for i in 0..per_input {
+                        let lane = (v >> (i * from_width)) & from_mask;
+                        result |= concrete_lane(lane) << (out_lane * to_width);
+                        out_lane += 1;
+                    }
+                }
+                return RustBV::concrete(result, out_width);
+            }
+        }
+
+        // Symbolic fallback: extract each lane, map, concat low-to-high.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(total_lanes as usize);
+        for op in inputs {
+            for i in 0..per_input {
+                let lo = i * from_width;
+                let hi = lo + from_width - 1;
+                let lane = op.extract(hi, lo, ctx);
+                elements.push(symbolic_lane(&lane, ctx));
+            }
+        }
+        Self::concat_le_elements(elements, ctx)
+    }
+
     /// NEON unary narrow (Iop_NarrowUn{N}to{N/2}x{M}). Truncates each lane
     /// from `from.bits()` to `from.bits()/2`.
     pub(super) fn vec_narrow_un(
@@ -224,32 +283,17 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
-        let in_total = from_width * count as u32;
-        debug_assert_eq!(arg.width(), in_total);
-
-        // Concrete fast path.
-        if in_total <= 128
-            && let Some(v) = arg.as_u128()
-        {
-            let to_mask: u128 = Self::low_bit_mask_u128(to_width);
-            let mut result: u128 = 0;
-            for i in 0..count {
-                let lo = (i as u32) * from_width;
-                let lane = (v >> lo) & to_mask;
-                let out_lo = (i as u32) * to_width;
-                result |= lane << out_lo;
-            }
-            return Ok(RustBV::concrete(result, to_width * count as u32));
-        }
-
-        // Symbolic: extract each low half-lane, concat.
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * from_width;
-            let hi = lo + to_width - 1;
-            elements.push(arg.extract(hi, lo, ctx));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
+        debug_assert_eq!(arg.width(), from_width * count as u32);
+        let to_mask = Self::low_bit_mask_u128(to_width);
+        Ok(Self::narrow_lanes(
+            &[&arg],
+            from_width,
+            to_width,
+            count as u32,
+            ctx,
+            |lane| lane & to_mask,
+            |lane, ctx| lane.extract(to_width - 1, 0, ctx),
+        ))
     }
 
     /// NEON binary narrow (Iop_NarrowBin{N}to{N/2}x{M}). Each input has
@@ -265,41 +309,17 @@ impl VEXOps {
         let from_width = from.bits();
         let to_width = from_width / 2;
         let per_input = (count / 2) as u32;
-        let in_total = from_width * per_input;
-        debug_assert_eq!(left.width(), in_total);
-        debug_assert_eq!(right.width(), in_total);
-
-        // Concrete fast path.
-        if in_total <= 128
-            && (to_width * count as u32) <= 128
-            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
-        {
-            let to_mask: u128 = Self::low_bit_mask_u128(to_width);
-            let mut result: u128 = 0;
-            for i in 0..per_input {
-                let lo = i * from_width;
-                let lane_l = (l >> lo) & to_mask;
-                let lane_r = (r >> lo) & to_mask;
-                let out_lo_l = i * to_width;
-                let out_lo_r = (per_input + i) * to_width;
-                result |= lane_l << out_lo_l;
-                result |= lane_r << out_lo_r;
-            }
-            return Ok(RustBV::concrete(result, to_width * count as u32));
-        }
-
-        // Symbolic: extract each low half-lane from both operands, concat.
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..per_input {
-            let lo = i * from_width;
-            let hi = lo + to_width - 1;
-            elements.push(left.extract(hi, lo, ctx));
-        }
-        for i in 0..per_input {
-            let lo = i * from_width;
-            let hi = lo + to_width - 1;
-            elements.push(right.extract(hi, lo, ctx));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
+        debug_assert_eq!(left.width(), from_width * per_input);
+        debug_assert_eq!(right.width(), from_width * per_input);
+        let to_mask = Self::low_bit_mask_u128(to_width);
+        Ok(Self::narrow_lanes(
+            &[&left, &right],
+            from_width,
+            to_width,
+            per_input,
+            ctx,
+            |lane| lane & to_mask,
+            |lane, ctx| lane.extract(to_width - 1, 0, ctx),
+        ))
     }
 }

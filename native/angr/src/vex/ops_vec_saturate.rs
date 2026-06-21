@@ -4,8 +4,9 @@
 //! VEXOps god-file. Declared as a child module of `ops` (via `#[path]` in
 //! ops.rs), so these `pub(super)` methods stay callable from the unop/binop
 //! dispatch in `ops`, and the shared sibling methods they call
-//! (`Self::sign_extend_low_to_i128`, `Self::concat_le_elements`) stay visible
-//! by the descendant-module rule. The lane-level clamp helpers
+//! (`Self::sign_extend_low_to_i128`, `Self::concat_le_elements`, and the
+//! `narrow_lanes` driver in `ops_vec_lane`) stay visible by the
+//! descendant-module rule. The lane-level clamp helpers
 //! (`saturate_lane`, `saturate_lane_symbolic`) are private to this module.
 //!
 //! Covers the saturating narrow family (Iop_QNarrowUn/QNarrowBin), per-lane
@@ -48,6 +49,8 @@ impl VEXOps {
     }
 
     /// NEON unary saturating narrow (Iop_QNarrowUn{N}{S/U}to{N/2}{S/U}x{M}).
+    /// Saturating analog of `vec_narrow_un` — same lane layout via the shared
+    /// `narrow_lanes` driver, with the per-lane truncate swapped for a clamp.
     pub(super) fn vec_qnarrow_un(
         arg: RustBV,
         from: IRType,
@@ -58,39 +61,30 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
-        let in_total = from_width * count as u32;
-        debug_assert_eq!(arg.width(), in_total);
-
-        // Concrete fast path.
-        if in_total <= 128
-            && let Some(v) = arg.as_u128()
-        {
-            let in_mask: u128 = Self::low_bit_mask_u128(from_width);
-            let mut result: u128 = 0;
-            for i in 0..count {
-                let lo = (i as u32) * from_width;
-                let lane = (v >> lo) & in_mask;
-                let sat = Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed);
-                let out_lo = (i as u32) * to_width;
-                result |= sat << out_lo;
-            }
-            return Ok(RustBV::concrete(result, to_width * count as u32));
-        }
-
-        // Symbolic: per-lane ITE clamp.
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * from_width;
-            let hi = lo + from_width - 1;
-            let lane = arg.extract(hi, lo, ctx);
-            elements.push(Self::saturate_lane_symbolic(
-                lane, from_width, to_width, src_signed, dst_signed, ctx,
-            ));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
+        debug_assert_eq!(arg.width(), from_width * count as u32);
+        Ok(Self::narrow_lanes(
+            &[&arg],
+            from_width,
+            to_width,
+            count as u32,
+            ctx,
+            |lane| Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed),
+            |lane, ctx| {
+                Self::saturate_lane_symbolic(
+                    lane.clone(),
+                    from_width,
+                    to_width,
+                    src_signed,
+                    dst_signed,
+                    ctx,
+                )
+            },
+        ))
     }
 
     /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
+    /// Saturating analog of `vec_narrow_bin` — `left` fills the low half,
+    /// `right` the high half, via the shared `narrow_lanes` driver.
     pub(super) fn vec_qnarrow_bin(
         left: RustBV,
         right: RustBV,
@@ -103,52 +97,26 @@ impl VEXOps {
         let from_width = from.bits();
         let to_width = from_width / 2;
         let per_input = (count / 2) as u32;
-        let in_total = from_width * per_input;
-        debug_assert_eq!(left.width(), in_total);
-        debug_assert_eq!(right.width(), in_total);
-
-        // Concrete fast path.
-        if in_total <= 128
-            && (to_width * count as u32) <= 128
-            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
-        {
-            let in_mask: u128 = Self::low_bit_mask_u128(from_width);
-            let mut result: u128 = 0;
-            for i in 0..per_input {
-                let lo = i * from_width;
-                let lane_l = (l >> lo) & in_mask;
-                let lane_r = (r >> lo) & in_mask;
-                let sat_l =
-                    Self::saturate_lane(lane_l, from_width, to_width, src_signed, dst_signed);
-                let sat_r =
-                    Self::saturate_lane(lane_r, from_width, to_width, src_signed, dst_signed);
-                let out_lo_l = i * to_width;
-                let out_lo_r = (per_input + i) * to_width;
-                result |= sat_l << out_lo_l;
-                result |= sat_r << out_lo_r;
-            }
-            return Ok(RustBV::concrete(result, to_width * count as u32));
-        }
-
-        // Symbolic: per-lane clamp from each operand, concatenate.
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..per_input {
-            let lo = i * from_width;
-            let hi = lo + from_width - 1;
-            let lane = left.extract(hi, lo, ctx);
-            elements.push(Self::saturate_lane_symbolic(
-                lane, from_width, to_width, src_signed, dst_signed, ctx,
-            ));
-        }
-        for i in 0..per_input {
-            let lo = i * from_width;
-            let hi = lo + from_width - 1;
-            let lane = right.extract(hi, lo, ctx);
-            elements.push(Self::saturate_lane_symbolic(
-                lane, from_width, to_width, src_signed, dst_signed, ctx,
-            ));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
+        debug_assert_eq!(left.width(), from_width * per_input);
+        debug_assert_eq!(right.width(), from_width * per_input);
+        Ok(Self::narrow_lanes(
+            &[&left, &right],
+            from_width,
+            to_width,
+            per_input,
+            ctx,
+            |lane| Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed),
+            |lane, ctx| {
+                Self::saturate_lane_symbolic(
+                    lane.clone(),
+                    from_width,
+                    to_width,
+                    src_signed,
+                    dst_signed,
+                    ctx,
+                )
+            },
+        ))
     }
 
     /// Symbolic clamp of one `from_width`-bit lane into `to_width` bits.
