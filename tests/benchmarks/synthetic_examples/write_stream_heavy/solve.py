@@ -6,9 +6,12 @@ fwrite) against the cle-loaded ``stdout`` / ``stderr`` FILE* externs. Under
 the Rust engine the native write-side SimProcedures (puts.rs::fputs,
 stdio.rs::fputc/fwrite) call ``read_fileno_for_stream``, which hits an
 unmapped lazy page for the cle stdout/stderr FILE* and returns
-``ProcedureError::Memory`` — the dispatcher then falls back to Python
-(~100ms/call). The fallback is CORRECT (Python resolves the right fd); this
-bench exists to *quantify* that per-call cost so a human can decide whether
+``ProcedureError::Memory`` — the dispatcher then falls back to Python.
+The fallback is CORRECT (Python resolves the right fd); this bench
+exists to *quantify* that per-call cost (measured ~2.8ms/call: 192
+fallbacks, time_in_callbacks 0.534s — NOT the ~100ms/call the
+superseded write-side-fileno-fallback-correct memory estimated) so a
+human can decide whether
 the proper native fix (loader symbol resolution exposed to SimProcedure
 context) is worth building. See bd memory write-side-fileno-fallback-correct
 and task angr-csyy9.
