@@ -7,86 +7,15 @@
 //! (`Self::concat_le_elements`, which stays in ops.rs) stays visible via the
 //! descendant rule.
 //!
-//! Covers per-lane signed/unsigned min-max (Iop_Min/Max{U,S}{N}x{M}), GF(2)
-//! carry-less polynomial multiply (Iop_PolynomialMul/Mull8x{8,16}) and packed
-//! absolute value (Iop_Abs{N}x{M} / PABS*).
+//! Covers GF(2) carry-less polynomial multiply (Iop_PolynomialMul/Mull8x{8,16}).
+//! The per-lane signed/unsigned min-max (Iop_Min/Max{U,S}{N}x{M}) and packed
+//! absolute value (Iop_Abs{N}x{M} / PABS*) families moved to the generic
+//! `vec_int_lane_op` driver (`IMinMax`/`IAbs` in ops.rs).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::ir::IRType;
 
 impl VEXOps {
-    /// Packed integer per-lane min or max. Handles signed/unsigned via the
-    /// `signed` flag and min/max via `is_max`.
-    pub(super) fn vec_int_minmax(
-        left: RustBV,
-        right: RustBV,
-        elem: IRType,
-        count: u8,
-        signed: bool,
-        is_max: bool,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
-
-        // Concrete fast path (only when total fits in u128).
-        if total_width <= 128
-            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
-        {
-            let mut result: u128 = 0;
-            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
-
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-                let l_elem = (l >> lo) & elem_mask;
-                let r_elem = (r >> lo) & elem_mask;
-
-                let pick_left = if signed {
-                    // Sign-extend each lane to i128 for comparison.
-                    let l_signed = Self::sign_extend_low_to_i128(l_elem, elem_width);
-                    let r_signed = Self::sign_extend_low_to_i128(r_elem, elem_width);
-                    if is_max {
-                        l_signed >= r_signed
-                    } else {
-                        l_signed <= r_signed
-                    }
-                } else {
-                    if is_max {
-                        l_elem >= r_elem
-                    } else {
-                        l_elem <= r_elem
-                    }
-                };
-
-                let chosen = if pick_left { l_elem } else { r_elem };
-                result |= (chosen & elem_mask) << lo;
-            }
-            return Ok(RustBV::concrete(result, total_width));
-        }
-
-        // Symbolic per-lane fallback.
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let l_elem = left.extract(hi, lo, ctx);
-            let r_elem = right.extract(hi, lo, ctx);
-
-            // For max: ITE(l >= r, l, r); for min: ITE(l <= r, l, r).
-            let cond = match (signed, is_max) {
-                (true, true) => l_elem.clone().sge_into(r_elem.clone(), ctx),
-                (true, false) => l_elem.clone().sle_into(r_elem.clone(), ctx),
-                (false, true) => l_elem.clone().uge_into(r_elem.clone(), ctx),
-                (false, false) => l_elem.clone().ule_into(r_elem.clone(), ctx),
-            };
-            elements.push(cond.ite_into(l_elem, r_elem, ctx));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
     /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
     /// widening) and `Iop_PolynomialMull8x8` (widening). Per-lane carry-less
     /// multiply over GF(2): the product is the XOR of shifted copies of `b`
@@ -153,57 +82,6 @@ impl VEXOps {
             }
             let lane_out = if widen { acc } else { acc.extract(7, 0, ctx) };
             elements.push(lane_out);
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
-    /// Packed integer per-lane absolute value. Returns the unsigned
-    /// representation of `|signed_lane|`. INT_MIN stays INT_MIN (matches the
-    /// PABS* hardware behavior).
-    pub(super) fn vec_int_abs(
-        arg: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), total_width);
-
-        // Concrete fast path.
-        if total_width <= 128
-            && let Some(v) = arg.as_u128()
-        {
-            let mut result: u128 = 0;
-            let elem_mask: u128 = Self::low_bit_mask_u128(elem_width);
-            let sign_bit: u128 = 1u128 << (elem_width - 1);
-
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-                let elem_val = (v >> lo) & elem_mask;
-                // |x| = (x ^ -1) + 1 when x is negative (two's complement),
-                // otherwise x. Simulated within elem_width bits.
-                let abs_val = if elem_val & sign_bit != 0 {
-                    // -x in elem_width bits = (~x + 1) & mask
-                    ((!elem_val).wrapping_add(1)) & elem_mask
-                } else {
-                    elem_val
-                };
-                result |= abs_val << lo;
-            }
-            return Ok(RustBV::concrete(result, total_width));
-        }
-
-        // Symbolic per-lane fallback: ITE(elem < 0, -elem, elem).
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        let zero = RustBV::concrete(0, elem_width);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let elem_val = arg.extract(hi, lo, ctx);
-            let neg = elem_val.clone().neg_into(ctx);
-            let is_neg = elem_val.clone().slt_into(zero.clone(), ctx);
-            elements.push(is_neg.ite_into(neg, elem_val, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }

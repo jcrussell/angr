@@ -164,6 +164,157 @@ macro_rules! impl_float_lane_minmax {
 impl_float_lane_minmax!(FMin, <, false);
 impl_float_lane_minmax!(FMax, >, true);
 
+/// Maximum arity supported by `IntLaneOp`. Sized for the current set of
+/// per-lane integer ops (unary Abs and binary Add/Sub/Mul/CmpEQ/CmpGT/Min/Max).
+const INT_LANE_OP_MAX_ARITY: usize = 2;
+
+/// Per-lane integer op contract used by `VEXOps::vec_int_lane_op`.
+///
+/// Mirrors [`FloatLaneOp`] for the packed-integer family: each impl provides
+/// BOTH a concrete fast path (operating on `u128` lanes already masked to
+/// `elem_width`) and a symbolic Z3 expression builder, so adding a new op
+/// cannot accidentally drop one of the two branches. Replaces the four
+/// near-identical per-lane loops that lived in `vec_binop`, `vec_cmp`,
+/// `vec_int_minmax`, and `vec_int_abs`.
+trait IntLaneOp {
+    /// Number of operand lanes consumed (1 for unary, 2 for binary).
+    fn arity(&self) -> usize;
+    /// Apply to concrete lanes already masked to `elem_width`. The driver
+    /// re-masks the return value, so impls need not mask the low bits again.
+    fn concrete_lane(&self, lanes: &[u128], elem_width: u32) -> u128;
+    /// Build the symbolic per-lane expression. Must be exactly `elem_width`
+    /// bits wide. `lanes.len() == self.arity()`.
+    fn symbolic_lane(&self, lanes: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV;
+}
+
+struct IAdd;
+struct ISub;
+struct IMul;
+/// Per-lane equality compare; lane is all-ones on equal, all-zeros otherwise.
+struct ICmpEq;
+/// Per-lane signed greater-than; lane is all-ones when `l > r` (signed).
+struct ICmpGtS;
+/// Per-lane signed/unsigned integer min or max.
+struct IMinMax {
+    signed: bool,
+    is_max: bool,
+}
+/// Per-lane absolute value (PABS*); INT_MIN stays INT_MIN.
+struct IAbs;
+
+/// Generate an `IntLaneOp` impl for a wrapping arithmetic binop whose concrete
+/// path is a `u128::wrapping_*` and whose symbolic path is a single RustBV
+/// method.
+macro_rules! impl_int_lane_arith {
+    ($name:ident, $wrapping:ident, $method:ident) => {
+        impl IntLaneOp for $name {
+            fn arity(&self) -> usize {
+                2
+            }
+            fn concrete_lane(&self, a: &[u128], _elem_width: u32) -> u128 {
+                a[0].$wrapping(a[1])
+            }
+            fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
+                a[0].clone().$method(a[1].clone(), ctx)
+            }
+        }
+    };
+}
+
+impl_int_lane_arith!(IAdd, wrapping_add, add_into);
+impl_int_lane_arith!(ISub, wrapping_sub, sub_into);
+impl_int_lane_arith!(IMul, wrapping_mul, mul_into);
+
+impl IntLaneOp for ICmpEq {
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
+        if a[0] == a[1] {
+            VEXOps::low_bit_mask_u128(elem_width)
+        } else {
+            0
+        }
+    }
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+        a[0].clone()
+            .eq_into(a[1].clone(), ctx)
+            .sign_extend_into(elem_width, ctx)
+    }
+}
+
+impl IntLaneOp for ICmpGtS {
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
+        let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
+        let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
+        if l > r {
+            VEXOps::low_bit_mask_u128(elem_width)
+        } else {
+            0
+        }
+    }
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+        a[0].clone()
+            .sgt_into(a[1].clone(), ctx)
+            .sign_extend_into(elem_width, ctx)
+    }
+}
+
+impl IntLaneOp for IMinMax {
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
+        let pick_left = if self.signed {
+            let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
+            let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
+            if self.is_max { l >= r } else { l <= r }
+        } else if self.is_max {
+            a[0] >= a[1]
+        } else {
+            a[0] <= a[1]
+        };
+        if pick_left { a[0] } else { a[1] }
+    }
+    fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
+        let l = a[0].clone();
+        let r = a[1].clone();
+        let cond = match (self.signed, self.is_max) {
+            (true, true) => l.clone().sge_into(r.clone(), ctx),
+            (true, false) => l.clone().sle_into(r.clone(), ctx),
+            (false, true) => l.clone().uge_into(r.clone(), ctx),
+            (false, false) => l.clone().ule_into(r.clone(), ctx),
+        };
+        cond.ite_into(l, r, ctx)
+    }
+}
+
+impl IntLaneOp for IAbs {
+    fn arity(&self) -> usize {
+        1
+    }
+    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
+        let v = a[0];
+        let sign_bit: u128 = 1u128 << (elem_width - 1);
+        // |x| = (~x + 1) when negative (two's complement), else x.
+        if v & sign_bit != 0 {
+            (!v).wrapping_add(1)
+        } else {
+            v
+        }
+    }
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+        let elem_val = a[0].clone();
+        let zero = RustBV::concrete(0, elem_width);
+        let neg = elem_val.clone().neg_into(ctx);
+        let is_neg = elem_val.clone().slt_into(zero, ctx);
+        is_neg.ite_into(neg, elem_val, ctx)
+    }
+}
+
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
 macro_rules! width_unop {
     ($arg:ident, $ty:expr, $method:ident, $ctx:expr) => {{
@@ -490,7 +641,7 @@ impl VEXOps {
             IROp::VFRSqrtEstS { elem } => Self::vec_float_scalar_fresh(arg, elem, "RSqrtEst", ctx),
 
             // Packed integer absolute value
-            IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
+            IROp::VAbs { elem, count } => Self::vec_int_lane_op(&[arg], elem, count, &IAbs, ctx),
 
             // Packed float sqrt / abs (whole vector)
             IROp::VFSqrt { elem, count } => {
@@ -871,9 +1022,15 @@ impl VEXOps {
             }
 
             // Vector arithmetic (element-wise).
-            IROp::VAdd { elem, count } => Self::vec_binop(left, right, elem, count, "add", ctx),
-            IROp::VSub { elem, count } => Self::vec_binop(left, right, elem, count, "sub", ctx),
-            IROp::VMul { elem, count } => Self::vec_binop(left, right, elem, count, "mul", ctx),
+            IROp::VAdd { elem, count } => {
+                Self::vec_int_lane_op(&[left, right], elem, count, &IAdd, ctx)
+            }
+            IROp::VSub { elem, count } => {
+                Self::vec_int_lane_op(&[left, right], elem, count, &ISub, ctx)
+            }
+            IROp::VMul { elem, count } => {
+                Self::vec_int_lane_op(&[left, right], elem, count, &IMul, ctx)
+            }
             IROp::VMulLo { elem, count } => Self::vec_mul_lo(left, right, elem, count, ctx),
 
             // NEON saturating integer add/sub.
@@ -941,8 +1098,12 @@ impl VEXOps {
             }
 
             // Vector compare operations.
-            IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
-            IROp::VCmpGT { elem, count } => Self::vec_cmp(left, right, elem, count, "gt", ctx),
+            IROp::VCmpEQ { elem, count } => {
+                Self::vec_int_lane_op(&[left, right], elem, count, &ICmpEq, ctx)
+            }
+            IROp::VCmpGT { elem, count } => {
+                Self::vec_int_lane_op(&[left, right], elem, count, &ICmpGtS, ctx)
+            }
 
             // NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> lane.
             IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),
@@ -983,14 +1144,30 @@ impl VEXOps {
                 elem,
                 count,
                 signed,
-            } => Self::vec_int_minmax(
-                left, right, elem, count, signed, /*is_max=*/ false, ctx,
+            } => Self::vec_int_lane_op(
+                &[left, right],
+                elem,
+                count,
+                &IMinMax {
+                    signed,
+                    is_max: false,
+                },
+                ctx,
             ),
             IROp::VMax {
                 elem,
                 count,
                 signed,
-            } => Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx),
+            } => Self::vec_int_lane_op(
+                &[left, right],
+                elem,
+                count,
+                &IMinMax {
+                    signed,
+                    is_max: true,
+                },
+                ctx,
+            ),
 
             // Misroute (guard/family drift): degrade to Python fallback
             // instead of panicking. See angr-cudgw.15.
@@ -1565,14 +1742,15 @@ mod vec_set_lo;
 #[path = "ops_vec_float_lane.rs"]
 mod vec_float_lane;
 
-/// Generic packed-integer element-wise binop dispatcher (`vec_binop`, the
-/// add/sub/mul family), extracted from this file (angr-cudgw.18). Declared as
-/// a child module so its `pub(super)` method remains callable from the binop
-/// dispatch above, and the shared sibling it references
-/// (`Self::concat_le_elements`, which stays in this file) stays visible via
-/// the descendant rule.
-#[path = "ops_vec_binop.rs"]
-mod vec_binop;
+/// Generic per-lane packed-integer dispatcher (`vec_int_lane_op`), mirroring
+/// `vec_float_lane` for the integer family (add/sub/mul, eq/gt compare,
+/// signed/unsigned min/max, abs). Declared as a child module so its
+/// `pub(super)` method remains callable from the binop/unop dispatch above,
+/// and the shared siblings it references (`Self::concat_le_elements`,
+/// `Self::low_bit_mask_u128`, the `IntLaneOp` trait, `INT_LANE_OP_MAX_ARITY`,
+/// all of which stay in this file) stay visible via the descendant rule.
+#[path = "ops_vec_int_lane.rs"]
+mod vec_int_lane;
 
 // angr-9hleg: the former monolithic ops_tests.rs (5288 lines) was split by
 // family to mirror the ops_*.rs source modules. Shared SIMD lane-test helpers
