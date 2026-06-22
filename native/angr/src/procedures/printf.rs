@@ -60,6 +60,35 @@ crate::declare_proc! {
     }
 }
 
+crate::declare_proc! {
+    /// Native fprintf implementation (simplified).
+    ///
+    /// ```c
+    /// int fprintf(FILE *stream, const char *format, ...);
+    /// ```
+    ///
+    /// The stream variant of [`NativePrintf`]: resolves `stream->_fileno` and
+    /// writes the RAW format string (no substitution) to that fd via
+    /// `write_fd`, mirroring NativePrintf's stdout write and NativeFputc's fd
+    /// resolution. Like printf, a symbolic format *byte* stops the scan and the
+    /// concrete prefix is written (via `scan_concrete_lossy`); a symbolic
+    /// FILE* or format *address* falls back to Python. Returns the number of
+    /// bytes written, or -1 on a closed/negative fd (matching Python `fprintf`,
+    /// which returns -1 when `simfd is None`).
+    name = "fprintf",
+    struct = NativeFprintf,
+    args = [stream: concrete, fmt_addr: concrete],
+    call |state| {
+        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        if fd < 0 {
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
+        }
+        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_PRINTF_LEN);
+        state.write_fd(fd as u32, &buf);
+        Ok(Some(RustBV::concrete(buf.len() as u128, 32)))
+    }
+}
+
 #[cfg(test)]
 #[path = "printf_tests.rs"]
 mod tests;

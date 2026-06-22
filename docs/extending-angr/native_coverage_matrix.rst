@@ -146,6 +146,11 @@ Stdio output
    * - ``printf``
      - Native
      - Concrete-format fast path; symbolic format string falls back.
+   * - ``fprintf``
+     - Native
+     - Stream variant of ``printf``: resolves ``stream->_fileno`` and
+       writes the raw format string to that fd; symbolic FILE*/format
+       falls back (angr-884yn).
    * - ``sprintf``, ``snprintf``
      - Native
      - Bounded buffer write.

@@ -261,6 +261,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcmp::NativeStrcasecmp));
         registry.register(Arc::new(puts::NativePuts));
         registry.register(Arc::new(printf::NativePrintf));
+        registry.register(Arc::new(printf::NativeFprintf));
         // New procedures (verified safe — no exploration flow changes)
         registry.register(Arc::new(memset::NativeMemset));
         // Fortify-source `_chk` mem wrappers (forward to the base mem procs).
