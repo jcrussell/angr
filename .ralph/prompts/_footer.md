@@ -63,6 +63,23 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 - **Output discipline:** no recap of completed steps, no narrative summaries
   between tool calls. End-of-turn: ≤2 sentences (what changed, what's next).
 
+## CODE QUALITY (DRY / KISS / SOLID — applies to every iteration)
+
+- **DRY** — reuse existing native procs/helpers; never copy-paste a base
+  implementation. Canonical example: a fortify `_chk` proc (`__memcpy_chk`,
+  `__sprintf_chk`, …) **calls the base native proc + adds the bound check** — it
+  does NOT reimplement the copy/format logic. Reuse `format_common` for any
+  format-string work and `mem_common` / `strings` helpers for buffer ops. If you
+  catch yourself writing the same logic twice, extract or call the existing one.
+- **KISS** — make the smallest change that passes the gate + unit tests. No
+  speculative abstraction, no new trait/layer/config knob unless a second caller
+  already needs it. Prefer a boring direct implementation over a clever general one.
+- **SOLID** — one proc family per module, following the existing
+  `procedures/mod.rs` registry + trait pattern (and the syscall equivalent in
+  `syscalls/mod.rs`). Don't widen the public surface; keep the `ProcedureError` /
+  `SyscallError` fallback semantics intact so unsupported cases still defer to
+  Python cleanly.
+
 ## MEMORY SAFETY (7GB box, no swap — these will OOM the loop)
 
 - The iteration runs in a systemd scope capped at **6G** (`memory_limit_bytes`
