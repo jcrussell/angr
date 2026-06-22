@@ -555,3 +555,133 @@ fn test_isoc99_fscanf_basic() {
     assert!(state.memory_load(0x2000, 4).unwrap().as_u64().is_none());
     assert!(state.memory_load(0x2010, 4).unwrap().as_u64().is_none());
 }
+
+#[test]
+fn test_scanf_scanset_basic() {
+    // %[abc] is a string-like conversion; mints symbolic bytes + NUL.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%[abc]\x00", Permission::RWX);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64), // char buf[]
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let first = state.memory_load(0x2000, 1).unwrap();
+    assert!(first.as_u64().is_none(), "scanset first byte should be symbolic");
+    let nul = state.memory_load(0x2000 + MAX_SCANF_STR_LEN, 1).unwrap();
+    assert_eq!(nul.as_u64(), Some(0));
+}
+
+#[test]
+fn test_scanf_scanset_negated_newline() {
+    // %[^\n] is the common "read a whole line" idiom.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%[^\n]\x00", Permission::RWX);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    assert!(state.memory_load(0x2000, 1).unwrap().as_u64().is_none());
+}
+
+#[test]
+fn test_scanf_scanset_with_width_and_literal_bracket() {
+    // Field width caps the NUL offset; a leading ']' is a literal set member,
+    // so the set body is "]a-z" and the conversion terminates at the 2nd ']'.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%5[]a-z]\x00", Permission::RWX);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    // NUL at field-width offset 5.
+    let nul = state.memory_load(0x2005, 1).unwrap();
+    assert_eq!(nul.as_u64(), Some(0));
+}
+
+#[test]
+fn test_scanf_scanset_suppressed_then_int() {
+    // %*[^\n] consumes no pointer arg; the following %d takes the first ptr.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%*[^\n]%d\x00", Permission::RWX);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64), // &int_var (for %d)
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    // Only the %d performs assignment.
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let val = state.memory_load(0x2000, 4).unwrap();
+    assert!(val.as_u64().is_none(), "%d after suppressed scanset should be symbolic");
+}
+
+#[test]
+fn test_scanf_scanset_unterminated_falls_back() {
+    // An unterminated set has no closing ']' — must error so the caller falls
+    // back to Python rather than silently mis-parsing.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%[abc\x00", Permission::RWX);
+
+    let result = NativeScanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(result.is_err(), "unterminated scanset should fall back");
+}

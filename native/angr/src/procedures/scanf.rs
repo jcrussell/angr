@@ -4,7 +4,8 @@
 //! and stores it at the corresponding pointer argument. This eliminates
 //! Python callback overhead for common CTF patterns using scanf for input.
 //!
-//! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %ld, %lld, %lu, %lx, %%
+//! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %[...] scanset,
+//! %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
 use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
@@ -43,6 +44,31 @@ struct ScanfSpec {
     max_str_len: u64,
     /// Whether to suppress assignment (*).
     suppress: bool,
+}
+
+/// Length of a scanset body following `%[`.
+///
+/// `start` is the index of the first byte after the `[`. Returns the number of
+/// bytes to advance from `start` to land just past the closing `]`, or `None`
+/// if the set is unterminated. Handles the two POSIX/glibc literal-`]` cases:
+/// a `]` directly after `[` or after `[^` is a member of the set, not the
+/// closing bracket.
+fn scanset_body_len(fmt: &[u8], start: usize) -> Option<usize> {
+    let mut j = start;
+    if j < fmt.len() && fmt[j] == b'^' {
+        j += 1;
+    }
+    // A ']' in the first position is a literal set member, not the terminator.
+    if j < fmt.len() && fmt[j] == b']' {
+        j += 1;
+    }
+    while j < fmt.len() {
+        if fmt[j] == b']' {
+            return Some(j + 1 - start);
+        }
+        j += 1;
+    }
+    None
 }
 
 /// Parse scanf format specifiers from a format string.
@@ -138,10 +164,27 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 });
             }
             b'[' => {
-                // Character class like %[^\n] — too complex, fall back
-                return Err(ProcedureError::Other(
-                    "scanf %[...] not supported natively".to_string(),
-                ));
+                // Scanset %[...] / %[^...]: matches a run of characters from
+                // (or not in) the bracketed set. Skip past the set body so the
+                // format cursor lands after the closing ']'. The set contents
+                // do not constrain the minted bytes — consistent with how %s
+                // mints fully unconstrained symbolic bytes here (see NativeSscanf
+                // docs). A malformed (unterminated) set falls back to Python.
+                let set_adv = scanset_body_len(fmt, i).ok_or_else(|| {
+                    ProcedureError::Other("scanf %[...]: unterminated set".to_string())
+                })?;
+                i += set_adv;
+                let max_len = if has_width {
+                    field_width
+                } else {
+                    MAX_SCANF_STR_LEN
+                };
+                specs.push(ScanfSpec {
+                    bits: 8,
+                    is_string: true,
+                    max_str_len: max_len,
+                    suppress,
+                });
             }
             b'n' => {
                 // %n writes count of chars read — skip
