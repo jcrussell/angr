@@ -193,7 +193,15 @@ File ops
        ``rewind``
      - Native
      - Allocates ``_IO_FILE`` struct, dispatches through
-       ``FILE._fileno`` (angr-karp).
+       ``FILE._fileno`` (angr-karp). The heap range
+       ``[0xC0000000, 0xC1000000)`` is registered as a lazy region and
+       ``RustSimState::memory_store`` auto-maps lazy pages, so the write of
+       ``_fileno`` into a freshly ``heap_alloc``-ed struct succeeds natively
+       instead of erroring ``Unmapped`` and falling back to Python. Reads of
+       never-written heap stay unmapped (fall back to Python, preserving
+       symbolic-fill). Before this fix every ``fseek``/``fputc``/``fopen``/
+       ``fclose`` on a fresh FILE fell back to Python (e.g. sharif7_rev50:
+       175 -> 44 SimProcedure fallbacks, 0.9s -> 0.32s).
 
 Environment
 ~~~~~~~~~~~

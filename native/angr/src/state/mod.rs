@@ -399,6 +399,26 @@ impl RustSimState {
         Self::new_with_endian(arch_name, None)
     }
 
+    /// Heap region `[heap_base, mmap_base)` — the bump-allocator range. Registered
+    /// as a lazy region in every constructor so native SimProcedures that allocate
+    /// a struct on the heap and immediately write to it (e.g. `fopen` writing the
+    /// fd into a fresh `_IO_FILE`) auto-map the backing page through
+    /// `memory_store` instead of erroring `Unmapped` and falling back to Python.
+    /// Unwritten heap pages stay unmapped, so reads of uninitialized heap still
+    /// surface `Unmapped` and fall back to Python — preserving angr's
+    /// symbolic-fill semantics rather than reading a zero page.
+    const HEAP_REGION_START: u64 = 0xC000_0000;
+    const HEAP_REGION_SIZE: u64 = 0x0100_0000; // [0xC0000000, 0xC1000000) == [heap_base, mmap_base)
+
+    /// Build a fresh `SymbolicMemory` with the heap registered as a lazy region.
+    /// Shared by every `RustSimState` constructor so the heap fast path is
+    /// consistent regardless of which entry point created the state.
+    fn new_state_memory(endness: Endness) -> SymbolicMemory {
+        let mut memory = SymbolicMemory::new(endness);
+        memory.add_lazy_region(Self::HEAP_REGION_START, Self::HEAP_REGION_SIZE);
+        memory
+    }
+
     /// Create a new state with explicit endianness override.
     pub fn new_with_endian(arch_name: &str, little_endian: Option<bool>) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
@@ -410,7 +430,7 @@ impl RustSimState {
         Ok(RustSimState {
             vex_arch,
             registers: RegisterFile::new(arch.clone()),
-            memory: SymbolicMemory::new(endness),
+            memory: Self::new_state_memory(endness),
             solver: Rc::new(RefCell::new(SymContext::new())),
             pc: 0,
             state_id: next_state_id(),
@@ -457,7 +477,7 @@ impl RustSimState {
         RustSimState {
             vex_arch,
             registers: RegisterFile::new(arch.clone()),
-            memory: SymbolicMemory::new(endness),
+            memory: Self::new_state_memory(endness),
             solver: Rc::new(RefCell::new(SymContext::new())),
             pc: 0,
             state_id: next_state_id(),
@@ -514,7 +534,7 @@ impl RustSimState {
         Ok(RustSimState {
             vex_arch,
             registers: RegisterFile::new(arch.clone()),
-            memory: SymbolicMemory::new(endness),
+            memory: Self::new_state_memory(endness),
             solver,
             pc: 0,
             state_id: next_state_id(),
@@ -1225,8 +1245,15 @@ impl RustSimState {
     }
 
     /// Store to memory.
+    ///
+    /// Uses the auto-mapping store so a write to a not-yet-mapped page inside a
+    /// lazy region (e.g. freshly `heap_alloc`-ed memory) maps a zero page and
+    /// succeeds, instead of erroring `Unmapped`. Writes to genuinely unmapped
+    /// addresses outside any lazy region still error so the caller can fall
+    /// back to Python. This is the procedure-facing API; the interpreter has
+    /// its own store paths.
     pub fn memory_store(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
-        self.memory.store_concrete(addr, value)
+        self.memory.store_concrete_automap_internal(addr, value)
     }
 
     /// Load from a symbolic address.

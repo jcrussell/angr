@@ -807,6 +807,11 @@ impl RustExplorationManager {
                             Some(proc_no_return)
                         }
                         Err(e) => {
+                            log::debug!(
+                                "Native procedure {} returned error, falling back to Python: {:?}",
+                                name,
+                                e
+                            );
                             self.profiling.native_proc_stats.python_fallbacks += 1;
                             let bucket = match e {
                                 ProcedureError::SymbolicArgument(_) => {
