@@ -409,6 +409,50 @@ impl NativeSimProcedure for NativeSnprintf {
     }
 }
 
+/// Native vsnprintf implementation.
+///
+/// ```c
+/// int vsnprintf(char *str, size_t size, const char *format, va_list ap);
+/// ```
+///
+/// This deliberately does **not** format. It matches Python angr's
+/// `procedures/libc/vsnprintf.py`, which is a no-op stub: `size == 0`
+/// returns 0; otherwise it stores a single NUL byte at `str` and returns 1.
+/// Reading the `va_list` properly is arch-specific (x86-64 SysV
+/// `reg_save_area`/`gp_offset`) and unmodeled by angr, so a "real" formatter
+/// here would diverge from the Python engine and explore different symbolic
+/// states — violating the faithful-reimplementation invariant. See bd memory
+/// `avoid-vsnprintf-real-formatting`.
+pub struct NativeVsnprintf;
+
+impl NativeSimProcedure for NativeVsnprintf {
+    fn name(&self) -> &'static str {
+        "vsnprintf"
+    }
+
+    fn num_args(&self) -> usize {
+        4 // str + size + format + va_list (format/va_list unused by the stub)
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let dest = extract_concrete_arg(&args[0], "str")?;
+        let size = extract_concrete_arg(&args[1], "size")?;
+
+        let bits = state.arch().bits();
+        if size == 0 {
+            return Ok(Some(RustBV::concrete(0u128, bits)));
+        }
+
+        // Match the Python stub: a single NUL terminator at `str`, return 1.
+        write_cstr(state, dest, &[])?;
+        Ok(Some(RustBV::concrete(1u128, bits)))
+    }
+}
+
 #[cfg(test)]
 #[path = "sprintf_tests.rs"]
 mod sprintf_tests;

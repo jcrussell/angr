@@ -375,3 +375,52 @@ fn test_sprintf_multiple_args() {
     }
     assert_eq!(&out, b"1+2=3");
 }
+
+// --- vsnprintf: matches Python's no-op stub (no %-substitution) ---
+
+#[test]
+fn test_vsnprintf_stub_writes_nul_returns_one() {
+    let mut state = setup_state();
+    // Pre-fill the destination so we can confirm only a single NUL lands.
+    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
+
+    let result = NativeVsnprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // str
+                RustBV::concrete(16, 64),     // size != 0
+                RustBV::concrete(0x1000, 64), // format (ignored)
+                RustBV::concrete(0, 64),      // va_list (ignored)
+            ],
+        )
+        .unwrap();
+
+    // Stub returns 1 and stores exactly one NUL byte at str[0].
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), 0);
+    // Byte after the terminator is untouched (no formatting occurred).
+    assert_eq!(state.memory_load(0x2001, 1).unwrap().as_u64().unwrap(), b'X' as u64);
+}
+
+#[test]
+fn test_vsnprintf_zero_size_returns_zero() {
+    let mut state = setup_state();
+    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
+
+    let result = NativeVsnprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64), // size == 0
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    // size == 0: returns 0 and writes nothing.
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), b'X' as u64);
+}

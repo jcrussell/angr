@@ -368,6 +368,7 @@ impl NativeProcedureRegistry {
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
+        registry.register(Arc::new(sprintf::NativeVsnprintf));
         // Fortify-source `_chk` printf-family wrappers forward to the base
         // printf/sprintf/snprintf procs above (drop the injected flag/slen args).
         registry.register(Arc::new(fortify_printf::NativePrintfChk));
