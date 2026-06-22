@@ -4,6 +4,7 @@ from .base import ExplorationTechnique
 from .bucketizer import Bucketizer
 from .cfg_distance import build_cfg_distance_map, cfg_distance
 from .dfs import DFS
+from .directed_search import DirectedSearch
 from .director import CallFunctionGoal, Director, ExecuteAddressGoal
 from .driller_core import DrillerCore
 from .explorer import Explorer
@@ -29,6 +30,7 @@ __all__ = (
     "DFS",
     "Bucketizer",
     "CallFunctionGoal",
+    "DirectedSearch",
     "Director",
     "DrillerCore",
     "ExecuteAddressGoal",
