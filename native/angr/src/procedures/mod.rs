@@ -85,6 +85,7 @@ pub mod exit;
 pub mod fgets;
 pub mod fileops;
 pub mod format_common;
+pub mod fortify_mem;
 pub mod fread;
 pub mod getenv;
 pub mod libc_start_main;
@@ -260,6 +261,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(printf::NativePrintf));
         // New procedures (verified safe — no exploration flow changes)
         registry.register(Arc::new(memset::NativeMemset));
+        // Fortify-source `_chk` mem wrappers (forward to the base mem procs).
+        registry.register(Arc::new(fortify_mem::NativeMemcpyChk));
+        registry.register(Arc::new(fortify_mem::NativeMemmoveChk));
+        registry.register(Arc::new(fortify_mem::NativeMemsetChk));
+        registry.register(Arc::new(fortify_mem::NativeMempcpyChk));
         registry.register(Arc::new(strcpy::NativeStrcpy));
         registry.register(Arc::new(strcpy::NativeStrncpy));
         registry.register(Arc::new(strlen::NativeStrnlen));
