@@ -287,10 +287,11 @@ impl NativeSyscallRegistry {
         //   as the FD-allocating handlers.
         // fstat (5): native struct-stat write (angr-k3ol.3). Reads
         //   content_len from FileSystem::fd_info(fd) and writes a
-        //   per-arch `struct stat` (AMD64 + ARM64 only — i386/ARM/MIPS32
-        //   use the legacy 32-bit struct stat and have no Python proc).
-        //   st_mode is the concrete S_IFREG|0o755 instead of a fresh
-        //   symbolic BVS (Python's `fstat_with_result` mints one).
+        //   per-arch `struct stat` (AMD64/ARM64 use the 64-bit struct;
+        //   i386/ARM/MIPS32 use the LFS struct stat64 via the `*64` numbers,
+        //   mirroring `fstat64.py`). st_mode is the concrete S_IFREG|0o755
+        //   instead of a fresh symbolic BVS (Python's `fstat_with_result`
+        //   mints one) — except MIPS32, whose `_store_mips32` omits st_mode.
         // stat (4): native path-keyed struct-stat write (angr-k3ol.4).
         //   Resolves pathname via read_path, returns -1 for empty /
         //   unknown paths, otherwise reuses `write_amd64_stat` with
@@ -805,7 +806,20 @@ impl NativeSyscallRegistry {
                 // angr-tvod: 6-arg, args 5-6 from [sp+16] via O32 stack path.
                 (4210, mmap::NativeMmap2Syscall),
                 (4091, munmap::NativeMunmapSyscall),
-                (4107, file_path::NativeLstatSyscall),
+                // Legacy 4106/4107/4108 (old 32-bit struct stat) have no Rust
+                // writer — angr's `fstat.py` only defines MIPS64, not MIPS32,
+                // so legacy stat-family on MIPS32 errors in Python too. Modern
+                // O32 glibc emits the LFS `*64` variants below (struct stat64,
+                // `write_mips32_stat`), so leave the legacy numbers to Python
+                // (angr-11djq.5.3).
+                // LFS stat family — struct stat64 (`write_mips32_stat`).
+                // MIPS-O32 numbers from angr's `mips-o32` map: stat64=4213,
+                // lstat64=4214, fstat64=4215, fstatat64=4293 (no newfstatat
+                // on O32 — uses fstatat64, wired to the same handler).
+                (4213, file_path::NativeStatSyscall),
+                (4214, file_path::NativeLstatSyscall),
+                (4215, file_path::NativeFstatSyscall),
+                (4293, file_path::NativeNewfstatatSyscall),
                 (4125, mprotect::NativeMprotectSyscall),
                 (4133, directory::NativeFchdirSyscall),
                 (4144, memory_extras::NativeMsyncSyscall),

@@ -283,15 +283,20 @@ fn mips32_at_family_uses_angr_divergent_numbers() {
             "MIPS32 {name} must register at angr number {angr_num}",
         );
         if angr_num != upstream_num {
-            // The upstream slot must NOT carry this handler — a +2 edit
-            // toward upstream would land here and de-register the name.
-            // (4287/4292/4293 are unmapped in our native table; 4293 is
-            // angr's fstatat64, which we do not register natively.)
-            assert!(
-                r.get("MIPS32", upstream_num).is_none(),
-                "MIPS32 upstream number {upstream_num} ({name}) must stay \
-                 unregistered — angr's table uses {angr_num}",
-            );
+            // The upstream slot must NOT carry THIS name's handler — a +2
+            // edit toward upstream would land here and de-register the name.
+            // The slot may legitimately hold a *different* handler: since
+            // angr-11djq.5.3, 4293 (upstream renameat) is angr's fstatat64
+            // and IS registered natively, so we check the handler's name
+            // rather than emptiness. (4287/4292 stay unmapped.)
+            if let Some(h) = r.get("MIPS32", upstream_num) {
+                assert_ne!(
+                    h.name(),
+                    name,
+                    "MIPS32 upstream number {upstream_num} must not carry \
+                     {name} — angr's table uses {angr_num}",
+                );
+            }
         }
     }
 }
@@ -756,8 +761,9 @@ fn file_path_stubs_registered_on_all_arches() {
     //   * 32-bit Linux i386 / ARM EABI use the LFS `lstat64` (196) and
     //     `fstatat64` (327) numbers — angr's i386/arm maps have no legacy
     //     106/107 entry — both wired to the lstat / newfstatat handlers
-    //     (angr-11djq.5.1 / .5.2). MIPS32 O32 still uses legacy `lstat`
-    //     (4107) and falls back to Python for `fstatat64`.
+    //     (angr-11djq.5.1 / .5.2). MIPS32 O32 also uses the LFS `lstat64`
+    //     (4214) and `fstatat64` (4293, wired to the newfstatat handler)
+    //     numbers (angr-11djq.5.3) — legacy `lstat` (4107) stays on Python.
     let r = NativeSyscallRegistry::new();
 
     // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
@@ -776,7 +782,7 @@ fn file_path_stubs_registered_on_all_arches() {
         ("X86", Some(196), Some(327), Some(85), 305, 307),
         ("ARM", Some(196), Some(327), Some(85), 332, 334),
         ("ARM64", None, Some(79), None, 78, 48),
-        ("MIPS32", Some(4107), None, Some(4085), 4298, 4300),
+        ("MIPS32", Some(4214), Some(4293), Some(4085), 4298, 4300),
         // N64 keeps lstat (5006) and adds newfstatat (5252).
         ("MIPS64", Some(5006), Some(5252), Some(5087), 5257, 5259),
     ];
