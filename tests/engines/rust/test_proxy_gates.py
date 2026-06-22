@@ -146,6 +146,42 @@ class TestProxyLiskovGaps:
         with pytest.raises(NotImplementedError, match="AMD64"):
             proxy.regs.load(7777, 8)
 
+    def test_solver_proxy_min_max_width_gt128_falls_back(self, fauxware_project):
+        """angr-fjhk9: ``RustSolverProxy.min``/``max`` (the ``RustStateProxy``
+        solver, distinct from the callback ``RustSolverProxyPlugin``) must NOT
+        mislabel a satisfiable >128-bit extremum as unsat. A wide bound the
+        Rust ``u128`` solver can't hold falls back to claripy's big-int solver
+        over the exported constraints (shared ``_resolve_none_extremum`` helper,
+        same disambiguation as the ``RustSolverFallback`` twin, angr-8iv6j)."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        wide = claripy.BVS("stateproxy_wide_gt128", 160)
+        proxy.solver._ensure_solver()
+        assert proxy.solver._solver_ctx.min(wide) is None
+        assert proxy.solver.min(wide) == 0
+        assert proxy.solver.max(wide) == (1 << 160) - 1
+
+    def test_solver_proxy_min_unsat_still_raises(self, fauxware_project):
+        """angr-fjhk9: a genuinely unsat ``RustSolverProxy`` ctx still raises
+        ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        u = claripy.BVS("stateproxy_unsat", 32)
+        proxy.solver.add(u == 1)
+        proxy.solver.add(u == 2)  # contradictory -> unsat
+        with pytest.raises(claripy.errors.UnsatError):
+            proxy.solver.min(u)
+        with pytest.raises(claripy.errors.UnsatError):
+            proxy.solver.max(u)
+
     def test_register_load_wrong_type(self, fauxware_project):
         """A float/None arg is a programming error, not an offset miss."""
 
@@ -798,6 +834,51 @@ class TestCallbackSolverProxyGate:
         cb_state.solver.add(sym == 0x33)
         assert cb_state.solver.satisfiable() is True
         assert cb_state.solver.eval(sym) == 0x33
+
+    def test_proxy_min_max_width_gt128_falls_back(self, fauxware_project):
+        """angr-fjhk9: ``RustSolverProxyPlugin.min``/``max`` must NOT mislabel a
+        satisfiable >128-bit extremum as unsat.
+
+        ``RustSolverContext.min``/``max`` return ``None`` for BOTH unsat and
+        ``width > 128`` (solving_ops.rs). Pre-fix the plugin raised
+        ``UnsatError`` on any ``None``, killing a valid state. Post-fix a
+        satisfiable wide bound falls back to claripy's big-int solver over the
+        exported constraints (same disambiguation as the ``RustSolverFallback``
+        twin, angr-8iv6j; keeps the four solver-shim sites in sync).
+        """
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        wide = claripy.BVS("plugin_wide_gt128", 160)
+        # Trigger is genuine: the forked Rust ctx can't bound a >128-bit symbol.
+        assert cb_state.solver._get_rust_ctx().min(wide) is None
+        # Post-fix: claripy big-int fallback yields the true bounds, not UnsatError.
+        assert cb_state.solver.min(wide) == 0
+        assert cb_state.solver.max(wide) == (1 << 160) - 1
+
+    def test_proxy_min_unsat_still_raises(self, fauxware_project):
+        """angr-fjhk9: a genuinely unsat plugin ctx still raises
+        ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        u = claripy.BVS("plugin_unsat", 32)
+        cb_state.solver.add(u == 1)
+        cb_state.solver.add(u == 2)  # contradictory -> unsat
+        with pytest.raises(claripy.errors.UnsatError):
+            cb_state.solver.min(u)
+        with pytest.raises(claripy.errors.UnsatError):
+            cb_state.solver.max(u)
 
     def test_proxy_bvs_delegates_to_claripy(self, fauxware_project):
         """``BVS`` / ``BVV`` delegate to claripy and accept the tracking key."""

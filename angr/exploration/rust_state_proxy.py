@@ -86,6 +86,39 @@ def _with_extra_constraints(ctx, fn, *args, extra=(), **kwargs):
     return fn(*args, **kwargs)
 
 
+def _resolve_none_extremum(kind, expr, constraints, extra_constraints, signed, satisfiable_fn):
+    """Resolve a ``None`` result from ``RustSolverContext.min``/``max``.
+
+    The Rust solver returns ``None`` for BOTH an unsat context and a
+    *satisfiable* extremum wider than ``u128`` (``solving_ops.rs``). The two
+    proxy ``min``/``max`` sites previously raised ``UnsatError`` on any
+    ``None``, so a valid >128-bit bound was mislabeled unsat and the state was
+    killed (angr-fjhk9). Disambiguate using the same logic as the
+    ``RustSolverFallback`` twin (angr-8iv6j), keeping the four solver-shim
+    sites in sync (``invariant-rust-solver-fallback-class``):
+
+    * genuinely unsat -> raise ``claripy.errors.UnsatError``. This preserves
+      the proxy-wide exception-type convention (the export.py twin raises
+      ``SimUnsatError`` instead — that divergence is intentional; the proxies
+      raise ``claripy.errors.UnsatError`` everywhere, incl. ``eval``, and a
+      test asserts it). ``satisfiable_fn`` is cheap: the Rust solver caches the
+      sat result from the ``min``/``max`` call above.
+    * satisfiable but width>128 -> fall back to claripy's big-int solver over
+      the exported constraints, which CAN bound it. This path is currently
+      unreachable via 64-bit address concretization, so the export cost never
+      materializes in practice.
+    """
+    if not satisfiable_fn():
+        raise claripy.errors.UnsatError("unsat")
+    solver = claripy.Solver()
+    cons = list(constraints)
+    if extra_constraints:
+        cons.extend(extra_constraints)
+    if cons:
+        solver.add(cons)
+    return solver.min(expr, signed=signed) if kind == "min" else solver.max(expr, signed=signed)
+
+
 class _SolutionCountMixin:
     """Shared solution-count wrappers for the two solver proxies.
 
@@ -182,9 +215,16 @@ class RustSolverProxy(_SolutionCountMixin):
         result = _with_extra_constraints(
             self._solver_ctx, self._solver_ctx.min, expr, extra=extra_constraints, signed=signed
         )
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return result
+        if result is not None:
+            return result
+        return _resolve_none_extremum(
+            "min",
+            expr,
+            self.constraints,
+            extra_constraints,
+            signed,
+            lambda: self.satisfiable(extra_constraints=extra_constraints),
+        )
 
     def max(self, expr, extra_constraints=(), signed=False, **kwargs):
         """Get maximum value of expression."""
@@ -192,9 +232,16 @@ class RustSolverProxy(_SolutionCountMixin):
         result = _with_extra_constraints(
             self._solver_ctx, self._solver_ctx.max, expr, extra=extra_constraints, signed=signed
         )
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return result
+        if result is not None:
+            return result
+        return _resolve_none_extremum(
+            "max",
+            expr,
+            self.constraints,
+            extra_constraints,
+            signed,
+            lambda: self.satisfiable(extra_constraints=extra_constraints),
+        )
 
     def add(self, *constraints):
         """Add constraint(s) to the solver."""
@@ -522,16 +569,30 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
     def min(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
         ctx = self._get_rust_ctx()
         result = _with_extra_constraints(ctx, ctx.min, expr, extra=extra_constraints, signed=signed)
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return result
+        if result is not None:
+            return result
+        return _resolve_none_extremum(
+            "min",
+            expr,
+            self.constraints,
+            extra_constraints,
+            signed,
+            lambda: self.satisfiable(extra_constraints=extra_constraints),
+        )
 
     def max(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
         ctx = self._get_rust_ctx()
         result = _with_extra_constraints(ctx, ctx.max, expr, extra=extra_constraints, signed=signed)
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return result
+        if result is not None:
+            return result
+        return _resolve_none_extremum(
+            "max",
+            expr,
+            self.constraints,
+            extra_constraints,
+            signed,
+            lambda: self.satisfiable(extra_constraints=extra_constraints),
+        )
 
     def is_true(self, expr, extra_constraints=(), **kwargs):
         expr = self._unwrap_constraint(expr)
