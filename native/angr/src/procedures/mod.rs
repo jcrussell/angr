@@ -97,6 +97,7 @@ pub mod memcmp;
 pub mod memcpy;
 pub mod memset;
 pub mod printf;
+pub mod pthread;
 pub mod puts;
 pub mod python_proc;
 pub mod rand;
@@ -292,6 +293,10 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(exit::NativeStackChkFail));
         registry.register(Arc::new(rand::NativeRand));
         registry.register(Arc::new(rand::NativeSrand));
+        // pthread mutex no-ops (single-path symex => locks always succeed,
+        // matching Python pthread_mutex_lock/unlock `return 0`).
+        registry.register(Arc::new(pthread::NativePthreadMutexLock));
+        registry.register(Arc::new(pthread::NativePthreadMutexUnlock));
         // Heap procedures (bump allocator, matching SimHeapBrk)
         registry.register(Arc::new(malloc::NativeMalloc));
         registry.register(Arc::new(malloc::NativeFree));
