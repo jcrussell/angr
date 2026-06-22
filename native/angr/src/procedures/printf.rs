@@ -28,9 +28,15 @@ crate::declare_proc! {
     ///
     /// printf is variadic, but we only read the (concrete) format string.
     /// Returns a non-negative value (number of characters printed).
+    ///
+    /// Aliased to `vprintf(const char *format, va_list ap)`: since the native
+    /// impl never substitutes (it writes the raw format string), the trailing
+    /// `va_list` is irrelevant and `format` is arg 0 either way, so vprintf is
+    /// byte-for-byte identical to printf — no separate impl needed (DRY).
     name = "printf",
     struct = NativePrintf,
     args = [fmt_addr: concrete],
+    aliases = ["vprintf"],
     call |state| {
         // Read the format string byte-by-byte from memory
         let mut buf = Vec::new();
@@ -75,9 +81,16 @@ crate::declare_proc! {
     /// FILE* or format *address* falls back to Python. Returns the number of
     /// bytes written, or -1 on a closed/negative fd (matching Python `fprintf`,
     /// which returns -1 when `simfd is None`).
+    ///
+    /// Aliased to `vfprintf(FILE *stream, const char *format, va_list ap)`:
+    /// like the printf/vprintf pair, the native impl writes the raw format
+    /// string without substitution, so the trailing `va_list` is irrelevant
+    /// and `stream`/`format` are args 0/1 either way — vfprintf is identical
+    /// to fprintf (DRY).
     name = "fprintf",
     struct = NativeFprintf,
     args = [stream: concrete, fmt_addr: concrete],
+    aliases = ["vfprintf"],
     call |state| {
         let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
         if fd < 0 {

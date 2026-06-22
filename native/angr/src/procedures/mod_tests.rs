@@ -112,3 +112,25 @@ fn test_char_io_unlocked_aliases_dispatch() {
         );
     }
 }
+
+#[test]
+fn test_vprintf_family_aliases_dispatch() {
+    // The native printf core writes the raw format string without
+    // substitution, so the va_list variants `vprintf = printf` and
+    // `vfprintf = fprintf` are behaviorally identical (format/stream live at
+    // the same arg slots; the trailing va_list is ignored). They register via
+    // the declare_proc! `aliases` mechanism rather than a duplicate impl (DRY).
+    let registry = NativeProcedureRegistry::new();
+    for (base, alias) in [("printf", "vprintf"), ("fprintf", "vfprintf")] {
+        assert!(registry.has_native(base), "{base} should be native");
+        assert!(
+            registry.has_native(alias),
+            "{alias} should resolve via alias"
+        );
+        assert_eq!(
+            registry.get(alias).map(|p| p.name()),
+            registry.get(base).map(|p| p.name()),
+            "{alias} should dispatch to the {base} impl",
+        );
+    }
+}
