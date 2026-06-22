@@ -60,6 +60,34 @@ class TestExplorationStrategy:
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
             mgr.set_exploration_strategy("random")
 
+    def test_uniqueness_filter_knobs(self, fauxware_project):
+        """register/disable/enabled uniqueness-filter knobs are wired to Rust.
+
+        Python-only wiring (angr-11djq.1): the native filter is already
+        tunable in Rust; this exercises the RustExplorationManager forwarders.
+        """
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Fresh manager: filter off, empty seen-set.
+        assert mgr.uniqueness_filter_enabled() is False
+        assert mgr.uniqueness_set_size() == 0
+
+        # Enabling with register names flips the flag.
+        mgr.register_uniqueness_filter(["rip"])
+        assert mgr.uniqueness_filter_enabled() is True
+
+        # Re-registering replaces the filter and resets the seen-set.
+        mgr.register_uniqueness_filter(["rax", "rbx"])
+        assert mgr.uniqueness_filter_enabled() is True
+        assert mgr.uniqueness_set_size() == 0
+
+        # Disabling clears the flag again.
+        mgr.disable_uniqueness_filter()
+        assert mgr.uniqueness_filter_enabled() is False
+        assert mgr.uniqueness_set_size() == 0
+
     def test_dfs_technique_auto_detection(self, fauxware_project):
         """Test that angr DFS technique is auto-detected."""
 

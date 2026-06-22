@@ -3729,6 +3729,30 @@ class RustExplorationManager(
         else:
             raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs' or 'dfs'.")
 
+    def register_uniqueness_filter(self, register_names: list[str]):
+        """Enable the native uniqueness filter keyed on the given registers.
+
+        States whose listed-register values collide with an already-seen
+        combination are dropped, collapsing reconverging paths. Pass the
+        register names (e.g. ``["rip"]`` or ``["rax", "rbx"]``) the filter
+        should hash. Replaces any previously-registered filter and resets its
+        seen-set. See the Rust core
+        (``exploration/mod.rs::register_uniqueness_filter``).
+        """
+        self._rust_mgr.register_uniqueness_filter(list(register_names))
+
+    def disable_uniqueness_filter(self):
+        """Disable the native uniqueness filter and clear its seen-set."""
+        self._rust_mgr.disable_uniqueness_filter()
+
+    def uniqueness_filter_enabled(self) -> bool:
+        """Return True if the native uniqueness filter is currently active."""
+        return self._rust_mgr.uniqueness_filter_enabled()
+
+    def uniqueness_set_size(self) -> int:
+        """Return the number of distinct register-combinations seen so far."""
+        return self._rust_mgr.uniqueness_set_size()
+
     def explore(
         self,
         find: int | list | Callable | None = None,
