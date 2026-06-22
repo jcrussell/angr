@@ -46,6 +46,16 @@ pub struct FileDescriptor {
     pub content: Vec<u8>,
     /// Whether the fd is currently open.
     pub is_open: bool,
+    /// When true and the concrete `content` buffer is empty/consumed, reads
+    /// mint fresh symbolic bytes natively (the stdin model) instead of
+    /// falling back to Python. Models an fd backed by a symbolic stream
+    /// (`SimPackets`), like stdin — NOT a bounded symbolic *file* with a
+    /// finite symbolic size (that EOF-aware case is still deferred; reads on
+    /// a symbolic-stream fd never hit EOF). Defaults false; `#[serde(default)]`
+    /// keeps pre-angr-11djq.6.1 snapshots loadable (reconstitutes to a
+    /// concrete-only fd, the prior behavior). Set only via `open_symbolic`.
+    #[serde(default)]
+    pub symbolic: bool,
 }
 
 impl FileDescriptor {
@@ -57,6 +67,7 @@ impl FileDescriptor {
             flags,
             content: Vec::new(),
             is_open: true,
+            symbolic: false,
         }
     }
 
@@ -68,6 +79,20 @@ impl FileDescriptor {
             flags,
             content,
             is_open: true,
+            symbolic: false,
+        }
+    }
+
+    /// Create a new symbolic-stream file descriptor (empty content, reads
+    /// mint fresh symbolic bytes). See [`FileDescriptor::symbolic`].
+    pub fn new_symbolic(name: String, flags: FdFlags) -> Self {
+        FileDescriptor {
+            name,
+            position: 0,
+            flags,
+            content: Vec::new(),
+            is_open: true,
+            symbolic: true,
         }
     }
 }
@@ -217,6 +242,30 @@ impl FileSystem {
         Arc::make_mut(&mut self.known_paths).insert(name.clone());
         Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::with_content(name, flags, content));
         fd
+    }
+
+    /// Open a symbolic-stream file descriptor: empty content, flagged so
+    /// that reads mint fresh symbolic bytes natively (the stdin model)
+    /// rather than falling back to Python. Returns the allocated fd number.
+    ///
+    /// Like `open` / `open_with_content`, this is a seeding API with no
+    /// production Python caller yet (tests + future state-export wiring) —
+    /// the open/openat syscall path still uses the content-less `open`, so
+    /// a real binary's `open()` is unaffected. See
+    /// `FileDescriptor::symbolic` for the stream-vs-bounded-file distinction.
+    pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        Arc::make_mut(&mut self.known_paths).insert(name.clone());
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new_symbolic(name, flags));
+        fd
+    }
+
+    /// True if `fd` is open and flagged as a symbolic stream (reads mint
+    /// fresh symbolic bytes once the concrete buffer is consumed). Drives
+    /// the symbolic-read branch of `NativeReadSyscall`.
+    pub fn is_symbolic(&self, fd: u32) -> bool {
+        self.fds.get(&fd).is_some_and(|d| d.is_open && d.symbolic)
     }
 
     /// Register an existing-file path without allocating an fd. Used by

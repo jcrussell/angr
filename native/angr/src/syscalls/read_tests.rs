@@ -183,6 +183,64 @@ fn read_empty_content_fd_falls_back() {
 }
 
 #[test]
+fn read_symbolic_fd_serves_symbolic_bytes_natively() {
+    // A symbolic-stream fd (empty content, flagged symbolic) mints fresh
+    // symbolic bytes natively instead of falling back to Python.
+    let h = NativeReadSyscall;
+    let mut state = fresh_state_with_buf();
+    let fd = state
+        .file_system()
+        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly);
+    assert!(state.file_system_ref().is_symbolic(fd));
+
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .expect("ok");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 4),
+        _ => panic!("expected Continue"),
+    }
+    for i in 0..4u64 {
+        let byte = state.memory_load(0x2000 + i, 1).expect("loaded");
+        assert!(byte.as_u64().is_none(), "byte {} should be symbolic", i);
+    }
+}
+
+#[test]
+fn read_symbolic_fd_never_hits_eof() {
+    // Unlike a concrete fd, a symbolic stream keeps producing bytes — a
+    // second read still returns `count` (no EOF).
+    let h = NativeReadSyscall;
+    let mut state = fresh_state_with_buf();
+    let fd = state
+        .file_system()
+        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly);
+    for _ in 0..2 {
+        let outcome = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(3, 64),
+                ],
+            )
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+            _ => panic!("expected Continue"),
+        }
+    }
+}
+
+#[test]
 fn read_closed_fd_falls_back() {
     let h = NativeReadSyscall;
     let mut state = fresh_state_with_buf();

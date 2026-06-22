@@ -73,7 +73,7 @@ impl NativeSyscall for NativeReadSyscall {
         }
 
         if fd == 0 {
-            return read_stdin_symbolic(state, buf, count);
+            return read_symbolic(state, buf, count, "sys_read");
         }
 
         let fd_u32 = fd as u32;
@@ -88,6 +88,12 @@ impl NativeSyscall for NativeReadSyscall {
             )));
         }
         if content_len == 0 {
+            // No concrete bytes left. A symbolic-stream fd (the stdin model)
+            // mints fresh symbolic bytes natively; any other fd defers to
+            // Python's symbolic-file model.
+            if state.file_system_ref().is_symbolic(fd_u32) {
+                return read_symbolic(state, buf, count, &format!("sys_read_fd{fd}"));
+            }
             return Err(SyscallError::Other(format!(
                 "read from fd={} has no concrete content; falling back to Python",
                 fd
@@ -103,10 +109,15 @@ impl NativeSyscall for NativeReadSyscall {
     }
 }
 
-fn read_stdin_symbolic(
+/// Mint `count` fresh symbolic bytes named `<prefix>_<id>_<i>` into `buf` and
+/// return `count` in rax. Shared by the stdin path (fd 0) and symbolic-stream
+/// fds. The `prefix` disambiguates per-fd names; `SYS_READ_COUNTER` keeps each
+/// call's bytes uniquely named even at the same callsite.
+fn read_symbolic(
     state: &mut RustSimState,
     buf: u64,
     count: u64,
+    prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
     let read_id = SYS_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
 
@@ -114,7 +125,7 @@ fn read_stdin_symbolic(
         let ctx = state.solver().borrow();
         (0..count)
             .map(|i| {
-                let name = format!("sys_read_{}_{}", read_id, i);
+                let name = format!("{}_{}_{}", prefix, read_id, i);
                 RustBV::symbolic(&ctx, &name, 8)
             })
             .collect()
