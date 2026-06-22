@@ -131,6 +131,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "angr-11djq.3 (T1c): bounded real-binary bench — reach getenv@libc in xmllint (libxml2 x86-64 PIE, vendored in angr-examples/xmllint/). De-risked single-state slice (iter11 probe, bd memory xmllint-path-b-tractability-probe): symbolic 16B stdin + standard CLI opts stays single-state through deterministic startup, reaches getenv (use_sim_procedures=True hooks it inside libc, so the find target is the resolved symbol addr, NOT the main-object PLT stub which is bypassed). Rust ~3.5s vs Py ~3.84s (~1.1x), 1 found state, peak ~364MB. Syscall->Python fallbacks 0; SimProc fallbacks 27 (calloc/getenv/malloc/pthread_*/strcmp/time — intentional Python libc). Wrapper in synthetic_examples/; resolves binary via ANGR_EXAMPLES_DIR. Marked rust_only in FAST_SUITE (realism/fallback-surface bench, not a speed win).",
     },
+    "fp_simd_kernel": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "angr-amtxu: FP/SIMD coverage fixture. Single concrete non-forking path driving SSE scalar FP (sqrtsd/divsd/mulsd/addsd/ucomisd) + -O3 auto-vectorized packed SIMD (mulps/addps, 32 in the binary) through the Rust VEX interpreter. The rest of the corpus is integer/string-bound, so vex_fallback_count / vecret_gsptr_fallback_count read ZERO everywhere (bd memory benchmark-vecret-gsptr-corpus-zero) and the native FP/SIMD path had no measured coverage. Vendored gcc -O3 -fno-math-errno -no-pie binary (write_stream_heavy pattern); no libc calls in the kernel so SimProc fallbacks cannot pollute the FP/SIMD measurement. Read vex_fallback_count in --dump-counters; non-zero re-opens native FP/SIMD handler work. Wrapper in synthetic_examples/.",
+    },
     "write_stream_heavy": {
         "tier": "fast",
         "rust_ok": True,

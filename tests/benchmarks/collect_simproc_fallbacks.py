@@ -81,9 +81,15 @@ CANDIDATE_BENCHES = [
     "mips32_le_branch",
     "mips64_le_branch",
     "mips64_be_branch",
-    # NOTE: no FP/SIMD-heavy workload exists in the corpus yet — the CTF
-    # crackmes and synthetic fixtures are all integer/string-bound. A
-    # dedicated FP/SIMD bench would need a new fixture (left for a follow-up).
+    # === angr-amtxu corpus-add: FP/SIMD-heavy workload ===
+    # The CTF crackmes + other synthetic fixtures are all integer/string-
+    # bound, so vex_fallback_count / vecret_gsptr_fallback_count read ZERO
+    # everywhere and the native VEX FP/SIMD interpreter path has no measured
+    # coverage. fp_simd_kernel is an in-repo synthetic (vendored gcc -O3
+    # binary, always present) whose concrete path drives SSE scalar FP
+    # (sqrtsd/divsd/mulsd) + auto-vectorized packed SIMD (mulps/addps). A
+    # non-zero VEX-fallback reading here re-opens native FP/SIMD handler work.
+    "fp_simd_kernel",
 ]
 
 # angr-internal SimProcedure stubs that are intentionally Python and have no
