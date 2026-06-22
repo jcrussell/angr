@@ -230,6 +230,26 @@ FAST_SUITE = [
     # syscall_python_fallback_count (currently 0) so the round-1 syscall
     # beads have a real-binary measurement surface — see the bead notes.
     ("xmllint_getenv", 30, "bfs", True),
+    # ctype/fprintf native-coverage micro-bench (angr-11djq.20). A tiny
+    # checked-in x86-64 ELF (tests/benchmarks/synthetic_examples/
+    # cli_ctype_fprintf/) that runs four symbolic stdin bytes through an
+    # isdigit short-circuit chain, fanning out to five leaf states and
+    # reaching a ``win`` marker on the all-digits path. It is the first gate
+    # entry that exercises __ctype_b_loc at all: the rest of the corpus is
+    # CTF-heavy and only touches fprintf incidentally (sharif7_rev50), so the
+    # locale-ctype (angr-tx7ec.4) and fprintf (angr-884yn) native procs had
+    # unit tests but no end-to-end coverage. Both fall back to Python in this
+    # end-to-end harness (the __ctype_b_loc classifier table is built by
+    # __libc_start_main *during* exploration, after the Rust seed is captured,
+    # so the table ptr is null at native dispatch; fprintf stderr/stdout awaits
+    # write-side fileno resolution, angr-csyy9) — so what the bench gates is the
+    # ctype/fprintf dispatch + fallback path, the regression surface nothing
+    # else in the corpus exercises. See the solve.py docstring for the detail.
+    # rust_only=True: a native-coverage / fallback-measurement surface, not a
+    # speed-win bench (Rust ~0.35s vs Python ~1.1s). Driver builds its manager
+    # through proj.factory.simulation_manager so run_single swaps in the Rust
+    # engine transparently. Inspect with --dump-counters.
+    ("cli_ctype_fprintf", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full

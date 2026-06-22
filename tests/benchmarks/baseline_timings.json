@@ -270,5 +270,13 @@
     "rust_time": 3.5,
     "state_creations": 0,
     "steps": 0
+  },
+  "cli_ctype_fprintf": {
+    "callback_count": 5,
+    "peak_memory_mb": 200.0,
+    "python_time": null,
+    "rust_time": 0.4,
+    "state_creations": 0,
+    "steps": 2
   }
 }
