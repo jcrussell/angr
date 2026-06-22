@@ -579,7 +579,10 @@ fn test_scanf_scanset_basic() {
 
     assert_eq!(result.unwrap().as_u64(), Some(1));
     let first = state.memory_load(0x2000, 1).unwrap();
-    assert!(first.as_u64().is_none(), "scanset first byte should be symbolic");
+    assert!(
+        first.as_u64().is_none(),
+        "scanset first byte should be symbolic"
+    );
     let nul = state.memory_load(0x2000 + MAX_SCANF_STR_LEN, 1).unwrap();
     assert_eq!(nul.as_u64(), Some(0));
 }
@@ -661,7 +664,10 @@ fn test_scanf_scanset_suppressed_then_int() {
     // Only the %d performs assignment.
     assert_eq!(result.unwrap().as_u64(), Some(1));
     let val = state.memory_load(0x2000, 4).unwrap();
-    assert!(val.as_u64().is_none(), "%d after suppressed scanset should be symbolic");
+    assert!(
+        val.as_u64().is_none(),
+        "%d after suppressed scanset should be symbolic"
+    );
 }
 
 #[test]
@@ -684,4 +690,29 @@ fn test_scanf_scanset_unterminated_falls_back() {
         ],
     );
     assert!(result.is_err(), "unterminated scanset should fall back");
+}
+
+#[test]
+fn test_scanf_percent_n_falls_back() {
+    // %n must defer to Python (Err), NOT mint/store a count natively. Python's
+    // format_parser.py::FormatString.interpret raises SimProcedureError on %n in
+    // the addr-based (sscanf) path and does a numeric read in the SimPackets path;
+    // a single native behavior would diverge from one of them. Pins the faithful
+    // fallback. See bd memory `format-n-no-native-parity`.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%n\x00", Permission::RWX);
+
+    let result = NativeScanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(result.is_err(), "%n in scanf should fall back to Python");
 }

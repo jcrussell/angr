@@ -187,7 +187,14 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 });
             }
             b'n' => {
-                // %n writes count of chars read — skip
+                // %n stores the count of chars consumed so far. Deliberately
+                // NOT implemented natively: deferring to Python is the faithful
+                // behavior. Python's format_parser.py::FormatString.interpret
+                // raises SimProcedureError on %n in the addr-based (sscanf-from-
+                // memory) path, and treats it as a numeric read in the SimPackets
+                // (stdin/file) path. A native write of the count would diverge
+                // from both. The fallback reproduces Python exactly for free.
+                // See bd memory `format-n-no-native-parity`.
                 return Err(ProcedureError::Other(
                     "scanf %n not supported natively".to_string(),
                 ));

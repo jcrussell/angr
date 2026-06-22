@@ -275,7 +275,14 @@ fn format_string(
                 );
             }
             b'n' => {
-                // %n writes the number of chars written so far — skip for safety
+                // %n writes the number of chars written so far to an int pointer.
+                // Deliberately NOT implemented natively: deferring to Python is
+                // the faithful behavior. Python's format_parser.py::FormatString
+                // .replace has no %n arm and falls through to
+                // `raise SimProcedureError("Unimplemented format specifier 'n'")`.
+                // A native write of the count would succeed where Python errors,
+                // diverging from the engine we mirror. The fallback reproduces
+                // Python exactly for free. See bd memory `format-n-no-native-parity`.
                 return Err(ProcedureError::Other("%n not supported".to_string()));
             }
             _ => {

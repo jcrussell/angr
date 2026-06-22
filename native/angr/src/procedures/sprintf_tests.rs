@@ -430,3 +430,28 @@ fn test_vsnprintf_zero_size_returns_zero() {
         b'X' as u64
     );
 }
+
+#[test]
+fn test_sprintf_percent_n_falls_back() {
+    // %n must defer to Python (Err), NOT write the char count natively.
+    // Python's format_parser.py::FormatString.replace raises SimProcedureError
+    // on %n; a native count-write would diverge. Pins the faithful fallback so a
+    // future iter doesn't naively "implement" it. See `format-n-no-native-parity`.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"abc%n\x00", Permission::RWX);
+
+    let result = NativeSprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // dest
+            RustBV::concrete(0x1000, 64), // format
+            RustBV::concrete(0x2800, 64), // %n int* arg
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(result.is_err(), "%n in sprintf should fall back to Python");
+}
