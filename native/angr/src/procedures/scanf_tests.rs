@@ -421,3 +421,137 @@ fn test_scanf_stdin_tracking() {
     // One 32-bit symbol for %d + MAX_SCANF_STR_LEN 8-bit symbols for %s
     assert_eq!(symbols.len(), 1 + MAX_SCANF_STR_LEN as usize);
 }
+
+// ---- fscanf / __isoc99_fscanf -------------------------------------------
+
+/// AMD64 `_IO_FILE._fileno` byte offset (mirrors io_file_data_for_arch).
+const AMD64_FD_OFF: u64 = 112;
+
+/// Map a FILE struct at `file_ptr` and store `fd` at its `_fileno` field.
+fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
+    state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
+    state
+        .memory_store(
+            file_ptr + AMD64_FD_OFF,
+            RustBV::concrete(fd as u32 as u128, 32),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_fscanf_basic() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 3);
+
+    let result = NativeFscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64), // FILE*
+                RustBV::concrete(0x1000, 64),           // format
+                RustBV::concrete(0x2000, 64),           // &int_var
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let val = state.memory_load(0x2000, 4).unwrap();
+    assert!(
+        val.as_u64().is_none(),
+        "fscanf %d result should be symbolic"
+    );
+    // A non-stdin fd must NOT pollute the stdin reconstruction.
+    assert!(
+        state.stdin_symbols().is_empty(),
+        "fscanf on fd 3 must not record stdin symbols"
+    );
+}
+
+#[test]
+fn test_fscanf_negative_fd_returns_minus_one() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, -1);
+
+    let result = NativeFscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    // Closed/negative fd → -1 (matches Python fscanf when simfd is None).
+    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+}
+
+#[test]
+fn test_fscanf_stdin_fd_records_symbols() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 0); // fscanf(stdin, ...)
+
+    NativeFscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    // fd 0 IS stdin → symbol must surface for posix.dumps(0).
+    assert_eq!(state.stdin_symbols().len(), 1);
+}
+
+#[test]
+fn test_isoc99_fscanf_basic() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d %d\x00", Permission::RWX);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 4);
+
+    let result = NativeIsoc99Fscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x2010, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(2));
+    assert!(state.memory_load(0x2000, 4).unwrap().as_u64().is_none());
+    assert!(state.memory_load(0x2010, 4).unwrap().as_u64().is_none());
+}

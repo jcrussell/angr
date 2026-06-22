@@ -161,14 +161,23 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
     Ok(specs)
 }
 
-/// Core scanf implementation shared by scanf and __isoc99_scanf.
+/// Core scanf implementation shared by scanf, __isoc99_scanf, sscanf and the
+/// fscanf family.
 ///
 /// `fmt_addr`: address of the format string in memory
 /// `ptr_args`: slice of pointer arguments (one per non-suppressed conversion)
+/// `source`: symbol-name prefix identifying the input source (`"stdin"` for
+///   scanf/sscanf, `"file"` for fscanf on a non-stdin fd). Purely a label.
+/// `record_stdin`: when true, each minted symbol is also recorded via
+///   `record_stdin_symbol` so it surfaces in `posix.dumps(0)`. Only correct
+///   when the input genuinely is stdin (fd 0); fscanf on a real file passes
+///   false so file reads do not pollute the stdin reconstruction.
 fn do_scanf(
     state: &mut RustSimState,
     fmt_addr: u64,
     ptr_args: &[RustBV],
+    source: &str,
+    record_stdin: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let fmt = read_format_string(state, fmt_addr)?;
     let specs = parse_scanf_format(&fmt)?;
@@ -195,7 +204,7 @@ fn do_scanf(
             // %s: create symbolic bytes + NUL terminator
             let str_len = spec.max_str_len;
             let names: Vec<String> = (0..str_len)
-                .map(|j| format!("stdin_scanf_{}_s{}_{}", scan_id, spec_idx, j))
+                .map(|j| format!("{}_scanf_{}_s{}_{}", source, scan_id, spec_idx, j))
                 .collect();
 
             let sym_bytes: Vec<RustBV> = {
@@ -206,8 +215,10 @@ fn do_scanf(
                     .collect()
             };
 
-            for name in &names {
-                state.record_stdin_symbol(name.clone(), 8);
+            if record_stdin {
+                for name in &names {
+                    state.record_stdin_symbol(name.clone(), 8);
+                }
             }
 
             for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
@@ -218,13 +229,15 @@ fn do_scanf(
             state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
-            let name = format!("stdin_scanf_{}_{}", scan_id, spec_idx);
+            let name = format!("{}_scanf_{}_{}", source, scan_id, spec_idx);
             let sym_val = {
                 let ctx = state.solver().borrow();
                 RustBV::symbolic(&ctx, &name, spec.bits)
             };
 
-            state.record_stdin_symbol(name, spec.bits);
+            if record_stdin {
+                state.record_stdin_symbol(name, spec.bits);
+            }
 
             // Store to pointer — write spec.bits/8 bytes
             state.memory_store(ptr, sym_val)?;
@@ -260,7 +273,7 @@ impl NativeSimProcedure for NativeScanf {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let fmt_addr = extract_concrete_arg(&args[0], "format")?;
-        do_scanf(state, fmt_addr, &args[1..])
+        do_scanf(state, fmt_addr, &args[1..], "stdin", true)
     }
 }
 
@@ -284,7 +297,7 @@ impl NativeSimProcedure for NativeIsoc99Scanf {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let fmt_addr = extract_concrete_arg(&args[0], "format")?;
-        do_scanf(state, fmt_addr, &args[1..])
+        do_scanf(state, fmt_addr, &args[1..], "stdin", true)
     }
 }
 
@@ -320,7 +333,89 @@ impl NativeSimProcedure for NativeSscanf {
         let fmt_addr = extract_concrete_arg(&args[1], "format")?;
         // For sscanf, we create symbolic values just like scanf
         // (the parsed values are unconstrained in symbolic execution)
-        do_scanf(state, fmt_addr, &args[2..])
+        do_scanf(state, fmt_addr, &args[2..], "stdin", true)
+    }
+}
+
+/// Core fscanf implementation shared by fscanf and __isoc99_fscanf.
+///
+/// The stream variant of [`NativeScanf`]: resolves `stream->_fileno` and routes
+/// through the shared [`do_scanf`] core, mirroring how `NativeFprintf` extends
+/// `NativePrintf`. Like the existing scanf/sscanf procs, the parsed values are
+/// minted as fresh unconstrained symbolic BVs (the file *content* is not parsed
+/// — same simplification `NativeSscanf` documents). A closed/negative fd
+/// returns -1, matching Python `fscanf` (`simfd is None`). Symbols are recorded
+/// for `posix.dumps(0)` only when the FILE wraps fd 0 (e.g. `fscanf(stdin,...)`).
+fn do_fscanf(
+    state: &mut RustSimState,
+    file_ptr: u64,
+    fmt_addr: u64,
+    ptr_args: &[RustBV],
+) -> Result<Option<RustBV>, ProcedureError> {
+    let fd = crate::procedures::fileops::read_fileno(state, file_ptr)?;
+    if fd < 0 {
+        return Ok(Some(RustBV::concrete(
+            (-1i64 as u64) as u128,
+            state.arch().bits(),
+        )));
+    }
+    let (source, record_stdin) = if fd == 0 {
+        ("stdin", true)
+    } else {
+        ("file", false)
+    };
+    do_scanf(state, fmt_addr, ptr_args, source, record_stdin)
+}
+
+/// Native fscanf implementation.
+///
+/// ```c
+/// int fscanf(FILE *stream, const char *format, ...);
+/// ```
+pub struct NativeFscanf;
+
+impl NativeSimProcedure for NativeFscanf {
+    fn name(&self) -> &'static str {
+        "fscanf"
+    }
+
+    fn num_args(&self) -> usize {
+        8 // stream + format + up to 6 pointer args
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
+        do_fscanf(state, file_ptr, fmt_addr, &args[2..])
+    }
+}
+
+/// Native __isoc99_fscanf implementation (alias for fscanf).
+///
+/// Many binaries compiled with newer glibc use __isoc99_fscanf instead of fscanf.
+pub struct NativeIsoc99Fscanf;
+
+impl NativeSimProcedure for NativeIsoc99Fscanf {
+    fn name(&self) -> &'static str {
+        "__isoc99_fscanf"
+    }
+
+    fn num_args(&self) -> usize {
+        8
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
+        do_fscanf(state, file_ptr, fmt_addr, &args[2..])
     }
 }
 
