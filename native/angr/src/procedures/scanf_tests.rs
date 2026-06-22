@@ -716,3 +716,33 @@ fn test_scanf_percent_n_falls_back() {
     );
     assert!(result.is_err(), "%n in scanf should fall back to Python");
 }
+
+#[test]
+fn test_scanf_float_specifiers_fall_back() {
+    // %f/%e/%g must defer to Python (Err), NOT mint a symbolic float natively.
+    // Python's format_parser.py::FormatString.interpret only handles
+    // {d,i,u,o,x,p,s,c} and raises SimProcedureError on anything else; a native
+    // float read would diverge from the engine we mirror — same wall as %n.
+    // Pins the faithful fallback. See bd memory `format-float-no-native-parity`.
+    for spec in [b"%f\x00", b"%e\x00", b"%g\x00"] {
+        let mut state = setup_state();
+        state.map_memory_data(0x1000, spec, Permission::RWX);
+
+        let result = NativeScanf.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "float specifier in scanf should fall back to Python"
+        );
+    }
+}

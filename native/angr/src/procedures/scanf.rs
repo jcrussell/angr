@@ -200,6 +200,11 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 ));
             }
             _ => {
+                // Unknown specifier — fall back to Python. Includes the float
+                // specifiers %f/%e/%g: Python's format_parser.py::FormatString
+                // .interpret raises SimProcedureError on them, so a native
+                // symbolic-float read would diverge. Faithful behavior is to
+                // defer. See bd memory `format-float-no-native-parity`.
                 return Err(ProcedureError::Other(format!(
                     "scanf: unsupported specifier '%{}'",
                     spec as char

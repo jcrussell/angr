@@ -455,3 +455,36 @@ fn test_sprintf_percent_n_falls_back() {
     );
     assert!(result.is_err(), "%n in sprintf should fall back to Python");
 }
+
+#[test]
+fn test_sprintf_float_specifiers_fall_back() {
+    // %f/%e/%g must defer to Python (Err), NOT format a float natively. Python's
+    // format_parser.py::FormatString.replace has no float arm and hits
+    // `raise SimProcedureError("Unimplemented format specifier ...")` for any
+    // spec outside {s,d,i,u,c,x,o,p}. A native float formatter would succeed
+    // where Python errors, diverging from the engine we mirror — same wall as
+    // %n. Pins the faithful fallback so a future iter doesn't naively
+    // "implement" it. See bd memory `format-float-no-native-parity`.
+    for spec in [b"%f\x00", b"%e\x00", b"%g\x00"] {
+        let mut state = setup_state();
+        state.map_memory_data(0x1000, spec, Permission::RWX);
+
+        let result = NativeSprintf.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // dest
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "float specifier in sprintf should fall back to Python"
+        );
+    }
+}

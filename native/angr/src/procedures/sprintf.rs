@@ -286,7 +286,12 @@ fn format_string(
                 return Err(ProcedureError::Other("%n not supported".to_string()));
             }
             _ => {
-                // Unknown specifier — fall back to Python
+                // Unknown specifier — fall back to Python. This includes the
+                // float specifiers %f/%e/%g: Python's format_parser.py::
+                // FormatString.replace raises SimProcedureError on them, so a
+                // native float formatter would diverge (succeed where Python
+                // errors). Faithful behavior is to defer. See bd memory
+                // `format-float-no-native-parity`.
                 return Err(ProcedureError::Other(format!(
                     "unsupported format specifier '%{}'",
                     spec as char
