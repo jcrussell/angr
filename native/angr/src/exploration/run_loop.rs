@@ -657,6 +657,9 @@ impl RustExplorationManager {
             self.apply_uniqueness_filter();
             // Apply native techniques (LengthLimiter, Timeout, LoopBound)
             self.apply_native_techniques();
+            // DS-instr (angr-11djq.16): sample (pc, callstack) reconvergence
+            // over the post-filter active frontier. Counters only.
+            self.record_reconvergence_sample();
         }
 
         // Record run loop timing and active state count

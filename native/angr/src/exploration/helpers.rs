@@ -1,6 +1,51 @@
 use super::*;
 
 impl RustExplorationManager {
+    /// DS-instr (angr-11djq.16): sample the active stash once per step and
+    /// accumulate state-reconvergence counters. A "collision" is two or more
+    /// active states sharing a `(pc, callstack-return-addr-chain)` key at the
+    /// same step — i.e. paths that have reconverged on the same program point.
+    /// Counters feed directed-search pruning (.14.2) and the merging-go/no-go
+    /// signal (.10). Cheap: `<2` active states is the common case and short-
+    /// circuits to two counter increments; only `>=2` builds the per-key map.
+    /// No behaviour change — counters only.
+    pub(crate) fn record_reconvergence_sample(&mut self) {
+        let active = match self.sm.get(STASH_ACTIVE) {
+            Some(a) if !a.is_empty() => a,
+            _ => return,
+        };
+        let observed = active.len() as u64;
+        let (colliding, max_group) = if active.len() < 2 {
+            (0u64, 1u64)
+        } else {
+            use std::hash::{Hash, Hasher};
+            let mut counts: HashMap<u64, u32> = HashMap::new();
+            for state in active.iter() {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                state.pc().hash(&mut h);
+                for entry in state.call_stack() {
+                    entry.return_addr.hash(&mut h);
+                }
+                *counts.entry(h.finish()).or_insert(0) += 1;
+            }
+            let mut colliding = 0u64;
+            let mut max_group = 1u64;
+            for &c in counts.values() {
+                if c >= 2 {
+                    colliding += c as u64;
+                }
+                max_group = max_group.max(c as u64);
+            }
+            (colliding, max_group)
+        };
+        self.reconvergence_collision_states += colliding;
+        self.reconvergence_active_observed += observed;
+        self.reconvergence_samples += 1;
+        if max_group > self.reconvergence_max_group {
+            self.reconvergence_max_group = max_group;
+        }
+    }
+
     /// Run a closure with an immutable borrow of the pending callback state.
     /// Returns Err(PyRuntimeError) when no callback is pending.
     #[inline]

@@ -122,6 +122,28 @@ impl RustExplorationManager {
             syscall_native_by_num.set_item(*num, *count)?;
         }
         dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
+        // DS-instr (angr-11djq.16): state-reconvergence counters. A collision
+        // == two+ active states sharing a (pc, callstack) key at the same step.
+        // `reconvergence_rate` = collision_states / active_observed over all
+        // per-step samples (0.0 when nothing was sampled). High rate => lots of
+        // reconvergence => directed-search pruning / state merging have
+        // headroom; near-zero => they have nothing to merge.
+        dict.set_item(
+            "reconvergence_collision_states",
+            self.reconvergence_collision_states,
+        )?;
+        dict.set_item(
+            "reconvergence_active_observed",
+            self.reconvergence_active_observed,
+        )?;
+        dict.set_item("reconvergence_samples", self.reconvergence_samples)?;
+        dict.set_item("reconvergence_max_group", self.reconvergence_max_group)?;
+        let reconvergence_rate = if self.reconvergence_active_observed > 0 {
+            self.reconvergence_collision_states as f64 / self.reconvergence_active_observed as f64
+        } else {
+            0.0
+        };
+        dict.set_item("reconvergence_rate", reconvergence_rate)?;
         Ok(dict)
     }
 

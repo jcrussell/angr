@@ -1463,6 +1463,66 @@ class TestRustExplorationPython:
             f"solver-fork block must have run on a branching binary; got {exec_stats['solver_fork_time_ns']}"
         )
 
+    def test_reconvergence_counters_populate_on_forking_workload(self, fauxware_project):
+        """angr-11djq.16 (DS-instr): the state-reconvergence counters are
+        exposed via ``stats()`` and populate on a forking workload.
+
+        A "collision" is two or more active states sharing a
+        ``(pc, callstack)`` key at the same step — paths that have reconverged
+        on the same program point. ``reconvergence_rate`` is
+        ``collision_states / active_observed`` over all per-step samples. The
+        counters feed directed-search pruning (.14.2) and the merging-go/no-go
+        signal (.10): high values == real headroom, near-zero == nothing to
+        merge.
+
+        Two co-located entry states march in lockstep through identical paths,
+        so they collide at every sampled step — a deterministic forking
+        workload that guarantees a non-zero collision count, unlike a single
+        seed whose forks land at distinct branch targets (rate stays 0).
+        """
+        keys = (
+            "reconvergence_collision_states",
+            "reconvergence_active_observed",
+            "reconvergence_samples",
+            "reconvergence_max_group",
+            "reconvergence_rate",
+        )
+
+        # Fresh manager: all reconvergence counters start at zero.
+        fresh = _RustExplorationManager("amd64")
+        fresh_stats = fresh.stats()
+        for key in keys:
+            assert key in fresh_stats, f"missing key {key}"
+        assert fresh_stats["reconvergence_collision_states"] == 0
+        assert fresh_stats["reconvergence_active_observed"] == 0
+        assert fresh_stats["reconvergence_samples"] == 0
+        assert fresh_stats["reconvergence_max_group"] == 0
+        assert fresh_stats["reconvergence_rate"] == 0.0
+
+        # Two states seeded at the same entry pc + (empty) callstack collide at
+        # the very first sample and stay in lockstep through identical paths.
+        states = [fauxware_project.factory.entry_state() for _ in range(2)]
+        mgr = RustExplorationManager(fauxware_project, states)
+        mgr.run(max_steps=8)
+        stats = mgr.stats
+
+        collisions = stats["reconvergence_collision_states"]
+        observed = stats["reconvergence_active_observed"]
+        samples = stats["reconvergence_samples"]
+        max_group = stats["reconvergence_max_group"]
+        rate = stats["reconvergence_rate"]
+
+        # Counters populated: at least one step sampled a non-empty frontier.
+        assert samples > 0
+        assert observed >= samples  # each sample observes >=1 active state
+        # The lockstep co-located states guarantee a real collision.
+        assert collisions > 0
+        assert max_group >= 2  # two states shared a (pc, callstack) key
+        # Structural invariants on the rate.
+        assert 0.0 < rate <= 1.0
+        assert collisions <= observed
+        assert rate == pytest.approx(collisions / observed)
+
     def test_analyze_constraint_sharing(self, fauxware_project):
         """angr-zdho: `analyze_constraint_sharing()` reports pointer-vs-structural
         sharing across every state's assumed-constraint RustBV graph.

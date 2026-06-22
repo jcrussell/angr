@@ -251,6 +251,24 @@ pub struct RustExplorationManager {
     /// `NativeProcStats` accumulator.
     pub(crate) profiling: ProfilingCollector,
     // state_index is now in self.sm (StashManager)
+    /// DS-instr (angr-11djq.16): state-reconvergence instrumentation.
+    /// Cumulative count, summed over per-step samples of the active stash, of
+    /// active states that share a `(pc, callstack)` key with ≥1 other active
+    /// state at the same step. High values mean lots of states reconverging on
+    /// the same program point — the signal that directed-search pruning
+    /// (.14.2) and automatic state merging (.10) have real headroom; near-zero
+    /// (e.g. deep divergent paths) means they have nothing to merge. Counters
+    /// only; no behaviour change. Surfaced via `stats()`.
+    pub(crate) reconvergence_collision_states: u64,
+    /// Cumulative sum of `active_count` over the same per-step samples — the
+    /// denominator for `reconvergence_rate` (collision_states / observed).
+    pub(crate) reconvergence_active_observed: u64,
+    /// Number of per-step samples taken (steps where the active stash was
+    /// non-empty). Lets a consumer distinguish "no collisions over many steps"
+    /// from "barely sampled".
+    pub(crate) reconvergence_samples: u64,
+    /// Largest `(pc, callstack)`-sharing group size observed in a single step.
+    pub(crate) reconvergence_max_group: u64,
 }
 
 #[pymethods]
@@ -312,6 +330,10 @@ impl RustExplorationManager {
             native_techniques: Vec::new(),
             constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),
+            reconvergence_collision_states: 0,
+            reconvergence_active_observed: 0,
+            reconvergence_samples: 0,
+            reconvergence_max_group: 0,
         })
     }
 
