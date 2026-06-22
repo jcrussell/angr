@@ -73,6 +73,39 @@ crate::declare_proc! {
 }
 
 crate::declare_proc! {
+    /// Native stpcpy implementation.
+    ///
+    /// ```c
+    /// char *stpcpy(char *dest, const char *src);
+    /// ```
+    ///
+    /// Like `strcpy`, but returns `dest + strlen(src)` (a pointer to the
+    /// written NUL) instead of `dest`. Reuses the same concrete-copy logic as
+    /// `strcpy` (DRY); `strlen(src)` is the length of the scanned buffer.
+    name = "stpcpy",
+    struct = NativeStpcpy,
+    args = [dest_bv: bv, src: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
+
+        // Read source string up to (but not including) the null terminator.
+        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+
+        // Write to destination byte-by-byte, then the null terminator.
+        write_cstr(state, dest, &buf)?;
+
+        // Return dest + strlen(src) (pointer to the written NUL).
+        let bits = state.arch().bits();
+        let len_bv = RustBV::concrete(buf.len() as u128, bits);
+        let ret = {
+            let ctx = state.solver().borrow();
+            dest_bv.add(&len_bv, &ctx)
+        };
+        Ok(Some(ret))
+    }
+}
+
+crate::declare_proc! {
     /// Native strdup implementation.
     ///
     /// ```c

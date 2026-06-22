@@ -14,18 +14,12 @@
 //! `strcpy`/`strncpy`/`strcat`/`strncat` impls (DRY) and only drop the extra
 //! arg.
 //!
-//! `__stpcpy_chk` is the one exception: there is no native `stpcpy` base, so it
-//! reuses the native `strcpy` copy logic and adjusts the return value to
-//! `dest + strlen(src)` (the pointer to the written NUL), matching glibc and
-//! Python's `stpcpy`.
+//! `__stpcpy_chk` forwards to the native `stpcpy` base (which returns
+//! `dest + strlen(src)`, the pointer to the written NUL), dropping `destlen`
+//! like the other wrappers.
 
-use super::extract_concrete_arg;
 use super::strcat::{NativeStrcat, NativeStrncat};
-use super::strcpy::{NativeStrcpy, NativeStrncpy};
-use super::strings::find_null_addr;
-use crate::symbolic::RustBV;
-
-const MAX_STRLEN: usize = 4096;
+use super::strcpy::{NativeStpcpy, NativeStrcpy, NativeStrncpy};
 
 crate::declare_proc! {
     /// `char *__strcpy_chk(char *dest, const char *src, size_t destlen)`.
@@ -78,25 +72,13 @@ crate::declare_proc! {
 crate::declare_proc! {
     /// `char *__stpcpy_chk(char *dest, const char *src, size_t destlen)`.
     ///
-    /// `stpcpy` is `strcpy` that returns `dest + strlen(src)` (a pointer to the
-    /// written NUL) instead of `dest`. There is no native `stpcpy` base, so we
-    /// reuse the native `strcpy` copy logic and adjust the return value (DRY);
-    /// `destlen` is dropped (matches Python angr).
+    /// Forwards to native `stpcpy` (which returns `dest + strlen(src)`),
+    /// dropping `destlen` (matches Python angr).
     name = "__stpcpy_chk",
     struct = NativeStpcpyChk,
     args = [dest_bv: bv, src_bv: bv, _destlen: bv],
     call |state| {
-        let src = extract_concrete_arg(&src_bv, "src")?;
-        NativeStrcpy.call(state, &[dest_bv.clone(), src_bv])?;
-        // strlen(src) = (address of NUL) - src.
-        let src_len = find_null_addr(state, src, MAX_STRLEN, "src")?.wrapping_sub(src);
-        let bits = state.arch().bits();
-        let len_bv = RustBV::concrete(src_len as u128, bits);
-        let ret = {
-            let ctx = state.solver().borrow();
-            dest_bv.add(&len_bv, &ctx)
-        };
-        Ok(Some(ret))
+        NativeStpcpy.call(state, &[dest_bv, src_bv])
     }
 }
 

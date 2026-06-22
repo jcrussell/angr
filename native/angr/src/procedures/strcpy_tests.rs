@@ -98,6 +98,47 @@ fn test_strncpy_pads_with_null() {
 }
 
 #[test]
+fn test_stpcpy_returns_end_pointer() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0u8; 16], Permission::RWX);
+
+    let result = NativeStpcpy
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64)],
+        )
+        .unwrap();
+
+    // stpcpy returns dest + strlen("hello") = 0x2000 + 5.
+    assert_eq!(result.unwrap().as_u64(), Some(0x2005));
+
+    // The string (incl. NUL) was copied like strcpy.
+    let loaded = state.memory_load(0x2000, 6).unwrap();
+    let expected = u64::from_le_bytes([b'h', b'e', b'l', b'l', b'o', 0, 0, 0]);
+    assert_eq!(loaded.as_u64(), Some(expected));
+}
+
+#[test]
+fn test_stpcpy_empty_returns_dest() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    let result = NativeStpcpy
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64)],
+        )
+        .unwrap();
+
+    // strlen("") == 0, so the end pointer is dest itself.
+    assert_eq!(result.unwrap().as_u64(), Some(0x2000));
+    let first = state.memory_load(0x2000, 1).unwrap();
+    assert_eq!(first.as_u64(), Some(0));
+}
+
+#[test]
 fn test_strdup_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0xC000_0000, 0x10000, Permission::RWX);

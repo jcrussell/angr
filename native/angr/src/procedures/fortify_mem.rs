@@ -10,10 +10,10 @@
 //! Emulating the runtime bound check would diverge from the Python engine and
 //! prune paths angr otherwise explores, so we deliberately do not. These
 //! wrappers therefore add zero copy logic — they delegate to the existing
-//! native `memcpy`/`memmove`/`memset` impls (DRY) and only drop the extra arg
-//! (and, for `mempcpy`, adjust the return value to `dst + n`).
+//! native `memcpy`/`memmove`/`memset`/`mempcpy` impls (DRY) and only drop the
+//! extra `destlen` arg.
 
-use super::memcpy::{NativeMemcpy, NativeMemmove};
+use super::memcpy::{NativeMemcpy, NativeMemmove, NativeMempcpy};
 use super::memset::NativeMemset;
 
 crate::declare_proc! {
@@ -55,20 +55,13 @@ crate::declare_proc! {
 crate::declare_proc! {
     /// `void *__mempcpy_chk(void *dest, const void *src, size_t n, size_t destlen)`.
     ///
-    /// `mempcpy` is `memcpy` that returns `dest + n` instead of `dest`. There is
-    /// no native `mempcpy` base, so we reuse the native `memcpy` copy logic and
-    /// adjust the return value (DRY); `destlen` is dropped (matches Python angr).
+    /// Forwards to native `mempcpy` (which returns `dest + n`), dropping
+    /// `destlen` (matches Python angr).
     name = "__mempcpy_chk",
     struct = NativeMempcpyChk,
     args = [dst_bv: bv, src_bv: bv, size_bv: bv, _destlen: bv],
     call |state| {
-        NativeMemcpy.call(state, &[dst_bv.clone(), src_bv, size_bv.clone()])?;
-        // mempcpy returns dst + n (size_t n is the same width as the pointer).
-        let ret = {
-            let ctx = state.solver().borrow();
-            dst_bv.add(&size_bv, &ctx)
-        };
-        Ok(Some(ret))
+        NativeMempcpy.call(state, &[dst_bv, src_bv, size_bv])
     }
 }
 

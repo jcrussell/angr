@@ -38,6 +38,35 @@ fn test_memcpy_basic() {
 }
 
 #[test]
+fn test_mempcpy_returns_dst_plus_n() {
+    let mut state = RustSimState::new("amd64").unwrap();
+
+    let data = b"hello world!";
+    state.map_memory_data(0x1000, data, Permission::RWX);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+    let result = NativeMempcpy
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // dst
+                RustBV::concrete(0x1000, 64), // src
+                RustBV::concrete(12, 64),     // n
+            ],
+        )
+        .unwrap();
+
+    // mempcpy returns dst + n, NOT dst.
+    assert_eq!(result.unwrap().as_u64(), Some(0x2000 + 12));
+
+    // The bytes were copied like memcpy.
+    for i in 0..12u64 {
+        let val = state.memory_load(0x2000 + i, 1).unwrap();
+        assert_eq!(val.as_u64(), Some(data[i as usize] as u64));
+    }
+}
+
+#[test]
 fn test_memcpy_zero_size() {
     let mut state = RustSimState::new("amd64").unwrap();
 

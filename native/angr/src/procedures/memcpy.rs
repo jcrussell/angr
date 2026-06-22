@@ -271,6 +271,28 @@ crate::declare_proc! {
     }
 }
 
+crate::declare_proc! {
+    /// Native mempcpy: `void *mempcpy(void *dest, const void *src, size_t n)`.
+    ///
+    /// Like `memcpy`, but returns `dest + n` instead of `dest`. Reuses the
+    /// native `memcpy` copy logic (DRY) and only adjusts the return value;
+    /// matches Python `mempcpy` (`return dst_addr + limit`). When the underlying
+    /// `memcpy` defers to Python (symbolic/oversized), the `?` propagates so the
+    /// whole call falls back, preserving parity.
+    name = "mempcpy",
+    struct = NativeMempcpy,
+    args = [dst_bv: bv, src_bv: bv, size_bv: bv],
+    call |state| {
+        NativeMemcpy.call(state, &[dst_bv.clone(), src_bv, size_bv.clone()])?;
+        // mempcpy returns dst + n (size_t n is the same width as the pointer).
+        let ret = {
+            let ctx = state.solver().borrow();
+            dst_bv.add(&size_bv, &ctx)
+        };
+        Ok(Some(ret))
+    }
+}
+
 #[cfg(test)]
 #[path = "memcpy_tests.rs"]
 mod tests;
