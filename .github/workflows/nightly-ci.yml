@@ -199,21 +199,27 @@ jobs:
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run Rust exploration tests with proxy gates on
         # angr-rpqk write-through gate-promotion verdict (bd memory
-        # write-through-gate-promotion-keep-off-verdict): the four
-        # write-through gates below are behaviorally clean (855/855 green
-        # with them forced on) but stay default-OFF in production because
-        # the FIFTH gate — ANGR_RUST_USE_CALLBACK_REGISTER_PROXY — corrupts
-        # PC / state.addr reads (breaks callable find/avoid predicates and
-        # stash accessors, times out unmapped_analysis). This nightly job
-        # exercises the four clean gates-on proxy paths so they cannot rot
-        # while disabled. REGISTER_PROXY is intentionally excluded pending
-        # its addr-corruption fix (see follow-up bead); do NOT add it here
-        # until that lands.
+        # write-through-gate-promotion-keep-off-verdict): the gates below
+        # are behaviorally clean (full tests/engines/rust/ suite green with
+        # them forced on) but stay default-OFF in production because the
+        # CALLBACK_REGISTER_PROXY gate corrupts PC / state.addr reads (breaks
+        # callable find/avoid predicates and stash accessors, times out
+        # unmapped_analysis). This nightly job exercises the clean gates-on
+        # proxy paths so they cannot rot while disabled. REGISTER_PROXY is
+        # intentionally excluded pending its addr-corruption fix
+        # (angr-4rq7); do NOT add it here until that lands.
+        #
+        # The two EXPORT proxy gates (angr-5x6la) were triaged forced-on:
+        # 982/982 rust suite green + fauxware fast-tier bench clean, so they
+        # join the soak. Closes the angr-sluuj.3 coverage gap where the
+        # export-pipeline proxies had only precedence-contract tests.
         env:
           ANGR_RUST_USE_CALLBACK_MEMORY_PROXY: "1"
           ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"
           ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY: "1"
           ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST: "1"
+          ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY: "1"
+          ANGR_RUST_USE_EXPORT_MEMORY_PROXY: "1"
         run: uv run pytest tests/engines/rust/ --tb=short
         timeout-minutes: 10
 

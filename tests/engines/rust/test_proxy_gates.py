@@ -1092,7 +1092,10 @@ class TestExportCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        # Explicit kwarg=False pins the eager (off) path regardless of any
+        # ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1 (nightly proxy_gates_on
+        # soak) — kwarg beats env in _resolve_env_flag.
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
         assert mgr._use_export_callstack_proxy is False
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         assert mgr._rust_mgr.get_state_call_stack(seed_id) == []
@@ -1167,7 +1170,9 @@ class TestExportCallStackProxyGate:
         from angr.state_plugins.callstack import CallStack
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        # Explicit kwarg=False pins the eager chain path under the nightly
+        # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1).
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
         assert mgr._use_export_callstack_proxy is False
         mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
@@ -1193,7 +1198,9 @@ class TestExportMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        # Explicit kwarg=False pins the eager writeback path under the nightly
+        # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1).
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=False)
         assert mgr._use_export_memory_proxy is False
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
