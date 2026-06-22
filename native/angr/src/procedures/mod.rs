@@ -86,6 +86,7 @@ pub mod fgets;
 pub mod fileops;
 pub mod format_common;
 pub mod fortify_mem;
+pub mod fortify_printf;
 pub mod fortify_str;
 pub mod fread;
 pub mod getenv;
@@ -355,6 +356,11 @@ impl NativeProcedureRegistry {
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
+        // Fortify-source `_chk` printf-family wrappers forward to the base
+        // printf/sprintf/snprintf procs above (drop the injected flag/slen args).
+        registry.register(Arc::new(fortify_printf::NativePrintfChk));
+        registry.register(Arc::new(fortify_printf::NativeSprintfChk));
+        registry.register(Arc::new(fortify_printf::NativeSnprintfChk));
         // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
         // is now invalidate-and-replayed per dirty page in
         // `_create_state_for_callback` (rust_callback_dispatch.py +

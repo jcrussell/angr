@@ -24,3 +24,13 @@ class sprintf(FormatParser):
         )
 
         return out_str.size() // self.arch.byte_width
+
+
+class __sprintf_chk(sprintf):
+    # _FORTIFY_SOURCE redirect: __sprintf_chk(s, flag, slen, fmt, ...). The
+    # compiler injects `flag` and the destination size `slen`; angr ignores
+    # both and forwards to the base sprintf (matching __printf_chk/__snprintf_chk
+    # and the native fortify_printf.rs wrappers). The 4-arg run() signature keeps
+    # the variadic args aligned — see the glibc.json __sprintf_chk prototype.
+    def run(self, dst_ptr, flag, slen, fmt):  # pylint:disable=arguments-differ,unused-argument
+        return super().run(dst_ptr, fmt)

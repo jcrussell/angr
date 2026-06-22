@@ -112,7 +112,7 @@
 			"proto": "{'_t': 'func', 'args': [{'_t': 'int'}, {'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true, 'q': ['const']}}], 'returnty': {'_t': 'int'}, 'arg_names': ['flag', 'TEMPLATE'], 'variadic': true}"
 		},
 		"__sprintf_chk": {
-			"proto": "{'_t': 'func', 'args': [{'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true}}, {'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true, 'q': ['const']}}], 'returnty': {'_t': 'int'}, 'arg_names': ['S', 'TEMPLATE'], 'variadic': true}"
+			"proto": "{'_t': 'func', 'args': [{'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true}}, {'_t': 'int'}, {'_t': 'len', 'signed': false, 'addr': null, 'length': null}, {'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true, 'q': ['const']}}], 'returnty': {'_t': 'int'}, 'arg_names': ['S', 'flag', 'slen', 'TEMPLATE'], 'variadic': true}"
 		},
 		"__stack_chk_fail": {
 			"proto": "{'_t': 'func', 'args': [], 'returnty': {'_t': 'bot', 'label': 'void'}, 'arg_names': []}"
