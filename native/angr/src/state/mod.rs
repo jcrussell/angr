@@ -1661,6 +1661,21 @@ impl PyRustSimState {
         self.inner.set_ctype_loc(ptrs);
     }
 
+    /// Register a symlink so native `readlink` / `readlinkat` resolve
+    /// `link` to `target` (raw bytes, as `readlink(2)` returns — NOT
+    /// NUL-terminated). Mirrors `FileSystem::add_symlink`; intended for a
+    /// Python harness to seed pre-existing symlinks at state-creation time
+    /// before handing off to Rust (`RustExplorationManager(..., symlinks=...)`).
+    ///
+    /// Python `state.fs` symlinks are NOT auto-mirrored — same explicit
+    /// trade-off as `register_known_path` (angr-11djq.6.2 / angr-m7s7y).
+    /// Forks inherit the entry via the `Arc<HashMap>` clone in
+    /// `FileSystem::fork`, so seeding the initial state covers all
+    /// descendants.
+    pub fn register_symlink(&mut self, link: String, target: Vec<u8>) {
+        self.inner.file_system().add_symlink(link, target);
+    }
+
     /// Get the history (basic block addresses).
     pub fn history(&self) -> Vec<u64> {
         self.inner.history().to_vec()

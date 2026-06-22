@@ -433,6 +433,51 @@ class TestNativeReadlinkatSyscall:
         )
 
 
+class TestSeededSymlinkReadlink:
+    """angr-m7s7y: a Python harness can seed pre-existing symlinks via the
+    ``RustExplorationManager(..., symlinks=...)`` kwarg, which forwards to the
+    native ``PyRustSimState.register_symlink`` / ``FileSystem::add_symlink``
+    setter. With an entry registered, native ``readlink`` resolves the link
+    (writes the raw target bytes, NOT NUL-terminated, returns the count)
+    instead of returning ``-1``. Unseeded links keep returning ``-1`` (the
+    pre-6.2 behavior — pinned by ``TestNativeReadlinkSyscall``).
+    """
+
+    def test_seeded_symlink_readlink_resolves(self):
+
+        # syscall; jmp self — the trailing self-loop pins the post-syscall
+        # state at 0x1002 so its rax (the return value) survives instead of
+        # diverging into unmapped memory and getting filled.
+        shellcode = b"\x0f\x05\xeb\xfe"
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        target = b"/real/target"
+        state.memory.store(0x4000, b"/link\x00")
+        buf_addr = 0x500000
+        state.memory.map_region(buf_addr, 0x1000, 0b110)  # RW
+        state.regs.rax = 89  # readlink
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        state.regs.rdi = 0x4000  # pathname -> "/link"
+        state.regs.rsi = buf_addr  # buf
+        state.regs.rdx = 256  # bufsiz
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True, symlinks={"/link": target})
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            f"seeded readlink must stay on the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
+        )
+        all_states = list(mgr.active) + list(mgr.deadended) + list(mgr.found)
+        assert all_states, "expected at least one state after readlink"
+        s = all_states[0]
+        ret = s.solver.eval(s.regs.rax)
+        assert ret == len(target), f"readlink should return target len {len(target)}, got {ret}"
+        written = s.solver.eval(s.memory.load(buf_addr, len(target)), cast_to=bytes)
+        assert written == target, f"buf should hold the raw target, got {written!r}"
+
+
 class TestNativeFaccessatSyscall:
     """angr-6009: native ``faccessat`` mirrors ``NativeAccessSyscall``
     with dirfd handling. Absolute paths and ``AT_FDCWD`` query

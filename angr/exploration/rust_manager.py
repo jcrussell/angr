@@ -780,6 +780,7 @@ class RustExplorationManager(
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         use_simproc_fork_via_rust: bool | None = None,
+        symlinks: dict | None = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -931,6 +932,19 @@ class RustExplorationManager(
             use_export_memory_proxy,
             use_simproc_fork_via_rust,
         )
+        # Pre-existing symlinks to seed into the Rust FileSystem at
+        # state-creation time (angr-m7s7y). Mirrors readlink(2): each value is
+        # the raw target bytes (NOT NUL-terminated). Python ``state.fs``
+        # symlinks are NOT auto-mirrored — the harness opts in explicitly,
+        # same trade-off as ``register_known_path`` (angr-11djq.6.2).
+        # ``_add_rust_state`` replays these onto every seed state; forks
+        # inherit via the Rust ``FileSystem`` Arc clone.
+        self._pending_symlinks: dict[str, bytes] = {}
+        if symlinks:
+            for link, target in symlinks.items():
+                self._pending_symlinks[str(link)] = (
+                    target if isinstance(target, (bytes, bytearray)) else str(target).encode()
+                )
         if self._phase_link_state(active_states):
             return
         self._phase_activate(active_states)
@@ -3425,6 +3439,17 @@ class RustExplorationManager(
 
             self._check_raise_options(angr_state.options)
             self._warn_rejected_options(angr_state.options)
+
+        # Seed harness-registered symlinks (angr-m7s7y) so native
+        # readlink/readlinkat can resolve them. Forks inherit via the Rust
+        # FileSystem Arc clone, so only the seed state needs the push.
+        for link, target in getattr(self, "_pending_symlinks", {}).items():
+            try:
+                rust_state.register_symlink(link, target)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: symlink push failed; native
+                # readlink for this link returns -1 (the pre-6.2 behavior).
+                l.debug("symlink seed push failed for %r: %s", link, e)
 
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
