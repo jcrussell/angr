@@ -108,3 +108,50 @@ fn test_symbolic_tolower_returns_symbolic() {
     assert_eq!(ctx.min(&result, false), Some(b'a' as u128));
     assert_eq!(ctx.max(&result, false), Some(b'a' as u128));
 }
+
+#[test]
+fn test_ctype_b_loc_returns_pushed_ptr() {
+    let mut s = make_state();
+    let mut ptrs = s.ctype_loc();
+    ptrs.b = Some(0xdead_0000);
+    s.set_ctype_loc(ptrs);
+    let p = NativeCtypeBLoc;
+    let ret = p.call(&mut s, &[]).unwrap().unwrap();
+    assert_eq!(ret.as_u64(), Some(0xdead_0000));
+    assert_eq!(ret.width(), 64);
+}
+
+#[test]
+fn test_ctype_tolower_toupper_loc_return_pushed_ptrs() {
+    let mut s = make_state();
+    let mut ptrs = s.ctype_loc();
+    ptrs.tolower = Some(0xaaaa_0000);
+    ptrs.toupper = Some(0xbbbb_0000);
+    s.set_ctype_loc(ptrs);
+    assert_eq!(
+        NativeCtypeToLowerLoc
+            .call(&mut s, &[])
+            .unwrap()
+            .unwrap()
+            .as_u64(),
+        Some(0xaaaa_0000)
+    );
+    assert_eq!(
+        NativeCtypeToUpperLoc
+            .call(&mut s, &[])
+            .unwrap()
+            .unwrap()
+            .as_u64(),
+        Some(0xbbbb_0000)
+    );
+}
+
+#[test]
+fn test_ctype_loc_uninitialized_falls_back_to_python() {
+    // None (init pass never ran) must surface as an Err so the dispatcher
+    // defers to Python rather than returning a bogus null pointer.
+    let mut s = make_state();
+    assert!(NativeCtypeBLoc.call(&mut s, &[]).is_err());
+    assert!(NativeCtypeToLowerLoc.call(&mut s, &[]).is_err());
+    assert!(NativeCtypeToUpperLoc.call(&mut s, &[]).is_err());
+}

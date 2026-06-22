@@ -3347,6 +3347,30 @@ class RustExplorationManager(
             # Python-allocated region. Debug-logs.
             l.debug("heap.heap_location init push failed: %s", e)
 
+        # Push the locale ctype table pointers so the native __ctype_b_loc /
+        # __ctype_tolower_loc / __ctype_toupper_loc procs can return them
+        # without a Python round-trip. Python's __libc_start_main init pass
+        # (which runs before Rust takes over) mallocs + fills the tables in
+        # shared memory and records the pointers on state.libc; we forward
+        # just the pointer values. Only set when the init pass actually ran
+        # (a plain int) — a blank_state entry leaves them None and the native
+        # proc falls back to Python.
+        try:
+            libc = getattr(angr_state, "libc", None)
+            if libc is not None:
+                for attr, setter in (
+                    ("ctype_b_loc_table_ptr", "ctype_b_loc_table_ptr"),
+                    ("ctype_tolower_loc_table_ptr", "ctype_tolower_loc_table_ptr"),
+                    ("ctype_toupper_loc_table_ptr", "ctype_toupper_loc_table_ptr"),
+                ):
+                    val = getattr(libc, attr, None)
+                    if isinstance(val, int):
+                        setattr(rust_state, setter, val)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: ctype table-ptr push failed; the
+            # native __ctype_*_loc procs will defer to Python. Debug-logs.
+            l.debug("libc ctype table-ptr init push failed: %s", e)
+
         # Sync registers (use precomputed dict from disk cache when available)
         _t_reg = time.perf_counter_ns()
         precomputed = self._precomputed_regs

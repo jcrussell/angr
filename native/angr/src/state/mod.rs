@@ -188,6 +188,21 @@ fn next_state_id() -> u64 {
     NEXT_STATE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Pointers to the three glibc locale ctype lookup tables, exposed via the
+/// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` accessors.
+///
+/// These are returned verbatim by the corresponding native procs. The tables
+/// themselves are malloc'd and populated by Python's `__libc_start_main` init
+/// pass before the Rust engine takes over; this struct only carries the
+/// already-built table pointers. `None` means the init pass never ran (e.g. a
+/// blank_state entry), in which case the native proc defers to Python.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct CtypeLocPtrs {
+    pub b: Option<u64>,
+    pub tolower: Option<u64>,
+    pub toupper: Option<u64>,
+}
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -264,6 +279,12 @@ pub struct RustSimState {
     /// `posix_brk`. Future cross-engine sync work should address both fields
     /// at the syscall callback boundary.
     mmap_base: u64,
+    /// Pointers to the three glibc locale ctype lookup tables. Built once by
+    /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
+    /// memory, see `__ctype_b_loc.py` et al.) and pushed into Rust at
+    /// seed-state creation. Native `__ctype_*_loc` procs return these verbatim;
+    /// `None` (init pass skipped) falls back to Python.
+    ctype_loc: CtypeLocPtrs,
     /// Symbolic variable names read from stdin (for posix.dumps(0) export).
     /// Each entry is (name, bit_width) for a symbolic BVS created by native
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
@@ -446,6 +467,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -493,6 +515,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -550,6 +573,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -752,6 +776,18 @@ impl RustSimState {
     /// `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`.
     pub fn set_mmap_base(&mut self, addr: u64) {
         self.mmap_base = addr;
+    }
+
+    /// Locale ctype table pointers (see [`CtypeLocPtrs`]). Read by the native
+    /// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` procs.
+    pub fn ctype_loc(&self) -> CtypeLocPtrs {
+        self.ctype_loc
+    }
+
+    /// Push the locale ctype table pointers from Python's `__libc_start_main`
+    /// init pass into Rust at seed-state creation.
+    pub fn set_ctype_loc(&mut self, ptrs: CtypeLocPtrs) {
+        self.ctype_loc = ptrs;
     }
 
     /// CGC `state.cgc.allocation_base` — current high-water bump pointer
@@ -1598,6 +1634,31 @@ impl PyRustSimState {
     #[setter]
     pub fn set_heap_brk(&mut self, addr: u64) {
         self.inner.set_heap_brk(addr);
+    }
+
+    /// Push Python's `state.libc.ctype_b_loc_table_ptr` into Rust so the native
+    /// `__ctype_b_loc` proc can return it without a Python round-trip.
+    #[setter]
+    pub fn set_ctype_b_loc_table_ptr(&mut self, addr: u64) {
+        let mut ptrs = self.inner.ctype_loc();
+        ptrs.b = Some(addr);
+        self.inner.set_ctype_loc(ptrs);
+    }
+
+    /// Push Python's `state.libc.ctype_tolower_loc_table_ptr` into Rust.
+    #[setter]
+    pub fn set_ctype_tolower_loc_table_ptr(&mut self, addr: u64) {
+        let mut ptrs = self.inner.ctype_loc();
+        ptrs.tolower = Some(addr);
+        self.inner.set_ctype_loc(ptrs);
+    }
+
+    /// Push Python's `state.libc.ctype_toupper_loc_table_ptr` into Rust.
+    #[setter]
+    pub fn set_ctype_toupper_loc_table_ptr(&mut self, addr: u64) {
+        let mut ptrs = self.inner.ctype_loc();
+        ptrs.toupper = Some(addr);
+        self.inner.set_ctype_loc(ptrs);
     }
 
     /// Get the history (basic block addresses).

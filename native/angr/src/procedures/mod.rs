@@ -308,6 +308,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(ctype::NativeIsPrint));
         registry.register(Arc::new(ctype::NativeToLower));
         registry.register(Arc::new(ctype::NativeToUpper));
+        // Locale ctype table accessors (return tables built by Python
+        // __libc_start_main; see CtypeLocPtrs).
+        registry.register(Arc::new(ctype::NativeCtypeBLoc));
+        registry.register(Arc::new(ctype::NativeCtypeToLowerLoc));
+        registry.register(Arc::new(ctype::NativeCtypeToUpperLoc));
         // String/memory search
         registry.register(Arc::new(strchr::NativeStrchr));
         registry.register(Arc::new(strchr::NativeMemchr));

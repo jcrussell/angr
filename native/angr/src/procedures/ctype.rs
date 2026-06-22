@@ -114,6 +114,54 @@ fn set_predicate(
     Ok(Some(lift_predicate(state, pred, &ctx)))
 }
 
+/// Return a locale ctype table pointer as an arch-width concrete BV, or an
+/// `Err` (→ Python fallback) when the table was never built. The three glibc
+/// `__ctype_*_loc` accessors all delegate here; the table itself is malloc'd
+/// and populated by Python's `__libc_start_main` init pass and the pointer is
+/// pushed into Rust at seed-state creation (see [`crate::state::CtypeLocPtrs`]).
+fn ctype_loc_ptr(
+    state: &RustSimState,
+    ptr: Option<u64>,
+    name: &str,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let addr = ptr.ok_or_else(|| ProcedureError::Other(format!("{name} table not initialized")))?;
+    Ok(Some(RustBV::concrete(addr as u128, state.arch().bits())))
+}
+
+crate::declare_proc! {
+    /// `const unsigned short **__ctype_b_loc(void)` — pointer to the locale
+    /// character-classification table (returns Python's
+    /// `state.libc.ctype_b_loc_table_ptr` verbatim).
+    name = "__ctype_b_loc",
+    struct = NativeCtypeBLoc,
+    args = [],
+    call |state| {
+        ctype_loc_ptr(state, state.ctype_loc().b, "__ctype_b_loc")
+    }
+}
+
+crate::declare_proc! {
+    /// `const int32_t **__ctype_tolower_loc(void)` — pointer to the locale
+    /// lowercase-conversion table.
+    name = "__ctype_tolower_loc",
+    struct = NativeCtypeToLowerLoc,
+    args = [],
+    call |state| {
+        ctype_loc_ptr(state, state.ctype_loc().tolower, "__ctype_tolower_loc")
+    }
+}
+
+crate::declare_proc! {
+    /// `const int32_t **__ctype_toupper_loc(void)` — pointer to the locale
+    /// uppercase-conversion table.
+    name = "__ctype_toupper_loc",
+    struct = NativeCtypeToUpperLoc,
+    args = [],
+    call |state| {
+        ctype_loc_ptr(state, state.ctype_loc().toupper, "__ctype_toupper_loc")
+    }
+}
+
 crate::declare_proc! {
     /// `int isdigit(int c)` — returns nonzero if `c` is an ASCII digit.
     name = "isdigit",
