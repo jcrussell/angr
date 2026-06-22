@@ -3148,6 +3148,35 @@ Migration recipe: change the clause to
 or catch ``Exception`` if the surrounding code already does broad
 recovery.
 
+Global allocator (mimalloc / jemalloc) — evaluated, not adopted
+---------------------------------------------------------------
+
+The engine has visible allocation pressure (thread-local LRU caches,
+``Arc<[RustBV]>`` operand allocs, per-fork state clones), so a non-system
+``#[global_allocator]`` was an obvious candidate (``angr-kq43``). mimalloc
+0.1.52 was wired in as the global allocator and benchmarked head-to-head
+against the system allocator on the same machine, 5-sample medians each:
+
+.. csv-table:: mimalloc vs system allocator (5-sample medians, same host)
+   :header: "benchmark", "system", "mimalloc", "delta"
+   :widths: 30, 10, 10, 10
+
+   "defcamp_r100", "0.34s", "0.33s", "-2.9%"
+   "ais3_crackme", "0.82s", "0.82s", "0%"
+   "csaw_wyvern", "3.70s", "3.69s", "-0.3%"
+   "ekopartyctf2016_rev250", "2.40s", "2.40s", "0%"
+   "mma_howtouse", "4.40s", "4.42s", "+0.5%"
+
+Every delta is inside run-to-run noise; the reliable slow outlier
+(``mma_howtouse``, the only non-bimodal slow case — ``unbreakable_1`` /
+``sokohashv2`` are bimodal and excluded) shows no win. The adoption
+criterion was ">5% win on a slow outlier with no regression on fast
+wins"; it is not met, so mimalloc was **not adopted** and the dep was
+removed. The engine's wallclock is dominated by Z3 ``check()`` and
+PyO3/state-sync FFI, not by malloc throughput, so a faster allocator has
+no headroom to recover here. Re-evaluate only if a future profile shows
+allocation as a hot path. See bd memory ``mimalloc-global-allocator``.
+
 Perf-campaign triage table (P1d)
 --------------------------------
 
