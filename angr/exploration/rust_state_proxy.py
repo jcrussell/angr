@@ -147,74 +147,58 @@ class _SolutionCountMixin:
         return results
 
 
-class RustSolverProxy(_SolutionCountMixin):
+class RustSolverProxyBase(_SolutionCountMixin):
+    """Shared delegation core for the two Rust solver proxies.
+
+    ``RustSolverProxy`` (standalone ``state.solver`` read proxy) and
+    ``RustSolverProxyPlugin`` (SimProcedure-callback ``state.solver`` plugin)
+    duplicate the bulk of their solver-query surface. The only thing that
+    differs is *how* each obtains the Rust solver context to query — the
+    standalone proxy lazily forks into ``self._solver_ctx`` via
+    ``_ensure_solver``, while the plugin caches its fork in
+    ``self._rust_ctx_cache`` (invalidated on ``add``). Subclasses express that
+    difference through two hooks:
+
+      * ``_query_ctx()`` — return the context to run a query against (forking
+        on first use).
+      * ``_forked_ctx()`` — return the already-forked context, or ``None`` if
+        nothing has been forked yet (used by the timeout setter to propagate
+        to a live fork).
+
+    Everything that is identical modulo that access — ``satisfiable`` /
+    ``min`` / ``max`` / ``min_int`` / ``max_int`` / ``symbolic`` /
+    ``constraints`` / ``timeout`` and the ``_cast_result`` helper — lives
+    here. ``eval`` / ``eval_upto`` / ``is_true`` / ``is_false`` / ``solution``
+    stay on the subclasses because their bodies genuinely differ (the plugin
+    munges the ``eval`` signature, unwraps ``SimActionObject`` constraints, and
+    shortcuts concrete ``BoolV`` expressions; the standalone proxy does not).
     """
-    Wraps a RustSolverContext to present a claripy-compatible solver interface.
-
-    Delegates satisfiability checks, evaluation, and constraint operations
-    directly to the Rust Z3 solver — no claripy frontend sync needed.
-    """
-
-    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
-        self._mgr = rust_mgr
-        self._state_id = state_id
-        self._solver_ctx = None  # lazy — forked on first access
-        # angr-yodz: when set, returns the parent RustStateProxy's single
-        # shared forked context so a constraint added here is visible to the
-        # same proxy's memory/posix reads. None for standalone construction.
-        self._shared_ctx_getter = shared_ctx_getter
-
-    def _ensure_solver(self):
-        if self._solver_ctx is None:
-            if self._shared_ctx_getter is not None:
-                self._solver_ctx = self._shared_ctx_getter()
-            else:
-                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
-
-    def satisfiable(self, extra_constraints=(), **kwargs):
-        """Check if the state's constraints are satisfiable."""
-        self._ensure_solver()
-        return _with_extra_constraints(self._solver_ctx, self._solver_ctx.satisfiable, extra=extra_constraints)
-
-    def eval(self, expr, n=1, cast_to=None, extra_constraints=(), **kwargs):
-        """Evaluate a symbolic expression to a concrete value.
-
-        Matches angr SimSolver.eval: returns a single value (not a tuple).
-        """
-        self._ensure_solver()
-        # Fast path: concrete expression
-        if hasattr(expr, "concrete") and expr.concrete:
-            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
-            return self._cast_result(expr, val, cast_to)
-        result = _with_extra_constraints(self._solver_ctx, self._solver_ctx.eval, expr, extra=extra_constraints)
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return self._cast_result(expr, result, cast_to)
 
     _cast_result = staticmethod(_cast_eval_result)
 
-    def _eval_inner(self, expr, n, cast_to):
-        if n == 1:
-            result = self._solver_ctx.eval(expr)
-            if result is None:
-                raise claripy.errors.UnsatError("unsat")
-            result = self._cast_result(expr, result, cast_to)
-            return (result,)
-        results = self._solver_ctx.eval_upto(expr, n)
-        results = tuple(self._cast_result(expr, r, cast_to) for r in results)
-        return results
+    # ---------------------------------------------------------------
+    # Context-access hooks — subclasses supply the fork strategy.
+    # ---------------------------------------------------------------
 
-    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
-        """Evaluate expression for up to n solutions. Returns a tuple."""
-        self._ensure_solver()
-        return _with_extra_constraints(self._solver_ctx, self._eval_inner, expr, n, cast_to, extra=extra_constraints)
+    def _query_ctx(self):
+        raise NotImplementedError
 
-    def min(self, expr, extra_constraints=(), signed=False, **kwargs):
+    def _forked_ctx(self):
+        raise NotImplementedError
+
+    # ---------------------------------------------------------------
+    # Shared delegation
+    # ---------------------------------------------------------------
+
+    def satisfiable(self, extra_constraints=(), **kwargs):
+        """Check if the state's constraints are satisfiable."""
+        ctx = self._query_ctx()
+        return _with_extra_constraints(ctx, ctx.satisfiable, extra=extra_constraints)
+
+    def min(self, expr, extra_constraints=(), signed=False, exact=None, **kwargs):
         """Get minimum value of expression."""
-        self._ensure_solver()
-        result = _with_extra_constraints(
-            self._solver_ctx, self._solver_ctx.min, expr, extra=extra_constraints, signed=signed
-        )
+        ctx = self._query_ctx()
+        result = _with_extra_constraints(ctx, ctx.min, expr, extra=extra_constraints, signed=signed)
         if result is not None:
             return result
         return _resolve_none_extremum(
@@ -226,12 +210,10 @@ class RustSolverProxy(_SolutionCountMixin):
             lambda: self.satisfiable(extra_constraints=extra_constraints),
         )
 
-    def max(self, expr, extra_constraints=(), signed=False, **kwargs):
+    def max(self, expr, extra_constraints=(), signed=False, exact=None, **kwargs):
         """Get maximum value of expression."""
-        self._ensure_solver()
-        result = _with_extra_constraints(
-            self._solver_ctx, self._solver_ctx.max, expr, extra=extra_constraints, signed=signed
-        )
+        ctx = self._query_ctx()
+        result = _with_extra_constraints(ctx, ctx.max, expr, extra=extra_constraints, signed=signed)
         if result is not None:
             return result
         return _resolve_none_extremum(
@@ -243,36 +225,11 @@ class RustSolverProxy(_SolutionCountMixin):
             lambda: self.satisfiable(extra_constraints=extra_constraints),
         )
 
-    def add(self, *constraints):
-        """Add constraint(s) to the solver."""
-        self._ensure_solver()
-        for c in constraints:
-            if isinstance(c, (list, tuple)):
-                for cc in c:
-                    self._solver_ctx.add_constraint_ast(cc)
-            else:
-                self._solver_ctx.add_constraint_ast(c)
-
-    def is_true(self, expr, **kwargs):
-        """Check if expression is definitely true."""
-        self._ensure_solver()
-        return self._solver_ctx.is_true(expr)
-
-    def is_false(self, expr, **kwargs):
-        """Check if expression is definitely false."""
-        self._ensure_solver()
-        return self._solver_ctx.is_false(expr)
-
     def symbolic(self, expr):
         """Check if expression contains symbolic variables."""
         if isinstance(expr, claripy.ast.Base):
             return expr.symbolic
         return False
-
-    def solution(self, expr, value, **kwargs):
-        """Check if value is a valid solution for expr."""
-        self._ensure_solver()
-        return self._solver_ctx.solution(expr, value)
 
     @property
     def constraints(self):
@@ -302,11 +259,106 @@ class RustSolverProxy(_SolutionCountMixin):
             return
         timeout_ms = int(value)
         self._mgr.set_state_solver_timeout(self._state_id, timeout_ms)
-        if self._solver_ctx is not None:
-            self._solver_ctx.set_timeout(timeout_ms)
+        ctx = self._forked_ctx()
+        if ctx is not None:
+            ctx.set_timeout(timeout_ms)
 
 
-class RustSolverProxyPlugin(_SolutionCountMixin):
+class RustSolverProxy(RustSolverProxyBase):
+    """
+    Wraps a RustSolverContext to present a claripy-compatible solver interface.
+
+    Delegates satisfiability checks, evaluation, and constraint operations
+    directly to the Rust Z3 solver — no claripy frontend sync needed.
+
+    Shared solver-query methods (satisfiable / min / max / symbolic /
+    constraints / timeout) live on ``RustSolverProxyBase``; this subclass adds
+    the lazy single-fork strategy (``_ensure_solver`` → ``self._solver_ctx``)
+    and the methods whose bodies differ from the plugin's (eval / eval_upto /
+    add / is_true / is_false / solution).
+    """
+
+    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._solver_ctx = None  # lazy — forked on first access
+        # angr-yodz: when set, returns the parent RustStateProxy's single
+        # shared forked context so a constraint added here is visible to the
+        # same proxy's memory/posix reads. None for standalone construction.
+        self._shared_ctx_getter = shared_ctx_getter
+
+    def _ensure_solver(self):
+        if self._solver_ctx is None:
+            if self._shared_ctx_getter is not None:
+                self._solver_ctx = self._shared_ctx_getter()
+            else:
+                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+
+    def _query_ctx(self):
+        self._ensure_solver()
+        return self._solver_ctx
+
+    def _forked_ctx(self):
+        return self._solver_ctx
+
+    def eval(self, expr, n=1, cast_to=None, extra_constraints=(), **kwargs):
+        """Evaluate a symbolic expression to a concrete value.
+
+        Matches angr SimSolver.eval: returns a single value (not a tuple).
+        """
+        self._ensure_solver()
+        # Fast path: concrete expression
+        if hasattr(expr, "concrete") and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
+            return self._cast_result(expr, val, cast_to)
+        result = _with_extra_constraints(self._solver_ctx, self._solver_ctx.eval, expr, extra=extra_constraints)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return self._cast_result(expr, result, cast_to)
+
+    def _eval_inner(self, expr, n, cast_to):
+        if n == 1:
+            result = self._solver_ctx.eval(expr)
+            if result is None:
+                raise claripy.errors.UnsatError("unsat")
+            result = self._cast_result(expr, result, cast_to)
+            return (result,)
+        results = self._solver_ctx.eval_upto(expr, n)
+        results = tuple(self._cast_result(expr, r, cast_to) for r in results)
+        return results
+
+    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
+        """Evaluate expression for up to n solutions. Returns a tuple."""
+        self._ensure_solver()
+        return _with_extra_constraints(self._solver_ctx, self._eval_inner, expr, n, cast_to, extra=extra_constraints)
+
+    def add(self, *constraints):
+        """Add constraint(s) to the solver."""
+        self._ensure_solver()
+        for c in constraints:
+            if isinstance(c, (list, tuple)):
+                for cc in c:
+                    self._solver_ctx.add_constraint_ast(cc)
+            else:
+                self._solver_ctx.add_constraint_ast(c)
+
+    def is_true(self, expr, **kwargs):
+        """Check if expression is definitely true."""
+        self._ensure_solver()
+        return self._solver_ctx.is_true(expr)
+
+    def is_false(self, expr, **kwargs):
+        """Check if expression is definitely false."""
+        self._ensure_solver()
+        return self._solver_ctx.is_false(expr)
+
+    def solution(self, expr, value, **kwargs):
+        """Check if value is a valid solution for expr."""
+        self._ensure_solver()
+        return self._solver_ctx.solution(expr, value)
+
+
+class RustSolverProxyPlugin(RustSolverProxyBase):
     """SimSolver-shaped plugin that routes constraint ops through Rust.
 
     Installed as ``state.solver`` on SimProcedure callback states under the
@@ -444,15 +496,6 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
         return [claripy.BVV(v, len(e)) for v in values]
 
     # ---------------------------------------------------------------
-    # Read-through: constraints
-    # ---------------------------------------------------------------
-
-    @property
-    def constraints(self):
-        """Return the underlying Rust state's constraints as claripy ASTs."""
-        return self._mgr.export_state_constraints(self._state_id)
-
-    # ---------------------------------------------------------------
     # Write-through: add
     # ---------------------------------------------------------------
 
@@ -534,9 +577,13 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
             )
         return self._rust_ctx_cache
 
-    def satisfiable(self, extra_constraints=(), exact=None, **kwargs):
-        ctx = self._get_rust_ctx()
-        return _with_extra_constraints(ctx, ctx.satisfiable, extra=extra_constraints)
+    # Context-access hooks for ``RustSolverProxyBase``: the plugin caches its
+    # fork in ``_rust_ctx_cache`` (invalidated on ``add``).
+    def _query_ctx(self):
+        return self._get_rust_ctx()
+
+    def _forked_ctx(self):
+        return self._rust_ctx_cache
 
     def eval(self, expr, n_or_cast=None, cast_to=None, extra_constraints=(), exact=None, **kwargs):
         """``state.solver.eval(expr[, cast_to=bytes])``.
@@ -566,34 +613,6 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
             results = [self._cast_result(expr, r, cast_to) for r in results]
         return list(results)
 
-    def min(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
-        ctx = self._get_rust_ctx()
-        result = _with_extra_constraints(ctx, ctx.min, expr, extra=extra_constraints, signed=signed)
-        if result is not None:
-            return result
-        return _resolve_none_extremum(
-            "min",
-            expr,
-            self.constraints,
-            extra_constraints,
-            signed,
-            lambda: self.satisfiable(extra_constraints=extra_constraints),
-        )
-
-    def max(self, expr, extra_constraints=(), exact=None, signed=False, **kwargs):
-        ctx = self._get_rust_ctx()
-        result = _with_extra_constraints(ctx, ctx.max, expr, extra=extra_constraints, signed=signed)
-        if result is not None:
-            return result
-        return _resolve_none_extremum(
-            "max",
-            expr,
-            self.constraints,
-            extra_constraints,
-            signed,
-            lambda: self.satisfiable(extra_constraints=extra_constraints),
-        )
-
     def is_true(self, expr, extra_constraints=(), **kwargs):
         expr = self._unwrap_constraint(expr)
         if isinstance(expr, bool):
@@ -617,11 +636,6 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
         ctx = self._get_rust_ctx()
         return ctx.solution(expr, value)
 
-    def symbolic(self, expr):
-        if isinstance(expr, claripy.ast.Base):
-            return expr.symbolic
-        return False
-
     def unique(self, expr, **kwargs):
         results = self.eval_upto(expr, 2, **kwargs)
         return len(results) == 1
@@ -637,12 +651,12 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
         return not self.symbolic(e)
 
     # SimSolver exposes ``min_int`` / ``max_int`` as aliases for ``min`` /
-    # ``max``; SimProcedures (libc/memcmp.py) call them as the int-only
-    # convenience.
-    min_int = min
-    max_int = max
-
-    _cast_result = staticmethod(_cast_eval_result)
+    # ``max``; SimProcedures (libc/memcmp.py, mempcpy.py, …) call them as the
+    # int-only convenience. Installed only on the plugin (the callback
+    # ``state.solver``); the standalone ``RustSolverProxy`` keeps its prior
+    # surface and does not expose them.
+    min_int = RustSolverProxyBase.min
+    max_int = RustSolverProxyBase.max
 
     # ---------------------------------------------------------------
     # Symbol creation (delegate to claripy — no solver interaction)
@@ -706,26 +720,6 @@ class RustSolverProxyPlugin(_SolutionCountMixin):
         for var in v.variables:
             if var in reverse_mapping:
                 yield reverse_mapping[var]
-
-    # ---------------------------------------------------------------
-    # Solver timeout — forward to the underlying Rust state's context.
-    # ---------------------------------------------------------------
-
-    @property
-    def timeout(self):
-        try:
-            return self._mgr.get_state_solver_timeout(self._state_id)
-        except Exception:
-            return 0
-
-    @timeout.setter
-    def timeout(self, value):
-        if value is None:
-            return
-        timeout_ms = int(value)
-        self._mgr.set_state_solver_timeout(self._state_id, timeout_ms)
-        if self._rust_ctx_cache is not None:
-            self._rust_ctx_cache.set_timeout(timeout_ms)
 
 
 class RustRegisterProxy:
