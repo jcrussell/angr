@@ -400,7 +400,10 @@ fn test_vsnprintf_stub_writes_nul_returns_one() {
     assert_eq!(result.unwrap().as_u64(), Some(1));
     assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), 0);
     // Byte after the terminator is untouched (no formatting occurred).
-    assert_eq!(state.memory_load(0x2001, 1).unwrap().as_u64().unwrap(), b'X' as u64);
+    assert_eq!(
+        state.memory_load(0x2001, 1).unwrap().as_u64().unwrap(),
+        b'X' as u64
+    );
 }
 
 #[test]
@@ -422,5 +425,8 @@ fn test_vsnprintf_zero_size_returns_zero() {
 
     // size == 0: returns 0 and writes nothing.
     assert_eq!(result.unwrap().as_u64(), Some(0));
-    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), b'X' as u64);
+    assert_eq!(
+        state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(),
+        b'X' as u64
+    );
 }
