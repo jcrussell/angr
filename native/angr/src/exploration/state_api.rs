@@ -245,6 +245,17 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _get_state_heap_brk(&self, state_id: u64) -> PyResult<u64> {
+        self.with_state(state_id, |state| Ok(state.heap_brk()))
+    }
+
+    pub(crate) fn _set_state_heap_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.set_heap_brk(addr);
+            Ok(())
+        })
+    }
+
     // -------------------------------------------------------------------------
     // Per-state Python-AST metadata
     // -------------------------------------------------------------------------

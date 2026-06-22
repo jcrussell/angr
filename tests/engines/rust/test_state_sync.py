@@ -353,6 +353,121 @@ class TestPosixBrkSync:
         assert states[0].posix.brk is cached.posix.brk
 
 
+class TestHeapBrkSync:
+    """Tests that the Rust per-state heap_brk (malloc bump allocator) mirrors
+    back to Python's state.heap.heap_location on stash export.
+
+    Regression for angr-um39j (mirrors TestPosixBrkSync for the brk syscall and
+    TestMmapBaseSync for mmap): native heap-allocating SimProcedures
+    (malloc/calloc/realloc/strdup/fopen) bump Rust's heap_brk via heap_alloc,
+    but nothing pushed that bump back to the angr SimState — so a later
+    Python-side fallback SimProcedure would read a stale state.heap.heap_location
+    and hand out heap addresses overlapping a Rust-allocated region. Latent
+    until angr-blq01 made native fopen/calloc/realloc actually run.
+    """
+
+    def test_get_state_heap_brk_default(self):
+        """Default heap_brk matches Python's heap.heap_location default
+        (0xC0000000)."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        assert mgr.get_state_heap_brk(sid) == 0xC000_0000
+
+    def test_set_state_heap_brk_round_trips(self):
+        """Setter advances the value and getter reads it back — proves the
+        FFI accessor pair is wired to the same RustSimState field that
+        heap_alloc mutates."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        mgr.set_state_heap_brk(sid, 0xC000_5000)
+        assert mgr.get_state_heap_brk(sid) == 0xC000_5000
+
+    def test_get_state_heap_brk_unknown_state_raises(self):
+        """Unknown state IDs surface a ValueError (matches the posix_brk API)."""
+        mgr = _RustExplorationManager("amd64")
+        with pytest.raises(ValueError, match=r"state .* not found"):
+            mgr.get_state_heap_brk(999_999)
+
+    def test_init_push_aligns_rust_heap_brk_with_python(self, fauxware_project):
+        """At state creation, _add_rust_state pushes Python's
+        state.heap.heap_location into Rust so subsequent native allocations
+        don't collide with a Python-side allocation. Default matches, so
+        advance Python first to prove the push runs.
+
+        Uses a non-entry blank_state: an entry-point state runs Python
+        init-to-main, which produces a fresh state and discards a bump on the
+        seed. A blank_state inside the main binary (not the entry) is returned
+        by _run_python_init_if_needed unmodified, so the bump survives.
+        """
+        proj = fauxware_project
+        state = proj.factory.blank_state(addr=proj.entry + 0x10)
+        assert state.addr != proj.entry
+        bumped = state.heap.heap_location + 0x4000
+        state.heap.heap_location = bumped
+
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        assert mgr._rust_mgr.get_state_heap_brk(sid) == bumped
+
+    def test_export_path_syncs_rust_heap_brk_into_state_heap(self, fauxware_project):
+        """End-to-end: a Rust-side heap_brk advance is visible on the angr
+        SimState returned by mgr.active.
+
+        Pre-fix this fails — state.heap.heap_location stays at the default
+        even though Rust bumped its internal counter, leading to the silent
+        heap-collision scenario in the bead description.
+        """
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        starting = state.heap.heap_location
+        assert isinstance(starting, int)
+
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        assert len(active_ids) == 1
+        sid = active_ids[0]
+        assert mgr._rust_mgr.get_state_heap_brk(sid) == starting
+
+        # Simulate what heap_alloc does on a native malloc: bump the per-state
+        # heap_brk by one page past the base.
+        bumped = starting + 0x1000
+        mgr._rust_mgr.set_state_heap_brk(sid, bumped)
+        assert mgr._rust_mgr.get_state_heap_brk(sid) == bumped
+
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        synced = states[0]
+
+        assert synced.heap.heap_location == bumped, (
+            f"state.heap.heap_location = {synced.heap.heap_location!r} but "
+            f"Rust's heap_brk advanced to 0x{bumped:x} — sync did not run on "
+            f"stash export and a Python-side malloc fallback would now overlap "
+            f"a Rust-allocated region."
+        )
+
+    def test_export_path_does_not_clobber_higher_python_heap_brk(self, fauxware_project):
+        """The sync takes max(rust, python) — a Python-side advance that
+        outpaced Rust must not be reverted."""
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        starting = state.heap.heap_location
+
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        sid = active_ids[0]
+
+        # Python advanced heap_location; Rust still at base.
+        cached = mgr._state_cache[sid]
+        higher = starting + 0x6000
+        cached.heap.heap_location = higher
+        assert mgr._rust_mgr.get_state_heap_brk(sid) == starting
+
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        # Python's higher value wins — not clobbered by Rust's smaller value.
+        assert states[0].heap.heap_location == higher
+
+
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict
     into Rust ``RustSimState`` (angr-p8o3).

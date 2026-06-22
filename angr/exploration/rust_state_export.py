@@ -461,6 +461,7 @@ class RustStateExportMixin:
             self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
             self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
             self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_heap_brk_to_state(angr_state, snapshot.state_id)
             angr_state.scratch.rust_fully_synced = True
             self._state_cache[snapshot.state_id] = angr_state
             self._finalize_materialized_state(angr_state)
@@ -491,6 +492,7 @@ class RustStateExportMixin:
         self._sync_rust_callstack_to_state(state, state_id)
         self._sync_rust_mmap_base_to_state(state, state_id)
         self._sync_rust_posix_brk_to_state(state, state_id)
+        self._sync_rust_heap_brk_to_state(state, state_id)
         state.scratch.rust_fully_synced = True
 
     def _finalize_materialized_state(self, state) -> None:
@@ -668,6 +670,37 @@ class RustStateExportMixin:
             return
         if rust_brk > py_brk:
             posix.brk = rust_brk
+
+    def _sync_rust_heap_brk_to_state(self, state: angr.SimState, state_id: int):
+        """Push Rust's per-state heap_brk into Python's state.heap.heap_location.
+
+        Mirror of _sync_rust_posix_brk_to_state for the malloc bump allocator.
+        Native heap-allocating SimProcedures (malloc/calloc/realloc/strdup/
+        fopen) bump Rust's heap_brk via heap_alloc; without this sync a later
+        Python-side fallback SimProcedure reads a stale state.heap.heap_location
+        and hands out heap addresses overlapping a Rust-allocated region
+        (angr-um39j; latent until angr-blq01 made native fopen/calloc/realloc
+        actually run instead of falling back).
+
+        Take max(rust, python) to avoid clobbering a Python-side advance (a
+        prior fallback malloc that bumped heap_location past Rust's value).
+        """
+        heap = getattr(state, "heap", None)
+        if heap is None or not hasattr(heap, "heap_location"):
+            return
+        py_loc = heap.heap_location
+        if not isinstance(py_loc, int):
+            return
+        try:
+            rust_brk = self._rust_mgr.get_state_heap_brk(state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: per-state heap_brk unavailable
+            # (state may have been dropped from Rust). Same overlap risk as
+            # the mmap_base / posix_brk syncs. Debug only.
+            l.debug("get_state_heap_brk(%d) failed: %s", state_id, e)
+            return
+        if rust_brk > py_loc:
+            heap.heap_location = rust_brk
 
     def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
         """Sync Rust-tracked call frames into state.callstack.

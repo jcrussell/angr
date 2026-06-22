@@ -3330,6 +3330,23 @@ class RustExplorationManager(
             # mapped memory. Debug-logs.
             l.debug("posix.brk init push failed: %s", e)
 
+        # Push state.heap.heap_location so Rust's malloc bump allocator
+        # (heap_alloc) starts past any Python-side allocation. Symmetric with
+        # the posix.brk push above and the export-side
+        # _sync_rust_heap_brk_to_state: a Python fallback SimProcedure that
+        # mallocs bumps heap_location, and without this push a subsequent
+        # native alloc in Rust would hand out an overlapping address
+        # (angr-um39j). Only push a plain int that's past Rust's default base.
+        try:
+            py_loc = getattr(getattr(angr_state, "heap", None), "heap_location", None)
+            if isinstance(py_loc, int):
+                rust_state.heap_brk = py_loc
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: heap_location push to Rust failed;
+            # Rust's native allocator bases from its default and may overlap a
+            # Python-allocated region. Debug-logs.
+            l.debug("heap.heap_location init push failed: %s", e)
+
         # Sync registers (use precomputed dict from disk cache when available)
         _t_reg = time.perf_counter_ns()
         precomputed = self._precomputed_regs

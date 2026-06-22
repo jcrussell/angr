@@ -690,6 +690,22 @@ impl RustSimState {
         self.heap_brk
     }
 
+    /// Set the heap brk (malloc bump allocator) pointer.
+    ///
+    /// **Invariant I7 (cross-mixin sync):** like `set_posix_brk`, both
+    /// engines mutate the malloc bump allocator — Rust on native
+    /// malloc/calloc/realloc/strdup/fopen (`heap_alloc`), Python on a
+    /// fallback heap-allocating SimProcedure (which bumps
+    /// `state.heap.heap_location`). The Python export path computes
+    /// `max(rust_value, python_value)` so neither side hands out an address
+    /// the other already allocated. This setter is the commanded path: it
+    /// takes whatever value the caller (FFI cross-sync) supplies, without
+    /// enforcing monotonicity locally. Regression test:
+    /// `TestHeapBrkSync.test_export_path_syncs_rust_heap_brk_into_state_heap`.
+    pub fn set_heap_brk(&mut self, addr: u64) {
+        self.heap_brk = addr;
+    }
+
     /// Get the POSIX brk pointer (mirrors `state.posix.brk` for the brk(2)
     /// syscall). Distinct from `heap_brk`, which is the malloc bump allocator.
     ///
@@ -1567,6 +1583,21 @@ impl PyRustSimState {
     #[setter]
     pub fn set_posix_brk(&mut self, addr: u64) {
         self.inner.set_posix_brk(addr);
+    }
+
+    /// Get the heap brk pointer (mirrors Python's `state.heap.heap_location`,
+    /// the malloc bump allocator).
+    #[getter]
+    pub fn heap_brk(&self) -> u64 {
+        self.inner.heap_brk()
+    }
+
+    /// Set the heap brk pointer. Used by the Python wrapper at state-creation
+    /// time to push `state.heap.heap_location` into Rust so subsequent native
+    /// allocations don't collide with a Python-side allocation (angr-um39j).
+    #[setter]
+    pub fn set_heap_brk(&mut self, addr: u64) {
+        self.inner.set_heap_brk(addr);
     }
 
     /// Get the history (basic block addresses).

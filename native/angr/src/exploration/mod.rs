@@ -1272,6 +1272,23 @@ impl RustExplorationManager {
         self._set_state_posix_brk(state_id, addr)
     }
 
+    /// Get the per-state heap brk pointer (mirrors Python's
+    /// `state.heap.heap_location`, the malloc bump allocator). Native
+    /// heap-allocating procedures (malloc/calloc/realloc/strdup/fopen) bump
+    /// this via `heap_alloc`; Python imports it on stash export so a Python
+    /// fallback SimProcedure doesn't hand out an address Rust already
+    /// allocated. See bead angr-um39j.
+    pub fn get_state_heap_brk(&self, state_id: u64) -> PyResult<u64> {
+        self._get_state_heap_brk(state_id)
+    }
+
+    /// Set the per-state heap brk pointer. Used by tests and on import to
+    /// push a Python-side `state.heap.heap_location` advance back into Rust
+    /// so subsequent native allocations don't collide.
+    pub fn set_state_heap_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
+        self._set_state_heap_brk(state_id, addr)
+    }
+
     // ----- Per-state Python-AST metadata (symbolic_pages /
     //       hook_symbolic_memory / addr_to_ast). Storage now lives in
     //       RustSimState; these methods are the FFI surface that replaces the
