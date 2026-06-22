@@ -2895,27 +2895,67 @@ RSS and a smaller active stash:
      - 31
      - 645 MB
 
-Recommended recipe::
+Most of the "real binary problem" here is *harnessing*, not engine
+capability. The end-to-end recipe stacks four knobs that each suppress a
+distinct source of state explosion. Full recipe::
 
+    import claripy
+    import angr.sim_options as o
     from angr.exploration import RustExplorationManager
     from angr.exploration_techniques import LengthLimiter
 
+    MAX_INPUT = 32
+
+    # (4) Bound the symbolic input length, and zero-fill unconstrained
+    #     reads so stubbed-libc / uninitialised reads don't seed fresh
+    #     symbolic branches.
+    stdin = claripy.BVS("stdin", 8 * MAX_INPUT)
+    state = project.factory.entry_state(
+        stdin=stdin,
+        add_options={
+            o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+        },
+    )
+
     mgr = RustExplorationManager(
         project, [state],
-        exploration_strategy="dfs",     # LIFO state selection
+        exploration_strategy="dfs",     # (1) LIFO state selection
         max_active_states=64,           # belt-and-braces fork cap
     )
-    # Drop states past the expected vulnerability depth.
-    mgr.use_technique(LengthLimiter(max_length=32, drop=True))
-    mgr.explore(find=vuln_addr)
+    # (2) Drop states past the expected vulnerability depth.
+    mgr.use_technique(LengthLimiter(max_length=MAX_INPUT, drop=True))
+    # (3) Loosen the uniqueness filter so a BFS-style active=0 premature
+    #     termination doesn't prune deep-but-similar states. The filter is
+    #     OFF by default; call this only if a prior step enabled it.
+    mgr.disable_uniqueness_filter()
+    mgr.explore(find=vuln_addr, avoid=avoid_addrs)
 
-Both ``exploration_strategy="dfs"`` (FFI:
-``set_state_selection_lifo``) and ``LengthLimiter`` (FFI:
-``register_length_limiter``) route through native Rust setters and
-compose without overriding each other. See
+Each knob and its native FFI entry point:
+
+#. ``exploration_strategy="dfs"`` (FFI: ``set_state_selection_lifo``) —
+   depth-first frontier so a single path drives toward the target depth
+   instead of the BFS frontier ballooning at shallow depth.
+#. ``LengthLimiter(drop=True)`` (FFI: ``register_length_limiter``) —
+   drop states once they pass the expected vulnerability depth so the
+   active stash stays bounded.
+#. The uniqueness filter (FFI: ``register_uniqueness_filter`` /
+   ``disable_uniqueness_filter`` / ``uniqueness_filter_enabled`` /
+   ``uniqueness_set_size``, exposed on the Python manager via T1a) — it
+   is **off by default**; if an earlier configuration step turned it on,
+   loosen or disable it here so near-duplicate deep states aren't pruned
+   into a premature ``active=0`` termination.
+#. ``ZERO_FILL_UNCONSTRAINED_MEMORY`` /
+   ``ZERO_FILL_UNCONSTRAINED_REGISTERS`` plus a bounded symbolic
+   ``stdin`` — cap the symbolic input and stop stubbed-libc return values
+   from spawning extra symbolic branches.
+
+All four compose without overriding each other. See
 ``TestExplorationStrategy.test_deep_loop_recipe_dfs_plus_length_limiter``
-in ``tests/engines/rust/`` for the regression that
-pins this composition.
+(DFS + ``LengthLimiter``) and
+``TestExplorationStrategy.test_deep_loop_recipe_full_knob_stack`` (the
+full four-knob stack) in ``tests/engines/rust/`` for the regressions that
+pin this composition.
 
 When to apply this recipe:
 

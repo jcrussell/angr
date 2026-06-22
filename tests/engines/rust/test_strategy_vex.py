@@ -256,6 +256,74 @@ class TestExplorationStrategy:
                 f"LengthLimiter should drop states past {max_length} blocks, observed depth={depth}"
             )
 
+    def test_deep_loop_recipe_full_knob_stack(self, fauxware_project):
+        """End-to-end smoke for the full deep-input-loop recipe (angr-11djq.2 /
+        T1b) documented in ``docs/advanced-topics/rust_engine.rst``
+        ("Deep-input-loop binaries (grub-class)" subsection).
+
+        Composes every knob the recipe recommends:
+
+        * ``exploration_strategy='dfs'`` — LIFO state selection
+          (``set_state_selection_lifo``).
+        * ``LengthLimiter(drop=True)`` — bound the active-stash depth
+          (``register_length_limiter``).
+        * ``disable_uniqueness_filter()`` — the T1a knob; loosen the
+          uniqueness filter so BFS-style ``active=0`` premature termination
+          doesn't prune deep-but-similar states
+          (``disable_uniqueness_filter``).
+        * ``ZERO_FILL_UNCONSTRAINED_*`` — kill symbolic branches from stubbed
+          libc returns / uninitialised reads.
+        * Bounded symbolic stdin — cap the symbolic input length.
+
+        fauxware is not a deep-loop binary, so this is a *composition* smoke,
+        not the depth-limited regression that motivates the recipe: it asserts
+        the full knob stack constructs, the uniqueness filter is observably
+        disabled, and the recipe still reaches the find while honouring the
+        depth bound and the avoid target.
+        """
+        import claripy
+
+        import angr.sim_options as o
+
+        find_addr = 0x4006ED
+        avoid_addr = 0x4006FD
+        max_input = 32
+
+        # Bound the symbolic input length.
+        stdin = claripy.BVS("stdin", 8 * max_input)
+        state = fauxware_project.factory.entry_state(
+            stdin=stdin,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        mgr = RustExplorationManager(
+            fauxware_project,
+            [state],
+            exploration_strategy="dfs",
+            max_active_states=64,
+        )
+        mgr.use_technique(angr.exploration_techniques.LengthLimiter(max_length=max_input, drop=True))
+        # Loosen the uniqueness filter (T1a knob).
+        assert mgr.uniqueness_filter_enabled() is False, "fresh manager defaults to uniqueness filter off"
+        mgr.register_uniqueness_filter(["rax", "rdi"])
+        assert mgr.uniqueness_filter_enabled() is True
+        mgr.disable_uniqueness_filter()
+        assert mgr.uniqueness_filter_enabled() is False, "disable_uniqueness_filter must turn the filter back off"
+
+        mgr.explore(find=find_addr, avoid=avoid_addr, max_steps=200)
+
+        assert len(mgr.found) > 0, "full deep-loop recipe must still reach fauxware's find"
+        for proxy in mgr.active_proxies():
+            depth = len(proxy.history.bbl_addrs)
+            assert depth <= max_input, (
+                f"LengthLimiter should drop states past {max_input} blocks, observed depth={depth}"
+            )
+        # The avoid target must not appear in the found stash.
+        for found in mgr.found:
+            assert avoid_addr not in found.history.bbl_addrs, "avoid target must be pruned from the found stash"
+
 
 class TestVexOperationCoverage:
     """Systematic tests for BV operations through the Rust solver.
