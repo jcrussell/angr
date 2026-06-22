@@ -3,19 +3,25 @@
 //! ## `readlink` / `readlinkat` (angr-wv38)
 //!
 //! `readlink(pathname, buf, bufsiz) → ssize_t` and
-//! `readlinkat(dirfd, pathname, buf, bufsiz) → ssize_t` always return
-//! `-1`. The Rust `FileSystem` model has no symlinks, so:
+//! `readlinkat(dirfd, pathname, buf, bufsiz) → ssize_t` consult the
+//! `FileSystem` symlink table (angr-11djq.6.2):
 //!
-//! * For any known path: `-1` with `errno = EINVAL` (not a symlink).
-//! * For any unknown path: `-1` with `errno = ENOENT` (no such file).
+//! * If `pathname` is a registered symlink (via `FileSystem::add_symlink`)
+//!   → write `min(target_len, bufsiz)` raw target bytes into `buf` (no
+//!   NUL terminator, matching `readlink(2)`) and return that count.
+//! * Otherwise → `-1`, buffer untouched (the path is "not a symlink"
+//!   `EINVAL` / "no such file" `ENOENT`).
 //!
-//! Either way the buffer is left untouched (real Linux only writes on a
-//! positive return). This is strictly more accurate than the previous
-//! fresh-symbolic stub return — the previous stub would let solver-
-//! permitted paths take the "positive return" branch and explore code
-//! reading non-existent symlink data. The known regression risk
-//! (binaries that branch on a positive return from `/proc/self/exe`-
-//! discovery code) was cleared by the angr-examples bench sweep.
+//! The symlink table is empty by default, so with no `add_symlink` call
+//! the handlers return `-1` for every path — byte-identical to the prior
+//! always-`-1` behavior. That default is strictly more accurate than the
+//! original fresh-symbolic stub return, which would let solver-permitted
+//! paths take the "positive return" branch and explore code reading
+//! non-existent symlink data. The known regression risk (binaries that
+//! branch on a positive return from `/proc/self/exe`-discovery code) was
+//! cleared by the angr-examples bench sweep. Python's symbolic-stub
+//! `readlink` has no symlink model, so this is a deliberate accuracy
+//! divergence (same trade-off as `access` / `stat`).
 //!
 //! The handlers still read `pathname` into a Rust `String` before
 //! returning, mirroring `NativeAccessSyscall` / `NativeFaccessatSyscall`:
@@ -384,15 +390,13 @@ impl NativeSyscall for NativeFaccessatSyscall {
     }
 }
 
-/// `readlink(pathname, buf, bufsiz) → -1` — always returns `-1` because
-/// the Rust `FileSystem` model has no symlinks (every path is "not a
-/// symlink" → `EINVAL`, every unknown path → `ENOENT`). The buffer is
-/// left untouched. `pathname` is still read into a Rust `String` so
-/// that a symbolic path byte routes through `SyscallError::SymbolicArgument`
-/// and falls back to the Python `syscall_stub` (matches the
-/// `NativeAccessSyscall` pattern). `buf` / `bufsiz` are not validated:
-/// they would only matter on a positive return, which never happens
-/// here.
+/// `readlink(pathname, buf, bufsiz) → ssize_t` — resolves `pathname`
+/// against the `FileSystem` symlink table (empty by default → `-1`).
+/// On a hit, writes `min(target_len, bufsiz)` raw target bytes to `buf`
+/// and returns that count (see `write_symlink_target`). `pathname` is
+/// read into a Rust `String` first, so a symbolic path byte routes
+/// through `SyscallError::SymbolicArgument` and falls back to the Python
+/// `syscall_stub` (matches the `NativeAccessSyscall` pattern).
 pub struct NativeReadlinkSyscall;
 
 impl NativeSyscall for NativeReadlinkSyscall {
@@ -410,23 +414,19 @@ impl NativeSyscall for NativeReadlinkSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         let pathname_addr = extract_concrete_arg(&args[0], "readlink pathname")?;
-        // args[1] = buf, args[2] = bufsiz — ignored (we return -1 and
-        // never write the buffer).
-        let _ = (args.get(1), args.get(2));
-
-        let _path = read_path(state, pathname_addr, "readlink")?;
-        Ok(SyscallOutcome::Continue { ret: NEG_ONE })
+        let path = read_path(state, pathname_addr, "readlink")?;
+        write_symlink_target(state, &path, &args[1], &args[2], "readlink")
     }
 }
 
-/// `readlinkat(dirfd, pathname, buf, bufsiz) → -1` — clone of
+/// `readlinkat(dirfd, pathname, buf, bufsiz) → ssize_t` — clone of
 /// `readlink` with `openat`-style dirfd handling. Absolute paths and
 /// `AT_FDCWD` resolve via `read_path`; relative paths with any other
 /// dirfd short-circuit to `-1` without touching the path (mirrors
-/// `NativeOpenatSyscall` / `NativeFaccessatSyscall`). The end result
-/// is `-1` either way — the dirfd branch only exists so the handler
-/// shape stays symmetric with the rest of the `*at` family and falls
-/// back to Python on symbolic dirfd.
+/// `NativeOpenatSyscall` / `NativeFaccessatSyscall`). On an absolute /
+/// `AT_FDCWD` path the symlink-table lookup runs via
+/// `write_symlink_target` (empty table → `-1`). Falls back to Python on
+/// symbolic dirfd.
 pub struct NativeReadlinkatSyscall;
 
 impl NativeSyscall for NativeReadlinkatSyscall {
@@ -445,8 +445,6 @@ impl NativeSyscall for NativeReadlinkatSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let dirfd = extract_concrete_arg(&args[0], "readlinkat dirfd")?;
         let pathname_addr = extract_concrete_arg(&args[1], "readlinkat pathname")?;
-        // args[2] = buf, args[3] = bufsiz — ignored (we return -1).
-        let _ = (args.get(2), args.get(3));
 
         let path = read_path(state, pathname_addr, "readlinkat")?;
         if path.is_empty() {
@@ -456,8 +454,36 @@ impl NativeSyscall for NativeReadlinkatSyscall {
         if !absolute && dirfd != AT_FDCWD_UNSIGNED {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        Ok(SyscallOutcome::Continue { ret: NEG_ONE })
+        write_symlink_target(state, &path, &args[2], &args[3], "readlinkat")
     }
+}
+
+/// Shared `readlink` / `readlinkat` tail: if `path` is a registered
+/// symlink, write `min(target_len, bufsiz)` raw target bytes (no NUL
+/// terminator, matching `readlink(2)`) into `buf` and return that count;
+/// otherwise return `-1` (the path is "not a symlink" / does not exist —
+/// the empty-table default). `buf` / `bufsiz` are only read on a symlink
+/// hit, so a symbolic `buf` / `bufsiz` on a non-symlink path still
+/// returns `-1` without falling back to Python (a symbolic operand on a
+/// genuine symlink routes through `SymbolicArgument` → Python).
+fn write_symlink_target(
+    state: &mut RustSimState,
+    path: &str,
+    buf_arg: &RustBV,
+    bufsiz_arg: &RustBV,
+    label: &str,
+) -> Result<SyscallOutcome, SyscallError> {
+    let target = match state.file_system_ref().readlink_target(path) {
+        Some(t) => t.to_vec(),
+        None => return Ok(SyscallOutcome::Continue { ret: NEG_ONE }),
+    };
+    let buf = extract_concrete_arg(buf_arg, &format!("{label} buf"))?;
+    let bufsiz = extract_concrete_arg(bufsiz_arg, &format!("{label} bufsiz"))?;
+    let n = (target.len() as u64).min(bufsiz);
+    for (i, b) in target.iter().take(n as usize).enumerate() {
+        state.memory_store(buf.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
+    }
+    Ok(SyscallOutcome::Continue { ret: n })
 }
 
 /// Concrete defaults for the `struct stat` fields. `fstat_with_result`

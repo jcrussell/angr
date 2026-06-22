@@ -98,6 +98,15 @@ pub struct FileSystem {
     /// built) are NOT mirrored — same trade-off as `open` / `openat`
     /// (angr-k3ol.1). Queried by `NativeAccessSyscall` (angr-k3ol.2).
     known_paths: Arc<HashSet<String>>,
+    /// Minimal symlink table: link path → raw target bytes (as
+    /// `readlink(2)` would return — NOT NUL-terminated). Empty by
+    /// default, so `readlink` / `readlinkat` keep returning `-1` for
+    /// every path (the prior behavior). Populated only via the
+    /// `add_symlink` API (tests / state export, mirroring the
+    /// `register_known_path` precedent — Python `state.fs` symlinks are
+    /// NOT auto-mirrored). Queried by `NativeReadlinkSyscall` /
+    /// `NativeReadlinkatSyscall` (angr-11djq.6.2).
+    symlinks: Arc<HashMap<String, Vec<u8>>>,
 }
 
 /// Serde shadow form for [`FileSystem`].
@@ -116,6 +125,10 @@ pub struct FileSystemData {
     /// behavior (no native access lookups would succeed).
     #[serde(default)]
     pub known_paths: std::collections::BTreeSet<String>,
+    /// `#[serde(default)]` keeps pre-angr-11djq.6.2 snapshots loadable —
+    /// reconstitutes to an empty map (no symlinks, `readlink` → `-1`).
+    #[serde(default)]
+    pub symlinks: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 impl From<FileSystem> for FileSystemData {
@@ -124,11 +137,17 @@ impl From<FileSystem> for FileSystemData {
             fs.fds.iter().map(|(k, v)| (*k, v.clone())).collect();
         let known_paths: std::collections::BTreeSet<String> =
             fs.known_paths.iter().cloned().collect();
+        let symlinks: std::collections::BTreeMap<String, Vec<u8>> = fs
+            .symlinks
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         FileSystemData {
             fds,
             next_fd: fs.next_fd,
             cwd: fs.cwd,
             known_paths,
+            symlinks,
         }
     }
 }
@@ -137,11 +156,13 @@ impl From<FileSystemData> for FileSystem {
     fn from(d: FileSystemData) -> Self {
         let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
         let known_paths: HashSet<String> = d.known_paths.into_iter().collect();
+        let symlinks: HashMap<String, Vec<u8>> = d.symlinks.into_iter().collect();
         FileSystem {
             fds: Arc::new(fds),
             next_fd: d.next_fd,
             cwd: d.cwd,
             known_paths: Arc::new(known_paths),
+            symlinks: Arc::new(symlinks),
         }
     }
 }
@@ -167,6 +188,7 @@ impl Default for FileSystem {
             next_fd: 3,
             cwd: b"/".to_vec(),
             known_paths: Arc::new(HashSet::new()),
+            symlinks: Arc::new(HashMap::new()),
         }
     }
 }
@@ -209,6 +231,23 @@ impl FileSystem {
     /// `NativeAccessSyscall`.
     pub fn is_path_known(&self, name: &str) -> bool {
         self.known_paths.contains(name)
+    }
+
+    /// Register a symlink: `link` resolves to `target` (raw bytes, as
+    /// `readlink(2)` returns — NOT NUL-terminated). Overwrites any
+    /// existing entry. Used by tests and the state-export path,
+    /// mirroring the `register_known_path` precedent (Python `state.fs`
+    /// symlinks are NOT auto-mirrored). Drives
+    /// `NativeReadlinkSyscall` / `NativeReadlinkatSyscall`.
+    pub fn add_symlink(&mut self, link: String, target: Vec<u8>) {
+        Arc::make_mut(&mut self.symlinks).insert(link, target);
+    }
+
+    /// Look up a symlink target by path. Returns the raw target bytes if
+    /// `path` is a registered symlink, else `None` (the path is not a
+    /// symlink, so `readlink` returns `-1`).
+    pub fn readlink_target(&self, path: &str) -> Option<&[u8]> {
+        self.symlinks.get(path).map(|v| v.as_slice())
     }
 
     /// Close a file descriptor. Returns true if it was open.

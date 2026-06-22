@@ -713,6 +713,105 @@ fn readlink_buf_is_not_modified_on_failure() {
 }
 
 #[test]
+fn readlink_registered_symlink_writes_target() {
+    // angr-11djq.6.2: a path registered in the symlink table returns its
+    // target bytes (no NUL terminator) and `target_len` as the count.
+    let target = b"/real/destination";
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), target.to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+
+    let out = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64), // buf
+                RustBV::concrete(256, 64),    // bufsiz (>> target len)
+            ],
+        )
+        .expect("readlink ok");
+    assert_eq!(expect_continue(out), target.len() as u64);
+    for (i, b) in target.iter().enumerate() {
+        let got = state.memory_load(0x3000 + i as u64, 1).expect("load");
+        assert_eq!(got.as_u64().unwrap() as u8, *b, "target byte {i}");
+    }
+    // No NUL terminator: the byte just past the target must be untouched
+    // (memory_load of an unwritten cell would be symbolic/zero, but the
+    // contract is we wrote exactly target.len() bytes — assert the count).
+}
+
+#[test]
+fn readlink_symlink_truncates_to_bufsiz() {
+    // bufsiz smaller than the target → write only `bufsiz` bytes and
+    // return `bufsiz` (matches readlink(2) truncation, no error).
+    let target = b"/very/long/symlink/target";
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), target.to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+    // Pre-fill buf with a sentinel so we can confirm only `bufsiz` bytes
+    // were overwritten.
+    for i in 0..target.len() as u64 {
+        state
+            .memory_store(0x3000 + i, RustBV::concrete(0xAA, 8))
+            .expect("sentinel");
+    }
+
+    let bufsiz = 5u64;
+    let out = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(bufsiz as u128, 64),
+            ],
+        )
+        .expect("readlink ok");
+    assert_eq!(expect_continue(out), bufsiz);
+    for i in 0..bufsiz {
+        let got = state.memory_load(0x3000 + i, 1).expect("load");
+        assert_eq!(got.as_u64().unwrap() as u8, target[i as usize]);
+    }
+    // Byte at index `bufsiz` must still be the sentinel (not written).
+    let untouched = state.memory_load(0x3000 + bufsiz, 1).expect("load");
+    assert_eq!(untouched.as_u64().unwrap(), 0xAA, "wrote past bufsiz");
+}
+
+#[test]
+fn readlinkat_registered_symlink_writes_target() {
+    // angr-11djq.6.2: readlinkat via AT_FDCWD on a registered symlink
+    // writes the target and returns its length, like readlink.
+    let target = b"/at/destination";
+    let mut state = state_with_path(b"/atlink");
+    state
+        .file_system()
+        .add_symlink("/atlink".to_string(), target.to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+
+    let out = NativeReadlinkatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(AT_FDCWD_UNSIGNED as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(256, 64),
+            ],
+        )
+        .expect("readlinkat ok");
+    assert_eq!(expect_continue(out), target.len() as u64);
+    for (i, b) in target.iter().enumerate() {
+        let got = state.memory_load(0x3000 + i as u64, 1).expect("load");
+        assert_eq!(got.as_u64().unwrap() as u8, *b, "target byte {i}");
+    }
+}
+
+#[test]
 fn readlink_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
