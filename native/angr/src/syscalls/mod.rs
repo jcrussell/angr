@@ -611,6 +611,12 @@ impl NativeSyscallRegistry {
                 // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
                 (191, rlimit::NativeGetrlimitSyscall),
                 (192, mmap::NativeMmap2Syscall),
+                // LFS stat family — struct stat64 (`write_arm_stat`). ARM
+                // EABI numbers match i386 (195/196/197) per angr's "arm"
+                // map in linux_kernel.py.
+                (195, file_path::NativeStatSyscall),
+                (196, file_path::NativeLstatSyscall),
+                (197, file_path::NativeFstatSyscall),
                 (199, identity::NativeGetuidSyscall),
                 (200, identity::NativeGetgidSyscall),
                 (201, identity::NativeGeteuidSyscall),
@@ -632,8 +638,10 @@ impl NativeSyscallRegistry {
                 (323, directory::NativeMkdiratSyscall),
                 (328, directory::NativeUnlinkatSyscall),
                 (329, directory::NativeRenameatSyscall),
-                // newfstatat absent on ARM EABI — uses fstatat64 (327).
+                // newfstatat absent on ARM EABI — uses fstatat64 (327 in
+                // angr's "arm" map), wired to the same handler as i386.
                 // renameat2 absent in angr's ARM EABI table.
+                (327, file_path::NativeNewfstatatSyscall),
                 (332, file_path::NativeReadlinkatSyscall),
                 (334, file_path::NativeFaccessatSyscall),
                 (346, concurrency::NativeEpollPwaitSyscall),

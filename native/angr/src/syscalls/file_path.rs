@@ -590,10 +590,56 @@ fn write_i386_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), 
     Ok(())
 }
 
+/// ARM (32-bit EABI) `struct stat64` layout (LFS variant — the one
+/// 32-bit glibc emits via `stat64`/`lstat64`/`fstat64`/`fstatat64`).
+/// Mirrors `angr/procedures/linux_kernel/fstat64.py::_store_arm`
+/// field-for-field. As with `write_i386_stat`, the value widths come
+/// from `posix.fstat_with_result`'s `Stat` tuple (`st_dev`/`st_ino`/
+/// `st_nlink`/`st_rdev`/`st_size`/`st_blksize`/`st_blocks`/times are
+/// 64-bit; `st_mode`/`st_uid`/`st_gid` are 32-bit), NOT the packed
+/// struct field widths, so several 64-bit stores spill into the next
+/// field and are overwritten by the following store. Replaying Python's
+/// exact order reproduces its byte output. The ARM layout differs from
+/// i386 mainly around `st_size` (0x30 here vs 0x2C on i386, no padding
+/// store) and it ends with the same "weird verification" `st_ino` copy
+/// (0x60 vs i386's 0x5C). All fields but `st_mode` (concrete
+/// `S_IFREG | 0o755`), `st_size` and `st_blksize` are zero — matching
+/// the other Rust handlers (Python mints a symbolic `st_mode`; the Rust
+/// path uses a concrete constant — see `write_amd64_stat`).
+fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
+        Ok(())
+    };
+    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
+        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
+        Ok(())
+    };
+
+    store_u64(state, 0x00, 0)?; // st_dev
+    store_u64(state, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
+    store_u32(state, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_u64(state, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
+    store_u32(state, 0x18, 0)?; // st_uid
+    store_u32(state, 0x1C, 0)?; // st_gid
+    store_u64(state, 0x20, 0)?; // st_rdev
+    store_u64(state, 0x30, size)?; // st_size
+    store_u64(state, 0x38, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps st_blocks)
+    store_u64(state, 0x40, 0)?; // st_blocks
+    store_u64(state, 0x48, 0)?; // st_atime
+    store_u64(state, 0x4C, 0)?; // st_atimensec
+    store_u64(state, 0x50, 0)?; // st_mtime
+    store_u64(state, 0x54, 0)?; // st_mtimensec
+    store_u64(state, 0x58, 0)?; // st_ctime
+    store_u64(state, 0x5C, 0)?; // st_ctimensec
+    store_u64(state, 0x60, 0)?; // st_ino (verification copy)
+    Ok(())
+}
+
 /// Dispatch the per-arch `struct stat` writer. Callers must arch-guard
 /// first (each stat-family handler accepts a slightly different arch set
-/// — legacy `stat`/`lstat` are AMD64+X86 only, `fstat`/`newfstatat` add
-/// ARM64), so the `_` arm is defensive rather than a normal path.
+/// — legacy `stat`/`lstat` are AMD64+X86+ARM only, `fstat`/`newfstatat`
+/// add ARM64), so the `_` arm is defensive rather than a normal path.
 fn write_stat_for_arch(
     state: &mut RustSimState,
     arch_name: &str,
@@ -604,6 +650,7 @@ fn write_stat_for_arch(
         "AMD64" => write_amd64_stat(state, buf, size),
         "ARM64" => write_aarch64_stat(state, buf, size),
         "X86" => write_i386_stat(state, buf, size),
+        "ARM" => write_arm_stat(state, buf, size),
         other => Err(SyscallError::Other(format!(
             "stat: no struct-stat writer for arch {other}"
         ))),
@@ -637,9 +684,10 @@ impl NativeSyscall for NativeFstatSyscall {
         // arch check first: avoid mutating state.memory if we will fall
         // back to Python anyway.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "ARM64" && arch_name != "X86" {
+        if arch_name != "AMD64" && arch_name != "ARM64" && arch_name != "X86" && arch_name != "ARM"
+        {
             return Err(SyscallError::Other(format!(
-                "fstat: unsupported arch {arch_name} (only AMD64/ARM64/X86 have a Rust handler)"
+                "fstat: unsupported arch {arch_name} (only AMD64/ARM64/X86/ARM have a Rust handler)"
             )));
         }
 
@@ -658,11 +706,12 @@ impl NativeSyscall for NativeFstatSyscall {
 /// `stat(pathname, statbuf) → 0 | -1` — resolve `pathname`, look up
 /// its content length via `FileSystem::content_size_for_path`, write a
 /// per-arch `struct stat` using the existing `write_amd64_stat` /
-/// `write_aarch64_stat` helpers, return `0`. Unknown / empty path
-/// returns `-1` with no buffer write. Arch coverage: AMD64 only
-/// (ARM64's asm-generic ABI dropped legacy `stat` — only `newfstatat`
-/// remains, already a stub). Unsupported arch returns `Other` BEFORE
-/// touching the path, mirroring the `fstat` policy.
+/// `write_i386_stat` / `write_arm_stat` helpers, return `0`. Unknown /
+/// empty path returns `-1` with no buffer write. Arch coverage:
+/// AMD64 + X86 + ARM (X86/ARM via the LFS `stat64` number; ARM64's
+/// asm-generic ABI dropped legacy `stat` — only `newfstatat` remains).
+/// Unsupported arch returns `Other` BEFORE touching the path, mirroring
+/// the `fstat` policy.
 pub struct NativeStatSyscall;
 
 impl NativeSyscall for NativeStatSyscall {
@@ -683,9 +732,9 @@ impl NativeSyscall for NativeStatSyscall {
         // back to Python anyway. AMD64 is the only arch that retains
         // a legacy `stat` syscall *and* has a working Python proc.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "X86" {
+        if arch_name != "AMD64" && arch_name != "X86" && arch_name != "ARM" {
             return Err(SyscallError::Other(format!(
-                "stat: unsupported arch {arch_name} (only AMD64/X86 have a Rust handler)"
+                "stat: unsupported arch {arch_name} (only AMD64/X86/ARM have a Rust handler)"
             )));
         }
 
@@ -713,12 +762,12 @@ impl NativeSyscall for NativeStatSyscall {
 /// model has no symlinks (open / openat never create one), so
 /// `lstat` collapses to `stat` semantics: resolve `pathname`, look up
 /// its content length via `FileSystem::content_size_for_path`, write
-/// the AMD64 `struct stat` via `write_amd64_stat`, return `0`.
+/// the per-arch `struct stat` via `write_stat_for_arch`, return `0`.
 /// Unknown / empty path returns `-1` with no buffer write. Arch
-/// coverage: AMD64 only — ARM64's asm-generic ABI dropped legacy
-/// `lstat` entirely; x86 / ARM EABI / MIPS32 carry the legacy 32-bit
-/// `struct stat` with no Python proc. Unsupported arch returns
-/// `Other` BEFORE touching the path, mirroring the `stat` policy.
+/// coverage: AMD64 + X86 + ARM (X86/ARM via the LFS `lstat64` number);
+/// ARM64's asm-generic ABI dropped legacy `lstat` entirely. Unsupported
+/// arch returns `Other` BEFORE touching the path, mirroring the `stat`
+/// policy.
 pub struct NativeLstatSyscall;
 
 impl NativeSyscall for NativeLstatSyscall {
@@ -736,9 +785,9 @@ impl NativeSyscall for NativeLstatSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "X86" {
+        if arch_name != "AMD64" && arch_name != "X86" && arch_name != "ARM" {
             return Err(SyscallError::Other(format!(
-                "lstat: unsupported arch {arch_name} (only AMD64/X86 have a Rust handler)"
+                "lstat: unsupported arch {arch_name} (only AMD64/X86/ARM have a Rust handler)"
             )));
         }
 
@@ -769,10 +818,10 @@ impl NativeSyscall for NativeLstatSyscall {
 /// do not model directory fds). The `flag` arg (incl. `AT_EMPTY_PATH`
 /// 0x1000) is ignored — `AT_EMPTY_PATH`'s "stat the dirfd directly"
 /// semantics would require dispatching to `NativeFstatSyscall(dirfd)`
-/// and is deferred. Arch coverage: AMD64 + ARM64 (both use 64-bit
-/// `struct stat` and have a Python `fstat.py` reference). Other arches
-/// (x86 / ARM EABI / MIPS32) use the legacy 32-bit struct stat with
-/// no Python proc — returns `Other` BEFORE touching state.
+/// and is deferred. Arch coverage: AMD64 + ARM64 + X86 + ARM (AMD64/
+/// ARM64 use the 64-bit `struct stat`; X86/ARM use the LFS `struct
+/// stat64` via `fstatat64`, mirroring `fstat64.py`). MIPS32 still falls
+/// back to Python — returns `Other` BEFORE touching state.
 pub struct NativeNewfstatatSyscall;
 
 impl NativeSyscall for NativeNewfstatatSyscall {
@@ -790,9 +839,10 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "ARM64" && arch_name != "X86" {
+        if arch_name != "AMD64" && arch_name != "ARM64" && arch_name != "X86" && arch_name != "ARM"
+        {
             return Err(SyscallError::Other(format!(
-                "newfstatat: unsupported arch {arch_name} (only AMD64/ARM64/X86 have a Rust handler)"
+                "newfstatat: unsupported arch {arch_name} (only AMD64/ARM64/X86/ARM have a Rust handler)"
             )));
         }
 

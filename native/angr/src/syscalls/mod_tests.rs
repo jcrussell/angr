@@ -753,8 +753,11 @@ fn file_path_stubs_registered_on_all_arches() {
     // Per-arch availability:
     //   * AArch64 asm-generic ABI dropped legacy `lstat` and `readlink`
     //     (only *at variants exist).
-    //   * 32-bit Linux i386 / ARM EABI / MIPS32 O32 use `fstatat64`
-    //     instead of `newfstatat`; absent here.
+    //   * 32-bit Linux i386 / ARM EABI use the LFS `lstat64` (196) and
+    //     `fstatat64` (327) numbers — angr's i386/arm maps have no legacy
+    //     106/107 entry — both wired to the lstat / newfstatat handlers
+    //     (angr-11djq.5.1 / .5.2). MIPS32 O32 still uses legacy `lstat`
+    //     (4107) and falls back to Python for `fstatat64`.
     let r = NativeSyscallRegistry::new();
 
     // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
@@ -769,8 +772,9 @@ fn file_path_stubs_registered_on_all_arches() {
     );
     let table: &[FilePathRow] = &[
         ("AMD64", Some(6), Some(262), Some(89), 267, 269),
-        ("X86", Some(107), None, Some(85), 305, 307),
-        ("ARM", Some(107), None, Some(85), 332, 334),
+        // X86 / ARM: LFS lstat64 (196) + fstatat64 (327), no legacy 107.
+        ("X86", Some(196), Some(327), Some(85), 305, 307),
+        ("ARM", Some(196), Some(327), Some(85), 332, 334),
         ("ARM64", None, Some(79), None, 78, 48),
         ("MIPS32", Some(4107), None, Some(4085), 4298, 4300),
         // N64 keeps lstat (5006) and adds newfstatat (5252).

@@ -1090,13 +1090,54 @@ fn fstat_known_fd_writes_i386_layout_and_returns_zero() {
 }
 
 #[test]
+fn fstat_known_fd_writes_arm_layout_and_returns_zero() {
+    // ARM (32-bit EABI) fstat64 / struct stat64 layout (`write_arm_stat`),
+    // mirroring angr/procedures/linux_kernel/fstat64.py::_store_arm.
+    // Offsets differ from i386: st_size at 0x30 (vs 0x2C), st_blksize at
+    // 0x38 (vs 0x34), no padding store. Buffers are 32-bit on ARM.
+    let mut state = RustSimState::new("armel").expect("state");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let fd = state.file_system().open_with_content(
+        "/tmp/arm".into(),
+        FdFlags::ReadOnly,
+        b"hello, world!".to_vec(),
+    );
+
+    let out = NativeFstatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 32),
+                RustBV::concrete(0x4000, 32),
+            ],
+        )
+        .expect("fstat ok");
+    assert_eq!(expect_continue(out), 0);
+
+    // st_mode at 0x10 (u32) — concrete S_IFREG | 0o755.
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFREG_0755 as u32);
+    // st_size at 0x30 (u64).
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
+    // st_blksize at 0x38 (low word of the 64-bit store).
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x38), ST_BLKSIZE as u32);
+    // st_dev at 0 — zero.
+    assert_eq!(read_u64_le(&state, 0x4000), 0);
+    // st_uid at 0x18 — zero (the overlapping st_nlink 64-bit store is 0).
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), 0);
+    // st_ino verification copy at 0x60 — zero.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x60), 0);
+}
+
+#[test]
 fn fstat_unsupported_arch_falls_back() {
-    // ARM / MIPS32 have legacy 32-bit struct stat and no Python
-    // implementation in fstat.py either, so the handler intentionally
-    // errors out and lets the dispatcher fall back to the Python proc
-    // (which itself raises). X86 IS supported now via `write_i386_stat`
-    // (fstat64 — angr-11djq.5.1) so it is excluded here.
-    for arch in ["armel", "mipsel"] {
+    // MIPS32 has a legacy 32-bit struct stat and no native writer yet,
+    // so the handler intentionally errors out and lets the dispatcher
+    // fall back to the Python proc. X86 (fstat64 — angr-11djq.5.1) and
+    // ARM (fstat64 — angr-11djq.5.2, via `write_arm_stat`) ARE supported
+    // now, so they are excluded here.
+    {
+        let arch = "mipsel";
         let mut state = RustSimState::new(arch).expect("state");
         let bits = state.arch().bits();
         let fd = state
@@ -1251,12 +1292,12 @@ fn stat_registered_path_without_fd_uses_zero_size() {
 
 #[test]
 fn stat_unsupported_arch_falls_back() {
-    // ARM64 has no legacy stat (only newfstatat). armel / mipsel
-    // carry the legacy 32-bit struct stat with no Python proc support
-    // — handler errors out so the dispatcher falls back to Python's
-    // error path. X86 IS supported (stat64 — angr-11djq.5.1) so it is
-    // excluded here.
-    for arch in ["armel", "aarch64", "mipsel"] {
+    // ARM64 has no legacy stat (only newfstatat). mipsel carries the
+    // legacy 32-bit struct stat with no native writer yet — handler
+    // errors out so the dispatcher falls back to Python's error path.
+    // X86 (stat64 — angr-11djq.5.1) and ARM (stat64 — angr-11djq.5.2)
+    // ARE supported, so they are excluded here.
+    for arch in ["aarch64", "mipsel"] {
         let mut state = RustSimState::new(arch).expect("state");
         let bits = state.arch().bits();
         // Register the path so we'd otherwise succeed.
@@ -1423,11 +1464,11 @@ fn lstat_known_path_with_content_writes_amd64_layout() {
 #[test]
 fn lstat_unsupported_arch_falls_back() {
     // ARM64 asm-generic ABI dropped legacy lstat (only newfstatat).
-    // armel / mipsel carry the legacy 32-bit struct stat with no
-    // Python proc support — handler errors out so the dispatcher falls
-    // back to Python's error path. X86 IS supported (lstat64 —
-    // angr-11djq.5.1) so it is excluded here.
-    for arch in ["armel", "aarch64", "mipsel"] {
+    // mipsel carries the legacy 32-bit struct stat with no native
+    // writer yet — handler errors out so the dispatcher falls back to
+    // Python's error path. X86 (lstat64 — angr-11djq.5.1) and ARM
+    // (lstat64 — angr-11djq.5.2) ARE supported, so they are excluded.
+    for arch in ["aarch64", "mipsel"] {
         let mut state = RustSimState::new(arch).expect("state");
         let bits = state.arch().bits();
         state
@@ -1649,10 +1690,12 @@ fn newfstatat_empty_path_returns_minus_one() {
 
 #[test]
 fn newfstatat_unsupported_arch_falls_back() {
-    // armel / mipsel carry the legacy 32-bit struct stat with no
-    // Python proc support. Handler errors out before any memory read.
-    // X86 IS supported (fstatat64 — angr-11djq.5.1) so it is excluded.
-    for arch in ["armel", "mipsel"] {
+    // mipsel carries the legacy 32-bit struct stat with no native
+    // writer yet. Handler errors out before any memory read. X86
+    // (fstatat64 — angr-11djq.5.1) and ARM (fstatat64 — angr-11djq.5.2)
+    // ARE supported, so they are excluded.
+    {
+        let arch = "mipsel";
         let mut state = RustSimState::new(arch).expect("state");
         let bits = state.arch().bits();
         state
