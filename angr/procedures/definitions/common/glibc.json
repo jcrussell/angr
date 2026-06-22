@@ -49,7 +49,7 @@
 			"proto": "{'_t': 'func', 'args': [{'_t': 'ptr', 'pts_to': {'_t': 'struct', 'fields': {}, 'name': 'FILE'}}], 'returnty': {'_t': 'len', 'signed': false, 'addr': null, 'length': null}, 'arg_names': ['STREAM']}"
 		},
 		"__fprintf_chk": {
-			"proto": "{'_t': 'func', 'args': [{'_t': 'int'}, {'_t': 'ptr', 'pts_to': {'_t': 'struct', 'fields': {}, 'name': 'FILE'}}, {'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true, 'q': ['const']}}], 'returnty': {'_t': 'int'}, 'arg_names': ['flag', 'STREAM', 'TEMPLATE'], 'variadic': true}"
+			"proto": "{'_t': 'func', 'args': [{'_t': 'ptr', 'pts_to': {'_t': 'struct', 'fields': {}, 'name': 'FILE'}}, {'_t': 'int'}, {'_t': 'ptr', 'pts_to': {'_t': 'char', 'signed': true, 'q': ['const']}}], 'returnty': {'_t': 'int'}, 'arg_names': ['STREAM', 'flag', 'TEMPLATE'], 'variadic': true}"
 		},
 		"__fpurge": {
 			"proto": "{'_t': 'func', 'args': [{'_t': 'ptr', 'pts_to': {'_t': 'struct', 'fields': {}, 'name': 'FILE'}}], 'returnty': {'_t': 'bot', 'label': 'void'}, 'arg_names': ['STREAM']}"

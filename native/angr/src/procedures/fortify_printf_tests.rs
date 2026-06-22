@@ -89,17 +89,58 @@ fn test_snprintf_chk_drops_flag_slen_respects_maxlen() {
     }
 }
 
+/// Map a FILE struct at `file_ptr` whose AMD64 `_IO_FILE._fileno` field (byte
+/// offset 112) holds `fd`. Mirrors the helper in `printf_tests.rs`.
+fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
+    const AMD64_FD_OFFSET: u64 = 112;
+    state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
+    let fd_bv = RustBV::concrete(fd as u32 as u128, 32);
+    state
+        .memory_store(file_ptr + AMD64_FD_OFFSET, fd_bv)
+        .unwrap();
+}
+
+#[test]
+fn test_fprintf_chk_drops_flag_and_writes_fd() {
+    // __fprintf_chk(stderr, flag, fmt) writes the raw format to fd 2.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 2);
+    state.map_memory_data(0x1000, b"error: %d\x00", Permission::RWX);
+
+    let result = NativeFprintfChk
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64), // stream
+                RustBV::concrete(1, 64),                // flag (dropped)
+                RustBV::concrete(0x1000, 64),           // format
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(9));
+    assert_eq!(state.fd_buffer(2), b"error: %d");
+    assert!(state.stdout_buffer().is_empty());
+}
+
 #[test]
 fn test_chk_num_args() {
     assert_eq!(NativePrintfChk.num_args(), 2);
     assert_eq!(NativeSprintfChk.num_args(), 10);
     assert_eq!(NativeSnprintfChk.num_args(), 11);
+    assert_eq!(NativeFprintfChk.num_args(), 3);
 }
 
 #[test]
 fn test_chk_registered_in_registry() {
     let registry = crate::procedures::NativeProcedureRegistry::new();
-    for name in ["__printf_chk", "__sprintf_chk", "__snprintf_chk"] {
+    for name in [
+        "__printf_chk",
+        "__sprintf_chk",
+        "__snprintf_chk",
+        "__fprintf_chk",
+    ] {
         assert!(
             registry.get(name).is_some(),
             "{name} should be registered natively"

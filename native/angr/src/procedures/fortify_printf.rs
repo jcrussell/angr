@@ -24,8 +24,10 @@
 //! * `int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen,
 //!                       const char *fmt, ...)`
 //!   → `snprintf(s, maxlen, fmt, ...)` (drop `flag`, `slen`)
+//! * `int __fprintf_chk(FILE *fp, int flag, const char *fmt, ...)`
+//!   → `fprintf(fp, fmt, ...)`        (drop `flag`)
 
-use super::printf::NativePrintf;
+use super::printf::{NativeFprintf, NativePrintf};
 use super::sprintf::{NativeSnprintf, NativeSprintf};
 use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
@@ -117,6 +119,36 @@ impl NativeSimProcedure for NativeSnprintfChk {
         forwarded.push(args[1].clone());
         forwarded.extend_from_slice(&args[4..]);
         NativeSnprintf.call(state, &forwarded)
+    }
+}
+
+/// `int __fprintf_chk(FILE *fp, int flag, const char *format, ...)`.
+///
+/// Forwards to native `fprintf`, dropping the injected `flag` (matches Python
+/// angr's `__fprintf_chk`). Native `fprintf` resolves the stream's fd and
+/// writes the (concrete) raw format string, ignoring the variadic args, so we
+/// request just `fp` + `flag` + `fmt`.
+pub struct NativeFprintfChk;
+
+impl NativeSimProcedure for NativeFprintfChk {
+    fn name(&self) -> &'static str {
+        "__fprintf_chk"
+    }
+
+    fn num_args(&self) -> usize {
+        3 // stream + flag + format
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        // fprintf expects [stream, format]; drop flag (args[1]).
+        let mut forwarded = Vec::with_capacity(args.len() - 1);
+        forwarded.push(args[0].clone());
+        forwarded.extend_from_slice(&args[2..]);
+        NativeFprintf.call(state, &forwarded)
     }
 }
 
