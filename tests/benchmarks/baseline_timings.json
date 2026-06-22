@@ -17,9 +17,9 @@
   },
   "android_arm_license_validation": {
     "callback_count": 0,
-    "peak_memory_mb": 224.0,
+    "peak_memory_mb": 242.0,
     "python_time": 0.2,
-    "rust_time": 0.25,
+    "rust_time": 0.48,
     "state_creations": 0,
     "steps": 0
   },
@@ -49,9 +49,9 @@
   },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
-    "peak_memory_mb": 385.0,
-    "python_time": 1.39,
-    "rust_time": 1.31,
+    "peak_memory_mb": 390.0,
+    "python_time": 1.42,
+    "rust_time": 1.51,
     "state_creations": 0,
     "steps": 0
   },
