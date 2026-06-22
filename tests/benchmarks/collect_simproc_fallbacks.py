@@ -47,6 +47,7 @@ from run_single import DEFAULT_MEM_LIMIT_MB, run_example
 # fairlight, baby-re) included since they may be dominated by hot Python
 # procs; sokohash skipped because of bimodal Z3 variance > 15s/run.
 CANDIDATE_BENCHES = [
+    # === CTF-heavy x86_64 corpus (original otjw/aq26d round-1 set) ===
     "fauxware",
     "ais3_crackme",
     "csaw_wyvern",
@@ -61,6 +62,28 @@ CANDIDATE_BENCHES = [
     "sym-write",
     "unmapped_analysis",
     "whitehatvn2015_re400",
+    # === angr-hzd9e corpus-add: libc-I/O-heavy workloads ===
+    # Stress the stdio write path (fwrite/fputc) and ctype/fprintf surfaces
+    # that the CTF crackmes never exercise. write_stream_heavy + cli_ctype_fprintf
+    # are in-repo synthetic fixtures (always present); busybox_static + xmllint_getenv
+    # need external fixtures (/usr/bin/busybox, ANGR_EXAMPLES_DIR) and skip
+    # gracefully when absent.
+    "write_stream_heavy",
+    "cli_ctype_fprintf",
+    "busybox_static",
+    "xmllint_getenv",
+    # === angr-hzd9e corpus-add: non-x86 (ARM/AArch64/MIPS) workloads ===
+    # Arch smoke fixtures — single-branch binaries that drive the VEX
+    # interpreter on big-endian / non-x86 guests, surfacing arch-specific
+    # VEX-op fallbacks the x86_64 corpus cannot reach.
+    "arm_le_branch",
+    "aarch64_le_branch",
+    "mips32_le_branch",
+    "mips64_le_branch",
+    "mips64_be_branch",
+    # NOTE: no FP/SIMD-heavy workload exists in the corpus yet — the CTF
+    # crackmes and synthetic fixtures are all integer/string-bound. A
+    # dedicated FP/SIMD bench would need a new fixture (left for a follow-up).
 ]
 
 # angr-internal SimProcedure stubs that are intentionally Python and have no
