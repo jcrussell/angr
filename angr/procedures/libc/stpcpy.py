@@ -17,3 +17,9 @@ class stpcpy(angr.SimProcedure):
             self.inline_call(strncpy, dst, src, src_len.ret_expr + 1, src_len=src_len.ret_expr).ret_expr
             + src_len.ret_expr
         )
+
+
+class __stpcpy_chk(stpcpy):
+    # _FORTIFY_SOURCE redirect; the trailing destlen is ignored (matches __memcpy_chk).
+    def run(self, dst, src, _destlen):  # type:ignore[reportIncompatibleMethodOverride]
+        return super().run(dst, src)

@@ -21,3 +21,9 @@ class strncpy(angr.SimProcedure):
 
         self.inline_call(memcpy, dst_addr, src_addr, cpy_size)
         return dst_addr
+
+
+class __strncpy_chk(strncpy):
+    # _FORTIFY_SOURCE redirect; the trailing destlen is ignored (matches __memcpy_chk).
+    def run(self, dst_addr, src_addr, limit, _destlen):  # type:ignore[reportIncompatibleMethodOverride]
+        return super().run(dst_addr, src_addr, limit)

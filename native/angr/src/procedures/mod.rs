@@ -86,6 +86,7 @@ pub mod fgets;
 pub mod fileops;
 pub mod format_common;
 pub mod fortify_mem;
+pub mod fortify_str;
 pub mod fread;
 pub mod getenv;
 pub mod libc_start_main;
@@ -266,6 +267,12 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fortify_mem::NativeMemmoveChk));
         registry.register(Arc::new(fortify_mem::NativeMemsetChk));
         registry.register(Arc::new(fortify_mem::NativeMempcpyChk));
+        // Fortify-source `_chk` string wrappers (forward to the base str procs).
+        registry.register(Arc::new(fortify_str::NativeStrcpyChk));
+        registry.register(Arc::new(fortify_str::NativeStrncpyChk));
+        registry.register(Arc::new(fortify_str::NativeStrcatChk));
+        registry.register(Arc::new(fortify_str::NativeStrncatChk));
+        registry.register(Arc::new(fortify_str::NativeStpcpyChk));
         registry.register(Arc::new(strcpy::NativeStrcpy));
         registry.register(Arc::new(strcpy::NativeStrncpy));
         registry.register(Arc::new(strlen::NativeStrnlen));

@@ -13,3 +13,9 @@ class strcat(angr.SimProcedure):
 
         self.inline_call(strncpy, dst + dst_len, src, src_len + 1, src_len=src_len)
         return dst
+
+
+class __strcat_chk(strcat):
+    # _FORTIFY_SOURCE redirect; the trailing destlen is ignored (matches __memcpy_chk).
+    def run(self, dst, src, _destlen):  # type:ignore[reportIncompatibleMethodOverride]
+        return super().run(dst, src)
