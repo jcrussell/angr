@@ -213,6 +213,23 @@ FAST_SUITE = [
     # supplied by run_single.py's EXAMPLE_CATALOG (the missing entry that
     # angr-8kmjo previously mislabeled this bench a >60s TIMEOUT).
     ("sharif7_rev50", 30, "bfs", False),
+    # xmllint reach-getenv (angr-11djq.3 / T1c). The first real-world,
+    # libc-heavy *utility* binary in the gate (libxml2's xmllint, an x86-64
+    # PIE vendored in angr-examples) — complements the CTF crackmes with a
+    # de-risked bounded slice validated by the iter-11 tractability probe
+    # (bd memory ``xmllint-path-b-tractability-probe``): symbolic 16-byte
+    # stdin + standard CLI options stays single-state through the
+    # deterministic startup and reaches getenv@libc in ~27 manager steps
+    # (FAST tier, ~3.5s Rust, single found state, peak ~364 MB << 4 GB cap).
+    # Wrapper lives in synthetic_examples/xmllint_getenv/; it resolves the
+    # binary via ANGR_EXAMPLES_DIR (the same env CI sets) rather than
+    # duplicating the 80 KB artifact. rust_only=True: this is a realism /
+    # regression-coverage + syscall-fallback measurement surface, not a
+    # speed-win bench (~1.1x over Python, marginal enough to flap into the
+    # SLA warn band on a real binary's init-tax variance). Records
+    # syscall_python_fallback_count (currently 0) so the round-1 syscall
+    # beads have a real-binary measurement surface — see the bead notes.
+    ("xmllint_getenv", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full
