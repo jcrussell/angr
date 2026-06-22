@@ -136,6 +136,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "angr-amtxu: FP/SIMD coverage fixture. Single concrete non-forking path driving SSE scalar FP (sqrtsd/divsd/mulsd/addsd/ucomisd) + -O3 auto-vectorized packed SIMD (mulps/addps, 32 in the binary) through the Rust VEX interpreter. The rest of the corpus is integer/string-bound, so vex_fallback_count / vecret_gsptr_fallback_count read ZERO everywhere (bd memory benchmark-vecret-gsptr-corpus-zero) and the native FP/SIMD path had no measured coverage. Vendored gcc -O3 -fno-math-errno -no-pie binary (write_stream_heavy pattern); no libc calls in the kernel so SimProc fallbacks cannot pollute the FP/SIMD measurement. Read vex_fallback_count in --dump-counters; non-zero re-opens native FP/SIMD handler work. Wrapper in synthetic_examples/.",
     },
+    "file_read_kernel": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "angr-w5llj: READ-side pre-seeded-file evidence harness for angr-11djq.7 (RustPosixState fd/file sync). Single concrete path: pre-seeds /data/secret.txt via state.fs.insert on the Python side, then raw open()/read()/close() + magic-prefix compare. Vendored gcc -O2 -no-pie binary; no stdio (raw syscalls) so the fallback measured is the fd path itself, not fopen/fread on top. RESULT (iter54): reaches the success path once (found=1, so the pre-seeded content IS cross-side visible — .7's 'pre-seeded files invisible' worry does NOT hold for the read path), but read falls back via SimProcedure->Python: 1 (read), NOT Syscall->Python (which reads 0). So pre-seeded read already works through the Python read SimProcedure fallback; .7 stays unfunded as a native optimization (1 fallback, not a hot loop). Supersedes the wrong-layer write_stream_heavy/xmllint_getenv attempts (bd memory djq7-evidence-needs-file-io-harness). Wrapper in synthetic_examples/.",
+    },
     "write_stream_heavy": {
         "tier": "fast",
         "rust_ok": True,

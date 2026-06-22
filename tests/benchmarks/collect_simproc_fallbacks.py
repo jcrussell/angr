@@ -90,6 +90,17 @@ CANDIDATE_BENCHES = [
     # (sqrtsd/divsd/mulsd) + auto-vectorized packed SIMD (mulps/addps). A
     # non-zero VEX-fallback reading here re-opens native FP/SIMD handler work.
     "fp_simd_kernel",
+    # === angr-w5llj corpus-add: READ-side pre-seeded-file workload ===
+    # The corpus reaches getenv (xmllint) or only WRITES streams
+    # (write_stream_heavy) — neither open()/read()s a pre-seeded file, so the
+    # fd-sync path angr-11djq.7 is gated on had no measured coverage. This
+    # in-repo synthetic (vendored gcc -no-pie binary, always present)
+    # pre-seeds /data/secret.txt via state.fs.insert then raw open()/read()s
+    # it. It surfaces a SimProcedure->Python fallback on `read` (NOT a syscall
+    # fallback) while still reaching the success path, witnessing that
+    # pre-seeded reads are already cross-side visible through the Python read
+    # SimProcedure. See bd memory djq7-evidence-needs-file-io-harness.
+    "file_read_kernel",
 ]
 
 # angr-internal SimProcedure stubs that are intentionally Python and have no
