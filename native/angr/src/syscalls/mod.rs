@@ -481,7 +481,11 @@ impl NativeSyscallRegistry {
                 (85, file_path::NativeReadlinkSyscall),
                 (90, mmap::NativeOldMmapSyscall),
                 (91, munmap::NativeMunmapSyscall),
-                (107, file_path::NativeLstatSyscall),
+                // Legacy 106/107/108 (old 32-bit struct stat) have no
+                // Rust writer — modern 32-bit glibc emits the LFS `*64`
+                // variants below (struct stat64, `write_i386_stat`).
+                // angr's i386 syscall map has no 106/107 entry either, so
+                // they fall back to Python (angr-11djq.5.1).
                 (125, mprotect::NativeMprotectSyscall),
                 (133, directory::NativeFchdirSyscall),
                 (144, memory_extras::NativeMsyncSyscall),
@@ -496,6 +500,10 @@ impl NativeSyscallRegistry {
                 // 191 = ugetrlimit (LFS uid_t variant) aliases to getrlimit.
                 (191, rlimit::NativeGetrlimitSyscall),
                 (192, mmap::NativeMmap2Syscall),
+                // LFS stat family — struct stat64 (`write_i386_stat`).
+                (195, file_path::NativeStatSyscall),
+                (196, file_path::NativeLstatSyscall),
+                (197, file_path::NativeFstatSyscall),
                 (199, identity::NativeGetuidSyscall),
                 (200, identity::NativeGetgidSyscall),
                 (201, identity::NativeGeteuidSyscall),
@@ -517,7 +525,9 @@ impl NativeSyscallRegistry {
                 (296, directory::NativeMkdiratSyscall),
                 (301, directory::NativeUnlinkatSyscall),
                 (302, directory::NativeRenameatSyscall),
-                // newfstatat absent on i386 — Linux 32-bit uses fstatat64 (327).
+                // newfstatat absent on i386 — Linux 32-bit uses fstatat64
+                // (327 in angr's i386 map), wired to the same handler.
+                (327, file_path::NativeNewfstatatSyscall),
                 (305, file_path::NativeReadlinkatSyscall),
                 (307, file_path::NativeFaccessatSyscall),
                 (319, concurrency::NativeEpollPwaitSyscall),
