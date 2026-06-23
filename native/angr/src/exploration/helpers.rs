@@ -46,6 +46,72 @@ impl RustExplorationManager {
         }
     }
 
+    /// angr-panhl.1 (Phase 0 kill-gate): model a work-stealing scheduler over
+    /// the active frontier *without any real threading*, and count how often a
+    /// state WOULD be migrated across worker boundaries (a "steal"). Sampled
+    /// once per step at dispatch time, where `stepped` is the just-popped
+    /// state id (the active stash no longer contains it). Each dispatch is one
+    /// "task".
+    ///
+    /// Model: `parallel_num_workers` workers, each owning a deque. Homes are
+    /// sticky across steps (locality); a new state is placed on the
+    /// least-loaded worker. A steal is counted when the dispatched state's home
+    /// worker still has a backlog (≥2 queued tasks, incl. this one) while some
+    /// other worker is idle (0 queued) — that idle worker would steal this task
+    /// across a boundary. Two `O(width)` passes; short-circuits the common
+    /// `<2`-state frontier. Counters only; no behaviour change. See bd memory
+    /// `parallel-migration-model`.
+    pub(crate) fn record_migration_sample(&mut self, stepped: u64) {
+        self.parallel_tasks += 1;
+        let m = self.parallel_num_workers;
+
+        // Schedulable frontier = dispatched state + whatever remains active.
+        let mut active_ids = self.sm.state_ids(STASH_ACTIVE);
+        active_ids.push(stepped);
+
+        let width = active_ids.len() as u64;
+        if width > self.parallel_max_active_width {
+            self.parallel_max_active_width = width;
+        }
+        // <2 schedulable states (or single worker): no cross-boundary steal.
+        if active_ids.len() < 2 || m < 2 {
+            return;
+        }
+
+        // Rebuild the home map for the surviving frontier: preserves sticky
+        // homes for states still active, drops the rest (bounds memory to the
+        // active width).
+        let mut new_of: HashMap<u64, usize> = HashMap::with_capacity(active_ids.len());
+        let mut load = vec![0i64; m];
+        for &sid in &active_ids {
+            if let Some(&w) = self.parallel_worker_of.get(&sid)
+                && w < m
+            {
+                new_of.insert(sid, w);
+                load[w] += 1;
+            }
+        }
+        for &sid in &active_ids {
+            if let std::collections::hash_map::Entry::Vacant(e) = new_of.entry(sid) {
+                let w = load
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|&(_, &l)| l)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                e.insert(w);
+                load[w] += 1;
+            }
+        }
+        if let Some(&h) = new_of.get(&stepped) {
+            let idle = load.contains(&0);
+            if idle && load[h] >= 2 {
+                self.parallel_migrations += 1;
+            }
+        }
+        self.parallel_worker_of = new_of;
+    }
+
     /// Run a closure with an immutable borrow of the pending callback state.
     /// Returns Err(PyRuntimeError) when no callback is pending.
     #[inline]

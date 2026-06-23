@@ -98,6 +98,8 @@ impl RustExplorationManager {
                     let sid = s.state_id();
                     self.current_stepping_state_id = Some(sid.into());
                     STEPPING_STATE_ID.with(|cell| cell.set(Some(sid)));
+                    // angr-panhl.1: model a work-stealing migration at dispatch.
+                    self.record_migration_sample(sid);
                     s
                 }
                 None => {

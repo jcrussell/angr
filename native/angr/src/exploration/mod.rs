@@ -269,6 +269,24 @@ pub struct RustExplorationManager {
     pub(crate) reconvergence_samples: u64,
     /// Largest `(pc, callstack)`-sharing group size observed in a single step.
     pub(crate) reconvergence_max_group: u64,
+    /// angr-panhl.1 (Phase 0 kill-gate): number of hypothetical workers used by
+    /// the work-stealing migration model. Read once from `ANGR_PARALLEL_WORKERS`
+    /// at construction (default 4). See `record_migration_sample`.
+    pub(crate) parallel_num_workers: usize,
+    /// Cumulative count of modelled work-stealing migrations ("steals"): per
+    /// dispatched task, +1 when the state's home worker has a backlog while
+    /// another worker is idle. The kill-gate's <10/bench migration target.
+    pub(crate) parallel_migrations: u64,
+    /// Number of dispatched tasks sampled (≈ steps where a state was stepped).
+    /// Denominator for the per-task duration the kill-gate's >100ms target uses
+    /// (avg task duration = wall_time / parallel_tasks, computed Python-side).
+    pub(crate) parallel_tasks: u64,
+    /// Largest schedulable frontier width (active stash + dispatched state)
+    /// observed in a single step — the independent-state count over time.
+    pub(crate) parallel_max_active_width: u64,
+    /// Sticky home-worker assignment per active state id, rebuilt each sample
+    /// from the surviving frontier (bounds memory to the active width).
+    pub(crate) parallel_worker_of: HashMap<u64, usize>,
 }
 
 #[pymethods]
@@ -334,6 +352,15 @@ impl RustExplorationManager {
             reconvergence_active_observed: 0,
             reconvergence_samples: 0,
             reconvergence_max_group: 0,
+            parallel_num_workers: std::env::var("ANGR_PARALLEL_WORKERS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|&w| w >= 1)
+                .unwrap_or(4),
+            parallel_migrations: 0,
+            parallel_tasks: 0,
+            parallel_max_active_width: 0,
+            parallel_worker_of: HashMap::new(),
         })
     }
 

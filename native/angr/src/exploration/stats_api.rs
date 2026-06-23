@@ -144,6 +144,25 @@ impl RustExplorationManager {
             0.0
         };
         dict.set_item("reconvergence_rate", reconvergence_rate)?;
+        // angr-panhl.1 (Phase 0 kill-gate): work-stealing migration model.
+        // `parallel_migrations` is the count of modelled cross-worker steals;
+        // `parallel_tasks` the number of dispatched tasks (≈ steps); the
+        // kill-gate compares migrations/bench (<10 PASS) and per-task duration
+        // (wall_time / parallel_tasks > 100ms PASS), with
+        // `parallel_max_active_width` the independent-state count over time and
+        // `python_callback_time_ns` the GIL/callback fraction.
+        dict.set_item("parallel_migrations", self.parallel_migrations)?;
+        dict.set_item("parallel_tasks", self.parallel_tasks)?;
+        dict.set_item("parallel_num_workers", self.parallel_num_workers)?;
+        dict.set_item("parallel_max_active_width", self.parallel_max_active_width)?;
+        dict.set_item(
+            "python_callback_count",
+            self.profiling.accumulated_stats.python_callback_count,
+        )?;
+        dict.set_item(
+            "python_callback_time_ns",
+            self.profiling.accumulated_stats.python_callback_time_ns,
+        )?;
         Ok(dict)
     }
 
