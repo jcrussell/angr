@@ -373,15 +373,35 @@ impl SymContext {
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
 
-        // All n check/get_model/assert-exclude iterations share one solver
-        // lock acquisition via with_z3_solver. The outer push/pop pair is
-        // balanced inside the closure, so the Z3 scope stack returns to its
+        // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
+        // Soundness: per `invalidate_model_if_inconsistent`, a surviving cached
+        // model satisfies all permanent constraints, and iteration-0 runs under
+        // a fresh empty push scope (no exclude constraints yet), so M(ast) with
+        // completion is a genuine feasible solution. Seeding it lets us skip
+        // exactly one check+get_model. The exclude-loop below then enumerates
+        // the remaining distinct values exactly as before. eval_upto is treated
+        // as unordered by callers (e.g. `solutions()`), and the result count is
+        // unchanged (min(n, #feasible)), so the solution set is faithful.
+        let seeded = self.cached_model_eval(&ast);
+
+        // The remaining check/get_model/assert-exclude iterations share one
+        // solver lock acquisition via with_z3_solver. The outer push/pop pair
+        // is balanced inside the closure, so the Z3 scope stack returns to its
         // pre-closure depth before f returns — safe for both the None
         // (per-context) and Some (shared-lineage) dispatch paths.
         self.with_z3_solver(|solver| {
             solver.push();
 
-            for _ in 0..n {
+            let mut remaining = n;
+            if let Some(value) = seeded {
+                Z3_EVAL_UPTO_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                results.push(value);
+                let val_ast = make_bv_const(value, bv.width());
+                solver.assert(ast.eq(&val_ast).not());
+                remaining -= 1;
+            }
+
+            for _ in 0..remaining {
                 match timed_check(solver, CheckSite::EvalUpto) {
                     z3::SatResult::Sat => {
                         if let Some(model) = solver.get_model() {
@@ -428,15 +448,37 @@ impl SymContext {
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
 
-        // All n check/get_model/assert-exclude iterations share one solver
-        // lock acquisition via with_z3_solver. The outer push/pop pair is
-        // balanced inside the closure, so the Z3 scope stack returns to its
+        // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
+        // Same soundness argument as eval_upto: the cached model satisfies all
+        // permanent constraints, and iteration-0 runs under a fresh empty push
+        // scope, so the wide witness is a genuine feasible solution. Saves one
+        // check+get_model; the exclude-loop enumerates the rest unchanged.
+        let seeded: Option<Vec<u8>> = {
+            let cache = self.model_cache.borrow();
+            cache
+                .as_ref()
+                .and_then(|m| m.eval(&ast, true))
+                .and_then(|r| extract_bv_value_wide(&r, width))
+        };
+
+        // The remaining check/get_model/assert-exclude iterations share one
+        // solver lock acquisition via with_z3_solver. The outer push/pop pair
+        // is balanced inside the closure, so the Z3 scope stack returns to its
         // pre-closure depth before f returns — safe for both the None
         // (per-context) and Some (shared-lineage) dispatch paths.
         self.with_z3_solver(|solver| {
             solver.push();
 
-            for _ in 0..n {
+            let mut remaining = n;
+            if let Some(bytes) = seeded {
+                Z3_EVAL_UPTO_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                let val_ast = make_bv_from_bytes(&bytes, width);
+                solver.assert(ast.eq(&val_ast).not());
+                results.push(bytes);
+                remaining -= 1;
+            }
+
+            for _ in 0..remaining {
                 match timed_check(solver, CheckSite::EvalUpto) {
                     z3::SatResult::Sat => {
                         if let Some(model) = solver.get_model() {

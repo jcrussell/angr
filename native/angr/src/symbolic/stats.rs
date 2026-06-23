@@ -45,6 +45,9 @@ pub(crate) static Z3_EXTREMA_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of min()/max() calls where no cached model was available (or the
 /// model could not be evaluated against the bv ast).
 pub(crate) static Z3_EXTREMA_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of eval_upto()/eval_upto_wide() calls that seeded iteration 0 from
+/// the warm cached model, skipping one check+get_model (angr-ovqja.4).
+pub(crate) static Z3_EVAL_UPTO_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 pub(crate) static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of cache hits in `to_z3_ast_cached` per-call HashMap (angr-zdho).
@@ -318,6 +321,10 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed),
     );
     stats.insert(
+        "z3_eval_upto_model_hit".into(),
+        Z3_EVAL_UPTO_MODEL_HIT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
         "z3_ast_build".into(),
         Z3_AST_BUILD_COUNT.load(Ordering::Relaxed),
     );
@@ -551,6 +558,7 @@ pub fn reset_solver_stats() {
     Z3_BRANCH_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_EXTREMA_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_EXTREMA_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
+    Z3_EVAL_UPTO_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
