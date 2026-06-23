@@ -619,3 +619,58 @@ fn test_state_from_serialized_version_mismatch() {
         Ok(_) => panic!("bad version must fail"),
     }
 }
+
+// angr-ahypj: RustSimState::translate_state cross-context whole-state twin.
+// Validates that translate_into composes correctly over a real state — a
+// symbolic register pinned by a path constraint must re-evaluate to the same
+// concrete witness once both the register overlay and the constraint have been
+// Z3_translate'd into a fresh target context. Exercises shared-AST identity
+// (the `rax` leaf in the register and inside the constraint must hash-cons to
+// the same node in the target context) and identity preservation.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_translate_state_cross_context() {
+    use z3::{Config, Context};
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    let x = {
+        let s = state.solver().borrow();
+        RustBV::symbolic(&s, "ahypj_rax", 64)
+    };
+    state.set_register("rax", x.clone());
+    let constraint = {
+        let s = state.solver().borrow();
+        x.eq(&RustBV::concrete(0xdead_beef, 64), &s)
+    };
+    state.add_constraint(constraint);
+
+    let original = Context::thread_local();
+    let cfg = Config::new();
+    let target = Context::new(&cfg);
+    assert_ne!(
+        original.get_z3_context().as_ptr() as usize,
+        target.get_z3_context().as_ptr() as usize,
+        "test bug: target == source context",
+    );
+
+    // translate_state asserts constraints into the new context's solver, which
+    // builds against the thread-local — swap first (the target-worker model).
+    Context::set_thread_local(&target);
+    let translated = state.translate_state(&target);
+    let rax_t = translated.get_register("rax").expect("rax present");
+    let got = translated.solver().borrow().eval(&rax_t);
+    let sat = translated.solver().borrow().is_sat();
+    Context::set_thread_local(&original);
+
+    assert_eq!(
+        got,
+        Some(0xdead_beef),
+        "translated rax must resolve via the transferred constraint",
+    );
+    assert!(sat, "translated state's solver must remain SAT");
+    assert_eq!(
+        translated.state_id(),
+        state.state_id(),
+        "translate_state preserves identity (same state_id)",
+    );
+}

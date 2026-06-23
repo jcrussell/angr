@@ -173,6 +173,72 @@ impl SymContext {
         }
     }
 
+    /// Cross-context twin of [`Self::fork`] (angr-ahypj): build a fresh
+    /// `SymContext` whose path-constraint state lives in `target_ctx`, using
+    /// the [`z3::Translate`] (`Z3_translate`) primitive instead of the
+    /// SMT-LIB2 string round-trip that [`Self::restore_from_snapshot`] uses.
+    ///
+    /// Mirrors `restore_from_snapshot`'s two-part replay so the result is
+    /// byte-for-byte equivalent:
+    ///
+    /// 1. **Solver state** — every Z3 assertion (`z3_assertions_shared` +
+    ///    local) is `Z3_translate`d into `target_ctx` and re-asserted via
+    ///    [`Self::add_constraint`]. This covers constraints with no [`RustBV`]
+    ///    form (the raw Python-sync / cross-process import paths), exactly as
+    ///    the SMT-LIB2 dump does in the snapshot path.
+    /// 2. **Assumed-constraint BV log** — every `(bv, is_true)` is deep-
+    ///    translated via [`RustBV::translate_into`] and pushed through
+    ///    [`Self::assumed_constraints_push`] (no second solver assert), so the
+    ///    BV-export log round-trips without double-counting `constraint_count`.
+    ///
+    /// # Preconditions / panics
+    ///
+    /// `target_ctx` must be the **active thread-local Z3 context** — the fresh
+    /// `SymContext`'s lazy solver and `add_constraint` both build against
+    /// `z3::Context::thread_local()`, so the caller must
+    /// `set_thread_local(target_ctx)` first (the production Option-A model
+    /// runs this on the target worker's thread). It must also be a *different*
+    /// context from the source's, or the underlying `Z3_translate` panics
+    /// (see [`RustBV::translate_into`]).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> Self {
+        use z3::Translate;
+        use z3::ast::Ast;
+        let new = SymContext::new();
+        // (1) Full solver state: `Z3_translate` every assertion into the target
+        // context, then route through `add_constraint_raw` (NOT `add_constraint`)
+        // so the `z3_assertions` LOG is seeded — `add_constraint`/`install_constraint`
+        // only asserts on the live solver and would leave the log empty, breaking
+        // any subsequent re-translate (the A->B->A path). Mirrors the replay loop
+        // in `restore_from_snapshot`.
+        let translate_one = |c: &z3::ast::Bool| {
+            let translated = c.translate(target_ctx);
+            let ptr = translated.get_z3_ast().as_ptr() as usize;
+            // SAFETY: `ptr` denotes a Bool freshly `Z3_translate`d into
+            // `target_ctx` (== the active thread-local, per the precondition);
+            // `from_borrowed_raw` takes its own ref via `Z3_inc_ref`,
+            // independent of `translated`'s ref.
+            if let Some(z3_ast) = unsafe { super::Z3AstPtr::from_borrowed_raw(target_ctx, ptr) } {
+                new.add_constraint_raw(z3_ast);
+            }
+        };
+        let shared = Arc::clone(&self.z3_assertions_shared.lock());
+        for c in shared.iter() {
+            translate_one(c);
+        }
+        {
+            let local = self.local_constraints.lock();
+            for c in local.z3_assertions.iter() {
+                translate_one(c);
+            }
+        }
+        // (2) Assumed-constraint BV log: translate, push without re-asserting.
+        for (bv, is_true) in self.get_assumed_constraints() {
+            new.assumed_constraints_push(bv.translate_into(target_ctx), is_true);
+        }
+        new
+    }
+
     // =========================================================================
     // Forking
     // =========================================================================

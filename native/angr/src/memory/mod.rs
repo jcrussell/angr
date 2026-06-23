@@ -46,6 +46,25 @@ pub struct PendingWrite {
     pub page_hint: Option<(u64, u64)>,
 }
 
+impl PendingWrite {
+    /// Deep-translate the symbolic `addr`/`value`/`condition` BVs into
+    /// `target_ctx` (angr-ahypj). Size and page-hint metadata are
+    /// context-independent and copied verbatim.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> PendingWrite {
+        PendingWrite {
+            addr: self.addr.translate_into(target_ctx),
+            value: self.value.translate_into(target_ctx),
+            size: self.size,
+            condition: self
+                .condition
+                .as_ref()
+                .map(|c| c.translate_into(target_ctx)),
+            page_hint: self.page_hint,
+        }
+    }
+}
+
 /// Errors from memory operations.
 ///
 /// `#[non_exhaustive]` per angr-irwe: minor versions may add new
@@ -559,6 +578,54 @@ impl SymbolicMemory {
             // re-validates loads against page fingerprints, so a cold child is
             // faithful by construction. Avoids the per-fork clone cost; the child
             // repopulates lazily on its first wider load.
+            wider_load_cache: RefCell::new(FxHashMap::default()),
+        }
+    }
+
+    /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
+    /// this memory whose every symbolic value lives in `target_ctx`.
+    ///
+    /// Pages, bitmaps, spans, lazy regions and concrete data are all
+    /// context-independent and cloned verbatim (the `OrdMap`/`Arc` shares are
+    /// O(1)). Only the three BV-bearing maps need `Z3_translate`:
+    /// `symbolic_objects` (per-byte values), `multi_objects` (lazy-store ITE
+    /// alternatives), and `pending_writes` (deferred symbolic stores). The
+    /// wider-load cache starts cold for the same reason `fork` clears it — it
+    /// is a rebuildable, fingerprint-validated memo, and its cached BVs belong
+    /// to the source context.
+    ///
+    /// Never mutates `self`: `translate_into` reads the immutable source BVs
+    /// and emits fresh ones, so `Arc`-shared sibling pages are safe.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> Self {
+        SymbolicMemory {
+            pages: self.pages.clone(),
+            symbolic_objects: self
+                .symbolic_objects
+                .iter()
+                .map(|(&addr, bv)| (addr, bv.translate_into(target_ctx)))
+                .collect(),
+            next_sym_id: self.next_sym_id,
+            default_permissions: self.default_permissions,
+            endness: self.endness,
+            dirty_pages: FxHashSet::default(),
+            lazy_regions: self.lazy_regions.clone(),
+            symbolic_spans: self.symbolic_spans.clone(),
+            multi_objects: self
+                .multi_objects
+                .iter()
+                .map(|(&addr, payload)| (addr, payload.translate_into(target_ctx)))
+                .collect(),
+            pending_writes: self
+                .pending_writes
+                .iter()
+                .map(|w| w.translate_into(target_ctx))
+                .collect(),
+            zero_fill_unconstrained: self.zero_fill_unconstrained,
+            imported_addrs: self.imported_addrs.clone(),
+            enforce_permissions: self.enforce_permissions,
+            enforce_nx: self.enforce_nx,
+            multi_versions: self.multi_versions.clone(),
             wider_load_cache: RefCell::new(FxHashMap::default()),
         }
     }

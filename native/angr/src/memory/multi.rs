@@ -177,6 +177,29 @@ impl MultiPayload {
     pub(crate) fn has_cached_collapse(&self) -> bool {
         self.cached_collapse.borrow().is_some()
     }
+
+    /// Deep-translate every alternative `(cond, value)` BV into `target_ctx`
+    /// (angr-ahypj). Drops the collapse cache so it rebuilds against the
+    /// target context on first load — the cached BV lives in the source
+    /// context and must never leak across the boundary.
+    ///
+    /// See [`crate::symbolic::RustBV::translate_into`] for the cross-context
+    /// `Z3_translate` primitive this composes over.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> MultiPayload {
+        let alternatives = self
+            .alternatives
+            .iter()
+            .map(|alt| MultiAlternative {
+                cond: alt.cond.translate_into(target_ctx),
+                value: alt.value.translate_into(target_ctx),
+            })
+            .collect();
+        MultiPayload {
+            alternatives,
+            cached_collapse: RefCell::new(None),
+        }
+    }
 }
 
 impl SymbolicMemory {

@@ -115,6 +115,77 @@ impl RustSimState {
         }
     }
 
+    /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
+    /// this state whose every context-bound `RustBV` — register overlays,
+    /// symbolic memory (`symbolic_objects` / `multi_objects` / pending
+    /// writes), path constraints, and `last_time` — has been `Z3_translate`d
+    /// into `target_ctx`. Every other field is context-independent and cloned
+    /// exactly as `fork` does.
+    ///
+    /// Unlike `fork`, identity is preserved: `state_id` and `parent_id` carry
+    /// over unchanged because this is the *same* state observed in a different
+    /// worker's Z3 context, not a new path.
+    ///
+    /// The `Py<PyAny>` overlay maps (`symbolic_pages`, `hook_symbolic_memory`,
+    /// `addr_to_ast`) hold Python claripy ASTs, which are context-independent;
+    /// they are `clone_ref`'d under the GIL exactly as in `fork`.
+    ///
+    /// # Preconditions
+    ///
+    /// `target_ctx` must be the **active thread-local Z3 context** and a
+    /// *different* context from this state's — see
+    /// [`SymContext::translate_into`] and [`RustBV::translate_into`]. In the
+    /// Option-A parallel model this runs on the target worker's thread after
+    /// `set_thread_local(target_ctx)`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_state(&self, target_ctx: &z3::Context) -> Self {
+        let translated_solver = Rc::new(RefCell::new(
+            self.solver.borrow().translate_into(target_ctx),
+        ));
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
+
+        RustSimState {
+            arch: self.arch.clone(),
+            vex_arch: self.vex_arch,
+            registers: self.registers.translate_into(target_ctx),
+            memory: self.memory.translate_into(target_ctx),
+            solver: translated_solver,
+            pc: self.pc,
+            state_id: self.state_id,
+            parent_id: self.parent_id,
+            history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
+            max_history: self.max_history,
+            hooks: self.hooks.clone(),
+            concretizer: self.concretizer.clone(),
+            track_history: self.track_history,
+            fs: self.fs.clone(),
+            heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
+            ctype_loc: self.ctype_loc,
+            stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
+            last_time: self
+                .last_time
+                .as_ref()
+                .map(|bv| bv.translate_into(target_ctx)),
+            no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
+            keep_ip_symbolic: self.keep_ip_symbolic,
+            force_eager_forks: self.force_eager_forks,
+            cgc_allocation_base: self.cgc_allocation_base,
+            cgc_sinkholes: self.cgc_sinkholes.clone(),
+            sim_options: self.sim_options.clone(),
+        }
+    }
+
     /// Fork with a constraint on the true branch.
     pub fn fork_true(&self, condition: &RustBV) -> Self {
         let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork_true(condition)));

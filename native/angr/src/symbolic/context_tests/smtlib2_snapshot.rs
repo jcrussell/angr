@@ -859,3 +859,58 @@ fn test_snapshot_assumed_constraints_roundtrip_mock() {
     assert_eq!(post[0].1, true);
     assert_eq!(post[1].1, false);
 }
+
+// angr-ahypj: SymContext::translate_into cross-context constraint twin. Unlike
+// the SMT-LIB2 round-trip above, this moves the path-constraint state into a
+// fresh context via Z3_translate (no string serialization). A symbolic var
+// pinned by a constraint, plus a derived value sharing that var's leaf, must
+// re-evaluate identically after translation — and survive an A->B->A bounce.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symcontext_translate_into_cross_context() {
+    use z3::{Config, Context};
+
+    let src = SymContext::new();
+    let x = RustBV::symbolic(&src, "ahypj_tx_x", 32);
+    src.assume_true(&x.eq(&RustBV::concrete(0x1234, 32), &src));
+    // Derived value references x — eval under the target context only resolves
+    // if the translated derived-leaf and the translated constraint-leaf
+    // hash-cons to the SAME node (shared-AST identity across translate_into).
+    let derived = x.add(&RustBV::concrete(1, 32), &src);
+
+    let original = Context::thread_local();
+    let target = Context::new(&Config::new());
+    assert_ne!(
+        original.get_z3_context().as_ptr() as usize,
+        target.get_z3_context().as_ptr() as usize,
+        "test bug: target == source context",
+    );
+
+    Context::set_thread_local(&target);
+    let new_ctx = src.translate_into(&target);
+    let derived_t = derived.translate_into(&target);
+    let got = new_ctx.eval(&derived_t);
+    let sat = new_ctx.is_sat();
+    let assumed_len = new_ctx.get_assumed_constraints().len();
+
+    // A->B->A: bounce the already-translated context into a third context.
+    let third = Context::new(&Config::new());
+    Context::set_thread_local(&third);
+    let back_ctx = new_ctx.translate_into(&third);
+    let derived_b = derived_t.translate_into(&third);
+    let got_back = back_ctx.eval(&derived_b);
+    Context::set_thread_local(&original);
+
+    assert_eq!(
+        got,
+        Some(0x1235),
+        "translated derived(x)=x+1 must eval via the transferred constraint",
+    );
+    assert!(sat, "translated context must remain SAT");
+    assert_eq!(assumed_len, 1, "assumed-constraint BV log must round-trip");
+    assert_eq!(
+        got_back,
+        Some(0x1235),
+        "A->B->A round trip must preserve the eval witness",
+    );
+}
