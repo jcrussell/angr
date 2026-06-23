@@ -271,7 +271,7 @@ pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
 mod extra_params_tests {
-    use super::{parse_extra_params, ParamValue};
+    use super::{ParamValue, parse_extra_params};
 
     #[test]
     fn parses_bool_and_uint_pairs() {
