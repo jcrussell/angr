@@ -113,7 +113,69 @@ pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
     params.set_u32("timeout", timeout_ms);
     params.set_bool("bv_extract_prop", true);
     params.set_bool("mul2concat", true);
+    apply_extra_params(&mut params);
     params
+}
+
+/// Parsed `ANGR_Z3_PARAMS` override spec, cached once per process. A
+/// comma-separated list of `key=value` pairs applied to every fresh solver
+/// AFTER the baked defaults, so an experiment can override or extend them
+/// without a rebuild. `value` of `true`/`false` (case-insensitive) sets a
+/// bool param; otherwise the value is parsed as a u32. Unparseable entries
+/// are skipped. Purpose: A/B param surveys (angr-ovqja.2) on the Z3-heavy
+/// bench set via `--counters-json` without recompiling per candidate.
+///
+/// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0"`.
+#[cfg(feature = "vex-engine-z3")]
+fn extra_params_spec() -> &'static Vec<(String, ParamValue)> {
+    static SPEC: std::sync::OnceLock<Vec<(String, ParamValue)>> = std::sync::OnceLock::new();
+    SPEC.get_or_init(|| {
+        std::env::var("ANGR_Z3_PARAMS")
+            .ok()
+            .map(|s| parse_extra_params(&s))
+            .unwrap_or_default()
+    })
+}
+
+/// Pure parser for the `ANGR_Z3_PARAMS` spec — split out so it is unit-testable
+/// without touching the process env / `OnceLock` cache.
+#[cfg(feature = "vex-engine-z3")]
+fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
+    s.split(',')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            let k = k.trim();
+            let v = v.trim();
+            if k.is_empty() {
+                return None;
+            }
+            let val = if v.eq_ignore_ascii_case("true") {
+                ParamValue::Bool(true)
+            } else if v.eq_ignore_ascii_case("false") {
+                ParamValue::Bool(false)
+            } else {
+                ParamValue::U32(v.parse::<u32>().ok()?)
+            };
+            Some((k.to_string(), val))
+        })
+        .collect()
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ParamValue {
+    Bool(bool),
+    U32(u32),
+}
+
+#[cfg(feature = "vex-engine-z3")]
+fn apply_extra_params(params: &mut z3::Params) {
+    for (key, val) in extra_params_spec() {
+        match val {
+            ParamValue::Bool(b) => params.set_bool(key.as_str(), *b),
+            ParamValue::U32(n) => params.set_u32(key.as_str(), *n),
+        }
+    }
 }
 
 /// Parsed `ANGR_Z3_TACTIC` env-var spec, cached once per process.
@@ -205,4 +267,34 @@ pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
     };
     solver.set_params(&build_solver_params(timeout_ms));
     solver
+}
+
+#[cfg(all(test, feature = "vex-engine-z3"))]
+mod extra_params_tests {
+    use super::{parse_extra_params, ParamValue};
+
+    #[test]
+    fn parses_bool_and_uint_pairs() {
+        let got = parse_extra_params("bv.size_reduce=true, relevancy=0 ,timeout=500");
+        assert_eq!(
+            got,
+            vec![
+                ("bv.size_reduce".to_string(), ParamValue::Bool(true)),
+                ("relevancy".to_string(), ParamValue::U32(0)),
+                ("timeout".to_string(), ParamValue::U32(500)),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_malformed_and_empty_keys() {
+        // no '=', empty key, and a non-numeric non-bool value are all dropped.
+        let got = parse_extra_params("noequals,=v,bad=notanum,ok=false");
+        assert_eq!(got, vec![("ok".to_string(), ParamValue::Bool(false))]);
+    }
+
+    #[test]
+    fn empty_spec_yields_no_params() {
+        assert!(parse_extra_params("").is_empty());
+    }
 }
