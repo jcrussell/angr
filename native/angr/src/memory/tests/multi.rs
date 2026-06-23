@@ -1068,8 +1068,10 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
     );
 }
 
-/// Forks must carry the wider-load cache forward (cheap BV refcount clone)
-/// and remain independent under child-side mutation.
+/// Forks start with a COLD wider-load cache (angr-6t8z3.2, commit
+/// 94c015db5): `fork()` deliberately does not deep-clone the parent's
+/// cache — the child repopulates lazily on its first wider load, and a
+/// child-side rebuild must not disturb the parent's own cached entry.
 #[test]
 fn test_phase4_wider_load_cache_fork_independence() {
     let ctx = SymContext::new_mock();
@@ -1091,8 +1093,8 @@ fn test_phase4_wider_load_cache_fork_independence() {
     let mut child = parent.fork();
     assert_eq!(
         child.wider_load_cache_len(),
-        1,
-        "fork carries cache forward"
+        0,
+        "fork starts with a cold cache (no deep-clone; repopulates lazily)"
     );
 
     // Child mutation must not affect parent.
