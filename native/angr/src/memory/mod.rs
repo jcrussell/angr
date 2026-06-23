@@ -552,9 +552,14 @@ impl SymbolicMemory {
             enforce_permissions: self.enforce_permissions,
             enforce_nx: self.enforce_nx,
             multi_versions: self.multi_versions.clone(),
-            // Cloning the cache is cheap (Arc-refcounted BVs) and lets the
-            // child reuse parent loads until the first divergent store.
-            wider_load_cache: RefCell::new(self.wider_load_cache.borrow().clone()),
+            // Start the fork with a cold wider-load cache rather than deep-cloning
+            // up to WIDER_LOAD_CACHE_CAP entries. The cache is a rebuildable,
+            // fingerprint-validated read-side memo with no correctness role: the
+            // snapshot restore path (from_snapshot) already starts it empty and
+            // re-validates loads against page fingerprints, so a cold child is
+            // faithful by construction. Avoids the per-fork clone cost; the child
+            // repopulates lazily on its first wider load.
+            wider_load_cache: RefCell::new(FxHashMap::default()),
         }
     }
 
