@@ -276,6 +276,55 @@ fn bench_state_fork(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// translate_state cross-context cost scaling (angr-9pwjd / panhl.2c)
+// ---------------------------------------------------------------------------
+
+/// Measures `RustSimState::translate_state` wall cost as a function of the
+/// number of distinct symbolic leaves carried by the state. panhl.2 measured
+/// the `translate_into` primitive at ~355ns/node / ~709ns/leaf and predicted
+/// whole-state cost is leaf-count-dominated (only Symbolic LEAVES do the
+/// Z3_translate; Expression nodes rebuild near-free via lazy memo). This bench
+/// confirms that prediction holds on whole states: plotting the per-leaf-count
+/// groups should be ~linear in leaf count. Each state spreads K symbolic
+/// leaves across a memory region, each pinned by a path constraint — the same
+/// shape as `test_translate_state_production_sized_roundtrip`.
+fn bench_translate_state_scaling(c: &mut Criterion) {
+    use z3::{Config, Context};
+
+    fn build_state(n_leaves: u64) -> rustylib::state::RustSimState {
+        const MEM_BASE: u64 = 0x10000;
+        let mut state = rustylib::state::RustSimState::new("AMD64").unwrap();
+        state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
+        for i in 0..n_leaves {
+            let leaf = {
+                let s = state.solver().borrow();
+                RustBV::symbolic(&s, format!("scl_mem_{i}"), 64)
+            };
+            state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
+            let s = state.solver().borrow();
+            let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
+            drop(s);
+            state.add_constraint(c);
+        }
+        state
+    }
+
+    let mut group = c.benchmark_group("translate_state_scaling");
+    for &n in &[8u64, 64, 256] {
+        let state = build_state(n);
+        let cfg = Config::new();
+        let target = Context::new(&cfg);
+        // translate_state asserts into the thread-local — switch to the target
+        // worker's context (the Option-A parallel model), as the unit test does.
+        Context::set_thread_local(&target);
+        group.bench_function(format!("leaves_{n}"), |bench| {
+            bench.iter(|| black_box(state.translate_state(&target)))
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // NEON SIMD ops (Mul8x16 / VGetElem / VSetElem — landed in angr-bkcs.2)
 // ---------------------------------------------------------------------------
 
@@ -849,6 +898,7 @@ criterion_group!(
     bench_memory_symbolic_load,
     bench_memory_fork,
     bench_state_fork,
+    bench_translate_state_scaling,
     bench_rustbv_neon_ops,
     bench_lineage_push_pop_vs_per_state,
     bench_stash_index_ops,

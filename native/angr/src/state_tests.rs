@@ -674,3 +674,138 @@ fn test_translate_state_cross_context() {
         "translate_state preserves identity (same state_id)",
     );
 }
+
+// angr-9pwjd: production-sized translate_state round-trip validation.
+//
+// The synthetic kill-gate above proves the mechanism on a one-leaf state.
+// This test scales it to a state shaped like a real mid-run state — many
+// distinct symbolic leaves spread across both the register file and a
+// symbolic memory region, each pinned by its own path constraint — and
+// drives a full A->B->A round-trip. The literal Z3-bound trio
+// (fairlight/sokohashv2/angry-reverser) cannot be captured into a pure-Rust
+// test (no in-Rust real-binary loader; the engine is driven from Python),
+// so we reconstruct an equivalently-shaped multi-leaf constrained state and
+// assert the falsifiable claim the bead cares about: EVERY path constraint
+// re-checks equal after translation, through a fresh context and back again.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_translate_state_production_sized_roundtrip() {
+    use z3::{Config, Context};
+
+    const N_MEM_LEAVES: u64 = 64;
+    const MEM_BASE: u64 = 0x10000;
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(MEM_BASE, N_MEM_LEAVES * 8, Permission::RWX);
+
+    // Pin a couple of registers to distinct symbolic leaves.
+    let (rax, rbx) = {
+        let s = state.solver().borrow();
+        (
+            RustBV::symbolic(&s, "pwjd_rax", 64),
+            RustBV::symbolic(&s, "pwjd_rbx", 64),
+        )
+    };
+    state.set_register("rax", rax.clone());
+    state.set_register("rbx", rbx.clone());
+    {
+        let s = state.solver().borrow();
+        let c_rax = rax.eq(&RustBV::concrete(0x1111_2222_3333_4444, 64), &s);
+        let c_rbx = rbx.eq(&RustBV::concrete(0x5555_6666_7777_8888, 64), &s);
+        drop(s);
+        state.add_constraint(c_rax);
+        state.add_constraint(c_rbx);
+    }
+
+    // Spread N distinct symbolic leaves across a symbolic memory region, each
+    // pinned to a distinct witness. Mirrors a deep stdin/heap symbolic region.
+    for i in 0..N_MEM_LEAVES {
+        let leaf = {
+            let s = state.solver().borrow();
+            RustBV::symbolic(&s, format!("pwjd_mem_{i}"), 64)
+        };
+        state
+            .memory_store(MEM_BASE + i * 8, leaf.clone())
+            .expect("store leaf");
+        let witness = 0xC0DE_0000_0000_0000u128 + i as u128;
+        let s = state.solver().borrow();
+        let c = leaf.eq(&RustBV::concrete(witness, 64), &s);
+        drop(s);
+        state.add_constraint(c);
+    }
+
+    // Capture the witnesses every constraint must re-prove after translation.
+    let mut expected: Vec<(u64, u128)> = Vec::with_capacity(N_MEM_LEAVES as usize);
+    for i in 0..N_MEM_LEAVES {
+        let cell = state.memory_load(MEM_BASE + i * 8, 8).expect("load cell");
+        let val = state.solver().borrow().eval(&cell).expect("cell evaluable");
+        expected.push((MEM_BASE + i * 8, val));
+    }
+    let exp_rax = state
+        .solver()
+        .borrow()
+        .eval(&state.get_register("rax").unwrap())
+        .unwrap();
+    let exp_rbx = state
+        .solver()
+        .borrow()
+        .eval(&state.get_register("rbx").unwrap())
+        .unwrap();
+
+    // Helper: assert a translated twin re-proves every captured witness.
+    let verify = |twin: &RustSimState, label: &str| {
+        assert!(
+            twin.solver().borrow().is_sat(),
+            "{label}: translated solver must remain SAT",
+        );
+        for (addr, want) in &expected {
+            let cell = twin.memory_load(*addr, 8).expect("load translated cell");
+            let got = twin.solver().borrow().eval(&cell);
+            assert_eq!(
+                got,
+                Some(*want),
+                "{label}: mem leaf @{addr:#x} must re-prove its witness",
+            );
+        }
+        assert_eq!(
+            twin.solver()
+                .borrow()
+                .eval(&twin.get_register("rax").unwrap()),
+            Some(exp_rax),
+            "{label}: rax must re-prove its witness",
+        );
+        assert_eq!(
+            twin.solver()
+                .borrow()
+                .eval(&twin.get_register("rbx").unwrap()),
+            Some(exp_rbx),
+            "{label}: rbx must re-prove its witness",
+        );
+        assert_eq!(
+            twin.state_id(),
+            state.state_id(),
+            "{label}: translate_state preserves identity",
+        );
+    };
+
+    let original = Context::thread_local();
+
+    // A -> B: translate the whole state into a fresh target context.
+    let cfg_b = Config::new();
+    let ctx_b = Context::new(&cfg_b);
+    Context::set_thread_local(&ctx_b);
+    let twin_b = state.translate_state(&ctx_b);
+    verify(&twin_b, "A->B");
+
+    // B -> A': translate the twin BACK into another fresh context. This is
+    // the round-trip that caught the iter15 add_constraint log bug — if the
+    // translated solver did not seed its z3_assertions log, the second hop
+    // would see zero constraints and the witnesses would not re-prove.
+    let cfg_a2 = Config::new();
+    let ctx_a2 = Context::new(&cfg_a2);
+    Context::set_thread_local(&ctx_a2);
+    let twin_a2 = twin_b.translate_state(&ctx_a2);
+    verify(&twin_a2, "B->A'");
+
+    Context::set_thread_local(&original);
+}
