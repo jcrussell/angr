@@ -8,7 +8,11 @@ The working tree is clean. Your job: drain one task from the bd queue.
 2. Read `.ralph/state/session.md` for the previous session's handoff notes.
 3. Check for in-flight work: `bd list --status=in_progress`.
 4. If something is in_progress, continue it. Otherwise: `bd ready` and pick
-   the highest-priority unblocked task (lowest P-number).
+   the highest-priority unblocked **leaf** task (lowest P-number). **Skip
+   `[epic]` rows** — epics are containers, not drainable work, and `bd ready`
+   lists them *above* leaves in the same priority band. If a candidate still has
+   open children (`bd children <id>`), it's a container too — descend to its
+   lowest-P open leaf. Pick the first row that is itself actionable.
 
 ## Scope discipline
 
