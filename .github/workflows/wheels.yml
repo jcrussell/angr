@@ -45,13 +45,21 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: >
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
             (yum install -y zlib-devel || true)
-          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
-          # z3-solver must be importable so build.rs::find_z3_pkg_from_python
-          # resolves libz3.so; libz3-dev supplies z3.h for z3-sys bindgen.
+          # Z3_SYS_Z3_HEADER pins the header EPEL's z3-devel installs (/usr/include/z3.h)
+          # so z3-sys bindgen never has to guess; build.rs/setup.py probe the same path.
+          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH" Z3_SYS_Z3_HEADER="/usr/include/z3.h"'
+          # z3-solver must be importable so build.rs::find_z3_pkg_from_python resolves
+          # libz3.so; z3-devel supplies z3.h for z3-sys bindgen. The manylinux images
+          # (AlmaLinux/CentOS) carry z3-devel ONLY in EPEL, which is not enabled by
+          # default — enable it first. Do NOT fall back to `pip download z3-solver`:
+          # that wheel ships libz3.so but NOT z3.h, so it masks a missing header as
+          # success and bindgen then dies with a cryptic NotExist (bd memory
+          # wheels-manylinux-z3-header-gap). Fail loud here instead.
           CIBW_BEFORE_BUILD_LINUX: >
             pip install z3-solver==4.13.0.0 patchelf &&
-            (yum install -y z3-devel || pip download z3-solver==4.13.0.0 >/dev/null) &&
-            echo "NOTE: z3.h must be present — set Z3_SYS_Z3_HEADER if z3-devel is unavailable in the manylinux image"
+            (yum install -y epel-release || true) &&
+            yum install -y z3-devel &&
+            (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after z3-devel install; enable EPEL or vendor z3.h and re-point Z3_SYS_Z3_HEADER" >&2; exit 1; })
           # DO NOT vendor libz3: exclude it, then point RUNPATH at the
           # z3-solver wheel's lib dir (sibling of angr/ in site-packages).
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
