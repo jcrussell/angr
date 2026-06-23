@@ -108,8 +108,17 @@ impl SymbolicMemory {
         // value, ignoring the overwrite. Detect by scanning for any
         // symbolic_objects entry whose start lies strictly inside our range,
         // and fall back to a per-byte merge (which uses both indices).
-        let has_inner_overlap =
-            (1..size as u64).any(|i| self.symbolic_objects.contains_key(&(addr + i)));
+        // angr-kdyfx: both per-byte sidecar probes here (this scan and
+        // `try_partial_overwrite_load` below) are provably no-ops when the
+        // symbolic sidecars are empty — the common concrete-region case. An
+        // empty `symbolic_objects` makes every `contains_key` false, so the
+        // `.any` is false; an empty pair makes `has_wider_sym_claim` false, so
+        // the partial-overwrite guard returns `None`. Gate both behind an
+        // `is_empty()` fast-path, mirroring `load_concrete_lazy_inner`'s
+        // `multi_objects.is_empty()` guard, to skip up to `size` empty-table
+        // `contains_key` probes per concrete load.
+        let has_inner_overlap = !self.symbolic_objects.is_empty()
+            && (1..size as u64).any(|i| self.symbolic_objects.contains_key(&(addr + i)));
         if has_inner_overlap {
             if let Some(merged) = self.try_byte_merge_load(addr, size, ctx) {
                 return Ok(merged);
@@ -126,7 +135,9 @@ impl SymbolicMemory {
             // signal with a per-byte bitmap scan; on mismatch, route
             // through `assemble_load_with_multi` which uses the bitmap
             // per-byte (Symbolic / Spanned / Concrete).
-            if let Some(r) = self.try_partial_overwrite_load(addr, size, ctx) {
+            if (!self.symbolic_objects.is_empty() || !self.symbolic_spans.is_empty())
+                && let Some(r) = self.try_partial_overwrite_load(addr, size, ctx)
+            {
                 return r;
             }
             // Check for stored symbolic object at exact address first
