@@ -59,8 +59,38 @@ impl RustBV {
                 op,
                 operands,
                 width,
+                memo,
                 ..
-            } => Self::build_z3_ast_cached(op, operands, *width, cache),
+            } => {
+                // Persistent per-Expression memo (angr-ovqja.3): a prior
+                // top-level conversion of THIS node (eval→min→max, range(),
+                // address concretize) already built the compound tree. Reuse
+                // it as a refcount bump, but only if the cached BV belongs to
+                // the active thread-local Z3 context — a context swap (test
+                // `with_z3_context`, never production) leaves the stale BV
+                // unusable, so fall through and rebuild in that case.
+                use z3::ast::Ast;
+                let reusable = {
+                    let slot = memo.borrow();
+                    match slot.as_ref() {
+                        Some(bv)
+                            if bv.get_ctx().get_z3_context()
+                                == z3::Context::thread_local().get_z3_context() =>
+                        {
+                            Some(bv.clone())
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(bv) = reusable {
+                    super::stats::record_z3_ast_memo_hit();
+                    bv
+                } else {
+                    let built = Self::build_z3_ast_cached(op, operands, *width, cache);
+                    *memo.borrow_mut() = Some(built.clone());
+                    built
+                }
+            }
         };
         cache.insert(cache_key, result.clone());
         result

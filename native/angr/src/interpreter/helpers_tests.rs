@@ -37,6 +37,7 @@ fn ite_bv(t: RustBV, f: RustBV) -> RustBV {
         width: 64,
         op: BVOp::Ite,
         operands: std::sync::Arc::from(vec![RustBV::concrete(0, 1), t, f]),
+        memo: Default::default(),
     }
 }
 
@@ -85,6 +86,7 @@ fn test_extract_ite_targets_non_ite_symbolic_aborts() {
         width: 64,
         op: BVOp::Add,
         operands: std::sync::Arc::from(vec![RustBV::concrete(1, 64), RustBV::concrete(2, 64)]),
+        memo: Default::default(),
     };
     let bv = ite_bv(RustBV::concrete(0xa, 64), add);
     assert_eq!(extract_ite_targets(&bv, 8), None);

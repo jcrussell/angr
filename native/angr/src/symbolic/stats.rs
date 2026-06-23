@@ -60,6 +60,15 @@ pub(crate) static Z3_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Equals the count of distinct Arc-pointer subtrees materialized into Z3
 /// ASTs for that conversion.
 pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of persistent per-`Expression` memo hits in `to_z3_ast_cached`
+/// (angr-ovqja.3).
+///
+/// A hit means the same `RustBV::Expression` value was converted to a Z3 AST
+/// in a *prior* top-level `to_z3_ast()` call (eval→min→max, `range()`, address
+/// concretize) and the whole compound tree rebuild was avoided — the cached
+/// `z3::ast::BV` was returned via a refcount bump. Distinct from
+/// `z3_ast_cache_hit`, which only dedups shared subtrees *within* one call.
+pub(crate) static Z3_AST_MEMO_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
 pub(crate) static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Unsat.
@@ -320,6 +329,10 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_ast_cache_miss".into(),
         Z3_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
     );
+    stats.insert(
+        "z3_ast_memo_hit".into(),
+        Z3_AST_MEMO_HIT_COUNT.load(Ordering::Relaxed),
+    );
     stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
     stats.insert(
         "z3_unsat_count".into(),
@@ -541,6 +554,7 @@ pub fn reset_solver_stats() {
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
+    Z3_AST_MEMO_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_SAT_COUNT.store(0, Ordering::Relaxed);
     Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
     Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
@@ -635,6 +649,13 @@ pub fn record_z3_ast_cache_hit() {
 #[inline]
 pub fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Increment the persistent per-`Expression` memo-hit counter (angr-ovqja.3).
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+pub fn record_z3_ast_memo_hit() {
+    Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 // -----------------------------------------------------------------------------

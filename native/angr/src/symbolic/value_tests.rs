@@ -570,6 +570,7 @@ fn raw_extract_node(inner: RustBV, high: u32, low: u32) -> RustBV {
         width: result_width,
         op: BVOp::Extract(high, low),
         operands: std::sync::Arc::<[RustBV]>::from([inner]),
+        memo: Default::default(),
     }
 }
 
@@ -1214,4 +1215,70 @@ fn serde_roundtrip_float_op() {
     let json = serde_json::to_string(&op).expect("serialize");
     let back: BVOp = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(op, back);
+}
+
+/// Regression (angr-ovqja.3): the persistent per-`Expression` Z3 AST memo must
+/// not leak a stale-context AST. The memo caches the built `z3::ast::BV` for an
+/// `Expression`; if the thread-local Z3 context is swapped (only `with_z3_context`
+/// in tests — never production), `to_z3_ast()` must rebuild against the active
+/// context rather than return the cached BV from the previous context.
+///
+/// Uses an Extract-over-concrete node so the rebuilt AST resolves to a fresh
+/// context-local constant with NO `Symbolic` leaves (whose own `ast` cache would
+/// confound the context check — that staleness predates this memo).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_expression_memo_no_stale_context_leak() {
+    use z3::ast::Ast as Z3AstTrait;
+    use z3::{Config, Context};
+
+    // `with_z3_context` cannot be used here: its `Send + Sync` closure bound
+    // exists precisely to forbid smuggling a Z3-bearing value (our `RustBV`)
+    // across the boundary — yet the stale-memo path requires converting the
+    // SAME `RustBV` in two contexts. Swap the thread-local context manually
+    // and restore it on the way out (single-threaded test, so this is sound).
+    let original = Context::thread_local();
+
+    let expr = raw_extract_node(RustBV::concrete(0x11223344, 32), 7, 0);
+
+    // First conversion in the default thread-local context populates the memo.
+    let ast1 = expr.to_z3_ast();
+    let default_ctx = ast1.get_ctx().get_z3_context().as_ptr() as usize;
+
+    // Second conversion in the SAME context is served from the memo and must
+    // still belong to that context.
+    let ast1b = expr.to_z3_ast();
+    assert_eq!(
+        ast1b.get_ctx().get_z3_context().as_ptr() as usize,
+        default_ctx,
+        "same-context repeat conversion must stay in the default context",
+    );
+
+    // Swap to a freshly-allocated context. The memo holds a default-context BV,
+    // so the guard must reject it and rebuild against the new context.
+    let cfg = Config::new();
+    let new_ctx = Context::new(&cfg);
+    let new_ctx_ptr = new_ctx.get_z3_context().as_ptr() as usize;
+    assert_ne!(
+        default_ctx, new_ctx_ptr,
+        "test bug: new context equals default; not testing cross-context",
+    );
+
+    Context::set_thread_local(&new_ctx);
+    let in_new_ctx = expr.to_z3_ast().get_ctx().get_z3_context().as_ptr() as usize;
+    // Restore before asserting so a failure does not poison sibling tests.
+    Context::set_thread_local(&original);
+    assert_eq!(
+        in_new_ctx, new_ctx_ptr,
+        "stale-context leak: memo returned a BV from the old context",
+    );
+
+    // Back in the default context the guard rejects the now-new-context memo
+    // and rebuilds against the default context again.
+    let ast3 = expr.to_z3_ast();
+    assert_eq!(
+        ast3.get_ctx().get_z3_context().as_ptr() as usize,
+        default_ctx,
+        "returning to the default context must rebuild against it",
+    );
 }

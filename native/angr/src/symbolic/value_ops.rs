@@ -175,6 +175,7 @@ impl RustBV {
             width,
             op,
             operands: operands.into(),
+            memo: Default::default(),
         }
     }
 

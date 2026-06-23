@@ -207,6 +207,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
                 prec: FloatPrec::F64,
             },
             operands: Arc::<[RustBV]>::from(vec![y.clone(), y]),
+            memo: Default::default(),
         };
         let f1 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
         let f2 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();

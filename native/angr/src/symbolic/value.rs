@@ -435,8 +435,36 @@ pub enum RustBV {
         /// path). Operands are stored inline rather than wrapped in `Arc<RustBV>`
         /// so each Expression construction is one allocation instead of N+1.
         operands: Arc<[RustBV]>,
+        /// Persistent Z3 AST memo (angr-ovqja.3).
+        ///
+        /// Caches the built `z3::ast::BV` for this exact `Expression` value so
+        /// repeat top-level conversions of the SAME node (eval→min→max,
+        /// `range()` which calls min then max, address-concretize) become a
+        /// refcount bump instead of a full compound-tree rebuild. Mirrors the
+        /// `Symbolic { ast }` leaf-cache pattern, but lazy: populated on first
+        /// [`to_z3_ast_cached`](RustBV::to_z3_ast_cached) and guarded against
+        /// thread-local Z3 context swaps (the cached BV carries its own
+        /// `Context`, compared to the active one on read).
+        ///
+        /// Excluded from the serde shadow ([`RustBVData`] has no such field),
+        /// from `PartialEq`/`Debug`, and from any identity key — it is a pure
+        /// deterministic-function cache. With the `vex-engine-z3` feature off
+        /// it collapses to `()` so construction sites stay cfg-free.
+        memo: ExprMemo,
     },
 }
+
+/// Lazy Z3 AST memo carried by [`RustBV::Expression`] (angr-ovqja.3).
+///
+/// `RefCell<Option<BV>>` under Z3 (single-threaded engine — the state graph is
+/// `Rc<RefCell<SymContext>>`, so interior mutability is sound), `()` otherwise
+/// so every `Expression` constructor can write `memo: Default::default()`
+/// without a `#[cfg]`.
+#[cfg(feature = "vex-engine-z3")]
+type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
+/// See the Z3-enabled variant above.
+#[cfg(not(feature = "vex-engine-z3"))]
+type ExprMemo = ();
 
 /// Serde shadow form for [`RustBV`].
 ///
@@ -498,6 +526,7 @@ impl From<RustBV> for RustBVData {
                 width,
                 op,
                 operands,
+                ..
             } => RustBVData::Expression {
                 id,
                 width,
@@ -532,6 +561,7 @@ impl From<RustBVData> for RustBV {
                 operands: Arc::<[RustBV]>::from(
                     operands.into_iter().map(RustBV::from).collect::<Vec<_>>(),
                 ),
+                memo: Default::default(),
             },
         }
     }

@@ -31,6 +31,7 @@ fn build_float_expr(kind: FloatOpKind, prec: FloatPrec, operands: Vec<RustBV>) -
         width,
         op: BVOp::Float { kind, prec },
         operands: Arc::<[RustBV]>::from(operands),
+        memo: Default::default(),
     }
 }
 
