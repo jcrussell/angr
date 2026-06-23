@@ -96,6 +96,78 @@ impl RustBV {
         result
     }
 
+    /// Translate this `RustBV` into a different Z3 [`z3::Context`].
+    ///
+    /// Returns a structurally-identical `RustBV` whose context-bound Z3 ASTs
+    /// have been `Z3_translate`d into `target_ctx`. This is the per-task AST
+    /// translation primitive for the shared-nothing parallel design
+    /// (Option A, `rust_parallel_design.rst`): handing a state from one
+    /// worker thread to another translates all its ASTs into the destination
+    /// thread's Z3 context.
+    ///
+    /// Per-variant cost:
+    /// - `Concrete` / `Constrained` carry no AST → an `Arc`/scalar clone.
+    /// - `Symbolic { ast }` is the ONLY context-bound leaf → one
+    ///   `Z3_translate` of the cached BV into `target_ctx`.
+    /// - `Expression` recurses into its operands and resets the lazy `memo`;
+    ///   the compound AST rebuilds lazily under whatever context is active at
+    ///   the next [`to_z3_ast`](Self::to_z3_ast) call (the same context-swap
+    ///   guard `to_z3_ast_cached` already uses), so no translation work is
+    ///   spent on intermediate nodes that are never re-queried.
+    ///
+    /// # Lazy-memory safety
+    ///
+    /// This never mutates `self`: it produces fresh `RustBV` nodes and leaves
+    /// the source tree (and any `Arc`-shared lazy-memory page ancestors it was
+    /// read from) untouched. Translating a state's memory therefore reads the
+    /// immutable source pages and emits new translated values — sibling states
+    /// sharing those page `Arc`s are never observed mid-translation.
+    ///
+    /// # Panics
+    ///
+    /// `target_ctx` must be a *different* context from the one the source ASTs
+    /// live in: `Z3_translate` returns null when asked to translate into the
+    /// same context, which panics here. This is never a real use case (a state
+    /// is only translated when handed to a *different* worker's context).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> RustBV {
+        use std::sync::Arc;
+        use z3::Translate;
+        match self {
+            RustBV::Concrete { .. } | RustBV::Constrained { .. } => self.clone(),
+            RustBV::Symbolic {
+                id,
+                width,
+                name,
+                ast,
+            } => RustBV::Symbolic {
+                id: *id,
+                width: *width,
+                name: Arc::clone(name),
+                ast: ast.translate(target_ctx),
+            },
+            RustBV::Expression {
+                id,
+                width,
+                op,
+                operands,
+                ..
+            } => {
+                let translated: Arc<[RustBV]> = operands
+                    .iter()
+                    .map(|o| o.translate_into(target_ctx))
+                    .collect();
+                RustBV::Expression {
+                    id: *id,
+                    width: *width,
+                    op: op.clone(),
+                    operands: translated,
+                    memo: Default::default(),
+                }
+            }
+        }
+    }
+
     /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.
     ///
     /// For comparison ops (Eq, Ne, Ult, etc.), produces the native Z3 Bool
