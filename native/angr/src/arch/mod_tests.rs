@@ -87,6 +87,64 @@ fn test_register_file_symbolic() {
     assert!(rax.is_symbolic());
 }
 
+/// Copy-on-write fork isolation for the `Arc`-wrapped register buffer:
+/// after `fork()` the child shares the parent's `data` Arc, but the first
+/// concrete write to either side must `Arc::make_mut`-clone so the other
+/// side is unaffected. Mirrors `memory::tests` fork isolation; the
+/// faithfulness gate for angr-6t8z3.1 (CoW must not leak writes across
+/// the parent/child boundary).
+#[test]
+fn test_register_file_fork_cow_isolation() {
+    let ctx = SymContext::new_mock();
+
+    let mut parent = RegisterFile::new(Box::new(AMD64));
+    parent.put_reg("rax", RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
+
+    // Fork: child shares the parent's data buffer until a write occurs.
+    let mut child = parent.fork();
+    assert_eq!(
+        child.get_reg("rax", &ctx).unwrap().as_u64(),
+        Some(0xAAAA_AAAA_AAAA_AAAA)
+    );
+
+    // Mutate the child via the concrete `put` path — must not touch parent.
+    child.put_reg("rax", RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
+    assert_eq!(
+        child.get_reg("rax", &ctx).unwrap().as_u64(),
+        Some(0xBBBB_BBBB_BBBB_BBBB)
+    );
+    assert_eq!(
+        parent.get_reg("rax", &ctx).unwrap().as_u64(),
+        Some(0xAAAA_AAAA_AAAA_AAAA),
+        "child write leaked into parent (CoW broken)"
+    );
+
+    // Mutate the parent (rbx, untouched offset) — child must not see it.
+    parent.put_reg("rbx", RustBV::concrete(0x1111_1111_1111_1111, 64));
+    assert_eq!(
+        parent.get_reg("rbx", &ctx).unwrap().as_u64(),
+        Some(0x1111_1111_1111_1111)
+    );
+    assert_eq!(
+        child.get_reg("rbx", &ctx).unwrap().as_u64(),
+        Some(0),
+        "parent write leaked into child (CoW broken)"
+    );
+
+    // copy_from_bytes is a separate &mut write path — also isolate it.
+    let mut p2 = RegisterFile::new(Box::new(AMD64));
+    p2.put_reg("rax", RustBV::concrete(0xDEAD_BEEF, 64));
+    let c2 = p2.fork();
+    let mut buf = vec![0u8; AMD64.state_size()];
+    buf[16] = 0x77; // overwrite RAX low byte region
+    p2.copy_from_bytes(&buf);
+    assert_eq!(
+        c2.get_reg("rax", &ctx).unwrap().as_u64(),
+        Some(0xDEAD_BEEF),
+        "copy_from_bytes leaked into forked child (CoW broken)"
+    );
+}
+
 /// Concrete-only round-trip: write a few registers, serialize, restore,
 /// and verify the same values come back. Uses mock SymContext so the
 /// test does not require Z3.

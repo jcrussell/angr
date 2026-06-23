@@ -28,6 +28,7 @@ use crate::vex::VexArch;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Architecture trait.
 ///
@@ -180,8 +181,11 @@ pub(crate) use impl_arch_registers;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "RegisterFileData", into = "RegisterFileData")]
 pub struct RegisterFile {
-    /// Raw storage (byte-addressable).
-    data: Vec<u8>,
+    /// Raw storage (byte-addressable). `Arc`-wrapped so `fork`/`Clone`
+    /// share the buffer O(1); every `&mut self` write site routes through
+    /// `Arc::make_mut` for copy-on-write isolation (mirrors the CoW
+    /// discipline of `SymbolicMemory::fork`).
+    data: Arc<Vec<u8>>,
     /// Symbolic overlays (offset -> value).
     symbolic: FxHashMap<u32, RustBV>,
     /// Architecture information.
@@ -207,7 +211,7 @@ impl From<RegisterFile> for RegisterFileData {
     fn from(rf: RegisterFile) -> Self {
         let arch_name = rf.arch.name().to_string();
         RegisterFileData {
-            data: rf.data,
+            data: Arc::unwrap_or_clone(rf.data),
             symbolic: rf.symbolic.into_iter().collect(),
             arch_name,
         }
@@ -223,7 +227,7 @@ impl From<RegisterFileData> for RegisterFile {
         data[..copy_len].copy_from_slice(&d.data[..copy_len]);
         let symbolic: FxHashMap<u32, RustBV> = d.symbolic.into_iter().collect();
         RegisterFile {
-            data,
+            data: Arc::new(data),
             symbolic,
             arch,
         }
@@ -235,7 +239,7 @@ impl RegisterFile {
     pub fn new(arch: Box<dyn Arch>) -> Self {
         let size = arch.state_size();
         RegisterFile {
-            data: vec![0; size],
+            data: Arc::new(vec![0; size]),
             symbolic: FxHashMap::default(),
             arch,
         }
@@ -398,9 +402,11 @@ impl RegisterFile {
             // Also update concrete data for the written portion if concrete
             if let Some(v) = value.as_u128() {
                 let start = offset as usize;
+                let len = self.data.len();
+                let data = Arc::make_mut(&mut self.data);
                 for i in 0..size as usize {
-                    if start + i < self.data.len() {
-                        self.data[start + i] = (v >> (i * 8)) as u8;
+                    if start + i < len {
+                        data[start + i] = (v >> (i * 8)) as u8;
                     }
                 }
             }
@@ -438,9 +444,11 @@ impl RegisterFile {
                 // Update concrete data for the written portion if concrete
                 if let Some(v) = value.as_u128() {
                     let start = offset as usize;
+                    let len = self.data.len();
+                    let data = Arc::make_mut(&mut self.data);
                     for i in 0..size as usize {
-                        if start + i < self.data.len() {
-                            self.data[start + i] = (v >> (i * 8)) as u8;
+                        if start + i < len {
+                            data[start + i] = (v >> (i * 8)) as u8;
                         }
                     }
                 }
@@ -470,8 +478,9 @@ impl RegisterFile {
             let end = start + size as usize;
 
             if end <= self.data.len() {
+                let data = Arc::make_mut(&mut self.data);
                 for i in 0..size as usize {
-                    self.data[start + i] = (v >> (i * 8)) as u8;
+                    data[start + i] = (v >> (i * 8)) as u8;
                 }
                 // Clear any symbolic overlay at this offset
                 self.symbolic.remove(&offset);
@@ -554,7 +563,7 @@ impl RegisterFile {
     /// This is used to initialize the register file from external state.
     pub fn copy_from_bytes(&mut self, bytes: &[u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
-        self.data[..len].copy_from_slice(&bytes[..len]);
+        Arc::make_mut(&mut self.data)[..len].copy_from_slice(&bytes[..len]);
         // Clear symbolic overlays since we're replacing with concrete values
         self.symbolic.clear();
     }
@@ -571,7 +580,9 @@ impl RegisterFile {
     /// Fork the register file for path splitting.
     pub fn fork(&self) -> RegisterFile {
         RegisterFile {
-            data: self.data.clone(),
+            // O(1) Arc refcount bump; the buffer is copied lazily on the
+            // first write to either parent or child via `Arc::make_mut`.
+            data: Arc::clone(&self.data),
             symbolic: self.symbolic.clone(),
             arch: self.arch.clone(),
         }
