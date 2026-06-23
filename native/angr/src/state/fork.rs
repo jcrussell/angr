@@ -13,6 +13,17 @@ impl RustSimState {
         HashMap<u64, (Py<PyAny>, u32)>,
         HashMap<u64, (Py<PyAny>, u32)>,
     ) {
+        // Common case for binaries with no symbolic pages or hooks: all three
+        // maps are empty, so there is nothing to clone_ref. Skip the GIL
+        // acquire entirely (Python::attach is not free on the exploration
+        // worker thread, where the GIL is not already held). Guard MUST check
+        // all three maps — any non-empty map needs the clone_ref pass.
+        if self.symbolic_pages.is_empty()
+            && self.hook_symbolic_memory.is_empty()
+            && self.addr_to_ast.is_empty()
+        {
+            return (HashMap::default(), HashMap::default(), HashMap::default());
+        }
         Python::attach(|py| {
             let pages = self
                 .symbolic_pages
