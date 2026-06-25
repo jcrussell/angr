@@ -1860,7 +1860,8 @@ class TestSimProcedureSelfCallContinuation:
 
 class TestNativeMemoryCopyAndSet:
     """Integration tests for NativeMemcpy / NativeMemmove / NativeMemset
-    (angr-8vfnz).
+    (angr-8vfnz) plus the string-copy family NativeStrcpy / NativeStrncpy /
+    NativeStrcat (angr-0ndrs).
 
     `procedures/memcpy.rs` and `procedures/memset.rs` ship extensive Cargo
     unit tests for the concrete + symbolic-byte/size/address paths, but had
@@ -2004,3 +2005,65 @@ class TestNativeMemoryCopyAndSet:
         assert count == 1
         got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 3))
         assert got == b"\xcc" * 3, f"dst={got!r}"
+
+    def _store_cstr(self, state, addr, data: bytes):
+        """Lay out a NUL-terminated C string at `addr`."""
+        import claripy
+
+        for i, b in enumerate(data + b"\x00"):
+            state.memory.store(addr + i, claripy.BVV(b, 8))
+
+    def test_strcpy_copies_string_with_terminator(self, fauxware_project):
+        # strcpy(dst, src): copies src incl. its NUL, returns dst.
+        payload = b"hello"
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, payload)
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+
+        count, sid, mgr = self._run(fauxware_project, "strcpy", state)
+        assert count == 1, "expected native strcpy dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(payload) + 1))
+        assert got == payload + b"\x00", f"dst={got!r}"
+
+    def test_strncpy_nul_pads_window(self, fauxware_project):
+        # strncpy(dst, src, n) with n > strlen(src) NUL-pads the whole window.
+        payload = b"hi"
+        n = 5
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, payload)
+        # Pre-seed dst with sentinel bytes the pad must overwrite.
+        import claripy
+
+        for i in range(n):
+            state.memory.store(self.DST_ADDR + i, claripy.BVV(0x55, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+        state.regs.rdx = n
+
+        count, sid, mgr = self._run(fauxware_project, "strncpy", state)
+        assert count == 1, "expected native strncpy dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, n))
+        assert got == payload + b"\x00" * (n - len(payload)), f"dst={got!r}"
+
+    def test_strcat_appends_after_existing_string(self, fauxware_project):
+        # strcat(dst, src) appends src at dst's existing NUL, returns dst.
+        existing = b"foo"
+        suffix = b"bar"
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.DST_ADDR, existing)
+        self._store_cstr(state, self.SRC_ADDR, suffix)
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+
+        count, sid, mgr = self._run(fauxware_project, "strcat", state)
+        assert count == 1, "expected native strcat dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR, f"rax={rax:#x}"
+        joined = existing + suffix
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(joined) + 1))
+        assert got == joined + b"\x00", f"dst={got!r}"
