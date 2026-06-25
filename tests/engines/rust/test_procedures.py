@@ -117,6 +117,52 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_strncmp_symbolic_bound_ignores_byte_past_n(self, fauxware_project):
+        """strncmp(s1, s2, 2) with s1 = "AB" + symbolic + "\\0" and s2 = "AB\\0"
+        must return 0: only the first 2 (equal) bytes are compared, so the
+        symbolic byte at offset 2 cannot affect the result. Distinguishes the
+        bounded strncmp from strcmp, which would read past offset 1."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strncmp"]())
+            state.memory.store(self.BUF_ADDR, b"AB")
+            sym = claripy.BVS("strncmp_b", 8)
+            state.memory.store(self.BUF_ADDR + 2, sym)
+            state.memory.store(self.BUF_ADDR + 3, claripy.BVV(0, 8))
+            state.memory.store(self.BUF_ADDR + 0x10, b"AB\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            state.regs.rdx = 2
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strcasecmp_symbolic_case_insensitive_equal(self, fauxware_project):
+        """strcasecmp(s1, s2) where s1[0] is symbolic constrained to 'A'
+        (uppercase) and s2 is "a\\0" (lowercase) must return 0: the case-fold
+        on both operands makes the bytes equal. strcmp would return non-zero."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["strcasecmp"]())
+            sym = claripy.BVS("strcasecmp_b", 8)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
+            state.memory.store(self.BUF_ADDR + 0x10, b"a\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            state.solver.add(sym == ord("A"))
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_strchr_symbolic_finds_target(self, fauxware_project):
         """strchr("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
         non-null must return BUF_ADDR + 3 (the index of 'X')."""
