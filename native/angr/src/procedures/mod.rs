@@ -80,6 +80,7 @@
 #[macro_use]
 mod macros;
 
+pub mod access;
 pub mod byteorder;
 pub mod ctype;
 pub mod exit;
@@ -305,6 +306,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(exit::NativeStackChkFail));
         registry.register(Arc::new(rand::NativeRand));
         registry.register(Arc::new(rand::NativeSrand));
+        registry.register(Arc::new(access::NativeAccess));
         // pthread mutex no-ops (single-path symex => locks always succeed,
         // matching Python pthread_mutex_lock/unlock `return 0`).
         registry.register(Arc::new(pthread::NativePthreadMutexLock));

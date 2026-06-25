@@ -1339,6 +1339,57 @@ class TestNativeSystem:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeAccess:
+    """Python-boundary coverage for native access() (angr-ae54t.17).
+
+    Angr's libc SimProcedure (`libc/access.py`) has no real filesystem, so it
+    returns a fresh symbolic int constrained to be either 0 or -1. The native
+    side previously had no `access`, so a PLT libc call round-tripped to Python.
+    This asserts native dispatch (call_counts ticks) and that the symbolic
+    return is feasibly 0 and -1 but no other value.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    def test_access_dispatches_native(self, fauxware_project):
+        import claripy
+
+        proj = fauxware_project
+
+        stub_cls = type(
+            "access",
+            (angr.SimProcedure,),
+            {"num_args": 2, "run": lambda self, path, mode: 0},
+        )
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = claripy.BVV(0x1000, 64)  # path
+            state.regs.rsi = claripy.BVV(0, 64)  # mode
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("access", 0) == 1, f"expected native access dispatch, got stats={stats}"
+            # The symbolic-int {0,-1} constraint is verified directly in the
+            # cargo test access_tests.rs::test_access_constrained_to_zero_or_minus_one.
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFreadBoundary:
     """Python-boundary regression for native fread dispatch (angr-c42t7).
 
