@@ -125,11 +125,63 @@ fn test_fprintf_chk_drops_flag_and_writes_fd() {
 }
 
 #[test]
+fn test_vsnprintf_chk_drops_flag_slen_forwards_to_stub() {
+    // __vsnprintf_chk(dest, maxlen, flag, slen, fmt, ap) forwards to the
+    // degenerate vsnprintf stub: maxlen>0 → single NUL at dest, returns 1.
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
+    state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
+    state
+        .memory_store(0x2000, RustBV::concrete(0x41, 8))
+        .unwrap(); // pre-seed 'A'
+
+    let result = NativeVsnprintfChk
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // dest
+                RustBV::concrete(4, 64),      // maxlen
+                RustBV::concrete(1, 64),      // flag (dropped)
+                RustBV::concrete(64, 64),     // slen (dropped)
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0, 64),      // va_list
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let byte = state.memory_load(0x2000, 1).unwrap();
+    assert_eq!(byte.as_u64().unwrap() as u8, 0); // NUL written over the 'A'
+}
+
+#[test]
+fn test_vsnprintf_chk_zero_maxlen_returns_zero() {
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
+    state.map_memory_data(0x1000, b"x\x00", Permission::RWX);
+
+    let result = NativeVsnprintfChk
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // dest
+                RustBV::concrete(0, 64),      // maxlen == 0
+                RustBV::concrete(1, 64),      // flag (dropped)
+                RustBV::concrete(64, 64),     // slen (dropped)
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0, 64),      // va_list
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+}
+
+#[test]
 fn test_chk_num_args() {
     assert_eq!(NativePrintfChk.num_args(), 2);
     assert_eq!(NativeSprintfChk.num_args(), 10);
     assert_eq!(NativeSnprintfChk.num_args(), 11);
     assert_eq!(NativeFprintfChk.num_args(), 3);
+    assert_eq!(NativeVsnprintfChk.num_args(), 6);
 }
 
 #[test]
@@ -140,6 +192,7 @@ fn test_chk_registered_in_registry() {
         "__sprintf_chk",
         "__snprintf_chk",
         "__fprintf_chk",
+        "__vsnprintf_chk",
     ] {
         assert!(
             registry.get(name).is_some(),

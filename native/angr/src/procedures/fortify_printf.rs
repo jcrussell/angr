@@ -26,9 +26,12 @@
 //!   → `snprintf(s, maxlen, fmt, ...)` (drop `flag`, `slen`)
 //! * `int __fprintf_chk(FILE *fp, int flag, const char *fmt, ...)`
 //!   → `fprintf(fp, fmt, ...)`        (drop `flag`)
+//! * `int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen,
+//!                        const char *fmt, va_list ap)`
+//!   → `vsnprintf(s, maxlen, fmt, ap)` (drop `flag`, `slen`)
 
 use super::printf::{NativeFprintf, NativePrintf};
-use super::sprintf::{NativeSnprintf, NativeSprintf};
+use super::sprintf::{NativeSnprintf, NativeSprintf, NativeVsnprintf};
 use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -149,6 +152,40 @@ impl NativeSimProcedure for NativeFprintfChk {
         forwarded.push(args[0].clone());
         forwarded.extend_from_slice(&args[2..]);
         NativeFprintf.call(state, &forwarded)
+    }
+}
+
+/// `int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen,
+///                      const char *format, va_list ap)`.
+///
+/// Forwards to native `vsnprintf`, dropping the injected `flag` and `slen`
+/// (matches Python angr's `__vsnprintf_chk`). The base `vsnprintf` is the
+/// degenerate stub (size==0 → 0, else writes a single NUL and returns 1), so
+/// only `s` and `maxlen` are consumed — the `format`/`va_list` words are
+/// passed through but unused.
+pub struct NativeVsnprintfChk;
+
+impl NativeSimProcedure for NativeVsnprintfChk {
+    fn name(&self) -> &'static str {
+        "__vsnprintf_chk"
+    }
+
+    fn num_args(&self) -> usize {
+        6 // dest + maxlen + flag + slen + format + va_list
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        // vsnprintf expects [dest, size, format, va_list]; drop flag (args[2])
+        // and slen (args[3]).
+        let mut forwarded = Vec::with_capacity(args.len() - 2);
+        forwarded.push(args[0].clone());
+        forwarded.push(args[1].clone());
+        forwarded.extend_from_slice(&args[4..]);
+        NativeVsnprintf.call(state, &forwarded)
     }
 }
 

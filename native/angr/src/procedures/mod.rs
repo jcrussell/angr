@@ -386,6 +386,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fortify_printf::NativeSprintfChk));
         registry.register(Arc::new(fortify_printf::NativeSnprintfChk));
         registry.register(Arc::new(fortify_printf::NativeFprintfChk));
+        registry.register(Arc::new(fortify_printf::NativeVsnprintfChk));
         // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
         // is now invalidate-and-replayed per dirty page in
         // `_create_state_for_callback` (rust_callback_dispatch.py +
