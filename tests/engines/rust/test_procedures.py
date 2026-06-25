@@ -1226,6 +1226,71 @@ class TestNativeIdentityGetters:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeSleep:
+    """Python-boundary coverage for native sleep/usleep (angr-ae54t.15).
+
+    Angr's posix SimProcedures (`sleep.py`/`usleep.py`) ignore their argument
+    and `return 0`. The native side previously had neither, so a PLT libc call
+    round-tripped to Python. This asserts native dispatch (call_counts ticks)
+    and rax=0 for both one-arg timers.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    @staticmethod
+    def _make_stub(proc_name: str):
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": 1, "run": lambda self, n: 0},
+        )
+
+    @pytest.mark.parametrize("proc_name", ["sleep", "usleep"])
+    def test_timer_returns_zero(self, fauxware_project, proc_name):
+        import claripy
+
+        proj = fauxware_project
+
+        stub_cls = self._make_stub(proc_name)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = claripy.BVV(42, 64)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get(proc_name, 0) == 1, (
+                f"expected native {proc_name} dispatch, got stats={stats}"
+            )
+
+            sid = None
+            for stash in ("active", "deadended", "errored", "unconstrained"):
+                ids = mgr._rust_mgr.get_state_ids(stash)
+                if ids:
+                    sid = ids[0]
+                    break
+            assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 0, f"expected rax=0 from native {proc_name}, got rax={rax:#x}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFreadBoundary:
     """Python-boundary regression for native fread dispatch (angr-c42t7).
 

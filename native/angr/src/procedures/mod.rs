@@ -106,6 +106,7 @@ pub mod python_proc;
 pub mod rand;
 pub mod read;
 pub mod scanf;
+pub mod sleep;
 pub mod sprintf;
 pub mod stdio;
 pub mod strcat;
@@ -401,6 +402,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(getid::NativeGeteuid));
         registry.register(Arc::new(getid::NativeGetgid));
         registry.register(Arc::new(getid::NativeGetegid));
+        // POSIX no-op timers (angr-ae54t.15): sleep/usleep ignore their
+        // argument and return 0 (mirror procedures/posix/{sleep,usleep}.py).
+        // A PLT libc call to sleep/usleep otherwise round-trips to Python.
+        registry.register(Arc::new(sleep::NativeSleep));
+        registry.register(Arc::new(sleep::NativeUsleep));
         // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeAsprintf));
