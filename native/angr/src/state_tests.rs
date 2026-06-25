@@ -32,6 +32,25 @@ fn test_state_fork() {
 }
 
 #[test]
+fn test_getopt_cursor_default_and_fork_isolation() {
+    // Foundation slice for native getopt parity (bead angr-bhk0a): the
+    // per-state getopt cursor must default to (optind=1, optchar=0) — the
+    // glibc/Python `state.libc.getopt_optind`/`getopt_optchar` defaults — and
+    // be copied (not shared) across fork so each path scans argv independently.
+    let mut parent = RustSimState::new("amd64").unwrap();
+    assert_eq!(parent.getopt_cursor(), (1, 0));
+
+    parent.set_getopt_cursor(4, 2);
+    let mut child = parent.fork();
+    assert_eq!(child.getopt_cursor(), (4, 2));
+
+    // Mutating the child must not disturb the parent (CoW isolation).
+    child.set_getopt_cursor(9, 0);
+    assert_eq!(child.getopt_cursor(), (9, 0));
+    assert_eq!(parent.getopt_cursor(), (4, 2));
+}
+
+#[test]
 fn test_set_detailed_history_honors_cap() {
     // set_detailed_history (called once per step from interpreter results)
     // must drain the oldest entries when the incoming buffer exceeds the
@@ -478,6 +497,7 @@ fn build_populated_state() -> RustSimState {
     s.set_no_symbolic_jump_resolution(true);
     s.set_posix_brk(0x1B0_4000);
     s.set_mmap_base(0xC100_8000);
+    s.set_getopt_cursor(7, 3);
 
     // Solver constraints — `rbx > 10` must hold after restore.
     let cmp = {
@@ -509,6 +529,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.heap_brk(), orig.heap_brk());
     assert_eq!(restored.posix_brk(), orig.posix_brk());
     assert_eq!(restored.mmap_base(), orig.mmap_base());
+    assert_eq!(restored.getopt_cursor(), orig.getopt_cursor());
     assert_eq!(restored.no_ip_concretization(), orig.no_ip_concretization());
     assert_eq!(restored.keep_ip_symbolic(), orig.keep_ip_symbolic());
     assert_eq!(

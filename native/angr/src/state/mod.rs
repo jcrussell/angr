@@ -279,6 +279,16 @@ pub struct RustSimState {
     /// `posix_brk`. Future cross-engine sync work should address both fields
     /// at the syscall callback boundary.
     mmap_base: u64,
+    /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
+    /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
+    /// fork + snapshot so each path resumes option scanning correctly.
+    /// Consumed by the native getopt proc (bead angr-bhk0a.3); the
+    /// loader-resolved extern-symbol address push is bead angr-bhk0a.2.
+    getopt_optind: u32,
+    /// getopt(3) cursor — index into the current `argv` element (POSIX
+    /// `optchar`, for bundled short options like `-abc`). Mirrors
+    /// `state.libc.getopt_optchar`. Default 0. See `getopt_optind`.
+    getopt_optchar: u32,
     /// Pointers to the three glibc locale ctype lookup tables. Built once by
     /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
     /// memory, see `__ctype_b_loc.py` et al.) and pushed into Rust at
@@ -467,6 +477,8 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            getopt_optind: 1,
+            getopt_optchar: 0,
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -515,6 +527,8 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            getopt_optind: 1,
+            getopt_optchar: 0,
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -573,6 +587,8 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            getopt_optind: 1,
+            getopt_optchar: 0,
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -752,6 +768,20 @@ impl RustSimState {
     /// `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
     pub fn set_posix_brk(&mut self, addr: u64) {
         self.posix_brk = addr;
+    }
+
+    /// getopt(3) cursor pair `(optind, optchar)` — mirrors Python's
+    /// `state.libc.getopt_optind` / `getopt_optchar`. Per-state, fork- and
+    /// snapshot-carried. Consumed by the native getopt proc (bead
+    /// angr-bhk0a.3).
+    pub fn getopt_cursor(&self) -> (u32, u32) {
+        (self.getopt_optind, self.getopt_optchar)
+    }
+
+    /// Set the getopt(3) cursor pair `(optind, optchar)`. See `getopt_cursor`.
+    pub fn set_getopt_cursor(&mut self, optind: u32, optchar: u32) {
+        self.getopt_optind = optind;
+        self.getopt_optchar = optchar;
     }
 
     /// Get the mmap base pointer (mirrors `state.heap.mmap_base` for the
@@ -1619,6 +1649,32 @@ impl PyRustSimState {
     #[setter]
     pub fn set_posix_brk(&mut self, addr: u64) {
         self.inner.set_posix_brk(addr);
+    }
+
+    /// Get the getopt(3) `optind` cursor (mirrors `state.libc.getopt_optind`).
+    #[getter]
+    pub fn getopt_optind(&self) -> u32 {
+        self.inner.getopt_cursor().0
+    }
+
+    /// Set the getopt(3) `optind` cursor.
+    #[setter]
+    pub fn set_getopt_optind(&mut self, value: u32) {
+        let (_, optchar) = self.inner.getopt_cursor();
+        self.inner.set_getopt_cursor(value, optchar);
+    }
+
+    /// Get the getopt(3) `optchar` cursor (mirrors `state.libc.getopt_optchar`).
+    #[getter]
+    pub fn getopt_optchar(&self) -> u32 {
+        self.inner.getopt_cursor().1
+    }
+
+    /// Set the getopt(3) `optchar` cursor.
+    #[setter]
+    pub fn set_getopt_optchar(&mut self, value: u32) {
+        let (optind, _) = self.inner.getopt_cursor();
+        self.inner.set_getopt_cursor(optind, value);
     }
 
     /// Get the heap brk pointer (mirrors Python's `state.heap.heap_location`,
