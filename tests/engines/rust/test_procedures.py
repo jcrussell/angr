@@ -1792,6 +1792,33 @@ class TestNativeStdioStatusAndWrite:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_perror_writes_user_string_to_stderr(self, fauxware_project):
+        """perror(s) writes only the user string to stderr (fd 2), no errno
+        suffix — mirrors Python posix/perror.py (write(2, s, strlen(s)))."""
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("perror", 1)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            payload = b"open failed"
+            state = self._setup_state(proj, fileno=2, source_bytes=payload)
+            state.regs.rdi = self.STRING_ADDR  # const char *s
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("perror", 0) == 1, f"expected native perror dispatch, got stats={stats}"
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            stderr_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 2))
+            assert stderr_bytes == payload, f"stderr={stderr_bytes!r} expected {payload!r}"
+            # stdout untouched.
+            stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            assert stdout_bytes == b"", f"stdout should be untouched, got {stdout_bytes!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_vprintf_alias_dispatches_native_to_stdout(self, fauxware_project):
         """vprintf(format, ap) is a declare_proc! alias of NativePrintf
         (printf.rs): the va_list is unmodeled, so it writes the RAW format

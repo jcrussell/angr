@@ -98,6 +98,7 @@ pub mod mem_common;
 pub mod memcmp;
 pub mod memcpy;
 pub mod memset;
+pub mod perror;
 pub mod printf;
 pub mod pthread;
 pub mod puts;
@@ -265,6 +266,9 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcmp::NativeStrcasecmp));
         registry.register(Arc::new(strcmp::NativeStrncasecmp));
         registry.register(Arc::new(puts::NativePuts));
+        // perror: write the user string to stderr (fd 2), no errno suffix —
+        // mirrors Python posix/perror.py (write(2, s, strlen(s))).
+        registry.register(Arc::new(perror::NativePerror));
         registry.register(Arc::new(printf::NativePrintf));
         registry.register(Arc::new(printf::NativeFprintf));
         // New procedures (verified safe — no exploration flow changes)
