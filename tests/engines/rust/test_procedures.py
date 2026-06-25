@@ -2136,3 +2136,39 @@ class TestNativeMemoryCopyAndSet:
         joined = existing + suffix
         got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(joined) + 1))
         assert got == joined + b"\x00", f"dst={got!r}"
+
+    def test_mempcpy_returns_dst_plus_n(self, fauxware_project):
+        # mempcpy(dst, src, n) copies n bytes like memcpy but returns dst + n
+        # (a pointer to the byte after the last copied), not dst.
+        import claripy
+
+        payload = b"mempcpy!"
+        state = self._blank_state(fauxware_project)
+        for i, b in enumerate(payload):
+            state.memory.store(self.SRC_ADDR + i, claripy.BVV(b, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+        state.regs.rdx = len(payload)
+
+        count, sid, mgr = self._run(fauxware_project, "mempcpy", state)
+        assert count == 1, "expected native mempcpy dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR + len(payload), f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(payload)))
+        assert got == payload, f"dst={got!r}"
+
+    def test_stpcpy_returns_pointer_to_written_nul(self, fauxware_project):
+        # stpcpy(dst, src) copies src incl. its NUL like strcpy, but returns
+        # dst + strlen(src) (a pointer to the written terminating NUL).
+        payload = b"world"
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, payload)
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+
+        count, sid, mgr = self._run(fauxware_project, "stpcpy", state)
+        assert count == 1, "expected native stpcpy dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.DST_ADDR + len(payload), f"rax={rax:#x}"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(payload) + 1))
+        assert got == payload + b"\x00", f"dst={got!r}"
