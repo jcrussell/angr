@@ -119,6 +119,7 @@ pub mod strset;
 pub mod strstr;
 pub mod strtod;
 pub mod strtol;
+pub mod system;
 pub mod write;
 
 #[cfg(test)]
@@ -407,6 +408,10 @@ impl NativeProcedureRegistry {
         // A PLT libc call to sleep/usleep otherwise round-trips to Python.
         registry.register(Arc::new(sleep::NativeSleep));
         registry.register(Arc::new(sleep::NativeUsleep));
+        // system() (angr-ae54t.16): cannot run a real shell, so model the exit
+        // status as an unconstrained 8-bit code zero-extended to 32-bit int
+        // (mirror procedures/libc/system.py). Otherwise round-trips to Python.
+        registry.register(Arc::new(system::NativeSystem));
         // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeAsprintf));

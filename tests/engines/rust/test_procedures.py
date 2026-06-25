@@ -1291,6 +1291,54 @@ class TestNativeSleep:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeSystem:
+    """Python-boundary coverage for native system() (angr-ae54t.16).
+
+    Angr's libc SimProcedure (`system.py`) cannot run a real shell, so it
+    returns an unconstrained 8-bit exit status zero-extended to 32-bit int.
+    The native side previously had no `system`, so a PLT libc call round-tripped
+    to Python. This asserts native dispatch (call_counts ticks) — the return is
+    symbolic, so there is no concrete rax to assert.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    def test_system_dispatches_native(self, fauxware_project):
+        import claripy
+
+        proj = fauxware_project
+
+        stub_cls = type(
+            "system",
+            (angr.SimProcedure,),
+            {"num_args": 1, "run": lambda self, cmd: 0},
+        )
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = claripy.BVV(0x1000, 64)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("system", 0) == 1, f"expected native system dispatch, got stats={stats}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFreadBoundary:
     """Python-boundary regression for native fread dispatch (angr-c42t7).
 
