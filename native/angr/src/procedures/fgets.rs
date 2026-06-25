@@ -31,6 +31,92 @@ use crate::symbolic::RustBV;
 
 const MAX_FGETS_SIZE: u64 = 4096;
 
+/// Default `SimStateLibc.max_gets_size` (angr/state_plugins/libc.py). `gets` has
+/// no size argument, so it reads at most `MAX_GETS_SIZE - 1` bytes. The Python
+/// knob is a static state attribute not exposed to Rust; a user who raises it to
+/// model a larger overflow would diverge here (rare — the default is what nearly
+/// every harness uses).
+const MAX_GETS_SIZE: u64 = 256;
+
+/// Apply the variable-length symbolic-line ("case 2") model shared by Python's
+/// `gets` (always) and `fgets` under SHORT_READS: build a symbolic `real_size`
+/// in `[0, size-1]`, add the per-byte newline/EOF constraints, store the data
+/// with a NUL at the `real_size` offset (as fixed-address ITE stores), and
+/// return the symbolic `real_size`.
+///
+/// `sym_bytes` are the `size-1` already-created symbolic input bytes (the caller
+/// records them as stdin symbols). `label`/`read_id` name the fresh
+/// `real_size`/`eof` symbols. Mirrors `procedures/libc/{fgets,gets}.py` case 2.
+///
+/// Keeping every store at a fixed address avoids symbolic-address
+/// concretization (which would enumerate up to `size-1` addresses) and stays
+/// concrete-loadable downstream. The final slot (index `size-1`) is the NUL of a
+/// full read; clamping it to NUL unconditionally is harmless for shorter reads
+/// (it sits beyond `real_size`, in undefined-content territory).
+pub(crate) fn store_symbolic_line(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    sym_bytes: &[RustBV],
+    label: &str,
+    read_id: u64,
+) -> Result<RustBV, ProcedureError> {
+    let bits = state.arch().bits();
+    let read_count = size - 1;
+    let (real_size, constraints, store_bytes) = {
+        let ctx = state.solver().borrow();
+        let real_size = RustBV::symbolic(&ctx, format!("{}_realsize_{}", label, read_id), bits);
+        // EOF is unknown for native symbolic stdin; a fresh symbolic bit soundly
+        // over-approximates `simfd.eof()` (the solver may pick eof=true to
+        // justify a short read, matching Python).
+        let eof = RustBV::symbolic(&ctx, format!("{}_eof_{}", label, read_id), 1);
+        let nl = RustBV::concrete(b'\n' as u128, 8);
+        let nul = RustBV::concrete(0, 8);
+
+        let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
+        // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
+        constraints.push(real_size.ule(&RustBV::concrete(read_count as u128, bits), &ctx));
+
+        // For each returned byte i:
+        //   If(i+1 != real_size,            byte != '\n',
+        //      Or(i+2 == size, eof, byte == '\n'))
+        // i.e. a non-final byte cannot be a newline, and the final returned byte
+        // is justified by running out of space, EOF, or being the newline.
+        for (i, byte) in sym_bytes.iter().enumerate() {
+            let idx = i as u64;
+            let cond = RustBV::concrete((idx + 1) as u128, bits).ne(&real_size, &ctx);
+            let then_b = byte.ne(&nl, &ctx);
+            let else_b = if idx + 2 == size {
+                // i+2 == size is a concrete tautology for the last byte.
+                RustBV::concrete(1, 1)
+            } else {
+                eof.or(&byte.eq(&nl, &ctx), &ctx)
+            };
+            constraints.push(cond.ite(&then_b, &else_b, &ctx));
+        }
+
+        // Emulate Python's `store(dst, data, size=real_size)` + NUL at
+        // dst+real_size: byte p is the NUL exactly when real_size == p.
+        let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
+        for (p, byte) in sym_bytes.iter().enumerate() {
+            let at = RustBV::concrete(p as u128, bits).eq(&real_size, &ctx);
+            store_bytes.push(at.ite(&nul, byte, &ctx));
+        }
+        store_bytes.push(nul.clone());
+        (real_size, constraints, store_bytes)
+    };
+
+    // Store the computed bytes at fixed offsets.
+    for (i, b) in store_bytes.into_iter().enumerate() {
+        state.memory_store(buf.wrapping_add(i as u64), b)?;
+    }
+    // Apply constraints after storing (each borrows the solver).
+    for c in constraints {
+        state.add_constraint(c);
+    }
+    Ok(real_size)
+}
+
 /// Resolve a `FILE *stream` argument to its backing fd for a read-side stdio
 /// procedure (`fgets`/`fgetc`).
 ///
@@ -137,68 +223,8 @@ crate::declare_proc! {
             // byte-identical and non-forking, so the perf gate is unaffected;
             // enabling SHORT_READS opts into the same state multiplication it
             // already causes Python-side.
-            let (real_size, constraints, store_bytes) = {
-                let ctx = state.solver().borrow();
-                let real_size =
-                    RustBV::symbolic(&ctx, format!("fgets_realsize_{}", read_id), bits);
-                // EOF is unknown for native symbolic stdin; a fresh symbolic
-                // bit soundly over-approximates `simfd.eof()` (the solver may
-                // pick eof=true to justify a short read, matching Python).
-                let eof = RustBV::symbolic(&ctx, format!("fgets_eof_{}", read_id), 1);
-                let nl = RustBV::concrete(b'\n' as u128, 8);
-                let nul = RustBV::concrete(0, 8);
-
-                let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
-                // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
-                constraints.push(real_size.ule(&RustBV::concrete(read_count as u128, bits), &ctx));
-
-                // For each returned byte i:
-                //   If(i+1 != real_size,            byte != '\n',
-                //      Or(i+2 == size, eof, byte == '\n'))
-                // i.e. a non-final byte cannot be a newline, and the final
-                // returned byte is justified by running out of space, EOF, or
-                // being the terminating newline.
-                for (i, byte) in sym_bytes.iter().enumerate() {
-                    let idx = i as u64;
-                    let cond = RustBV::concrete((idx + 1) as u128, bits).ne(&real_size, &ctx);
-                    let then_b = byte.ne(&nl, &ctx);
-                    let else_b = if idx + 2 == size {
-                        // i+2 == size is a concrete tautology for the last byte.
-                        RustBV::concrete(1, 1)
-                    } else {
-                        eof.or(&byte.eq(&nl, &ctx), &ctx)
-                    };
-                    constraints.push(cond.ite(&then_b, &else_b, &ctx));
-                }
-
-                // Emulate Python's `store(dst, data, size=real_size)` + NUL at
-                // dst+real_size as concrete-position ITE stores: byte p is the
-                // NUL exactly when real_size == p, else the data byte. Keeping
-                // every store at a fixed address avoids symbolic-address
-                // concretization (which would enumerate up to size-1 addresses)
-                // and stays concrete-loadable downstream. The final slot (index
-                // read_count == size-1) is the NUL of a full read; clamping it
-                // to NUL unconditionally is harmless for shorter reads (it sits
-                // beyond real_size, in undefined-content territory).
-                let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
-                for (p, byte) in sym_bytes.iter().enumerate() {
-                    let at = RustBV::concrete(p as u128, bits).eq(&real_size, &ctx);
-                    store_bytes.push(at.ite(&nul, byte, &ctx));
-                }
-                store_bytes.push(nul.clone());
-                (real_size, constraints, store_bytes)
-            };
-
-            // Store the computed bytes at fixed offsets.
-            for (i, b) in store_bytes.into_iter().enumerate() {
-                state.memory_store(buf.wrapping_add(i as u64), b)?;
-            }
-            // Apply constraints after storing (each borrows the solver).
-            for c in constraints {
-                state.add_constraint(c);
-            }
-
             // Return symbolic real_size — the downstream fork source.
+            let real_size = store_symbolic_line(state, buf, size, &sym_bytes, "fgets", read_id)?;
             return Ok(Some(real_size));
         }
 
@@ -348,6 +374,51 @@ crate::declare_proc! {
     aliases = ["getc_unlocked"],
     call |state| {
         NativeFgetc.call(state, std::slice::from_ref(&stream))
+    }
+}
+
+crate::declare_proc! {
+    /// Native gets implementation.
+    ///
+    /// ```c
+    /// char *gets(char *s);
+    /// ```
+    ///
+    /// `gets` has no size argument and always reads from stdin, so this serves
+    /// the symbolic-stdin path unconditionally (fd 0), reading at most
+    /// `MAX_GETS_SIZE - 1` symbolic bytes. Unlike `fgets`, Python's `gets`
+    /// (`procedures/libc/gets.py`) applies the variable-length case-2 model for
+    /// symbolic input *always* — it is not gated on SHORT_READS — so this native
+    /// path mirrors that: [`store_symbolic_line`] adds the per-byte newline/EOF
+    /// constraints and a NUL at the symbolic `real_size` offset. The return value
+    /// is the buffer pointer `s` (matching Python), not `real_size`.
+    name = "gets",
+    struct = NativeGets,
+    args = [buf: concrete],
+    call |state| {
+        let bits = state.arch().bits();
+        let read_count = MAX_GETS_SIZE - 1;
+        let read_id = symbol_counter("gets");
+
+        // Create symbolic stdin bytes and record them for posix.dumps(0) export.
+        let names: Vec<String> = (0..read_count)
+            .map(|i| format!("stdin_gets_{}_{}", read_id, i))
+            .collect();
+        let sym_bytes: Vec<RustBV> = {
+            let ctx = state.solver().borrow();
+            names
+                .iter()
+                .map(|name| RustBV::symbolic(&ctx, name, 8))
+                .collect()
+        };
+        for name in &names {
+            state.record_stdin_symbol(name.clone(), 8);
+        }
+
+        store_symbolic_line(state, buf, MAX_GETS_SIZE, &sym_bytes, "gets", read_id)?;
+
+        // gets returns the destination buffer pointer.
+        Ok(Some(RustBV::concrete(buf as u128, bits)))
     }
 }
 

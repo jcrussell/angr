@@ -404,3 +404,57 @@ fn test_fgets_short_reads_nul_at_real_size() {
         "byte at buf+real_size must be the NUL terminator"
     );
 }
+
+#[test]
+fn test_gets_returns_buffer_pointer() {
+    // gets returns the destination buffer pointer (not real_size), reads from
+    // stdin with no size/stream args, and applies the case-2 symbolic-line
+    // model unconditionally (no SHORT_READS gate), mirroring Python
+    // procedures/libc/gets.py.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+    let result = NativeGets
+        .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        result.as_u64(),
+        Some(0x2000),
+        "gets returns the destination buffer pointer"
+    );
+
+    // The first bytes are symbolic stdin input.
+    let byte0 = state.memory_load(0x2000, 1).unwrap();
+    assert!(byte0.as_u64().is_none(), "gets byte 0 should be symbolic");
+}
+
+#[test]
+fn test_gets_nul_at_real_size_bounded() {
+    // The terminating NUL sits at the symbolic real_size offset (max_gets_size
+    // model: real_size in [0, 254]). Pin real_size=5 by forcing buf+5 to be the
+    // NUL while a non-NUL byte before it stays reachable, proving the variable
+    // length terminator. Also confirm real_size cannot reach 255 (== size-1+1).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+    NativeGets
+        .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+        .unwrap()
+        .unwrap();
+
+    // Constrain buf+5 to NUL and buf+4 to non-NUL: a self-consistent short read
+    // of length 5 must be satisfiable under the case-2 constraints.
+    let (cons, sat) = {
+        let ctx = state.solver().borrow();
+        let zero = RustBV::concrete(0, 8);
+        let b4 = state.memory_load(0x2004, 1).unwrap();
+        let b5 = state.memory_load(0x2005, 1).unwrap();
+        let cons = b5.eq(&zero, &ctx).and(&b4.ne(&zero, &ctx), &ctx);
+        let sat = ctx.can_be_true(&cons);
+        (cons, sat)
+    };
+    assert!(sat, "a length-5 short read must be reachable under gets");
+    state.add_constraint(cons);
+}

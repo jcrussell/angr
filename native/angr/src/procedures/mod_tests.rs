@@ -7,6 +7,7 @@ fn test_registry_creation() {
     assert!(registry.has_native("strlen"));
     assert!(registry.has_native("memcpy"));
     assert!(registry.has_native("strcmp"));
+    assert!(registry.has_native("gets"));
 }
 
 #[test]

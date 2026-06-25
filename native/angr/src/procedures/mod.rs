@@ -373,6 +373,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fgets::NativeFgetc));
         registry.register(Arc::new(fgets::NativeGetchar));
         registry.register(Arc::new(fgets::NativeGetc));
+        registry.register(Arc::new(fgets::NativeGets));
         // Output procedures (stdout)
         registry.register(Arc::new(puts::NativePutchar));
         registry.register(Arc::new(puts::NativeFputc));
