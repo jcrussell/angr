@@ -122,6 +122,7 @@ pub mod strtod;
 pub mod strtol;
 pub mod syslog;
 pub mod system;
+pub mod time;
 pub mod write;
 
 #[cfg(test)]
@@ -421,6 +422,12 @@ impl NativeProcedureRegistry {
         // itself (FormatParser) is left to Python.
         registry.register(Arc::new(syslog::NativeOpenlog));
         registry.register(Arc::new(syslog::NativeCloselog));
+        // libc time() (angr-ae54t.21): Python's procedures/libc/time.py just
+        // inline_calls the linux_kernel time syscall. Native parity forwards
+        // to the same model via syscalls::sim_time::fresh_monotonic_time, so a
+        // PLT time() call no longer round-trips to Python. Symbolic *tloc falls
+        // back to Python (matches the syscall's concrete-pointer gate).
+        registry.register(Arc::new(time::NativeTime));
         // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeAsprintf));

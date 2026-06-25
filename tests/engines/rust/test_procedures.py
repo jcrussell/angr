@@ -1336,6 +1336,48 @@ class TestNativeSyslog:
         )
 
 
+class TestNativeTime:
+    """Python-boundary coverage for native libc time() (angr-ae54t.21).
+
+    Angr's `procedures/libc/time.py` inline_calls the linux_kernel time
+    syscall. The native side already models that syscall but had no native
+    libc `time` procedure, so a PLT time() call round-tripped to Python. The
+    native proc forwards to the same `fresh_monotonic_time` model and returns a
+    symbolic time_t in rax. This asserts native dispatch (call_counts ticks).
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    def test_time_dispatches_native(self, fauxware_project):
+        import claripy
+
+        proj = fauxware_project
+        stub_cls = type("time", (angr.SimProcedure,), {"num_args": 1, "run": lambda self, tloc: 0})
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            # tloc = NULL: no store, just a symbolic return.
+            state.regs.rdi = claripy.BVV(0, 64)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("time", 0) == 1, f"expected native time dispatch, got stats={stats}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeSleep:
     """Python-boundary coverage for native sleep/usleep (angr-ae54t.15).
 

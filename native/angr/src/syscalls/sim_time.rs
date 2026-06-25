@@ -103,6 +103,32 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
 ///
 /// Symbolic `pointer`: fall back to Python so its `condition=(pointer != 0)`
 /// store logic runs. (Most binaries pass NULL or a concrete stack address.)
+/// Build a fresh symbolic `time_t`, apply the monotonic constraint
+/// (`>= last_time`, or `>= 0` on the first call), and record it as the new
+/// `last_time`. Shared by the `time` *syscall* (`NativeTimeSyscall`) and the
+/// libc `time` *procedure* (`procedures::time::NativeTime`), which forward to
+/// the same model — Python's `procedures/libc/time.py` `inline_call`s
+/// `linux_kernel/time`, so both engines must produce identical behavior.
+///
+/// The caller performs the optional `*pointer` store (its error type differs
+/// between the two callers — `SyscallError` vs `ProcedureError`) and wraps the
+/// returned BV in the appropriate outcome.
+pub fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
+    let bits = state.arch().bits();
+    let (sys_time, monotonic_constraint) = {
+        let ctx = state.solver().borrow();
+        let sys_time = fresh_symbolic(&ctx, "sys_time", bits);
+        let zero = RustBV::concrete(0, bits);
+        // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
+        let lower = state.last_time().cloned().unwrap_or(zero);
+        let cmp = sys_time.sge(&lower, &ctx);
+        (sys_time, cmp)
+    };
+    state.add_constraint(monotonic_constraint);
+    state.set_last_time(sys_time.clone());
+    sys_time
+}
+
 pub struct NativeTimeSyscall;
 
 impl NativeSyscall for NativeTimeSyscall {
@@ -127,23 +153,12 @@ impl NativeSyscall for NativeTimeSyscall {
         }
         let pointer = extract_concrete_arg(&args[0], "time pointer")?;
 
-        let bits = state.arch().bits();
-        let (sys_time, monotonic_constraint) = {
-            let ctx = state.solver().borrow();
-            let sys_time = fresh_symbolic(&ctx, "sys_time", bits);
-            let zero = RustBV::concrete(0, bits);
-            // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
-            let lower = state.last_time().cloned().unwrap_or(zero);
-            let cmp = sys_time.sge(&lower, &ctx);
-            (sys_time, cmp)
-        };
-        state.add_constraint(monotonic_constraint);
+        let sys_time = fresh_monotonic_time(state);
 
         if pointer != 0 {
             state.memory_store(pointer, sys_time.clone())?;
         }
 
-        state.set_last_time(sys_time.clone());
         Ok(SyscallOutcome::ContinueSymbolic { ret: sys_time })
     }
 }
