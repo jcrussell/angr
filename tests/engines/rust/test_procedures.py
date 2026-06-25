@@ -1627,6 +1627,70 @@ class TestNativeStdioStatusAndWrite:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_vprintf_alias_dispatches_native_to_stdout(self, fauxware_project):
+        """vprintf(format, ap) is a declare_proc! alias of NativePrintf
+        (printf.rs): the va_list is unmodeled, so it writes the RAW format
+        string to stdout and returns its length. This asserts the alias name
+        passed through the Python SimProc registration dispatches natively
+        (call_counts["vprintf"], not "printf") — the Python-boundary half of
+        the registry-level test_vprintf_family_aliases_dispatch unit test."""
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("vprintf", 1)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            payload = b"hello world"
+            state = self._setup_state(proj, fileno=1, source_bytes=payload)
+            state.regs.rdi = self.STRING_ADDR  # const char *format
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("vprintf", 0) == 1, (
+                f"expected native vprintf alias dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == len(payload), f"vprintf → rax={rax}, expected {len(payload)}"
+            stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            assert stdout_bytes == payload, f"stdout={stdout_bytes!r} expected {payload!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_vfprintf_alias_dispatches_native_to_stream(self, fauxware_project):
+        """vfprintf(stream, format, ap) is a declare_proc! alias of
+        NativeFprintf (printf.rs): it resolves stream->_fileno and writes the
+        RAW format string to that fd, returning the byte count. Asserts the
+        alias name dispatches natively (call_counts["vfprintf"]) and routes to
+        the stream's fd, mirroring the fputs stream test."""
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("vfprintf", 2)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            payload = b"stream out"
+            state = self._setup_state(proj, fileno=1, source_bytes=payload)
+            state.regs.rdi = self.FILE_PTR  # FILE *stream
+            state.regs.rsi = self.STRING_ADDR  # const char *format
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("vfprintf", 0) == 1, (
+                f"expected native vfprintf alias dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == len(payload), f"vfprintf → rax={rax}, expected {len(payload)}"
+            fd_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            assert fd_bytes == payload, f"fd1={fd_bytes!r} expected {payload!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
 
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
