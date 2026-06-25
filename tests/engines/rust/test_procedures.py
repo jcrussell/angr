@@ -2249,6 +2249,22 @@ class TestNativeMemoryCopyAndSet:
         got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 3))
         assert got == b"\xcc" * 3, f"dst={got!r}"
 
+    def test_bzero_native_dispatch_zeros_bytes(self, fauxware_project):
+        # bzero(s, n) forwards to native memset(s, 0, n). Pre-seed dst with a
+        # 0xFF sentinel; the first n bytes must be zeroed, byte n untouched.
+        import claripy
+
+        state = self._blank_state(fauxware_project)
+        for i in range(7):
+            state.memory.store(self.DST_ADDR + i, claripy.BVV(0xFF, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = 5  # n
+
+        count, sid, mgr = self._run(fauxware_project, "bzero", state)
+        assert count == 1, "expected native bzero dispatch"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, 7))
+        assert got == b"\x00" * 5 + b"\xff" * 2, f"dst={got!r}"
+
     def _store_cstr(self, state, addr, data: bytes):
         """Lay out a NUL-terminated C string at `addr`."""
         import claripy

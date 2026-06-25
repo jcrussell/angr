@@ -180,6 +180,22 @@ fn memset_symbolic_addr(
     Ok(Some(dest_bv.clone()))
 }
 
+crate::declare_proc! {
+    /// `void bzero(void *s, size_t n)` — zero `n` bytes at `s`.
+    ///
+    /// Matches Python angr (`procedures/posix/bzero.py`), which subclasses
+    /// `memset` and forwards `memset(s, 0, n)`. Reuses native `memset` (DRY,
+    /// same pattern as `__memset_chk`): builds an 8-bit zero fill byte and
+    /// delegates to [`NativeMemset`]. The C return type is `void`; memset's
+    /// dest-pointer return is harmless and ignored by callers.
+    name = "bzero",
+    struct = NativeBzero,
+    args = [dest_bv: bv, size_bv: bv],
+    call |state| {
+        NativeMemset.call(state, &[dest_bv, RustBV::concrete(0, 8), size_bv])
+    }
+}
+
 #[cfg(test)]
 #[path = "memset_tests.rs"]
 mod tests;

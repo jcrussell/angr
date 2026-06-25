@@ -327,3 +327,25 @@ fn test_memset_symbolic_size_unbounded_fallback() {
     );
     assert!(result.is_err(), "unbounded symbolic size should fall back");
 }
+
+#[test]
+fn test_bzero_zeros_region() {
+    // bzero(s, n) must zero n bytes at s, reusing native memset (no fallback).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &[0xFFu8; 16], Permission::RWX);
+
+    let proc = NativeBzero;
+    proc.call(&mut state, &[RustBV::concrete(0x1000, 64), RustBV::concrete(8, 64)])
+        .unwrap();
+
+    // First 8 bytes zeroed; byte 8 untouched (still 0xFF).
+    assert_eq!(state.memory_load(0x1000, 8).unwrap().as_u64(), Some(0));
+    assert_eq!(state.memory_load(0x1008, 1).unwrap().as_u64(), Some(0xFF));
+}
+
+#[test]
+fn test_bzero_registered() {
+    // bzero must resolve through the native registry (no Python fallback).
+    let registry = crate::procedures::NativeProcedureRegistry::new();
+    assert!(registry.has_native("bzero"), "bzero should be native");
+}
