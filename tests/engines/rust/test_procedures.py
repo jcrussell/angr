@@ -1274,6 +1274,68 @@ class TestNativeSetbuf:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeSyslog:
+    """Python-boundary coverage for native openlog/closelog (angr-ae54t.20).
+
+    Angr's libc SimProcedures (`openlog.py`, `closelog.py`) are void no-op stubs
+    (return nothing). The native side previously had none, so a PLT libc call
+    round-tripped to Python. This asserts native dispatch (call_counts ticks) —
+    each proc writes no return register, so there is no rax to assert.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    def _dispatch(self, proj, name, num_args, run, setup_regs):
+        import claripy
+
+        stub_cls = type(name, (angr.SimProcedure,), {"num_args": num_args, "run": run})
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            setup_regs(state, claripy)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get(name, 0) == 1, f"expected native {name} dispatch, got stats={stats}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_openlog_dispatches_native(self, fauxware_project):
+        def setup(state, claripy):
+            state.regs.rdi = claripy.BVV(0x1000, 64)
+            state.regs.rsi = claripy.BVV(0, 64)
+            state.regs.rdx = claripy.BVV(8, 64)
+
+        self._dispatch(
+            fauxware_project,
+            "openlog",
+            3,
+            lambda self, ident, option, facility: None,
+            setup,
+        )
+
+    def test_closelog_dispatches_native(self, fauxware_project):
+        self._dispatch(
+            fauxware_project,
+            "closelog",
+            0,
+            lambda self: None,
+            lambda state, claripy: None,
+        )
+
+
 class TestNativeSleep:
     """Python-boundary coverage for native sleep/usleep (angr-ae54t.15).
 

@@ -120,6 +120,7 @@ pub mod strset;
 pub mod strstr;
 pub mod strtod;
 pub mod strtol;
+pub mod syslog;
 pub mod system;
 pub mod write;
 
@@ -414,6 +415,12 @@ impl NativeProcedureRegistry {
         // status as an unconstrained 8-bit code zero-extended to 32-bit int
         // (mirror procedures/libc/system.py). Otherwise round-trips to Python.
         registry.register(Arc::new(system::NativeSystem));
+        // syslog family (angr-ae54t.20): openlog/closelog are void no-op stubs
+        // in Python (procedures/libc/{openlog,closelog}.py: return). Native
+        // void no-ops keep a PLT call from round-tripping to Python. syslog(3)
+        // itself (FormatParser) is left to Python.
+        registry.register(Arc::new(syslog::NativeOpenlog));
+        registry.register(Arc::new(syslog::NativeCloselog));
         // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeAsprintf));
