@@ -365,7 +365,9 @@ impl RustExplorationManager {
     }
 
     // =========================================================================
-    // PyAPI methods (from pyapi.rs)
+    // PyAPI methods (thin getters/accessors kept inline in this single
+    // #[pymethods] block — larger bodies live in sibling modules per
+    // `invariant-pyo3-single-pymethods-impl`)
     // =========================================================================
 
     /// Get the architecture name.
