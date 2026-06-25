@@ -169,3 +169,47 @@ DRY: matches Python `pthread_once.run` / `retsite` line for line.
 
 S1 is the only near-zero-risk slice; S2 is the genuinely hard interpreter work
 and should not be attempted blind — this doc is its design input.
+
+## Addendum (iter 44): measured blast-radius for the risk-#5 decision
+
+Risk #5 (outcome-enum vs sibling-trait) is the one open question gating the human
+go/no-go on `angr-5gf0s`. iter42 *recommended* the trait-method pair on KISS
+grounds; this addendum replaces that judgement call with a measured edit count so
+the human can decide in one read. Counts are over the **`NativeSimProcedure`**
+trait scope only — syscalls are a separate `NativeSyscall` trait
+(`native/angr/src/syscalls/mod.rs`) and `pthread_once` is a *procedure*, so the
+syscall side is untouched by either option.
+
+Measured on HEAD (`grep` over `native/angr/src/procedures/`):
+
+| Surface | Count |
+|---|---|
+| `impl NativeSimProcedure for …` blocks (distinct native procs) | 24 |
+| `Ok(Some(…))` return sites in proc `call` bodies | 148 |
+| `Ok(None)` return sites | 24 |
+| proc impl files | 6 |
+
+**Option A — `ProcOutcome` enum replaces `Option<RustBV>` in `call`'s signature.**
+Every proc's `call` return type changes (24 signatures) *and* every return-value
+construction must wrap into `ProcOutcome::Return(…)` (148 + 24 = 172 sites), plus
+the trait def and the `stepping.rs` `Ok(ret_val)` arm. **≈198 mechanical edits
+across 6 files**, every one a merge-conflict surface and a place a hand-port can
+silently drop a `no_return` case.
+
+**Option B — sibling-trait pair (recommended).** Keep `call` exactly as-is
+(`-> Result<Option<RustBV>, ProcedureError>`). Add: (1) `enum ProcOutcome`,
+(2) a default `call_ex(&self, …) -> Result<ProcOutcome, …>` that wraps
+`self.call(...)` into `ProcOutcome::Return`, (3) a default
+`resume(&self, …) -> Result<ProcOutcome, …>` returning `Err(NotImplemented)`.
+The dispatcher calls `call_ex` on fresh entry / `resume` on a sentinel hit. **≈4
+new items, 0 edits to any of the 24 existing procs.** Only sub-call procs
+(`pthread_once`, future `atexit`/`qsort`) override `call_ex` + `resume`.
+
+**Conclusion:** the blast-radius ratio is ~198 : 4 in favour of Option B, with
+Option A adding no capability Option B lacks (both express `CallAndResume`
+identically; the only difference is whether the 24 return-only procs are forced
+to re-state their outcome). Option B is also strictly more SOLID — return-only
+procs never mention the sub-call vocabulary. **Recommendation stands and is now
+quantified: pick Option B (sibling-trait pair).** This addendum does not itself
+green-light S2 — the human still owns the go/no-go per the acceptance criteria;
+it only removes the one judgement call blocking that decision.
