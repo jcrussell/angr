@@ -30,10 +30,10 @@ Coverage notes:
     the ctype/fprintf *dispatch + fallback* path on a symbolic CLI-shaped path —
     nothing else in the corpus drives __ctype_b_loc at all — so a regression in
     that machinery now trips a gate, not just a unit test.
-  * getopt is deliberately absent: it has no angr SimProcedure (parity wall,
-    angr-tx7ec.5 / angr-ae54t), so it would run real glibc through the VEX
-    interpreter — ~15s under Python and divergent under Rust — for zero native
-    coverage.
+  * getopt is deliberately absent: as of angr-ae54t.6 it has a Python
+    SimProcedure but no *native* proc, so it would fall back to Python for zero
+    native coverage (the point of this fixture); before that it had no
+    SimProcedure at all and ran real glibc through the VEX interpreter (~15s).
 
 The binary is small and self-contained, so it is checked in alongside its
 source (``cli_ctype_fprintf.c``) and needs no compiler at test time.

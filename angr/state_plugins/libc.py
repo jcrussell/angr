@@ -1211,6 +1211,13 @@ class SimStateLibc(SimStatePlugin):
 
         self.errno_location = None
 
+        # getopt() cross-call cursor (see angr/procedures/libc/getopt.py).
+        # getopt_optind mirrors the guest `optind` global (1-based, glibc
+        # default 1); getopt_optchar is the libc-internal within-argument
+        # offset for grouped short options ("-abc"), not visible to the guest.
+        self.getopt_optind = 1
+        self.getopt_optchar = 0
+
     @SimStatePlugin.memo
     def copy(self, memo):  # pylint: disable=unused-argument
         o = super().copy(memo)
@@ -1234,6 +1241,8 @@ class SimStateLibc(SimStatePlugin):
         o.ctype_tolower_loc_table_ptr = self.ctype_tolower_loc_table_ptr
         o.ctype_toupper_loc_table_ptr = self.ctype_toupper_loc_table_ptr
         o.errno_location = self.errno_location
+        o.getopt_optind = self.getopt_optind
+        o.getopt_optchar = self.getopt_optchar
 
         return o
 

@@ -22,10 +22,10 @@
  * take its native fast path (a loaded-libc binary region would force the
  * Python fallback — see run_loop.rs is_in_binary).
  *
- * getopt is deliberately absent: angr ships no getopt SimProcedure (parity
- * wall, angr-tx7ec.5 / angr-ae54t), so it would run real glibc through the VEX
- * interpreter — slow under Python and divergent under Rust — for zero native
- * coverage.
+ * getopt is deliberately absent: as of angr-ae54t.6 it has a Python
+ * SimProcedure but no *native* proc, so it would fall back to Python and add
+ * zero native coverage (the point of this fixture); before that it had no
+ * SimProcedure at all and ran real glibc through the VEX interpreter.
  *
  * Build (checked-in prebuilt, so the gate needs no compiler at test time):
  *   gcc -O0 -no-pie -fno-stack-protector -o cli_ctype_fprintf cli_ctype_fprintf.c
