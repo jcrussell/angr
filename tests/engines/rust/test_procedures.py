@@ -161,6 +161,106 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_strchrnul_symbolic_finds_target(self, fauxware_project):
+        """strchrnul("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
+        non-null must return BUF_ADDR + 3 (the index of 'X')."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strchrnul"]())
+            state.memory.store(self.BUF_ADDR, b"a")
+            sym = claripy.BVS("strchrnul_q", 8)
+            state.memory.store(self.BUF_ADDR + 1, sym)
+            state.memory.store(self.BUF_ADDR + 2, b"bX\x00")
+            state.solver.add(sym != ord("X"))
+            state.solver.add(sym != 0)
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord("X")
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 3
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 3
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strchrnul_not_found_returns_nul_ptr(self, fauxware_project):
+        """strchrnul("ab\\0", 'X') must return a pointer to the terminating
+        NUL (BUF_ADDR + 2), not NULL — the defining strchrnul-vs-strchr
+        difference."""
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strchrnul"]())
+            state.memory.store(self.BUF_ADDR, b"ab\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord("X")
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_rawmemchr_symbolic_finds_target(self, fauxware_project):
+        """rawmemchr(buf, 'X') where buf[2] is symbolic constrained to 'X'
+        must return BUF_ADDR + 2 (rawmemchr has no length bound; the caller
+        guarantees the byte is present)."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["rawmemchr"]())
+            state.memory.store(self.BUF_ADDR, b"AB")
+            sym = claripy.BVS("rawmemchr_q", 8)
+            state.memory.store(self.BUF_ADDR + 2, sym)
+            state.memory.store(self.BUF_ADDR + 3, b"CD")
+            state.solver.add(sym == ord("X"))
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord("X")
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_memrchr_symbolic_finds_last(self, fauxware_project):
+        """memrchr(buf, 'X', 4) with 'X' at index 1 (concrete) and index 3
+        (symbolic, constrained to 'X') must return the LAST match,
+        BUF_ADDR + 3 — the reverse-scan that distinguishes memrchr."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["memrchr"]())
+            state.memory.store(self.BUF_ADDR, b"AXc")
+            sym = claripy.BVS("memrchr_q", 8)
+            state.memory.store(self.BUF_ADDR + 3, sym)
+            state.solver.add(sym == ord("X"))
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord("X")
+            state.regs.rdx = 4
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 3
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 3
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_stpncpy_concrete_returns_nul_ptr(self, fauxware_project):
+        """stpncpy(dst, "hi\\0", 8) must NUL-pad the 8-byte window and return a
+        pointer to the written NUL (dst + 2 = strlen("hi")), unlike strncpy
+        which returns dst. src must be concrete (native proc gate)."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["stpncpy"]())
+            state.memory.store(self.BUF_ADDR, b"hi\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = self.BUF_ADDR
+            state.regs.rdx = 8
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == dst + 2
+            assert s.solver.max(s.regs.rax) == dst + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_memcmp_symbolic_constrained_equal(self, fauxware_project):
         """memcmp(b1, b2, 4) where each buffer's middle byte is a distinct
         symbolic, constrained equal — must return 0."""
