@@ -572,6 +572,75 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def _run_ctype_predicate(self, proj, name, char, expected):
+        """Shared helper: run a 1-arg ctype proc on a 32-bit symbolic int
+        constrained to ``ord(char)`` and assert rax concretizes to ``expected``.
+        """
+        import claripy
+
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"][name]())
+            sym = claripy.BVS(f"{name}_x", 32)
+            state.solver.add(sym == ord(char))
+            state.regs.rdi = sym.zero_extend(32)
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == expected
+            assert s.solver.max(s.regs.rax) == expected
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_isspace_symbolic_returns_true_for_space(self, fauxware_project):
+        """isspace on a symbolic int constrained to ASCII ' ' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isspace", " ", 1)
+
+    def test_isspace_symbolic_returns_false_for_letter(self, fauxware_project):
+        """isspace on a symbolic int constrained to ASCII 'a' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isspace", "a", 0)
+
+    def test_isalnum_symbolic_returns_true_for_digit(self, fauxware_project):
+        """isalnum on a symbolic int constrained to ASCII '7' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isalnum", "7", 1)
+
+    def test_isupper_symbolic_returns_true_for_upper(self, fauxware_project):
+        """isupper on a symbolic int constrained to ASCII 'Q' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isupper", "Q", 1)
+
+    def test_isupper_symbolic_returns_false_for_lower(self, fauxware_project):
+        """isupper on a symbolic int constrained to ASCII 'q' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isupper", "q", 0)
+
+    def test_islower_symbolic_returns_true_for_lower(self, fauxware_project):
+        """islower on a symbolic int constrained to ASCII 'q' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "islower", "q", 1)
+
+    def test_isxdigit_symbolic_returns_true_for_hex_letter(self, fauxware_project):
+        """isxdigit on a symbolic int constrained to ASCII 'f' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isxdigit", "f", 1)
+
+    def test_isxdigit_symbolic_returns_false_for_nonhex(self, fauxware_project):
+        """isxdigit on a symbolic int constrained to ASCII 'g' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isxdigit", "g", 0)
+
+    def test_isprint_symbolic_returns_true_for_printable(self, fauxware_project):
+        """isprint on a symbolic int constrained to ASCII 'A' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isprint", "A", 1)
+
+    def test_isprint_symbolic_returns_false_for_control(self, fauxware_project):
+        """isprint on a symbolic int constrained to a tab returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isprint", "\t", 0)
+
+    def test_toupper_symbolic_shifts_lowercase(self, fauxware_project):
+        """toupper on a symbolic int constrained to 'a' returns rax = ord('A')."""
+        self._run_ctype_predicate(fauxware_project, "toupper", "a", ord("A"))
+
+    def test_toupper_symbolic_leaves_digit_unchanged(self, fauxware_project):
+        """toupper on a symbolic int constrained to '5' returns rax = ord('5')."""
+        self._run_ctype_predicate(fauxware_project, "toupper", "5", ord("5"))
+
+    def test_tolower_symbolic_shifts_uppercase(self, fauxware_project):
+        """tolower on a symbolic int constrained to 'A' returns rax = ord('a')."""
+        self._run_ctype_predicate(fauxware_project, "tolower", "A", ord("a"))
+
     def test_posix_fork_symbolic_flag_returns_both_branches(self, fauxware_project):
         """angr-q6r1: posix.fork SimProcedure dispatches correctly under the
         Rust manager and the symbolic-flag return value yields both the
