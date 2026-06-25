@@ -314,6 +314,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(ctype::NativeIsLower));
         registry.register(Arc::new(ctype::NativeIsXdigit));
         registry.register(Arc::new(ctype::NativeIsPrint));
+        registry.register(Arc::new(ctype::NativeIsAscii));
+        registry.register(Arc::new(ctype::NativeIsBlank));
+        registry.register(Arc::new(ctype::NativeIsCntrl));
+        registry.register(Arc::new(ctype::NativeIsGraph));
+        registry.register(Arc::new(ctype::NativeIsPunct));
         registry.register(Arc::new(ctype::NativeToLower));
         registry.register(Arc::new(ctype::NativeToUpper));
         // Locale ctype table accessors (return tables built by Python

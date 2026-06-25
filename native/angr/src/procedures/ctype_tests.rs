@@ -155,3 +155,62 @@ fn test_ctype_loc_uninitialized_falls_back_to_python() {
     assert!(NativeCtypeToLowerLoc.call(&mut s, &[]).is_err());
     assert!(NativeCtypeToUpperLoc.call(&mut s, &[]).is_err());
 }
+
+#[test]
+fn test_isascii() {
+    let mut s = make_state();
+    let p = NativeIsAscii;
+    assert_eq!(call_with(&p, &mut s, 0x00), 1);
+    assert_eq!(call_with(&p, &mut s, 0x7f), 1);
+    assert_eq!(call_with(&p, &mut s, b'A'), 1);
+    assert_eq!(call_with(&p, &mut s, 0x80), 0);
+    assert_eq!(call_with(&p, &mut s, 0xff), 0);
+}
+
+#[test]
+fn test_isblank() {
+    let mut s = make_state();
+    let p = NativeIsBlank;
+    assert_eq!(call_with(&p, &mut s, b' '), 1);
+    assert_eq!(call_with(&p, &mut s, b'\t'), 1);
+    assert_eq!(call_with(&p, &mut s, b'\n'), 0);
+    assert_eq!(call_with(&p, &mut s, b'a'), 0);
+}
+
+#[test]
+fn test_iscntrl() {
+    let mut s = make_state();
+    let p = NativeIsCntrl;
+    assert_eq!(call_with(&p, &mut s, 0x00), 1);
+    assert_eq!(call_with(&p, &mut s, b'\t'), 1);
+    assert_eq!(call_with(&p, &mut s, 0x1f), 1);
+    assert_eq!(call_with(&p, &mut s, 0x7f), 1);
+    assert_eq!(call_with(&p, &mut s, b' '), 0);
+    assert_eq!(call_with(&p, &mut s, b'a'), 0);
+}
+
+#[test]
+fn test_isgraph() {
+    let mut s = make_state();
+    let p = NativeIsGraph;
+    assert_eq!(call_with(&p, &mut s, b'!'), 1);
+    assert_eq!(call_with(&p, &mut s, b'~'), 1);
+    assert_eq!(call_with(&p, &mut s, b'A'), 1);
+    assert_eq!(call_with(&p, &mut s, b' '), 0);
+    assert_eq!(call_with(&p, &mut s, 0x7f), 0);
+}
+
+#[test]
+fn test_ispunct() {
+    let mut s = make_state();
+    let p = NativeIsPunct;
+    assert_eq!(call_with(&p, &mut s, b'!'), 1);
+    assert_eq!(call_with(&p, &mut s, b'/'), 1);
+    assert_eq!(call_with(&p, &mut s, b':'), 1);
+    assert_eq!(call_with(&p, &mut s, b'@'), 1);
+    assert_eq!(call_with(&p, &mut s, b'['), 1);
+    assert_eq!(call_with(&p, &mut s, b'~'), 1);
+    assert_eq!(call_with(&p, &mut s, b'a'), 0);
+    assert_eq!(call_with(&p, &mut s, b'0'), 0);
+    assert_eq!(call_with(&p, &mut s, b' '), 0);
+}

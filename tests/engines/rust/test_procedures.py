@@ -641,6 +641,46 @@ class TestSymbolicLibcProcedures:
         """tolower on a symbolic int constrained to 'A' returns rax = ord('a')."""
         self._run_ctype_predicate(fauxware_project, "tolower", "A", ord("a"))
 
+    def test_isascii_symbolic_returns_true_for_ascii(self, fauxware_project):
+        """isascii on a symbolic int constrained to 'A' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isascii", "A", 1)
+
+    def test_isascii_symbolic_returns_false_for_high_byte(self, fauxware_project):
+        """isascii on a symbolic int constrained to 0x80 returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isascii", "\x80", 0)
+
+    def test_isblank_symbolic_returns_true_for_tab(self, fauxware_project):
+        """isblank on a symbolic int constrained to a tab returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isblank", "\t", 1)
+
+    def test_isblank_symbolic_returns_false_for_newline(self, fauxware_project):
+        """isblank on a symbolic int constrained to a newline returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isblank", "\n", 0)
+
+    def test_iscntrl_symbolic_returns_true_for_del(self, fauxware_project):
+        """iscntrl on a symbolic int constrained to DEL (0x7f) returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "iscntrl", "\x7f", 1)
+
+    def test_iscntrl_symbolic_returns_false_for_space(self, fauxware_project):
+        """iscntrl on a symbolic int constrained to ' ' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "iscntrl", " ", 0)
+
+    def test_isgraph_symbolic_returns_true_for_punct(self, fauxware_project):
+        """isgraph on a symbolic int constrained to '!' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "isgraph", "!", 1)
+
+    def test_isgraph_symbolic_returns_false_for_space(self, fauxware_project):
+        """isgraph on a symbolic int constrained to ' ' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "isgraph", " ", 0)
+
+    def test_ispunct_symbolic_returns_true_for_symbol(self, fauxware_project):
+        """ispunct on a symbolic int constrained to '@' returns rax = 1."""
+        self._run_ctype_predicate(fauxware_project, "ispunct", "@", 1)
+
+    def test_ispunct_symbolic_returns_false_for_letter(self, fauxware_project):
+        """ispunct on a symbolic int constrained to 'a' returns rax = 0."""
+        self._run_ctype_predicate(fauxware_project, "ispunct", "a", 0)
+
     def test_posix_fork_symbolic_flag_returns_both_branches(self, fauxware_project):
         """angr-q6r1: posix.fork SimProcedure dispatches correctly under the
         Rust manager and the symbolic-flag return value yields both the

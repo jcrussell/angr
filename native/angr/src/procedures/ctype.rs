@@ -1,7 +1,7 @@
 //! Native character classification functions (ctype.h).
 //!
 //! isdigit, isalpha, isspace, isalnum, isupper, islower, isxdigit, isprint,
-//! tolower, toupper.
+//! isascii, isblank, iscntrl, isgraph, ispunct, tolower, toupper.
 //!
 //! Each takes a single int argument and returns 0 or non-zero.
 //! Symbolic arguments are handled by emitting a constraint-shaped result that
@@ -242,6 +242,65 @@ crate::declare_proc! {
     args = [c: bv],
     call |state| {
         ranges_predicate(state, &c, &[(0x20, 0x7e)], |c| (0x20..=0x7e).contains(&c))
+    }
+}
+
+crate::declare_proc! {
+    /// `int isascii(int c)` — nonzero if `c` is a 7-bit ASCII value [0, 127].
+    name = "isascii",
+    struct = NativeIsAscii,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(0x00, 0x7f)], |c| c <= 0x7f)
+    }
+}
+
+crate::declare_proc! {
+    /// `int isblank(int c)` — nonzero for space (0x20) or tab (0x09).
+    name = "isblank",
+    struct = NativeIsBlank,
+    args = [c: bv],
+    call |state| {
+        set_predicate(state, &c, b" \t", |c| c == b' ' || c == b'\t')
+    }
+}
+
+crate::declare_proc! {
+    /// `int iscntrl(int c)` — nonzero for control chars [0, 31] or DEL (127).
+    name = "iscntrl",
+    struct = NativeIsCntrl,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(0x00, 0x1f), (0x7f, 0x7f)], |c| c <= 0x1f || c == 0x7f)
+    }
+}
+
+crate::declare_proc! {
+    /// `int isgraph(int c)` — nonzero for printable non-space chars [33, 126].
+    name = "isgraph",
+    struct = NativeIsGraph,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(0x21, 0x7e)], |c| (0x21..=0x7e).contains(&c))
+    }
+}
+
+crate::declare_proc! {
+    /// `int ispunct(int c)` — nonzero for punctuation: [33,47], [58,64],
+    /// [91,96], [123,126] (matches Python's ispunct ranges).
+    name = "ispunct",
+    struct = NativeIsPunct,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(
+            state,
+            &c,
+            &[(0x21, 0x2f), (0x3a, 0x40), (0x5b, 0x60), (0x7b, 0x7e)],
+            |c| (0x21..=0x2f).contains(&c)
+                || (0x3a..=0x40).contains(&c)
+                || (0x5b..=0x60).contains(&c)
+                || (0x7b..=0x7e).contains(&c),
+        )
     }
 }
 
