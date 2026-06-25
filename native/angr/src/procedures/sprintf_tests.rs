@@ -431,6 +431,55 @@ fn test_vsnprintf_zero_size_returns_zero() {
     );
 }
 
+// --- vsprintf: raw format write, no %-substitution (va_list unmodeled) ---
+
+#[test]
+fn test_vsprintf_writes_raw_string() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+
+    let result = NativeVsprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // str
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0, 64),      // va_list (ignored)
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(11));
+    for (i, &expected) in b"hello world\x00".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64().unwrap() as u8, expected);
+    }
+}
+
+#[test]
+fn test_vsprintf_no_substitution() {
+    // A %d format must be copied VERBATIM (no va_list read), unlike NativeSprintf.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
+
+    let result = NativeVsprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64), // va_list (ignored — NOT a %d arg)
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(6)); // "val=%d"
+    for (i, &expected) in b"val=%d\x00".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64().unwrap() as u8, expected);
+    }
+}
+
 #[test]
 fn test_sprintf_percent_n_falls_back() {
     // %n must defer to Python (Err), NOT write the char count natively.

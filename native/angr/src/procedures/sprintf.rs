@@ -511,6 +511,48 @@ impl NativeSimProcedure for NativeVsnprintf {
     }
 }
 
+/// Native vsprintf implementation.
+///
+/// ```c
+/// int vsprintf(char *str, const char *format, va_list ap);
+/// ```
+///
+/// Like the `vprintf = printf` / `vfprintf = fprintf` aliases (printf.rs), this
+/// deliberately does **not** %-substitute: reading the `va_list` is arch-specific
+/// (x86-64 SysV `reg_save_area`) and unmodeled by angr, so a "real" formatter via
+/// the [`format_string`] core would explore divergent symbolic states (see bd
+/// memory `avoid-vsnprintf-real-formatting`). Instead it copies the RAW format
+/// string into `str` (NUL-terminated) and returns its length — matching Python
+/// `vsprintf` (strcpy + strlen). Falls back to Python on a symbolic dest/format
+/// *address* or a symbolic format *byte* via `read_string`/`extract_concrete_arg`.
+pub struct NativeVsprintf;
+
+impl NativeSimProcedure for NativeVsprintf {
+    fn name(&self) -> &'static str {
+        "vsprintf"
+    }
+
+    fn num_args(&self) -> usize {
+        3 // str + format + va_list (va_list unused by the raw-write impl)
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let dest = extract_concrete_arg(&args[0], "str")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
+
+        // Raw format string, no %-substitution (va_list is unmodeled).
+        let fmt = read_string(state, fmt_addr)?;
+        write_cstr(state, dest, &fmt)?;
+
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(fmt.len() as u128, bits)))
+    }
+}
+
 #[cfg(test)]
 #[path = "sprintf_tests.rs"]
 mod sprintf_tests;
