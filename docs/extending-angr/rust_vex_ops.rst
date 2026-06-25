@@ -92,8 +92,8 @@ Worked example 1 — arithmetic: ``Add``
 The minimum-friction case: a width-parameterized binary op whose
 implementation already exists on ``RustBV``.
 
-**ir.rs** — the enum variant. ``Add`` lives in the ``IROp`` enum at
-``native/angr/src/vex/ir.rs`` (search ``pub enum IROp`` then the
+**ir/ops_def.rs** — the enum variant. ``Add`` lives in the ``IROp`` enum at
+``native/angr/src/vex/ir/ops_def.rs`` (search ``pub enum IROp`` then the
 ``// Arithmetic`` group):
 
 .. code-block:: rust
@@ -234,7 +234,7 @@ Worked example 3 — memory read: ``IRExpr::Load``
 ------------------------------------------------
 
 ``Load`` is not an ``IROp`` — it's an ``IRExpr`` variant in
-``vex/ir.rs``, and it lives in the **interpreter** layer rather than
+``vex/ir/ast.rs``, and it lives in the **interpreter** layer rather than
 ``ops.rs``. This is a frequent place contributors go looking in the
 wrong file. The reason is that loads need access to the state's memory
 plane, which ``VEXOps`` deliberately does not have (its inputs are
@@ -266,7 +266,7 @@ Worked example 4 — memory write: ``IRStmt::Store``
 --------------------------------------------------
 
 Same story as ``Load`` but on the statement side (search
-``IRStmt::Store {`` in ``vex/ir.rs``):
+``IRStmt::Store {`` in ``vex/ir/ast.rs``):
 
 .. code-block:: rust
 
