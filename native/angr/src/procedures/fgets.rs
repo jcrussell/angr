@@ -76,6 +76,7 @@ crate::declare_proc! {
     name = "fgets",
     struct = NativeFgets,
     args = [buf: concrete, size: concrete, stream: concrete],
+    aliases = ["fgets_unlocked"],
     call |state| {
         let bits = state.arch().bits();
         if size == 0 {

@@ -46,6 +46,7 @@ fn test_stdio_unlocked_aliases_dispatch() {
         ("fputs", "fputs_unlocked"),
         ("feof", "feof_unlocked"),
         ("fflush", "fflush_unlocked"),
+        ("fgets", "fgets_unlocked"),
     ] {
         assert!(registry.has_native(base), "{base} should be native");
         assert!(
