@@ -309,3 +309,130 @@ fn test_memchr_symbolic_target_solver_evaluation() {
     assert_eq!(ctx.min(&result, false), Some(0x1002));
     assert_eq!(ctx.max(&result, false), Some(0x1002));
 }
+
+#[test]
+fn test_strchrnul_found() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+    let p = NativeStrchrnul;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'l' as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1002));
+}
+
+#[test]
+fn test_strchrnul_not_found_returns_nul_ptr() {
+    // strchrnul returns a pointer to the terminating NUL (not NULL).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
+    let p = NativeStrchrnul;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'z' as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1002)); // address of the NUL
+}
+
+#[test]
+fn test_rawmemchr_found() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"\x01\x02\x03\x04", Permission::RWX);
+    let p = NativeRawmemchr;
+    let result = p
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(3, 64)],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1002));
+}
+
+#[test]
+fn test_rawmemchr_finds_nul() {
+    // Common use: rawmemchr(s, '\0') == s + strlen(s).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
+    let p = NativeRawmemchr;
+    let result = p
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0u128, 64)],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1003));
+}
+
+#[test]
+fn test_memrchr_found_last() {
+    // memrchr returns the LAST occurrence in the first n bytes.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a_b_c", Permission::RWX);
+    let p = NativeMemrchr;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'_' as u128, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1003)); // second '_'
+}
+
+#[test]
+fn test_memrchr_not_found() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"abcde", Permission::RWX);
+    let p = NativeMemrchr;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'z' as u128, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0)); // NULL
+}
+
+#[test]
+fn test_memrchr_ignores_nul_bytes_in_window() {
+    // Unlike strrchr, memrchr scans the full n bytes regardless of NULs.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"x\x00x\x00", Permission::RWX);
+    let p = NativeMemrchr;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'x' as u128, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x1002)); // second 'x', past a NUL
+}

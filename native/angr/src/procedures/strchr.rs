@@ -26,11 +26,16 @@ const MAX_SCAN: usize = 4096;
 /// `stop_at_null` controls the strchr-only ITE arm: if a byte is the null
 /// terminator and didn't match the target, the result is NULL and no
 /// further (later) match is considered.
+///
+/// `nul_returns_addr` (strchrnul) makes the null-terminator arm yield the
+/// address of the terminator instead of NULL, so an absent target returns a
+/// pointer to the trailing NUL rather than NULL.
 fn build_ite_chain(
     byte_loads: &[(u64, RustBV)],
     target_byte: &RustBV,
     arch_bits: u32,
     stop_at_null: bool,
+    nul_returns_addr: bool,
     ctx: &SymContext,
 ) -> RustBV {
     let null_addr = RustBV::concrete(0u128, arch_bits);
@@ -40,9 +45,15 @@ fn build_ite_chain(
         let addr_bv = RustBV::concrete(*byte_addr as u128, arch_bits);
         let match_cond = byte_val.eq(target_byte, ctx);
         if stop_at_null {
-            // result = ITE(byte == target, addr, ITE(byte == 0, NULL, result_next))
+            // result = ITE(byte == target, addr, ITE(byte == 0, <nul>, result_next))
+            // where <nul> is the terminator address (strchrnul) or NULL (strchr).
             let null_cond = byte_val.eq(&zero_byte, ctx);
-            let inner = null_cond.ite(&null_addr, &result, ctx);
+            let nul_result = if nul_returns_addr {
+                &addr_bv
+            } else {
+                &null_addr
+            };
+            let inner = null_cond.ite(nul_result, &result, ctx);
             result = match_cond.ite(&addr_bv, &inner, ctx);
         } else {
             // result = ITE(byte == target, addr, result_next)
@@ -63,6 +74,7 @@ fn scan_for_byte(
     target_arg: &RustBV,
     max_scan: u64,
     stop_at_null: bool,
+    nul_returns_addr: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let arch_bits = state.arch().bits();
 
@@ -91,8 +103,10 @@ fn scan_for_byte(
                             ConcreteStep::Stop(RustBV::concrete(byte_addr as u128, arch_bits))
                         } else if stop_at_null && byte == 0 {
                             // Null terminator hit before target — strchr returns
-                            // NULL. (target == 0 is captured by the match above.)
-                            ConcreteStep::Stop(RustBV::concrete(0u128, arch_bits))
+                            // NULL; strchrnul returns the terminator address.
+                            // (target == 0 is captured by the match above.)
+                            let nul_addr = if nul_returns_addr { byte_addr } else { 0 };
+                            ConcreteStep::Stop(RustBV::concrete(nul_addr as u128, arch_bits))
                         } else {
                             // Concrete non-match — no contribution, skip.
                             ConcreteStep::Continue
@@ -122,7 +136,14 @@ fn scan_for_byte(
                     .collect();
                 let ctx = state.solver().borrow();
                 let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
-                build_ite_chain(&byte_loads, &target_byte_bv, arch_bits, stop_at_null, &ctx)
+                build_ite_chain(
+                    &byte_loads,
+                    &target_byte_bv,
+                    arch_bits,
+                    stop_at_null,
+                    nul_returns_addr,
+                    &ctx,
+                )
             }
         }));
     }
@@ -147,7 +168,14 @@ fn scan_for_byte(
 
     let ctx = state.solver().borrow();
     let target_byte_bv = target_arg.extract(7, 0, &ctx);
-    let chain = build_ite_chain(&byte_loads, &target_byte_bv, arch_bits, stop_at_null, &ctx);
+    let chain = build_ite_chain(
+        &byte_loads,
+        &target_byte_bv,
+        arch_bits,
+        stop_at_null,
+        nul_returns_addr,
+        &ctx,
+    );
     Ok(Some(chain))
 }
 
@@ -169,6 +197,29 @@ crate::declare_proc! {
             &c,
             MAX_SCAN as u64,
             /*stop_at_null=*/ true,
+            /*nul_returns_addr=*/ false,
+        )
+    }
+}
+
+crate::declare_proc! {
+    /// strchrnul: like strchr, but return a pointer to the terminating NUL
+    /// (rather than NULL) when the character is not found.
+    ///
+    /// ```c
+    /// char *strchrnul(const char *s, int c);
+    /// ```
+    name = "strchrnul",
+    struct = NativeStrchrnul,
+    args = [addr: concrete, c: bv],
+    call |state| {
+        scan_for_byte(
+            state,
+            addr,
+            &c,
+            MAX_SCAN as u64,
+            /*stop_at_null=*/ true,
+            /*nul_returns_addr=*/ true,
         )
     }
 }
@@ -194,26 +245,33 @@ crate::declare_proc! {
     struct = NativeStrrchr,
     args = [addr: concrete, c: bv],
     call |state| {
-        scan_for_byte_last(state, addr, &c, MAX_SCAN as u64)
+        scan_for_byte_last(state, addr, &c, MAX_SCAN as u64, /*stop_at_null=*/ true)
     }
 }
 
-/// Scan for the LAST match of `target_arg` in the null-terminated buffer at
-/// `addr`. Concrete fast path tracks the last hit; on the first symbolic
-/// byte we collect remaining loads up to (and including) the concrete null
-/// and build an ITE chain.
+/// Scan for the LAST match of `target_arg` at `addr`. Concrete fast path
+/// tracks the last hit; on the first symbolic byte we collect remaining loads
+/// and build a forward ITE chain.
+///
+/// `stop_at_null` (strrchr) treats a concrete null as end-of-string: the scan
+/// stops there and `max_scan` exhaustion is an error (no terminator found, so
+/// we defer to Python). When false (memrchr) the full `max_scan` window is
+/// scanned regardless of null bytes, and exhaustion returns the last match (or
+/// NULL).
 fn scan_for_byte_last(
     state: &mut RustSimState,
     addr: u64,
     target_arg: &RustBV,
     max_scan: u64,
+    stop_at_null: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let arch_bits = state.arch().bits();
     let null_addr = RustBV::concrete(0u128, arch_bits);
 
-    // Stop collecting once a concrete null is seen (end of string).
-    let collect_stop =
-        |byte_val: &RustBV| byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+    // Stop collecting once a concrete null is seen (strrchr end-of-string only).
+    let collect_stop = |byte_val: &RustBV| {
+        stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false)
+    };
 
     if let Some(target) = target_arg.as_u64() {
         let target_byte = target as u8;
@@ -230,7 +288,7 @@ fn scan_for_byte_last(
                         if byte == target_byte {
                             last_match = Some(byte_addr);
                         }
-                        if byte == 0 {
+                        if stop_at_null && byte == 0 {
                             // End of string in concrete mode — return last match
                             // (or NULL if none).
                             let result_addr = last_match.unwrap_or(0);
@@ -248,9 +306,14 @@ fn scan_for_byte_last(
 
         return Ok(Some(match result {
             ScanResult::Stopped(addr_bv) => addr_bv,
-            // Ran past max without hitting null.
             ScanResult::Exhausted => {
-                return Err(ProcedureError::MaxIterations(max_scan as usize));
+                // strrchr: ran past max without hitting a null terminator —
+                // defer to Python. memrchr: the n-window is exhausted, so the
+                // last concrete match (or NULL) is the answer.
+                if stop_at_null {
+                    return Err(ProcedureError::MaxIterations(max_scan as usize));
+                }
+                RustBV::concrete(last_match.unwrap_or(0) as u128, arch_bits)
             }
             ScanResult::Collected(byte_loads) => {
                 let byte_loads: Vec<(u64, RustBV)> = byte_loads
@@ -344,7 +407,47 @@ crate::declare_proc! {
         let scan_len = n.min(MAX_SCAN as u64);
         scan_for_byte(
             state, addr, &c, scan_len, /*stop_at_null=*/ false,
+            /*nul_returns_addr=*/ false,
         )
+    }
+}
+
+crate::declare_proc! {
+    /// rawmemchr: like memchr, but without a length bound — the caller
+    /// guarantees the byte is present (UB otherwise).
+    ///
+    /// ```c
+    /// void *rawmemchr(const void *s, int c);
+    /// ```
+    ///
+    /// We scan up to MAX_SCAN bytes; if the byte is not found we return NULL
+    /// (the UB case), matching the non-found behavior of the bounded memchr.
+    name = "rawmemchr",
+    struct = NativeRawmemchr,
+    args = [addr: concrete, c: bv],
+    call |state| {
+        scan_for_byte(
+            state, addr, &c, MAX_SCAN as u64, /*stop_at_null=*/ false,
+            /*nul_returns_addr=*/ false,
+        )
+    }
+}
+
+crate::declare_proc! {
+    /// memrchr: find the LAST occurrence of a byte in the first n bytes.
+    ///
+    /// ```c
+    /// void *memrchr(const void *s, int c, size_t n);
+    /// ```
+    ///
+    /// Returns pointer to the last occurrence of c in the first n bytes of s,
+    /// or NULL if not found. `n` must be concrete to bound the scan.
+    name = "memrchr",
+    struct = NativeMemrchr,
+    args = [addr: concrete, c: bv, n: concrete],
+    call |state| {
+        let scan_len = n.min(MAX_SCAN as u64);
+        scan_for_byte_last(state, addr, &c, scan_len, /*stop_at_null=*/ false)
     }
 }
 

@@ -323,8 +323,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(ctype::NativeCtypeToUpperLoc));
         // String/memory search
         registry.register(Arc::new(strchr::NativeStrchr));
+        registry.register(Arc::new(strchr::NativeStrchrnul));
         registry.register(Arc::new(strchr::NativeMemchr));
+        registry.register(Arc::new(strchr::NativeRawmemchr));
         registry.register(Arc::new(strchr::NativeStrrchr));
+        registry.register(Arc::new(strchr::NativeMemrchr));
         // Byte-set search (angr-f16h.5)
         registry.register(Arc::new(strset::NativeStrpbrk));
         registry.register(Arc::new(strset::NativeStrspn));
