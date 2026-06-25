@@ -70,3 +70,24 @@ for name in ("aarch64eb", "aarch64be", "arm64eb", "arm64be"):
 
 assert archinfo.arch_from_id("aarch64").memory_endness == Endness.LE
 ```
+
+### `angr_examples_xmllint_solve_symex.patch` + `angr_examples_xmllint_solve_symex_PR.md`
+
+Target: `angr/angr-examples` (new file `examples/xmllint/solve_symex.py`).
+
+Adds a symbolic-execution harness for xmllint as a sibling of the
+existing fuzzer `examples/xmllint/solve.py`: `use_sim_procedures=True`,
+16 symbolic stdin bytes, bounded `explore(find=getenv)`. Reaches
+`getenv` single-state in ~185 steps (no explosion). The `getenv` find
+target is deliberate — a parser callsite (`fread`/`xmlReadFd`) is not
+viable as plain symex on either engine (constraint/state explosion);
+see the PR body and bd bead `angr-75mc.1` for the rationale.
+
+Downstream blocker: `bd recall angr-75mc` (xmllint real-binary bench).
+Unblock sequence: file PR → upstream merge → add `xmllint` (or
+`xmllint_symex`) entry to `tests/benchmarks/baseline_timings.json`
+sourcing this harness → drop the `human` label and close `angr-75mc`.
+The in-repo synthetic equivalent (`tests/benchmarks/synthetic_examples/
+xmllint_getenv/solve.py`) already exists and resolves the binary via
+`ANGR_EXAMPLES_DIR`; this PR upstreams the canonical copy next to the
+binary.

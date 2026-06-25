@@ -1,0 +1,109 @@
+diff --git a/examples/xmllint/solve_symex.py b/examples/xmllint/solve_symex.py
+new file mode 100644
+index 0000000..8530faa
+--- /dev/null
++++ b/examples/xmllint/solve_symex.py
+@@ -0,0 +1,103 @@
++#!/usr/bin/env python3
++"""Symbolic-execution harness for xmllint (sibling of the fuzzer ``solve.py``).
++
++``solve.py`` drives xmllint with the *fuzzer* (concrete execution); this script
++is the *symbolic-execution* counterpart. It is the path-(b) "sim-proc harness"
++chosen for the angr Rust-symex benchmark corpus (downstream bd bead
++``angr-75mc``): a real-world, libc-heavy command-line utility used as a symbolic
++workload instead of yet another CTF crackme.
++
++What it does
++------------
++With ``use_sim_procedures=True`` libc startup is cheap (angr's libc SimProcedure
++stubs replace the real glibc init), and 16 symbolic stdin bytes are carried
++through the deterministic CLI-option parsing. Symbolic execution stays
++**single-state** and reaches ``getenv`` (resolved in the loaded libc) in ~185
++steps, well inside a few hundred MB — no state explosion.
++
++Why ``getenv`` and not a parser callsite
++----------------------------------------
++``getenv`` sits on the deterministic startup path *before* the symbolic stdin is
++consumed, so the input is carried but not yet branched on — a clean mechanics
++smoke. Targeting a parser callsite (``fread`` / ``xmlReadFd`` / ``xmlParseDocument``)
++instead is **not viable as plain symex on either engine**: with
++``use_sim_procedures=True`` the stubbed libc returns unconstrained symbolic
++values that propagate into pointers and branch conditions, producing a
++constraint/state explosion (Z3 out-of-memory under the Python engine; symbolic
++pointer concretization under the Rust engine). That deep target was empirically
++ruled out — concrete XML on stdin explodes identically, so it is not a
++symbolic-input problem. The fuzzer (``solve.py``, concrete execution) is the only
++driver that reaches xmllint's parser. ``getenv`` is therefore the deliberate,
++de-risked find target for a *symbolic* xmllint workload.
++
++Run it
++------
++    python solve_symex.py
++    python -m unittest solve_symex
++"""
++
++from __future__ import annotations
++
++import os
++import unittest
++
++import claripy
++
++import angr
++from angr import sim_options as so
++
++# Hard backstop on total steps. The probe reached getenv in ~185 steps on a
++# single state; this cap protects the run from any unexpected fork storm deeper
++# in the option parser.
++STEP_BUDGET = 400
++
++
++def main(verbose=True):
++    target = os.path.join(os.path.dirname(__file__), "xmllint_bin")
++
++    # xmllint CLI: read XML from stdin ('-'), quiet/no-network/recover/entities.
++    xmllint_args = [target, "--noout", "--nonet", "--recover", "--noent", "-"]
++
++    # use_sim_procedures=True keeps libc startup cheap and gives angr's libc
++    # SimProcedures the symbolic workload (the path-(b) "sim-proc harness").
++    project = angr.Project(target, auto_load_libs=True, use_sim_procedures=True)
++
++    # 16 symbolic stdin bytes: carried through startup but not yet branched on
++    # when getenv is reached, so the run stays single-state.
++    stdin = claripy.BVS("stdin", 16 * 8)
++    state = project.factory.entry_state(
++        args=xmllint_args,
++        stdin=stdin,
++        add_options={
++            so.ZERO_FILL_UNCONSTRAINED_MEMORY,
++            so.ZERO_FILL_UNCONSTRAINED_REGISTERS,
++        },
++    )
++
++    # With use_sim_procedures=True angr hooks getenv inside libc and redirects
++    # the call straight to the hook, bypassing the local PLT stub — so target
++    # the resolved libc symbol address (where the SimProcedure lives), not the
++    # main-object PLT entry (which is never executed).
++    getenv_sym = project.loader.find_symbol("getenv")
++    assert getenv_sym is not None, "getenv symbol not found in loaded libc"
++    getenv_addr = getenv_sym.rebased_addr
++
++    simgr = project.factory.simulation_manager(state)
++    # Bounded explore: stop at the first state to reach getenv, or after the
++    # step budget is exhausted.
++    simgr.explore(find=getenv_addr, num_find=1, n=STEP_BUDGET)
++
++    if verbose:
++        print(f"xmllint: reached getenv -> {len(simgr.found)} found state(s)")
++        print(f"stashes: {simgr}")
++    return simgr
++
++
++class TestXmllintSymex(unittest.TestCase):
++    def test(self):
++        simgr = main(verbose=False)
++        self.assertTrue(simgr.found, "did not reach getenv within the step budget")
++
++
++if __name__ == "__main__":
++    main()
