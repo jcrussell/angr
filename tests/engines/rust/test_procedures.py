@@ -289,6 +289,40 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_strstr_finds_substring(self, fauxware_project):
+        """strstr("abcdef\\0", "cde\\0") must return BUF_ADDR + 2 — a pointer to
+        the first occurrence of the needle inside the haystack. Concrete strings
+        keep the Python strstr SimProc on a single path (it forks on symbolic
+        input)."""
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strstr"]())
+            state.memory.store(self.BUF_ADDR, b"abcdef\x00")
+            state.memory.store(self.BUF_ADDR + 0x10, b"cde\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strstr_not_found_returns_null(self, fauxware_project):
+        """strstr("abc\\0", "xyz\\0") must return NULL (0) — the needle is absent
+        from the haystack."""
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["strstr"]())
+            state.memory.store(self.BUF_ADDR, b"abc\x00")
+            state.memory.store(self.BUF_ADDR + 0x10, b"xyz\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_stpncpy_concrete_returns_nul_ptr(self, fauxware_project):
         """stpncpy(dst, "hi\\0", 8) must NUL-pad the 8-byte window and return a
         pointer to the written NUL (dst + 2 = strlen("hi")), unlike strncpy
