@@ -33,7 +33,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   getopt_optind, getopt_optchar,
+///   getopt_optind, getopt_optchar, getopt_extern,
 ///   stdin_symbols, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -71,6 +71,7 @@ pub struct RustSimStateSnapshot {
     pub mmap_base: u64,
     pub getopt_optind: u32,
     pub getopt_optchar: u32,
+    pub getopt_extern: crate::state::GetoptExternAddrs,
     pub ctype_loc: crate::state::CtypeLocPtrs,
     pub stdin_symbols: Vec<(String, u32)>,
     pub call_stack: Vec<CallStackEntry>,
@@ -147,6 +148,7 @@ impl RustSimState {
             mmap_base: self.mmap_base,
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
+            getopt_extern: self.getopt_extern,
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -198,6 +200,7 @@ impl RustSimState {
             mmap_base: snap.mmap_base,
             getopt_optind: snap.getopt_optind,
             getopt_optchar: snap.getopt_optchar,
+            getopt_extern: snap.getopt_extern,
             ctype_loc: snap.ctype_loc,
             stdin_symbols: snap.stdin_symbols,
             call_stack: snap.call_stack,

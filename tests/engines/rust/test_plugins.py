@@ -426,6 +426,35 @@ class TestAdversarial:
         for i, f in enumerate(forks):
             assert f.get_register("rax") == i
 
+    def test_getopt_extern_addr_pushdown_and_fork(self):
+        """getopt(3) extern-global addresses (optind/optarg/optopt) round-trip
+        through the Python->native init-push channel (bhk0a.1).
+
+        The native getopt proc (bhk0a.2) writes the cursor/optarg/optopt back
+        to these guest addresses; rust_manager resolves them once via
+        loader.find_symbol and pushes them here. Defaults are None (proc defers
+        to Python); pushed values are carried across fork (CoW-isolated).
+        """
+        state = RustSimState("amd64")
+        # Unset by default -> native proc defers to Python.
+        assert state.getopt_optind_addr is None
+        assert state.getopt_optarg_addr is None
+        assert state.getopt_optopt_addr is None
+
+        state.getopt_optind_addr = 0x601000
+        state.getopt_optarg_addr = 0x601008
+        state.getopt_optopt_addr = 0x601010
+        assert state.getopt_optind_addr == 0x601000
+        assert state.getopt_optarg_addr == 0x601008
+        assert state.getopt_optopt_addr == 0x601010
+
+        child = state.fork()
+        assert child.getopt_optind_addr == 0x601000
+        # Mutating the child must not disturb the parent (CoW isolation).
+        child.getopt_optind_addr = 0x700000
+        assert child.getopt_optind_addr == 0x700000
+        assert state.getopt_optind_addr == 0x601000
+
     # --- Solver edge cases ---
 
     def test_solver_empty_constraints(self):

@@ -203,6 +203,23 @@ pub struct CtypeLocPtrs {
     pub toupper: Option<u64>,
 }
 
+/// Guest-memory addresses of the glibc getopt(3) extern globals `optind`,
+/// `optarg`, and `optopt`, resolved Python-side once via
+/// `proj.loader.find_symbol(name).rebased_addr` and pushed into Rust at
+/// seed-state creation (mirrors the [`CtypeLocPtrs`] init-push channel).
+///
+/// The native getopt proc (bead angr-bhk0a.2) writes the updated cursor /
+/// optarg / optopt back to these guest addresses so the program reads them
+/// like real getopt would. `None` means the symbol was absent (statically
+/// linked away, or a blank_state with no loader pass), in which case the
+/// native proc defers to Python.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct GetoptExternAddrs {
+    pub optind: Option<u64>,
+    pub optarg: Option<u64>,
+    pub optopt: Option<u64>,
+}
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -289,6 +306,11 @@ pub struct RustSimState {
     /// `optchar`, for bundled short options like `-abc`). Mirrors
     /// `state.libc.getopt_optchar`. Default 0. See `getopt_optind`.
     getopt_optchar: u32,
+    /// Guest-memory addresses of the glibc getopt(3) extern globals
+    /// (`optind`/`optarg`/`optopt`), pushed Python-side at init. See
+    /// [`GetoptExternAddrs`]. Carried across fork + snapshot. Consumed by the
+    /// native getopt proc (bead angr-bhk0a.2).
+    getopt_extern: GetoptExternAddrs,
     /// Pointers to the three glibc locale ctype lookup tables. Built once by
     /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
     /// memory, see `__ctype_b_loc.py` et al.) and pushed into Rust at
@@ -479,6 +501,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             getopt_optind: 1,
             getopt_optchar: 0,
+            getopt_extern: GetoptExternAddrs::default(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -529,6 +552,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             getopt_optind: 1,
             getopt_optchar: 0,
+            getopt_extern: GetoptExternAddrs::default(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -589,6 +613,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             getopt_optind: 1,
             getopt_optchar: 0,
+            getopt_extern: GetoptExternAddrs::default(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -818,6 +843,18 @@ impl RustSimState {
     /// init pass into Rust at seed-state creation.
     pub fn set_ctype_loc(&mut self, ptrs: CtypeLocPtrs) {
         self.ctype_loc = ptrs;
+    }
+
+    /// Guest addresses of the getopt(3) extern globals (see
+    /// [`GetoptExternAddrs`]). Consumed by the native getopt proc (bhk0a.2).
+    pub fn getopt_extern(&self) -> GetoptExternAddrs {
+        self.getopt_extern
+    }
+
+    /// Push the loader-resolved getopt(3) extern-global addresses from Python
+    /// into Rust at seed-state creation.
+    pub fn set_getopt_extern(&mut self, addrs: GetoptExternAddrs) {
+        self.getopt_extern = addrs;
     }
 
     /// CGC `state.cgc.allocation_base` — current high-water bump pointer
@@ -1715,6 +1752,55 @@ impl PyRustSimState {
         let mut ptrs = self.inner.ctype_loc();
         ptrs.toupper = Some(addr);
         self.inner.set_ctype_loc(ptrs);
+    }
+
+    /// Push the loader-resolved guest address of the getopt(3) `optind` extern
+    /// global into Rust so the native getopt proc can write the cursor back to
+    /// guest memory. Mirrors the ctype table-ptr init-push channel.
+    #[setter]
+    pub fn set_getopt_optind_addr(&mut self, addr: u64) {
+        let mut addrs = self.inner.getopt_extern();
+        addrs.optind = Some(addr);
+        self.inner.set_getopt_extern(addrs);
+    }
+
+    /// Push the loader-resolved guest address of the getopt(3) `optarg` extern
+    /// global into Rust. See `set_getopt_optind_addr`.
+    #[setter]
+    pub fn set_getopt_optarg_addr(&mut self, addr: u64) {
+        let mut addrs = self.inner.getopt_extern();
+        addrs.optarg = Some(addr);
+        self.inner.set_getopt_extern(addrs);
+    }
+
+    /// Push the loader-resolved guest address of the getopt(3) `optopt` extern
+    /// global into Rust. See `set_getopt_optind_addr`.
+    #[setter]
+    pub fn set_getopt_optopt_addr(&mut self, addr: u64) {
+        let mut addrs = self.inner.getopt_extern();
+        addrs.optopt = Some(addr);
+        self.inner.set_getopt_extern(addrs);
+    }
+
+    /// Read back the pushed getopt(3) `optind` extern address (`None` until
+    /// the init-push runs). Exposed for round-trip verification.
+    #[getter]
+    pub fn get_getopt_optind_addr(&self) -> Option<u64> {
+        self.inner.getopt_extern().optind
+    }
+
+    /// Read back the pushed getopt(3) `optarg` extern address. See
+    /// `get_getopt_optind_addr`.
+    #[getter]
+    pub fn get_getopt_optarg_addr(&self) -> Option<u64> {
+        self.inner.getopt_extern().optarg
+    }
+
+    /// Read back the pushed getopt(3) `optopt` extern address. See
+    /// `get_getopt_optind_addr`.
+    #[getter]
+    pub fn get_getopt_optopt_addr(&self) -> Option<u64> {
+        self.inner.getopt_extern().optopt
     }
 
     /// Register a symlink so native `readlink` / `readlinkat` resolve

@@ -3385,6 +3385,31 @@ class RustExplorationManager(
             # native __ctype_*_loc procs will defer to Python. Debug-logs.
             l.debug("libc ctype table-ptr init push failed: %s", e)
 
+        # Push the loader-resolved guest addresses of the getopt(3) extern
+        # globals (optind/optarg/optopt) so the native getopt proc (bead
+        # angr-bhk0a.2) can write the cursor/optarg/optopt back to guest
+        # memory the way real getopt does. Python is the only side with
+        # loader.find_symbol, so this is a Python->native init-push (mirrors
+        # the ctype table-ptr channel above, not the Rust->Python posix_brk
+        # sync). Each symbol may be absent (statically linked away, or a
+        # blank_state with no real loader pass) — then we skip it and the
+        # native proc defers to Python for that global.
+        try:
+            loader = getattr(self._project, "loader", None)
+            if loader is not None:
+                for name, setter in (
+                    ("optind", "getopt_optind_addr"),
+                    ("optarg", "getopt_optarg_addr"),
+                    ("optopt", "getopt_optopt_addr"),
+                ):
+                    sym = loader.find_symbol(name)
+                    if sym is not None:
+                        setattr(rust_state, setter, sym.rebased_addr)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: getopt extern-addr push failed; the
+            # native getopt proc will defer to Python. Debug-logs.
+            l.debug("getopt extern-addr init push failed: %s", e)
+
         # Sync registers (use precomputed dict from disk cache when available)
         _t_reg = time.perf_counter_ns()
         precomputed = self._precomputed_regs

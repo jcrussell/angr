@@ -51,6 +51,33 @@ fn test_getopt_cursor_default_and_fork_isolation() {
 }
 
 #[test]
+fn test_getopt_extern_addrs_default_and_fork_isolation() {
+    // bhk0a.1: the loader-resolved getopt(3) extern-global addresses
+    // (optind/optarg/optopt) default to None (no init-push yet -> native proc
+    // defers to Python) and are copied (not shared) across fork.
+    let mut parent = RustSimState::new("amd64").unwrap();
+    let d = parent.getopt_extern();
+    assert_eq!((d.optind, d.optarg, d.optopt), (None, None, None));
+
+    parent.set_getopt_extern(GetoptExternAddrs {
+        optind: Some(0x601000),
+        optarg: Some(0x601008),
+        optopt: Some(0x601010),
+    });
+    let mut child = parent.fork();
+    let c = child.getopt_extern();
+    assert_eq!(
+        (c.optind, c.optarg, c.optopt),
+        (Some(0x601000), Some(0x601008), Some(0x601010))
+    );
+
+    // CoW isolation: mutating the child must not disturb the parent.
+    child.set_getopt_extern(GetoptExternAddrs::default());
+    assert_eq!(child.getopt_extern().optind, None);
+    assert_eq!(parent.getopt_extern().optind, Some(0x601000));
+}
+
+#[test]
 fn test_set_detailed_history_honors_cap() {
     // set_detailed_history (called once per step from interpreter results)
     // must drain the oldest entries when the incoming buffer exceeds the
@@ -498,6 +525,11 @@ fn build_populated_state() -> RustSimState {
     s.set_posix_brk(0x1B0_4000);
     s.set_mmap_base(0xC100_8000);
     s.set_getopt_cursor(7, 3);
+    s.set_getopt_extern(GetoptExternAddrs {
+        optind: Some(0x602000),
+        optarg: Some(0x602008),
+        optopt: Some(0x602010),
+    });
 
     // Solver constraints — `rbx > 10` must hold after restore.
     let cmp = {
@@ -530,6 +562,12 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.posix_brk(), orig.posix_brk());
     assert_eq!(restored.mmap_base(), orig.mmap_base());
     assert_eq!(restored.getopt_cursor(), orig.getopt_cursor());
+    {
+        let (ro, oo) = (restored.getopt_extern(), orig.getopt_extern());
+        assert_eq!(ro.optind, oo.optind);
+        assert_eq!(ro.optarg, oo.optarg);
+        assert_eq!(ro.optopt, oo.optopt);
+    }
     assert_eq!(restored.no_ip_concretization(), orig.no_ip_concretization());
     assert_eq!(restored.keep_ip_symbolic(), orig.keep_ip_symbolic());
     assert_eq!(
