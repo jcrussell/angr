@@ -93,6 +93,7 @@ pub mod fortify_str;
 pub mod fread;
 pub mod getenv;
 pub mod getid;
+pub mod getopt;
 pub mod libc_start_main;
 pub mod malloc;
 pub mod mem_common;
@@ -396,6 +397,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(scanf::NativeIsoc99Fscanf));
         // Environment variable access
         registry.register(Arc::new(getenv::NativeGetenv));
+        registry.register(Arc::new(getopt::NativeGetopt));
         registry.register(Arc::new(getenv::NativeSetenv));
         registry.register(Arc::new(getenv::NativePutenv));
         registry.register(Arc::new(getenv::NativeUnsetenv));

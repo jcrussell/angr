@@ -434,6 +434,90 @@ class TestRustExplorationManagerUnit:
         state.pc = hook_addr
         return state
 
+    def test_native_getopt_concrete_argv_end_to_end(self):
+        """Native getopt(3) runs end-to-end through the dispatcher (bhk0a.2).
+
+        Lays out a concrete argv + optstring in a RustSimState, binds the
+        loader-resolved optind/optarg/optopt extern globals, hooks ``getopt``
+        at an out-of-binary PC so native dispatch fires (not the Python proc),
+        and drives two successive calls. Asserts the int return in RAX, the
+        ``optind`` cursor advance written back to guest memory, and that
+        ``optarg`` points at the required-argument string — the observable
+        contract the Python proc establishes.
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
+
+        GETOPT_HOOK = 0x500500
+        EXIT_HOOK = 0x600500
+        STR_BASE = 0x2000
+        ARGV_BASE = 0x4000
+        OPTIND_ADDR = 0x3000
+        OPTARG_ADDR = 0x3008
+        OPTOPT_ADDR = 0x3010
+        STACK_BASE = 0x7FFF0000
+
+        mgr.register_simprocedure(GETOPT_HOOK, "getopt", num_args=3, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        def make_state():
+            state = RustSimState("amd64")
+            for base in (STR_BASE, 0x3000, ARGV_BASE, STACK_BASE):
+                state.map_memory(base & ~0xFFF, 0x1000, 7)
+            # optstring "ab:" then argv element strings, recording each ptr.
+            cursor = STR_BASE
+            state.memory_store(cursor, b"ab:\x00")
+            optstring_addr = cursor
+            cursor += 4
+            argv = [b"prog", b"-a", b"-b", b"val", b"file"]
+            for i, a in enumerate(argv):
+                state.memory_store(cursor, a + b"\x00")
+                state.memory_store(ARGV_BASE + i * 8, cursor.to_bytes(8, "little"))
+                cursor += len(a) + 1
+            # Bind the extern globals so the proc writes optind/optarg/optopt.
+            state.getopt_optind_addr = OPTIND_ADDR
+            state.getopt_optarg_addr = OPTARG_ADDR
+            state.getopt_optopt_addr = OPTOPT_ADDR
+            state.memory_store(STACK_BASE, EXIT_HOOK.to_bytes(8, "little"))
+            state.set_register("rsp", STACK_BASE)
+            state.set_register("rdi", len(argv))  # argc
+            state.set_register("rsi", ARGV_BASE)  # argv
+            state.set_register("rdx", optstring_addr)
+            state.pc = GETOPT_HOOK
+            return state
+
+        # --- call 1: "-a" (flag) -> returns 'a', optind advances to 2. ---
+        mgr.add_state("active", make_state())
+        mgr.run(10)
+        sid = mgr.get_state_ids("deadended")[0]
+        assert mgr.get_state_register(sid, "rax") == ord("a")
+        optind = int.from_bytes(bytes(mgr.get_state_memory(sid, OPTIND_ADDR, 4)), "little")
+        assert optind == 2, f"expected optind=2 after -a, got {optind}"
+
+        # --- a fresh state at "-b val": required arg pulled from next elem. ---
+        s2 = make_state()
+        # advance the cursor to argv[2] ("-b") by priming guest optind.
+        s2.memory_store(OPTIND_ADDR, (2).to_bytes(4, "little"))
+        s2.getopt_optind = 2
+        mgr2 = _RustExplorationManager("amd64")
+        mgr2.set_callbacks(callbacks)
+        mgr2.register_simprocedure(GETOPT_HOOK, "getopt", num_args=3, no_return=False)
+        mgr2.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        mgr2.add_state("active", s2)
+        mgr2.run(10)
+        sid2 = mgr2.get_state_ids("deadended")[0]
+        assert mgr2.get_state_register(sid2, "rax") == ord("b")
+        optind2 = int.from_bytes(bytes(mgr2.get_state_memory(sid2, OPTIND_ADDR, 4)), "little")
+        assert optind2 == 4, f"expected optind=4 after -b val, got {optind2}"
+        optarg = int.from_bytes(bytes(mgr2.get_state_memory(sid2, OPTARG_ADDR, 8)), "little")
+        argval = bytes(mgr2.get_state_memory(sid2, optarg, 3))
+        assert argval == b"val", f"optarg should point at 'val', got {argval!r}"
+
     def test_python_procedure_symbolic_arg_falls_back_to_python(self, fauxware_project):
         """A symbolic argument must trigger the Python SimProcedure fallback,
         not invoke the registered native callable.
