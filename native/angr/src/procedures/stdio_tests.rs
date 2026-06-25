@@ -150,6 +150,37 @@ fn test_setvbuf_returns_zero() {
     assert_eq!(result.unwrap().as_u64(), Some(0));
 }
 
+#[test]
+fn test_setbuf_returns_void_no_register() {
+    // setbuf is a void no-op: Ok(None) means no return register is written.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let result = NativeSetbuf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x10000, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+    assert!(result.is_none(), "setbuf must not set a return value");
+}
+
+#[test]
+fn test_setbuf_symbolic_args_no_fallback() {
+    // Python ignores both operands; symbolic stream/buf must NOT fall back.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let ctx = state.solver().borrow();
+    let stream = RustBV::symbolic(&ctx, "stream", 64);
+    let buf = RustBV::symbolic(&ctx, "buf", 64);
+    drop(ctx);
+    let result = NativeSetbuf.call(&mut state, &[stream, buf]).unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_setbuf_name_and_arity() {
+    assert_eq!(NativeSetbuf.name(), "setbuf");
+    assert_eq!(NativeSetbuf.num_args(), 2);
+}
+
 // --- feof / ferror / fputs ---
 
 #[test]

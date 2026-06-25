@@ -173,6 +173,36 @@ impl NativeSimProcedure for NativeSetvbuf {
     }
 }
 
+/// Native setbuf implementation.
+///
+/// ```c
+/// void setbuf(FILE *stream, char *buf);
+/// ```
+///
+/// angr's Python proc (`procedures/libc/setbuf.py`) is a void no-op
+/// (`run(stream, buf): return`). We match: both args are ignored and no
+/// return register is written (`Ok(None)`), so the proc just performs the
+/// return-address dance — parity holds for symbolic args too.
+pub struct NativeSetbuf;
+
+impl NativeSimProcedure for NativeSetbuf {
+    fn name(&self) -> &'static str {
+        "setbuf"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        _state: &mut RustSimState,
+        _args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        Ok(None)
+    }
+}
+
 /// Read a 32-bit fd from a FILE struct on the given arch. Returns the signed
 /// fd (so -1 sentinels are preserved). Mirrors fileops.rs::read_fileno so the
 /// stdio shims don't need to depend on private helpers there.

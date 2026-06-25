@@ -1226,6 +1226,54 @@ class TestNativeIdentityGetters:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeSetbuf:
+    """Python-boundary coverage for native setbuf (angr-ae54t.19).
+
+    Angr's libc SimProcedure (`setbuf.py`) is a void no-op (ignores stream/buf
+    and returns nothing). The native side previously had none, so a PLT libc
+    call round-tripped to Python. This asserts native dispatch (call_counts
+    ticks) — the proc writes no return register, so there is no rax to assert.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    def test_setbuf_dispatches_native(self, fauxware_project):
+        import claripy
+
+        proj = fauxware_project
+
+        stub_cls = type(
+            "setbuf",
+            (angr.SimProcedure,),
+            {"num_args": 2, "run": lambda self, stream, buf: None},
+        )
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = claripy.BVV(0x1000, 64)
+            state.regs.rsi = claripy.BVV(0, 64)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("setbuf", 0) == 1, f"expected native setbuf dispatch, got stats={stats}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeSleep:
     """Python-boundary coverage for native sleep/usleep (angr-ae54t.15).
 

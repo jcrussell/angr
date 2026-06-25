@@ -442,9 +442,11 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fread::NativeFreadUnlocked));
         // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
         // fflush / setvbuf are no-ops returning 0 (match Python procs).
+        // setbuf (angr-ae54t.19) is a void no-op returning nothing.
         registry.register(Arc::new(stdio::NativeFwrite));
         registry.register(Arc::new(stdio::NativeFflush));
         registry.register(Arc::new(stdio::NativeSetvbuf));
+        registry.register(Arc::new(stdio::NativeSetbuf));
         // stdio status / write shims (angr-f16h.1): feof/ferror dispatch off
         // FILE._fileno and return concrete int flags; fputs reuses fwrite's
         // write_fd path with a NUL-terminated source string.
