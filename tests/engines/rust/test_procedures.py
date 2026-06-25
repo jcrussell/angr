@@ -163,6 +163,32 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_strncasecmp_bounded_case_insensitive_equal(self, fauxware_project):
+        """strncasecmp(s1, s2, 2) with s1 = "Ab" + symbolic + "\\0" and
+        s2 = "aB\\0" must return 0: the first 2 bytes match case-insensitively
+        (A==a, b==B), and the symbolic byte at offset 2 is past n so cannot
+        affect the result. Distinguishes the bounded case-insensitive variant
+        from strncmp (case-sensitive → nonzero) and strcasecmp (unbounded →
+        would read the symbolic byte)."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["strncasecmp"]())
+            state.memory.store(self.BUF_ADDR, b"Ab")
+            sym = claripy.BVS("strncasecmp_b", 8)
+            state.memory.store(self.BUF_ADDR + 2, sym)
+            state.memory.store(self.BUF_ADDR + 3, claripy.BVV(0, 8))
+            state.memory.store(self.BUF_ADDR + 0x10, b"aB\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            state.regs.rdx = 2
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_strchr_symbolic_finds_target(self, fauxware_project):
         """strchr("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
         non-null must return BUF_ADDR + 3 (the index of 'X')."""

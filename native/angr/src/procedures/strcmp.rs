@@ -186,6 +186,21 @@ crate::declare_proc! {
     }
 }
 
+crate::declare_proc! {
+    /// Native strncasecmp: `int strncasecmp(const char *s1, const char *s2, size_t n)`.
+    ///
+    /// Like strcasecmp, but compares at most `n` characters (mirrors
+    /// `procedures/libc/strncasecmp.py`, which is strncmp with `ignore_case=True`).
+    name = "strncasecmp",
+    struct = NativeStrncasecmp,
+    args = [s1: concrete, s2: concrete, n: concrete],
+    call |state| {
+        let max_len = n.min(MAX_STRCMP_LEN as u64);
+        compare_bytes(state, s1, s2, max_len,
+                      /*stop_at_null=*/true, /*case_insensitive=*/true)
+    }
+}
+
 #[cfg(test)]
 #[path = "strcmp_tests.rs"]
 mod strcmp_tests;

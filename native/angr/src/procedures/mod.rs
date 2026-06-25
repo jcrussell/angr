@@ -262,6 +262,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcmp::NativeStrcmp));
         registry.register(Arc::new(strcmp::NativeStrncmp));
         registry.register(Arc::new(strcmp::NativeStrcasecmp));
+        registry.register(Arc::new(strcmp::NativeStrncasecmp));
         registry.register(Arc::new(puts::NativePuts));
         registry.register(Arc::new(printf::NativePrintf));
         registry.register(Arc::new(printf::NativeFprintf));

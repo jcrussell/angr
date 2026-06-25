@@ -138,6 +138,50 @@ fn test_strcasecmp() {
     assert_eq!(result.unwrap().as_u64(), Some(0));
 }
 
+#[test]
+fn test_strncasecmp_limit() {
+    let mut state = RustSimState::new("amd64").unwrap();
+
+    // Differ only in case (offsets 0-4) AND in the trailing digit (offset 5).
+    state.map_memory_data(0x1000, b"HELLO1\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"hello2\x00", Permission::RWX);
+
+    let proc = NativeStrncasecmp;
+
+    // First 5 chars are case-insensitively equal.
+    let result = proc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+
+    // Including the 6th char ('1' vs '2') makes them differ.
+    let result = proc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(6, 64),
+            ],
+        )
+        .unwrap();
+    let val = result.unwrap().as_u128().unwrap() as i32;
+    assert!(val != 0);
+}
+
+#[test]
+fn test_strncasecmp_registered() {
+    let registry = crate::procedures::NativeProcedureRegistry::new();
+    assert!(registry.has_native("strncasecmp"));
+}
+
 // ---------- Symbolic-byte tests ----------
 
 /// Insert a fully-symbolic byte at `addr`. The page must already be
