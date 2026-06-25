@@ -72,6 +72,10 @@ pub struct RustSimStateSnapshot {
     pub getopt_optind: u32,
     pub getopt_optchar: u32,
     pub getopt_extern: crate::state::GetoptExternAddrs,
+    /// Suspended native sub-call continuations (bead angr-pn3w8). `#[serde(default)]`
+    /// keeps pre-pn3w8 snapshots forward-compatible (restores to an empty stack).
+    #[serde(default)]
+    pub native_resume_stack: Vec<crate::state::NativeResumeFrame>,
     pub ctype_loc: crate::state::CtypeLocPtrs,
     pub stdin_symbols: Vec<(String, u32)>,
     pub call_stack: Vec<CallStackEntry>,
@@ -149,6 +153,7 @@ impl RustSimState {
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
+            native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -201,6 +206,7 @@ impl RustSimState {
             getopt_optind: snap.getopt_optind,
             getopt_optchar: snap.getopt_optchar,
             getopt_extern: snap.getopt_extern,
+            native_resume_stack: snap.native_resume_stack,
             ctype_loc: snap.ctype_loc,
             stdin_symbols: snap.stdin_symbols,
             call_stack: snap.call_stack,

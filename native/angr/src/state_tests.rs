@@ -78,6 +78,39 @@ fn test_getopt_extern_addrs_default_and_fork_isolation() {
 }
 
 #[test]
+fn test_native_resume_stack_default_and_fork_isolation() {
+    // angr-pn3w8 (S1): the native sub-call resume stack defaults to empty and
+    // is copied (not shared) across fork so each path resumes its own pending
+    // sub-calls. No dispatcher yet — this only exercises the per-state plumbing.
+    let mut parent = RustSimState::new("amd64").unwrap();
+    assert!(parent.native_resume_stack().is_empty());
+
+    parent.push_native_resume_frame(NativeResumeFrame {
+        proc_name: "pthread_once".to_string(),
+        resume_tag: 0,
+        saved_args: vec![
+            RustBV::concrete(0x601000, 64),
+            RustBV::concrete(0x400500, 64),
+        ],
+    });
+    assert_eq!(parent.native_resume_stack().len(), 1);
+
+    let mut child = parent.fork();
+    assert_eq!(child.native_resume_stack().len(), 1);
+    let frame = &child.native_resume_stack()[0];
+    assert_eq!(frame.proc_name, "pthread_once");
+    assert_eq!(frame.resume_tag, 0);
+    assert_eq!(frame.saved_args.len(), 2);
+    assert_eq!(frame.saved_args[0].as_u64(), Some(0x601000));
+
+    // CoW isolation: popping in the child must not disturb the parent's stack.
+    let popped = child.pop_native_resume_frame();
+    assert!(popped.is_some());
+    assert!(child.native_resume_stack().is_empty());
+    assert_eq!(parent.native_resume_stack().len(), 1);
+}
+
+#[test]
 fn test_set_detailed_history_honors_cap() {
     // set_detailed_history (called once per step from interpreter results)
     // must drain the oldest entries when the incoming buffer exceeds the
@@ -530,6 +563,11 @@ fn build_populated_state() -> RustSimState {
         optarg: Some(0x602008),
         optopt: Some(0x602010),
     });
+    s.push_native_resume_frame(NativeResumeFrame {
+        proc_name: "pthread_once".to_string(),
+        resume_tag: 1,
+        saved_args: vec![RustBV::concrete(0x602000, 64)],
+    });
 
     // Solver constraints — `rbx > 10` must hold after restore.
     let cmp = {
@@ -567,6 +605,15 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
         assert_eq!(ro.optind, oo.optind);
         assert_eq!(ro.optarg, oo.optarg);
         assert_eq!(ro.optopt, oo.optopt);
+    }
+    {
+        let (rs, os) = (restored.native_resume_stack(), orig.native_resume_stack());
+        assert_eq!(rs.len(), os.len());
+        for (rf, of) in rs.iter().zip(os.iter()) {
+            assert_eq!(rf.proc_name, of.proc_name);
+            assert_eq!(rf.resume_tag, of.resume_tag);
+            assert_eq!(rf.saved_args.len(), of.saved_args.len());
+        }
     }
     assert_eq!(restored.no_ip_concretization(), orig.no_ip_concretization());
     assert_eq!(restored.keep_ip_symbolic(), orig.keep_ip_symbolic());

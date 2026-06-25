@@ -220,6 +220,30 @@ pub struct GetoptExternAddrs {
     pub optopt: Option<u64>,
 }
 
+/// One suspended-continuation frame for the native sub-call (ADDS_EXITS)
+/// dispatcher (design: `tools/decisions/native_subcall_dispatcher_design.md`,
+/// spike angr-5gf0s). When a native proc needs to call a guest function and
+/// resume afterwards (the analogue of Python's `SimProcedure.call(...,
+/// continue_at="retsite")`), the continuation cannot be a Rust closure — it
+/// must be *data* on the state so it survives fork/snapshot. This frame is that
+/// data: `proc_name` re-finds the proc in the registry on return, `resume_tag`
+/// selects which continuation arm to run, and `saved_args` carries the original
+/// proc arguments the continuation needs.
+///
+/// This is the S1 foundation slice (bead angr-pn3w8): the per-state `Vec` field
+/// (a LIFO stack) plus fork/snapshot/proxy plumbing only. The dispatcher that
+/// pushes/pops frames is S2 (bead angr-xxukz chain); an empty stack is the
+/// default and means no behaviour change.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeResumeFrame {
+    /// Registry name of the native proc whose continuation should run.
+    pub proc_name: String,
+    /// Which continuation arm of that proc to dispatch on resume.
+    pub resume_tag: u32,
+    /// Original proc arguments the continuation needs after the sub-call.
+    pub saved_args: Vec<RustBV>,
+}
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -311,6 +335,12 @@ pub struct RustSimState {
     /// [`GetoptExternAddrs`]. Carried across fork + snapshot. Consumed by the
     /// native getopt proc (bead angr-bhk0a.2).
     getopt_extern: GetoptExternAddrs,
+    /// Suspended native sub-call continuations (LIFO). Empty by default; a
+    /// native proc that calls a guest function and resumes pushes a
+    /// [`NativeResumeFrame`] here, and the dispatcher pops it on return. Carried
+    /// across fork + snapshot so each path resumes its own pending sub-calls.
+    /// Foundation slice (bead angr-pn3w8); the dispatcher is S2.
+    native_resume_stack: Vec<NativeResumeFrame>,
     /// Pointers to the three glibc locale ctype lookup tables. Built once by
     /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
     /// memory, see `__ctype_b_loc.py` et al.) and pushed into Rust at
@@ -502,6 +532,7 @@ impl RustSimState {
             getopt_optind: 1,
             getopt_optchar: 0,
             getopt_extern: GetoptExternAddrs::default(),
+            native_resume_stack: Vec::new(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -553,6 +584,7 @@ impl RustSimState {
             getopt_optind: 1,
             getopt_optchar: 0,
             getopt_extern: GetoptExternAddrs::default(),
+            native_resume_stack: Vec::new(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -614,6 +646,7 @@ impl RustSimState {
             getopt_optind: 1,
             getopt_optchar: 0,
             getopt_extern: GetoptExternAddrs::default(),
+            native_resume_stack: Vec::new(),
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -855,6 +888,26 @@ impl RustSimState {
     /// into Rust at seed-state creation.
     pub fn set_getopt_extern(&mut self, addrs: GetoptExternAddrs) {
         self.getopt_extern = addrs;
+    }
+
+    /// Read-only view of the native sub-call resume stack (LIFO). Empty unless
+    /// the S2 dispatcher has suspended a native proc mid sub-call. See
+    /// [`NativeResumeFrame`].
+    pub fn native_resume_stack(&self) -> &[NativeResumeFrame] {
+        &self.native_resume_stack
+    }
+
+    /// Push a suspended-continuation frame onto the native sub-call resume
+    /// stack. Used by the S2 dispatcher when a native proc calls a guest
+    /// function and needs to resume afterwards.
+    pub fn push_native_resume_frame(&mut self, frame: NativeResumeFrame) {
+        self.native_resume_stack.push(frame);
+    }
+
+    /// Pop the most-recently-pushed continuation frame, or `None` if the stack
+    /// is empty. Used by the S2 dispatcher at the resume sentinel.
+    pub fn pop_native_resume_frame(&mut self) -> Option<NativeResumeFrame> {
+        self.native_resume_stack.pop()
     }
 
     /// CGC `state.cgc.allocation_base` — current high-water bump pointer
