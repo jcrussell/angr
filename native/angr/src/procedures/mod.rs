@@ -280,6 +280,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcpy::NativeStrcpy));
         registry.register(Arc::new(strcpy::NativeStrncpy));
         registry.register(Arc::new(strcpy::NativeStpcpy));
+        registry.register(Arc::new(strcpy::NativeStpncpy));
         registry.register(Arc::new(strlen::NativeStrnlen));
         // exit/abort: terminal NO_RET procedures. The native dispatchers in
         // both stepping.rs (interpreter exit) and mod.rs (top-of-loop hook

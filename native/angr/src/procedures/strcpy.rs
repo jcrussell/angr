@@ -106,6 +106,47 @@ crate::declare_proc! {
 }
 
 crate::declare_proc! {
+    /// Native stpncpy implementation.
+    ///
+    /// ```c
+    /// char *stpncpy(char *dest, const char *src, size_t n);
+    /// ```
+    ///
+    /// Like `strncpy` (bounded copy + NUL-pad of the n-byte window), but returns
+    /// `dest + min(strlen(src), n)` — a pointer to the written NUL, or `dest + n`
+    /// when no NUL fits inside the window — instead of `dest`. Reuses the same
+    /// concrete-copy logic as `strncpy` (DRY).
+    name = "stpncpy",
+    struct = NativeStpncpy,
+    args = [dest_bv: bv, src: concrete, n: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
+
+        if n > MAX_STRLEN as u64 {
+            return Err(ProcedureError::MaxIterations(n as usize));
+        }
+
+        let (mut buf, null_found) = scan_concrete_bounded(state, src, n as usize, "src")?;
+        // Return offset is the #non-null bytes copied = min(strlen(src), n),
+        // captured before the NUL-pad resize grows `buf` to the full window.
+        let ret_off = buf.len() as u128;
+        if null_found {
+            buf.resize(n as usize, 0);
+        }
+
+        write_concrete_bytes(state, dest, &buf)?;
+
+        let bits = state.arch().bits();
+        let off_bv = RustBV::concrete(ret_off, bits);
+        let ret = {
+            let ctx = state.solver().borrow();
+            dest_bv.add(&off_bv, &ctx)
+        };
+        Ok(Some(ret))
+    }
+}
+
+crate::declare_proc! {
     /// Native strdup implementation.
     ///
     /// ```c

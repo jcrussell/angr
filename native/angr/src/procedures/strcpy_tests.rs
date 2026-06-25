@@ -179,6 +179,58 @@ fn test_strdup_empty_string() {
 }
 
 #[test]
+fn test_stpncpy_short_src_returns_nul_and_pads() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    let result = NativeStpncpy
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap();
+
+    // strlen("hi") == 2 < n == 5, so end pointer is dest + 2.
+    assert_eq!(result.unwrap().as_u64(), Some(0x2002));
+
+    // The 5-byte window is "hi" + NUL padding (strncpy semantics).
+    let loaded = state.memory_load(0x2000, 8).unwrap();
+    let expected = u64::from_le_bytes([b'h', b'i', 0, 0, 0, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(loaded.as_u64(), Some(expected));
+}
+
+#[test]
+fn test_stpncpy_long_src_returns_dest_plus_n() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"abcdef\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    let result = NativeStpncpy
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        )
+        .unwrap();
+
+    // No NUL fits inside the 3-byte window, so the end pointer is dest + n == 0x2003.
+    assert_eq!(result.unwrap().as_u64(), Some(0x2003));
+
+    // Exactly n bytes copied, no NUL terminator written.
+    let loaded = state.memory_load(0x2000, 4).unwrap();
+    let expected = u64::from_le_bytes([b'a', b'b', b'c', 0xFF, 0, 0, 0, 0]);
+    assert_eq!(loaded.as_u64(), Some(expected & 0xFFFF_FFFF));
+}
+
+#[test]
 fn test_strdup_symbolic_arg() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
