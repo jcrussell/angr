@@ -261,6 +261,116 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_sprintf_formats_decimal_and_returns_length(self, fauxware_project):
+        """sprintf(dest, "%d", 42) must format "42" into dest and return 2 (the
+        formatted length), exercising the native format_string core + vararg
+        read from rdx across the FFI boundary."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["sprintf"]())
+            state.memory.store(self.BUF_ADDR, b"%d\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = self.BUF_ADDR
+            state.regs.rdx = 42  # first vararg
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 2
+            assert s.solver.max(s.regs.rax) == 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_snprintf_returns_untruncated_length(self, fauxware_project):
+        """snprintf(dest, 2, "%d", 999) must return the would-have-been length
+        3 (not the truncated 1), the defining snprintf return contract."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["snprintf"]())
+            state.memory.store(self.BUF_ADDR, b"%d\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = 2  # size limit
+            state.regs.rdx = self.BUF_ADDR  # format
+            state.regs.rcx = 999  # first vararg
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 3
+            assert s.solver.max(s.regs.rax) == 3
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_asprintf_returns_formatted_length(self, fauxware_project):
+        """asprintf(strp, "hi") allocates the buffer and returns the formatted
+        length 2 (rax), matching Python asprintf's malloc + strcpy + strlen."""
+        proj = fauxware_project
+        strp = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["asprintf"]())
+            state.memory.store(self.BUF_ADDR, b"hi\x00")
+            state.regs.rdi = strp
+            state.regs.rsi = self.BUF_ADDR
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 2
+            assert s.solver.max(s.regs.rax) == 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_vsprintf_raw_copies_format_and_returns_length(self, fauxware_project):
+        """vsprintf(str, "hello", ap) does NOT %-substitute (va_list unmodeled):
+        it raw-copies the format string and returns strlen("hello") = 5,
+        matching Python vsprintf (strcpy + strlen)."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["vsprintf"]())
+            state.memory.store(self.BUF_ADDR, b"hello\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = self.BUF_ADDR  # format
+            state.regs.rdx = 0  # va_list (unused by the raw-copy impl)
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 5
+            assert s.solver.max(s.regs.rax) == 5
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_vsnprintf_stub_returns_one(self, fauxware_project):
+        """vsnprintf(str, size, fmt, ap) is a no-op stub (va_list unmodeled):
+        size>0 stores a single NUL at str and returns 1, matching Python
+        vsnprintf.py."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["vsnprintf"]())
+            state.memory.store(self.BUF_ADDR, b"hello\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = 5  # size > 0
+            state.regs.rdx = self.BUF_ADDR  # format (unused by the stub)
+            state.regs.rcx = 0  # va_list
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 1
+            assert s.solver.max(s.regs.rax) == 1
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_vsnprintf_chk_forwards_maxlen_to_vsnprintf(self, fauxware_project):
+        """__vsnprintf_chk(dest, maxlen, flag, slen, fmt, ap) drops flag+slen and
+        forwards maxlen as the vsnprintf size; maxlen>0 yields the stub return 1
+        (rax), matching Python __vsnprintf_chk -> vsnprintf."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["__vsnprintf_chk"]())
+            state.memory.store(self.BUF_ADDR, b"hello\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = 5  # maxlen > 0
+            state.regs.rdx = 1  # flag (dropped)
+            state.regs.rcx = 8  # slen (dropped)
+            state.regs.r8 = self.BUF_ADDR  # format (unused by the stub)
+            state.regs.r9 = 0  # va_list
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 1
+            assert s.solver.max(s.regs.rax) == 1
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_memcmp_symbolic_constrained_equal(self, fauxware_project):
         """memcmp(b1, b2, 4) where each buffer's middle byte is a distinct
         symbolic, constrained equal — must return 0."""
