@@ -147,9 +147,14 @@ crate::declare_proc! {
     /// Native strcmp: `int strcmp(const char *s1, const char *s2)`.
     ///
     /// Returns < 0, 0, or > 0 per lexicographic comparison.
+    ///
+    /// `strcoll` is aliased here: in the C/POSIX locale (angr's default,
+    /// matching `procedures/libc/strcoll.py` which inline-calls strcmp) the
+    /// locale-aware comparison degenerates to a plain lexicographic strcmp.
     name = "strcmp",
     struct = NativeStrcmp,
     args = [s1: concrete, s2: concrete],
+    aliases = ["strcoll"],
     call |state| {
         compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64,
                       /*stop_at_null=*/true, /*case_insensitive=*/false)

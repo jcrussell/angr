@@ -84,6 +84,33 @@ fn test_fileops_largefile_aliases_dispatch() {
 }
 
 #[test]
+fn test_strcoll_alias_dispatch() {
+    // Python angr's `strcoll` (procedures/libc/strcoll.py) inline-calls strcmp
+    // in the C/POSIX locale (angr's default). The declare_proc! `aliases`
+    // mechanism must surface NativeStrcmp under the `strcoll` name so binaries
+    // that call strcoll don't round-trip to Python on every comparison.
+    let registry = NativeProcedureRegistry::new();
+    assert!(registry.has_native("strcmp"), "strcmp should be native");
+    assert!(
+        registry.has_native("strcoll"),
+        "strcoll should resolve via alias"
+    );
+    assert_eq!(
+        registry.get("strcoll").map(|p| p.name()),
+        registry.get("strcmp").map(|p| p.name()),
+        "strcoll should dispatch to the strcmp impl",
+    );
+}
+
+#[test]
+fn test_strxfrm_registered() {
+    // strxfrm is a standalone native proc (strncpy + return strlen) — confirm
+    // it registers so a binary calling it doesn't fall back to Python.
+    let registry = NativeProcedureRegistry::new();
+    assert!(registry.has_native("strxfrm"), "strxfrm should be native");
+}
+
+#[test]
 fn test_char_io_unlocked_aliases_dispatch() {
     // Python angr aliases the single-char stdio variants `x_unlocked = x`
     // (fputc.py: `fputc_unlocked = putc_unlocked = fputc`; fgetc.py:

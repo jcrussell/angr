@@ -239,3 +239,61 @@ fn test_strdup_symbolic_arg() {
     let result = NativeStrdup.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
+
+#[test]
+fn test_strxfrm_copies_and_returns_src_len() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0xFFu8; 16], Permission::RWX);
+
+    // n larger than the source: full string + NUL pad, return strlen("hello")==5.
+    let result = NativeStrxfrm
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(8, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(5));
+
+    // dest holds "hello" then NUL-padding out to n==8 bytes (strncpy semantics).
+    for (i, &expected) in b"hello".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(expected as u64));
+    }
+    for i in 5..8u64 {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(0));
+    }
+}
+
+#[test]
+fn test_strxfrm_truncates_to_n_but_returns_full_len() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"abcdef\x00", Permission::RWX);
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    // n smaller than strlen: copy only n bytes (no NUL), return full strlen==6.
+    let result = NativeStrxfrm
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(6));
+
+    // First 3 bytes copied; byte 3 untouched (still 0xFF, no NUL termination).
+    for (i, &expected) in b"abc".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(expected as u64));
+    }
+    let byte3 = state.memory_load(0x2003, 1).unwrap();
+    assert_eq!(byte3.as_u64(), Some(0xFF));
+}

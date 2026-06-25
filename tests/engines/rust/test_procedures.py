@@ -2276,3 +2276,43 @@ class TestNativeMemoryCopyAndSet:
         assert rax == self.DST_ADDR + len(payload), f"rax={rax:#x}"
         got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, len(payload) + 1))
         assert got == payload + b"\x00", f"dst={got!r}"
+
+    def test_strcoll_aliases_strcmp_equal_strings(self, fauxware_project):
+        # strcoll(s1, s2) degenerates to strcmp in the C locale (native alias);
+        # equal strings compare equal (rax == 0) and call_counts ticks under the
+        # hooked `strcoll` name (aliases register on the NativeStrcmp impl).
+        payload = b"locale"
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, payload)
+        self._store_cstr(state, self.DST_ADDR, payload)
+        state.regs.rdi = self.SRC_ADDR
+        state.regs.rsi = self.DST_ADDR
+
+        count, sid, mgr = self._run(fauxware_project, "strcoll", state)
+        assert count == 1, "expected native strcoll (strcmp alias) dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        # strcmp returns a 32-bit int; equal strings -> 0 (low 32 bits).
+        assert rax & 0xFFFFFFFF == 0, f"rax={rax:#x}"
+
+    def test_strxfrm_copies_window_and_returns_src_len(self, fauxware_project):
+        # strxfrm(dst, src, n) degenerates to strncpy(dst, src, n) + return
+        # strlen(src) in the C locale. With n > strlen, dst holds the NUL-padded
+        # window and rax == strlen(src).
+        payload = b"abc"
+        n = 6
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, payload)
+        import claripy
+
+        for i in range(n):
+            state.memory.store(self.DST_ADDR + i, claripy.BVV(0x55, 8))
+        state.regs.rdi = self.DST_ADDR
+        state.regs.rsi = self.SRC_ADDR
+        state.regs.rdx = n
+
+        count, sid, mgr = self._run(fauxware_project, "strxfrm", state)
+        assert count == 1, "expected native strxfrm dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == len(payload), f"rax={rax:#x} (expected strlen={len(payload)})"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, n))
+        assert got == payload + b"\x00" * (n - len(payload)), f"dst={got!r}"

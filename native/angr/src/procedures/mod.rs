@@ -361,6 +361,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(puts::NativePutc));
         // String duplication
         registry.register(Arc::new(strcpy::NativeStrdup));
+        registry.register(Arc::new(strcpy::NativeStrxfrm));
         // Memory comparison
         registry.register(Arc::new(memcmp::NativeMemcmp));
         // String search

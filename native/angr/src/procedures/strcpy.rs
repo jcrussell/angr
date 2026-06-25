@@ -172,6 +172,46 @@ crate::declare_proc! {
     }
 }
 
+crate::declare_proc! {
+    /// Native strxfrm implementation.
+    ///
+    /// ```c
+    /// size_t strxfrm(char *dest, const char *src, size_t n);
+    /// ```
+    ///
+    /// In the C/POSIX locale (angr's default, matching
+    /// `procedures/libc/strxfrm.py`) the transform degenerates to
+    /// `strncpy(dest, src, n)` followed by returning `strlen(src)`. We scan
+    /// the full source once for the length, then write the bounded+NUL-padded
+    /// `n`-byte window exactly as `strncpy` would (reusing the same string
+    /// helpers, DRY). Note the return value is the *untruncated* source
+    /// length, so it can exceed `n` (snprintf-style "would-be" length).
+    name = "strxfrm",
+    struct = NativeStrxfrm,
+    args = [dest_bv: bv, src: concrete, n: concrete],
+    call |state| {
+        let dest = extract_concrete_arg(&dest_bv, "dest")?;
+
+        if n > MAX_STRLEN as u64 {
+            return Err(ProcedureError::MaxIterations(n as usize));
+        }
+
+        // Full source length (strlen), excluding the NUL — this is the return.
+        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let src_len = buf.len();
+
+        // strncpy(dest, src, n): first min(n, src_len) bytes, NUL-padded to n.
+        let n_usize = n as usize;
+        let mut out = buf;
+        out.truncate(n_usize);
+        out.resize(n_usize, 0);
+        write_concrete_bytes(state, dest, &out)?;
+
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(src_len as u128, bits)))
+    }
+}
+
 #[cfg(test)]
 #[path = "strcpy_tests.rs"]
 mod tests;
