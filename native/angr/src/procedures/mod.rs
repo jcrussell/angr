@@ -80,6 +80,7 @@
 #[macro_use]
 mod macros;
 
+pub mod byteorder;
 pub mod ctype;
 pub mod exit;
 pub mod fgets;
@@ -330,6 +331,9 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(ctype::NativeCtypeBLoc));
         registry.register(Arc::new(ctype::NativeCtypeToLowerLoc));
         registry.register(Arc::new(ctype::NativeCtypeToUpperLoc));
+
+        registry.register(Arc::new(byteorder::NativeHtonl));
+        registry.register(Arc::new(byteorder::NativeHtons));
         // String/memory search
         registry.register(Arc::new(strchr::NativeStrchr));
         registry.register(Arc::new(strchr::NativeStrchrnul));

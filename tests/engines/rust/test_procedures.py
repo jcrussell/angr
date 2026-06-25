@@ -707,6 +707,35 @@ class TestSymbolicLibcProcedures:
         """ispunct on a symbolic int constrained to 'a' returns rax = 0."""
         self._run_ctype_predicate(fauxware_project, "ispunct", "a", 0)
 
+    def test_htonl_concrete_swaps_low_four_bytes(self, fauxware_project):
+        """htonl on a concrete 0x01020304 returns rax = 0x04030201 (amd64 is
+        little-endian, so the native proc byte-swaps the low 32 bits and
+        zero-extends; mirrors angr/procedures/libc/htonl.py)."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["htonl"]())
+            state.regs.rdi = claripy.BVV(0x01020304, 64)
+            s = self._run_one_step(proj, state)
+            assert s.solver.eval_one(s.regs.rax) == 0x04030201
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_htons_concrete_swaps_low_two_bytes(self, fauxware_project):
+        """htons on a concrete 0x0102 returns rax = 0x0201; only the low 16
+        bits are converted (mirrors angr/procedures/libc/htons.py)."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["htons"]())
+            state.regs.rdi = claripy.BVV(0x0102, 64)
+            s = self._run_one_step(proj, state)
+            assert s.solver.eval_one(s.regs.rax) == 0x0201
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_posix_fork_symbolic_flag_returns_both_branches(self, fauxware_project):
         """angr-q6r1: posix.fork SimProcedure dispatches correctly under the
         Rust manager and the symbolic-flag return value yields both the
