@@ -335,8 +335,11 @@ fn test_bzero_zeros_region() {
     state.map_memory_data(0x1000, &[0xFFu8; 16], Permission::RWX);
 
     let proc = NativeBzero;
-    proc.call(&mut state, &[RustBV::concrete(0x1000, 64), RustBV::concrete(8, 64)])
-        .unwrap();
+    proc.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(8, 64)],
+    )
+    .unwrap();
 
     // First 8 bytes zeroed; byte 8 untouched (still 0xFF).
     assert_eq!(state.memory_load(0x1000, 8).unwrap().as_u64(), Some(0));
