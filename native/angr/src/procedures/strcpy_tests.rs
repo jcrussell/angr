@@ -297,3 +297,55 @@ fn test_strxfrm_truncates_to_n_but_returns_full_len() {
     let byte3 = state.memory_load(0x2003, 1).unwrap();
     assert_eq!(byte3.as_u64(), Some(0xFF));
 }
+
+#[test]
+fn test_strndup_truncates_to_n() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+    state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+
+    // n == 3 < strlen("hello"), so only "hel" is copied + NUL terminator.
+    let result = NativeStrndup
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(3, 64)],
+        )
+        .unwrap();
+    let new_addr = result.unwrap().as_u64().unwrap();
+    assert!(new_addr >= 0xC000_0000);
+
+    for (i, &expected) in b"hel\x00".iter().enumerate() {
+        let byte = state.memory_load(new_addr + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(expected as u64));
+    }
+    // strnlen("hello", 3) == 3, alloc == 3 + 1.
+    assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(4));
+}
+
+#[test]
+fn test_strndup_n_exceeds_strlen_copies_full_string() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+    state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
+
+    // n == 10 > strlen("hi") == 2, so the whole string (+ NUL) is copied.
+    let result = NativeStrndup
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(10, 64)],
+        )
+        .unwrap();
+    let new_addr = result.unwrap().as_u64().unwrap();
+
+    for (i, &expected) in b"hi\x00".iter().enumerate() {
+        let byte = state.memory_load(new_addr + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(expected as u64));
+    }
+    assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(3));
+}
+
+#[test]
+fn test_strndup_registered() {
+    let registry = crate::procedures::NativeProcedureRegistry::new();
+    assert!(registry.has_native("strndup"));
+}

@@ -2428,3 +2428,21 @@ class TestNativeMemoryCopyAndSet:
         assert rax == len(payload), f"rax={rax:#x} (expected strlen={len(payload)})"
         got = bytes(mgr._rust_mgr.get_state_memory(sid, self.DST_ADDR, n))
         assert got == payload + b"\x00" * (n - len(payload)), f"dst={got!r}"
+
+    def test_strndup_truncates_to_n_and_nul_terminates(self, fauxware_project):
+        # strndup(s, n) = strnlen(s, n) + malloc(len+1) + copy, always
+        # NUL-terminated. With n < strlen(s), the result is the truncated
+        # prefix + NUL in a fresh heap buffer (rax points at it).
+        src = b"hello"
+        n = 3
+        state = self._blank_state(fauxware_project)
+        self._store_cstr(state, self.SRC_ADDR, src)
+        state.regs.rdi = self.SRC_ADDR
+        state.regs.rsi = n
+
+        count, sid, mgr = self._run(fauxware_project, "strndup", state)
+        assert count == 1, "expected native strndup dispatch"
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax != 0, "strndup returned NULL"
+        got = bytes(mgr._rust_mgr.get_state_memory(sid, rax, n + 1))
+        assert got == src[:n] + b"\x00", f"dup={got!r}"

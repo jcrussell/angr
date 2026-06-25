@@ -173,6 +173,42 @@ crate::declare_proc! {
 }
 
 crate::declare_proc! {
+    /// Native strndup implementation.
+    ///
+    /// ```c
+    /// char *strndup(const char *s, size_t n);
+    /// ```
+    ///
+    /// Like `strdup` but copies at most `n` bytes. Matches
+    /// `procedures/posix/strndup.py`: the length is `strnlen(s, n)`
+    /// (min of the source length and `n`), the new buffer is
+    /// `heap_alloc(len + 1)`, and the result is always NUL-terminated even
+    /// when the source was truncated at `n`. Reuses `scan_concrete_bounded`
+    /// (the strnlen-style bounded scan, DRY) and `write_cstr` (appends the
+    /// terminator), mirroring `NativeStrdup`.
+    name = "strndup",
+    struct = NativeStrndup,
+    args = [src: concrete, n: concrete],
+    call |state| {
+        if n > MAX_STRLEN as u64 {
+            return Err(ProcedureError::MaxIterations(n as usize));
+        }
+
+        // strnlen(s, n): bytes up to the first NUL or `n`, whichever comes
+        // first (the `null_found` flag is irrelevant — either way the copied
+        // length is buf.len()).
+        let (buf, _null_found) = scan_concrete_bounded(state, src, n as usize, "src")?;
+
+        // Allocate len + 1 and write the bytes followed by a NUL terminator.
+        let new_addr = state.heap_alloc(buf.len() as u64 + 1);
+        write_cstr(state, new_addr, &buf)?;
+
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(new_addr as u128, bits)))
+    }
+}
+
+crate::declare_proc! {
     /// Native strxfrm implementation.
     ///
     /// ```c
