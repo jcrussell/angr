@@ -90,6 +90,7 @@ pub mod fortify_printf;
 pub mod fortify_str;
 pub mod fread;
 pub mod getenv;
+pub mod getid;
 pub mod libc_start_main;
 pub mod malloc;
 pub mod mem_common;
@@ -380,6 +381,14 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(getenv::NativePutenv));
         registry.register(Arc::new(getenv::NativeUnsetenv));
         registry.register(Arc::new(getenv::NativeClearenv));
+        // POSIX identity getters (angr-ae54t.9): getuid/geteuid/getgid/getegid
+        // each return the constant 1000 (mirror procedures/posix/getuid.py and
+        // syscalls/identity.rs DEFAULT_UID_GID). Without these, a PLT libc call
+        // to getuid round-trips to Python — the syscall handler doesn't cover it.
+        registry.register(Arc::new(getid::NativeGetuid));
+        registry.register(Arc::new(getid::NativeGeteuid));
+        registry.register(Arc::new(getid::NativeGetgid));
+        registry.register(Arc::new(getid::NativeGetegid));
         // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeAsprintf));

@@ -1101,6 +1101,76 @@ class TestNativeFileDescriptorErrorReturns:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeIdentityGetters:
+    """Python-boundary coverage for native getuid/geteuid/getgid/getegid
+    (angr-ae54t.9).
+
+    Angr's posix SimProcedures each `return 1000`. The native side previously
+    only had these as *syscall* handlers (`syscalls/identity.rs`); a PLT libc
+    call dispatches through the procedure registry, so without the native
+    procedures (`procedures/getid.rs`) every call round-tripped to Python.
+    This asserts native dispatch (call_counts ticks) and the constant 1000 in
+    rax for all four zero-arg getters.
+    """
+
+    HOOK_ADDR = 0x600E30
+    DEAD_ADDR = 0x4008B0
+
+    @staticmethod
+    def _make_stub(proc_name: str):
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": 0, "run": lambda self: 1000},
+        )
+
+    @pytest.mark.parametrize(
+        "proc_name",
+        ["getuid", "geteuid", "getgid", "getegid"],
+    )
+    def test_identity_getter_returns_1000(self, fauxware_project, proc_name):
+        import claripy
+
+        proj = fauxware_project
+
+        stub_cls = self._make_stub(proc_name)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get(proc_name, 0) == 1, (
+                f"expected native {proc_name} dispatch, got stats={stats}"
+            )
+
+            sid = None
+            for stash in ("active", "deadended", "errored", "unconstrained"):
+                ids = mgr._rust_mgr.get_state_ids(stash)
+                if ids:
+                    sid = ids[0]
+                    break
+            assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 1000, f"expected rax=1000 from native {proc_name}, got rax={rax:#x}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFreadBoundary:
     """Python-boundary regression for native fread dispatch (angr-c42t7).
 
