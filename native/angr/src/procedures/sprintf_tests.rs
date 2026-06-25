@@ -488,3 +488,97 @@ fn test_sprintf_float_specifiers_fall_back() {
         );
     }
 }
+
+#[test]
+fn test_asprintf_simple_string() {
+    // asprintf mallocs the buffer, writes the pointer to *strp, returns length.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+
+    let result = NativeAsprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // strp (char **)
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(11));
+    // *strp now points at a heap buffer holding the formatted string + NUL.
+    let dst = state.memory_load(0x2000, 8).unwrap().as_u64().unwrap();
+    assert!(dst != 0);
+    assert!(state.heap_metadata().is_allocated(dst));
+    for (i, &expected) in b"hello world\x00".iter().enumerate() {
+        let byte = state.memory_load(dst + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64().unwrap() as u8, expected);
+    }
+}
+
+#[test]
+fn test_asprintf_percent_d() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
+
+    let result = NativeAsprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // strp
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(42, 64),     // %d arg
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(6)); // "val=42"
+    let dst = state.memory_load(0x2000, 8).unwrap().as_u64().unwrap();
+    let mut out = Vec::new();
+    for i in 0..6u64 {
+        out.push(state.memory_load(dst + i, 1).unwrap().as_u64().unwrap() as u8);
+    }
+    assert_eq!(&out, b"val=42");
+}
+
+#[test]
+fn test_asprintf_symbolic_format_falls_back() {
+    // A symbolic format string must defer to Python (read_string errors on a
+    // symbolic byte), matching sprintf's fallback semantics.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"\x00\x00\x00\x00", Permission::RWX);
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "fmt_byte", 8)
+    };
+    state.memory_store(0x1000, sym).unwrap();
+
+    let result = NativeAsprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "symbolic format in asprintf should fall back to Python"
+    );
+}

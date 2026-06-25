@@ -10,10 +10,14 @@ import angr
 l = logging.getLogger(name=__name__)
 
 
-class __getdelim(angr.SimProcedure):
+class getdelim(angr.SimProcedure):
     # this code is modified from the 'fgets' implementation
     #   to take an arbitrary delimiter
     #   with no max size for concrete data
+    #
+    # NOTE: was historically named ``__getdelim``, which registered under the
+    # key ``__getdelim`` and left the public ``getdelim`` symbol unhooked. The
+    # class is named ``getdelim`` so SIM_PROCEDURES['libc']['getdelim'] resolves.
 
     # pylint: disable=arguments-differ
     def run(self, line_ptrptr, len_ptr, delim, file_ptr):

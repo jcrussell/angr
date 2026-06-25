@@ -374,8 +374,9 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(getenv::NativePutenv));
         registry.register(Arc::new(getenv::NativeUnsetenv));
         registry.register(Arc::new(getenv::NativeClearenv));
-        // String formatting (sprintf, snprintf)
+        // String formatting (sprintf, asprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
+        registry.register(Arc::new(sprintf::NativeAsprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
         registry.register(Arc::new(sprintf::NativeVsnprintf));
         // Fortify-source `_chk` printf-family wrappers forward to the base

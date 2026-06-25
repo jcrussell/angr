@@ -379,6 +379,52 @@ impl NativeSimProcedure for NativeSprintf {
     }
 }
 
+/// Native asprintf implementation.
+///
+/// ```c
+/// int asprintf(char **strp, const char *format, ...);
+/// ```
+///
+/// Like sprintf, but allocates the destination buffer (`heap_alloc`, matching
+/// Python `asprintf` inline-calling `malloc`), writes the buffer pointer to
+/// `*strp`, and returns the formatted length (excluding the NUL). Reuses the
+/// shared [`format_string`] core (DRY with sprintf/snprintf) and falls back to
+/// Python on symbolic format strings/args via the same `ProcedureError` paths.
+pub struct NativeAsprintf;
+
+impl NativeSimProcedure for NativeAsprintf {
+    fn name(&self) -> &'static str {
+        "asprintf"
+    }
+
+    fn num_args(&self) -> usize {
+        8 // strp + format + up to 6 variadic args
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let strp = extract_concrete_arg(&args[0], "strp")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
+
+        let fmt = read_string(state, fmt_addr)?;
+        let varargs = &args[2..];
+        let output = format_string(state, &fmt, varargs)?;
+
+        // Allocate output.len() + 1 bytes (data + NUL) and write the string.
+        let dst = state.heap_alloc(output.len() as u64 + 1);
+        write_cstr(state, dst, &output)?;
+
+        // Write the allocated buffer pointer back to *strp (honors mem endness).
+        let bits = state.arch().bits();
+        state.memory_store(strp, RustBV::concrete(dst as u128, bits))?;
+
+        Ok(Some(RustBV::concrete(output.len() as u128, bits)))
+    }
+}
+
 /// Native snprintf implementation.
 ///
 /// ```c
