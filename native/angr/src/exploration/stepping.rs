@@ -65,7 +65,7 @@ enum NativeProcDisposition {
 /// `Debug`-only reads, hence the allow).
 #[derive(Debug)]
 #[allow(dead_code)]
-enum SubcallSetupError {
+pub(crate) enum SubcallSetupError {
     /// More guest arguments than the ABI exposes in registers. Stack-spilled
     /// guest args are not yet supported (S2 scope; defers to Python).
     TooManyArgs { requested: usize, available: usize },
@@ -1010,7 +1010,7 @@ impl RustExplorationManager {
     /// `caller_return_addr`, not the stack. Link-register ABI: write the
     /// sentinel into the link register (requires `link_register()`).
     #[allow(clippy::too_many_arguments)]
-    fn setup_native_subcall(
+    pub(crate) fn setup_native_subcall(
         &self,
         state: &mut RustSimState,
         proc_name: String,

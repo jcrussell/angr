@@ -271,8 +271,16 @@ impl RustExplorationManager {
                                     .entry(name.clone())
                                     .or_insert(0) += 1;
                             }
-                            Ok(args) => match native_proc.call(&mut state, &args) {
-                                Ok(ret_val) => {
+                            Ok(args) => match native_proc.call_ex(&mut state, &args) {
+                                // Borrow note: `native_proc` borrows
+                                // `self.native_procedures`; that borrow ends at
+                                // the `call_ex` call above (NLL), freeing
+                                // `&mut self` for `setup_native_subcall` /
+                                // `push_to_active_or_drop` below. These arms must
+                                // NOT reference `native_proc` again. (Path B's
+                                // `handle_simprocedure` uses an explicit
+                                // `NativeProcDisposition` enum for the same reason.)
+                                Ok(ProcOutcome::Return(ret_val)) => {
                                     // Native execution succeeded
                                     self.profiling.native_proc_stats.native_calls += 1;
                                     *self
@@ -348,6 +356,64 @@ impl RustExplorationManager {
 
                                     self.push_to_active_or_drop(state);
                                     continue;
+                                }
+                                Ok(ProcOutcome::CallAndResume {
+                                    target,
+                                    args: sub_args,
+                                    resume_tag,
+                                }) => {
+                                    // The proc requested a guest sub-call. Capture
+                                    // the caller return address from [sp] BEFORE
+                                    // `setup_native_subcall` overwrites that slot
+                                    // with the resume sentinel. A symbolic SP /
+                                    // unmapped slot (None) or a setup failure falls
+                                    // back to Python (the state is left untouched
+                                    // by setup on Err). Do NOT pop SP or honour
+                                    // `no_return` here: the guest's own `ret`
+                                    // advances SP, and `handle_native_resume`
+                                    // finishes without re-adjusting it.
+                                    let setup = match self.get_return_addr(&state) {
+                                        Some(caller_return_addr) => self
+                                            .setup_native_subcall(
+                                                &mut state,
+                                                name.clone(),
+                                                args,
+                                                caller_return_addr,
+                                                target,
+                                                sub_args,
+                                                resume_tag,
+                                            )
+                                            .map_err(|e| format!("{e:?}")),
+                                        None => Err("no concrete return address".to_string()),
+                                    };
+                                    match setup {
+                                        Ok(()) => {
+                                            self.profiling.native_proc_stats.native_calls += 1;
+                                            *self
+                                                .profiling
+                                                .native_proc_stats
+                                                .call_counts
+                                                .entry(name.clone())
+                                                .or_insert(0) += 1;
+                                            self.push_to_active_or_drop(state);
+                                            continue;
+                                        }
+                                        Err(reason) => {
+                                            log::debug!(
+                                                "native sub-call setup failed ({}); \
+                                                 falling back to Python for {}",
+                                                reason,
+                                                name
+                                            );
+                                            self.profiling.native_proc_stats.python_fallbacks += 1;
+                                            *self
+                                                .profiling
+                                                .native_proc_stats
+                                                .other_fallbacks_by_name
+                                                .entry(name.clone())
+                                                .or_insert(0) += 1;
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     // Native execution failed, fall back to Python

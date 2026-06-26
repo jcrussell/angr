@@ -225,6 +225,63 @@ fn setup_native_subcall_rejects_too_many_args() {
 }
 
 #[test]
+fn path_a_captures_caller_return_addr_via_get_return_addr() {
+    // The run-loop inline fast path (Path A, run_loop.rs) sets up a CallAndResume
+    // by capturing the caller return address with `get_return_addr` (reads [sp])
+    // and feeding it to `setup_native_subcall`. This locks that composition: the
+    // captured address must equal [sp] at fresh entry and must be where the proc
+    // resumes after the guest returns. (The full run-loop dispatch is exercised
+    // by the Python e2e; the run loop needs a Python FFI context to drive.)
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.native_procedures.register(Arc::new(SubcallTestProc));
+
+        let sp = 0x7fff_0000u64;
+        let caller_ret = 0x0040_0123u64;
+        let mut state = state_with_stack(sp, caller_ret);
+
+        // Path A reads the caller return address from [sp] before setup
+        // overwrites that slot with the sentinel.
+        let captured = mgr
+            .get_return_addr(&state)
+            .expect("get_return_addr reads [sp]");
+        assert_eq!(captured, caller_ret);
+
+        // Drive the same sequence Path A's CallAndResume arm performs.
+        mgr.setup_native_subcall(
+            &mut state,
+            "subcall_test".into(),
+            vec![RustBV::concrete(41, 64)],
+            captured,
+            SubcallTestProc::GUEST_TARGET,
+            vec![],
+            SubcallTestProc::RESUME_TAG,
+        )
+        .unwrap();
+        assert_eq!(state.pc(), SubcallTestProc::GUEST_TARGET);
+
+        // Guest runs and `ret`s to the sentinel (amd64: sp += 8, pc = sentinel).
+        state.set_sp(RustBV::concrete((sp + 8) as u128, 64));
+        state.set_pc(native_resume_sentinel(8));
+
+        let succ = match mgr.handle_native_resume(
+            state,
+            vec![],
+            FxHashMap::default(),
+            FxHashMap::default(),
+        ) {
+            Ok(s) => s,
+            Err(_) => panic!("handle_native_resume returned a StepError"),
+        };
+        assert_eq!(succ.len(), 1);
+        // Resumes exactly at the captured caller address — proving Path A's
+        // get_return_addr capture targets the right slot.
+        assert_eq!(succ[0].pc(), captured);
+    });
+}
+
+#[test]
 fn resume_sentinel_name_and_address_are_stable() {
     // The sentinel name is the reserved constant, and the address is the
     // top-of-space aligned slot per pointer width.
