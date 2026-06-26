@@ -2818,3 +2818,99 @@ class TestNativeMemoryCopyAndSet:
         assert rax != 0, "strndup returned NULL"
         got = bytes(mgr._rust_mgr.get_state_memory(sid, rax, n + 1))
         assert got == src[:n] + b"\x00", f"dup={got!r}"
+
+
+class TestNativePthreadOnce:
+    """End-to-end test for native pthread_once (xxukz) through the real run loop.
+
+    Native unit tests in `native/angr/src/procedures/pthread_tests.rs` cover
+    call_ex/resume directly; the run-loop dispatch (Path A fresh-entry →
+    CallAndResume setup → guest routine runs & `ret`s to the resume sentinel →
+    Path B resume → return to caller) needs a Python FFI context and real VEX
+    lifting, which only this layer exercises.
+
+    A hand-assembled amd64 blob holds the init routine `func` (which bumps a
+    1-byte marker) and a driver that calls `pthread_once(&once, func)` twice.
+    pthread_once is hooked at 0x500000 — OUTSIDE the loaded blob — so the
+    `is_in_binary` gate lets native dispatch fire (a hook inside the blob would
+    run the Python proc instead). The once-guard must run `func` exactly once:
+    the second call sees the done-bit set and returns 0 without re-invoking it.
+
+    `once` and `marker` live on the rsp page (the program's own pushes map it in
+    the Rust engine — a separate scratch page would be unmapped there, since the
+    native proc reads guest memory directly without the Python load callback).
+    `func` bumps the marker via ``[rdi+8]``: pthread_once leaves rdi = &once
+    intact across the native sub-call, so marker == once + 8 needs no 64-bit
+    absolute displacement (which the `inc byte [disp32]` form cannot encode).
+    """
+
+    LOAD = 0x400000
+    HOOK = 0x500000  # pthread_once, outside the blob -> native dispatch
+    RSP = 0x7FFFFFFF0800  # mid-page, so pushes stay on the mapped rsp page
+    ONCE = 0x7FFFFFFF0C00  # once-guard byte (starts 0), above rsp on same page
+    MARKER = ONCE + 8  # func bumps this via [rdi+8]; == 1 proves it ran once
+
+    def _blob(self) -> tuple[bytes, int]:
+        # func @ LOAD: inc byte [rdi+8]; ret   (rdi still = &once at sub-call)
+        func = bytes([0xFE, 0x47, 0x08, 0xC3])
+
+        # one `pthread_once(&once, func)` call via absolute `call rax`
+        def call_once() -> bytes:
+            return (
+                bytes([0x48, 0xBF])
+                + self.ONCE.to_bytes(8, "little")  # mov rdi, &once
+                + bytes([0x48, 0xBE])
+                + self.LOAD.to_bytes(8, "little")  # mov rsi, func
+                + bytes([0x48, 0xB8])
+                + self.HOOK.to_bytes(8, "little")  # mov rax, &pthread_once
+                + bytes([0xFF, 0xD0])  # call rax
+            )
+
+        # main @ LOAD+len(func): two pthread_once calls, then self-loop.
+        main = call_once() + call_once() + bytes([0xEB, 0xFE])  # jmp $
+        return func + main, self.LOAD + len(func)
+
+    def test_pthread_once_runs_init_exactly_once(self):
+        import claripy
+
+        blob, main_addr = self._blob()
+
+        proj = angr.load_shellcode(blob, arch="AMD64", load_address=self.LOAD)
+        proj.hook(self.HOOK, angr.SIM_PROCEDURES["posix"]["pthread_once"](), replace=True)
+
+        state = proj.factory.blank_state(
+            addr=main_addr,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        state.regs.rsp = self.RSP
+        # once-guard and marker both start at 0.
+        state.memory.store(self.ONCE, claripy.BVV(0, 8))
+        state.memory.store(self.MARKER, claripy.BVV(0, 8))
+
+        mgr = RustExplorationManager(proj, [state])
+        # main: 2 calls; each: pthread_once + (first only) func + resume; self-loop.
+        mgr.run(max_steps=40)
+
+        stats = mgr._rust_mgr.native_procedure_stats()
+        assert stats["call_counts"].get("pthread_once", 0) >= 1, (
+            f"expected native pthread_once dispatch, got stats={stats}"
+        )
+
+        states = mgr.active + mgr.deadended + mgr.errored
+        assert states, f"no resulting states; stashes={mgr.stash_counts()}"
+        s = states[0]
+
+        marker = s.solver.eval(s.memory.load(self.MARKER, 1))
+        assert marker == 1, (
+            f"init routine must run exactly once across two pthread_once calls; "
+            f"marker={marker} (0=never ran, 2=ran on both calls -> once-guard broken)"
+        )
+        guard = s.solver.eval(s.memory.load(self.ONCE, 1))
+        assert guard & 2 != 0, f"pthread_once must set the done-bit; once-guard={guard:#x}"
+        # func returned and control resumed at the caller: PC is back in main
+        # (the self-loop), not stranded at the sentinel or in func.
+        pc = s.solver.eval(s.regs.pc)
+        assert main_addr <= pc < self.LOAD + len(blob), f"control must resume in main after the sub-call; pc={pc:#x}"
