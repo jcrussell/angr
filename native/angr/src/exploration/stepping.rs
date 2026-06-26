@@ -34,6 +34,50 @@ pub(crate) enum StepError {
     Unconstrained(RustSimState, Vec<RustSimState>),
 }
 
+/// What the native fast path in `handle_simprocedure` decided, captured so the
+/// follow-up action runs *after* the `self.native_procedures` borrow is
+/// released (a `SubCall` setup needs `&mut self`). See the S2 design in
+/// `tools/decisions/native_subcall_dispatcher_design.md` (bead angr-5gf0s).
+enum NativeProcDisposition {
+    /// Native ran and produced a plain return; `no_return` deadends the state.
+    /// The return value has not been written yet.
+    Returned {
+        no_return: bool,
+        ret_val: Option<RustBV>,
+    },
+    /// Native requested a guest sub-call (`ProcOutcome::CallAndResume`).
+    /// `saved_args` are the original proc args (re-handed to the continuation);
+    /// `sub_args` are the arguments for the guest routine `target`.
+    SubCall {
+        proc_name: String,
+        saved_args: Vec<RustBV>,
+        target: u64,
+        sub_args: Vec<RustBV>,
+        resume_tag: u32,
+    },
+    /// No native handler (or it errored / declined) — use the Python path.
+    Fallback,
+}
+
+/// Why a native sub-call could not be set up; the dispatcher falls back to the
+/// Python SimProcedure path on any of these. Fields are carried for the
+/// `Debug` diagnostic in the fallback log line (dead-code analysis ignores
+/// `Debug`-only reads, hence the allow).
+#[derive(Debug)]
+#[allow(dead_code)]
+enum SubcallSetupError {
+    /// More guest arguments than the ABI exposes in registers. Stack-spilled
+    /// guest args are not yet supported (S2 scope; defers to Python).
+    TooManyArgs { requested: usize, available: usize },
+    /// Stack pointer is symbolic — cannot place the sentinel return slot.
+    SpSymbolic,
+    /// Writing the sentinel return slot to the stack failed (unmapped / perms).
+    Memory(crate::memory::MemoryError),
+    /// Link-register ABI with no `link_register()` wired up — cannot redirect
+    /// the guest routine's return to the sentinel.
+    UnsupportedAbi,
+}
+
 /// Output of one interpreter run, packaged for the post-execution phase.
 ///
 /// Replaces a 12-element tuple destructure that became unreadable as fields
@@ -742,6 +786,19 @@ impl RustExplorationManager {
         stored_conditions: FxHashMap<u64, RustBV>,
         fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
+        // Native sub-call resume sentinel (S2, bead angr-5gf0s): a guest routine
+        // invoked via `ProcOutcome::CallAndResume` returns here. Pop the top
+        // resume frame and re-enter its proc's continuation — recognized by name
+        // before any native-registry or Python lookup.
+        if name == crate::procedures::NATIVE_RESUME_SENTINEL_NAME {
+            return self.handle_native_resume(
+                state,
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
+            );
+        }
+
         // Try native procedure first — avoids Python callback overhead.
         // Skip native for addresses inside the binary — these are user-placed
         // hooks where the Python SimProcedure should always run (the user hooked
@@ -751,9 +808,11 @@ impl RustExplorationManager {
             .binary_regions
             .iter()
             .any(|(base, data)| addr >= *base && addr < *base + data.len() as u64);
-        // Result of native execution: None = fall back to Python, Some(bool) =
-        // succeeded with no_return flag indicating whether to deadend the main state.
-        let native_no_return: Option<bool> = if !is_in_binary {
+        // Run the native fast path (if any) and capture *what to do* without
+        // acting yet: the action (especially a `CallAndResume` sub-call setup,
+        // which needs `&mut self`) must run after the `self.native_procedures`
+        // borrow is released. `Fallback` routes to the Python SimProcedure path.
+        let disposition: NativeProcDisposition = if !is_in_binary {
             if let Some(native_proc) = self.native_procedures.get(&name) {
                 let proc_no_return = native_proc.no_return();
                 match self.extract_procedure_args(&state, num_args) {
@@ -761,9 +820,8 @@ impl RustExplorationManager {
                         // SP symbolic / stack unmapped — silently zero-padding
                         // here would hand the native handler fabricated zeros
                         // and mask the underlying stack-setup bug. Skip the
-                        // native fast path; `None` falls through to the
-                        // Python SimProcedure callback at the bottom of this
-                        // function.
+                        // native fast path; `Fallback` routes to the Python
+                        // SimProcedure callback at the bottom of this function.
                         log::debug!(
                             "Skipping native procedure {} (arg extraction failed: {:?})",
                             name,
@@ -776,10 +834,10 @@ impl RustExplorationManager {
                             .other_fallbacks_by_name
                             .entry(name.clone())
                             .or_insert(0) += 1;
-                        None
+                        NativeProcDisposition::Fallback
                     }
-                    Ok(args) => match native_proc.call(&mut state, &args) {
-                        Ok(ret_val) => {
+                    Ok(args) => match native_proc.call_ex(&mut state, &args) {
+                        Ok(outcome) => {
                             self.profiling.native_proc_stats.native_calls += 1;
                             *self
                                 .profiling
@@ -787,24 +845,23 @@ impl RustExplorationManager {
                                 .call_counts
                                 .entry(name.clone())
                                 .or_insert(0) += 1;
-
-                            if !proc_no_return {
-                                if let Some(rv) = ret_val {
-                                    let ret_reg =
-                                        self.environment.calling_convention.return_register();
-                                    state.set_register_by_offset(ret_reg, rv);
-                                }
-
-                                // Set PC to return address and pop stack
-                                state.set_pc(return_addr);
-                                let sp = state.get_sp().as_u64().unwrap_or(0);
-                                let ptr_size = state.arch().bytes() as u64;
-                                state.set_sp(RustBV::concrete(
-                                    (sp + ptr_size) as u128,
-                                    state.arch().bits(),
-                                ));
+                            match outcome {
+                                ProcOutcome::Return(ret_val) => NativeProcDisposition::Returned {
+                                    no_return: proc_no_return,
+                                    ret_val,
+                                },
+                                ProcOutcome::CallAndResume {
+                                    target,
+                                    args: sub_args,
+                                    resume_tag,
+                                } => NativeProcDisposition::SubCall {
+                                    proc_name: name.clone(),
+                                    saved_args: args,
+                                    target,
+                                    sub_args,
+                                    resume_tag,
+                                },
                             }
-                            Some(proc_no_return)
                         }
                         Err(e) => {
                             log::debug!(
@@ -826,18 +883,70 @@ impl RustExplorationManager {
                                 _ => &mut self.profiling.native_proc_stats.other_fallbacks_by_name,
                             };
                             *bucket.entry(name.clone()).or_insert(0) += 1;
-                            None
+                            NativeProcDisposition::Fallback
                         }
                     },
                 }
             } else {
-                None
+                NativeProcDisposition::Fallback
             }
         } else {
-            None
+            NativeProcDisposition::Fallback
         };
 
-        if let Some(no_return) = native_no_return {
+        let fall_back_to_python = match disposition {
+            NativeProcDisposition::Returned { no_return, ret_val } => {
+                if !no_return {
+                    if let Some(rv) = ret_val {
+                        let ret_reg = self.environment.calling_convention.return_register();
+                        state.set_register_by_offset(ret_reg, rv);
+                    }
+                    // Set PC to return address and pop stack (return-only path,
+                    // semantics unchanged from the pre-S2 dispatcher).
+                    state.set_pc(return_addr);
+                    let sp = state.get_sp().as_u64().unwrap_or(0);
+                    let ptr_size = state.arch().bytes() as u64;
+                    state.set_sp(RustBV::concrete(
+                        (sp + ptr_size) as u128,
+                        state.arch().bits(),
+                    ));
+                }
+                Some(no_return)
+            }
+            NativeProcDisposition::SubCall {
+                proc_name,
+                saved_args,
+                target,
+                sub_args,
+                resume_tag,
+            } => {
+                // The proc requested a guest sub-call. Set it up (jump to
+                // `target`, arrange resume via the sentinel). On any setup
+                // failure, leave the state untouched and fall back to Python.
+                match self.setup_native_subcall(
+                    &mut state,
+                    proc_name,
+                    saved_args,
+                    return_addr,
+                    target,
+                    sub_args,
+                    resume_tag,
+                ) {
+                    Ok(()) => Some(false),
+                    Err(e) => {
+                        log::debug!(
+                            "native sub-call setup failed ({:?}); falling back to Python for {}",
+                            e,
+                            name
+                        );
+                        None
+                    }
+                }
+            }
+            NativeProcDisposition::Fallback => None,
+        };
+
+        if let Some(no_return) = fall_back_to_python {
             // Unified deferred-fork handling: identical semantics to
             // MaxBlocks/BlockEnd (snapshot-based forks restore solver
             // state from the branch point; UNSAT forks go to STASH_PRUNED).
@@ -884,6 +993,177 @@ impl RustExplorationManager {
                 fork_snapshots,
             )))
         }
+    }
+
+    /// Set up a native sub-call (`ProcOutcome::CallAndResume`): make the guest
+    /// routine `target` run with `sub_args`, then return to the resume sentinel
+    /// so the proc's continuation re-enters via [`handle_native_resume`].
+    ///
+    /// All feasibility checks happen before any state mutation, so on `Err` the
+    /// caller can cleanly fall back to the Python SimProcedure path. `S2`,
+    /// bead angr-5gf0s. See `tools/decisions/native_subcall_dispatcher_design.md`.
+    ///
+    /// Stack-return ABI (x86/amd64): at proc entry `[sp]` holds the caller's
+    /// return address; we overwrite it with the sentinel so the guest `ret`
+    /// lands on the sentinel (SP unchanged here — the guest's own `ret` advances
+    /// it). The original caller address rides in the frame's
+    /// `caller_return_addr`, not the stack. Link-register ABI: write the
+    /// sentinel into the link register (requires `link_register()`).
+    #[allow(clippy::too_many_arguments)]
+    fn setup_native_subcall(
+        &self,
+        state: &mut RustSimState,
+        proc_name: String,
+        saved_args: Vec<RustBV>,
+        caller_return_addr: u64,
+        target: u64,
+        sub_args: Vec<RustBV>,
+        resume_tag: u32,
+    ) -> Result<(), SubcallSetupError> {
+        let cc = &self.environment.calling_convention;
+        let arg_regs = cc.arg_registers();
+        if sub_args.len() > arg_regs.len() {
+            return Err(SubcallSetupError::TooManyArgs {
+                requested: sub_args.len(),
+                available: arg_regs.len(),
+            });
+        }
+        let ptr_bits = cc.pointer_size() * 8;
+        let sentinel = crate::procedures::native_resume_sentinel(cc.pointer_size());
+
+        // --- feasibility checks (no mutation yet) ---
+        let lr_offset = if cc.pops_return_addr() {
+            None
+        } else {
+            Some(
+                cc.link_register()
+                    .ok_or(SubcallSetupError::UnsupportedAbi)?,
+            )
+        };
+        let sp_val = if cc.pops_return_addr() {
+            Some(
+                state
+                    .get_sp()
+                    .as_u64()
+                    .ok_or(SubcallSetupError::SpSymbolic)?,
+            )
+        } else {
+            None
+        };
+
+        // --- mutation: redirect the guest routine's return to the sentinel ---
+        if let Some(sp) = sp_val {
+            // Overwrite the caller return slot at [sp] with the sentinel. This
+            // is the only fallible mutation; do it first so an unmapped stack
+            // leaves the state untouched for the Python fallback.
+            state
+                .memory_mut()
+                .store_concrete(sp, RustBV::concrete(sentinel as u128, ptr_bits))
+                .map_err(SubcallSetupError::Memory)?;
+        } else if let Some(lr) = lr_offset {
+            state.set_register_by_offset(lr, RustBV::concrete(sentinel as u128, ptr_bits));
+        }
+
+        // --- record the continuation and enter the guest routine ---
+        state.push_native_resume_frame(crate::state::NativeResumeFrame {
+            proc_name,
+            resume_tag,
+            saved_args,
+            caller_return_addr,
+        });
+        for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
+            state.set_register_by_offset(*reg, val);
+        }
+        state.set_pc(target);
+        Ok(())
+    }
+
+    /// Re-enter a native proc's continuation after a `CallAndResume` sub-call
+    /// returns to the resume sentinel. Pops the top resume frame, calls the
+    /// proc's [`crate::procedures::NativeSimProcedure::resume`], and applies the
+    /// resulting [`ProcOutcome`]. `S2`, bead angr-5gf0s.
+    fn handle_native_resume(
+        &mut self,
+        mut state: RustSimState,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        let frame = match state.pop_native_resume_frame() {
+            Some(f) => f,
+            None => {
+                // Sentinel reached with no pending frame: a corrupt state we
+                // cannot resume. Deadend defensively rather than guess a PC.
+                log::error!("native resume sentinel hit with empty resume stack; deadending");
+                return Err(StepError::Deadended(state));
+            }
+        };
+
+        // Run the continuation. The `self.native_procedures` borrow is released
+        // once `outcome` is bound, freeing `&mut self` for the sub-call setup.
+        let outcome = match self.native_procedures.get(&frame.proc_name) {
+            Some(proc) => proc.resume(&mut state, frame.resume_tag, &frame.saved_args),
+            None => {
+                log::error!(
+                    "native resume: proc {} not in registry; deadending",
+                    frame.proc_name
+                );
+                return Err(StepError::Deadended(state));
+            }
+        };
+
+        match outcome {
+            Ok(ProcOutcome::Return(ret_val)) => {
+                if let Some(rv) = ret_val {
+                    let ret_reg = self.environment.calling_convention.return_register();
+                    state.set_register_by_offset(ret_reg, rv);
+                }
+                // Resume the original caller. The guest routine's `ret` already
+                // consumed the sentinel return slot (stack-return ABI advances
+                // SP), so unlike the fresh-entry return path we do NOT adjust SP.
+                state.set_pc(frame.caller_return_addr);
+            }
+            Ok(ProcOutcome::CallAndResume {
+                target,
+                args: sub_args,
+                resume_tag,
+            }) => {
+                // Nested sub-call: the original caller and saved args carry
+                // forward so the final return still lands at `caller_return_addr`.
+                if let Err(e) = self.setup_native_subcall(
+                    &mut state,
+                    frame.proc_name.clone(),
+                    frame.saved_args.clone(),
+                    frame.caller_return_addr,
+                    target,
+                    sub_args,
+                    resume_tag,
+                ) {
+                    log::error!("native resume nested sub-call setup failed ({e:?}); deadending");
+                    return Err(StepError::Deadended(state));
+                }
+            }
+            Err(e) => {
+                // resume() should never fail when reached via the sentinel (the
+                // proc opted into sub-calls). Deadend defensively.
+                log::error!(
+                    "native resume: {} resume() failed: {:?}; deadending",
+                    frame.proc_name,
+                    e
+                );
+                return Err(StepError::Deadended(state));
+            }
+        }
+
+        // Deferred-fork handling identical to the native return path.
+        let mut successors = vec![state];
+        self.process_deferred_forks_into(
+            &mut successors,
+            deferred_forks,
+            &stored_conditions,
+            fork_snapshots,
+        );
+        Ok(successors)
     }
 
     /// Handle SymbolicJumpTarget: a symbolic jump concretized to a bounded
@@ -1213,6 +1493,20 @@ impl RustExplorationManager {
             }
         }
 
+        // Register the native sub-call resume sentinel (S2, bead angr-5gf0s):
+        // a reserved hook address that a proc returning ProcOutcome::CallAndResume
+        // makes the guest routine return to. Recognized by name in
+        // handle_simprocedure; never lifted (is_hooked fires first).
+        let resume_sentinel = crate::procedures::native_resume_sentinel(
+            self.environment.calling_convention.pointer_size(),
+        );
+        interp.register_simprocedure(
+            resume_sentinel,
+            crate::procedures::NATIVE_RESUME_SENTINEL_NAME.to_string(),
+            0,
+            false,
+        );
+
         // Add find/avoid addresses as hooks so the interpreter stops there
         for &addr in &self.find_addrs {
             interp.add_hook(addr);
@@ -1401,3 +1695,7 @@ impl RustExplorationManager {
 #[cfg(test)]
 #[path = "sizes_tests.rs"]
 mod sizes;
+
+#[cfg(test)]
+#[path = "subcall_tests.rs"]
+mod subcall_tests;

@@ -242,6 +242,15 @@ pub struct NativeResumeFrame {
     pub resume_tag: u32,
     /// Original proc arguments the continuation needs after the sub-call.
     pub saved_args: Vec<RustBV>,
+    /// Address the *original* caller of this proc should resume at once the
+    /// continuation finishes. Captured at sub-call time and used as the PC on
+    /// the final [`crate::procedures::ProcOutcome::Return`] instead of reading
+    /// the stack: a stack-return ABI clobbers the slot when the guest routine
+    /// returns to the resume sentinel, and a link-register ABI loses the
+    /// original return address when the dispatcher overwrites LR with the
+    /// sentinel. Storing it on the frame makes resume correct on both (S2,
+    /// bead angr-5gf0s).
+    pub caller_return_addr: u64,
 }
 
 /// Rust-native simulation state.

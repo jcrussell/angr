@@ -29,7 +29,7 @@ use crate::interpreter::{
     DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON, VEXInterpreter,
 };
 use crate::memory::Permission;
-use crate::procedures::{NativeProcedureRegistry, ProcedureError};
+use crate::procedures::{NativeProcedureRegistry, ProcOutcome, ProcedureError};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 #[cfg(feature = "vex-engine-z3")]

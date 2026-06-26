@@ -190,6 +190,67 @@ pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureEr
         .ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
 }
 
+/// Reserved SimProcedure name for the native sub-call **resume sentinel**.
+///
+/// A native proc that returns [`ProcOutcome::CallAndResume`] makes the guest
+/// routine return to [`native_resume_sentinel`], an address registered under
+/// this name in every interpreter's SimProcedure registry. When PC lands there
+/// the dispatcher recognises the name (before any native-registry lookup), pops
+/// the top [`crate::state::NativeResumeFrame`], and re-enters the proc via
+/// [`NativeSimProcedure::resume`]. No guest user defines a function with this
+/// name, and the sentinel address is never lifted (the run loop's `is_hooked`
+/// check fires first), so the name/address pair is collision-safe.
+pub const NATIVE_RESUME_SENTINEL_NAME: &str = "__native_resume__";
+
+/// Address used as the return target of a native sub-call's guest routine.
+///
+/// Picks the top-of-address-space slot for the architecture's pointer width
+/// (`0xFFFF_FFFF_FFFF_FFF0` on 64-bit, `0xFFFF_FFF0` on 32-bit), 16-byte
+/// aligned. It is never executed — it is only ever recognised as a hook — so it
+/// does not need to be mapped; the high reserved slot just avoids colliding
+/// with real binary/hook addresses.
+pub fn native_resume_sentinel(ptr_bytes: u32) -> u64 {
+    let bits = ptr_bytes * 8;
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    mask & !0xFu64
+}
+
+/// Outcome of a native procedure invocation.
+///
+/// Most procedures are return-only and never construct this directly — they
+/// implement [`NativeSimProcedure::call`] returning `Option<RustBV>`, which the
+/// default [`NativeSimProcedure::call_ex`] wraps into [`ProcOutcome::Return`].
+///
+/// A procedure that needs to invoke a guest routine and resume afterwards
+/// (the native equivalent of Python `SimProcedure.call(func, ..., "retsite")`,
+/// e.g. `pthread_once`) overrides `call_ex`/`resume` and returns
+/// [`ProcOutcome::CallAndResume`]. The dispatcher then jumps into `target`,
+/// and on its return re-enters the proc via [`NativeSimProcedure::resume`].
+/// Design: `tools/decisions/native_subcall_dispatcher_design.md` (bead
+/// `angr-5gf0s`, Option B).
+pub enum ProcOutcome {
+    /// Procedure completed; store this return value (or `None` for void).
+    /// Flows through the dispatcher's existing return path (set return
+    /// register, PC = caller return address, pop stack).
+    Return(Option<RustBV>),
+    /// Sub-call: jump into guest routine `target` with `args`, and on its
+    /// return resume this proc via [`NativeSimProcedure::resume`] keyed by
+    /// `resume_tag` (the data-encoded analogue of Python's named continuation).
+    CallAndResume {
+        /// Guest routine entry address to jump into.
+        target: u64,
+        /// Arguments to pass to `target` per the calling convention.
+        args: Vec<RustBV>,
+        /// Which continuation arm of [`NativeSimProcedure::resume`] to run
+        /// when `target` returns.
+        resume_tag: u32,
+    },
+}
+
 /// Trait for native SimProcedure implementations.
 ///
 /// Implementors provide Rust-native execution of common library functions.
@@ -229,6 +290,39 @@ pub trait NativeSimProcedure: Send + Sync {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError>;
+
+    /// Extended entry point that can express a sub-call ([`ProcOutcome`]).
+    ///
+    /// The dispatcher calls this on **fresh** entry (not `call` directly). The
+    /// default delegates to [`Self::call`] and wraps the result in
+    /// [`ProcOutcome::Return`], so the ~24 return-only procedures need no
+    /// changes (Option B, design `angr-5gf0s`). Only procedures that invoke a
+    /// guest routine override this to return [`ProcOutcome::CallAndResume`].
+    fn call_ex(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<ProcOutcome, ProcedureError> {
+        self.call(state, args).map(ProcOutcome::Return)
+    }
+
+    /// Continuation re-entered after a [`ProcOutcome::CallAndResume`] sub-call
+    /// returns. `resume_tag` selects the continuation arm and `saved_args` are
+    /// the original proc arguments captured at sub-call time (mirrors Python's
+    /// `retsite(self, ...)` re-receiving its run() args).
+    ///
+    /// The default returns `NotImplemented`, so only sub-call procedures need
+    /// to override it. Returning [`ProcOutcome::CallAndResume`] from here is
+    /// allowed (a continuation may itself sub-call; the dispatcher's resume
+    /// stack is LIFO).
+    fn resume(
+        &self,
+        _state: &mut RustSimState,
+        _resume_tag: u32,
+        _saved_args: &[RustBV],
+    ) -> Result<ProcOutcome, ProcedureError> {
+        Err(ProcedureError::NotImplemented)
+    }
 }
 
 /// Registry of native SimProcedure implementations.

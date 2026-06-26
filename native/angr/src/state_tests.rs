@@ -92,6 +92,7 @@ fn test_native_resume_stack_default_and_fork_isolation() {
             RustBV::concrete(0x601000, 64),
             RustBV::concrete(0x400500, 64),
         ],
+        caller_return_addr: 0x400600,
     });
     assert_eq!(parent.native_resume_stack().len(), 1);
 
@@ -567,6 +568,7 @@ fn build_populated_state() -> RustSimState {
         proc_name: "pthread_once".to_string(),
         resume_tag: 1,
         saved_args: vec![RustBV::concrete(0x602000, 64)],
+        caller_return_addr: 0x4007a0,
     });
 
     // Solver constraints — `rbx > 10` must hold after restore.
@@ -613,6 +615,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
             assert_eq!(rf.proc_name, of.proc_name);
             assert_eq!(rf.resume_tag, of.resume_tag);
             assert_eq!(rf.saved_args.len(), of.saved_args.len());
+            assert_eq!(rf.caller_return_addr, of.caller_return_addr);
         }
     }
     assert_eq!(restored.no_ip_concretization(), orig.no_ip_concretization());

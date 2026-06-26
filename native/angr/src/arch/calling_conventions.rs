@@ -122,6 +122,20 @@ pub trait CallingConvention: Send + Sync {
         true
     }
 
+    /// Register offset of the link/return-address register on ABIs where
+    /// `call` writes the return address to a register rather than the stack
+    /// (`pops_return_addr() == false`): ARM/ARM64 LR (R14/X30), MIPS `$ra`
+    /// (R31). Returns `None` on stack-return ABIs (x86/AMD64) and on any ABI
+    /// that has not yet wired this up.
+    ///
+    /// Used by the native sub-call dispatcher (S2, bead angr-5gf0s) to make a
+    /// guest routine return to the resume sentinel on link-register ABIs. Until
+    /// an arch overrides it, link-register sub-calls fall back to the Python
+    /// SimProcedure path.
+    fn link_register(&self) -> Option<u32> {
+        None
+    }
+
     /// Extract up to N arguments from registers and memory.
     ///
     /// Arguments are extracted in order: first from registers, then from

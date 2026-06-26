@@ -1,6 +1,10 @@
 # Design spike: native SimProcedure sub-call (ADDS_EXITS) dispatcher mechanism
 
-Status: **spike / design — needs human go/no-go before implementation**
+Status: **APPROVED — Option B, S2 implemented** (human go/no-go 2026-06-25).
+S1 (`angr-pn3w8`, resume-stack field) landed in `abd0c1544`; S2 (dispatcher
+core: `ProcOutcome`/`call_ex`/`resume` + resume sentinel + `setup_native_subcall`
+/ `handle_native_resume`) implemented this commit. S3 (`angr-xxukz`, port
+`pthread_once`) remains the next slice.
 Filed: 2026-06-25 (iter 42, autonomous)
 Blocks (drainable once landed): `angr-xxukz` (native `pthread_once`),
 `pthread_create` `static_exits`, and any future native proc that must invoke a
@@ -166,6 +170,17 @@ DRY: matches Python `pthread_once.run` / `retsite` line for line.
   a tiny guest routine and resumes. No real proc yet.
 - **S3 (xxukz):** port `pthread_once` to use S1+S2; e2e test against a binary that
   calls `pthread_once`. Then `pthread_create` `static_exits` as a follow-on.
+  **S3 integration note (S2 review finding):** S2 wired `call_ex`/`CallAndResume`
+  into the `handle_simprocedure` dispatch path (`stepping.rs`) only. The *other*
+  native-proc dispatch path — the inline fast path at the top of the run loop
+  (`run_loop.rs`, the `native_proc.call(&mut state, &args)` arm ~L274) — still
+  calls the return-only `call`. A real sub-call proc reached via that path (fresh
+  entry when PC lands directly on the hook at loop top) would silently never
+  sub-call. S3 must route that arm through `call_ex` (and handle `CallAndResume`)
+  too, or consolidate the two paths. Harmless in S2: the default `call_ex` equals
+  `call` and no real proc returns `CallAndResume` yet. The resume *return* (guest
+  `ret` → sentinel) is unaffected — the sentinel surfaces mid-block as
+  `RunResult::SimProcedure`, so it already lands in `handle_simprocedure`.
 
 S1 is the only near-zero-risk slice; S2 is the genuinely hard interpreter work
 and should not be attempted blind — this doc is its design input.
