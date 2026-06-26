@@ -133,6 +133,19 @@ if (( CARGO_ONLY == 1 )); then
             fi
         done
     fi
+    # build.rs runpaths the .so to whatever libz3 `python3` (on PATH) resolves —
+    # which in --cargo-only mode is the SYSTEM python3, not the venv. Linking the
+    # system libz3 while claripy loads the venv libz3 loads TWO libz3 instances
+    # and double-frees at interpreter teardown (`free(): invalid pointer`,
+    # SIGABRT/SIGSEGV at process exit — see bd cargo-direct-so-teardown-segfault).
+    # Pin the runpath to the venv's libz3 so Python and Rust share one instance.
+    if [[ -z "${Z3_LIBRARY_PATH_OVERRIDE:-}" ]]; then
+        VENV_Z3_LIB="$VENV/lib/python3.12/site-packages/z3/lib"
+        if [[ -f "$VENV_Z3_LIB/libz3.so" || -f "$VENV_Z3_LIB/libz3.dylib" ]]; then
+            export Z3_LIBRARY_PATH_OVERRIDE="$VENV_Z3_LIB"
+            echo "using Z3_LIBRARY_PATH_OVERRIDE=$Z3_LIBRARY_PATH_OVERRIDE"
+        fi
+    fi
     cargo build --manifest-path "$MANIFEST" "${CARGO_PROFILE_FLAG[@]}"
     SRC="$REPO_DIR/target/$CARGO_PROFILE_DIR/librustylib.so"
     if [[ ! -f "$SRC" ]]; then
