@@ -408,6 +408,9 @@ impl NativeProcedureRegistry {
         // matching Python pthread_mutex_lock/unlock `return 0`).
         registry.register(Arc::new(pthread::NativePthreadMutexLock));
         registry.register(Arc::new(pthread::NativePthreadMutexUnlock));
+        // pthread_once: native sub-call (CallAndResume) — runs the init routine
+        // then returns 0; already-initialised guard returns 0 directly (xxukz).
+        registry.register(Arc::new(pthread::NativePthreadOnce));
         // Heap procedures (bump allocator, matching SimHeapBrk)
         registry.register(Arc::new(malloc::NativeMalloc));
         registry.register(Arc::new(malloc::NativeFree));
