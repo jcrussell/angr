@@ -247,6 +247,36 @@ class TestRustExplorationManagerUnit:
         assert peak_active <= 1, f"active stash peaked at {peak_active}, exceeding max_active_states=1"
         assert counts.get("pruned", 0) > 0, f"enforcement never pruned a fork; counts={counts}"
 
+    def test_parallel_width_histogram(self, fauxware_project):
+        """angr-panhl.3: the step-weighted width histogram buckets every
+        dispatched task exactly once and captures concurrent (>1) frontier width.
+
+        Peak width alone (parallel_max_active_width) cannot tell a sustained
+        wide sweep from a single brief fork — which is the variable the panhl.1
+        kill-gate omitted and this audit needs. fauxware's symbolic auth branch
+        forks the active stash past width 1, so a correct histogram must
+        (a) sum exactly to parallel_tasks (every dispatch bucketed once) and
+        (b) record a sample in a width>=2 bucket, distinguishing it from a
+        single-path run.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run()
+
+        stats = mgr.stats  # high-level manager exposes stats as a @property
+        hist = stats["parallel_width_hist"]
+        assert isinstance(hist, list) and len(hist) == 5, f"unexpected hist shape: {hist!r}"
+
+        # Core invariant: every dispatched task is bucketed exactly once.
+        assert sum(hist) == stats["parallel_tasks"], f"hist sum {sum(hist)} != parallel_tasks {stats['parallel_tasks']}"
+
+        # fauxware forks at the auth branch, so concurrency must be observed and
+        # the >=2 buckets must reflect it (not collapse everything into width-1).
+        assert stats["parallel_max_active_width"] >= 2, (
+            f"fauxware should fork past width 1; max_width={stats['parallel_max_active_width']}"
+        )
+        assert sum(hist[1:]) > 0, f"width>=2 observed but no >=2 bucket populated: {hist}"
+
     def test_register_python_procedure_appears_in_listing(self):
         """register_python_procedure adds the procedure to the registry."""
         mgr = _RustExplorationManager("amd64")

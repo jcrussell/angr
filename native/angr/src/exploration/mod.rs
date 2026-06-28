@@ -284,6 +284,14 @@ pub struct RustExplorationManager {
     /// Largest schedulable frontier width (active stash + dispatched state)
     /// observed in a single step — the independent-state count over time.
     pub(crate) parallel_max_active_width: u64,
+    /// angr-panhl.3 (concurrent-width audit): step-weighted histogram of the
+    /// schedulable frontier width. Peak width (`parallel_max_active_width`) is
+    /// misleading — one brief fork to width 5 looks identical to a sustained
+    /// width-5 sweep. This counts dispatched-task samples per width bucket so
+    /// the *sustained* (step-weighted) width is recoverable: the fraction of
+    /// steps with ≥2/≥3/≥5 concurrent states is the true parallel-favorability
+    /// signal panhl.1 omitted. Buckets: [width==1, ==2, 3–4, 5–8, ≥9].
+    pub(crate) parallel_width_hist: [u64; 5],
     /// Sticky home-worker assignment per active state id, rebuilt each sample
     /// from the surviving frontier (bounds memory to the active width).
     pub(crate) parallel_worker_of: HashMap<u64, usize>,
@@ -360,6 +368,7 @@ impl RustExplorationManager {
             parallel_migrations: 0,
             parallel_tasks: 0,
             parallel_max_active_width: 0,
+            parallel_width_hist: [0; 5],
             parallel_worker_of: HashMap::new(),
         })
     }

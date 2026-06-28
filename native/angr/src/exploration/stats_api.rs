@@ -155,6 +155,12 @@ impl RustExplorationManager {
         dict.set_item("parallel_tasks", self.parallel_tasks)?;
         dict.set_item("parallel_num_workers", self.parallel_num_workers)?;
         dict.set_item("parallel_max_active_width", self.parallel_max_active_width)?;
+        // angr-panhl.3 (concurrent-width audit): step-weighted width histogram
+        // [width==1, ==2, 3–4, 5–8, ≥9]. Sustained width (the parallel-
+        // favorability signal panhl.1 omitted) = 1 - hist[0]/sum(hist); the
+        // fraction of steps with ≥3 concurrent states = (hist[2]+hist[3]+hist[4])
+        // / sum(hist).
+        dict.set_item("parallel_width_hist", self.parallel_width_hist.to_vec())?;
         dict.set_item(
             "python_callback_count",
             self.profiling.accumulated_stats.python_callback_count,
