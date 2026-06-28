@@ -73,6 +73,7 @@ version = "0.1.0"
 dependencies = [
  "backtrace",
  "criterion",
+ "crossbeam-deque",
  "env_logger",
  "fixedbitset 0.5.7",
  "icicle-fuzzing",

@@ -371,6 +371,41 @@ Migration path
 
 If Option A is chosen, a staged rollout:
 
+.. note::
+
+   **Implementation update (angr-1ilq, 2026-06-28) — the transport
+   mechanism below is superseded.** Phases 2–3 originally specced
+   *translate-on-steal*: the stealing worker calls
+   ``SymContext::translate_state`` to pull a victim state into its own
+   context. Adversarial review (``angr-1ilq.1``) proved this **unsound** for
+   work-stealing: ``translate_state`` reads the *source* Z3 context, but it
+   runs on the *stealing* thread while the victim worker is still using that
+   context (it was stolen *because* the victim is busy) — a data race inside
+   Z3, which is single-threaded per context (hazard C).
+
+   The shipped transport instead crosses the worker boundary with
+   ``Send``-by-construction data: ``RustSimState::detach_for_migration`` →
+   ``StateMigrationPayload`` (serialized, context-free bytes + live
+   GIL-managed ``Py`` overlay handles) → ``reattach`` rebuilds every AST in
+   the *stealer's own* context, never reading the source. Zero ``unsafe``.
+   See ``native/angr/src/state/migration.rs`` and the ``angr-1ilq.1`` bead.
+   ``translate_state`` survives only for same-thread context moves; it must
+   **not** be reintroduced on the steal path.
+
+   **GIL-coupling reframes Phases 3–4 (angr-1ilq.3).** Stepping is not a
+   pure-Rust ``step → successors`` operation: ``step_state_with_skip`` takes
+   a live ``Python<'_>`` token and yields back to Python at seven callback
+   points (find/avoid predicates, SimProcedures, syscalls, symbolic
+   branches, Python-VEX fallback, errors). A worker therefore cannot step a
+   state without the GIL. Real parallelism requires releasing the GIL
+   (``py.allow_threads``) only around the Rust-pure inner work and
+   re-acquiring it for callbacks — Phase 4 is the load-bearing half, not a
+   coda. The first ``angr-1ilq.3`` increment landed the work-stealing pool
+   machinery (``exploration/scheduler.rs``: per-worker Z3 context,
+   ``crossbeam-deque`` over ``StateMigrationPayload``, task-boundary
+   cancellation) **proven in isolation**; wiring it into ``run_loop`` behind
+   the GIL boundary is the deferred follow-up.
+
 #. **Phase 0 — instrumentation.** Add per-state ``task_id`` and a
    counter that tracks state migrations across (hypothetical)
    worker boundaries. Run the bench suite to confirm migration
@@ -424,9 +459,15 @@ Open questions
   the same NUMA node first, fall back to global) might matter
   past 8 cores but are an optimization, not a correctness concern.
 * **Cancellation.** A worker that finds the target while others are
-  still stepping should be able to signal "stop". Z3 supports
-  cancellation via ``set_interrupt``; the scheduler needs to fan
-  it out to each per-worker context.
+  still stepping should be able to signal "stop". The shipped scheduler
+  (``exploration/scheduler.rs``) uses a shared ``AtomicBool``
+  (``CancelToken``) checked at task boundaries — the migration grain — so a
+  worker finishes its current task then stops. Z3-level mid-solve
+  interruption (``Context::handle().interrupt()``; ``ContextHandle`` is
+  ``Send + Sync``) is available and is the right tool to abort a *long
+  in-flight solve*, but fanning it out safely requires keeping each worker's
+  context alive past every possible interrupter — coupling that belongs with
+  the run-loop integration, where solve durations matter. Deferred.
 * **Determinism.** Parallel exploration is non-deterministic by
   nature (state visit order depends on scheduling). Document the
   loss of determinism and gate it on an env var so reproducible

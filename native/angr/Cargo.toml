@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 # VEX engine with Z3 enabled by default; fuzzer is optional
 default = ["vex-engine", "vex-engine-z3", "automaton"]
 vex-engine = ["im", "lru", "thiserror"]
-vex-engine-z3 = ["vex-engine", "z3", "z3-sys"]
+vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
 automaton = ["indexmap", "fixedbitset"]
 
@@ -43,6 +43,11 @@ z3-sys = { version = "0.10", optional = true }
 im = { version = "15.1", optional = true }
 lru = { version = "0.12", optional = true }
 thiserror = { version = "1.0", optional = true }
+# Work-stealing deque for the parallel exploration scheduler (angr-1ilq.3).
+# Gated under vex-engine-z3 (the scheduler only exists alongside the Z3-backed
+# StateMigrationPayload transport). Already present in Cargo.lock transitively
+# (via rayon), so promoting it to a direct dep adds zero new crates.
+crossbeam-deque = { version = "0.8", optional = true }
 
 # Fuzzer dependencies (optional)
 icicle-fuzzing = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
