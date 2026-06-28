@@ -170,7 +170,16 @@ impl RustSimState {
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
-            native_resume_stack: self.native_resume_stack.clone(),
+            // angr-1ilq.2: every other context-bound field above is
+            // Z3_translate'd into target_ctx; the resume stack's
+            // `saved_args` carries context-bound ASTs too and must be
+            // translated, not plain-cloned, or a symbolic saved_arg becomes a
+            // dangling foreign-context AST under threading.
+            native_resume_stack: self
+                .native_resume_stack
+                .iter()
+                .map(|frame| frame.translate_into(target_ctx))
+                .collect(),
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),

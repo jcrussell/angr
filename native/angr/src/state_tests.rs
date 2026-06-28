@@ -784,6 +784,93 @@ fn test_translate_state_cross_context() {
     );
 }
 
+// angr-1ilq.2: translate_state must Z3_translate every RustBV in
+// native_resume_stack.saved_args, not plain-clone the stack. A symbolic
+// saved_arg cloned into a foreign worker's context is a dangling cross-context
+// AST → UB once that worker touches it. This A->B->A' round-trip pushes a frame
+// whose saved_args mix a symbolic arg (pinned by a path constraint) and a
+// concrete arg, re-homes the whole state through a fresh context and back, and
+// asserts the symbolic arg re-proves its witness via the transferred constraint
+// at every hop (the concrete arg clones verbatim). Without the translate, the
+// second hop reads a foreign-context AST.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_translate_state_resume_stack_cross_context() {
+    use z3::{Config, Context};
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    // Symbolic saved_arg pinned to a known witness via a path constraint.
+    let x = {
+        let s = state.solver().borrow();
+        RustBV::symbolic(&s, "ilq2_saved_arg", 64)
+    };
+    let constraint = {
+        let s = state.solver().borrow();
+        x.eq(&RustBV::concrete(0xCAFE_F00D_DEAD_BEEF, 64), &s)
+    };
+    state.add_constraint(constraint);
+    // Frame mixes a symbolic arg (must translate) and a concrete arg (clones
+    // verbatim) — covers both arms of RustBV::translate_into.
+    state.push_native_resume_frame(NativeResumeFrame {
+        proc_name: "ilq2_proc".to_string(),
+        resume_tag: 7,
+        saved_args: vec![x.clone(), RustBV::concrete(0x602000, 64)],
+        caller_return_addr: 0x400600,
+    });
+
+    let original = Context::thread_local();
+
+    // Re-prove the frame survived translation into `twin`'s context.
+    let verify = |twin: &RustSimState, label: &str| {
+        assert!(
+            twin.solver().borrow().is_sat(),
+            "{label}: translated solver must remain SAT",
+        );
+        let stack = twin.native_resume_stack();
+        assert_eq!(stack.len(), 1, "{label}: resume stack preserved");
+        let frame = &stack[0];
+        assert_eq!(frame.proc_name, "ilq2_proc", "{label}: proc_name preserved");
+        assert_eq!(frame.resume_tag, 7, "{label}: resume_tag preserved");
+        assert_eq!(
+            frame.caller_return_addr, 0x400600,
+            "{label}: caller_return_addr preserved",
+        );
+        assert_eq!(frame.saved_args.len(), 2, "{label}: saved_args count");
+        assert_eq!(
+            twin.solver().borrow().eval(&frame.saved_args[0]),
+            Some(0xCAFE_F00D_DEAD_BEEF),
+            "{label}: symbolic saved_arg must re-prove its witness",
+        );
+        assert_eq!(
+            frame.saved_args[1].as_u64(),
+            Some(0x602000),
+            "{label}: concrete saved_arg clones verbatim",
+        );
+    };
+
+    // A -> B: translate the whole state into a fresh target context.
+    let cfg_b = Config::new();
+    let ctx_b = Context::new(&cfg_b);
+    assert_ne!(
+        original.get_z3_context().as_ptr() as usize,
+        ctx_b.get_z3_context().as_ptr() as usize,
+        "test bug: target == source context",
+    );
+    Context::set_thread_local(&ctx_b);
+    let twin_b = state.translate_state(&ctx_b);
+    verify(&twin_b, "A->B");
+
+    // B -> A': translate the twin BACK into another fresh context — the hop
+    // that catches a half-translated (foreign-context) resume-stack AST.
+    let cfg_a2 = Config::new();
+    let ctx_a2 = Context::new(&cfg_a2);
+    Context::set_thread_local(&ctx_a2);
+    let twin_a2 = twin_b.translate_state(&ctx_a2);
+    verify(&twin_a2, "B->A'");
+
+    Context::set_thread_local(&original);
+}
+
 // angr-9pwjd: production-sized translate_state round-trip validation.
 //
 // The synthetic kill-gate above proves the mechanism on a one-leaf state.

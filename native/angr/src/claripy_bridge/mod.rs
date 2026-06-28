@@ -55,9 +55,13 @@
 //!   logic in `get_claripy_ast`: clearing only `AST_CACHE` would leave
 //!   `CLARIPY_AST_CACHE` still pointing at Python ASTs for symbol ids
 //!   that the next conversion will re-allocate, which surfaces as a
-//!   correct hit on a stale identity. `clear_all_caches` extends to
-//!   the global registry; do NOT call `clear_global_registry()`
-//!   in isolation — that breaks C2.
+//!   correct hit on a stale identity. `reset_for_new_exploration`
+//!   extends the clear to the global registry; do NOT call
+//!   `clear_global_registry()` in isolation — that breaks C2. Under the
+//!   Option-A parallel model (angr-1ilq) the global clear is
+//!   exploration-start / main-thread only; a worker clears only its own
+//!   thread-locals via `clear_worker_local_caches` so it cannot wipe
+//!   symbol identity that sibling workers still hold.
 //!
 //! - **C4. Expression nodes are cached by operands pointer only.**
 //!   `EXPRESSION_BY_OPERANDS_PTR` (keyed by `Arc::as_ptr(operands) as

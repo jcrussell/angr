@@ -253,6 +253,33 @@ pub struct NativeResumeFrame {
     pub caller_return_addr: u64,
 }
 
+#[cfg(feature = "vex-engine-z3")]
+impl NativeResumeFrame {
+    /// Cross-context twin of this frame (angr-1ilq.2): `Z3_translate` every
+    /// context-bound `RustBV` in `saved_args` into `target_ctx`; all other
+    /// fields are context-independent and cloned. Mirrors
+    /// [`crate::state::RustSimState::translate_state`] (state/fork.rs) — a
+    /// concrete `saved_arg` clones verbatim (see [`RustBV::translate_into`] in
+    /// symbolic/value_z3.rs), a symbolic one is re-homed so a stolen state's
+    /// resume stack is valid in the worker's context rather than a dangling
+    /// foreign-context AST.
+    ///
+    /// `target_ctx` must be a *different* context from the one these ASTs live
+    /// in (the same panic-on-same-context contract as `RustBV::translate_into`).
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> NativeResumeFrame {
+        NativeResumeFrame {
+            proc_name: self.proc_name.clone(),
+            resume_tag: self.resume_tag,
+            saved_args: self
+                .saved_args
+                .iter()
+                .map(|bv| bv.translate_into(target_ctx))
+                .collect(),
+            caller_return_addr: self.caller_return_addr,
+        }
+    }
+}
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking

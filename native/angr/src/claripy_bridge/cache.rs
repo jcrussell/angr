@@ -37,8 +37,8 @@ const AST_CACHE_SIZE: usize = 10000;
 // cross-cache invariant C5.
 //
 // Invalidation: cleared by `clear_ast_cache` (block boundary /
-// significant constraint changes) and `clear_all_caches` (exploration
-// restart). Capacity-bounded LRU eviction beyond that. See cross-cache
+// significant constraint changes) and `reset_for_new_exploration`
+// (exploration restart). Capacity-bounded LRU eviction beyond that. See cross-cache
 // invariant C3 — partial clears are never correct.
 //
 // Coherence with CLARIPY_AST_CACHE: a `Symbolic`/`Constrained` hit
@@ -83,7 +83,7 @@ macro_rules! tl_cache {
 // acceptable.
 //
 // Invalidation: cleared only by `clear_ast_cache` (block boundary,
-// but normally called when starting fresh) and `clear_all_caches`
+// but normally called when starting fresh) and `reset_for_new_exploration`
 // (exploration restart). See cross-cache invariant C3.
 //
 // Coherence with SymbolicIdentityRegistry: forward subset relation
@@ -124,7 +124,7 @@ thread_local! {
 // surfacing as a wrong-AST return. The `Py<PyAny>` is the payload
 // returned on hit.
 //
-// Invalidation: cleared by `clear_ast_cache` and `clear_all_caches`
+// Invalidation: cleared by `clear_ast_cache` and `reset_for_new_exploration`
 // (C3). Capacity-bounded LRU eviction (10000) beyond that. On
 // eviction, the held `RustBV` drops its refcount, allowing the
 // operands `Arc` to be freed — safe because the evicted entry is no
@@ -270,17 +270,44 @@ pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Op
 /// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
 ///
-/// Note: This clears thread-local caches but NOT the global registry.
-/// Use `clear_all_caches()` to clear everything including global state.
+/// Note: This clears thread-local caches but NOT the global registry. It is the
+/// **worker-local** clear — safe to call from any exploration worker thread
+/// because it only touches this thread's caches (see
+/// [`clear_worker_local_caches`] for the threading-intent alias). Use
+/// [`reset_for_new_exploration`] to also wipe the cross-thread global registry.
 pub fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
     tl_cache!(CLARIPY_AST_CACHE, clear());
     tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
 }
 
-/// Clear all caches including the global registry.
-/// Call this at the start of a new exploration to prevent stale mappings.
-pub fn clear_all_caches() {
+/// Worker-local cache clear: drops only this thread's three thread-local AST
+/// caches, never the process-wide `SymbolicIdentityRegistry`.
+///
+/// angr-1ilq.2: a self-documenting entry point for the Option-A parallel
+/// scheduler (1ilq.3) to call on per-worker task-boundary / teardown. It is a
+/// thin alias for [`clear_ast_cache`] kept distinct so a worker-side call reads
+/// as worker-scoped and a future contributor does not reach for
+/// [`reset_for_new_exploration`] (which wipes global symbol identity that
+/// sibling workers depend on). See cross-cache invariant C3 in the parent
+/// module rustdoc.
+pub fn clear_worker_local_caches() {
+    clear_ast_cache();
+}
+
+/// Reset all caches for a fresh exploration: the thread-local AST caches **and**
+/// the process-wide global registry.
+///
+/// **Main-thread / exploration-start only.** This wipes the cross-thread
+/// `SymbolicIdentityRegistry`, which holds canonical symbol identity shared by
+/// every worker. Under the Option-A parallel model (1ilq) it MUST NOT be called
+/// from a worker mid-run — doing so would invalidate live symbol IDs other
+/// workers still hold. Workers clear only their own caches via
+/// [`clear_worker_local_caches`].
+///
+/// Clears the thread-local caches first, then the global registry, so the
+/// ordering still honors cross-cache invariant C3 (no partial clear is correct).
+pub fn reset_for_new_exploration() {
     clear_ast_cache();
     crate::symbolic::clear_global_registry();
 }
@@ -293,4 +320,59 @@ pub fn cache_stats() -> (usize, usize) {
         let c = cache.borrow();
         (c.len(), c.cap().get())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // angr-1ilq.2: the worker-local clear must leave the cross-thread global
+    // SymbolicIdentityRegistry intact. Under the Option-A parallel model a
+    // worker clears only its own thread-local caches at a task boundary; if
+    // that path also wiped the global registry it would invalidate symbol
+    // identity every sibling worker still holds. This pins the split:
+    // register a symbol (populating both the thread-local CLARIPY_AST_CACHE and
+    // the global registry via the C2 mirror), run the worker-local clear, then
+    // assert the global identity still resolves while the thread-local was
+    // dropped.
+    #[test]
+    fn test_worker_local_clear_preserves_global_registry() {
+        // Distinctive id unlikely to collide with allocate_id()-minted ids in
+        // sibling tests sharing the process-global registry.
+        const SYMBOL_ID: u64 = 0x1A2B_3C4D_5E6F;
+
+        Python::initialize();
+        Python::attach(|py| {
+            store_claripy_ast_with_info(0x7777, SYMBOL_ID, "ilq2_sym", 64, py.None());
+
+            // Precondition: identity is live in the global registry.
+            assert!(
+                global_registry().has_original(SYMBOL_ID),
+                "setup: registry must hold the symbol after store",
+            );
+
+            // Worker-local clear: drops this thread's caches only.
+            clear_worker_local_caches();
+
+            // The global registry — and thus cross-thread symbol identity —
+            // survives the worker-local clear.
+            assert!(
+                global_registry().has_original(SYMBOL_ID),
+                "worker-local clear must NOT wipe the global registry",
+            );
+            assert!(
+                get_claripy_ast(SYMBOL_ID).is_some(),
+                "symbol identity must still resolve via the global registry \
+                 after a worker-local clear",
+            );
+
+            // Contrast: the exploration-start reset DOES drop the global
+            // identity (and is main-thread / start-of-run only).
+            reset_for_new_exploration();
+            assert!(
+                !global_registry().has_original(SYMBOL_ID),
+                "reset_for_new_exploration must clear the global registry",
+            );
+        });
+    }
 }
