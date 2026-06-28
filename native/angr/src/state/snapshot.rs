@@ -24,6 +24,10 @@ pub enum SnapshotError {
     UnknownArch { name: String },
     #[error("decode error: {0}")]
     Decode(String),
+    /// `reattach` was called while `target_ctx` was not the active thread-local
+    /// Z3 context — rebuilding would mint ASTs in the wrong context (angr-1ilq.1).
+    #[error("reattach target_ctx is not the active thread-local Z3 context")]
+    ContextMismatch,
 }
 
 /// Snapshot of a [`RustSimState`]'s persistable state (angr-x04s.1.3).

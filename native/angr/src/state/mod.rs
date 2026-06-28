@@ -161,12 +161,18 @@ mod export;
 mod filesystem;
 mod fork;
 mod inspection;
+/// Cross-worker state migration transport (angr-1ilq.1). Z3-only: migration
+/// between distinct per-worker Z3 contexts is meaningless without the solver.
+#[cfg(feature = "vex-engine-z3")]
+mod migration;
 mod snapshot;
 mod types;
 
 pub use export::*;
 pub use filesystem::*;
 pub use inspection::*;
+#[cfg(feature = "vex-engine-z3")]
+pub use migration::StateMigrationPayload;
 pub use snapshot::*;
 pub use types::*;
 
