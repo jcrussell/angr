@@ -445,6 +445,31 @@ If Option A is chosen, a staged rollout:
    speedup on the slow Z3-bound trio with no regression on the
    single-threaded baseline.
 
+   .. important:: **Overhead GO/NO-GO gate (angr-1obng, 2b′) — result: NO-GO.**
+
+      Before wiring the live wave loop (2c), the ``2b′`` gate measured the
+      *real* per-state migration tax with the ``RUST_PARALLEL_SHADOW_PROBE``
+      shadow probe (``to_serialized`` + ``from_serialized`` into a foreign Z3
+      context, the exact serde
+      :rust:struct:`StateMigrationPayload::reattach` performs) and pitted it
+      against an optimistically-biased parallelism model
+      (``tests/benchmarks/run_parallel_overhead_gate.py``). At 2 workers both
+      target benches come back **NO-GO**: ``cmu_binary_bomb_partial`` ≈ 0.96×
+      (migration tax ≈ 0.30 s = 43 % of the 0.70 s clean serial run) and
+      ``codegate_2017-angrybird`` ≈ 0.07× (migration tax ≈ 51 s = **13.6× the
+      entire 3.77 s** clean serial run; ≈ 60 ms/state, ≈ 1 MB serialized/state).
+
+      The bottleneck is **transport, not scheduling**: the
+      ``to_serialized``/``from_serialized`` round-trip across Z3 contexts is
+      far too expensive for level-synchronous waves. Per-state cross-context
+      migration (Option A as specified) cannot pay off on these workloads
+      until the transport is ≈ 10–50× cheaper. **2c live wiring is therefore
+      NOT authorized.** The 2b′ scheduling-policy primitives (serial bounce
+      queue, shared block cache, narrow-frontier fallback) still land as
+      isolated, tested machinery ready to receive 2c *if and when* a cheaper
+      migration transport closes the gap; reducing that transport cost is the
+      true blocker and is tracked separately.
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
