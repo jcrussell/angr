@@ -162,6 +162,24 @@ impl RustExplorationManager {
         // fraction of steps with ≥3 concurrent states = (hist[2]+hist[3]+hist[4])
         // / sum(hist).
         dict.set_item("parallel_width_hist", self.parallel_width_hist.to_vec())?;
+        // SI-B (angr-1ilq.3 increment 2b'): real state-migration serde tax,
+        // measured by the opt-in shadow probe (RUST_PARALLEL_SHADOW_PROBE). All
+        // zero unless the probe is on; feeds the 2b' overhead GO/NO-GO gate.
+        // `parallel_shadow_migration_ns` is to_serialized (main thread) +
+        // from_serialized (foreign Z3 context, scratch thread); per-state cost =
+        // ns / states, per-state payload = bytes / states.
+        dict.set_item(
+            "parallel_shadow_migration_ns",
+            self.parallel_shadow_migration_ns,
+        )?;
+        dict.set_item(
+            "parallel_shadow_migration_states",
+            self.parallel_shadow_migration_states,
+        )?;
+        dict.set_item(
+            "parallel_shadow_migration_bytes",
+            self.parallel_shadow_migration_bytes,
+        )?;
         dict.set_item(
             "python_callback_count",
             self.profiling.accumulated_stats.python_callback_count,

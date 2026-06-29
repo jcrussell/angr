@@ -349,6 +349,46 @@ class TestRustExplorationManagerUnit:
         assert stats["parallel_num_workers"] == 4
         assert stats["parallel_real_workers"] == 2
 
+    def test_shadow_probe_off_keeps_counters_zero(self, fauxware_project, monkeypatch):
+        """SI-B: with RUST_PARALLEL_SHADOW_PROBE unset the probe is a no-op.
+
+        The three shadow-migration counters must exist in stats() and stay 0
+        after a full exploration — the zero-behaviour-change proof for the
+        default path that the 2b' overhead gate (SI-C) relies on.
+        """
+        monkeypatch.delenv("RUST_PARALLEL_SHADOW_PROBE", raising=False)
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run()
+
+        stats = mgr.stats  # high-level manager exposes stats as a @property
+        for key in (
+            "parallel_shadow_migration_ns",
+            "parallel_shadow_migration_states",
+            "parallel_shadow_migration_bytes",
+        ):
+            assert key in stats, f"missing shadow-probe counter {key}"
+            assert stats[key] == 0, f"{key} should be 0 with probe off, got {stats[key]}"
+
+    def test_shadow_probe_on_records_migration_cost(self, fauxware_project, monkeypatch):
+        """SI-B: RUST_PARALLEL_SHADOW_PROBE=1 records the real migration serde tax.
+
+        The env var is read ONCE at manager construction, so it must be set
+        BEFORE the manager is built. After a few dispatched states all three
+        counters must be strictly positive (a state was serialized on the main
+        thread and deserialized in a foreign Z3 context on the scratch thread),
+        and the rebuilt states are discarded so exploration still completes.
+        """
+        monkeypatch.setenv("RUST_PARALLEL_SHADOW_PROBE", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run()
+
+        stats = mgr.stats
+        assert stats["parallel_shadow_migration_states"] > 0, "probe never sampled a state"
+        assert stats["parallel_shadow_migration_ns"] > 0, "no migration time recorded"
+        assert stats["parallel_shadow_migration_bytes"] > 0, "no serialized bytes recorded"
+
     def test_register_python_procedure_appears_in_listing(self):
         """register_python_procedure adds the procedure to the registry."""
         mgr = _RustExplorationManager("amd64")

@@ -59,6 +59,11 @@ mod run_loop;
 #[cfg(feature = "vex-engine-z3")]
 #[allow(dead_code)]
 mod scheduler;
+/// SI-B (angr-1ilq.3 increment 2b'): opt-in shadow probe measuring the real
+/// state-migration serde tax. Z3-gated: the scratch thread builds states into
+/// its own `z3::Context`, so it only exists with the Z3-backed engine.
+#[cfg(feature = "vex-engine-z3")]
+mod shadow_probe;
 mod state_api;
 mod state_id;
 mod state_lifecycle;
@@ -318,6 +323,37 @@ pub struct RustExplorationManager {
     /// Sticky home-worker assignment per active state id, rebuilt each sample
     /// from the surviving frontier (bounds memory to the active width).
     pub(crate) parallel_worker_of: HashMap<u64, usize>,
+    /// SI-B (angr-1ilq.3 increment 2b'): opt-in "shadow probe" that measures the
+    /// REAL state-migration serde tax on the live benchmark workload. Read ONCE
+    /// from `RUST_PARALLEL_SHADOW_PROBE` at construction (default false). When
+    /// false the probe is a no-op and exploration behaviour is byte-identical.
+    /// When true, each dispatched state is round-tripped through
+    /// `to_serialized` (on the main thread) + `from_serialized` (in a DIFFERENT
+    /// Z3 context on a persistent scratch thread, faithfully modelling
+    /// `StateMigrationPayload::reattach`'s cross-context AST minting) and the
+    /// result is discarded — it measures the migration cost, never routes it.
+    /// Feeds the 2b' overhead GO/NO-GO gate (SI-C).
+    pub(crate) shadow_probe: bool,
+    /// Cumulative nanoseconds spent in the shadow-probe migration round-trip:
+    /// `to_serialized` time (measured on the main thread) + `from_serialized`
+    /// time (measured on the scratch thread). Channel transit time is excluded.
+    pub(crate) parallel_shadow_migration_ns: u64,
+    /// Number of states round-tripped by the shadow probe (one per dispatch
+    /// while the probe is on). Denominator for the per-state migration cost.
+    pub(crate) parallel_shadow_migration_states: u64,
+    /// Cumulative serialized-envelope bytes produced by the shadow probe across
+    /// all round-tripped states. Denominator for the per-state payload size.
+    pub(crate) parallel_shadow_migration_bytes: u64,
+    /// Lazily-spawned persistent scratch-thread channel endpoints for the
+    /// shadow probe: `(send serialized bytes, receive deserialize ns)`. `None`
+    /// until the first probe step spawns the thread. The thread owns its own
+    /// `z3::Context` for its whole life and exits cleanly when this Sender drops
+    /// at manager teardown (channel close ends its `recv` loop) — no JoinHandle
+    /// or Drop impl is needed.
+    pub(crate) shadow_probe_chan: Option<(
+        std::sync::mpsc::Sender<Vec<u8>>,
+        std::sync::mpsc::Receiver<u64>,
+    )>,
 }
 
 #[pymethods]
@@ -398,6 +434,14 @@ impl RustExplorationManager {
             parallel_max_active_width: 0,
             parallel_width_hist: [0; 5],
             parallel_worker_of: HashMap::new(),
+            shadow_probe: std::env::var("RUST_PARALLEL_SHADOW_PROBE")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            parallel_shadow_migration_ns: 0,
+            parallel_shadow_migration_states: 0,
+            parallel_shadow_migration_bytes: 0,
+            shadow_probe_chan: None,
         })
     }
 
