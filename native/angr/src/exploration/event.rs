@@ -122,6 +122,26 @@ impl ExplorationEvent {
         }
     }
 
+    /// Find/avoid **callable predicate** callback. Mirrors the inline
+    /// `need_callback` events the run loop built at the pre-step predicate checks
+    /// (formerly raw struct literals in `run_loop.rs`); `reason` is
+    /// `"find_predicate"` or `"avoid_predicate"`.
+    pub(crate) fn need_predicate(
+        state_id: u64,
+        addr: u64,
+        reason: &str,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
+    ) -> Self {
+        ExplorationEvent {
+            callback_state_id: Some(state_id),
+            callback_reason: Some(reason.to_string()),
+            callback_addr: Some(addr),
+            ..Self::base("need_callback", found_count, active_count, steps)
+        }
+    }
+
     pub(crate) fn need_syscall(
         state_id: u64,
         syscall_num: Option<u64>,
