@@ -25,9 +25,7 @@ use pyo3::types::{PyBytes, PyDict};
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunErrorKind, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter::{
-    DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON, VEXInterpreter,
-};
+use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcOutcome, ProcedureError};
 use crate::solver::RustSolverContext;
@@ -65,6 +63,7 @@ mod state_api;
 mod state_id;
 mod state_lifecycle;
 mod stats_api;
+mod step_core;
 mod stepping;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};

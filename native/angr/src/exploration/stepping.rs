@@ -1,11 +1,10 @@
 use super::*;
 use crate::arch::RegisterFile;
-use crate::interpreter::{BLOCK_CACHE_CAPACITY, BranchSnapshot};
+use crate::interpreter::BranchSnapshot;
 use crate::memory::SymbolicMemory;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
 use lru::LruCache;
-use std::num::NonZeroUsize;
 
 /// Error during state stepping.
 ///
@@ -82,23 +81,23 @@ pub(crate) enum SubcallSetupError {
 ///
 /// Replaces a 12-element tuple destructure that became unreadable as fields
 /// were added. All fields are owned (taken from the interpreter before drop).
-struct InterpreterStepResult {
-    result: RunResult,
-    deferred_forks: Vec<DeferredFork>,
-    last_condition: Option<RustBV>,
-    stored_conditions: FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
-    new_registers: RegisterFile,
-    new_pc: u64,
-    new_call_stack: Vec<CallStackEntry>,
-    new_detailed_history: Vec<HistoryEntry>,
-    recovered_memory: Option<SymbolicMemory>,
-    step_stats: ExecutionStats,
-    updated_block_cache: LruCache<u64, Arc<IRSB>>,
+pub(crate) struct InterpreterStepResult {
+    pub(crate) result: RunResult,
+    pub(crate) deferred_forks: Vec<DeferredFork>,
+    pub(crate) last_condition: Option<RustBV>,
+    pub(crate) stored_conditions: FxHashMap<u64, RustBV>,
+    pub(crate) fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    pub(crate) new_registers: RegisterFile,
+    pub(crate) new_pc: u64,
+    pub(crate) new_call_stack: Vec<CallStackEntry>,
+    pub(crate) new_detailed_history: Vec<HistoryEntry>,
+    pub(crate) recovered_memory: Option<SymbolicMemory>,
+    pub(crate) step_stats: ExecutionStats,
+    pub(crate) updated_block_cache: LruCache<u64, Arc<IRSB>>,
     /// Set only when `state.keep_ip_symbolic()` was true and the interpreter
     /// concretized a symbolic default-exit next-pc. The manager writes this
     /// back to the state's IP register after `state.set_pc(new_pc)`.
-    symbolic_ip_at_exit: Option<RustBV>,
+    pub(crate) symbolic_ip_at_exit: Option<RustBV>,
 }
 
 // `StepError` carries an inline `RustSimState` (see enum doc above) so
@@ -1430,173 +1429,24 @@ impl RustExplorationManager {
         skip_addr: Option<u64>,
         setup_start: Option<std::time::Instant>,
     ) -> InterpreterStepResult {
-        let solver_rc = state.solver().clone();
-        let solver_ref = solver_rc.borrow();
-
-        // Create interpreter with the state's solver.
-        //
-        // angr-027h: a state carrying `force_eager_forks` (a loop-exit fork
-        // resumed at an UnconstrainedJump) overrides the manager-level
-        // `use_deferred_forks` so it materializes successors eagerly and BFSes
-        // to the find target instead of recursively re-deferring.
-        let mut exec_config = self.exec_config.clone();
-        if state.force_eager_forks() {
-            exec_config.use_deferred_forks = false;
-        }
-        let mut interp =
-            VEXInterpreter::with_config(self.environment.vex_arch, &solver_ref, exec_config);
-
-        // Propagate lazy_solves to skip Z3 feasibility checks
-        interp.lazy_solves = self.constraint_solver.lazy_solves;
-        // Propagate NO_IP_CONCRETIZATION from the state. Unlike lazy_solves
-        // which is a manager-level flag, this is a per-state SimOption.
-        interp.no_ip_concretization = state.no_ip_concretization();
-        // NO_SYMBOLIC_JUMP_RESOLUTION sibling — same routing, applied at the
-        // same short-circuit in eval_next_addr_concretized.
-        interp.no_symbolic_jump_resolution = state.no_symbolic_jump_resolution();
-        // KEEP_IP_SYMBOLIC: per-state SimOption that tells eval_next_addr_concretized
-        // to stash the original symbolic next-pc expression (for restore via
-        // set_ip after the manager's set_pc) and to skip the
-        // `assume_true(next_val == addr)` narrowing constraint.
-        interp.keep_ip_symbolic = state.keep_ip_symbolic();
-        interp.set_profiling(self.profiling.profiling_enabled);
-        // Propagate concretization strategy config
-        interp.set_concretizer(self.memory_config.concretizer_config.clone());
-        // Propagate VEX optimization level settings
-        interp.vex_opt_level = self.memory_config.vex_opt_level;
-        // Take a fresh Arc snapshot of the manager's overrides; interp will
-        // share until a setter mutates (none do during step execution).
-        interp.vex_opt_level_overrides =
-            Arc::new(self.memory_config.vex_opt_level_overrides.clone());
-
-        // Copy state registers to interpreter (including symbolic values)
-        interp.registers = state.registers().fork();
-        interp.set_pc(initial_pc);
-        // Forward state_id so inspect dispatch sites can identify which
-        // state owns the firing event (angr-uq4n.3/.4).
-        interp.current_state_id = state.state_id() as i64;
-        // Transfer call stack and detailed history to interpreter
-        interp.call_stack = state.call_stack().to_vec();
-        interp.detailed_history = state.detailed_history().to_vec();
-
-        // Set up hooks, skipping the one we just processed (for zero-length hooks)
-        for &addr in &self.hooks {
-            if Some(addr) != skip_addr {
-                interp.add_hook(addr);
-            }
-        }
-
-        // Register SimProcedures, also skipping the one we just processed
-        for (addr, (name, num_args, no_return)) in &self.simprocedures {
-            if Some(*addr) != skip_addr {
-                interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
-            }
-        }
-
-        // Register the native sub-call resume sentinel (S2, bead angr-5gf0s):
-        // a reserved hook address that a proc returning ProcOutcome::CallAndResume
-        // makes the guest routine return to. Recognized by name in
-        // handle_simprocedure; never lifted (is_hooked fires first).
-        let resume_sentinel = crate::procedures::native_resume_sentinel(
-            self.environment.calling_convention.pointer_size(),
-        );
-        interp.register_simprocedure(
-            resume_sentinel,
-            crate::procedures::NATIVE_RESUME_SENTINEL_NAME.to_string(),
-            0,
-            false,
-        );
-
-        // Add find/avoid addresses as hooks so the interpreter stops there
-        for &addr in &self.find_addrs {
-            interp.add_hook(addr);
-        }
-        for &addr in &self.avoid_addrs {
-            interp.add_hook(addr);
-        }
-
-        // Copy binary regions for code lifting (O(1) Arc clone per region)
-        for (base, data) in &self.environment.binary_regions {
-            interp.add_concrete_memory_shared(*base, Arc::clone(data));
-        }
-
-        // Transfer state's SymbolicMemory into the interpreter.
-        // This makes Rust the source of truth for all memory during
-        // VEX execution. Loads/stores go to SymbolicMemory directly
-        // instead of calling back to Python.
-        interp.set_rust_memory(state.take_memory());
-
-        // Share the exploration-level block cache with the interpreter
-        // so lifted blocks persist across steps (avoids re-lifting).
-        // Swap exploration's populated cache into interp, stash interp's empty one.
-        let interp_empty_cache = interp.swap_block_cache(std::mem::replace(
-            &mut self.environment.block_cache,
-            LruCache::new(
-                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-            ),
-        ));
-        // interp now has the exploration's cache; self.environment.block_cache is a temporary empty placeholder
-        let _ = interp_empty_cache; // drop the empty cache
-
-        // Record setup time before execution
-        if let Some(start) = setup_start {
-            interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
-        }
-
-        // Run until event.
-        // When callable predicates are active (find_needs_python), limit to
-        // 1 block so the run loop can check the predicate at each PC.
-        // Otherwise the interpreter would execute many blocks, skipping past
-        // the target address without the predicate ever seeing it.
-        let steps_limit = if self.find_needs_python || self.avoid_needs_python {
-            1
-        } else {
-            self.max_steps_per_run
-        };
-        let (result, _blocks_executed, deferred_forks) = interp.run_until_event(
+        // Behavior-preserving thin wrapper (angr-1ilq.3, sub-increment 2b-i):
+        // snapshot the read-only step config into a `Send + Sync` `StepContext`
+        // and drive the interpreter through the free function. `ctx` is owned
+        // (it borrows nothing from `self`), so the `&mut self.environment.block_cache`
+        // pass for the cache swap does not conflict. The block cache is the only
+        // `&mut` routing bit the step touches; the manager leaves a placeholder
+        // there during the call and restores `updated_block_cache` afterwards.
+        let ctx = self.step_context();
+        super::step_core::run_interpreter_step_core(
+            &ctx,
             py,
             callbacks,
-            steps_limit,
-            &self.stop_addrs,
-            self.block_granular,
-        );
-
-        // Drain interpreter state into owned values before drop.
-        let last_condition = interp.take_last_branch_condition();
-        let stored_conditions = interp.take_stored_conditions();
-        let fork_snapshots = interp.take_fork_snapshots();
-        let symbolic_ip_at_exit = interp.take_symbolic_ip_at_exit();
-        let new_registers = interp.registers.fork();
-        let new_pc = interp.get_pc();
-        let new_call_stack = std::mem::take(&mut interp.call_stack);
-        let new_detailed_history = std::mem::take(&mut interp.detailed_history);
-
-        // Flush any remaining pending stores to rust_memory before recovery.
-        interp.flush_stores_to_rust_memory();
-        let recovered_memory = interp.take_rust_memory();
-
-        // Return shared block cache to exploration before interpreter is dropped
-        let updated_block_cache = interp.swap_block_cache(LruCache::new(
-            NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-        ));
-
-        let step_stats = interp.take_stats();
-
-        InterpreterStepResult {
-            result,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
-            new_registers,
-            new_pc,
-            new_call_stack,
-            new_detailed_history,
-            recovered_memory,
-            step_stats,
-            updated_block_cache,
-            symbolic_ip_at_exit,
-        }
+            state,
+            initial_pc,
+            skip_addr,
+            setup_start,
+            &mut self.environment.block_cache,
+        )
     }
 
     /// Process deferred forks and add the resulting forked states to the successor list.
