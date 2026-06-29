@@ -325,6 +325,65 @@ fn bench_translate_state_scaling(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+
+/// Measures the REAL state-migration serde round-trip used by the parallel
+/// scheduler: `to_serialized()` -> `from_serialized()`, reconstructing every
+/// Z3 AST in a FRESH (scratch) context. This mirrors
+/// `StateMigrationPayload::reattach` (src/state/migration.rs:90-102), which
+/// requires the target context to be the active thread-local and then rebuilds
+/// the state via `RustSimState::from_serialized`. Unlike
+/// `bench_translate_state_scaling` above — which benches `translate_state`, the
+/// REJECTED cross-context `Z3_translate` path — this is the serde tax the
+/// scheduler actually pays when moving a state between workers. Sweeping leaf
+/// counts (incl. a large 1024) exposes the super-linear serde cost of deep
+/// op-trees. Same state shape as `bench_translate_state_scaling`: K symbolic
+/// leaves spread across a mapped region, each pinned by a path constraint.
+fn bench_migration_roundtrip(c: &mut Criterion) {
+    use rustylib::state::RustSimState;
+    use z3::{Config, Context};
+
+    fn build_state(n_leaves: u64) -> RustSimState {
+        const MEM_BASE: u64 = 0x10000;
+        let mut state = RustSimState::new("AMD64").unwrap();
+        state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
+        for i in 0..n_leaves {
+            let leaf = {
+                let s = state.solver().borrow();
+                RustBV::symbolic(&s, format!("mig_mem_{i}"), 64)
+            };
+            state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
+            let s = state.solver().borrow();
+            let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
+            drop(s);
+            state.add_constraint(c);
+        }
+        state
+    }
+
+    let mut group = c.benchmark_group("migration_roundtrip");
+    for &n in &[8u64, 64, 256, 1024] {
+        let state = build_state(n);
+        // `from_serialized` mints ASTs in the active thread-local context, so
+        // swap to a fresh scratch context to model reattach landing the state
+        // in a different worker's context (reattach's thread-local precondition).
+        let cfg = Config::new();
+        let scratch = Context::new(&cfg);
+        Context::set_thread_local(&scratch);
+        // Sanity-check the setup: from_serialized must rebuild cleanly in the
+        // scratch context (no SnapshotError) before we start timing.
+        let probe = state.to_serialized();
+        RustSimState::from_serialized(&probe).expect("from_serialized in scratch context");
+        group.bench_function(format!("leaves_{n}"), |bench| {
+            bench.iter(|| {
+                let bytes = state.to_serialized();
+                black_box(RustSimState::from_serialized(&bytes).unwrap());
+            })
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // NEON SIMD ops (Mul8x16 / VGetElem / VSetElem — landed in angr-bkcs.2)
 // ---------------------------------------------------------------------------
 
@@ -899,6 +958,7 @@ criterion_group!(
     bench_memory_fork,
     bench_state_fork,
     bench_translate_state_scaling,
+    bench_migration_roundtrip,
     bench_rustbv_neon_ops,
     bench_lineage_push_pop_vs_per_state,
     bench_stash_index_ops,
