@@ -115,11 +115,11 @@ impl Drop for GilWorkGuard {
             d.set(n);
             n
         });
-        if now == 0 {
-            if let Some(start) = REGION_START.with(|s| s.take()) {
-                let elapsed = start.elapsed().as_nanos() as u64;
-                GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
-            }
+        if now == 0
+            && let Some(start) = REGION_START.with(|s| s.take())
+        {
+            let elapsed = start.elapsed().as_nanos() as u64;
+            GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
         }
     }
 }
