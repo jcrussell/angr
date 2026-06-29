@@ -19,8 +19,8 @@ impl RustExplorationManager {
     // Pending state initialization / memory mapping
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _set_pending_state_pc(&mut self, pc: u64) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+    pub(crate) fn _set_pending_state_pc(&mut self, state_id: u64, pc: u64) -> PyResult<()> {
+        self.with_pending_mut(state_id, |pending| {
             pending.state.set_pc(pc);
             Ok(())
         })
@@ -28,11 +28,12 @@ impl RustExplorationManager {
 
     pub(crate) fn _pending_state_map_memory(
         &mut self,
+        state_id: u64,
         addr: u64,
         data: &[u8],
         permissions: u8,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             pending
                 .state
                 .map_memory_data(addr, data, Permission::from_bits(permissions));
@@ -52,8 +53,12 @@ impl RustExplorationManager {
     // Branch condition / register inspection
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_branch_condition(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_pending(state_id, |pending| {
             let condition_id = match &pending.reason {
                 CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
                 _ => {
@@ -79,8 +84,12 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_register(
+        &self,
+        state_id: u64,
+        name: &str,
+    ) -> PyResult<Option<u128>> {
+        self.with_pending(state_id, |pending| {
             pending
                 .state
                 .get_register(name)
@@ -92,9 +101,10 @@ impl RustExplorationManager {
     pub(crate) fn _get_pending_register_ast(
         &self,
         py: Python<'_>,
+        state_id: u64,
         name: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.with_pending(|pending| {
+        self.with_pending(state_id, |pending| {
             let bv = pending
                 .state
                 .get_register(name)
@@ -105,12 +115,12 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_pending_history(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| Ok(pending.state.history().to_vec()))
+    pub(crate) fn _get_pending_history(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self.with_pending(state_id, |pending| Ok(pending.state.history().to_vec()))
     }
 
-    pub(crate) fn _get_pending_jumpkind(&self) -> PyResult<String> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_jumpkind(&self, state_id: u64) -> PyResult<String> {
+        self.with_pending(state_id, |pending| {
             Ok(pending
                 .jumpkind
                 .clone()
@@ -118,8 +128,11 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_pending_history_and_jumpkind(&self) -> PyResult<(Vec<u64>, String)> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_history_and_jumpkind(
+        &self,
+        state_id: u64,
+    ) -> PyResult<(Vec<u64>, String)> {
+        self.with_pending(state_id, |pending| {
             let history = pending.state.history().to_vec();
             let jumpkind = pending
                 .jumpkind
@@ -129,8 +142,13 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+    pub(crate) fn _set_pending_register(
+        &mut self,
+        state_id: u64,
+        name: &str,
+        value: u128,
+    ) -> PyResult<()> {
+        self.with_pending_mut(state_id, |pending| {
             let size = pending
                 .state
                 .arch()
@@ -150,10 +168,11 @@ impl RustExplorationManager {
 
     pub(crate) fn _set_pending_register_symbolic(
         &mut self,
+        state_id: u64,
         name: &str,
         handle_id: u64,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             let bv = if let Some(ref solver) = pending.solver_ctx {
                 solver
                     .symbol_table()
@@ -179,10 +198,11 @@ impl RustExplorationManager {
     pub(crate) fn _set_pending_register_symbolic_ast(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         reg_name: &str,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &sym_ctx;
@@ -229,10 +249,11 @@ impl RustExplorationManager {
     pub(crate) fn _import_symbolic_memory(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
@@ -252,8 +273,13 @@ impl RustExplorationManager {
     // Pending memory get/set (high-level API, used by Python init)
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _get_pending_memory(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_memory(
+        &self,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Vec<u8>> {
+        self.with_pending(state_id, |pending| {
             let bv = pending
                 .state
                 .memory_load(addr, size)
@@ -268,11 +294,16 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _set_pending_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+    pub(crate) fn _set_pending_memory(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
         // angr-5aj8: route through the shared 16-byte-chunk helper. The prior
         // single-pack implementation here silently truncated/overflowed for
         // data.len() > 16 (RustBV::concrete is u128-backed); chunking fixes it.
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 pending
                     .state
@@ -282,12 +313,12 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_pending_dirty_pages(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| Ok(pending.state.get_dirty_pages()))
+    pub(crate) fn _get_pending_dirty_pages(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self.with_pending(state_id, |pending| Ok(pending.state.get_dirty_pages()))
     }
 
-    pub(crate) fn _clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+    pub(crate) fn _clear_pending_dirty_tracking(&mut self, state_id: u64) -> PyResult<()> {
+        self.with_pending_mut(state_id, |pending| {
             pending.state.clear_dirty_pages();
             Ok(())
         })
@@ -297,8 +328,12 @@ impl RustExplorationManager {
     // Pending constraints / handles / snapshots
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _export_pending_constraints(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        self.with_pending(state_id, |pending| {
             let mut result = Vec::new();
 
             let claripy_mod = py.import("claripy")?;
@@ -320,8 +355,14 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _get_active_handle_ids(&self) -> Vec<u64> {
+        // Union the actively-referenced handle ids across ALL pending callbacks
+        // (not keyed by state_id): the sole caller `get_active_handle_ids` has no
+        // state_id to pass, and the result feeds AST-handle-cache eviction
+        // protection, which must keep every live handle regardless of which
+        // pending state owns it. With one entry on the single-threaded path this
+        // is byte-identical to the former single-slot behaviour.
         let mut ids = Vec::new();
-        if let Some(ref pending) = self.pending_callback {
+        for pending in self.pending_callbacks.values() {
             for id in pending.stored_conditions.keys() {
                 ids.push(*id);
             }
@@ -332,19 +373,22 @@ impl RustExplorationManager {
         ids
     }
 
-    pub(crate) fn _export_pending_state(&self) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        self.with_pending(|pending| Ok(pending.state.export_full()))
+    pub(crate) fn _export_pending_state(
+        &self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        self.with_pending(state_id, |pending| Ok(pending.state.export_full()))
     }
 
-    pub(crate) fn _get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_root_state_id(&self, state_id: u64) -> PyResult<Option<u64>> {
+        self.with_pending(state_id, |pending| {
             let state_id = pending.state.state_id();
             Ok(self.sm.roots().get(&state_id).copied())
         })
     }
 
-    pub(crate) fn _get_pending_ancestry(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_ancestry(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self.with_pending(state_id, |pending| {
             let mut ancestry = vec![pending.state.state_id()];
 
             if let Some(parent_id) = pending.state.parent_id() {
@@ -365,10 +409,11 @@ impl RustExplorationManager {
     pub(crate) fn _export_callback_bundle<'py>(
         &self,
         py: Python<'py>,
+        state_id: u64,
         register_names: Vec<String>,
         shared_solver: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        self.with_pending(|pending| {
+        self.with_pending(state_id, |pending| {
             let dict = PyDict::new(py);
 
             let reg_dict = PyDict::new(py);
@@ -422,16 +467,16 @@ impl RustExplorationManager {
     // Pending solver fork / borrow / constraint sync
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _fork_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self.with_pending(|pending| {
+    pub(crate) fn _fork_pending_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
+        self.with_pending(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let forked_ctx = solver_ref.borrow().fork();
             Ok(RustSolverContext::from_sym_context(forked_ctx))
         })
     }
 
-    pub(crate) fn _borrow_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self.with_pending(|pending| {
+    pub(crate) fn _borrow_pending_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
+        self.with_pending(state_id, |pending| {
             let solver_rc = pending.state.solver().clone();
             Ok(RustSolverContext::from_shared_sym_context(solver_rc))
         })
@@ -440,11 +485,12 @@ impl RustExplorationManager {
     pub(crate) fn _add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<()> {
         use pyo3::types::PyListMethods;
 
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &sym_ctx;
@@ -476,8 +522,8 @@ impl RustExplorationManager {
     // Pending memory low-level (page / address access used by callbacks)
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _get_pending_mapped_pages(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self.with_pending(state_id, |pending| {
             Ok(pending
                 .state
                 .memory()
@@ -488,8 +534,12 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _pending_memory_load_page(
+        &self,
+        state_id: u64,
+        page_addr: u64,
+    ) -> PyResult<Vec<u8>> {
+        self.with_pending(state_id, |pending| {
             pending
                 .state
                 .memory()
@@ -508,9 +558,10 @@ impl RustExplorationManager {
     pub(crate) fn _pending_memory_load_symbolic_page<'py>(
         &self,
         py: Python<'py>,
+        state_id: u64,
         page_addr: u64,
     ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
-        self.with_pending(|pending| {
+        self.with_pending(state_id, |pending| {
             let claripy_mod = py.import("claripy")?;
             let target_page = page_addr >> 12;
             let mut out = Vec::new();
@@ -533,8 +584,13 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
+    pub(crate) fn _pending_memory_load(
+        &self,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Vec<u8>> {
+        self.with_pending(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
             match pending.state.memory().load_concrete(addr, size, &ctx) {
@@ -558,13 +614,18 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+    pub(crate) fn _pending_memory_store(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
         // angr-5aj8: split into 16-byte chunks. RustBV::Concrete is u128-backed;
         // packing more than 16 bytes (the prior implementation silently truncated
         // and constructed an oversized concrete BV) leaves store_concrete to emit
         // a 16-byte-cycle pattern across the entire claimed width. Use the safe
         // pattern from RustSimState::apply_changes.
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 pending
                     .state
@@ -577,11 +638,12 @@ impl RustExplorationManager {
 
     pub(crate) fn _pending_memory_map_data(
         &mut self,
+        state_id: u64,
         addr: u64,
         data: &[u8],
         perm: u8,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
+        self.with_pending_mut(state_id, |pending| {
             pending
                 .state
                 .map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));

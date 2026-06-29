@@ -1015,7 +1015,7 @@ class RustStateSyncMixin:
         for reg_name in reg_names:
             try:
                 # Try concrete first (fast path — direct store bypasses claripy)
-                val = self._rust_mgr.get_pending_register(reg_name)
+                val = self._rust_mgr.get_pending_register(self._current_callback_state_id, reg_name)
                 if val is not None:
                     offset_size = reg_map.get(reg_name)
                     if offset_size is not None:
@@ -1025,7 +1025,7 @@ class RustStateSyncMixin:
                 else:
                     # Register is symbolic — convert to claripy AST
                     try:
-                        ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                        ast = self._rust_mgr.get_pending_register_ast(self._current_callback_state_id, reg_name)
                         if ast is not None:
                             setattr(state.regs, reg_name, ast)
                     except Exception:
@@ -1364,7 +1364,7 @@ class RustStateSyncMixin:
         try:
             # Best approach: directly sync claripy AST to Rust
             if hasattr(self._rust_mgr, "set_pending_register_symbolic_ast"):
-                self._rust_mgr.set_pending_register_symbolic_ast(reg_name, value)
+                self._rust_mgr.set_pending_register_symbolic_ast(self._current_callback_state_id, reg_name, value)
                 if _DBG:
                     l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
                 return
@@ -1372,7 +1372,7 @@ class RustStateSyncMixin:
             # Fallback: use handle-based sync
             if hasattr(self._rust_mgr, "claripy_ast_to_handle"):
                 handle = self._rust_mgr.claripy_ast_to_handle(value)
-                self._rust_mgr.set_pending_register_symbolic(reg_name, handle.id())
+                self._rust_mgr.set_pending_register_symbolic(self._current_callback_state_id, reg_name, handle.id())
                 if _DBG:
                     l.debug(f"Synced symbolic register {reg_name} to Rust via handle")
                 return
@@ -1807,7 +1807,7 @@ class RustStateSyncMixin:
             sp_page = sp & ~PAGE_MASK
             sp_offset = sp - sp_page
             try:
-                page_data = self._rust_mgr.pending_memory_load_page(sp_page)
+                page_data = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, sp_page)
                 if page_data and len(page_data) == PAGE_SIZE:
                     # Write non-zero pointer-sized values from SP upward
                     # Covers 64 slots (~512 bytes on x64) for args + locals
@@ -1833,7 +1833,7 @@ class RustStateSyncMixin:
             for i in range(16):
                 addr = sp + i * ptr_size
                 try:
-                    data = self._rust_mgr.pending_memory_load(addr, ptr_size)
+                    data = self._rust_mgr.pending_memory_load(self._current_callback_state_id, addr, ptr_size)
                     if data and len(data) == ptr_size:
                         int_val = int.from_bytes(data, "little")
                         if int_val != 0:
@@ -1882,7 +1882,7 @@ class RustStateSyncMixin:
         if _is_rust_memory_proxy(state.memory):
             return
         try:
-            dirty_pages = self._rust_mgr.get_pending_dirty_pages()
+            dirty_pages = self._rust_mgr.get_pending_dirty_pages(self._current_callback_state_id)
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: dirty-page API unavailable on
             # this build; skip replay. NativeRead/NativeWrite-style sync
@@ -1893,7 +1893,7 @@ class RustStateSyncMixin:
 
         for page_addr in dirty_pages:
             try:
-                page_bytes = self._rust_mgr.pending_memory_load_page(page_addr)
+                page_bytes = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, page_addr)
             except Exception:
                 page_bytes = None
 
@@ -1914,7 +1914,9 @@ class RustStateSyncMixin:
                         l.debug(f"dirty-page concrete replay failed at 0x{page_addr:x}: {e}")
 
             try:
-                sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(page_addr)
+                sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(
+                    self._current_callback_state_id, page_addr
+                )
             except (AttributeError, RuntimeError):
                 # cat-(a) EXPECTED CONTROL FLOW: symbolic-page FFI absent on
                 # older builds; symbolic bytes fall through to the older
@@ -1940,7 +1942,7 @@ class RustStateSyncMixin:
                             l.debug(f"dirty-page symbolic replay failed at 0x{addr:x}: {e}")
 
         try:
-            self._rust_mgr.clear_pending_dirty_tracking()
+            self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)
         except (AttributeError, RuntimeError):
             # cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;
             # dirty bits stay set but next replay is idempotent (writes the

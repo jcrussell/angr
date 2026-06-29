@@ -58,7 +58,7 @@ class RustCallbackDispatchMixin:
         rust_jumpkind = getattr(state.scratch, "_rust_bundle_jumpkind", None)
         if rust_history is None:
             try:
-                rust_history, rust_jumpkind = self._rust_mgr.get_pending_history_and_jumpkind()
+                rust_history, rust_jumpkind = self._rust_mgr.get_pending_history_and_jumpkind(event.callback_state_id)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: pending Rust history unavailable;
                 # fall back to a single-element history. State.history may be
@@ -143,9 +143,9 @@ class RustCallbackDispatchMixin:
 
         # Fallback: Get SP from Rust for saved state
         try:
-            sp_val = self._rust_mgr.get_pending_register("rsp")
+            sp_val = self._rust_mgr.get_pending_register(event.callback_state_id, "rsp")
             if sp_val is None:
-                sp_val = self._rust_mgr.get_pending_register("esp")
+                sp_val = self._rust_mgr.get_pending_register(event.callback_state_id, "esp")
             saved_sp = sp_val or 0
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: pending SP read failed;
@@ -476,7 +476,7 @@ class RustCallbackDispatchMixin:
             if _DBG:
                 l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
             # Resume execution at this address, no SimProcedure to run
-            self._rust_mgr.resume_after_simprocedure(addr, None, None)
+            self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
@@ -492,7 +492,7 @@ class RustCallbackDispatchMixin:
             except Exception as e:
                 if _DBG:
                     l.debug(f"Could not set skip_hook_addr for stale hook 0x{addr:x}: {e}")
-            self._rust_mgr.resume_after_simprocedure(addr, None, None)
+            self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
@@ -513,7 +513,7 @@ class RustCallbackDispatchMixin:
         state = self._create_state_for_callback(event)
         if state is None:
             l.warning(f"Could not create state for SimProcedure at 0x{addr:x}")
-            self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr + 1, None, None)
             self._set_callback_state(None)
             self._current_callback_state_id = None
             self._perf_stats.add_simprocedure_phase("state_create", time.perf_counter_ns() - _sp_state_create_start)
@@ -665,12 +665,12 @@ class RustCallbackDispatchMixin:
             if "missing" in str(e) and "positional argument" in str(e):
                 l.warning(f"Continuation at 0x{addr:x} missing args (likely after_main) — deadending")
                 try:
-                    self._rust_mgr.resume_after_simprocedure(0, None, None, None)
+                    self._rust_mgr.resume_after_simprocedure(event.callback_state_id, 0, None, None, None)
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: resume_after_simprocedure failed in
                     # the missing-args path; try resume_after_error next.
                     try:
-                        self._rust_mgr.resume_after_error(str(e))
+                        self._rust_mgr.resume_after_error(event.callback_state_id, str(e))
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: resume_after_error also failed; the
                         # pending state stays pending and the next run() iteration will
@@ -694,7 +694,7 @@ class RustCallbackDispatchMixin:
             traceback.print_exc()
             # Signal error to Rust - this will move the state to errored stash
             try:
-                self._rust_mgr.resume_after_error(str(e))
+                self._rust_mgr.resume_after_error(event.callback_state_id, str(e))
             except Exception as resume_err:
                 # cat-(b) FALLBACK WITH LOSS: resume_after_error itself raised;
                 # the pending state stays pending. Already warns.
@@ -753,7 +753,7 @@ class RustCallbackDispatchMixin:
         if _DBG:
             reason = "no-return procedure" if is_terminal else "exit continuation"
             l.debug(f"Fast path: {reason} {name} at 0x{addr:x} — deadending")
-        self._rust_mgr.deadend_pending_callback()
+        self._rust_mgr.deadend_pending_callback(self._current_callback_state_id)
         self._current_callback_state_id = None
         _proc_name = name or proc.__class__.__name__
         if _proc_name not in self._procedure_times:
@@ -905,7 +905,7 @@ class RustCallbackDispatchMixin:
         if proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL:
             if _DBG:
                 l.debug(f"No-return procedure {name} with successors — deadending")
-            self._rust_mgr.deadend_pending_callback()
+            self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             self._set_callback_state(None)
             self._current_callback_state_id = None
             return True
@@ -922,7 +922,7 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
                 self._exit_continuation_addrs.add(addr_int)
-                self._rust_mgr.deadend_pending_callback()
+                self._rust_mgr.deadend_pending_callback(event.callback_state_id)
                 self._set_callback_state(None)
                 self._current_callback_state_id = None
                 self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
@@ -1004,9 +1004,9 @@ class RustCallbackDispatchMixin:
                     # zero-length hook; resume_after_simprocedure may re-trigger the
                     # hook on next step.
                     pass
-                self._rust_mgr.resume_after_simprocedure(addr, None, None)
+                self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
             else:
-                self._rust_mgr.deadend_pending_callback()
+                self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             return
 
         if is_zero_length_hook:
@@ -1026,19 +1026,19 @@ class RustCallbackDispatchMixin:
         if getattr(proc, "NO_RET", False):
             if _DBG:
                 l.debug(f"No-return procedure {name} — deadending state")
-            self._rust_mgr.deadend_pending_callback()
+            self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             return
 
         ret_addr = event.callback_return_addr or (addr + 1)
         for sym_addr, ast in tracked_symbolic_writes or []:
             try:
-                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+                self._rust_mgr.import_symbolic_memory(event.callback_state_id, sym_addr, ast)
             except Exception:
                 # cat-(c) WRONG-ANSWER RISK: tracked symbolic write not imported
                 # to Rust; subsequent loads at sym_addr will see concrete bytes
                 # instead of the symbolic value.
                 pass
-        self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, tracked_writes or None)
 
     @staticmethod
     def _resolve_next_pc(state, fallback_addr=None):
@@ -1231,7 +1231,9 @@ class RustCallbackDispatchMixin:
         # IMPORTANT: This must happen BEFORE symbolic imports, because
         # apply_changes writes concrete data which clears symbolic page markers.
         # Importing symbolic values after resume re-sets the markers correctly.
-        self._rust_mgr.resume_after_simprocedure(new_pc, reg_changes, mem_changes or None, new_constraints or None)
+        self._rust_mgr.resume_after_simprocedure(
+            event.callback_state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
+        )
 
         # Import symbolic memory to Rust AFTER resume.
         # The resume's apply_changes writes concrete witnesses which clear
@@ -1364,7 +1366,7 @@ class RustCallbackDispatchMixin:
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
         self._rust_mgr.resume_after_simprocedure(
-            new_pc, reg_changes or None, mem_changes or None, new_constraints or None
+            event.callback_state_id, new_pc, reg_changes or None, mem_changes or None, new_constraints or None
         )
 
         # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
@@ -1482,7 +1484,7 @@ class RustCallbackDispatchMixin:
         # Try to fork the pending solver context for this state
         # This ensures the forked state inherits all constraints
         try:
-            forked_solver = self._rust_mgr.fork_pending_solver()
+            forked_solver = self._rust_mgr.fork_pending_solver(event.callback_state_id)
             # Attach forked solver to the state
             succ_state.scratch.rust_solver_ctx = forked_solver
             if _DBG:
@@ -1516,7 +1518,7 @@ class RustCallbackDispatchMixin:
         if fork_constraints:
             try:
                 # The state was just added, so sync constraints to the pending/active state
-                self._rust_mgr.add_constraints_to_pending(fork_constraints)
+                self._rust_mgr.add_constraints_to_pending(event.callback_state_id, fork_constraints)
                 if _DBG:
                     l.debug(f"Synced {len(fork_constraints)} fork constraints to Rust state")
             except Exception as e:
@@ -1617,8 +1619,8 @@ class RustCallbackDispatchMixin:
         if state is None:
             l.warning(f"Could not create state for syscall {syscall_num}")
             # Continue after syscall
-            pc = self._rust_mgr.get_pending_register("rip") or 0
-            self._rust_mgr.resume_after_syscall(pc + 1, None, None)
+            pc = self._rust_mgr.get_pending_register(state_id, "rip") or 0
+            self._rust_mgr.resume_after_syscall(state_id, pc + 1, None, None)
             return
 
         # Run the syscall
@@ -1668,7 +1670,7 @@ class RustCallbackDispatchMixin:
                 mem_changes = self._extract_memory_changes(state, succ_state)
                 new_constraints = self._extract_new_constraints(state, succ_state)
 
-                self._rust_mgr.resume_after_syscall(new_pc, reg_changes, mem_changes, new_constraints or None)
+                self._rust_mgr.resume_after_syscall(state_id, new_pc, reg_changes, mem_changes, new_constraints or None)
 
                 # Update cache
                 state_id = event.callback_state_id
@@ -1680,14 +1682,14 @@ class RustCallbackDispatchMixin:
                     self._add_forked_state(succ, event)
             else:
                 pc = state.addr + 1
-                self._rust_mgr.resume_after_syscall(pc, None, None)
+                self._rust_mgr.resume_after_syscall(state_id, pc, None, None)
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume
             # at PC+1 rather than re-running the syscall. Already warns.
             l.warning(f"Syscall execution error: {e}")
             pc = state.addr + 1
-            self._rust_mgr.resume_after_syscall(pc, None, None)
+            self._rust_mgr.resume_after_syscall(state_id, pc, None, None)
         finally:
             # Clear callback state to avoid stale references
             self._set_callback_state(None)
@@ -1724,7 +1726,7 @@ class RustCallbackDispatchMixin:
         addr = event.callback_addr
 
         if self._find_predicate is None:
-            self._rust_mgr.resume_find_predicate(False)
+            self._rust_mgr.resume_find_predicate(state_id, False)
             return
 
         try:
@@ -1752,7 +1754,7 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Find predicate at 0x{addr:x}: {e}")
                 matched = False
 
-            self._rust_mgr.resume_find_predicate(matched)
+            self._rust_mgr.resume_find_predicate(state_id, matched)
 
             # If matched, store the proxy as the found state
             if matched:
@@ -1765,7 +1767,7 @@ class RustCallbackDispatchMixin:
             # state is reported as not-matched even if it would have been.
             # Already warns.
             l.warning(f"Find predicate callback error: {e}")
-            self._rust_mgr.resume_find_predicate(False)
+            self._rust_mgr.resume_find_predicate(state_id, False)
 
     def _handle_avoid_predicate_callback(self, event: _ExplorationEvent):
         """Handle callable avoid predicate evaluation callback from Rust.
@@ -1795,7 +1797,7 @@ class RustCallbackDispatchMixin:
         addr = event.callback_addr
 
         if self._avoid_predicate is None:
-            self._rust_mgr.resume_avoid_predicate(False)
+            self._rust_mgr.resume_avoid_predicate(state_id, False)
             return
 
         try:
@@ -1818,14 +1820,14 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
                 matched = False
 
-            self._rust_mgr.resume_avoid_predicate(matched)
+            self._rust_mgr.resume_avoid_predicate(state_id, matched)
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer avoid-predicate handler raised;
             # state is reported as not-matched even if it would have been
             # avoided. Already warns.
             l.warning(f"Avoid predicate callback error: {e}")
-            self._rust_mgr.resume_avoid_predicate(False)
+            self._rust_mgr.resume_avoid_predicate(state_id, False)
 
     def _handle_symbolic_branch_callback(self, event: _ExplorationEvent):
         """Handle symbolic branch callback from Rust.
@@ -1867,7 +1869,7 @@ class RustCallbackDispatchMixin:
 
         try:
             # Get the branch condition from Rust as a claripy AST
-            condition = self._rust_mgr.get_pending_branch_condition()
+            condition = self._rust_mgr.get_pending_branch_condition(state_id)
 
             if _DBG:
                 l.debug(f"Got branch condition from Rust: {condition}")
@@ -1898,6 +1900,7 @@ class RustCallbackDispatchMixin:
             ids_before = set(self._rust_mgr.get_state_ids("active"))
 
             self._rust_mgr.resume_after_symbolic_branch(
+                state_id,
                 true_target,
                 false_target,
                 [true_constraint],
@@ -1932,6 +1935,7 @@ class RustCallbackDispatchMixin:
             # This is less accurate but at least continues exploration
             try:
                 self._rust_mgr.resume_after_symbolic_branch(
+                    state_id,
                     true_target,
                     false_target,
                     None,
@@ -1946,7 +1950,7 @@ class RustCallbackDispatchMixin:
                 # Recovery: Move the pending state to errored stash to avoid hanging.
                 # Uses the same error handling as other callback failures.
                 try:
-                    self._rust_mgr.resume_after_error(f"symbolic_branch_error: {e2}")
+                    self._rust_mgr.resume_after_error(state_id, f"symbolic_branch_error: {e2}")
                     l.warning("Moved state to errored stash after symbolic branch failure")
                 except Exception as e3:
                     # cat-(b) FALLBACK WITH LOSS: even errored-stash recovery failed;
@@ -1965,7 +1969,7 @@ class RustCallbackDispatchMixin:
             The parent state ID, or None if not available.
         """
         try:
-            snapshot = self._rust_mgr.export_pending_state()
+            snapshot = self._rust_mgr.export_pending_state(self._current_callback_state_id)
             return snapshot.parent_id
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: parent_id lookup failed; the cache
@@ -1983,7 +1987,7 @@ class RustCallbackDispatchMixin:
             The root state ID if available, or None if not tracked.
         """
         try:
-            return self._rust_mgr.get_pending_root_state_id()
+            return self._rust_mgr.get_pending_root_state_id(self._current_callback_state_id)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: root_id lookup failed; ancestry walk
             # below picks up.
@@ -2043,7 +2047,7 @@ class RustCallbackDispatchMixin:
             List of state IDs in the ancestry chain.
         """
         try:
-            return self._rust_mgr.get_pending_ancestry()
+            return self._rust_mgr.get_pending_ancestry(self._current_callback_state_id)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: get_pending_ancestry failed; fall
             # back to single parent_id lookup.
@@ -2133,7 +2137,7 @@ class RustCallbackDispatchMixin:
             try:
                 arch = self._project.arch
                 reg_names = self._get_arch_register_names(arch)
-                bundle = self._rust_mgr.export_callback_bundle(reg_names)
+                bundle = self._rust_mgr.export_callback_bundle(state_id, reg_names)
 
                 # Apply solver from bundle
                 forked_solver = bundle["solver"]
@@ -2166,7 +2170,7 @@ class RustCallbackDispatchMixin:
                             else:
                                 # Symbolic register — fetch AST individually
                                 try:
-                                    ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                                    ast = self._rust_mgr.get_pending_register_ast(state_id, reg_name)
                                     if ast is not None:
                                         setattr(state.regs, reg_name, ast)
                                 except Exception:
@@ -2198,13 +2202,13 @@ class RustCallbackDispatchMixin:
                 self._last_bundle_registers = None  # Clear on fallback
                 # Fallback to individual calls — try shared (borrow) first, fork as last resort
                 try:
-                    shared_solver = self._rust_mgr.borrow_pending_solver()
+                    shared_solver = self._rust_mgr.borrow_pending_solver(state_id)
                     state.scratch.rust_solver_ctx = shared_solver
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: borrow_pending_solver failed; try
                     # fork_pending_solver next.
                     try:
-                        forked_solver = self._rust_mgr.fork_pending_solver()
+                        forked_solver = self._rust_mgr.fork_pending_solver(state_id)
                         state.scratch.rust_solver_ctx = forked_solver
                     except Exception as e2:
                         # cat-(c) WRONG-ANSWER RISK: even fork_pending_solver failed;
@@ -2457,7 +2461,7 @@ class RustCallbackDispatchMixin:
 
             # Fork the Rust solver context even for blank states
             try:
-                forked_solver = self._rust_mgr.fork_pending_solver()
+                forked_solver = self._rust_mgr.fork_pending_solver(self._current_callback_state_id)
                 state.scratch.rust_solver_ctx = forked_solver
                 if _DBG:
                     l.debug(
@@ -2508,7 +2512,7 @@ class RustCallbackDispatchMixin:
             state = self._create_state_for_callback(event)
             if state is None:
                 l.warning(f"Could not create state for VEX fallback at 0x{addr:x}")
-                self._rust_mgr.resume_after_simprocedure(addr, None, None)
+                self._rust_mgr.resume_after_simprocedure(state_id, addr, None, None)
                 return
 
             # Step the state through Python's VEX engine for one block
@@ -2519,7 +2523,7 @@ class RustCallbackDispatchMixin:
                 # resume_after_error to errored-stash the state. Already warns.
                 l.warning(f"Python VEX engine failed at 0x{addr:x}: {e}")
                 try:
-                    self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
+                    self._rust_mgr.resume_after_error(state_id, f"python_vex_fallback_error: {e}")
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: resume_after_error itself failed;
                     # the pending state hangs the next step. Tolerated.
@@ -2530,7 +2534,7 @@ class RustCallbackDispatchMixin:
             if not all_succs:
                 if _DBG:
                     l.debug(f"VEX fallback produced no successors at 0x{addr:x} — deadending")
-                self._rust_mgr.deadend_pending_callback()
+                self._rust_mgr.deadend_pending_callback(state_id)
                 return
 
             # Use the first successor as the primary result
@@ -2554,7 +2558,9 @@ class RustCallbackDispatchMixin:
             new_constraints = [c for c in succ.solver.constraints if c not in orig_constraints]
 
             # Resume Rust with the first successor
-            self._rust_mgr.resume_after_simprocedure(new_pc, reg_changes, mem_changes or None, new_constraints or None)
+            self._rust_mgr.resume_after_simprocedure(
+                state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
+            )
 
             # Additional successors (symbolic branches in the fallback block)
             # are forked into new Rust active states so the convergent path
@@ -2576,7 +2582,7 @@ class RustCallbackDispatchMixin:
             # we try resume_after_error. Already warns.
             l.warning(f"Python VEX fallback error at 0x{addr:x}: {e}")
             try:
-                self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
+                self._rust_mgr.resume_after_error(state_id, f"python_vex_fallback_error: {e}")
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: resume_after_error in the outer
                 # handler also failed; pending state hangs. Tolerated.

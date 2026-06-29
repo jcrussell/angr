@@ -279,20 +279,24 @@ fn resume_after_error_records_and_moves_to_errored() {
     state.set_pc(0x401000);
     let sid = state.state_id();
 
-    mgr.pending_callback = Some(PendingCallback {
-        state,
-        pre_callback_snapshot: None,
-        reason: CallbackReason::Error {
-            message: "boom".to_string(),
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason: CallbackReason::Error {
+                message: "boom".to_string(),
+            },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
         },
-        jumpkind: None,
-        solver_ctx: None,
-        deferred_forks: Vec::new(),
-        stored_conditions: FxHashMap::default(),
-        fork_snapshots: FxHashMap::default(),
-    });
+    );
 
-    mgr._resume_after_error("py callback raised").expect("ok");
+    mgr._resume_after_error(sid, "py callback raised")
+        .expect("ok");
 
     let errors = mgr.get_errors();
     assert_eq!(errors.len(), 1);
@@ -302,7 +306,7 @@ fn resume_after_error_records_and_moves_to_errored() {
     assert_eq!(errored.len(), 1);
     assert_eq!(errored[0].state_id(), sid);
     // The pending callback was consumed.
-    assert!(mgr.pending_callback.is_none());
+    assert!(mgr.pending_callbacks.is_empty());
 }
 
 /// Calling _resume_after_error with no pending state raises RuntimeError.
@@ -311,9 +315,102 @@ fn resume_after_error_no_pending_state_raises() {
     Python::initialize();
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let err = mgr
-        ._resume_after_error("ignored")
+        ._resume_after_error(0, "ignored")
         .expect_err("must raise without a pending state");
     Python::attach(|py| {
         assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
     });
+}
+
+// --- pending_callbacks keying (angr-1ilq.4) ------------------------------
+// The single-slot `pending_callback: Option<_>` became a `state_id`-keyed
+// `FxHashMap<StateId, PendingCallback>`. These assert the keying is genuine:
+// a resume addressed by the wrong/absent id must NOT consume some other
+// pending state, and two pending entries under distinct ids are resolved /
+// removed independently with no crosstalk.
+
+/// Build a minimal Error-reason PendingCallback for an amd64 state at `pc`.
+/// Cheap to construct (no solver fork / deferred forks), so multi-pending
+/// isolation can be exercised purely at the Rust unit-test level.
+#[cfg(test)]
+fn make_pending_at(pc: u64) -> (u64, PendingCallback) {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(pc);
+    let sid = state.state_id();
+    let pending = PendingCallback {
+        state,
+        pre_callback_snapshot: None,
+        reason: CallbackReason::Error {
+            message: "pending".to_string(),
+        },
+        jumpkind: None,
+        solver_ctx: None,
+        deferred_forks: Vec::new(),
+        stored_conditions: FxHashMap::default(),
+        fork_snapshots: FxHashMap::default(),
+    };
+    (sid, pending)
+}
+
+/// Resuming with the wrong/absent state_id returns the "no pending callback"
+/// error and leaves the genuine pending entry untouched; resuming with the
+/// correct id then succeeds and consumes it.
+#[test]
+fn resume_wrong_state_id_errors_correct_succeeds() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let (sid, pending) = make_pending_at(0x401000);
+    mgr.pending_callbacks.insert(StateId::new(sid), pending);
+
+    // Wrong id (sid + 1 is guaranteed absent): must error, must NOT consume sid.
+    let wrong = sid.wrapping_add(1);
+    let err = mgr
+        ._resume_after_error(wrong, "ignored")
+        .expect_err("wrong state_id must raise");
+    Python::attach(|py| {
+        assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+    });
+    assert!(
+        mgr.pending_callbacks.contains_key(&StateId::new(sid)),
+        "genuine pending entry must survive a mis-addressed resume"
+    );
+
+    // Correct id: succeeds and consumes exactly that entry.
+    mgr._resume_after_error(sid, "real error").expect("ok");
+    assert!(
+        !mgr.pending_callbacks.contains_key(&StateId::new(sid)),
+        "correct resume must remove the entry"
+    );
+    assert!(mgr.pending_callbacks.is_empty());
+}
+
+/// Two pending entries under distinct StateIds are resumed/removed
+/// independently: resuming one leaves the other in place, and each routes its
+/// own state into the errored stash.
+#[test]
+fn multi_pending_entries_resume_independently() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let (sid_a, pending_a) = make_pending_at(0x401000);
+    let (sid_b, pending_b) = make_pending_at(0x402000);
+    assert_ne!(sid_a, sid_b, "distinct states must have distinct ids");
+    mgr.pending_callbacks.insert(StateId::new(sid_a), pending_a);
+    mgr.pending_callbacks.insert(StateId::new(sid_b), pending_b);
+    assert_eq!(mgr.pending_callbacks.len(), 2);
+
+    // Resume A: only A is consumed; B remains live.
+    mgr._resume_after_error(sid_a, "err a").expect("resume a");
+    assert!(!mgr.pending_callbacks.contains_key(&StateId::new(sid_a)));
+    assert!(mgr.pending_callbacks.contains_key(&StateId::new(sid_b)));
+
+    // Resume B: now empty.
+    mgr._resume_after_error(sid_b, "err b").expect("resume b");
+    assert!(mgr.pending_callbacks.is_empty());
+
+    // Both states landed in the errored stash, with their own ids.
+    let errored = mgr.sm.get(STASH_ERRORED).expect("errored stash");
+    let ids: Vec<u64> = errored.iter().map(|s| s.state_id()).collect();
+    assert!(ids.contains(&sid_a) && ids.contains(&sid_b));
 }

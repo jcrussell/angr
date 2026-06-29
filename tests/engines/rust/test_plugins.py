@@ -678,7 +678,7 @@ class TestBlankStateFallback:
         def hook(state):
             mgr = holder["mgr"]
             # Live pending Rust state is set for the duration of this callback.
-            rust_rsp = mgr._rust_mgr.get_pending_register("rsp")
+            rust_rsp = mgr._rust_mgr.get_pending_register(mgr._current_callback_state_id, "rsp")
             fb_state = mgr._create_blank_state_fallback(None)
             captured["state"] = fb_state
             captured["rust_rsp"] = rust_rsp

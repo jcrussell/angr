@@ -381,9 +381,7 @@ impl RustExplorationManager {
         if let Some(state) = self.find_state_mut(state_id) {
             return Ok(state.flush_and_export_full());
         }
-        if let Some(ref mut pending) = self.pending_callback
-            && pending.state.state_id() == state_id
-        {
+        if let Some(pending) = self.pending_callbacks.get_mut(&StateId::new(state_id)) {
             return Ok(pending.state.flush_and_export_full());
         }
         Err(PyValueError::new_err(format!(

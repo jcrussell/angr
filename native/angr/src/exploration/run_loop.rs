@@ -204,7 +204,8 @@ impl RustExplorationManager {
                 // conflict), THEN store it. Mirrors the former order exactly.
                 StepOutcome::NeedCallback(pending) => {
                     let event = self.callback_event(&pending);
-                    self.pending_callback = Some(pending);
+                    self.pending_callbacks
+                        .insert(StateId::new(pending.state.state_id()), pending);
                     return Ok(event);
                 }
                 // A real interpreter step completed — route successors / apply

@@ -21,14 +21,15 @@ impl RustExplorationManager {
     pub(crate) fn _resume_after_simprocedure(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
         let pending = self
-            .pending_callback
-            .take()
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
 
         // Apply changes
@@ -232,10 +233,10 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `deadend_pending_callback`.
-    pub(crate) fn _deadend_pending_callback(&mut self) -> PyResult<()> {
+    pub(crate) fn _deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
         let pending = self
-            .pending_callback
-            .take()
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
 
         // Process deferred forks BEFORE deadending — these represent
@@ -274,10 +275,13 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `resume_after_error`.
-    pub(crate) fn _resume_after_error(&mut self, error_msg: &str) -> PyResult<()> {
-        let pending = self.pending_callback.take().ok_or_else(|| {
-            PyRuntimeError::new_err("no pending callback state for error handling")
-        })?;
+    pub(crate) fn _resume_after_error(&mut self, state_id: u64, error_msg: &str) -> PyResult<()> {
+        let pending = self
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err("no pending callback state for error handling")
+            })?;
 
         let pc = pending.state.pc();
         let state_id = pending.state.state_id();
@@ -306,6 +310,7 @@ impl RustExplorationManager {
     pub(crate) fn _resume_after_symbolic_branch(
         &mut self,
         _py: Python<'_>,
+        state_id: u64,
         true_pc: u64,
         false_pc: u64,
         true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
@@ -315,8 +320,8 @@ impl RustExplorationManager {
         // the branch condition is sourced from stored_conditions (set by interpreter).
         let _ = (true_constraints, false_constraints);
         let pending = self
-            .pending_callback
-            .take()
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending symbolic branch callback"))?;
 
         // Get the branch condition from stored_conditions (set by interpreter)
@@ -516,10 +521,10 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `resume_find_predicate`.
-    pub(crate) fn _resume_find_predicate(&mut self, matched: bool) -> PyResult<()> {
+    pub(crate) fn _resume_find_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
         let pending = self
-            .pending_callback
-            .take()
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending find predicate callback"))?;
 
         if matched {
@@ -546,10 +551,10 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `resume_avoid_predicate`.
-    pub(crate) fn _resume_avoid_predicate(&mut self, matched: bool) -> PyResult<()> {
+    pub(crate) fn _resume_avoid_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
         let pending = self
-            .pending_callback
-            .take()
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending avoid predicate callback"))?;
 
         if matched {

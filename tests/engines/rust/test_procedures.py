@@ -2306,7 +2306,7 @@ class TestNativeReadCacheSync:
 
         # Inside the live pending callback: the wrapper returns the symbolic
         # object on SYM_PAGE as an (addr, ast) pair.
-        entries = mgr.pending_memory_load_symbolic_page(SYM_PAGE)
+        entries = mgr.pending_memory_load_symbolic_page(event.callback_state_id, SYM_PAGE)
         by_addr = dict(entries)
         assert SYM_ADDR in by_addr, (
             f"symbolic object at 0x{SYM_ADDR:x} missing from page-0x{SYM_PAGE:x} replay; got {sorted(by_addr)}"
@@ -2319,7 +2319,7 @@ class TestNativeReadCacheSync:
 
         # The page filter must EXCLUDE objects whose base address is not on the
         # queried page — querying HOOK's page returns nothing for SYM_ADDR.
-        other = mgr.pending_memory_load_symbolic_page(HOOK & ~0xFFF)
+        other = mgr.pending_memory_load_symbolic_page(event.callback_state_id, HOOK & ~0xFFF)
         assert SYM_ADDR not in [a for a, _ in other], (
             f"page filter leaked 0x{SYM_ADDR:x} into the wrong page (0x{HOOK & ~0xFFF:x})"
         )

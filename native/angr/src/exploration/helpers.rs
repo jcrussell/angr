@@ -124,30 +124,36 @@ impl RustExplorationManager {
         self.parallel_worker_of = new_of;
     }
 
-    /// Run a closure with an immutable borrow of the pending callback state.
-    /// Returns Err(PyRuntimeError) when no callback is pending.
+    /// Run a closure with an immutable borrow of the pending callback state
+    /// identified by `state_id`. Returns Err(PyRuntimeError) when no callback
+    /// is pending for that id.
     #[inline]
-    pub(crate) fn with_pending<T, F>(&self, f: F) -> PyResult<T>
+    pub(crate) fn with_pending<T, F>(&self, state_id: impl Into<StateId>, f: F) -> PyResult<T>
     where
         F: FnOnce(&PendingCallback) -> PyResult<T>,
     {
         let pending = self
-            .pending_callback
-            .as_ref()
+            .pending_callbacks
+            .get(&state_id.into())
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         f(pending)
     }
 
-    /// Run a closure with a mutable borrow of the pending callback state.
-    /// Returns Err(PyRuntimeError) when no callback is pending.
+    /// Run a closure with a mutable borrow of the pending callback state
+    /// identified by `state_id`. Returns Err(PyRuntimeError) when no callback
+    /// is pending for that id.
     #[inline]
-    pub(crate) fn with_pending_mut<T, F>(&mut self, f: F) -> PyResult<T>
+    pub(crate) fn with_pending_mut<T, F>(
+        &mut self,
+        state_id: impl Into<StateId>,
+        f: F,
+    ) -> PyResult<T>
     where
         F: FnOnce(&mut PendingCallback) -> PyResult<T>,
     {
         let pending = self
-            .pending_callback
-            .as_mut()
+            .pending_callbacks
+            .get_mut(&state_id.into())
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         f(pending)
     }
@@ -264,14 +270,12 @@ impl RustExplorationManager {
     /// Find an immutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
     pub(crate) fn find_state(&self, state_id: impl Into<StateId>) -> Option<&RustSimState> {
-        let sid = state_id.into().raw();
-        // Check pending callback state first (during find_predicate evaluation)
-        if let Some(ref pending) = self.pending_callback
-            && pending.state.state_id() == sid
-        {
+        let sid = state_id.into();
+        // Check pending callback states first (during find_predicate evaluation)
+        if let Some(pending) = self.pending_callbacks.get(&sid) {
             return Some(&pending.state);
         }
-        self.sm.find_state(sid)
+        self.sm.find_state(sid.raw())
     }
 
     /// Find a mutable reference to a state by ID using the index.
@@ -288,13 +292,11 @@ impl RustExplorationManager {
         &mut self,
         state_id: impl Into<StateId>,
     ) -> Option<&mut RustSimState> {
-        let sid = state_id.into().raw();
-        if let Some(ref mut pending) = self.pending_callback
-            && pending.state.state_id() == sid
-        {
+        let sid = state_id.into();
+        if let Some(pending) = self.pending_callbacks.get_mut(&sid) {
             return Some(&mut pending.state);
         }
-        self.sm.find_state_mut(sid)
+        self.sm.find_state_mut(sid.raw())
     }
 
     /// Compute a hash for a state's register tuple for uniqueness checking.

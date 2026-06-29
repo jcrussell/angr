@@ -155,8 +155,14 @@ pub struct RustExplorationManager {
     pub(crate) hooks: HashSet<u64>,
     /// SimProcedures: address -> (name, num_args, no_return).
     pub(crate) simprocedures: HashMap<u64, (String, usize, bool)>,
-    /// Pending state waiting for Python callback result.
-    pub(crate) pending_callback: Option<PendingCallback>,
+    /// States waiting for a Python callback result, keyed by `StateId`.
+    ///
+    /// In the single-threaded engine this holds exactly one live entry at a
+    /// time (the state currently parked across a Python callback). It is a map
+    /// rather than an `Option` so multiple outstanding callbacks can coexist
+    /// once the work-stealing scheduler (angr-1ilq.3) drives several workers,
+    /// each addressing its own pending state explicitly by `state_id`.
+    pub(crate) pending_callbacks: FxHashMap<StateId, PendingCallback>,
     /// ID of the state currently being stepped (for Python callbacks to identify)
     pub(crate) current_stepping_state_id: Option<StateId>,
     /// Total steps executed.
@@ -338,7 +344,7 @@ impl RustExplorationManager {
             callbacks: None,
             hooks: HashSet::new(),
             simprocedures: HashMap::new(),
-            pending_callback: None,
+            pending_callbacks: FxHashMap::default(),
             current_stepping_state_id: None,
             steps: 0,
             errors: Vec::new(),
@@ -994,20 +1000,21 @@ impl RustExplorationManager {
 
     /// Set the PC of the pending callback state (for external initialization).
     /// See `pending_api::_set_pending_state_pc` for the body.
-    pub fn set_pending_state_pc(&mut self, pc: u64) -> PyResult<()> {
-        self._set_pending_state_pc(pc)
+    pub fn set_pending_state_pc(&mut self, state_id: u64, pc: u64) -> PyResult<()> {
+        self._set_pending_state_pc(state_id, pc)
     }
 
     /// Map memory in the pending state.
     /// See `pending_api::_pending_state_map_memory` for the body.
-    #[pyo3(signature = (addr, data, permissions=7))]
+    #[pyo3(signature = (state_id, addr, data, permissions=7))]
     pub fn pending_state_map_memory(
         &mut self,
+        state_id: u64,
         addr: u64,
         data: &[u8],
         permissions: u8,
     ) -> PyResult<()> {
-        self._pending_state_map_memory(addr, data, permissions)
+        self._pending_state_map_memory(state_id, addr, data, permissions)
     }
 
     /// Map memory in active states.
@@ -1021,20 +1028,29 @@ impl RustExplorationManager {
     ///
     /// Returns the condition as a claripy AST that Python can use for forking.
     /// See `pending_api::_get_pending_branch_condition` for the body.
-    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self._get_pending_branch_condition(py)
+    pub fn get_pending_branch_condition(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Py<PyAny>> {
+        self._get_pending_branch_condition(py, state_id)
     }
 
     /// Get register value from pending state (concrete only).
     /// See `pending_api::_get_pending_register` for the body.
-    pub fn get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
-        self._get_pending_register(name)
+    pub fn get_pending_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
+        self._get_pending_register(state_id, name)
     }
 
     /// Get register as claripy AST from pending state (handles symbolic).
     /// See `pending_api::_get_pending_register_ast` for the body.
-    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        self._get_pending_register_ast(py, name)
+    pub fn get_pending_register_ast(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        name: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self._get_pending_register_ast(py, state_id, name)
     }
 
     /// Get history (BBL addresses) from pending callback state.
@@ -1042,8 +1058,8 @@ impl RustExplorationManager {
     /// This is used by Python to initialize history on callback states,
     /// preventing IndexError when hooks access `state.history.recent_bbl_addrs[-1]`.
     /// See `pending_api::_get_pending_history` for the body.
-    pub fn get_pending_history(&self) -> PyResult<Vec<u64>> {
-        self._get_pending_history()
+    pub fn get_pending_history(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self._get_pending_history(state_id)
     }
 
     /// Get jumpkind for pending callback.
@@ -1051,8 +1067,8 @@ impl RustExplorationManager {
     /// Returns the jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
     /// This is used by Python to properly initialize callstack management.
     /// See `pending_api::_get_pending_jumpkind` for the body.
-    pub fn get_pending_jumpkind(&self) -> PyResult<String> {
-        self._get_pending_jumpkind()
+    pub fn get_pending_jumpkind(&self, state_id: u64) -> PyResult<String> {
+        self._get_pending_jumpkind(state_id)
     }
 
     /// Get history (BBL addresses) and jumpkind from pending callback state
@@ -1060,14 +1076,14 @@ impl RustExplorationManager {
     /// calling `get_pending_history()` and `get_pending_jumpkind()`
     /// separately from the callback dispatcher hot path.
     /// See `pending_api::_get_pending_history_and_jumpkind` for the body.
-    pub fn get_pending_history_and_jumpkind(&self) -> PyResult<(Vec<u64>, String)> {
-        self._get_pending_history_and_jumpkind()
+    pub fn get_pending_history_and_jumpkind(&self, state_id: u64) -> PyResult<(Vec<u64>, String)> {
+        self._get_pending_history_and_jumpkind(state_id)
     }
 
     /// Set register value in pending state.
     /// See `pending_api::_set_pending_register` for the body.
-    pub fn set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        self._set_pending_register(name, value)
+    pub fn set_pending_register(&mut self, state_id: u64, name: &str, value: u128) -> PyResult<()> {
+        self._set_pending_register(state_id, name, value)
     }
 
     /// Set register to a symbolic value from a handle ID.
@@ -1075,8 +1091,13 @@ impl RustExplorationManager {
     /// Used for syncing symbolic return values from SimProcedures.
     /// The handle_id should reference a RustBV in the solver's symbol table.
     /// See `pending_api::_set_pending_register_symbolic` for the body.
-    pub fn set_pending_register_symbolic(&mut self, name: &str, handle_id: u64) -> PyResult<()> {
-        self._set_pending_register_symbolic(name, handle_id)
+    pub fn set_pending_register_symbolic(
+        &mut self,
+        state_id: u64,
+        name: &str,
+        handle_id: u64,
+    ) -> PyResult<()> {
+        self._set_pending_register_symbolic(state_id, name, handle_id)
     }
 
     /// Set a symbolic register value in the pending state from claripy AST.
@@ -1087,10 +1108,11 @@ impl RustExplorationManager {
     pub fn set_pending_register_symbolic_ast(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         reg_name: &str,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self._set_pending_register_symbolic_ast(py, reg_name, ast)
+        self._set_pending_register_symbolic_ast(py, state_id, reg_name, ast)
     }
 
     /// Import symbolic memory from Python hook into Rust's symbolic_objects.
@@ -1114,22 +1136,23 @@ impl RustExplorationManager {
     pub fn import_symbolic_memory(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self._import_symbolic_memory(py, addr, ast)
+        self._import_symbolic_memory(py, state_id, addr, ast)
     }
 
     /// Get memory from pending state.
     /// See `pending_api::_get_pending_memory` for the body.
-    pub fn get_pending_memory(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self._get_pending_memory(addr, size)
+    pub fn get_pending_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {
+        self._get_pending_memory(state_id, addr, size)
     }
 
     /// Store memory in pending state.
     /// See `pending_api::_set_pending_memory` for the body.
-    pub fn set_pending_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        self._set_pending_memory(addr, data)
+    pub fn set_pending_memory(&mut self, state_id: u64, addr: u64, data: &[u8]) -> PyResult<()> {
+        self._set_pending_memory(state_id, addr, data)
     }
 
     /// Get dirty page addresses from pending state.
@@ -1137,14 +1160,14 @@ impl RustExplorationManager {
     /// This returns the list of page-aligned addresses that have been
     /// modified in the pending callback state.
     /// See `pending_api::_get_pending_dirty_pages` for the body.
-    pub fn get_pending_dirty_pages(&self) -> PyResult<Vec<u64>> {
-        self._get_pending_dirty_pages()
+    pub fn get_pending_dirty_pages(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self._get_pending_dirty_pages(state_id)
     }
 
     /// Clear dirty page tracking in pending state.
     /// See `pending_api::_clear_pending_dirty_tracking` for the body.
-    pub fn clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
-        self._clear_pending_dirty_tracking()
+    pub fn clear_pending_dirty_tracking(&mut self, state_id: u64) -> PyResult<()> {
+        self._clear_pending_dirty_tracking(state_id)
     }
 
     /// Export pending constraints as a list of claripy ASTs.
@@ -1152,8 +1175,12 @@ impl RustExplorationManager {
     /// Returns constraints that can be added to Python state.solver.
     /// This exports stored branch conditions accumulated during Rust execution.
     /// See `pending_api::_export_pending_constraints` for the body.
-    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        self._export_pending_constraints(py)
+    pub fn export_pending_constraints(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        self._export_pending_constraints(py, state_id)
     }
 
     /// Get handle IDs that are actively referenced in the pending state.
@@ -1170,8 +1197,11 @@ impl RustExplorationManager {
     /// This allows Python to get a complete snapshot of the pending state
     /// including all registers, memory pages, and metadata.
     /// See `pending_api::_export_pending_state` for the body.
-    pub fn export_pending_state(&self) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        self._export_pending_state()
+    pub fn export_pending_state(
+        &self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        self._export_pending_state(state_id)
     }
 
     /// Get the root state ID for the pending callback state.
@@ -1183,8 +1213,8 @@ impl RustExplorationManager {
     /// Returns:
     ///     The root state ID if available, or None if the state has no tracked root.
     /// See `pending_api::_get_pending_root_state_id` for the body.
-    pub fn get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
-        self._get_pending_root_state_id()
+    pub fn get_pending_root_state_id(&self, state_id: u64) -> PyResult<Option<u64>> {
+        self._get_pending_root_state_id(state_id)
     }
 
     /// Get the full ancestry chain for the pending callback state.
@@ -1195,8 +1225,8 @@ impl RustExplorationManager {
     /// This is used by Python to find cached state data when the current state
     /// is a multi-level fork of an original state.
     /// See `pending_api::_get_pending_ancestry` for the body.
-    pub fn get_pending_ancestry(&self) -> PyResult<Vec<u64>> {
-        self._get_pending_ancestry()
+    pub fn get_pending_ancestry(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self._get_pending_ancestry(state_id)
     }
 
     /// Fork the pending state's solver context for Python callbacks.
@@ -1220,19 +1250,20 @@ impl RustExplorationManager {
     /// - "constraint_count": u64
     /// - "stdout": bytes (accumulated stdout buffer)
     /// See `pending_api::_export_callback_bundle` for the body.
-    #[pyo3(signature = (register_names, shared_solver=true))]
+    #[pyo3(signature = (state_id, register_names, shared_solver=true))]
     pub fn export_callback_bundle<'py>(
         &self,
         py: Python<'py>,
+        state_id: u64,
         register_names: Vec<String>,
         shared_solver: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        self._export_callback_bundle(py, register_names, shared_solver)
+        self._export_callback_bundle(py, state_id, register_names, shared_solver)
     }
 
     /// See `pending_api::_fork_pending_solver` for the body.
-    pub fn fork_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self._fork_pending_solver()
+    pub fn fork_pending_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
+        self._fork_pending_solver(state_id)
     }
 
     /// Borrow the pending state's solver context without forking.
@@ -1245,8 +1276,8 @@ impl RustExplorationManager {
     /// so post-callback constraint sync via add_constraints_to_pending() should
     /// be skipped to avoid double-adding.
     /// See `pending_api::_borrow_pending_solver` for the body.
-    pub fn borrow_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self._borrow_pending_solver()
+    pub fn borrow_pending_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
+        self._borrow_pending_solver(state_id)
     }
 
     /// Add constraints from Python callbacks back to the pending state.
@@ -1261,9 +1292,10 @@ impl RustExplorationManager {
     pub fn add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<()> {
-        self._add_constraints_to_pending(py, constraints)
+        self._add_constraints_to_pending(py, state_id, constraints)
     }
 
     /// Add constraints from Python to a state in a stash by state ID.
@@ -1459,14 +1491,14 @@ impl RustExplorationManager {
     /// Used by SimProcedure callbacks to read the correct per-state memory.
     /// Get all mapped page addresses from pending callback state's memory.
     /// See `pending_api::_get_pending_mapped_pages` for the body.
-    pub fn get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
-        self._get_pending_mapped_pages()
+    pub fn get_pending_mapped_pages(&self, state_id: u64) -> PyResult<Vec<u64>> {
+        self._get_pending_mapped_pages(state_id)
     }
 
     /// Load an entire page (4096 bytes) from pending callback state's memory.
     /// See `pending_api::_pending_memory_load_page` for the body.
-    pub fn pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
-        self._pending_memory_load_page(page_addr)
+    pub fn pending_memory_load_page(&self, state_id: u64, page_addr: u64) -> PyResult<Vec<u8>> {
+        self._pending_memory_load_page(state_id, page_addr)
     }
 
     /// Symbolic counterpart of `pending_memory_load_page`: returns the
@@ -1476,26 +1508,33 @@ impl RustExplorationManager {
     pub fn pending_memory_load_symbolic_page<'py>(
         &self,
         py: Python<'py>,
+        state_id: u64,
         page_addr: u64,
     ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
-        self._pending_memory_load_symbolic_page(py, page_addr)
+        self._pending_memory_load_symbolic_page(py, state_id, page_addr)
     }
 
     /// See `pending_api::_pending_memory_load` for the body.
-    pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self._pending_memory_load(addr, size)
+    pub fn pending_memory_load(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {
+        self._pending_memory_load(state_id, addr, size)
     }
 
     /// Store to pending callback state's Rust memory.
     /// See `pending_api::_pending_memory_store` for the body.
-    pub fn pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        self._pending_memory_store(addr, data)
+    pub fn pending_memory_store(&mut self, state_id: u64, addr: u64, data: &[u8]) -> PyResult<()> {
+        self._pending_memory_store(state_id, addr, data)
     }
 
     /// Map memory with data in pending callback state.
     /// See `pending_api::_pending_memory_map_data` for the body.
-    pub fn pending_memory_map_data(&mut self, addr: u64, data: &[u8], perm: u8) -> PyResult<()> {
-        self._pending_memory_map_data(addr, data, perm)
+    pub fn pending_memory_map_data(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+        perm: u8,
+    ) -> PyResult<()> {
+        self._pending_memory_map_data(state_id, addr, data, perm)
     }
 
     /// Set address to skip hook check for on next step.
@@ -2159,10 +2198,11 @@ impl RustExplorationManager {
     // =========================================================================
 
     /// Resume after a SimProcedure callback. See `resume::_resume_after_simprocedure` for the body.
-    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     pub fn resume_after_simprocedure(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
@@ -2170,6 +2210,7 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self._resume_after_simprocedure(
             py,
+            state_id,
             new_pc,
             register_changes,
             memory_changes,
@@ -2178,10 +2219,11 @@ impl RustExplorationManager {
     }
 
     /// Resume after a syscall callback.
-    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     pub fn resume_after_syscall(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
@@ -2190,6 +2232,7 @@ impl RustExplorationManager {
         // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
         self._resume_after_simprocedure(
             py,
+            state_id,
             new_pc,
             register_changes,
             memory_changes,
@@ -2198,10 +2241,11 @@ impl RustExplorationManager {
     }
 
     /// Resume after a hook callback. Same semantics as resume_after_simprocedure.
-    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     pub fn resume_after_hook(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
@@ -2210,6 +2254,7 @@ impl RustExplorationManager {
         // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
         self._resume_after_simprocedure(
             py,
+            state_id,
             new_pc,
             register_changes,
             memory_changes,
@@ -2220,22 +2265,23 @@ impl RustExplorationManager {
     /// Fast-path: deadend the pending callback state without full apply_changes.
     /// Used for SimProcedure continuations known to just call exit().
     /// See `resume::_deadend_pending_callback` for the body.
-    pub fn deadend_pending_callback(&mut self) -> PyResult<()> {
-        self._deadend_pending_callback()
+    pub fn deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        self._deadend_pending_callback(state_id)
     }
 
     /// Resume after an error occurred during callback execution (P17).
     /// See `resume::_resume_after_error` for the body.
-    pub fn resume_after_error(&mut self, error_msg: &str) -> PyResult<()> {
-        self._resume_after_error(error_msg)
+    pub fn resume_after_error(&mut self, state_id: u64, error_msg: &str) -> PyResult<()> {
+        self._resume_after_error(state_id, error_msg)
     }
 
     /// Resume after Python handles a symbolic branch.
     /// See `resume::_resume_after_symbolic_branch` for the body.
-    #[pyo3(signature = (true_pc, false_pc, true_constraints=None, false_constraints=None))]
+    #[pyo3(signature = (state_id, true_pc, false_pc, true_constraints=None, false_constraints=None))]
     pub fn resume_after_symbolic_branch(
         &mut self,
         py: Python<'_>,
+        state_id: u64,
         true_pc: u64,
         false_pc: u64,
         true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
@@ -2243,6 +2289,7 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self._resume_after_symbolic_branch(
             py,
+            state_id,
             true_pc,
             false_pc,
             true_constraints,
@@ -2252,14 +2299,14 @@ impl RustExplorationManager {
 
     /// Resume after Python evaluates a find predicate (P2).
     /// See `resume::_resume_find_predicate` for the body.
-    pub fn resume_find_predicate(&mut self, matched: bool) -> PyResult<()> {
-        self._resume_find_predicate(matched)
+    pub fn resume_find_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
+        self._resume_find_predicate(state_id, matched)
     }
 
     /// Resume after Python evaluates an avoid predicate (P7).
     /// See `resume::_resume_avoid_predicate` for the body.
-    pub fn resume_avoid_predicate(&mut self, matched: bool) -> PyResult<()> {
-        self._resume_avoid_predicate(matched)
+    pub fn resume_avoid_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
+        self._resume_avoid_predicate(state_id, matched)
     }
 
     // =========================================================================
