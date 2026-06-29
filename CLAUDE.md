@@ -335,7 +335,7 @@ Caveats:
 ## Key Files
 
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
-- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (entry point `mod.rs`, plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs, state_id.rs, and the angr-zel8z.3 data-model split: event.rs (ExplorationEvent pyclass), callback_types.rs (CallbackReason + PendingCallback), native_technique.rs (NativeTechnique enum))
+- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (entry point `mod.rs`, plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs, state_id.rs, scheduler.rs (work-stealing parallel pool, angr-1ilq.3), step_core.rs (Send+Sync StepContext + run_interpreter_step_core, angr-1ilq.3 increment 2b-i), and the angr-zel8z.3 data-model split: event.rs (ExplorationEvent pyclass), callback_types.rs (CallbackReason + PendingCallback), native_technique.rs (NativeTechnique enum))
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
 - **Claripy bridge**: `native/angr/src/claripy_bridge/` (entry point `mod.rs` + cache.rs, import.rs, export.rs submodules)
 - **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, helpers.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
