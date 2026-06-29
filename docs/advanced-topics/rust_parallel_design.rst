@@ -468,7 +468,9 @@ If Option A is chosen, a staged rollout:
       queue, shared block cache, narrow-frontier fallback) still land as
       isolated, tested machinery ready to receive 2c *if and when* a cheaper
       migration transport closes the gap; reducing that transport cost is the
-      true blocker and is tracked separately.
+      true blocker and is tracked as a dedicated prerequisite bead
+      (``angr-t3l5o``) that blocks both the 2c live wave loop
+      (``angr-vh834``) and the parent ``angr-1ilq.3``.
 
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
