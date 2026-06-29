@@ -111,6 +111,12 @@ pub fn claripy_to_rustbv(
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
+    // GIL-work timing (angr-1ilq.7): bracket the whole conversion — the Python
+    // attribute reads, the hash, and the recursive descent — as one region. The
+    // depth guard makes the self-recursion and any caller-nested callback a
+    // timing no-op, so each disjoint GIL region is counted exactly once.
+    let _gil = crate::gil_profile::GilWorkGuard::enter();
+
     // Get the operation name first to determine caching strategy
     let op: String = ast.getattr("op")?.extract()?;
     let op_str = op.as_str();

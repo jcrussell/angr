@@ -127,6 +127,12 @@ pub fn rustbv_to_claripy(
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
+    // GIL-work timing (angr-1ilq.7): time the whole export (recursive memo
+    // descent + claripy method calls) as one region. This is the non-recursive
+    // outer wrapper, so a single guard here covers all of `_memo`; the depth
+    // guard prevents double-counting when a dispatch method called us already.
+    let _gil = crate::gil_profile::GilWorkGuard::enter();
+
     // Memoize by RustBV pointer identity to dedupe shared subtrees in DAGs.
     // sym-write's symbolic-store ITE chains have ~25 unique Arc-shared
     // subtrees expanded into a 142k-node tree without dedup; converting that

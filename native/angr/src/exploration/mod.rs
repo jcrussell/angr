@@ -702,6 +702,13 @@ impl RustExplorationManager {
     /// When enabled, per-step timing and counters are accumulated.
     pub fn set_profiling(&mut self, enabled: bool) {
         self.profiling.profiling_enabled = enabled;
+        // angr-1ilq.7: the GIL/wall accumulators are deliberately NOT reset
+        // here. A bench runs in its own process and may build several managers
+        // (one per `simulation_manager()` call / exploration phase); we want the
+        // process-cumulative GIL vs run-loop-wall totals across ALL of them, so
+        // the last manager's `stats()` reports the whole-bench fraction. The
+        // thread-locals start at zero per process, so there is no cross-bench
+        // contamination. `gil_profile::reset()` remains available for tests.
     }
 
     /// Set the maximum length of each state's `history` / `detailed_history`

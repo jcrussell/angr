@@ -47,6 +47,7 @@ impl PythonCallbacks {
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_mem_read.as_ref() {
             Some(cb) => cb,
             None => return Ok(None),
@@ -79,6 +80,7 @@ impl PythonCallbacks {
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_mem_write.as_ref() {
             Some(cb) => cb,
             None => return Ok(None),
@@ -105,6 +107,7 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_reg_read.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -127,6 +130,7 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_reg_write.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -147,6 +151,7 @@ impl PythonCallbacks {
         when: &str,
         addr: u64,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_instruction.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -163,6 +168,7 @@ impl PythonCallbacks {
         when: &str,
         addr: u64,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_irsb.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -181,6 +187,7 @@ impl PythonCallbacks {
         jumpkind: &str,
         guard_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_exit.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -201,6 +208,7 @@ impl PythonCallbacks {
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_call.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -217,6 +225,7 @@ impl PythonCallbacks {
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_return.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -234,6 +243,7 @@ impl PythonCallbacks {
         tmp_num: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_tmp_read.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -255,6 +265,7 @@ impl PythonCallbacks {
         tmp_num: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_tmp_write.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -275,6 +286,7 @@ impl PythonCallbacks {
         when: &str,
         stmt_idx: u32,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_statement.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -294,6 +306,7 @@ impl PythonCallbacks {
         when: &str,
         expr_result: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_expr.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -319,6 +332,7 @@ impl PythonCallbacks {
         addr_ast: &Py<PyAny>,
         result: Option<Vec<u64>>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_address_concretization.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -345,6 +359,7 @@ impl PythonCallbacks {
         size: u32,
         expr_ast: &Py<PyAny>,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_symbolic_variable.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),
@@ -359,6 +374,7 @@ impl PythonCallbacks {
     /// deferred-fork processing in `exploration/stepping.rs`.
     /// No attrs — the BP just sees the forked state's id.
     pub fn call_inspect_fork(&self, py: Python<'_>, state_id: i64, when: &str) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = match self.inspect_fork.as_ref() {
             Some(cb) => cb,
             None => return Ok(()),

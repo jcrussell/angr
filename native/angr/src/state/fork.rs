@@ -25,6 +25,12 @@ impl RustSimState {
             return (HashMap::default(), HashMap::default(), HashMap::default());
         }
         Python::attach(|py| {
+            // GIL-work timing (angr-1ilq.7): the per-fork metadata clone_ref
+            // pass is a Python-touch point not routed through PythonCallbacks or
+            // the claripy bridge, so it needs its own guard. Only reached when a
+            // state carries symbolic pages/hooks (the early-return above skips
+            // the common empty case).
+            let _gil = crate::gil_profile::GilWorkGuard::enter();
             let pages = self
                 .symbolic_pages
                 .iter()

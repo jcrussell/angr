@@ -115,6 +115,14 @@ impl RustExplorationManager {
             return Err(PyRuntimeError::new_err("callbacks not ready"));
         }
 
+        // GIL-work timing (angr-1ilq.7): bracket the whole run-loop wall time —
+        // the denominator for the GIL/solver fractions. While live it also arms
+        // the GIL-region timer (see `gil_profile`), so only Python-touch work
+        // *during stepping* is counted (state export after `run()` is excluded,
+        // keeping `gil_work_ns <= run_wall_ns`). The `Drop` fires on every exit
+        // path (early `return`, `?`, panic) without borrowing `self`.
+        let _gil_wall = crate::gil_profile::RunLoopWallGuard::new(self.profiling.profiling_enabled);
+
         let run_loop_start = if self.profiling.profiling_enabled {
             Some(std::time::Instant::now())
         } else {

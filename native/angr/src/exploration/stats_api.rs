@@ -169,6 +169,18 @@ impl RustExplorationManager {
             "python_callback_time_ns",
             self.profiling.accumulated_stats.python_callback_time_ns,
         )?;
+        // angr-1ilq.7 GIL-strategy spike: the depth-guarded total GIL-hold time
+        // and the run-loop wall time, both read from the thread-local
+        // accumulators (see `gil_profile`). `gil_work_time_ns` is the Amdahl
+        // serial fraction for strategy A (lazy-GIL); the denominator is
+        // `run_wall_time_ns`. By construction `gil_work_time_ns <=
+        // run_wall_time_ns` (GIL regions are gated on an active run loop), so
+        // `GIL_fraction <= 1`. Unlike `python_callback_time_ns` (lift-only),
+        // this covers every Python-touch point: bridge round-trips, memory /
+        // register / hook / syscall / dirty / fetch callbacks, inspect dispatch,
+        // and per-fork metadata clone_ref.
+        dict.set_item("gil_work_time_ns", crate::gil_profile::gil_work_ns())?;
+        dict.set_item("run_wall_time_ns", crate::gil_profile::run_wall_ns())?;
         Ok(dict)
     }
 

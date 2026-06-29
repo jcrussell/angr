@@ -15,6 +15,7 @@ impl PythonCallbacks {
         addr: u64,
         size: u32,
     ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.memory_load.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("memory_load callback not set")
         })?;
@@ -43,6 +44,7 @@ impl PythonCallbacks {
 
     /// Call the memory store callback.
     pub fn call_memory_store(&self, py: Python<'_>, addr: u64, data: &[u8]) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.memory_store.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("memory_store callback not set")
         })?;
@@ -61,6 +63,7 @@ impl PythonCallbacks {
         py: Python<'_>,
         stores: &[(u64, Vec<u8>)],
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         if stores.is_empty() {
             return Ok(());
         }
@@ -95,6 +98,7 @@ impl PythonCallbacks {
         py: Python<'_>,
         loads: &[(u64, u32)], // (address, size) pairs
     ) -> PyResult<Vec<BatchLoadEntry>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         if loads.is_empty() {
             return Ok(Vec::new());
         }
@@ -154,6 +158,7 @@ impl PythonCallbacks {
         size: u32,
         addr_ast: &RustBV,
     ) -> PyResult<RustBV> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         // If symbolic callback is set, use it
         if let Some(cb) = &self.memory_load_symbolic {
             let addrs_list: Vec<u64> = addrs.to_vec();
@@ -203,6 +208,7 @@ impl PythonCallbacks {
         data: &RustBV,
         addr_ast: &RustBV,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         use crate::claripy_bridge::rustbv_to_claripy;
 
         // If data is symbolic and we have the full symbolic callback, use it
@@ -259,6 +265,7 @@ impl PythonCallbacks {
     /// `None`, hard-error rather than no-op — see the module-level docs
     /// for why silent fallbacks mask wiring bugs.
     pub fn call_on_hook(&self, py: Python<'_>, addr: u64) -> PyResult<u64> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self
             .on_hook
             .as_ref()
@@ -270,6 +277,7 @@ impl PythonCallbacks {
 
     /// Call the syscall handling callback.
     pub fn call_on_syscall(&self, py: Python<'_>, num: u64) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.on_syscall.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("on_syscall callback not set")
         })?;
@@ -291,6 +299,7 @@ impl PythonCallbacks {
         opt_level: Option<i32>,
         dirty_bytes: Option<&[u8]>,
     ) -> PyResult<String> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.lift_block.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("lift_block callback not set")
         })?;
@@ -319,6 +328,7 @@ impl PythonCallbacks {
         offset: u32,
         size: u32,
     ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.get_register.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("get_register callback not set")
         })?;
@@ -345,6 +355,7 @@ impl PythonCallbacks {
 
     /// Call the register put callback.
     pub fn call_put_register(&self, py: Python<'_>, offset: u32, data: &[u8]) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.put_register.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("put_register callback not set")
         })?;
@@ -365,6 +376,7 @@ impl PythonCallbacks {
         args: &[u64],
         ret_ty_bits: u32,
     ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.dirty_call.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("dirty_call callback not set")
         })?;
@@ -411,6 +423,7 @@ impl PythonCallbacks {
     /// - permissions: permission bits (R=4, W=2, X=1)
     /// - is_mapped: whether the page exists in Python memory
     pub fn call_fetch_page(&self, py: Python<'_>, page_addr: u64) -> PyResult<(Vec<u8>, u8, bool)> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.fetch_page.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("fetch_page callback not set")
         })?;
@@ -433,6 +446,7 @@ impl PythonCallbacks {
         py: Python<'_>,
         page_addrs: &[u64],
     ) -> PyResult<Vec<(Vec<u8>, u8, bool)>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         if page_addrs.is_empty() {
             return Ok(Vec::new());
         }
@@ -484,6 +498,7 @@ impl PythonCallbacks {
         addr: u64,
         value: &RustBV,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         use crate::claripy_bridge::rustbv_to_claripy;
 
         // If the symbolic value callback is set, use it
@@ -516,6 +531,7 @@ impl PythonCallbacks {
         addr_val: &RustBV,
         data_val: &RustBV,
     ) -> PyResult<()> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         use crate::claripy_bridge::rustbv_to_claripy;
 
         if let Some(cb) = &self.memory_store_symbolic_full {
@@ -554,6 +570,7 @@ impl PythonCallbacks {
         addr_val: &RustBV,
         size: u32,
     ) -> PyResult<Py<PyAny>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         use crate::claripy_bridge::rustbv_to_claripy;
 
         if let Some(cb) = &self.memory_load_symbolic_full {
@@ -591,6 +608,7 @@ impl PythonCallbacks {
         addr: u64,
         symbol_name: Option<&str>,
     ) -> PyResult<Option<(String, usize, bool)>> {
+        let _gil = crate::gil_profile::GilWorkGuard::enter();
         let cb = self.resolve_function.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("resolve_function callback not set")
         })?;
