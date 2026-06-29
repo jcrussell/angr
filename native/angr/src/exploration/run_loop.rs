@@ -93,11 +93,39 @@ pub(crate) enum TerminalDisposition {
 }
 
 impl RustExplorationManager {
+    /// Run-loop entry point. Dispatches to the verbatim single-threaded loop
+    /// (default, zero-regression) or the parallel coordinator when
+    /// `RUST_PARALLEL_WORKERS > 1`. The coordinator is scaffolding in 2a — it
+    /// currently delegates to the single-threaded path (no behaviour change);
+    /// the real wave loop lands in angr-vh834 (1ilq.3c).
+    pub(crate) fn run_loop(
+        &mut self,
+        py: Python<'_>,
+        n: Option<u32>,
+    ) -> PyResult<ExplorationEvent> {
+        if self.parallel_real_workers <= 1 {
+            return self.run_loop_single_threaded(py, n);
+        }
+        self.run_loop_parallel(py, n)
+    }
+
+    /// Parallel coordinator path (angr-1ilq.3c, angr-1obng). 2a SCAFFOLD ONLY:
+    /// delegates to the single-threaded loop so enabling RUST_PARALLEL_WORKERS>1
+    /// is a no-op until the wave loop and scheduling policy land. This keeps the
+    /// branch point in place and reviewable without any parallel execution.
+    pub(crate) fn run_loop_parallel(
+        &mut self,
+        py: Python<'_>,
+        n: Option<u32>,
+    ) -> PyResult<ExplorationEvent> {
+        self.run_loop_single_threaded(py, n)
+    }
+
     /// Inner body of the pymethods-exposed `run`. See `run` in `mod.rs`.
     ///
     /// Thin driver over `step_one`: owns the loop frame (I8 termination,
     /// state pop, post-step bookkeeping) and routes each `StepOutcome`.
-    pub(crate) fn run_loop(
+    pub(crate) fn run_loop_single_threaded(
         &mut self,
         py: Python<'_>,
         n: Option<u32>,

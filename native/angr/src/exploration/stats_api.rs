@@ -154,6 +154,7 @@ impl RustExplorationManager {
         dict.set_item("parallel_migrations", self.parallel_migrations)?;
         dict.set_item("parallel_tasks", self.parallel_tasks)?;
         dict.set_item("parallel_num_workers", self.parallel_num_workers)?;
+        dict.set_item("parallel_real_workers", self.parallel_real_workers)?;
         dict.set_item("parallel_max_active_width", self.parallel_max_active_width)?;
         // angr-panhl.3 (concurrent-width audit): step-weighted width histogram
         // [width==1, ==2, 3–4, 5–8, ≥9]. Sustained width (the parallel-

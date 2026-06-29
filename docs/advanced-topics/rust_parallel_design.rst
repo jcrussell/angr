@@ -423,6 +423,18 @@ If Option A is chosen, a staged rollout:
    rayon-backed worker pool gated by a ``RUST_PARALLEL_WORKERS`` env
    var (default 1). Single-worker remains the current path. Each
    worker owns a ``SymContext``; the scheduler translates on steal.
+
+   .. note::
+
+      ``RUST_PARALLEL_WORKERS`` (canonical; the number of REAL
+      work-stealing worker threads, default 1) is **distinct** from
+      ``ANGR_PARALLEL_WORKERS`` (the ``angr-panhl.1`` migration *model*
+      worker count, default 4, which only feeds the
+      ``record_migration_sample`` instrumentation and never spawns
+      threads). At the default of 1 the run loop takes the verbatim
+      single-threaded path; the value is surfaced as
+      ``parallel_real_workers`` in ``mgr.stats`` alongside the model's
+      ``parallel_num_workers``.
 #. **Phase 4 — Python callback dispatch.** Workers stepping a state
    that fires a Python SimProcedure must serialize on the GIL.
    Document the throughput cap for SimProcedure-heavy benches.

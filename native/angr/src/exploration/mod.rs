@@ -290,6 +290,13 @@ pub struct RustExplorationManager {
     /// the work-stealing migration model. Read once from `ANGR_PARALLEL_WORKERS`
     /// at construction (default 4). See `record_migration_sample`.
     pub(crate) parallel_num_workers: usize,
+    /// angr-1ilq.3 increment 2a: number of REAL work-stealing worker threads
+    /// for the parallel run-loop coordinator. DISTINCT from `parallel_num_workers`
+    /// (the panhl.1 migration *model*). Read once from `RUST_PARALLEL_WORKERS` at
+    /// construction (default 1 = single-threaded, no behaviour change). The
+    /// coordinator path is wired in a later increment; at default 1 the run loop
+    /// takes the verbatim single-threaded path.
+    pub(crate) parallel_real_workers: usize,
     /// Cumulative count of modelled work-stealing migrations ("steals"): per
     /// dispatched task, +1 when the state's home worker has a backlog while
     /// another worker is idle. The kill-gate's <10/bench migration target.
@@ -382,6 +389,11 @@ impl RustExplorationManager {
                 .and_then(|v| v.parse::<usize>().ok())
                 .filter(|&w| w >= 1)
                 .unwrap_or(4),
+            parallel_real_workers: std::env::var("RUST_PARALLEL_WORKERS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|&w| w >= 1)
+                .unwrap_or(1),
             parallel_migrations: 0,
             parallel_tasks: 0,
             parallel_max_active_width: 0,

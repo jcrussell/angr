@@ -277,6 +277,78 @@ class TestRustExplorationManagerUnit:
         )
         assert sum(hist[1:]) > 0, f"width>=2 observed but no >=2 bucket populated: {hist}"
 
+    def test_parallel_real_workers_defaults_to_one(self, monkeypatch):
+        """angr-1ilq.3 2a: RUST_PARALLEL_WORKERS unset => parallel_real_workers == 1.
+
+        The new REAL-worker field is read once from RUST_PARALLEL_WORKERS at
+        Rust __new__; with the env var unset the default is single-threaded (1),
+        which keeps the run loop on the verbatim single-threaded path.
+        """
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        mgr = _RustExplorationManager("amd64")
+        stats = mgr.stats()
+        assert stats["parallel_real_workers"] == 1
+
+    def test_parallel_real_workers_honors_env(self, monkeypatch):
+        """RUST_PARALLEL_WORKERS=2 sets parallel_real_workers; behaviour unchanged.
+
+        The parallel coordinator is a 2a scaffold that delegates to the
+        single-threaded loop, so enabling >1 workers must not change results:
+        fauxware still completes and finds the auth-bypass solution.
+        """
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        mgr = _RustExplorationManager("amd64")
+        assert mgr.stats()["parallel_real_workers"] == 2
+
+    def test_parallel_real_workers_env_runs_fauxware(self, fauxware_project, monkeypatch):
+        """RUST_PARALLEL_WORKERS=2 is a no-op via the delegating scaffold.
+
+        Drives the high-level manager on fauxware twice — once single-threaded
+        (default) and once with 2 real workers requested — and asserts identical
+        final stash counts. The 2a parallel path delegates to the single-threaded
+        loop, so enabling >1 workers must not change exploration results.
+        """
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        baseline_mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        assert baseline_mgr.stats["parallel_real_workers"] == 1
+        baseline_mgr.run()
+        baseline_counts = baseline_mgr.stash_counts()
+
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        parallel_mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        assert parallel_mgr.stats["parallel_real_workers"] == 2
+        parallel_mgr.run()
+        parallel_counts = parallel_mgr.stash_counts()
+
+        assert parallel_counts == baseline_counts, (
+            f"parallel scaffold changed results: {parallel_counts} != {baseline_counts}"
+        )
+
+    @pytest.mark.parametrize("bad", ["0", "garbage", "-1", ""])
+    def test_parallel_real_workers_bad_env_falls_back(self, monkeypatch, bad):
+        """RUST_PARALLEL_WORKERS=0/garbage falls back to the default of 1.
+
+        The `>= 1` filter rejects 0 and the parse rejects non-numeric / empty
+        values, so any invalid setting collapses to single-threaded.
+        """
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", bad)
+        mgr = _RustExplorationManager("amd64")
+        assert mgr.stats()["parallel_real_workers"] == 1
+
+    def test_parallel_model_workers_independent_of_real_workers(self, monkeypatch):
+        """The panhl.1 migration MODEL count stays default 4 and independent.
+
+        `parallel_num_workers` (the migration model, env ANGR_PARALLEL_WORKERS)
+        must remain its own default (4) and not be perturbed by the new REAL
+        worker field — they are deliberately distinct knobs.
+        """
+        monkeypatch.delenv("ANGR_PARALLEL_WORKERS", raising=False)
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        mgr = _RustExplorationManager("amd64")
+        stats = mgr.stats()
+        assert stats["parallel_num_workers"] == 4
+        assert stats["parallel_real_workers"] == 2
+
     def test_register_python_procedure_appears_in_listing(self):
         """register_python_procedure adds the procedure to the registry."""
         mgr = _RustExplorationManager("amd64")
