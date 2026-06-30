@@ -134,11 +134,25 @@ def assert_probe_counters(name: str, stats: dict) -> None:
         )
 
 
-def compute_gate(name: str, stats: dict, workers: int, threshold: float) -> dict:
+def compute_gate(
+    name: str,
+    stats: dict,
+    workers: int,
+    threshold: float,
+    steal_fraction: float | None = None,
+) -> dict:
     """Project the parallel speedup band for one bench from its stats dict.
 
     Raises GateError (via assert_probe_counters) if the probe counters are
     missing or zero.
+
+    ``steal_fraction`` (angr-t3l5o pivot): the shadow probe measures a
+    level-synchronous wave model that migrates EVERY dispatched state, so the
+    raw ``O_migrate`` is the worst case.  A real steal-on-imbalance scheduler
+    migrates only a fraction ``f`` of states (an actual cross-worker steal);
+    the effective tax is ``f * O_migrate``.  ``None`` (default) reproduces the
+    wave-model worst case (f = 1.0).  The break-even ``f*`` is always reported
+    regardless of this knob.
     """
     assert_probe_counters(name, stats)
 
@@ -209,13 +223,35 @@ def compute_gate(name: str, stats: dict, workers: int, threshold: float) -> dict
         o_cache_pess = 0.0  # cannot quantify without a per-lift timer
         o_cache_pess_derived = False
 
+    # angr-t3l5o pivot: charge only the migrated fraction of states.  Default
+    # f = 1.0 reproduces the wave-model worst case (every state migrates).
+    steal_f = 1.0 if steal_fraction is None else steal_fraction
+    eff_o_migrate = o_migrate * steal_f
+
     def project(o_cache: float) -> tuple[float, float]:
-        t_par = (t_s - t_serial_bounce) / p_eff_b + o_migrate + o_cache + t_serial_bounce
+        t_par = (t_s - t_serial_bounce) / p_eff_b + eff_o_migrate + o_cache + t_serial_bounce
         speedup = t_s / t_par if t_par > 0 else 0.0
         return t_par, speedup
 
     t_par_opt, speedup_opt = project(0.0)
     t_par_pess, speedup_pess = project(o_cache_pess)
+
+    # Break-even steal fraction f*: the largest fraction of states a scheduler
+    # may migrate and still clear the threshold, per O_cache band.  Solve
+    #   (t_s - bounce)/p_eff_b + f* * o_migrate + o_cache + bounce == t_s/threshold
+    # for f*.  f* >= 1 => GO even migrating every state (the wave model already
+    # passes); f* <= 0 => the non-migration terms alone miss the bar (P_eff too
+    # low / cache tax too high) so no migration-count reduction can help.  This
+    # is the headline pivot number: it converts "transport is too expensive"
+    # into a concrete scheduler target ("keep steals below f* of states").
+    def break_even(o_cache: float) -> float:
+        if o_migrate <= 0:
+            return float("inf")
+        budget = t_s / threshold - t_serial_bounce - (t_s - t_serial_bounce) / p_eff_b - o_cache
+        return budget / o_migrate
+
+    steal_be_opt = break_even(0.0)
+    steal_be_pess = break_even(o_cache_pess)
 
     # Verdict.  GO needs BOTH ends above threshold.  NO-GO if even the
     # optimistic end fails.  Otherwise the band straddles -> NO-GO-FOR-NOW.
@@ -259,6 +295,10 @@ def compute_gate(name: str, stats: dict, workers: int, threshold: float) -> dict
         "t_par_pess": t_par_pess,
         "speedup_pess": speedup_pess,
         "pess_quantified": pess_quantified,
+        "steal_fraction": steal_f,
+        "eff_o_migrate": eff_o_migrate,
+        "steal_be_opt": steal_be_opt,
+        "steal_be_pess": steal_be_pess,
         "verdict": verdict,
     }
 
@@ -393,11 +433,40 @@ def print_report(g: dict) -> None:
             )
         )
     rows.append(("O_cache optimistic", "0 s  (shared C2 cache)"))
+    if g["steal_fraction"] != 1.0:
+        rows.append(
+            (
+                f"O_migrate @ steal_fraction={g['steal_fraction']:.3f}",
+                f"{g['eff_o_migrate']:.6f} s  (vs {g['o_migrate']:.6f} s wave-model)",
+            )
+        )
     rows.append(("T_par optimistic / pessimistic", f"{g['t_par_opt']:.4f} s  /  {g['t_par_pess']:.4f} s"))
     rows.append(
         (
             "speedup band [pess .. opt]",
             f"{g['speedup_pess']:.3f}x .. {g['speedup_opt']:.3f}x",
+        )
+    )
+
+    def _fmt_fstar(f: float) -> str:
+        if f == float("inf"):
+            return "inf (no migration tax)"
+        if f >= 1.0:
+            return f"{f * 100:.1f}% (GO even at full wave-model migration)"
+        if f <= 0.0:
+            return f"{f * 100:.1f}% (unreachable — P_eff/cache miss the bar alone)"
+        return f"{f * 100:.1f}%"
+
+    rows.append(
+        (
+            "break-even steal fraction f* [pess .. opt]",
+            f"{_fmt_fstar(g['steal_be_pess'])} .. {_fmt_fstar(g['steal_be_opt'])}",
+        )
+    )
+    rows.append(
+        (
+            "  (max migrated states for GO)",
+            "a steal-on-imbalance scheduler must migrate <= f* of dispatched states",
         )
     )
     keyw = max(len(k) for k, _ in rows)
@@ -476,6 +545,14 @@ def main() -> int:
     ap.add_argument("--only", nargs="*", help="Restrict to these bench names (default: cmu + codegate)")
     ap.add_argument("--threshold", type=float, default=1.0, help="GO requires projected speedup > this (default 1.0)")
     ap.add_argument("--timeout", type=int, default=180, help="Per-bench run_single timeout, seconds (default 180)")
+    ap.add_argument(
+        "--steal-fraction",
+        type=float,
+        default=None,
+        help="angr-t3l5o pivot: fraction of dispatched states a steal-on-imbalance "
+        "scheduler actually migrates (0..1). Scales O_migrate. Default (unset) = 1.0, "
+        "the wave-model worst case. The break-even f* is always reported regardless.",
+    )
     ap.add_argument("--selftest", action="store_true", help="Run the loud-assert negative test and exit")
     args = ap.parse_args()
 
@@ -493,7 +570,7 @@ def main() -> int:
         )
         try:
             stats = gather_stats(name, args.timeout)
-            g = compute_gate(name, stats, args.workers, args.threshold)
+            g = compute_gate(name, stats, args.workers, args.threshold, args.steal_fraction)
         except GateError as e:
             print(f"[ERROR] {e}", file=sys.stderr)
             errors.append((name, str(e)))
