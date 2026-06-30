@@ -582,6 +582,44 @@ If Option A is chosen, a staged rollout:
         serialized fraction, **not** a measured wall-clock win on codegate (that
         needs the live wiring and a wide bench like cmu).
 
+   .. important:: **Live wave loop delivered + measured (angr-vh834, 2026-06-30)
+      — mechanism complete and correct; wall-clock GO does NOT materialize on the
+      available bench (workload-bound, not implementation-bound).**
+
+      The full parallel path is now wired and committed: an ``&mut self``-free
+      post-step core (``run_post_step_core``/``CoreOutcome``), a GIL-free
+      interpreter step (callbacks self-acquire via ``Python::attach``; the ``py``
+      token removed from the step chain), and a live work-stealing wave loop
+      behind ``RUST_PARALLEL_WORKERS>=2`` (``run_loop_parallel``) that keeps
+      continue-states worker-local (f≈0), materializes only found terminals, and
+      reports **real** ``SchedulerStats`` counters. ``workers<=1`` is byte-identical
+      (untouched single-threaded path); ``workers=2`` reproduces the
+      single-threaded found set (adversarial peer review confirmed the
+      concurrency machinery sound; four fauxware-masked routing/accounting gaps
+      were found and fixed, incl. a CRITICAL find/avoid-via-``Hook`` misroute).
+
+      **Live measurement — ``cmu_binary_bomb_partial``, ``RUST_PARALLEL_WORKERS``
+      1 vs 2 (3 reps each):** workers=2 is **≈1.57× SLOWER** (2.37 s vs 1.51 s).
+      Counters at workers=2: ``parallel_tasks=28``, ``parallel_migrations=33``
+      (honest steal fraction **> 100 %**), 164 GIL-serialized block lifts. The
+      bench is phase-1 of the binary bomb — a **short, narrow** strcmp solve
+      (~28 state-steps, frontier width ≈ 1), so there is **no exploitable parallel
+      concurrency**, and per-wave overhead dominates: ``run_instrumented``
+      re-spawns ``thread::scope`` + two fresh Z3 contexts **every wave**, plus
+      migration serde and cold per-worker block caches that GIL-serialize re-lifts.
+      The earlier ``[3,0,1,7,11]`` "wide-and-slow" label was a projection/model
+      artifact, **not** this exploration.
+
+      This vindicates the 2b′ NO-GO and the f\*≈100 % thin-margin finding: these
+      CTF-partial workloads are overhead-bound. **The deliverable is the
+      mechanism** (correct, determinism-gated, real-countered parallel
+      exploration), **not a wall-clock win.** A real GO is **workload-bound** and
+      needs, in order: (1) a genuinely wide-and-slow bench (``run_width_audit.py``
+      standing NO-GO — "sequence angr-11djq first to create wide workloads");
+      (2) a **persistent worker pool** (eliminate the per-wave ``thread::scope`` +
+      Z3-context churn); (3) a **shared warm block cache** (eliminate the
+      GIL-serialized per-worker re-lifts).
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
