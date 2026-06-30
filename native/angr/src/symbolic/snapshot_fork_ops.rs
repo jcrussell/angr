@@ -23,7 +23,7 @@ use super::context::{LocalConstraints, PushStack, freeze_into_shared};
 use super::{RustBV, SymContext, SymContextSnapshot};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -32,7 +32,7 @@ use super::solver_build::*;
 #[cfg(feature = "vex-engine-z3")]
 use std::cell::{Cell, RefCell};
 #[cfg(feature = "vex-engine-z3")]
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicU32;
 
 impl SymContext {
     /// Build a serializable snapshot of this context's path-constraint state
@@ -52,57 +52,102 @@ impl SymContext {
     /// (Python-side `Py<PyAny>` overlays).
     pub fn to_snapshot(&self) -> SymContextSnapshot {
         let assumed_constraints = self.get_assumed_constraints();
-        // angr-82g6: also dump the full Z3 solver state in SMT-LIB2 so
-        // every assertion — including constraints added via
-        // `add_constraint_raw` that have no [`RustBV`] form in
-        // `assumed_constraints` (the Python claripy-sync fallback path
-        // in `_add_constraints_to_state` and the cross-process pointer-
-        // import path in `_import_z3_constraint_ptrs`) — survives the
-        // round-trip.
+        // angr-t3l5o Phase 1: two-class capture. The assume class is carried
+        // as `assumed_constraints` IR and rebuilt by re-asserting via
+        // `assume_*` on restore (no text). The RESIDUAL class (no-RustBV
+        // assertions — raw / bv-eq / merge-guard) is carried as an SMT-LIB2
+        // text dump in `residual_smtlib2`, EMPTY in the common case.
         //
-        // Restore replays this dump through `add_constraint_raw` and
-        // separately writes the `assumed_constraints` log via
-        // `assumed_constraints_push` (no solver re-assert), so the two
-        // captures are independent and don't need ptr-level dedup. This
-        // sidesteps the pitfall that Python-claripy ASTs and our
-        // `claripy_to_rustbv`-rebuilt ASTs are structurally different
-        // (hash-cons to different pointers) — both forms land back where
-        // they came from.
+        // The merge fallback: when `assume_class_reconstructible` is false the
+        // context's `assumed` pairs are export-only (a `merge()` left the
+        // guarded `Or` disjunctions on the solver, not the unconditional
+        // pairs). Re-asserting them would over-constrain, so we instead dump
+        // the FULL solver and tell restore (via `reassert_assumed = false`)
+        // not to re-assert the assume class — the pre-Phase-1 behavior,
+        // preserved for correctness on merged lineages.
         #[cfg(feature = "vex-engine-z3")]
-        let solver_smtlib2 = {
-            // angr-t3l5o Phase 0b: time the SMT-LIB2 text emit and record the
-            // residual (no-RustBV) assertion count, both gated on the env flag.
-            if crate::migrate_phase_timers::count_armed() {
-                // Approximate residual count as total Z3 assertions minus the
-                // reconstructible assume class (see field doc on
-                // MIGRATE_RAW_CONSTRAINT_COUNT). Computed before the emit so the
-                // emit timer measures the dump alone. `z3_assertion_count`
-                // materializes the lazy solver — acceptable in measurement mode.
-                let total = self.z3_assertion_count() as u64;
-                let assumed = assumed_constraints.len() as u64;
-                crate::migrate_phase_timers::add_raw_constraint_count(
-                    total.saturating_sub(assumed),
+        let (residual_smtlib2, reassert_assumed) = {
+            let reassert_assumed = self
+                .assume_class_reconstructible
+                .load(std::sync::atomic::Ordering::Relaxed);
+            // angr-t3l5o Phase 1: self-checking invariant. `z3_assertions`
+            // (and thus `z3_assertion_count`) is the disjoint union of the
+            // assume-class asserts (reconstructible from `assumed_constraints`)
+            // and the residual log. We use the WEAKER bounded form rather than
+            // an exact equality because the exact reconstructible-assume count
+            // is hard to recover here: an `assumed` entry produces a distinct
+            // solver assertion only when it is neither a concrete-true
+            // tautology nor a ptr-dedup hit (see `assume_true`/`assume_false`),
+            // and Z3 may also drop/merge structurally-identical asserts in
+            // `get_assertions()`. The bounds catch the real failure mode this
+            // guard targets — a future caller asserting on the solver without
+            // recording into a log — while tolerating those benign sub-counts.
+            #[cfg(debug_assertions)]
+            {
+                let non_bv_count = self.non_bv_assertions_shared.lock().len()
+                    + self.local_constraints.lock().non_bv_assertions.len();
+                let z3_count = self.z3_assertion_count();
+                let assumed_len = assumed_constraints.len();
+                debug_assert!(
+                    z3_count >= non_bv_count,
+                    "residual log ({non_bv_count}) exceeds solver assertion \
+                     count ({z3_count}) — a residual sink recorded a Bool that \
+                     never reached the solver"
+                );
+                debug_assert!(
+                    z3_count <= assumed_len + non_bv_count,
+                    "solver assertion count ({z3_count}) exceeds assume \
+                     ({assumed_len}) + residual ({non_bv_count}) — a caller \
+                     asserted on the solver without recording into a log"
                 );
             }
-            crate::migrate_phase_timers::time_phase(
+            // angr-t3l5o Phase 0b: record the EXACT residual (no-RustBV)
+            // assertion count, env-gated. Phase 1 makes the exact count
+            // available (the `non_bv_assertions` log) so we no longer
+            // approximate it as `z3_assertion_count - assumed.len()`.
+            if crate::migrate_phase_timers::count_armed() {
+                let non_bv_count = (self.non_bv_assertions_shared.lock().len()
+                    + self.local_constraints.lock().non_bv_assertions.len())
+                    as u64;
+                crate::migrate_phase_timers::add_raw_constraint_count(non_bv_count);
+            }
+            // Time the EMIT phase around the dump that actually runs. On the
+            // common reconstructible path this is `dump_non_bv_smtlib2`, which
+            // returns "" when the residual log is empty — so post-Phase-1
+            // attribution shows the text emit collapse toward ~0.
+            let residual = crate::migrate_phase_timers::time_phase(
                 &crate::migrate_phase_timers::MIGRATE_SMTLIB2_EMIT_NS,
-                || self.dump_solver_smtlib2(),
-            )
+                || {
+                    if reassert_assumed {
+                        self.dump_non_bv_smtlib2()
+                    } else {
+                        self.dump_solver_smtlib2()
+                    }
+                },
+            );
+            (residual, reassert_assumed)
         };
         #[cfg(not(feature = "vex-engine-z3"))]
-        let solver_smtlib2 = String::new();
+        let (residual_smtlib2, reassert_assumed) = (
+            String::new(),
+            self.assume_class_reconstructible
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         SymContextSnapshot {
             assumed_constraints,
-            solver_smtlib2,
+            residual_smtlib2,
+            reassert_assumed,
         }
     }
 
     /// Helper for [`Self::to_snapshot`]: dump the union of
-    /// `z3_assertions_shared` and the local Z3 assertion vector into a
-    /// temp [`z3::Solver`] and emit SMT-LIB2.
+    /// `z3_assertions_shared` and the local Z3 assertion vector (the FULL
+    /// solver state) into a temp [`z3::Solver`] and emit SMT-LIB2.
     ///
-    /// Returns the empty string when no Z3 assertions exist, so the
-    /// snapshot envelope stays minimal in the no-constraints case.
+    /// Returns the empty string when no Z3 assertions exist. Used only on the
+    /// merge fallback path (`assume_class_reconstructible == false`); the
+    /// common path uses [`Self::dump_non_bv_smtlib2`]. Still reachable from
+    /// the Phase-0 bench hook `bench_dump_solver_smtlib2`.
     #[cfg(feature = "vex-engine-z3")]
     fn dump_solver_smtlib2(&self) -> String {
         let temp = z3::Solver::new();
@@ -114,6 +159,35 @@ impl SymContext {
         }
         let local = self.local_constraints.lock();
         for c in local.z3_assertions.iter() {
+            temp.assert(c);
+            any = true;
+        }
+        if any {
+            format!("{}", temp)
+        } else {
+            String::new()
+        }
+    }
+
+    /// Helper for [`Self::to_snapshot`]: dump ONLY the residual (no-[`RustBV`])
+    /// assertions — `non_bv_assertions_shared ∪ local.non_bv_assertions` —
+    /// into a temp [`z3::Solver`] and emit SMT-LIB2 (angr-t3l5o Phase 1).
+    ///
+    /// Returns the empty string when the residual log is empty, which is the
+    /// common case (pure assume-class contexts). This is the lever that
+    /// collapses the old full-solver text round-trip: the assume class is
+    /// rebuilt from `assumed_constraints` IR instead of from text.
+    #[cfg(feature = "vex-engine-z3")]
+    fn dump_non_bv_smtlib2(&self) -> String {
+        let temp = z3::Solver::new();
+        let mut any = false;
+        let shared = Arc::clone(&self.non_bv_assertions_shared.lock());
+        for c in shared.iter() {
+            temp.assert(c);
+            any = true;
+        }
+        let local = self.local_constraints.lock();
+        for c in local.non_bv_assertions.iter() {
             temp.assert(c);
             any = true;
         }
@@ -137,16 +211,16 @@ impl SymContext {
     /// context starts with all entries on the local side and can be
     /// re-shared by a subsequent `fork()`.
     ///
-    /// angr-82g6: the Z3 solver state is rebuilt from `solver_smtlib2`
-    /// (every assertion replayed through [`Self::add_constraint_raw`])
-    /// so constraints added via the raw path — which has no [`RustBV`]
-    /// form in `assumed_constraints` — round-trip faithfully. The
-    /// `assumed_constraints` log is then populated directly via
-    /// [`Self::assumed_constraints_push`] (no second solver assert) so
-    /// the BV-export log matches the original without double-counting
-    /// against `constraint_count`. Snapshots written before this field
-    /// existed (`solver_smtlib2` empty by `#[serde(default)]`) fall
-    /// through to the original `assume_*` replay path.
+    /// angr-t3l5o Phase 1: two-class reattach. When `reassert_assumed` is
+    /// true (the common case) the assume class is rebuilt from
+    /// `assumed_constraints` IR by re-asserting each pair through the public
+    /// `assume_*` APIs — repopulating the Z3 solver, the BV-export log, and
+    /// `constraint_count` with NO SMT-LIB2 text emit/parse — then the
+    /// (usually empty) residual is replayed. When false (a merged context)
+    /// the full residual dump is replayed and the `assumed` pairs are pushed
+    /// to the BV-export log WITHOUT asserting (re-asserting would
+    /// over-constrain the guarded merge state); `assume_class_reconstructible`
+    /// is set false so a re-migration of the restored context stays correct.
     ///
     /// Must run inside an active Z3 thread-local context when the
     /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
@@ -154,50 +228,79 @@ impl SymContext {
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
         #[cfg(feature = "vex-engine-z3")]
         {
-            if !snap.solver_smtlib2.is_empty() {
-                use z3::ast::Ast;
-                // angr-t3l5o Phase 0b: time the SMT-LIB2 re-parse + re-assert
-                // loop (the reattach-side text round-trip). The assumed_constraints
-                // BV-log replay below is intentionally NOT counted as parse.
-                crate::migrate_phase_timers::time_phase(
-                    &crate::migrate_phase_timers::MIGRATE_SMTLIB2_PARSE_NS,
-                    || {
-                        let tmp = z3::Solver::new();
-                        tmp.from_string(snap.solver_smtlib2.as_str());
-                        let z3_ctx = z3::Context::thread_local();
-                        for assertion in tmp.get_assertions() {
-                            let ptr = assertion.get_z3_ast().as_ptr() as usize;
-                            // SAFETY: `ptr` came from a Bool returned by
-                            // `get_assertions()` parsed into the thread-local
-                            // Z3 context (the same one `add_constraint_raw`
-                            // will use). `from_borrowed_raw` takes its own ref
-                            // via `Z3_inc_ref`, independent of the temp
-                            // solver's reference.
-                            if let Some(z3_ast) =
-                                unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
-                            {
-                                self.add_constraint_raw(z3_ast);
-                            }
-                        }
-                    },
-                );
+            if snap.reassert_assumed {
+                // (i) Rebuild the assume class from IR — no text round-trip.
+                for (cond, is_true) in &snap.assumed_constraints {
+                    if *is_true {
+                        self.assume_true(cond);
+                    } else {
+                        self.assume_false(cond);
+                    }
+                }
+                // (ii) Replay the residual (raw / bv-eq) class, if any. Routes
+                // through `add_constraint_raw` (residual sink #1) so the
+                // restored context's `non_bv_assertions` log is rebuilt too.
+                if !snap.residual_smtlib2.is_empty() {
+                    self.replay_residual_smtlib2(&snap.residual_smtlib2);
+                }
+            } else {
+                // Merge fallback: the `assumed` pairs are export-only. Replay
+                // the full residual dump, then push the pairs to the BV log
+                // without asserting.
+                self.assume_class_reconstructible
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                if !snap.residual_smtlib2.is_empty() {
+                    self.replay_residual_smtlib2(&snap.residual_smtlib2);
+                }
                 for (cond, is_true) in &snap.assumed_constraints {
                     self.assumed_constraints_push(cond.clone(), *is_true);
                 }
-                return;
             }
         }
-        // Legacy / non-Z3 path: replay assumed_constraints via the
-        // public assume APIs. This is the only path when
-        // `solver_smtlib2` is empty (older snapshots, or vex-engine-z3
-        // disabled at build time).
-        for (cond, is_true) in &snap.assumed_constraints {
-            if *is_true {
-                self.assume_true(cond);
-            } else {
-                self.assume_false(cond);
+        // Non-Z3 (mock) path: no solver to assert against, so replay the
+        // assume pairs through the mock `assume_*` (which only repopulates the
+        // BV-export log). The residual class does not exist without Z3.
+        #[cfg(not(feature = "vex-engine-z3"))]
+        {
+            for (cond, is_true) in &snap.assumed_constraints {
+                if *is_true {
+                    self.assume_true(cond);
+                } else {
+                    self.assume_false(cond);
+                }
             }
         }
+    }
+
+    /// Replay an SMT-LIB2 residual dump onto this context's solver via the
+    /// `from_string` + `get_assertions` + [`Self::add_constraint_raw`] loop
+    /// (angr-t3l5o Phase 1). Each re-asserted Bool lands in the residual log
+    /// (`add_constraint_raw` is residual sink #1). Times the parse phase into
+    /// `MIGRATE_SMTLIB2_PARSE_NS` when migration phase timers are armed.
+    #[cfg(feature = "vex-engine-z3")]
+    fn replay_residual_smtlib2(&self, residual: &str) {
+        use z3::ast::Ast;
+        crate::migrate_phase_timers::time_phase(
+            &crate::migrate_phase_timers::MIGRATE_SMTLIB2_PARSE_NS,
+            || {
+                let tmp = z3::Solver::new();
+                tmp.from_string(residual);
+                let z3_ctx = z3::Context::thread_local();
+                for assertion in tmp.get_assertions() {
+                    let ptr = assertion.get_z3_ast().as_ptr() as usize;
+                    // SAFETY: `ptr` came from a Bool returned by
+                    // `get_assertions()` parsed into the thread-local Z3
+                    // context (the same one `add_constraint_raw` will use).
+                    // `from_borrowed_raw` takes its own ref via `Z3_inc_ref`,
+                    // independent of the temp solver's reference.
+                    if let Some(z3_ast) =
+                        unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
+                    {
+                        self.add_constraint_raw(z3_ast);
+                    }
+                }
+            },
+        );
     }
 
     /// angr-t3l5o Phase 0a bench hook: expose the private
@@ -288,6 +391,16 @@ impl SymContext {
         use z3::Translate;
         use z3::ast::Ast;
         let new = SymContext::new();
+        // angr-t3l5o Phase 1: translate_into routes EVERY assertion (assume
+        // class included) through `add_constraint_raw`, so the rebuilt
+        // context's residual log holds the whole constraint set while
+        // `assumed` holds export-only duplicates of the assume class. Mark it
+        // non-reconstructible so a later `to_snapshot` dumps the full solver
+        // and does not also re-assert `assumed` (which would double the assume
+        // class). This path is not snapshotted in production, but the flag
+        // keeps the two transports composable.
+        new.assume_class_reconstructible
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         // (1) Full solver state: `Z3_translate` every assertion into the target
         // context, then route through `add_constraint_raw` (NOT `add_constraint`)
         // so the `z3_assertions` LOG is seeded — `add_constraint`/`install_constraint`
@@ -366,7 +479,7 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;
-        let (frozen_shared, frozen_assumed) = {
+        let (frozen_shared, frozen_assumed, frozen_non_bv) = {
             let mut local = self.local_constraints.lock();
             let frozen_shared = freeze_into_shared(
                 &self.z3_assertions_shared,
@@ -378,7 +491,15 @@ impl SymContext {
                 &mut local.assumed,
                 in_transaction,
             );
-            (frozen_shared, frozen_assumed)
+            // angr-t3l5o Phase 1: the residual log follows the IDENTICAL
+            // shared/local freeze lifecycle as `z3_assertions` so fork/merge
+            // never drop residual constraints.
+            let frozen_non_bv = freeze_into_shared(
+                &self.non_bv_assertions_shared,
+                &mut local.non_bv_assertions,
+                in_transaction,
+            );
+            (frozen_shared, frozen_assumed, frozen_non_bv)
         };
         let assumed_total_len = frozen_assumed.len();
 
@@ -472,6 +593,12 @@ impl SymContext {
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
+            non_bv_assertions_shared: Mutex::new(frozen_non_bv),
+            // angr-t3l5o Phase 1: inherit reconstructibility parent→child so a
+            // merge's export-only-assume marking propagates down the lineage.
+            assume_class_reconstructible: AtomicBool::new(
+                self.assume_class_reconstructible.load(Ordering::Relaxed),
+            ),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(None),
             sat_cache: Cell::new(None),
@@ -673,6 +800,9 @@ impl SymContext {
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
+            assume_class_reconstructible: AtomicBool::new(
+                self.assume_class_reconstructible.load(Ordering::Relaxed),
+            ),
             local_constraints: Mutex::new(LocalConstraints::new()),
         }
     }
@@ -771,10 +901,14 @@ impl SymContext {
             // This means: if this merge path is active, all its constraints hold
             for assertion in shared.iter().chain(ctx_local.z3_assertions.iter()) {
                 let guarded = z3::ast::Bool::or(&[&not_cond, assertion]);
-                merged
-                    .local_constraints
-                    .lock()
-                    .push_assertion(guarded.clone());
+                {
+                    // angr-t3l5o Phase 1: residual sink #3 (merge guard). The
+                    // guarded `Or` has no RustBV form and is not reconstructible
+                    // from `assumed`, so record it in the residual log too.
+                    let mut ml = merged.local_constraints.lock();
+                    ml.push_assertion(guarded.clone());
+                    ml.non_bv_assertions.push(guarded.clone());
+                }
                 merged.add_constraint(guarded);
             }
 
@@ -791,11 +925,21 @@ impl SymContext {
         // Assert that at least one merge condition is true
         let cond_refs: Vec<&z3::ast::Bool> = all_z3_conditions.iter().collect();
         let or_conds = z3::ast::Bool::or(&cond_refs);
-        merged
-            .local_constraints
-            .lock()
-            .push_assertion(or_conds.clone());
+        {
+            // angr-t3l5o Phase 1: residual sink #3 (merge `Or` guard).
+            let mut ml = merged.local_constraints.lock();
+            ml.push_assertion(or_conds.clone());
+            ml.non_bv_assertions.push(or_conds.clone());
+        }
         merged.add_constraint(or_conds);
+
+        // angr-t3l5o Phase 1: a merged context's `assumed` pairs are
+        // export-only — the solver holds the guarded `Or`s above, not the
+        // unconditional pairs. Mark it non-reconstructible so `to_snapshot`
+        // dumps the full solver and restore does NOT re-assert the pairs.
+        merged
+            .assume_class_reconstructible
+            .store(false, Ordering::Relaxed);
 
         merged
     }
@@ -840,6 +984,12 @@ impl SymContext {
                     .extend(other.local_constraints.lock().assumed.iter().cloned());
             }
         }
+
+        // angr-t3l5o Phase 1: keep the flag consistent with the Z3 merge path
+        // (inert for the mock restore, which always replays via `assume_*`).
+        merged
+            .assume_class_reconstructible
+            .store(false, Ordering::Relaxed);
 
         merged
     }

@@ -786,8 +786,12 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     let snap = ctx.to_snapshot();
     assert_eq!(snap.assumed_constraints.len(), 1);
     assert!(
-        !snap.solver_smtlib2.is_empty(),
-        "snapshot must carry an SMT-LIB2 dump when raw constraints \
+        snap.reassert_assumed,
+        "a non-merged context must reconstruct its assume class from IR"
+    );
+    assert!(
+        !snap.residual_smtlib2.is_empty(),
+        "snapshot must carry an SMT-LIB2 residual dump when raw constraints \
          are present"
     );
     let json = serde_json::to_string(&snap).expect("serialize");
@@ -826,12 +830,14 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
-    // Legacy JSON shape — pre-82g6 snapshots only carry
-    // assumed_constraints.
+    // Legacy JSON shape — a snapshot that omits both residual fields. The
+    // serde defaults give an empty residual and `reassert_assumed == true`,
+    // so restore falls through to the assume-only replay path.
     let legacy_json = r#"{"assumed_constraints":[]}"#;
     let restored: SymContextSnapshot =
         serde_json::from_str(legacy_json).expect("legacy JSON must parse");
-    assert!(restored.solver_smtlib2.is_empty());
+    assert!(restored.residual_smtlib2.is_empty());
+    assert!(restored.reassert_assumed);
 
     let ctx = SymContext::new();
     ctx.restore_from_snapshot(&restored);
@@ -912,5 +918,231 @@ fn test_symcontext_translate_into_cross_context() {
         got_back,
         Some(0x1235),
         "A->B->A round trip must preserve the eval witness",
+    );
+}
+
+// =============================================================================
+// angr-t3l5o Phase 1: two-class (assume-IR + residual-text) round-trip tests.
+// =============================================================================
+
+/// THE WIN PATH: a pure-`assume` context emits NO SMT-LIB2 residual text —
+/// the assume class round-trips entirely as `RustBV` IR. Proves the old
+/// full-solver text dump vanishes on the common (codegate/cmu) migration path.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_snapshot_pure_assume_residual_empty() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "t3l5o_win_x", 32);
+    let y = RustBV::symbolic(&ctx, "t3l5o_win_y", 32);
+    let ten = RustBV::concrete(10, 32);
+    let twenty = RustBV::concrete(20, 32);
+    let zero = RustBV::concrete(0, 32);
+    ctx.assume_true(&x.ugt(&ten, &ctx));
+    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_false(&y.eq(&zero, &ctx));
+
+    let pre_sat = ctx.is_sat();
+    let pre_count = ctx.num_constraints();
+    assert!(pre_sat);
+
+    let snap = ctx.to_snapshot();
+    assert!(
+        snap.reassert_assumed,
+        "pure-assume context is reconstructible"
+    );
+    assert_eq!(
+        snap.residual_smtlib2, "",
+        "WIN PATH: a pure-assume context must emit NO SMT-LIB2 residual text"
+    );
+    assert_eq!(snap.assumed_constraints.len(), 3);
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx2 = SymContext::new();
+    ctx2.restore_from_snapshot(&restored);
+
+    assert_eq!(ctx2.is_sat(), pre_sat, "restored sat must match");
+    assert_eq!(
+        ctx2.num_constraints(),
+        pre_count,
+        "restored constraint_count must match (rebuilt from IR)"
+    );
+    let x_val = ctx2.eval(&x).expect("x evaluable");
+    let y_val = ctx2.eval(&y).expect("y evaluable");
+    assert!(x_val > 10 && x_val < 20, "x={x_val} must satisfy 10<x<20");
+    assert_ne!(y_val, 0, "y must be non-zero");
+}
+
+/// An `add_bv_constraint` (address-concretization) constraint has no `RustBV`
+/// assume entry, so it round-trips via the residual text dump. The restored
+/// solver must pin x to the concretized value.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_snapshot_add_bv_constraint_roundtrip() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "t3l5o_bv_x", 32);
+    ctx.add_bv_constraint(&x, 0x1000);
+
+    let pre_sat = ctx.is_sat();
+    let pre_count = ctx.num_constraints();
+    assert!(pre_sat);
+    assert_eq!(pre_count, 1, "one bv-eq constraint");
+
+    let snap = ctx.to_snapshot();
+    assert!(snap.reassert_assumed);
+    assert_eq!(
+        snap.assumed_constraints.len(),
+        0,
+        "add_bv_constraint records no assume entry"
+    );
+    assert!(
+        !snap.residual_smtlib2.is_empty(),
+        "the bv-eq constraint must live in the residual dump"
+    );
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx2 = SymContext::new();
+    ctx2.restore_from_snapshot(&restored);
+
+    assert_eq!(ctx2.is_sat(), pre_sat);
+    assert_eq!(
+        ctx2.num_constraints(),
+        pre_count,
+        "bv-eq constraint_count round-trips"
+    );
+    let x_val = ctx2.eval(&x).expect("x evaluable");
+    assert_eq!(
+        x_val, 0x1000,
+        "restored x must equal the concretized address"
+    );
+}
+
+/// A mixed assume + raw context: the assume class rebuilds from IR, the raw
+/// class from the residual text. Both must be present and binding after
+/// restore, with the assume entry alone in the BV-export log.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_snapshot_mixed_assume_raw_roundtrip() {
+    use z3::ast::Ast;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "t3l5o_mix_x", 32);
+    let ten = RustBV::concrete(10, 32);
+    let twenty = RustBV::concrete(20, 32);
+    // assume: x > 10 (RustBV-known)
+    ctx.assume_true(&x.ugt(&ten, &ctx));
+    // raw: x < 20 (no RustBV form recorded)
+    let z3_ctx = z3::Context::thread_local();
+    let raw_bool = {
+        let xz = x.to_z3_ast();
+        let tw = twenty.to_z3_ast();
+        xz.bvult(&tw)
+    };
+    let raw_ptr = raw_bool.get_z3_ast().as_ptr() as usize;
+    let z3_ast_ptr =
+        unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr) }.expect("raw Bool yields ptr");
+    ctx.add_constraint_raw(z3_ast_ptr);
+
+    let pre_sat = ctx.is_sat();
+    let pre_count = ctx.num_constraints();
+    assert_eq!(pre_count, 2, "assume + raw = 2 logical constraints");
+
+    let snap = ctx.to_snapshot();
+    assert!(snap.reassert_assumed);
+    assert_eq!(
+        snap.assumed_constraints.len(),
+        1,
+        "only the assume entry hits the BV log"
+    );
+    assert!(
+        !snap.residual_smtlib2.is_empty(),
+        "the raw entry lives in the residual dump"
+    );
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx2 = SymContext::new();
+    ctx2.restore_from_snapshot(&restored);
+
+    assert_eq!(ctx2.is_sat(), pre_sat);
+    assert_eq!(
+        ctx2.num_constraints(),
+        pre_count,
+        "both assume and raw classes restore"
+    );
+    assert_eq!(
+        ctx2.assumed_constraint_count(),
+        1,
+        "raw entry stays out of the BV log"
+    );
+    let x_val = ctx2.eval(&x).expect("x evaluable");
+    assert!(
+        x_val > 10 && x_val < 20,
+        "restored x={x_val} must satisfy x>10 (assume) AND x<20 (raw)"
+    );
+}
+
+/// A `merge()`-d context round-trips: the merge guards survive via the
+/// residual text dump, and crucially the assume class is NOT re-asserted
+/// (which would collapse the guarded disjunctions into unconditional
+/// constraints and over-constrain the merged state).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_snapshot_merge_context_roundtrip() {
+    let ctx1 = SymContext::new();
+    let x = RustBV::symbolic(&ctx1, "t3l5o_merge_x", 32);
+    let five = RustBV::concrete(5, 32);
+    ctx1.assume_true(&x.ugt(&five, &ctx1)); // path 1: x > 5
+
+    let ctx2 = SymContext::new();
+    let three = RustBV::concrete(3, 32);
+    ctx2.assume_true(&x.ult(&three, &ctx2)); // path 2: x < 3
+
+    let m1 = RustBV::symbolic(&ctx1, "t3l5o_merge_m1", 1);
+    let m2 = RustBV::symbolic(&ctx1, "t3l5o_merge_m2", 1);
+    let merged = ctx1.merge(&[&ctx2], &[m1.clone(), m2.clone()]);
+
+    let pre_sat = merged.is_sat();
+    let pre_count = merged.num_constraints();
+    assert!(pre_sat, "merged disjunction is satisfiable");
+
+    let snap = merged.to_snapshot();
+    assert!(
+        !snap.reassert_assumed,
+        "a merged context must NOT re-assert its export-only assume pairs"
+    );
+    assert!(
+        !snap.residual_smtlib2.is_empty(),
+        "merge guards live in the residual dump"
+    );
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx3 = SymContext::new();
+    ctx3.restore_from_snapshot(&restored);
+
+    assert_eq!(ctx3.is_sat(), pre_sat, "restored sat must match");
+    assert_eq!(
+        ctx3.num_constraints(),
+        pre_count,
+        "restored constraint_count must match the merge guards"
+    );
+
+    // Discriminator: select the x<3 branch (m1=false, m2=true). The merge
+    // guards must allow x<3 here — a buggy re-assert of the assume class
+    // would force x>5 AND x<3 → UNSAT.
+    let zero1 = RustBV::concrete(0, 1);
+    let one1 = RustBV::concrete(1, 1);
+    ctx3.assume_true(&m1.eq(&zero1, &ctx3));
+    ctx3.assume_true(&m2.eq(&one1, &ctx3));
+    assert!(
+        ctx3.is_sat(),
+        "x<3 (m2) branch must remain satisfiable — merge guards intact"
+    );
+    let x_val = ctx3.eval(&x).expect("x evaluable");
+    assert!(
+        x_val < 3,
+        "x={x_val} must fall in the selected x<3 branch (guards not collapsed)"
     );
 }

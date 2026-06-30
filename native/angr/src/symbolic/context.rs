@@ -89,42 +89,66 @@ use super::solver_build::*;
 
 /// Snapshot of a [`SymContext`]'s path-constraint state.
 ///
-/// Captures the `assumed_constraints` Vec — the canonical record from
-/// which Z3 solver state, scope paths, and fast-path caches re-derive
-/// after load. Built by [`SymContext::to_snapshot`] and consumed by
-/// [`SymContext::restore_from_snapshot`].
+/// Two-class capture (angr-t3l5o Phase 1):
 ///
-/// Carries `(RustBV, bool)` directly via the [`RustBV`] serde derive
-/// (angr-x04s.1.1). Per-Z3-context cache state (solver, model_cache,
-/// sat_cache, lineage scope_path, push stacks) is NOT included — these
-/// are runtime caches that the loader rebuilds on first query against
-/// the restored constraints.
+/// * The **assume class** is captured as context-free [`RustBV`] IR in
+///   `assumed_constraints`. On restore it is rebuilt by re-asserting each
+///   pair through `assume_true`/`assume_false` — no SMT-LIB2 text emit or
+///   parse. This is the common, hot path (path constraints from branch
+///   forking) and is what makes cross-Z3-context migration cheap.
+/// * The **residual class** is the set of solver assertions that have no
+///   [`RustBV`] form and so are not reconstructible from `assumed_constraints`
+///   — the raw entries from [`SymContext::add_constraint_raw`] (Python
+///   claripy-sync fallback + cross-process pointer import), the
+///   address-concretization equalities from [`SymContext::add_bv_constraint`],
+///   and the `merge()` guard/`Or` disjunctions. These are carried as an
+///   SMT-LIB2 text dump in `residual_smtlib2`, which is **empty** in the
+///   common case (no raw/bv/merge constraints) — the win path that collapses
+///   the old full-solver text round-trip.
+///
+/// Per-Z3-context cache state (solver, model_cache, sat_cache, lineage
+/// scope_path, push stacks) is NOT included — these are runtime caches that
+/// the loader rebuilds on first query against the restored constraints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymContextSnapshot {
     /// `(constraint, is_assumed_true)` pairs in insertion order.
     pub assumed_constraints: Vec<(RustBV, bool)>,
-    /// Full Z3 solver state as an SMT-LIB2 dump (angr-82g6).
+    /// Residual Z3 solver state as an SMT-LIB2 dump (angr-t3l5o Phase 1,
+    /// renamed from `solver_smtlib2`).
     ///
-    /// Captures every assertion currently on the solver — both the
-    /// `assume_*`-tracked entries (already in `assumed_constraints`)
-    /// and the raw entries from [`SymContext::add_constraint_raw`] that
-    /// have no [`RustBV`] form (the Python-claripy-sync fallback path
-    /// in `_add_constraints_to_state` and the cross-process pointer-
-    /// import path in `_import_z3_constraint_ptrs`).
+    /// Carries ONLY the residual class — the solver assertions with no
+    /// [`RustBV`] form (raw / bv-eq / merge-guard). Empty in the common
+    /// assume-only case, so no `format!` text emit happens on the hot path.
     ///
-    /// Restore replays this dump through `add_constraint_raw` to
-    /// rebuild Z3-side solver state, then populates the
-    /// `assumed_constraints` BV log via `assumed_constraints_push`
-    /// (no second solver assert). The two captures are independent —
-    /// no ptr-level dedup needed, which side-steps the case where
-    /// Python-claripy ASTs and `claripy_to_rustbv`-rebuilt ASTs are
-    /// structurally different and hash-cons to different pointers.
+    /// When `reassert_assumed` is false (a merged context, see that field)
+    /// this instead carries the **full** solver dump and the `assumed`
+    /// pairs are NOT re-asserted on restore.
     ///
-    /// `#[serde(default)]` keeps round-trip compat with older snapshots
-    /// that predate this field — they fall through to the original
-    /// `assume_*` replay path with the pre-82g6 lossy semantics.
+    /// `#[serde(default)]` keeps deserialization tolerant of a missing field
+    /// (empty residual → assume-only replay).
     #[serde(default)]
-    pub solver_smtlib2: String,
+    pub residual_smtlib2: String,
+    /// Whether `assumed_constraints` should be re-asserted on the solver at
+    /// restore time (angr-t3l5o Phase 1).
+    ///
+    /// `true` (the common case): the assume class was directly asserted, so
+    /// restore rebuilds the solver by re-asserting each pair via
+    /// `assume_true`/`assume_false`, then replays `residual_smtlib2` (the
+    /// raw/bv residual). `false`: the context came from a `merge()`, whose
+    /// `assumed` pairs are export-only (the solver holds the guarded `Or`
+    /// disjunctions, not the unconditional pairs). For those, restore replays
+    /// the full `residual_smtlib2` dump and pushes the pairs to the BV-export
+    /// log WITHOUT asserting — re-asserting would over-constrain the merged
+    /// state. `#[serde(default = "default_true")]` keeps a missing field
+    /// (legacy / mock) on the common re-assert path.
+    #[serde(default = "default_true")]
+    pub reassert_assumed: bool,
+}
+
+/// serde default for [`SymContextSnapshot::reassert_assumed`] — the common
+/// assume-reconstructible path.
+fn default_true() -> bool {
+    true
 }
 
 /// Default Z3 solver timeout in milliseconds.
@@ -161,6 +185,16 @@ pub(super) struct LocalConstraints {
     /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) z3_assertions: Vec<z3::ast::Bool>,
+    /// Local residual (no-[`RustBV`]) Z3 Bool assertions added after fork
+    /// (angr-t3l5o Phase 1). A strict subset of `z3_assertions`: the entries
+    /// pushed by the three residual sinks — `add_constraint_raw` (non-dup),
+    /// `add_bv_constraint`, and the `merge` guard/`Or` asserts. Mirrors the
+    /// `z3_assertions` shared/local lifecycle so `fork`'s `freeze_into_shared`
+    /// and `merge` carry it without new logic. Dumped to `residual_smtlib2`
+    /// in `to_snapshot`; the assume class is reconstructed from
+    /// `assumed_constraints` IR instead.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(super) non_bv_assertions: Vec<z3::ast::Bool>,
     /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_raw`.
     /// Holds ptrs for every assertion known to be currently asserted on the
     /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
@@ -181,6 +215,8 @@ impl LocalConstraints {
             assumed: Vec::new(),
             #[cfg(feature = "vex-engine-z3")]
             z3_assertions: Vec::new(),
+            #[cfg(feature = "vex-engine-z3")]
+            non_bv_assertions: Vec::new(),
             #[cfg(feature = "vex-engine-z3")]
             dedup_set: HashSet::new(),
             #[cfg(feature = "vex-engine-z3")]
@@ -290,6 +326,26 @@ pub struct SymContext {
     /// (slice 9, angr-a2br.2.7).
     #[cfg(feature = "vex-engine-z3")]
     pub(super) z3_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
+
+    /// Shared (frozen) residual (no-[`RustBV`]) Z3 Bool assertions from
+    /// parent (angr-t3l5o Phase 1) — mirrors `z3_assertions_shared` exactly so
+    /// `fork`'s `freeze_into_shared` carries it with no new logic. Holds only
+    /// the residual subset (raw / bv-eq / merge-guard); the assume class is
+    /// reconstructed from `assumed_constraints` IR. Dumped to
+    /// `residual_smtlib2` in `to_snapshot`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(super) non_bv_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
+
+    /// Whether this context's `assumed` pairs are directly asserted on the
+    /// solver (angr-t3l5o Phase 1). `true` for normal contexts — re-asserting
+    /// the assume class via `assume_*` reconstructs the assume-class solver
+    /// assertions. Set `false` by `merge()`: a merged context's `assumed`
+    /// pairs are export-only (the solver holds guarded `Or` disjunctions,
+    /// not the unconditional pairs), so re-asserting them would over-constrain.
+    /// Inherited parent→child on `fork`. Drives the `reassert_assumed` flag on
+    /// the snapshot and whether `to_snapshot` dumps only the residual (cheap)
+    /// or the full solver (merge fallback).
+    pub(super) assume_class_reconstructible: AtomicBool,
 
     /// Local additions (assumed pairs + Z3 Bool cache) added after fork.
     /// Combined under one Mutex so the assume_*/add_constraint_raw hot path
@@ -446,6 +502,7 @@ impl SymContext {
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
+            assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
         }
     }
@@ -489,6 +546,8 @@ impl SymContext {
             symbol_table: Arc::new(HashMap::new()),
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
             z3_assertions_shared: Mutex::new(Arc::new(Vec::new())),
+            non_bv_assertions_shared: Mutex::new(Arc::new(Vec::new())),
+            assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(Some(solver)),
             sat_cache: Cell::new(None),

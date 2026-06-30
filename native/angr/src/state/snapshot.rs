@@ -10,7 +10,12 @@ use super::*;
 /// envelope. Bump on any breaking shape change to [`RustSimStateSnapshot`]
 /// so a stale snapshot fails fast with `SnapshotError::VersionMismatch`
 /// instead of silently producing a wrong-shaped state.
-pub const SNAPSHOT_VERSION: u8 = 1;
+// v2 (angr-t3l5o Phase 1): `SymContextSnapshot` switched from a full-solver
+// `solver_smtlib2` dump to the two-class `residual_smtlib2` + `reassert_assumed`
+// shape. A v1 envelope replayed under v2 would double-assert the assume class
+// (full text dump re-asserted AND `assumed_constraints` re-asserted), so reject
+// it via the version gate rather than silently mixing the formats.
+pub const SNAPSHOT_VERSION: u8 = 2;
 
 /// Errors raised by [`RustSimState::from_serialized`] /
 /// `StashManager::load_snapshot`.

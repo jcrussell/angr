@@ -221,7 +221,19 @@ impl SymContext {
         ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            self.seed_and_check_z3_dedup(&mut local, &constraint)
+            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint);
+            if !dup {
+                // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
+                // constraint (Python claripy-sync fallback / cross-process
+                // ptr import) has no `assumed` entry to reconstruct it from,
+                // so record it in the residual log to round-trip via
+                // `residual_smtlib2`. Only on the non-dup path — a dup is
+                // already counted on its first add. `seed_and_check_z3_dedup`
+                // pushed the same Bool to `z3_assertions` just above, so the
+                // residual log stays a subset of `z3_assertions`.
+                local.non_bv_assertions.push(constraint.clone());
+            }
+            dup
         };
         if was_dup {
             ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -483,6 +495,18 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let val_ast = super::bv_codec::make_bv_const(value, bv.width());
         let constraint = ast.eq(&val_ast);
+        // angr-t3l5o Phase 1: residual sink #2 (address concretization).
+        // `add_constraint` (below) only asserts on the live solver and does
+        // NOT seed the `z3_assertions` log, so without these pushes the
+        // constraint would be lost on fork (solver rebuild replays
+        // `z3_assertions`) and on snapshot. Push to BOTH logs: `z3_assertions`
+        // so a forked/rematerialized solver replays it, and `non_bv_assertions`
+        // so it round-trips via `residual_smtlib2` (it has no `assumed` entry).
+        {
+            let mut local = self.local_constraints.lock();
+            local.push_assertion(constraint.clone());
+            local.non_bv_assertions.push(constraint.clone());
+        }
         self.add_constraint(constraint);
     }
 

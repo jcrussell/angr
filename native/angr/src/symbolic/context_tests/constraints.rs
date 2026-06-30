@@ -3,6 +3,15 @@ use super::*;
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 
+/// Serializes the two tests that delta-assert the process-global
+/// `ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT`. Under the default parallel test
+/// runner their measurement windows can interleave and inflate the observed
+/// delta (a sibling test's dedup hit lands between `hits_before` and the
+/// assertion). Holding this lock across each window makes the deltas exact.
+/// Poison-tolerant: a panic in one test must not cascade into the other.
+#[cfg(feature = "vex-engine-z3")]
+static DEDUP_HIT_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// angr-v5a5 slice 4b: a fresh SymContext has an empty
 /// scope-savepoint stack.
 #[cfg(feature = "vex-engine-z3")]
@@ -375,6 +384,9 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
     let five = RustBV::concrete(5, 8);
     let ast = raw_entry(&x.eq(&five, &ctx));
 
+    let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
 
     // Three calls with the same Z3_ast — dedup must catch reps 2 and 3.
@@ -531,6 +543,9 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
     // assertion, and child's local.dedup_set is unseeded.
     let child = parent.fork();
     assert!(!child.local_constraints.lock().dedup_set_seeded);
+    let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
     child.add_constraint_raw(ast_for_child);
     // Seeded from shared; the ptr was already there, so this call is

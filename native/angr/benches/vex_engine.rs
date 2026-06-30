@@ -464,7 +464,7 @@ fn bench_migration_phases(c: &mut Criterion) {
 
             // Pre-built artifacts (setup, not timed).
             let mut snap_no_solver = state.to_snapshot();
-            snap_no_solver.solver.solver_smtlib2 = String::new();
+            snap_no_solver.solver.residual_smtlib2 = String::new();
             let encoded_no_solver = serde_json::to_vec(&snap_no_solver).unwrap();
             let smtlib2 = state.solver().borrow().bench_dump_solver_smtlib2();
             let leaf_state = build_migration_state(LEAVES, 0, 0.0);
