@@ -180,6 +180,27 @@ impl RustExplorationManager {
             "parallel_shadow_migration_bytes",
             self.parallel_shadow_migration_bytes,
         )?;
+        // angr-t3l5o Phase 0b: per-phase migration attribution (env-gated by
+        // ANGR_MIGRATE_PHASE_TIMERS). Process-global accumulators, all zero
+        // unless the env var is set. emit/parse/serde/leaf_rebuild are ns;
+        // raw_constraint_count is the summed residual (no-RustBV) assertion
+        // count across migrated states (divide by
+        // parallel_shadow_migration_states for a per-state average). Surfaced
+        // here so `run_single.py --counters-json` reports them alongside the
+        // shadow-probe round-trip total.
+        {
+            let (emit_ns, parse_ns, serde_ns, leaf_rebuild_ns, raw_count, roundtrip_ns) =
+                crate::migrate_phase_timers::snapshot();
+            dict.set_item("migrate_smtlib2_emit_ns", emit_ns)?;
+            dict.set_item("migrate_smtlib2_parse_ns", parse_ns)?;
+            dict.set_item("migrate_serde_ns", serde_ns)?;
+            dict.set_item("migrate_leaf_rebuild_ns", leaf_rebuild_ns)?;
+            dict.set_item("migrate_raw_constraint_count", raw_count)?;
+            // Self-consistent denominator: total wall of all migration
+            // serialize+deserialize halves (same call set as the phase timers,
+            // unlike parallel_shadow_migration_ns which omits non-probe states).
+            dict.set_item("migrate_roundtrip_ns", roundtrip_ns)?;
+        }
         dict.set_item(
             "python_callback_count",
             self.profiling.accumulated_stats.python_callback_count,

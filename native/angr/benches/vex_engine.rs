@@ -338,31 +338,74 @@ fn bench_translate_state_scaling(c: &mut Criterion) {
 /// counts (incl. a large 1024) exposes the super-linear serde cost of deep
 /// op-trees. Same state shape as `bench_translate_state_scaling`: K symbolic
 /// leaves spread across a mapped region, each pinned by a path constraint.
+/// Build a migration-bench state with two cost axes (angr-t3l5o Phase 0a):
+///
+/// * `n_leaves` — distinct symbolic memory cells, each pinned by a shallow
+///   `leaf == const` assume-class constraint (the original bench shape).
+/// * `depth_d` — number of additional DEEP nested op-tree constraints. Each is
+///   a 32-link chain of `add`/`xor` across the leaves, so the SMT-LIB2 text
+///   grows with `depth_d` and the chain length *independent of leaf count*.
+/// * `raw_fraction` — `floor(r * depth_d)` of the deep constraints are added
+///   via the RAW path (`add_constraint_raw`) so they land in the residual
+///   (no-`RustBV`) class — present in the solver text dump but absent from
+///   `assumed_constraints`.
+fn build_migration_state(
+    n_leaves: u64,
+    depth_d: usize,
+    raw_fraction: f64,
+) -> rustylib::state::RustSimState {
+    use rustylib::state::RustSimState;
+    const MEM_BASE: u64 = 0x10000;
+    let mut state = RustSimState::new("AMD64").unwrap();
+    state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
+    let mut leaves = Vec::with_capacity(n_leaves as usize);
+    for i in 0..n_leaves {
+        let leaf = {
+            let s = state.solver().borrow();
+            RustBV::symbolic(&s, format!("mig_mem_{i}"), 64)
+        };
+        state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
+        leaves.push(leaf);
+    }
+    // Shallow per-leaf assume-class constraint (original bench shape).
+    for (i, leaf) in leaves.iter().enumerate() {
+        let s = state.solver().borrow();
+        let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
+        drop(s);
+        state.add_constraint(c);
+    }
+    // Deep nested op-tree constraints; `floor(r*D)` via the raw/residual path.
+    let n_raw = (raw_fraction * depth_d as f64).floor() as usize;
+    for d in 0..depth_d {
+        let pred = {
+            let s = state.solver().borrow();
+            let mut acc = leaves[d % leaves.len()].clone();
+            for k in 0..32u128 {
+                let other = &leaves[(d + k as usize) % leaves.len()];
+                acc = acc.add(other, &s);
+                acc = acc.xor(&RustBV::concrete(((d as u128) << 8) | k, 64), &s);
+            }
+            acc.eq(&RustBV::concrete(0xABCD_0000u128 + d as u128, 64), &s)
+        };
+        if d < n_raw {
+            state
+                .solver()
+                .borrow()
+                .bench_add_constraint_raw_from_bool(&pred);
+        } else {
+            state.add_constraint(pred);
+        }
+    }
+    state
+}
+
 fn bench_migration_roundtrip(c: &mut Criterion) {
     use rustylib::state::RustSimState;
     use z3::{Config, Context};
 
-    fn build_state(n_leaves: u64) -> RustSimState {
-        const MEM_BASE: u64 = 0x10000;
-        let mut state = RustSimState::new("AMD64").unwrap();
-        state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
-        for i in 0..n_leaves {
-            let leaf = {
-                let s = state.solver().borrow();
-                RustBV::symbolic(&s, format!("mig_mem_{i}"), 64)
-            };
-            state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
-            let s = state.solver().borrow();
-            let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
-            drop(s);
-            state.add_constraint(c);
-        }
-        state
-    }
-
     let mut group = c.benchmark_group("migration_roundtrip");
     for &n in &[8u64, 64, 256, 1024] {
-        let state = build_state(n);
+        let state = build_migration_state(n, 0, 0.0);
         // `from_serialized` mints ASTs in the active thread-local context, so
         // swap to a fresh scratch context to model reattach landing the state
         // in a different worker's context (reattach's thread-local precondition).
@@ -379,6 +422,84 @@ fn bench_migration_roundtrip(c: &mut Criterion) {
                 black_box(RustSimState::from_serialized(&bytes).unwrap());
             })
         });
+    }
+    group.finish();
+}
+
+/// angr-t3l5o Phase 0a: split the migration round-trip into its six phases and
+/// time each in isolation, sweeping `constraint_depth D ∈ {0, 32, 256}` and
+/// `raw_fraction r ∈ {0.0, 0.5}` at a fixed representative leaf count (256):
+///
+///   (1) `serde_encode`  — serde-json encode with `solver_smtlib2` forced empty
+///   (2) `serde_decode`  — serde-json decode of that (no `from_snapshot`)
+///   (3) `smtlib2_emit`  — `dump_solver_smtlib2()` alone
+///   (4) `smtlib2_parse` — `from_string` + `get_assertions` + re-add loop alone
+///   (5) `leaf_rebuild`  — `from_serialized` of a NO-constraint state
+///   (6) `memory_copy`   — `memory.to_snapshot()` / `from_snapshot()` alone
+///
+/// Phases are measured in a fresh scratch Z3 context (mirrors the round-trip
+/// bench: detach reads the producer state's cached Bools, reattach mints fresh
+/// ASTs in the consumer context).
+fn bench_migration_phases(c: &mut Criterion) {
+    use rustylib::state::{RustSimState, RustSimStateSnapshot};
+    use rustylib::symbolic::SymContext;
+    use z3::{Config, Context};
+
+    const LEAVES: u64 = 256;
+    let mut group = c.benchmark_group("migration_phases");
+
+    for &depth_d in &[0usize, 32, 256] {
+        for &raw_fraction in &[0.0f64, 0.5] {
+            // r has no effect at D=0 (no deep constraints) — emit only one cell.
+            if depth_d == 0 && raw_fraction != 0.0 {
+                continue;
+            }
+            let tag = format!("D{depth_d}_r{raw_fraction}");
+            let state = build_migration_state(LEAVES, depth_d, raw_fraction);
+
+            // Switch to a scratch context for all phases.
+            let cfg = Config::new();
+            let scratch = Context::new(&cfg);
+            Context::set_thread_local(&scratch);
+
+            // Pre-built artifacts (setup, not timed).
+            let mut snap_no_solver = state.to_snapshot();
+            snap_no_solver.solver.solver_smtlib2 = String::new();
+            let encoded_no_solver = serde_json::to_vec(&snap_no_solver).unwrap();
+            let smtlib2 = state.solver().borrow().bench_dump_solver_smtlib2();
+            let leaf_state = build_migration_state(LEAVES, 0, 0.0);
+            let leaf_bytes = leaf_state.to_serialized();
+            RustSimState::from_serialized(&leaf_bytes).expect("leaf rebuild probe");
+
+            // (1) serde encode (solver text empty)
+            group.bench_function(format!("serde_encode/{tag}"), |b| {
+                b.iter(|| black_box(serde_json::to_vec(&snap_no_solver).unwrap()))
+            });
+            // (2) serde decode (solver text empty)
+            group.bench_function(format!("serde_decode/{tag}"), |b| {
+                b.iter(|| {
+                    let snap: RustSimStateSnapshot =
+                        RustSimState::bench_decode_snapshot(&encoded_no_solver);
+                    black_box(snap);
+                })
+            });
+            // (3) SMT-LIB2 emit
+            group.bench_function(format!("smtlib2_emit/{tag}"), |b| {
+                b.iter(|| black_box(state.solver().borrow().bench_dump_solver_smtlib2()))
+            });
+            // (4) SMT-LIB2 parse
+            group.bench_function(format!("smtlib2_parse/{tag}"), |b| {
+                b.iter(|| black_box(SymContext::bench_parse_smtlib2(&smtlib2)))
+            });
+            // (5) leaf rebuild (no-constraint state from_serialized)
+            group.bench_function(format!("leaf_rebuild/{tag}"), |b| {
+                b.iter(|| black_box(RustSimState::from_serialized(&leaf_bytes).unwrap()))
+            });
+            // (6) memory-page copy
+            group.bench_function(format!("memory_copy/{tag}"), |b| {
+                b.iter(|| black_box(state.bench_memory_snapshot_roundtrip()))
+            });
+        }
     }
     group.finish();
 }
@@ -959,6 +1080,7 @@ criterion_group!(
     bench_state_fork,
     bench_translate_state_scaling,
     bench_migration_roundtrip,
+    bench_migration_phases,
     bench_rustbv_neon_ops,
     bench_lineage_push_pop_vs_per_state,
     bench_stash_index_ops,

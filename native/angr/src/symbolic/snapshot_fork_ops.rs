@@ -69,7 +69,26 @@ impl SymContext {
         // (hash-cons to different pointers) — both forms land back where
         // they came from.
         #[cfg(feature = "vex-engine-z3")]
-        let solver_smtlib2 = self.dump_solver_smtlib2();
+        let solver_smtlib2 = {
+            // angr-t3l5o Phase 0b: time the SMT-LIB2 text emit and record the
+            // residual (no-RustBV) assertion count, both gated on the env flag.
+            if crate::migrate_phase_timers::count_armed() {
+                // Approximate residual count as total Z3 assertions minus the
+                // reconstructible assume class (see field doc on
+                // MIGRATE_RAW_CONSTRAINT_COUNT). Computed before the emit so the
+                // emit timer measures the dump alone. `z3_assertion_count`
+                // materializes the lazy solver — acceptable in measurement mode.
+                let total = self.z3_assertion_count() as u64;
+                let assumed = assumed_constraints.len() as u64;
+                crate::migrate_phase_timers::add_raw_constraint_count(
+                    total.saturating_sub(assumed),
+                );
+            }
+            crate::migrate_phase_timers::time_phase(
+                &crate::migrate_phase_timers::MIGRATE_SMTLIB2_EMIT_NS,
+                || self.dump_solver_smtlib2(),
+            )
+        };
         #[cfg(not(feature = "vex-engine-z3"))]
         let solver_smtlib2 = String::new();
         SymContextSnapshot {
@@ -137,23 +156,31 @@ impl SymContext {
         {
             if !snap.solver_smtlib2.is_empty() {
                 use z3::ast::Ast;
-                let tmp = z3::Solver::new();
-                tmp.from_string(snap.solver_smtlib2.as_str());
-                let z3_ctx = z3::Context::thread_local();
-                for assertion in tmp.get_assertions() {
-                    let ptr = assertion.get_z3_ast().as_ptr() as usize;
-                    // SAFETY: `ptr` came from a Bool returned by
-                    // `get_assertions()` parsed into the thread-local
-                    // Z3 context (the same one `add_constraint_raw`
-                    // will use). `from_borrowed_raw` takes its own ref
-                    // via `Z3_inc_ref`, independent of the temp
-                    // solver's reference.
-                    if let Some(z3_ast) =
-                        unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
-                    {
-                        self.add_constraint_raw(z3_ast);
-                    }
-                }
+                // angr-t3l5o Phase 0b: time the SMT-LIB2 re-parse + re-assert
+                // loop (the reattach-side text round-trip). The assumed_constraints
+                // BV-log replay below is intentionally NOT counted as parse.
+                crate::migrate_phase_timers::time_phase(
+                    &crate::migrate_phase_timers::MIGRATE_SMTLIB2_PARSE_NS,
+                    || {
+                        let tmp = z3::Solver::new();
+                        tmp.from_string(snap.solver_smtlib2.as_str());
+                        let z3_ctx = z3::Context::thread_local();
+                        for assertion in tmp.get_assertions() {
+                            let ptr = assertion.get_z3_ast().as_ptr() as usize;
+                            // SAFETY: `ptr` came from a Bool returned by
+                            // `get_assertions()` parsed into the thread-local
+                            // Z3 context (the same one `add_constraint_raw`
+                            // will use). `from_borrowed_raw` takes its own ref
+                            // via `Z3_inc_ref`, independent of the temp
+                            // solver's reference.
+                            if let Some(z3_ast) =
+                                unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
+                            {
+                                self.add_constraint_raw(z3_ast);
+                            }
+                        }
+                    },
+                );
                 for (cond, is_true) in &snap.assumed_constraints {
                     self.assumed_constraints_push(cond.clone(), *is_true);
                 }
@@ -170,6 +197,62 @@ impl SymContext {
             } else {
                 self.assume_false(cond);
             }
+        }
+    }
+
+    /// angr-t3l5o Phase 0a bench hook: expose the private
+    /// [`Self::dump_solver_smtlib2`] so the per-phase micro-bench in
+    /// `benches/vex_engine.rs` can time the SMT-LIB2 *emit* in isolation
+    /// without copy-pasting its body.
+    #[doc(hidden)]
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn bench_dump_solver_smtlib2(&self) -> String {
+        self.dump_solver_smtlib2()
+    }
+
+    /// angr-t3l5o Phase 0a bench hook: re-parse an SMT-LIB2 text dump into a
+    /// fresh context's solver via the same `from_string` + `get_assertions` +
+    /// `add_constraint_raw` loop that [`Self::restore_from_snapshot`] uses,
+    /// isolating the SMT-LIB2 *parse* cost. Returns the number of re-asserted
+    /// constraints. Must run inside an active thread-local Z3 context.
+    #[doc(hidden)]
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn bench_parse_smtlib2(smtlib2: &str) -> usize {
+        use z3::ast::Ast;
+        let fresh = SymContext::new();
+        let tmp = z3::Solver::new();
+        tmp.from_string(smtlib2);
+        let z3_ctx = z3::Context::thread_local();
+        let mut n = 0usize;
+        for assertion in tmp.get_assertions() {
+            let ptr = assertion.get_z3_ast().as_ptr() as usize;
+            // SAFETY: same contract as `restore_from_snapshot` — `ptr` is a
+            // Bool from `get_assertions()` in the active thread-local context.
+            if let Some(z3_ast) = unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) } {
+                fresh.add_constraint_raw(z3_ast);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// angr-t3l5o Phase 0a bench hook: assert a width-1 `RustBV` predicate via
+    /// the *raw* path (`add_constraint_raw`) so it lands in the residual
+    /// (no-`RustBV`) class — i.e. it is NOT recorded in `assumed_constraints`
+    /// and so survives the round-trip only through the SMT-LIB2 text dump.
+    /// Lets the micro-bench populate the `raw_fraction` axis.
+    #[doc(hidden)]
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn bench_add_constraint_raw_from_bool(&self, pred: &RustBV) {
+        use z3::ast::Ast;
+        let bool_ast = pred.to_z3_bool();
+        let ctx = z3::Context::thread_local();
+        let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
+        // SAFETY: `bool_ast` keeps the AST alive across the inc_ref; the
+        // resulting Z3AstPtr holds its own ref (mirrors the `raw_entry` test
+        // helper in context_tests/constraints.rs).
+        if let Some(z3_ast) = unsafe { super::Z3AstPtr::from_borrowed_raw(&ctx, ptr) } {
+            self.add_constraint_raw(z3_ast);
         }
     }
 

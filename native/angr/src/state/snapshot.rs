@@ -185,7 +185,12 @@ impl RustSimState {
         })?;
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
-        let memory = SymbolicMemory::from_snapshot(snap.memory);
+        // angr-t3l5o Phase 0b: time the symbolic-memory page rebuild (the
+        // non-solver "leaf rebuild" phase) when migration phase timers are on.
+        let memory = crate::migrate_phase_timers::time_phase(
+            &crate::migrate_phase_timers::MIGRATE_LEAF_REBUILD_NS,
+            || SymbolicMemory::from_snapshot(snap.memory),
+        );
         let environment: HashMap<Vec<u8>, Vec<u8>> = snap.environment.into_iter().collect();
         let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
         Ok(RustSimState {
@@ -240,12 +245,24 @@ impl RustSimState {
     /// to today's `crate::symbolic::value::BVOp` layout; JSON tolerates
     /// minor variant churn without a breaking change.
     pub fn to_serialized(&self) -> Vec<u8> {
-        let snap = self.to_snapshot();
-        let body = serde_json::to_vec(&snap).expect("snapshot encode");
-        let mut out = Vec::with_capacity(1 + body.len());
-        out.push(SNAPSHOT_VERSION);
-        out.extend_from_slice(&body);
-        out
+        crate::migrate_phase_timers::time_roundtrip_half(|| {
+            // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
+            // SMT-LIB2 emit timer inside `to_snapshot` fires ONLY for migration
+            // transport (not for unrelated stash `to_snapshot` calls).
+            let prev = crate::migrate_phase_timers::set_serializing(true);
+            let snap = self.to_snapshot();
+            // Time the pure serde-json encode (the SMT-LIB2 emit already
+            // happened inside `to_snapshot` and is timed separately).
+            let body = crate::migrate_phase_timers::time_phase(
+                &crate::migrate_phase_timers::MIGRATE_SERDE_NS,
+                || serde_json::to_vec(&snap).expect("snapshot encode"),
+            );
+            crate::migrate_phase_timers::set_serializing(prev);
+            let mut out = Vec::with_capacity(1 + body.len());
+            out.push(SNAPSHOT_VERSION);
+            out.extend_from_slice(&body);
+            out
+        })
     }
 
     /// Inverse of [`Self::to_serialized`]. Rejects an empty envelope or a
@@ -267,11 +284,56 @@ impl RustSimState {
         // `disable_recursion_limit()` lifts the cap; the on-disk envelope
         // is trusted (written by our own `to_serialized`) so the DoS
         // hardening the limit provides is not load-bearing here.
-        let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+        crate::migrate_phase_timers::time_roundtrip_half(|| {
+            // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
+            // serde-decode / SMT-LIB2-parse / leaf-rebuild sub-timers inside
+            // `from_snapshot` fire ONLY for migration transport (not for stash
+            // `from_snapshot` calls). Restored before returning either arm.
+            let prev = crate::migrate_phase_timers::set_serializing(true);
+            // Time the pure serde-json decode of the snapshot struct (the
+            // SMT-LIB2 parse and memory leaf-rebuild happen later in
+            // `from_snapshot` and are timed separately).
+            let decoded: Result<RustSimStateSnapshot, _> = crate::migrate_phase_timers::time_phase(
+                &crate::migrate_phase_timers::MIGRATE_SERDE_NS,
+                || {
+                    let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+                    de.disable_recursion_limit();
+                    serde::Deserialize::deserialize(&mut de)
+                },
+            );
+            let snap: RustSimStateSnapshot = match decoded {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::migrate_phase_timers::set_serializing(prev);
+                    return Err(SnapshotError::Decode(e.to_string()));
+                }
+            };
+            let out = Self::from_snapshot(snap);
+            crate::migrate_phase_timers::set_serializing(prev);
+            out
+        })
+    }
+
+    /// angr-t3l5o Phase 0a bench hook: serde-json decode a snapshot byte
+    /// buffer into the [`RustSimStateSnapshot`] struct (no `from_snapshot`
+    /// rebuild), isolating the serde-decode cost. Uses the same
+    /// `disable_recursion_limit` as [`Self::from_serialized`].
+    #[doc(hidden)]
+    pub fn bench_decode_snapshot(bytes: &[u8]) -> RustSimStateSnapshot {
+        let mut de = serde_json::Deserializer::from_slice(bytes);
         de.disable_recursion_limit();
-        let snap: RustSimStateSnapshot = serde::Deserialize::deserialize(&mut de)
-            .map_err(|e| SnapshotError::Decode(e.to_string()))?;
-        Self::from_snapshot(snap)
+        serde::Deserialize::deserialize(&mut de).expect("snapshot decode")
+    }
+
+    /// angr-t3l5o Phase 0a bench hook: round-trip just the symbolic-memory
+    /// pages through `to_snapshot` / `from_snapshot`, isolating the
+    /// memory-page copy cost. Returns the rebuilt page count so the result
+    /// cannot be optimized away.
+    #[doc(hidden)]
+    pub fn bench_memory_snapshot_roundtrip(&self) -> usize {
+        let snap = self.memory.to_snapshot();
+        let rebuilt = crate::memory::SymbolicMemory::from_snapshot(snap);
+        rebuilt.to_snapshot().pages.len()
     }
 }
 
