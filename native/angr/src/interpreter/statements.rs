@@ -5,7 +5,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
     pub(super) fn execute_stmt_with_callbacks(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         stmt: &IRStmt,
         irsb: &IRSB,
@@ -16,7 +15,7 @@ impl<'a> VEXInterpreter<'a> {
             IRStmt::IMark { addr, len, .. } => {
                 self.current_insn_addr = *addr;
                 self.current_insn_len = *len;
-                self.dispatch_instruction_inspect(py, callbacks, *addr);
+                self.dispatch_instruction_inspect(callbacks, *addr);
                 // Check for hooks at this address
                 if self.is_hooked(*addr) {
                     return Ok(StmtResult::Exit {
@@ -30,9 +29,9 @@ impl<'a> VEXInterpreter<'a> {
             IRStmt::AbiHint { .. } => Ok(StmtResult::Continue),
 
             IRStmt::Put { offset, data } => {
-                let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let value = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 let size = value.width().div_ceil(8);
-                self.dispatch_reg_write_inspect(py, callbacks, *offset, size, &value);
+                self.dispatch_reg_write_inspect(callbacks, *offset, size, &value);
                 self.registers.put(*offset, value);
                 self.mark_register_dirty(*offset);
 
@@ -40,9 +39,9 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             IRStmt::WrTmp { tmp, data } => {
-                let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let value = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 if (*tmp as usize) < self.temps.len() {
-                    self.dispatch_tmp_write_inspect(py, callbacks, *tmp, &value);
+                    self.dispatch_tmp_write_inspect(callbacks, *tmp, &value);
                     self.temps[*tmp as usize] = Some(value);
                 } else {
                     return Err(CbExecutionError::UnknownTemp(*tmp));
@@ -56,9 +55,8 @@ impl<'a> VEXInterpreter<'a> {
                 endness,
             } => {
                 let store_start = profile_start!(self);
-                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                let mut data_val =
-                    self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let mut data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 let data_size = data_val.width().div_ceil(8) as usize;
                 if self.profiling_enabled {
                     self.stats.store_stmt_count += 1;
@@ -70,14 +68,13 @@ impl<'a> VEXInterpreter<'a> {
                 // the store; data_size is unchanged because the guard rejects a
                 // width mismatch.
                 if let Some(injected) = self.dispatch_mem_write_inspect(
-                    py, callbacks, &addr_val, &data_val, data_size, *endness, "before",
+                    callbacks, &addr_val, &data_val, data_size, *endness, "before",
                 ) {
                     data_val = injected;
                 }
 
                 if self.use_rust_memory
                     && self.try_rust_memory_store(
-                        py,
                         callbacks,
                         &addr_val,
                         &data_val,
@@ -87,7 +84,7 @@ impl<'a> VEXInterpreter<'a> {
                 {
                     // SymbolicMemory::store_concrete already bumped record_mem_store.
                     self.dispatch_mem_write_inspect(
-                        py, callbacks, &addr_val, &data_val, data_size, *endness, "after",
+                        callbacks, &addr_val, &data_val, data_size, *endness, "after",
                     );
                     return Ok(StmtResult::Continue);
                 }
@@ -96,22 +93,16 @@ impl<'a> VEXInterpreter<'a> {
                 // bump the global mem_store counter here for parity with
                 // the Rust-memory path.
                 record_mem_store(data_size as u64);
-                self.fallback_to_python_store(
-                    py,
-                    callbacks,
-                    &addr_val,
-                    data_val.clone(),
-                    data_size,
-                )?;
+                self.fallback_to_python_store(callbacks, &addr_val, data_val.clone(), data_size)?;
                 self.dispatch_mem_write_inspect(
-                    py, callbacks, &addr_val, &data_val, data_size, *endness, "after",
+                    callbacks, &addr_val, &data_val, data_size, *endness, "after",
                 );
                 Ok(StmtResult::Continue)
             }
 
             IRStmt::Exit { guard, dst, jk, .. } => {
-                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
-                self.dispatch_exit_inspect(py, callbacks, *dst, *jk, &guard_val);
+                let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
+                self.dispatch_exit_inspect(callbacks, *dst, *jk, &guard_val);
 
                 // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
                 if !guard_val.is_symbolic() {
@@ -133,7 +124,7 @@ impl<'a> VEXInterpreter<'a> {
                     // Skip can_be_true/can_be_false Z3 checks — Python's
                     // resume_after_symbolic_branch will add constraints and the
                     // sat_cache optimization avoids redundant checks there.
-                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
+                    let fallthrough = self.eval_next_addr(callbacks, irsb)?;
                     // Store condition for Rust-side constraint addition during resume
                     let cond_id = self.next_cond_id();
                     self.stored_conditions.insert(cond_id, guard_val.clone());
@@ -291,7 +282,7 @@ impl<'a> VEXInterpreter<'a> {
                 data,
             } => {
                 // Evaluate the index expression
-                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, &irsb.tyenv)?;
+                let ix_val = self.eval_expr_with_callbacks(callbacks, ix, &irsb.tyenv)?;
 
                 // PutI requires a concrete index to compute the register offset
                 let idx = if let Some(idx) = ix_val.as_u64() {
@@ -315,7 +306,7 @@ impl<'a> VEXInterpreter<'a> {
                 let offset = descr.base + index * elem_size;
 
                 // Evaluate the data to write
-                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
 
                 // Write to the register file
                 self.registers.put(offset, data_val);
@@ -326,7 +317,7 @@ impl<'a> VEXInterpreter<'a> {
 
             IRStmt::StoreG {
                 guard, addr, data, ..
-            } => self.handle_storeg(py, callbacks, guard, addr, data, irsb),
+            } => self.handle_storeg(callbacks, guard, addr, data, irsb),
 
             IRStmt::LoadG {
                 dst,
@@ -335,7 +326,7 @@ impl<'a> VEXInterpreter<'a> {
                 alt,
                 cvt,
                 ..
-            } => self.handle_loadg(py, callbacks, dst, guard, addr, alt, cvt, irsb),
+            } => self.handle_loadg(callbacks, dst, guard, addr, alt, cvt, irsb),
 
             IRStmt::CAS {
                 old_hi,
@@ -347,7 +338,6 @@ impl<'a> VEXInterpreter<'a> {
                 dataLo,
                 endness,
             } => self.execute_cas_stmt(
-                py,
                 callbacks,
                 *old_hi,
                 *old_lo,
@@ -381,7 +371,7 @@ impl<'a> VEXInterpreter<'a> {
                             endness: *endness,
                         };
                         let value =
-                            self.eval_expr_with_callbacks(py, callbacks, &load_expr, &irsb.tyenv)?;
+                            self.eval_expr_with_callbacks(callbacks, &load_expr, &irsb.tyenv)?;
                         if (*result as usize) < self.temps.len() {
                             self.temps[*result as usize] = Some(value);
                         } else {
@@ -396,7 +386,7 @@ impl<'a> VEXInterpreter<'a> {
                             data: (**data_expr).clone(),
                             endness: *endness,
                         };
-                        self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
+                        self.execute_stmt_with_callbacks(callbacks, &store_stmt, irsb)?;
                         if (*result as usize) < self.temps.len() {
                             self.temps[*result as usize] = Some(RustBV::concrete(1, 1));
                         } else {
@@ -406,7 +396,7 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 Ok(StmtResult::Continue)
             }
-            IRStmt::Dirty(dirty) => self.handle_dirty_call(py, callbacks, dirty, irsb),
+            IRStmt::Dirty(dirty) => self.handle_dirty_call(callbacks, dirty, irsb),
         }
     }
 
@@ -416,7 +406,6 @@ impl<'a> VEXInterpreter<'a> {
     /// `execute_stmt_with_callbacks` (cudgw.18).
     fn handle_storeg(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         guard: &IRExpr,
         addr: &IRExpr,
@@ -425,7 +414,7 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<StmtResult, CbExecutionError> {
         {
             // Evaluate guard condition
-            let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+            let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 
             // Check if guard is symbolic
             if guard_val.is_symbolic() {
@@ -437,25 +426,23 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 if !self.ctx.can_be_false(&guard_val) {
                     // Guard is always true - perform store unconditionally
-                    let addr_val =
-                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                    let data_val =
-                        self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                    let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                     let data_size = data_val.width().div_ceil(8) as usize;
 
                     if let Some(addr_concrete) = addr_val.as_u64() {
                         self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                         // Check if data is symbolic - use symbolic store callback
                         if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                            self.flush_stores(py, callbacks)?;
+                            self.flush_stores(callbacks)?;
                             callbacks
-                                .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                .call_memory_store_symbolic_value(addr_concrete, &data_val)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         } else {
                             let data_bytes = bv_to_bytes(&data_val);
                             self.pending_stores.push(addr_concrete, data_bytes);
                             if self.pending_stores.len() >= self.max_pending_stores {
-                                self.flush_stores(py, callbacks)?;
+                                self.flush_stores(callbacks)?;
                             }
                         }
                     }
@@ -463,28 +450,27 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 // Both paths possible with symbolic guard - use ITE for conditional store
                 // Store ITE(guard, new_data, current_data)
-                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 let data_size = data_val.width().div_ceil(8) as usize;
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
                     // Load current value at address
-                    let current =
-                        self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                    let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
                     // Create ITE: if guard then new_data else current
                     let ite_result = guard_val.ite(&data_val, &current, self.ctx);
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                     // ITE result is symbolic if guard or either operand is symbolic
                     if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        self.flush_stores(py, callbacks)?;
+                        self.flush_stores(callbacks)?;
                         callbacks
-                            .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                            .call_memory_store_symbolic_value(addr_concrete, &ite_result)
                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                     } else {
                         let ite_bytes = bv_to_bytes(&ite_result);
                         self.pending_stores.push(addr_concrete, ite_bytes);
                         if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(py, callbacks)?;
+                            self.flush_stores(callbacks)?;
                         }
                     }
                 } else {
@@ -494,24 +480,20 @@ impl<'a> VEXInterpreter<'a> {
                             let addr_concrete = *addr_concrete;
                             // Load current value and use ITE
                             let current =
-                                self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                                self.load_from_callback(callbacks, addr_concrete, data_size)?;
                             let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                            self.flush_stores(py, callbacks)?;
+                            self.flush_stores(callbacks)?;
                             // ITE result is symbolic - use symbolic store callback
                             if ite_result.is_symbolic()
                                 && callbacks.has_memory_store_symbolic_value()
                             {
                                 callbacks
-                                    .call_memory_store_symbolic_value(
-                                        py,
-                                        addr_concrete,
-                                        &ite_result,
-                                    )
+                                    .call_memory_store_symbolic_value(addr_concrete, &ite_result)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             } else {
                                 let ite_bytes = bv_to_bytes(&ite_result);
                                 callbacks
-                                    .call_memory_store(py, addr_concrete, &ite_bytes)
+                                    .call_memory_store(addr_concrete, &ite_bytes)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             }
                             // Invalidate any prefetched value at this address.
@@ -524,10 +506,10 @@ impl<'a> VEXInterpreter<'a> {
                             // address load and is brittle, so delegate to Python's
                             // full symbolic store callback which has access to
                             // angr's address concretization strategies.
-                            self.flush_stores(py, callbacks)?;
+                            self.flush_stores(callbacks)?;
                             if callbacks.has_memory_store_symbolic_full() {
                                 callbacks
-                                    .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             } else {
                                 return Err(CbExecutionError::Unsupported(
@@ -549,28 +531,28 @@ impl<'a> VEXInterpreter<'a> {
                 && g != 0
             {
                 // Guard is true - perform the store
-                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 let data_size = data_val.width().div_ceil(8) as usize;
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                     // Check if data is symbolic - use symbolic store callback
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        self.flush_stores(py, callbacks)?;
+                        self.flush_stores(callbacks)?;
                         callbacks
-                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                            .call_memory_store_symbolic_value(addr_concrete, &data_val)
                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                     } else {
                         let data_bytes = bv_to_bytes(&data_val);
                         self.pending_stores.push(addr_concrete, data_bytes);
                         if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(py, callbacks)?;
+                            self.flush_stores(callbacks)?;
                         }
                     }
                 } else {
                     // Symbolic address with concrete guard - flush and use callback
-                    self.flush_stores(py, callbacks)?;
+                    self.flush_stores(callbacks)?;
                     // Check if data is symbolic - use symbolic store callback
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         // Concretize address for write (with cache)
@@ -579,7 +561,7 @@ impl<'a> VEXInterpreter<'a> {
                             ConcretizationResult::Single(addr_concrete) => {
                                 let addr_concrete = *addr_concrete;
                                 callbacks
-                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .call_memory_store_symbolic_value(addr_concrete, &data_val)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                             }
@@ -590,13 +572,13 @@ impl<'a> VEXInterpreter<'a> {
                                 // addresses are updated, not just the first one.
                                 if callbacks.has_memory_store_symbolic_full() {
                                     callbacks
-                                        .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                        .call_memory_store_symbolic_full(&addr_val, &data_val)
                                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 } else if callbacks.has_memory_store_symbolic_value()
                                     && addrs.len() <= 16
                                 {
                                     self.build_ite_store_from_callbacks(
-                                        py, callbacks, addrs, &addr_val, &data_val,
+                                        callbacks, addrs, &addr_val, &data_val,
                                     )?;
                                 } else {
                                     return Err(CbExecutionError::Unsupported(
@@ -611,7 +593,7 @@ impl<'a> VEXInterpreter<'a> {
                                 // TooLarge or Failed - delegate to Python's full symbolic callback
                                 if callbacks.has_memory_store_symbolic_full() {
                                     callbacks
-                                        .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                        .call_memory_store_symbolic_full(&addr_val, &data_val)
                                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 } else {
                                     return Err(CbExecutionError::Unsupported(
@@ -625,7 +607,7 @@ impl<'a> VEXInterpreter<'a> {
                     } else {
                         let data_bytes = bv_to_bytes(&data_val);
                         callbacks
-                            .call_memory_store(py, 0, &data_bytes)
+                            .call_memory_store(0, &data_bytes)
                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                     }
                 }
@@ -643,7 +625,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     fn handle_loadg(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         dst: &u32,
         guard: &IRExpr,
@@ -654,10 +635,10 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<StmtResult, CbExecutionError> {
         {
             // Evaluate guard condition
-            let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+            let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 
             // Evaluate the alternative value (used when guard is false)
-            let alt_val = self.eval_expr_with_callbacks(py, callbacks, alt, &irsb.tyenv)?;
+            let alt_val = self.eval_expr_with_callbacks(callbacks, alt, &irsb.tyenv)?;
 
             // Determine the load size from the destination temp type
             let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
@@ -686,10 +667,8 @@ impl<'a> VEXInterpreter<'a> {
 
                 if can_be_true && !can_be_false {
                     // Guard is always true - perform load unconditionally
-                    let addr_val =
-                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                     let loaded = self.resolve_loadg_load(
-                        py,
                         callbacks,
                         &addr_val,
                         load_size,
@@ -714,9 +693,8 @@ impl<'a> VEXInterpreter<'a> {
                 }
 
                 // Both paths possible - evaluate address and load, then ITE
-                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let loaded = self.resolve_loadg_load(
-                    py,
                     callbacks,
                     &addr_val,
                     load_size,
@@ -739,10 +717,8 @@ impl<'a> VEXInterpreter<'a> {
             if let Some(g) = guard_val.as_u64() {
                 let result = if g != 0 {
                     // Guard is true - perform the load
-                    let addr_val =
-                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                     let loaded = self.resolve_loadg_load(
-                        py,
                         callbacks,
                         &addr_val,
                         load_size,
@@ -773,7 +749,6 @@ impl<'a> VEXInterpreter<'a> {
     /// verbatim from `execute_stmt_with_callbacks` (cudgw.18).
     fn handle_dirty_call(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         dirty: &crate::vex::ir::IRDirty,
         irsb: &IRSB,
@@ -781,7 +756,7 @@ impl<'a> VEXInterpreter<'a> {
         {
             // Check guard if present
             if let Some(guard) = &dirty.guard {
-                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
                 if guard_val.is_symbolic() {
                     // Symbolic guard: pick the taken branch if feasible,
                     // otherwise skip. We can't fork mid-block, so we
@@ -817,7 +792,7 @@ impl<'a> VEXInterpreter<'a> {
             let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
             let mut all_args_concrete = true;
             for arg in &dirty.args {
-                let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                let val = self.eval_expr_with_callbacks(callbacks, arg, &irsb.tyenv)?;
                 if let Some(concrete) = val.as_u64() {
                     arg_vals.push(concrete);
                 } else if let Some(concrete) = self.concretize_and_pin(&val) {
@@ -898,7 +873,7 @@ impl<'a> VEXInterpreter<'a> {
                 // still unrepresentable, surface a clear error.
                 arg_vals.clear();
                 for arg in &dirty.args {
-                    let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                    let val = self.eval_expr_with_callbacks(callbacks, arg, &irsb.tyenv)?;
                     if let Some(concrete) = val.as_u64() {
                         arg_vals.push(concrete);
                     } else if let Some(concrete) = self.concretize_and_pin(&val) {
@@ -915,7 +890,7 @@ impl<'a> VEXInterpreter<'a> {
             // Call Python callback
             self.stats.python_dirty_call_count += 1;
             let (data, is_symbolic, _symbolic_ast) = callbacks
-                .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
+                .call_dirty_call(&dirty.cee.name, &arg_vals, ret_ty_bits)
                 .map_err(|e| {
                     CbExecutionError::Callback(format!(
                         "dirty call {} failed: {}",

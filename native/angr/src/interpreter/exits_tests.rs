@@ -192,10 +192,10 @@ fn eval_next_addr_concrete_returns_literal() {
     irsb.next = IRExpr::Const(IRConst::U64(0x4000));
 
     Python::initialize();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let cb = PythonCallbacks::new();
         let addr = interp
-            .eval_next_addr(py, &cb, &irsb)
+            .eval_next_addr(&cb, &irsb)
             .expect("concrete next address");
         assert_eq!(addr, 0x4000);
     });
@@ -221,10 +221,10 @@ fn eval_next_addr_single_concretization_returns_target() {
     interp.temps[0] = Some(sym);
 
     Python::initialize();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let cb = PythonCallbacks::new();
         let addr = interp
-            .eval_next_addr(py, &cb, &irsb)
+            .eval_next_addr(&cb, &irsb)
             .expect("single-valued symbolic next address");
         assert_eq!(addr, 0x9000);
     });
@@ -247,10 +247,10 @@ fn eval_next_addr_multivalued_returns_unsupported() {
     interp.temps[0] = Some(sym);
 
     Python::initialize();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let cb = PythonCallbacks::new();
         let err = interp
-            .eval_next_addr(py, &cb, &irsb)
+            .eval_next_addr(&cb, &irsb)
             .expect_err("multi-valued symbolic next must be unsupported");
         assert!(matches!(err, CbExecutionError::Unsupported(_)));
     });
@@ -287,10 +287,10 @@ fn exit_nondeferred_symbolic_guard_uses_eval_next_addr_for_fallthrough() {
     };
 
     Python::initialize();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let cb = PythonCallbacks::new();
         let res = interp
-            .execute_stmt_with_callbacks(py, &cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(&cb, &stmt, &irsb)
             .expect("symbolic exit");
         match res {
             StmtResult::SymbolicBranch {

@@ -23,7 +23,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_mem_write_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         data_val: &RustBV,
@@ -32,7 +31,7 @@ impl<'a> VEXInterpreter<'a> {
         when: &str,
     ) -> Option<RustBV> {
         // MemWrite = InspectEvent variant 1 — see crate::state::InspectEvent.
-        let value_ast = self.inspect_ast(py, callbacks, 1, data_val)?;
+        let value_ast = self.inspect_ast(callbacks, 1, data_val)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
@@ -40,7 +39,6 @@ impl<'a> VEXInterpreter<'a> {
         };
         let mutated = callbacks
             .call_inspect_mem_write(
-                py,
                 self.current_state_id,
                 when,
                 addr_u64,
@@ -53,8 +51,10 @@ impl<'a> VEXInterpreter<'a> {
         // (only meaningful for when='before', pre-store — angr-inh0).
         // Convert it back to a RustBV; reject a width mismatch defensively
         // so a bad override can't silently corrupt the store.
-        let bound = mutated.bind(py);
-        let bv = crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()?;
+        let bv = Python::attach(|py| {
+            let bound = mutated.bind(py);
+            crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()
+        })?;
         if bv.width() == (data_size * 8) as u32 {
             Some(bv)
         } else {
@@ -67,18 +67,16 @@ impl<'a> VEXInterpreter<'a> {
     /// with the stored value as `reg_write_expr`.
     pub(super) fn dispatch_reg_write_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         offset: u32,
         size: u32,
         value: &RustBV,
     ) {
         // RegWrite = InspectEvent variant 3.
-        let Some(value_ast) = self.inspect_ast(py, callbacks, 3, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, 3, value) else {
             return;
         };
         let _ = callbacks.call_inspect_reg_write(
-            py,
             self.current_state_id,
             "after",
             offset,
@@ -96,17 +94,15 @@ impl<'a> VEXInterpreter<'a> {
     /// caller after this returns so the slot is consistent post-dispatch.
     pub(super) fn dispatch_tmp_write_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         tmp_num: u32,
         value: &RustBV,
     ) {
         // TmpWrite bit assigned in _INSPECT_EVENT_SPECS.
-        let Some(value_ast) = self.inspect_ast(py, callbacks, 14, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, 14, value) else {
             return;
         };
         let _ = callbacks.call_inspect_tmp_write(
-            py,
             self.current_state_id,
             "after",
             tmp_num,
@@ -119,17 +115,12 @@ impl<'a> VEXInterpreter<'a> {
     /// `crate::state::InspectEvent`; bit 6 is custom for the `instruction`
     /// event (no `InspectEvent` slot — angr Python exposes it but the Rust
     /// `InspectionManager` enum doesn't track it). Dispatches `when='before'`.
-    pub(super) fn dispatch_instruction_inspect(
-        &self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
-        addr: u64,
-    ) {
+    pub(super) fn dispatch_instruction_inspect(&self, callbacks: &PythonCallbacks, addr: u64) {
         // Instruction = bit 6 (custom — not in the Rust InspectEvent enum).
         if !callbacks.inspect_event_enabled(6) {
             return;
         }
-        let _ = callbacks.call_inspect_instruction(py, self.current_state_id, "before", addr);
+        let _ = callbacks.call_inspect_instruction(self.current_state_id, "before", addr);
     }
 
     /// Fire an `exit` inspect callback into Python for a VEX conditional `Exit`.
@@ -137,18 +128,16 @@ impl<'a> VEXInterpreter<'a> {
     /// with the branch target, jumpkind name (`Ijk_*`), and guard AST.
     pub(super) fn dispatch_exit_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         target: u64,
         jk: JumpKind,
         guard: &RustBV,
     ) {
         // Exit = InspectEvent variant 5.
-        let Some(guard_ast) = self.inspect_ast(py, callbacks, 5, guard) else {
+        let Some(guard_ast) = self.inspect_ast(callbacks, 5, guard) else {
             return;
         };
         let _ = callbacks.call_inspect_exit(
-            py,
             self.current_state_id,
             "before",
             target,

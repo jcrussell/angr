@@ -86,7 +86,7 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
 /// `irsb_json` is a serialized pyvex IRSB, `arch_name` is e.g. `"amd64"`
 /// or `"arm64"` (case-insensitive, matches [`crate::arch::arch_from_name`]).
 #[pyfunction]
-pub fn execute_irsb_for_test(py: Python<'_>, irsb_json: &str, arch_name: &str) -> PyResult<()> {
+pub fn execute_irsb_for_test(irsb_json: &str, arch_name: &str) -> PyResult<()> {
     let arch = arch_from_name(arch_name)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {}", arch_name)))?;
     let vex_arch = arch.vex_arch();
@@ -99,7 +99,7 @@ pub fn execute_irsb_for_test(py: Python<'_>, irsb_json: &str, arch_name: &str) -
     let mut interp = crate::interpreter::VEXInterpreter::new(vex_arch, &ctx);
 
     let addr = irsb.addr;
-    match interp.execute_block(py, &callbacks, &irsb) {
+    match interp.execute_block(&callbacks, &irsb) {
         Ok(_) => Ok(()),
         Err(e) => Err(cb_execution_error_to_typed(e, addr, arch_name).into()),
     }

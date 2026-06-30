@@ -104,7 +104,7 @@ impl RustExplorationManager {
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
         if self.parallel_real_workers <= 1 {
-            return self.run_loop_single_threaded(py, n);
+            return self.run_loop_single_threaded(n);
         }
         self.run_loop_parallel(py, n)
     }
@@ -115,10 +115,14 @@ impl RustExplorationManager {
     /// branch point in place and reviewable without any parallel execution.
     pub(crate) fn run_loop_parallel(
         &mut self,
-        py: Python<'_>,
+        // Reserved for the work-stealing wave loop, which will release the GIL
+        // via `_py.allow_threads(...)` around the now-py-free interpreter step
+        // (angr-vh834 Phase 4). The scaffold still delegates to the
+        // single-threaded driver, which no longer needs a token.
+        _py: Python<'_>,
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
-        self.run_loop_single_threaded(py, n)
+        self.run_loop_single_threaded(n)
     }
 
     /// Inner body of the pymethods-exposed `run`. See `run` in `mod.rs`.
@@ -127,7 +131,6 @@ impl RustExplorationManager {
     /// state pop, post-step bookkeeping) and routes each `StepOutcome`.
     pub(crate) fn run_loop_single_threaded(
         &mut self,
-        py: Python<'_>,
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
         let max_steps = n.unwrap_or(self.max_steps_per_run);
@@ -230,7 +233,7 @@ impl RustExplorationManager {
                 }
             };
 
-            match self.step_one(py, &callbacks, state)? {
+            match self.step_one(&callbacks, state)? {
                 // Pre-step / find-avoid policy already routed the state. Advance
                 // without post-step bookkeeping (former `continue` paths).
                 StepOutcome::Routed => continue,
@@ -286,7 +289,6 @@ impl RustExplorationManager {
     /// concerns (state pop, post-step bookkeeping, event storage) to the driver.
     pub(crate) fn step_one(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         mut state: RustSimState,
     ) -> PyResult<StepOutcome> {
@@ -617,7 +619,7 @@ impl RustExplorationManager {
 
         // Step the state, passing the skip_hook_addr if we just skipped
         let skip_addr_for_step = if should_skip_hook { Some(pc) } else { None };
-        match self.step_state_with_skip(py, callbacks, state, skip_addr_for_step) {
+        match self.step_state_with_skip(callbacks, state, skip_addr_for_step) {
             Ok(successors) => Ok(StepOutcome::Successors(successors)),
             Err(StepError::NeedCallback(pending)) => {
                 // Check if the callback address is a find/avoid address

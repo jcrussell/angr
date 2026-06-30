@@ -26,13 +26,12 @@ impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
     pub(super) fn eval_expr_with_callbacks(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         let expr_start = profile_start!(self);
-        let result = self.eval_expr_with_callbacks_inner(py, callbacks, expr, tyenv);
+        let result = self.eval_expr_with_callbacks_inner(callbacks, expr, tyenv);
         profile_add!(expr_start, self.stats.expr_eval_time_ns);
         if self.profiling_enabled {
             self.stats.expr_eval_count += 1;
@@ -43,14 +42,13 @@ impl<'a> VEXInterpreter<'a> {
         // the highest-frequency dispatch site in the engine (every binop
         // arg, store data, exit guard, etc. comes through here).
         if let Ok(ref value) = result {
-            self.dispatch_expr_inspect(py, callbacks, value);
+            self.dispatch_expr_inspect(callbacks, value);
         }
         result
     }
 
     fn eval_expr_with_callbacks_inner(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         expr: &IRExpr,
         tyenv: &TypeEnv,
@@ -61,7 +59,7 @@ impl<'a> VEXInterpreter<'a> {
             IRExpr::RdTmp(tmp) => {
                 if let Some(Some(val)) = self.temps.get(*tmp as usize) {
                     let value = val.clone();
-                    self.dispatch_tmp_read_inspect(py, callbacks, *tmp, &value);
+                    self.dispatch_tmp_read_inspect(callbacks, *tmp, &value);
                     Ok(value)
                 } else {
                     Err(CbExecutionError::UnknownTemp(*tmp))
@@ -71,36 +69,34 @@ impl<'a> VEXInterpreter<'a> {
             IRExpr::Get { offset, ty } => {
                 let size = ty.bytes();
                 let value = self.registers.get(*offset, size, self.ctx);
-                self.dispatch_reg_read_inspect(py, callbacks, *offset, size, &value);
+                self.dispatch_reg_read_inspect(callbacks, *offset, size, &value);
                 Ok(value)
             }
 
             IRExpr::Load { addr, ty, endness } => {
-                self.eval_load(py, callbacks, addr, *ty, *endness, tyenv)
+                self.eval_load(callbacks, addr, *ty, *endness, tyenv)
             }
 
-            IRExpr::Unop { op, arg } => self.eval_unop(py, callbacks, *op, arg, tyenv),
+            IRExpr::Unop { op, arg } => self.eval_unop(callbacks, *op, arg, tyenv),
 
             IRExpr::Binop { op, left, right } => {
-                self.eval_binop(py, callbacks, *op, left, right, tyenv)
+                self.eval_binop(callbacks, *op, left, right, tyenv)
             }
 
             IRExpr::ITE {
                 cond,
                 iftrue,
                 iffalse,
-            } => self.eval_ite(py, callbacks, cond, iftrue, iffalse, tyenv),
+            } => self.eval_ite(callbacks, cond, iftrue, iffalse, tyenv),
 
-            IRExpr::GetI { descr, ix, bias } => {
-                self.eval_geti(py, callbacks, *descr, ix, *bias, tyenv)
-            }
+            IRExpr::GetI { descr, ix, bias } => self.eval_geti(callbacks, *descr, ix, *bias, tyenv),
 
             IRExpr::Triop {
                 op,
                 arg1,
                 arg2,
                 arg3,
-            } => self.eval_triop(py, callbacks, *op, arg1, arg2, arg3, tyenv),
+            } => self.eval_triop(callbacks, *op, arg1, arg2, arg3, tyenv),
 
             IRExpr::Qop {
                 op,
@@ -108,10 +104,10 @@ impl<'a> VEXInterpreter<'a> {
                 arg2,
                 arg3,
                 arg4,
-            } => self.eval_qop(py, callbacks, *op, arg1, arg2, arg3, arg4, tyenv),
+            } => self.eval_qop(callbacks, *op, arg1, arg2, arg3, arg4, tyenv),
 
             IRExpr::CCall { cee, retty, args } => {
-                self.eval_ccall(py, callbacks, cee, *retty, args, tyenv)
+                self.eval_ccall(callbacks, cee, *retty, args, tyenv)
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
@@ -131,7 +127,6 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_load(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr: &IRExpr,
         ty: IRType,
@@ -139,7 +134,7 @@ impl<'a> VEXInterpreter<'a> {
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         let load_start = profile_start!(self);
-        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
+        let addr_val = self.eval_expr_with_callbacks(callbacks, addr, tyenv)?;
         let size = ty.bytes() as usize;
         if self.profiling_enabled {
             self.stats.load_stmt_count += 1;
@@ -149,7 +144,7 @@ impl<'a> VEXInterpreter<'a> {
             // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
             if self.use_rust_memory
                 && let Some(value) =
-                    self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
+                    self.try_rust_memory_load(callbacks, &addr_val, size, load_start)?
             {
                 // SymbolicMemory::load_concrete already bumped record_mem_load.
                 break 'load value;
@@ -163,14 +158,14 @@ impl<'a> VEXInterpreter<'a> {
             record_mem_load(size as u64);
 
             if let Some(addr_concrete) = addr_val.as_u64() {
-                self.load_concrete_addr(py, callbacks, addr_concrete, size)?
+                self.load_concrete_addr(callbacks, addr_concrete, size)?
             } else {
-                self.load_symbolic_addr(py, callbacks, &addr_val, size)?
+                self.load_symbolic_addr(callbacks, &addr_val, size)?
             }
         };
 
         if let Some(injected) =
-            self.dispatch_mem_read_inspect(py, callbacks, &addr_val, &value, size, endness)
+            self.dispatch_mem_read_inspect(callbacks, &addr_val, &value, size, endness)
         {
             return Ok(injected);
         }
@@ -213,7 +208,6 @@ impl<'a> VEXInterpreter<'a> {
     /// and concrete-memory caches before falling back to the Python callback.
     fn load_concrete_addr(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_concrete: u64,
         size: usize,
@@ -282,14 +276,13 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
         // SLOW PATH: Fall back to Python callback
-        self.load_from_callback(py, callbacks, addr_concrete, size)
+        self.load_from_callback(callbacks, addr_concrete, size)
     }
 
     /// Symbolic-address load path: concretize, then dispatch by result shape
     /// (single / multiple / strided / too-large / failed).
     fn load_symbolic_addr(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         size: usize,
@@ -302,14 +295,11 @@ impl<'a> VEXInterpreter<'a> {
         // angr-vfst: address_concretization BP_BEFORE — dispatch before the
         // concretizer runs so a user BP could (in a future iter) intervene.
         // MVP: dispatch only; no override path. Gated on bit 17 inside.
-        self.dispatch_address_concretization_inspect(
-            py, callbacks, addr_val, "load", "before", None,
-        );
+        self.dispatch_address_concretization_inspect(callbacks, addr_val, "load", "before", None);
         let conc = self.concretize_cached_read(addr_val);
         // BP_AFTER carries the list of concrete addresses produced.
         let result_addrs = conc.addresses();
         self.dispatch_address_concretization_inspect(
-            py,
             callbacks,
             addr_val,
             "load",
@@ -322,12 +312,12 @@ impl<'a> VEXInterpreter<'a> {
                 if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                     return Ok(bytes_to_bv(data, (size * 8) as u32));
                 }
-                self.load_from_callback(py, callbacks, addr_concrete, size)
+                self.load_from_callback(callbacks, addr_concrete, size)
             }
             ConcretizationResult::Multiple(addrs) => {
                 // Build ITE chain in Rust instead of delegating to Python
                 // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                self.build_ite_load_from_callbacks(py, callbacks, addrs, addr_val, size)
+                self.build_ite_load_from_callbacks(callbacks, addrs, addr_val, size)
             }
             ConcretizationResult::Strided {
                 base,
@@ -336,11 +326,11 @@ impl<'a> VEXInterpreter<'a> {
             } => {
                 // Strided access pattern - generate addresses and build ITE chain in Rust
                 let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                self.build_ite_load_from_callbacks(py, callbacks, &addrs, addr_val, size)
+                self.build_ite_load_from_callbacks(callbacks, &addrs, addr_val, size)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 let descr = format!("range 0x{:x}-0x{:x}", min, max);
-                self.fallback_load_symbolic_full(py, callbacks, addr_val, size, "Load", &descr)
+                self.fallback_load_symbolic_full(callbacks, addr_val, size, "Load", &descr)
             }
             ConcretizationResult::Failed(reason) => {
                 // Concretization failed entirely (e.g., timeout, no
@@ -348,7 +338,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Python's memory model can still resolve it via its
                 // own address concretization strategies.
                 let descr = format!("concretize failed: {}", reason);
-                self.fallback_load_symbolic_full(py, callbacks, addr_val, size, "Load", &descr)
+                self.fallback_load_symbolic_full(callbacks, addr_val, size, "Load", &descr)
             }
         }
     }
@@ -381,14 +371,13 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_unop(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         op: IROp,
         arg: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         record_vex_unop(iropclass(&op));
-        let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
+        let arg_val = self.eval_expr_with_callbacks(callbacks, arg, tyenv)?;
         let arg_is_sym = arg_val.is_symbolic();
         match VEXOps::unop(op, arg_val, self.ctx) {
             Ok(v) => Ok(v),
@@ -411,7 +400,6 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_binop(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         op: IROp,
         left: &IRExpr,
@@ -419,8 +407,8 @@ impl<'a> VEXInterpreter<'a> {
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         record_vex_binop(iropclass(&op));
-        let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
-        let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
+        let left_val = self.eval_expr_with_callbacks(callbacks, left, tyenv)?;
+        let right_val = self.eval_expr_with_callbacks(callbacks, right, tyenv)?;
         let fallback_width = op
             .result_type()
             .map(|t| t.bits())
@@ -466,24 +454,23 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_ite(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         cond: &IRExpr,
         iftrue: &IRExpr,
         iffalse: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
-        let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
+        let cond_val = self.eval_expr_with_callbacks(callbacks, cond, tyenv)?;
         // Short-circuit: skip evaluating the dead branch when condition is concrete
         if let Some(v) = cond_val.as_u128() {
             return if v != 0 {
-                self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)
+                self.eval_expr_with_callbacks(callbacks, iftrue, tyenv)
             } else {
-                self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)
+                self.eval_expr_with_callbacks(callbacks, iffalse, tyenv)
             };
         }
-        let true_val = self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)?;
-        let false_val = self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)?;
+        let true_val = self.eval_expr_with_callbacks(callbacks, iftrue, tyenv)?;
+        let false_val = self.eval_expr_with_callbacks(callbacks, iffalse, tyenv)?;
         Ok(cond_val.ite(&true_val, &false_val, self.ctx))
     }
 
@@ -505,7 +492,6 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_geti(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         descr: IRRegArray,
         ix: &IRExpr,
@@ -513,7 +499,7 @@ impl<'a> VEXInterpreter<'a> {
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         // Evaluate the index expression
-        let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
+        let ix_val = self.eval_expr_with_callbacks(callbacks, ix, tyenv)?;
 
         // GetI requires a concrete index to compute the register offset
         let idx = if let Some(idx) = ix_val.as_u64() {
@@ -541,7 +527,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     fn eval_triop(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         op: IROp,
         arg1: &IRExpr,
@@ -555,9 +540,9 @@ impl<'a> VEXInterpreter<'a> {
         // `binop_with_rm` which honors the VEX rm bits when non-RNE;
         // RNE keeps the native-f{32,64} fast path. Other Triops
         // ignore rm and fall through to `binop`.
-        let rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-        let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-        let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+        let rm = self.eval_expr_with_callbacks(callbacks, arg1, tyenv)?;
+        let v2 = self.eval_expr_with_callbacks(callbacks, arg2, tyenv)?;
+        let v3 = self.eval_expr_with_callbacks(callbacks, arg3, tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
         match VEXOps::binop_with_rm(op, rm, v2, v3, self.ctx) {
@@ -580,7 +565,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     fn eval_qop(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         op: IROp,
         arg1: &IRExpr,
@@ -593,10 +577,10 @@ impl<'a> VEXInterpreter<'a> {
         // VEX Qops are typically fused multiply-add/sub with a
         // rounding mode: (rm, a, b, c). Drop rm for the same reason
         // as Triop above.
-        let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-        let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-        let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-        let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+        let _rm = self.eval_expr_with_callbacks(callbacks, arg1, tyenv)?;
+        let v2 = self.eval_expr_with_callbacks(callbacks, arg2, tyenv)?;
+        let v3 = self.eval_expr_with_callbacks(callbacks, arg3, tyenv)?;
+        let v4 = self.eval_expr_with_callbacks(callbacks, arg4, tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
         match VEXOps::qop(op, v2, v3, v4, self.ctx) {
@@ -618,7 +602,6 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_ccall(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         cee: &IRCallee,
         retty: IRType,
@@ -627,7 +610,7 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<RustBV, CbExecutionError> {
         let mut arg_vals = Vec::with_capacity(args.len());
         for arg in args {
-            arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
+            arg_vals.push(self.eval_expr_with_callbacks(callbacks, arg, tyenv)?);
         }
 
         if let Some(result) =
@@ -671,7 +654,6 @@ impl<'a> VEXInterpreter<'a> {
     /// (delegates to `try_convert_symbolic_value`).
     fn convert_load_result(
         &self,
-        py: Python<'_>,
         load_results: &[crate::callbacks::BatchLoadEntry],
         i: usize,
         width: u32,
@@ -683,7 +665,7 @@ impl<'a> VEXInterpreter<'a> {
         if !*is_symbolic {
             return bytes_to_bv(data, width);
         }
-        self.try_convert_symbolic_value(py, symbolic_ast.as_ref(), width, fallback_name)
+        self.try_convert_symbolic_value(symbolic_ast.as_ref(), width, fallback_name)
     }
 
     /// Convert an optional symbolic AST to RustBV, falling back to a fresh symbolic.
@@ -691,7 +673,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Order: handle-table fast path, then claripy-AST conversion, then fresh symbolic.
     pub(super) fn try_convert_symbolic_value(
         &self,
-        py: Python<'_>,
         ast_obj: Option<&Py<PyAny>>,
         width: u32,
         fallback_name: impl FnOnce() -> String,
@@ -699,21 +680,28 @@ impl<'a> VEXInterpreter<'a> {
         let Some(ast_obj) = ast_obj else {
             return RustBV::symbolic(self.ctx, fallback_name(), width);
         };
-        let ast = ast_obj.bind(py);
+        // Self-attach: the claripy bridge work below needs the GIL, but this
+        // helper no longer threads a caller token (angr-vh834 Phase 4). When
+        // the GIL is already held (single-threaded path) this is a cheap
+        // re-entrant no-op.
+        let converted: Option<RustBV> = Python::attach(|py| {
+            let ast = ast_obj.bind(py);
 
-        if let Some(table) = self.symbol_table
-            && let Some(bv) = try_handle_to_rustbv(ast, table)
-        {
-            return bv;
-        }
+            if let Some(table) = self.symbol_table
+                && let Some(bv) = try_handle_to_rustbv(ast, table)
+            {
+                return Some(bv);
+            }
 
-        if is_claripy_ast(ast)
-            && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
-        {
-            return bv;
-        }
+            if is_claripy_ast(ast)
+                && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
+            {
+                return Some(bv);
+            }
+            None
+        });
 
-        RustBV::symbolic(self.ctx, fallback_name(), width)
+        converted.unwrap_or_else(|| RustBV::symbolic(self.ctx, fallback_name(), width))
     }
 
     /// Build an ITE chain for symbolic memory load by loading each candidate address.
@@ -728,7 +716,6 @@ impl<'a> VEXInterpreter<'a> {
     /// 3. We can use balanced ITE trees for better solver performance
     fn build_ite_load_from_callbacks(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_expr: &RustBV,
@@ -744,18 +731,18 @@ impl<'a> VEXInterpreter<'a> {
         let addr_width = addr_expr.width();
 
         if addrs.len() == 1 {
-            return self.load_from_callback(py, callbacks, addrs[0], size);
+            return self.load_from_callback(callbacks, addrs[0], size);
         }
 
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
-            .call_memory_load_batch(py, &load_requests)
+            .call_memory_load_batch(&load_requests)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
 
         for (i, addr) in addrs.iter().enumerate() {
-            let value = self.convert_load_result(py, &load_results, i, width, || {
+            let value = self.convert_load_result(&load_results, i, width, || {
                 format!("ite_load_{:x}_{}", addr, size)
             });
 
@@ -785,7 +772,6 @@ impl<'a> VEXInterpreter<'a> {
     /// for the ITE chain building that Python would otherwise do.
     pub(super) fn build_ite_store_from_callbacks(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_expr: &RustBV,
@@ -801,21 +787,21 @@ impl<'a> VEXInterpreter<'a> {
 
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
-            .call_memory_load_batch(py, &load_requests)
+            .call_memory_load_batch(&load_requests)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         for (i, &addr) in addrs.iter().enumerate() {
             let addr_const = RustBV::concrete(addr as u128, addr_width);
             let cond = addr_expr.eq(&addr_const, self.ctx);
 
-            let current = self.convert_load_result(py, &load_results, i, val_width, || {
+            let current = self.convert_load_result(&load_results, i, val_width, || {
                 format!("ite_store_cur_{:x}", addr)
             });
 
             let ite_value = cond.ite(data_val, &current, self.ctx);
 
             callbacks
-                .call_memory_store_symbolic_value(py, addr, &ite_value)
+                .call_memory_store_symbolic_value(addr, &ite_value)
                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
         }
 
@@ -847,26 +833,25 @@ impl<'a> VEXInterpreter<'a> {
     /// later if needed.
     pub(super) fn resolve_loadg_load(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         load_size: usize,
         context: &str,
     ) -> Result<RustBV, CbExecutionError> {
         if let Some(addr_concrete) = addr_val.as_u64() {
-            return self.load_from_callback(py, callbacks, addr_concrete, load_size);
+            return self.load_from_callback(callbacks, addr_concrete, load_size);
         }
         let conc = self.concretize_cached_read(addr_val);
         match &*conc {
             ConcretizationResult::Single(a) => {
                 let a = *a;
-                self.load_from_callback(py, callbacks, a, load_size)
+                self.load_from_callback(callbacks, a, load_size)
             }
             ConcretizationResult::Multiple(addrs) => {
                 let a = *addrs.first().ok_or_else(|| {
                     CbExecutionError::Unsupported(format!("{} with empty address set", context))
                 })?;
-                self.load_from_callback(py, callbacks, a, load_size)
+                self.load_from_callback(callbacks, a, load_size)
             }
             ConcretizationResult::Strided {
                 base,
@@ -877,21 +862,15 @@ impl<'a> VEXInterpreter<'a> {
                     "strided base=0x{:x} stride=0x{:x} count={}",
                     base, stride, count
                 );
-                self.fallback_load_symbolic_full(
-                    py, callbacks, addr_val, load_size, context, &descr,
-                )
+                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 let descr = format!("range 0x{:x}-0x{:x}", min, max);
-                self.fallback_load_symbolic_full(
-                    py, callbacks, addr_val, load_size, context, &descr,
-                )
+                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
             ConcretizationResult::Failed(reason) => {
                 let descr = format!("concretize failed: {}", reason);
-                self.fallback_load_symbolic_full(
-                    py, callbacks, addr_val, load_size, context, &descr,
-                )
+                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
         }
     }
@@ -932,7 +911,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Python path, or `Err` for unrecoverable errors.
     fn try_rust_memory_load(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         size: usize,
@@ -968,7 +946,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                 let prefetch_count = self.page_prefetch_count;
                 let page_fetched =
-                    self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+                    self.fetch_page_with_prefetch(callbacks, page_addr, prefetch_count)?;
 
                 // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
                 // Python may have actual data for this page from backers (file contents,
@@ -1043,7 +1021,6 @@ impl<'a> VEXInterpreter<'a> {
     /// every dispatch site.
     pub(super) fn inspect_ast(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         event_bit: u8,
         value: &RustBV,
@@ -1051,8 +1028,10 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(event_bit) {
             return None;
         }
-        let claripy_mod = py.import("claripy").ok()?;
-        crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()
+        Python::attach(|py| {
+            let claripy_mod = py.import("claripy").ok()?;
+            crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()
+        })
     }
 
     /// Fire a `mem_read` inspect callback into Python for this load.
@@ -1072,7 +1051,6 @@ impl<'a> VEXInterpreter<'a> {
     /// value is unchanged, so the original load result stands.
     fn dispatch_mem_read_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         value: &RustBV,
@@ -1080,7 +1058,7 @@ impl<'a> VEXInterpreter<'a> {
         endness: Endness,
     ) -> Option<RustBV> {
         // MemRead = InspectEvent variant 0 — see crate::state::InspectEvent.
-        let value_ast = self.inspect_ast(py, callbacks, 0, value)?;
+        let value_ast = self.inspect_ast(callbacks, 0, value)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
@@ -1088,7 +1066,6 @@ impl<'a> VEXInterpreter<'a> {
         };
         let mutated = callbacks
             .call_inspect_mem_read(
-                py,
                 self.current_state_id,
                 "after",
                 addr_u64,
@@ -1100,8 +1077,10 @@ impl<'a> VEXInterpreter<'a> {
         // The user injected a new value via state.inspect.mem_read_expr.
         // Convert it back to a RustBV; reject a width mismatch defensively
         // so a bad override can't silently corrupt downstream ops.
-        let bound = mutated.bind(py);
-        let bv = crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()?;
+        let bv = Python::attach(|py| {
+            let bound = mutated.bind(py);
+            crate::claripy_bridge::claripy_to_rustbv(py, bound, self.ctx).ok()
+        })?;
         if bv.width() == (size * 8) as u32 {
             Some(bv)
         } else {
@@ -1117,18 +1096,16 @@ impl<'a> VEXInterpreter<'a> {
     /// Python callback are swallowed and logged on the Python side.
     fn dispatch_reg_read_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         offset: u32,
         size: u32,
         value: &RustBV,
     ) {
         // RegRead = InspectEvent variant 2.
-        let Some(value_ast) = self.inspect_ast(py, callbacks, 2, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, 2, value) else {
             return;
         };
         let _ = callbacks.call_inspect_reg_read(
-            py,
             self.current_state_id,
             "after",
             offset,
@@ -1144,19 +1121,12 @@ impl<'a> VEXInterpreter<'a> {
     /// with the tmp's stored value as `tmp_read_expr`. RdTmp can fire many
     /// times per IRSB (every binop/load/store args go through it); the
     /// claripy AST round-trip is therefore only done when a BP is set.
-    fn dispatch_tmp_read_inspect(
-        &self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
-        tmp_num: u32,
-        value: &RustBV,
-    ) {
+    fn dispatch_tmp_read_inspect(&self, callbacks: &PythonCallbacks, tmp_num: u32, value: &RustBV) {
         // TmpRead bit assigned in _INSPECT_EVENT_SPECS.
-        let Some(value_ast) = self.inspect_ast(py, callbacks, 13, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, 13, value) else {
             return;
         };
         let _ = callbacks.call_inspect_tmp_read(
-            py,
             self.current_state_id,
             "after",
             tmp_num,
@@ -1174,11 +1144,11 @@ impl<'a> VEXInterpreter<'a> {
     /// `expr_result`. The original `IRExpr` is intentionally NOT passed
     /// (Rust IRExpr doesn't round-trip cleanly into a `pyvex.IRExpr`);
     /// the BP receives `expr=None` and only the computed value.
-    fn dispatch_expr_inspect(&self, py: Python<'_>, callbacks: &PythonCallbacks, value: &RustBV) {
-        let Some(value_ast) = self.inspect_ast(py, callbacks, 16, value) else {
+    fn dispatch_expr_inspect(&self, callbacks: &PythonCallbacks, value: &RustBV) {
+        let Some(value_ast) = self.inspect_ast(callbacks, 16, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_expr(py, self.current_state_id, "after", Some(&value_ast));
+        let _ = callbacks.call_inspect_expr(self.current_state_id, "after", Some(&value_ast));
     }
 
     /// Fire an `address_concretization` inspect callback (angr-vfst).
@@ -1192,18 +1162,16 @@ impl<'a> VEXInterpreter<'a> {
     /// objects to BPs (MVP gap, documented in `rust_engine.rst`).
     pub(super) fn dispatch_address_concretization_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         action: &str,
         when: &str,
         result: Option<Vec<u64>>,
     ) {
-        let Some(addr_ast) = self.inspect_ast(py, callbacks, 17, addr_val) else {
+        let Some(addr_ast) = self.inspect_ast(callbacks, 17, addr_val) else {
             return;
         };
         let _ = callbacks.call_inspect_address_concretization(
-            py,
             self.current_state_id,
             when,
             action,
@@ -1221,17 +1189,15 @@ impl<'a> VEXInterpreter<'a> {
     /// `solver.py:432-439`'s BP_AFTER signature.
     pub(super) fn dispatch_symbolic_variable_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         name: &str,
         size_bits: u32,
         value: &RustBV,
     ) {
-        let Some(expr_ast) = self.inspect_ast(py, callbacks, 18, value) else {
+        let Some(expr_ast) = self.inspect_ast(callbacks, 18, value) else {
             return;
         };
         let _ = callbacks.call_inspect_symbolic_variable(
-            py,
             self.current_state_id,
             "after",
             name,

@@ -93,7 +93,6 @@ impl RustExplorationManager {
     /// interpreter so the underlying instruction can execute.
     pub(crate) fn step_state_with_skip(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         mut state: RustSimState,
         skip_addr: Option<u64>,
@@ -113,7 +112,6 @@ impl RustExplorationManager {
         // Run the VEX interpreter to its next event.
         let step = super::step_core::run_interpreter_step_core(
             &ctx,
-            py,
             callbacks,
             &mut state,
             initial_pc,
@@ -185,7 +183,7 @@ impl RustExplorationManager {
             inputs,
             root_hint,
         );
-        self.apply_core_outcome(py, callbacks, &prof, outcome)
+        self.apply_core_outcome(callbacks, &prof, outcome)
     }
 
     /// Apply the deferred mutations the `&mut self`-free post-step core recorded
@@ -195,7 +193,6 @@ impl RustExplorationManager {
     /// translate the routing decision into the `Result` the run loop consumes.
     fn apply_core_outcome(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         prof: &ParallelProfiling,
         outcome: CoreOutcome,
@@ -290,7 +287,7 @@ impl RustExplorationManager {
             CoreReturn::Deadended(state) => Err(StepError::Deadended(state)),
             CoreReturn::Errored(state, message) => Err(StepError::Error(state, message)),
             CoreReturn::Unconstrained(state, forks) => Err(StepError::Unconstrained(state, forks)),
-            CoreReturn::NeedsPython(bounce) => self.dispatch_bounce(py, callbacks, bounce),
+            CoreReturn::NeedsPython(bounce) => self.dispatch_bounce(callbacks, bounce),
         }
     }
 
@@ -300,7 +297,6 @@ impl RustExplorationManager {
     /// `&mut self` resolve path) the single-threaded engine produced inline.
     fn dispatch_bounce(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         bounce: PendingBounce,
     ) -> Result<Vec<RustSimState>, StepError> {
@@ -425,7 +421,6 @@ impl RustExplorationManager {
                 return_addr,
                 symbol_name,
             } => self.handle_unmodeled_call(
-                py,
                 callbacks,
                 state,
                 addr,
@@ -634,7 +629,6 @@ impl RustExplorationManager {
     #[allow(clippy::too_many_arguments)]
     fn handle_unmodeled_call(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         mut state: RustSimState,
         addr: u64,
@@ -651,7 +645,7 @@ impl RustExplorationManager {
 
         // Try to resolve the function via callback
         if callbacks.has_resolve_function() {
-            match callbacks.call_resolve_function(py, addr, symbol_name.as_deref()) {
+            match callbacks.call_resolve_function(addr, symbol_name.as_deref()) {
                 Ok(Some((name, num_args, no_return))) => {
                     // Function resolved! Register it and return to Python for execution
                     log::debug!(
@@ -840,15 +834,15 @@ impl RustExplorationManager {
         if !cb.inspect_event_enabled(4) {
             return;
         }
-        Python::attach(|py| {
-            if let Err(e) = cb.call_inspect_fork(py, forked_state_id as i64, "after") {
-                log::debug!(
-                    "fork inspect dispatch raised (state {}): {}",
-                    forked_state_id,
-                    e
-                );
-            }
-        });
+        // call_inspect_fork self-attaches the GIL (angr-vh834 Phase 4), so no
+        // explicit Python::attach wrapper is needed here.
+        if let Err(e) = cb.call_inspect_fork(forked_state_id as i64, "after") {
+            log::debug!(
+                "fork inspect dispatch raised (state {}): {}",
+                forked_state_id,
+                e
+            );
+        }
     }
 }
 

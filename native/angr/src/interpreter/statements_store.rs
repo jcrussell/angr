@@ -6,7 +6,6 @@ impl<'a> VEXInterpreter<'a> {
     /// was handled, Ok(false) if the caller should fall back to the Python path.
     pub(super) fn try_rust_memory_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         data_val: &RustBV,
@@ -24,7 +23,7 @@ impl<'a> VEXInterpreter<'a> {
         // to concretize). Gated on bit 17 inside the helper.
         if !addr_val.is_concrete() {
             self.dispatch_address_concretization_inspect(
-                py, callbacks, addr_val, "store", "before", None,
+                callbacks, addr_val, "store", "before", None,
             );
         }
         // Concretize for write with per-block cache (avoids redundant Z3 calls)
@@ -32,7 +31,6 @@ impl<'a> VEXInterpreter<'a> {
         if !addr_val.is_concrete() {
             let result_addrs = conc_result.addresses();
             self.dispatch_address_concretization_inspect(
-                py,
                 callbacks,
                 addr_val,
                 "store",
@@ -63,7 +61,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                 let prefetch_count = self.page_prefetch_count;
                 let page_fetched =
-                    self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+                    self.fetch_page_with_prefetch(callbacks, page_addr, prefetch_count)?;
 
                 if page_fetched {
                     // Page was fetched - retry store using cached concretization
@@ -204,7 +202,6 @@ impl<'a> VEXInterpreter<'a> {
     /// branch goes through `handle_symbolic_store`.
     pub(super) fn fallback_to_python_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         data_val: RustBV,
@@ -212,9 +209,9 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<(), CbExecutionError> {
         if let Some(addr_concrete) = addr_val.as_u64() {
             self.invalidate_loads_at(addr_concrete, data_size);
-            self.handle_concrete_store(py, callbacks, addr_concrete, data_val, data_size)
+            self.handle_concrete_store(callbacks, addr_concrete, data_val, data_size)
         } else {
-            self.handle_symbolic_store(py, callbacks, addr_val, &data_val, data_size)
+            self.handle_symbolic_store(callbacks, addr_val, &data_val, data_size)
         }
     }
 
@@ -238,7 +235,6 @@ impl<'a> VEXInterpreter<'a> {
     /// of routing every 64-bit symbolic store through Python.
     pub(super) fn handle_concrete_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_concrete: u64,
         data_val: RustBV,
@@ -258,9 +254,9 @@ impl<'a> VEXInterpreter<'a> {
         if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
             // Try symbolic store callback (preserves expression tree)
             let sym_ok = (|| -> Result<(), CbExecutionError> {
-                self.flush_stores(py, callbacks)?;
+                self.flush_stores(callbacks)?;
                 callbacks
-                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                    .call_memory_store_symbolic_value(addr_concrete, &data_val)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))
             })();
             if sym_ok.is_err() {
@@ -274,7 +270,7 @@ impl<'a> VEXInterpreter<'a> {
                 for (i, b) in data_bytes.iter_mut().enumerate() {
                     *b = (concrete_val >> (i * 8)) as u8;
                 }
-                let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
+                let _ = callbacks.call_memory_store(addr_concrete, &data_bytes);
             }
             Ok(())
         } else if data_val.is_symbolic() {
@@ -287,7 +283,7 @@ impl<'a> VEXInterpreter<'a> {
             // load.
             self.pending_symbolic_stores.insert(addr_concrete, data_val);
             if self.pending_symbolic_stores.len() >= self.max_pending_stores {
-                self.flush_stores(py, callbacks)?;
+                self.flush_stores(callbacks)?;
             }
             Ok(())
         } else {
@@ -300,7 +296,7 @@ impl<'a> VEXInterpreter<'a> {
             self.pending_stores.push(addr_concrete, data_bytes);
 
             if self.pending_stores.len() >= self.max_pending_stores {
-                self.flush_stores(py, callbacks)?;
+                self.flush_stores(callbacks)?;
             }
             Ok(())
         }
@@ -335,7 +331,6 @@ impl<'a> VEXInterpreter<'a> {
     /// callback or Unsupported; Failed → `fallback_store_symbolic_full`.
     pub(super) fn handle_symbolic_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_val: &RustBV,
         data_val: &RustBV,
@@ -350,7 +345,7 @@ impl<'a> VEXInterpreter<'a> {
         // Touched addresses are unknown — drop the entire prefetch cache
         // and flush pending stores before Python sees the symbolic write.
         self.load_prefetch_cache.clear();
-        self.flush_stores(py, callbacks)?;
+        self.flush_stores(callbacks)?;
 
         let concret_result = self.concretize_cached_write(addr_val);
         match &*concret_result {
@@ -361,18 +356,18 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                     callbacks
-                        .call_memory_store_symbolic_value(py, addr_concrete, data_val)
+                        .call_memory_store_symbolic_value(addr_concrete, data_val)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                 } else {
                     let data_bytes = bv_to_bytes(data_val);
                     callbacks
-                        .call_memory_store(py, addr_concrete, &data_bytes)
+                        .call_memory_store(addr_concrete, &data_bytes)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                 }
                 Ok(())
             }
             ConcretizationResult::Multiple(addrs) => {
-                self.dispatch_multi_store(py, callbacks, addrs, addr_val, data_val)
+                self.dispatch_multi_store(callbacks, addrs, addr_val, data_val)
             }
             ConcretizationResult::Strided {
                 base,
@@ -380,7 +375,7 @@ impl<'a> VEXInterpreter<'a> {
                 count,
             } => {
                 let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                self.dispatch_multi_store(py, callbacks, &addrs, addr_val, data_val)
+                self.dispatch_multi_store(callbacks, &addrs, addr_val, data_val)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 let (min, max) = (*min, *max);
@@ -389,7 +384,7 @@ impl<'a> VEXInterpreter<'a> {
                 // strategies) via the full symbolic callback.
                 if callbacks.has_memory_store_symbolic_full() {
                     callbacks
-                        .call_memory_store_symbolic_full(py, addr_val, data_val)
+                        .call_memory_store_symbolic_full(addr_val, data_val)
                         .map_err(|e| {
                             CbExecutionError::Callback(format!(
                                 "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
@@ -410,9 +405,7 @@ impl<'a> VEXInterpreter<'a> {
                 // store callback so Python's memory model can still resolve
                 // the address; only error out if the callback isn't wired up.
                 let descr = format!("concretize failed: {}", reason);
-                self.fallback_store_symbolic_full(
-                    py, callbacks, addr_val, data_val, "store", &descr,
-                )
+                self.fallback_store_symbolic_full(callbacks, addr_val, data_val, "store", &descr)
             }
         }
     }
@@ -422,17 +415,16 @@ impl<'a> VEXInterpreter<'a> {
     /// available, otherwise hand the full address list to Python.
     pub(super) fn dispatch_multi_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_val: &RustBV,
         data_val: &RustBV,
     ) -> Result<(), CbExecutionError> {
         if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-            self.build_ite_store_from_callbacks(py, callbacks, addrs, addr_val, data_val)
+            self.build_ite_store_from_callbacks(callbacks, addrs, addr_val, data_val)
         } else {
             callbacks
-                .call_memory_store_symbolic(py, addrs, data_val, addr_val)
+                .call_memory_store_symbolic(addrs, data_val, addr_val)
                 .map_err(|e| CbExecutionError::Callback(e.to_string()))
         }
     }

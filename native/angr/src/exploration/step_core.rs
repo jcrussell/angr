@@ -29,7 +29,6 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
-use pyo3::Python;
 use rustc_hash::FxHashMap;
 
 use crate::callbacks::{ExecutionConfig, PythonCallbacks};
@@ -174,7 +173,6 @@ impl RustExplorationManager {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_interpreter_step_core(
     ctx: &StepContext,
-    py: Python<'_>,
     callbacks: &PythonCallbacks,
     state: &mut RustSimState,
     initial_pc: u64,
@@ -301,13 +299,8 @@ pub(crate) fn run_interpreter_step_core(
     } else {
         ctx.max_steps_per_run
     };
-    let (result, _blocks_executed, deferred_forks) = interp.run_until_event(
-        py,
-        callbacks,
-        steps_limit,
-        &ctx.stop_addrs,
-        ctx.block_granular,
-    );
+    let (result, _blocks_executed, deferred_forks) =
+        interp.run_until_event(callbacks, steps_limit, &ctx.stop_addrs, ctx.block_granular);
 
     // Drain interpreter state into owned values before drop.
     let last_condition = interp.take_last_branch_condition();

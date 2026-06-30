@@ -25,7 +25,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_cas_stmt(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         old_hi: Option<u32>,
         old_lo: u32,
@@ -68,16 +67,14 @@ impl<'a> VEXInterpreter<'a> {
             ty: half_ty,
             endness,
         };
-        let current_lo =
-            self.eval_expr_with_callbacks(py, callbacks, &load_lo_expr, &irsb.tyenv)?;
-        let expd_lo_val = self.eval_expr_with_callbacks(py, callbacks, expd_lo, &irsb.tyenv)?;
-        let data_lo_val = self.eval_expr_with_callbacks(py, callbacks, data_lo, &irsb.tyenv)?;
+        let current_lo = self.eval_expr_with_callbacks(callbacks, &load_lo_expr, &irsb.tyenv)?;
+        let expd_lo_val = self.eval_expr_with_callbacks(callbacks, expd_lo, &irsb.tyenv)?;
+        let data_lo_val = self.eval_expr_with_callbacks(callbacks, data_lo, &irsb.tyenv)?;
 
         // For DCAS, also load the high half at addr + sizeof(half).
         let dcas = if is_dcas {
             let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
             let (current_hi, expd_hi_val, data_hi_val) = self.cas_load_dcas_high(
-                py,
                 callbacks,
                 &addr_hi_expr,
                 expd_hi.unwrap(),
@@ -108,7 +105,6 @@ impl<'a> VEXInterpreter<'a> {
         };
 
         self.cas_writeback(
-            py,
             callbacks,
             &cmp,
             addr,
@@ -168,7 +164,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_load_dcas_high(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_hi_expr: &IRExpr,
         expd_hi: &IRExpr,
@@ -182,10 +177,9 @@ impl<'a> VEXInterpreter<'a> {
             ty: half_ty,
             endness,
         };
-        let current_hi =
-            self.eval_expr_with_callbacks(py, callbacks, &load_hi_expr, &irsb.tyenv)?;
-        let expd_hi_val = self.eval_expr_with_callbacks(py, callbacks, expd_hi, &irsb.tyenv)?;
-        let data_hi_val = self.eval_expr_with_callbacks(py, callbacks, data_hi, &irsb.tyenv)?;
+        let current_hi = self.eval_expr_with_callbacks(callbacks, &load_hi_expr, &irsb.tyenv)?;
+        let expd_hi_val = self.eval_expr_with_callbacks(callbacks, expd_hi, &irsb.tyenv)?;
+        let data_hi_val = self.eval_expr_with_callbacks(callbacks, data_hi, &irsb.tyenv)?;
         Ok((current_hi, expd_hi_val, data_hi_val))
     }
 
@@ -198,7 +192,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_writeback(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         cmp: &RustBV,
         addr: &IRExpr,
@@ -212,18 +205,9 @@ impl<'a> VEXInterpreter<'a> {
         match cmp.as_u64() {
             Some(0) => Ok(()),
             Some(_) => {
-                self.cas_dispatch_store(
-                    py,
-                    callbacks,
-                    addr,
-                    data_lo_expr,
-                    data_lo_val,
-                    endness,
-                    irsb,
-                )?;
+                self.cas_dispatch_store(callbacks, addr, data_lo_expr, data_lo_val, endness, irsb)?;
                 if let Some(d) = dcas {
                     self.cas_dispatch_store(
-                        py,
                         callbacks,
                         &d.addr_hi_expr,
                         d.data_hi_expr,
@@ -236,10 +220,10 @@ impl<'a> VEXInterpreter<'a> {
             }
             None => {
                 let store_lo = cmp.ite(data_lo_val, current_lo, self.ctx);
-                self.cas_store_symbolic_data(py, callbacks, addr, &store_lo, irsb)?;
+                self.cas_store_symbolic_data(callbacks, addr, &store_lo, irsb)?;
                 if let Some(d) = dcas {
                     let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi, self.ctx);
-                    self.cas_store_symbolic_data(py, callbacks, &d.addr_hi_expr, &store_hi, irsb)?;
+                    self.cas_store_symbolic_data(callbacks, &d.addr_hi_expr, &store_hi, irsb)?;
                 }
                 Ok(())
             }
@@ -252,7 +236,6 @@ impl<'a> VEXInterpreter<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_dispatch_store(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_expr: &IRExpr,
         data_expr: &IRExpr,
@@ -261,14 +244,14 @@ impl<'a> VEXInterpreter<'a> {
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
         if data_bv.is_symbolic() {
-            self.cas_store_symbolic_data(py, callbacks, addr_expr, data_bv, irsb)
+            self.cas_store_symbolic_data(callbacks, addr_expr, data_bv, irsb)
         } else {
             let store_stmt = IRStmt::Store {
                 addr: addr_expr.clone(),
                 data: data_expr.clone(),
                 endness,
             };
-            self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
+            self.execute_stmt_with_callbacks(callbacks, &store_stmt, irsb)?;
             Ok(())
         }
     }
@@ -280,20 +263,19 @@ impl<'a> VEXInterpreter<'a> {
     /// and `memory_store_symbolic_full` for symbolic addresses.
     pub(super) fn cas_store_symbolic_data(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr_expr: &IRExpr,
         data_bv: &RustBV,
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
-        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr_expr, &irsb.tyenv)?;
+        let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
         let data_size = data_bv.width().div_ceil(8) as usize;
         if let Some(addr_concrete) = addr_val.as_u64() {
             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
             if callbacks.has_memory_store_symbolic_value() {
-                self.flush_stores(py, callbacks)?;
+                self.flush_stores(callbacks)?;
                 callbacks
-                    .call_memory_store_symbolic_value(py, addr_concrete, data_bv)
+                    .call_memory_store_symbolic_value(addr_concrete, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
                 self.pending_symbolic_stores
@@ -301,14 +283,14 @@ impl<'a> VEXInterpreter<'a> {
                 let data_bytes = bv_to_bytes(data_bv);
                 self.pending_stores.push(addr_concrete, data_bytes);
                 if self.pending_stores.len() >= self.max_pending_stores {
-                    self.flush_stores(py, callbacks)?;
+                    self.flush_stores(callbacks)?;
                 }
             }
         } else {
-            self.flush_stores(py, callbacks)?;
+            self.flush_stores(callbacks)?;
             if callbacks.has_memory_store_symbolic_full() {
                 callbacks
-                    .call_memory_store_symbolic_full(py, &addr_val, data_bv)
+                    .call_memory_store_symbolic_full(&addr_val, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
                 return Err(CbExecutionError::Unsupported(

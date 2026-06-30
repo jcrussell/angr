@@ -22,11 +22,11 @@ fn make_irsb_with_temps(addr: u64, temp_types: &[IRType]) -> IRSB {
 /// Initialize Python once for tests that need to call execute_stmt_with_callbacks.
 fn with_python<F, R>(f: F) -> R
 where
-    F: FnOnce(Python<'_>, &PythonCallbacks) -> R,
+    F: FnOnce(&PythonCallbacks) -> R,
 {
     Python::initialize();
     let callbacks = PythonCallbacks::new();
-    Python::attach(|py| f(py, &callbacks))
+    Python::attach(|_py| f(&callbacks))
 }
 
 #[test]
@@ -34,9 +34,9 @@ fn noop_returns_continue() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
-    with_python(|py, cb| {
+    with_python(|cb| {
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &IRStmt::NoOp, &irsb)
+            .execute_stmt_with_callbacks(cb, &IRStmt::NoOp, &irsb)
             .expect("noop");
         assert!(matches!(res, StmtResult::Continue));
     });
@@ -47,14 +47,14 @@ fn imark_updates_current_insn() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x2000, &[]);
-    with_python(|py, cb| {
+    with_python(|cb| {
         let stmt = IRStmt::IMark {
             addr: 0x2004,
             len: 4,
             delta: 0,
         };
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("imark");
         assert!(matches!(res, StmtResult::Continue));
         assert_eq!(interp.current_insn_addr, 0x2004);
@@ -68,14 +68,14 @@ fn imark_at_hooked_address_returns_exit() {
     let mut interp = new_interp(&ctx);
     interp.add_hook(0x3000);
     let irsb = make_irsb_with_temps(0x3000, &[]);
-    with_python(|py, cb| {
+    with_python(|cb| {
         let stmt = IRStmt::IMark {
             addr: 0x3000,
             len: 1,
             delta: 0,
         };
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("imark");
         match res {
             StmtResult::Exit { target, jumpkind } => {
@@ -97,9 +97,9 @@ fn abihint_is_no_op() {
         len: 0,
         nia: Box::new(IRExpr::Const(IRConst::U64(0x1004))),
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("abihint");
         assert!(matches!(res, StmtResult::Continue));
     });
@@ -111,9 +111,9 @@ fn mbe_fence_is_continue() {
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
     let stmt = IRStmt::MBE(MBusEvent::Fence);
-    with_python(|py, cb| {
+    with_python(|cb| {
         // MBE may fall through to default arm but should not error.
-        let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
+        let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_ok(), "MBE should not error");
     });
 }
@@ -128,9 +128,9 @@ fn put_concrete_writes_register() {
         offset: 16,
         data: IRExpr::Const(IRConst::U64(0xcafe)),
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("put");
     });
     let val = interp.registers.get(16, 8, &ctx);
@@ -147,9 +147,9 @@ fn put_marks_register_dirty() {
         offset: 16, // RAX -> bit index 4
         data: IRExpr::Const(IRConst::U64(1)),
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("put");
     });
     assert_ne!(interp.dirty_registers, 0);
@@ -166,9 +166,9 @@ fn wrtmp_concrete_writes_temp() {
         tmp: 0,
         data: IRExpr::Const(IRConst::U32(0x1234)),
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("wrtmp");
     });
     let val = interp.temps[0].as_ref().expect("temp written");
@@ -185,8 +185,8 @@ fn wrtmp_unknown_temp_errors() {
         tmp: 5,
         data: IRExpr::Const(IRConst::U32(0)),
     };
-    with_python(|py, cb| {
-        let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
+    with_python(|cb| {
+        let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_err(), "should error on unknown temp");
         if let Err(err) = res {
             assert!(matches!(err, CbExecutionError::UnknownTemp(5)));
@@ -205,9 +205,9 @@ fn exit_with_concrete_false_guard_continues() {
         jk: JumpKind::Boring,
         offsIP: 184,
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("exit");
         assert!(matches!(res, StmtResult::Continue));
     });
@@ -224,9 +224,9 @@ fn exit_with_concrete_true_guard_takes_branch() {
         jk: JumpKind::Boring,
         offsIP: 184,
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         let res = interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("exit");
         match res {
             StmtResult::Exit { target, .. } => assert_eq!(target, 0x9000),
@@ -249,9 +249,9 @@ fn store_to_concrete_addr_buffers_pending_store() {
         data: IRExpr::Const(IRConst::U32(0xdead_beef)),
         endness: Endness::Little,
     };
-    with_python(|py, cb| {
+    with_python(|cb| {
         interp
-            .execute_stmt_with_callbacks(py, cb, &stmt, &irsb)
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("store should buffer without erroring");
     });
     // Buffered into pending_stores keyed by address.
@@ -317,7 +317,7 @@ def load_batch(loads):
         let addrs = [0x1000u64, 0x2000u64];
 
         interp
-            .build_ite_store_from_callbacks(py, &cb, &addrs, &addr_expr, &data_val)
+            .build_ite_store_from_callbacks(&cb, &addrs, &addr_expr, &data_val)
             .expect("build_ite_store_from_callbacks");
 
         let rec = globals.get_item("_rec").unwrap().unwrap();
@@ -355,8 +355,8 @@ fn loadg_unknown_cvt_surfaces_invalid_ir() {
         cvt: IRLoadGOp::Unknown,
         endness: Endness::Little,
     };
-    with_python(|py, cb| {
-        let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
+    with_python(|cb| {
+        let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         // An unrecognized cvt must error rather than silently load+Identity.
         assert!(
             matches!(res, Err(CbExecutionError::InvalidIR(_))),
@@ -375,8 +375,8 @@ fn put_at_high_offset_does_not_overflow_dirty_mask() {
         offset: 600,
         data: IRExpr::Const(IRConst::U8(0xaa)),
     };
-    with_python(|py, cb| {
-        let res = interp.execute_stmt_with_callbacks(py, cb, &stmt, &irsb);
+    with_python(|cb| {
+        let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_ok(), "high-offset Put should not overflow");
     });
 }

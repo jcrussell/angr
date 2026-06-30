@@ -144,7 +144,7 @@ fn eval_unop_concrete_unsupported_propagates_error_not_zero() {
     use crate::callbacks::PythonCallbacks;
     Python::initialize();
     let callbacks = PythonCallbacks::new();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
         let env = TypeEnv::new();
@@ -152,7 +152,7 @@ fn eval_unop_concrete_unsupported_propagates_error_not_zero() {
         // returns OpError::NotUnary. Arg is concrete, so the pre-fix
         // code would have returned Ok(concrete 0).
         let arg = IRExpr::Const(IRConst::U64(0x1234));
-        let res = interp.eval_unop(py, &callbacks, IROp::Add(IRType::I64), &arg, &env);
+        let res = interp.eval_unop(&callbacks, IROp::Add(IRType::I64), &arg, &env);
         assert!(
             matches!(res, Err(CbExecutionError::Op(OpError::NotUnary(_)))),
             "concrete unsupported unop must propagate OpError, got {res:?}"
@@ -166,7 +166,7 @@ fn eval_binop_concrete_unsupported_propagates_error_not_zero() {
     use crate::callbacks::PythonCallbacks;
     Python::initialize();
     let callbacks = PythonCallbacks::new();
-    Python::attach(|py| {
+    Python::attach(|_py| {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
         let env = TypeEnv::new();
@@ -174,7 +174,7 @@ fn eval_binop_concrete_unsupported_propagates_error_not_zero() {
         // returns OpError::NotBinary.
         let left = IRExpr::Const(IRConst::U64(0x1));
         let right = IRExpr::Const(IRConst::U64(0x2));
-        let res = interp.eval_binop(py, &callbacks, IROp::Not(IRType::I64), &left, &right, &env);
+        let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
         assert!(
             matches!(res, Err(CbExecutionError::Op(OpError::NotBinary(_)))),
             "concrete unsupported binop must propagate OpError, got {res:?}"

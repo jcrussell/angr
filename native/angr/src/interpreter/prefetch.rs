@@ -24,7 +24,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns true if the page was successfully fetched and mapped.
     pub fn fetch_page(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         page_addr: u64,
     ) -> Result<bool, CbExecutionError> {
@@ -35,7 +34,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call Python to fetch the page
         let (data, permissions, is_mapped) = callbacks
-            .call_fetch_page(py, page_addr)
+            .call_fetch_page(page_addr)
             .map_err(|e| CbExecutionError::Callback(format!("fetch_page failed: {}", e)))?;
 
         if !is_mapped {
@@ -64,7 +63,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns the number of pages successfully fetched.
     pub fn fetch_pages_batch(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         page_addrs: &[u64],
     ) -> Result<usize, CbExecutionError> {
@@ -74,7 +72,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call Python to fetch pages in batch
         let results = callbacks
-            .call_batch_fetch_pages(py, page_addrs)
+            .call_batch_fetch_pages(page_addrs)
             .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {}", e)))?;
 
         let mut fetched = 0;
@@ -109,14 +107,13 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns true if the main page was successfully fetched.
     pub fn fetch_page_with_prefetch(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         page_addr: u64,
         prefetch_count: u32,
     ) -> Result<bool, CbExecutionError> {
         if prefetch_count == 0 && !self.config.enable_eager_prefetch {
             // No prefetching, just fetch the single page
-            return self.fetch_page(py, callbacks, page_addr);
+            return self.fetch_page(callbacks, page_addr);
         }
 
         // Build list of pages to fetch
@@ -130,11 +127,11 @@ impl<'a> VEXInterpreter<'a> {
 
         if pages_to_fetch.is_empty() {
             // No pages to fetch (shouldn't happen, but handle gracefully)
-            return self.fetch_page(py, callbacks, page_addr);
+            return self.fetch_page(callbacks, page_addr);
         }
 
         // Fetch all pages in one batch
-        let fetched = self.fetch_pages_batch(py, callbacks, &pages_to_fetch)?;
+        let fetched = self.fetch_pages_batch(callbacks, &pages_to_fetch)?;
 
         // Return true if at least the main page was fetched
         if let Some(ref rust_mem) = self.rust_memory {
@@ -355,7 +352,6 @@ impl<'a> VEXInterpreter<'a> {
     /// batches them into a single callback, and populates the prefetch cache.
     pub(super) fn prefetch_loads_for_block(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
@@ -400,7 +396,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call batch callback
         let results = callbacks
-            .call_memory_load_batch(py, callback_loads)
+            .call_memory_load_batch(callback_loads)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         // Populate prefetch cache
@@ -409,7 +405,6 @@ impl<'a> VEXInterpreter<'a> {
                 let value = if *is_symbolic {
                     // handle fast path -> claripy slow path -> fresh symbolic
                     self.try_convert_symbolic_value(
-                        py,
                         symbolic_ast.as_ref(),
                         (size * 8) as u32,
                         || format!("prefetch_{:x}_{}", addr, size),

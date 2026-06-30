@@ -673,7 +673,6 @@ impl PythonCallbacks {
     #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_read(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         addr: u64,
@@ -681,7 +680,7 @@ impl PythonCallbacks {
         value_ast: Option<Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
-        self.call_inspect_mem_read(py, state_id, when, addr, size, value_ast.as_ref(), endness)
+        self.call_inspect_mem_read(state_id, when, addr, size, value_ast.as_ref(), endness)
     }
 
     /// Test entry point: invoke the registered mem_write callback directly.
@@ -690,7 +689,6 @@ impl PythonCallbacks {
     #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_write(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         addr: u64,
@@ -698,7 +696,7 @@ impl PythonCallbacks {
         value_ast: Option<Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
-        self.call_inspect_mem_write(py, state_id, when, addr, size, value_ast.as_ref(), endness)
+        self.call_inspect_mem_write(state_id, when, addr, size, value_ast.as_ref(), endness)
     }
 
     /// Test entry point: invoke the registered reg_read callback directly.
@@ -706,14 +704,13 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, offset, size, value_ast))]
     pub fn py_call_inspect_reg_read(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         offset: u32,
         size: u32,
         value_ast: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_reg_read(py, state_id, when, offset, size, value_ast.as_ref())
+        self.call_inspect_reg_read(state_id, when, offset, size, value_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered reg_write callback directly.
@@ -721,38 +718,30 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, offset, size, value_ast))]
     pub fn py_call_inspect_reg_write(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         offset: u32,
         size: u32,
         value_ast: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_reg_write(py, state_id, when, offset, size, value_ast.as_ref())
+        self.call_inspect_reg_write(state_id, when, offset, size, value_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered instruction callback directly.
     #[pyo3(name = "call_inspect_instruction")]
     pub fn py_call_inspect_instruction(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         addr: u64,
     ) -> PyResult<()> {
-        self.call_inspect_instruction(py, state_id, when, addr)
+        self.call_inspect_instruction(state_id, when, addr)
     }
 
     /// Test entry point: invoke the registered irsb callback directly.
     #[pyo3(name = "call_inspect_irsb")]
-    pub fn py_call_inspect_irsb(
-        &self,
-        py: Python<'_>,
-        state_id: i64,
-        when: &str,
-        addr: u64,
-    ) -> PyResult<()> {
-        self.call_inspect_irsb(py, state_id, when, addr)
+    pub fn py_call_inspect_irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
+        self.call_inspect_irsb(state_id, when, addr)
     }
 
     /// Test entry point: invoke the registered exit callback directly.
@@ -760,38 +749,35 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, target, jumpkind, guard_ast))]
     pub fn py_call_inspect_exit(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         target: u64,
         jumpkind: &str,
         guard_ast: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_exit(py, state_id, when, target, jumpkind, guard_ast.as_ref())
+        self.call_inspect_exit(state_id, when, target, jumpkind, guard_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered call callback directly.
     #[pyo3(name = "call_inspect_call")]
     pub fn py_call_inspect_call(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
-        self.call_inspect_call(py, state_id, when, function_address)
+        self.call_inspect_call(state_id, when, function_address)
     }
 
     /// Test entry point: invoke the registered return callback directly.
     #[pyo3(name = "call_inspect_return")]
     pub fn py_call_inspect_return(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
-        self.call_inspect_return(py, state_id, when, function_address)
+        self.call_inspect_return(state_id, when, function_address)
     }
 
     /// Test entry point: invoke the registered tmp_read callback directly.
@@ -799,13 +785,12 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
     pub fn py_call_inspect_tmp_read(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         tmp_num: u32,
         value_ast: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_tmp_read(py, state_id, when, tmp_num, value_ast.as_ref())
+        self.call_inspect_tmp_read(state_id, when, tmp_num, value_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered tmp_write callback directly.
@@ -813,25 +798,23 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
     pub fn py_call_inspect_tmp_write(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         tmp_num: u32,
         value_ast: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_tmp_write(py, state_id, when, tmp_num, value_ast.as_ref())
+        self.call_inspect_tmp_write(state_id, when, tmp_num, value_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered statement callback directly.
     #[pyo3(name = "call_inspect_statement")]
     pub fn py_call_inspect_statement(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         stmt_idx: u32,
     ) -> PyResult<()> {
-        self.call_inspect_statement(py, state_id, when, stmt_idx)
+        self.call_inspect_statement(state_id, when, stmt_idx)
     }
 
     /// Test entry point: invoke the registered expr callback directly.
@@ -839,12 +822,11 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, expr_result))]
     pub fn py_call_inspect_expr(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         expr_result: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        self.call_inspect_expr(py, state_id, when, expr_result.as_ref())
+        self.call_inspect_expr(state_id, when, expr_result.as_ref())
     }
 
     /// Test entry point: invoke the address_concretization callback directly.
@@ -852,14 +834,13 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, action, addr_ast, result))]
     pub fn py_call_inspect_address_concretization(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         action: &str,
         addr_ast: Py<PyAny>,
         result: Option<Vec<u64>>,
     ) -> PyResult<()> {
-        self.call_inspect_address_concretization(py, state_id, when, action, &addr_ast, result)
+        self.call_inspect_address_concretization(state_id, when, action, &addr_ast, result)
     }
 
     /// Test entry point: invoke the symbolic_variable callback directly.
@@ -867,20 +848,19 @@ impl PythonCallbacks {
     #[pyo3(signature = (state_id, when, name, size, expr_ast))]
     pub fn py_call_inspect_symbolic_variable(
         &self,
-        py: Python<'_>,
         state_id: i64,
         when: &str,
         name: &str,
         size: u32,
         expr_ast: Py<PyAny>,
     ) -> PyResult<()> {
-        self.call_inspect_symbolic_variable(py, state_id, when, name, size, &expr_ast)
+        self.call_inspect_symbolic_variable(state_id, when, name, size, &expr_ast)
     }
 
     /// Test entry point: invoke the registered fork callback directly.
     #[pyo3(name = "call_inspect_fork")]
-    pub fn py_call_inspect_fork(&self, py: Python<'_>, state_id: i64, when: &str) -> PyResult<()> {
-        self.call_inspect_fork(py, state_id, when)
+    pub fn py_call_inspect_fork(&self, state_id: i64, when: &str) -> PyResult<()> {
+        self.call_inspect_fork(state_id, when)
     }
 
     /// Check if all required callbacks are set.

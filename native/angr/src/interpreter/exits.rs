@@ -6,11 +6,10 @@ impl<'a> VEXInterpreter<'a> {
     /// Used for Exit statements where we still need callbacks for complex expressions.
     pub(super) fn eval_next_addr(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<u64, CbExecutionError> {
-        let next_val = self.eval_expr_with_callbacks(py, callbacks, &irsb.next, &irsb.tyenv)?;
+        let next_val = self.eval_expr_with_callbacks(callbacks, &irsb.next, &irsb.tyenv)?;
         // Check for symbolic addresses FIRST - Constrained BV has concrete value but is still symbolic
         if next_val.is_symbolic() {
             // Try to concretize to a single value

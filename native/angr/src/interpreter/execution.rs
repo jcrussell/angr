@@ -28,7 +28,6 @@ impl<'a> VEXInterpreter<'a> {
     /// throughput.
     pub fn run_until_event(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         max_blocks: u32,
         stop_addrs: &std::collections::HashSet<u64>,
@@ -96,7 +95,7 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             // Try to get or lift the block
-            let irsb = match self.get_or_lift_block(py, callbacks, self.pc) {
+            let irsb = match self.get_or_lift_block(callbacks, self.pc) {
                 Ok(irsb) => irsb,
                 Err(e) => {
                     let forks = self.take_deferred_forks();
@@ -115,7 +114,7 @@ impl<'a> VEXInterpreter<'a> {
 
             // Execute the block
             let block_start = profile_start!(self);
-            match self.execute_block_with_callbacks(py, callbacks, &irsb) {
+            match self.execute_block_with_callbacks(callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
                     profile_add!(block_start, self.stats.block_exec_time_ns);
@@ -142,14 +141,14 @@ impl<'a> VEXInterpreter<'a> {
                                 // the push with the target IP, AFTER the
                                 // push). function_address is the resolved
                                 // call target (`next_addr`).
-                                self.dispatch_call_inspect(py, callbacks, next_addr, "before");
+                                self.dispatch_call_inspect(callbacks, next_addr, "before");
                                 self.call_stack.push(crate::state::CallStackEntry {
                                     call_site_addr: self.current_insn_addr,
                                     callee_addr: next_addr,
                                     return_addr: ret_addr,
                                     stack_ptr: sp_val,
                                 });
-                                self.dispatch_call_inspect(py, callbacks, next_addr, "after");
+                                self.dispatch_call_inspect(callbacks, next_addr, "after");
                             } else if jumpkind.is_ret() {
                                 // angr-4ai9: state.inspect `return` event —
                                 // mirror Python callstack.py:430/432.
@@ -159,19 +158,9 @@ impl<'a> VEXInterpreter<'a> {
                                 // callback sees a valid frame.
                                 let popped_func_addr =
                                     self.call_stack.last().map(|f| f.callee_addr).unwrap_or(0);
-                                self.dispatch_return_inspect(
-                                    py,
-                                    callbacks,
-                                    popped_func_addr,
-                                    "before",
-                                );
+                                self.dispatch_return_inspect(callbacks, popped_func_addr, "before");
                                 self.call_stack.pop();
-                                self.dispatch_return_inspect(
-                                    py,
-                                    callbacks,
-                                    popped_func_addr,
-                                    "after",
-                                );
+                                self.dispatch_return_inspect(callbacks, popped_func_addr, "after");
                             }
 
                             // Record detailed history entry
@@ -369,7 +358,6 @@ impl<'a> VEXInterpreter<'a> {
     /// 3. Fall back to Python callback for lifting
     fn get_or_lift_block(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr: u64,
     ) -> Result<Arc<IRSB>, CbExecutionError> {
@@ -428,7 +416,7 @@ impl<'a> VEXInterpreter<'a> {
         };
 
         let irsb_json = callbacks
-            .call_lift_block(py, addr, opt_level, dirty_bytes.as_deref())
+            .call_lift_block(addr, opt_level, dirty_bytes.as_deref())
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
         if self.profiling_enabled {
             self.stats.python_callback_count += 1;
@@ -473,17 +461,15 @@ impl<'a> VEXInterpreter<'a> {
     /// `execute_block_with_callbacks` internally.
     pub fn execute_block(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
-        self.execute_block_with_callbacks(py, callbacks, irsb)
+        self.execute_block_with_callbacks(callbacks, irsb)
     }
 
     /// Execute a block using Python callbacks for memory access.
     fn execute_block_with_callbacks(
         &mut self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
@@ -505,13 +491,13 @@ impl<'a> VEXInterpreter<'a> {
 
         // Prefetch loads for this block (reduces individual FFI calls)
         let prefetch_start = profile_start!(self);
-        self.prefetch_loads_for_block(py, callbacks, irsb)?;
+        self.prefetch_loads_for_block(callbacks, irsb)?;
         profile_add!(prefetch_start, self.stats.prefetch_time_ns);
 
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs. Bit 7 in the inspect-enabled bitmask.
         if callbacks.inspect_event_enabled(7) {
-            let _ = callbacks.call_inspect_irsb(py, self.current_state_id, "before", irsb.addr);
+            let _ = callbacks.call_inspect_irsb(self.current_state_id, "before", irsb.addr);
         }
 
         // Execute statements
@@ -526,14 +512,13 @@ impl<'a> VEXInterpreter<'a> {
             // cost at one `AtomicU32::load + AND` per statement.
             if callbacks.inspect_event_enabled(15) {
                 let _ = callbacks.call_inspect_statement(
-                    py,
                     self.current_state_id,
                     "before",
                     stmt_idx as u32,
                 );
             }
             let stmt_start = profile_start!(self);
-            match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
+            match self.execute_stmt_with_callbacks(callbacks, stmt, irsb)? {
                 StmtResult::Continue => {
                     if let Some(start) = stmt_start {
                         let elapsed = start.elapsed().as_nanos() as u64;
@@ -553,7 +538,7 @@ impl<'a> VEXInterpreter<'a> {
                 }
                 StmtResult::Exit { target, jumpkind } => {
                     // Flush pending stores before returning
-                    self.flush_stores(py, callbacks)?;
+                    self.flush_stores(callbacks)?;
                     self.pop_block_solver_if_pushed();
                     return Ok(self.handle_exit(target, jumpkind));
                 }
@@ -563,7 +548,7 @@ impl<'a> VEXInterpreter<'a> {
                     false_target,
                 } => {
                     // Flush pending stores before returning
-                    self.flush_stores(py, callbacks)?;
+                    self.flush_stores(callbacks)?;
                     self.pop_block_solver_if_pushed();
 
                     // Generate unique condition ID and store condition for later retrieval
@@ -597,7 +582,7 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Flush pending stores at block end
-        self.flush_stores(py, callbacks)?;
+        self.flush_stores(callbacks)?;
 
         // Pop incremental branch solver context if pushed
         self.pop_block_solver_if_pushed();
@@ -623,7 +608,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Mirrors Python `callstack.py:386` / `:419`.
     fn dispatch_call_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         function_address: u64,
         when: &str,
@@ -631,7 +615,7 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(8) {
             return;
         }
-        let _ = callbacks.call_inspect_call(py, self.current_state_id, when, function_address);
+        let _ = callbacks.call_inspect_call(self.current_state_id, when, function_address);
     }
 
     /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
@@ -642,7 +626,6 @@ impl<'a> VEXInterpreter<'a> {
     /// `pop()`). Falls back to 0 when the call stack is empty.
     fn dispatch_return_inspect(
         &self,
-        py: Python<'_>,
         callbacks: &PythonCallbacks,
         function_address: u64,
         when: &str,
@@ -650,7 +633,7 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(9) {
             return;
         }
-        let _ = callbacks.call_inspect_return(py, self.current_state_id, when, function_address);
+        let _ = callbacks.call_inspect_return(self.current_state_id, when, function_address);
     }
 }
 
