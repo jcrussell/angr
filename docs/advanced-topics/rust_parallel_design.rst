@@ -529,6 +529,59 @@ If Option A is chosen, a staged rollout:
       ``angr-1ilq.3``; ``angr-t3l5o`` delivered the transport win that makes it
       feasible.
 
+   .. important:: **Anti-migration scheduler delivered (angr-729vn,
+      2026-06-30) — surplus-only serialization; gate GO with a wide-bench
+      safety margin, codegate marginal.**
+
+      The redesigned ``exploration/scheduler.rs`` now holds worker-local **live**
+      states in a thread-private ``VecDeque<RustSimState>`` (home Z3 context,
+      never serialized) and crosses the worker boundary as a
+      :rust:struct:`StateMigrationPayload` on only two paths: an actual imbalance
+      steal (surplus shed to the shared :rust:struct:`Injector`) and a
+      *materialized* found terminal that must cross the ``thread::scope`` join.
+      Dead-path terminals (deadended / errored) are returned as a lightweight
+      ``TerminalSummary`` built in-context and dropped there — **zero serde**.
+      This is a selective ``drop_terminal_states``: the full symbolic state of
+      dead paths is not recoverable through the parallel path, but it removes the
+      ~50 % terminal-join serde that would otherwise be paid at any steal
+      fraction. Surplus selection is FIFO (coldest first) under an idle-gated
+      trigger (sibling starving ``&&`` local backlog ≥ 2, mirroring the
+      ``record_migration_sample`` model) plus a high-water cap; local consumption
+      is LIFO (hottest child next). The crossbeam per-worker
+      ``Worker``/``Stealer`` are gone (a ``Stealer`` is ``Send`` and would move
+      the irreducibly ``!Send`` ``RustSimState`` across threads); the injector is
+      the only cross-thread channel. ``run_instrumented`` reports
+      ``SchedulerStats`` whose ``honest_steal_fraction`` =
+      ``(surplus_offloaded + materialized_terminals) / dispatches``.
+
+      **Verification (proven in isolation; not yet wired into the run loop).**
+      Because the scheduler still cannot step live (GIL coupling — the downstream
+      ``angr-vh834`` / ``1ilq.4`` work), the steal fraction is measured with the
+      run loop's GIL-free ``f_model = parallel_migrations / parallel_tasks``
+      (captured at ``ANGR_PARALLEL_WORKERS=2`` to match the gate's
+      ``--workers 2``) plus the found-materialization fraction, and fed to the
+      projection gate via ``--steal-fraction`` (driver:
+      ``tests/benchmarks/run_steal_fraction_gate.py``). Results:
+
+      * ``cmu_binary_bomb_partial`` — **clean GO**, speedup band 1.66×, break-even
+        ``f* ≈ 100 %`` (GO even migrating *every* state). A genuinely
+        wide-and-slow bench (width hist ``[3,0,1,7,11]``); the scheduler's
+        ``f_model = 0 %`` clears it with an enormous margin. **This satisfies the
+        bead acceptance** (GO on ≥ 1 wide-and-slow non-bimodal bench).
+      * ``codegate_2017-angrybird`` — **marginal GO**. Honest
+        ``f_gate ≈ 10.78 %`` (median ``f_model 10.66 %`` + found ``0.12 %``)
+        clears the binding pessimistic break-even ``f*_pess ≈ 11.3 %``
+        (speedup band 1.02×–1.12×), vindicating the t3l5o pivot's "keep steals
+        below ~11 %" thesis — but only by ~0.5 pp, **not** the conservative 2×
+        safety margin. Because ``f_model`` is a **lower-bound proxy** (it counts
+        ≤ 1 steal/step over a sticky-home simulation while the real Trigger A can
+        shed several per step), codegate sits right at the migration-bound edge
+        and its GO is not safe. Codegate's narrow, w≈1-dominated frontier (hist
+        ``[158,252,307,118,9]``) is also why real parallelism there would be low
+        regardless: the deliverable here is the *mechanism* + a bounded, honest
+        serialized fraction, **not** a measured wall-clock win on codegate (that
+        needs the live wiring and a wide bench like cmu).
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on

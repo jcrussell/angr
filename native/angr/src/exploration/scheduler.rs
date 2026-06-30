@@ -1,5 +1,5 @@
 //! Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3,
-//! correctness-first isolated increment).
+//! correctness-first isolated increment; anti-migration redesign angr-729vn).
 //!
 //! # What this is, and what it is NOT (yet)
 //!
@@ -19,37 +19,59 @@
 //! (the callback-dispatch half is 1ilq.4). See the `angr-1ilq.3` bead.
 //!
 //! So this increment proves the part that has nothing to do with the GIL and
-//! everything to do with thread-safety: that a [`StateMigrationPayload`]
-//! (angr-1ilq.1) can be distributed across workers that each own a private Z3
-//! context, reattached, processed, and have successors detached back into
-//! `Send` payloads — all under genuine concurrency, with zero `unsafe`.
+//! everything to do with thread-safety: that worker-local live states can be
+//! explored in a private Z3 context, with cross-worker transport happening
+//! *only* on an actual imbalance steal — all under genuine concurrency, with
+//! zero `unsafe`.
 //!
-//! # Transport invariant
+//! # Transport invariant (angr-729vn — anti-migration)
 //!
-//! Everything on the deque is a [`StateMigrationPayload`] (`Send` by
-//! construction), never a [`RustSimState`] (irreducibly `!Send`). A worker:
+//! The pivot from `angr-t3l5o` (2026-06-30): the parallel blocker is migration
+//! *count*, not per-state transport cost. The residual ~14.5 ms/state migration
+//! tax on `codegate` is ~60% an irreducible Z3-AST-rebuild floor that exceeds
+//! the per-state work budget, so per-state migration cannot pay off **if every
+//! state migrates**. The lever is therefore to migrate as *few* states as
+//! possible. This scheduler is built around that:
 //!
-//! 1. pops/steals a payload,
-//! 2. [`reattach`](StateMigrationPayload::reattach)es it into *its own*
-//!    thread-local Z3 context (every AST minted locally; the source context is
-//!    never read cross-thread — this is what makes the design sound where the
-//!    rejected `translate_state`-on-steal was not; see hazard C on the bead),
-//! 3. runs the caller's `process` closure to get successors,
-//! 4. [`detach_for_migration`](RustSimState::detach_for_migration)es each
-//!    successor back into a payload *on the worker* (correct context) before it
-//!    can cross a thread again.
+//! * Each worker keeps its live successors in a thread-private
+//!   `VecDeque<RustSimState>` (the *home-context fast path*). These states stay
+//!   in the worker's own Z3 context and are **never serialized**.
+//! * The only cross-thread channel is a shared [`Injector`] of
+//!   [`StateMigrationPayload`]s (`Send` by construction). A state is detached
+//!   into a payload — paying the serde + Z3-AST-rebuild tax — **only** when:
+//!   1. it is *surplus* offered for stealing on imbalance (see
+//!      [`offload_surplus`]), or
+//!   2. it is a *materialized* terminal the caller must recover across the
+//!      `thread::scope` join (found/matched states).
+//! * Deadended/errored terminals are returned as a lightweight
+//!   [`TerminalSummary`] built in the worker's context and dropped there — they
+//!   pay **no** serde at all. (This is a selective `drop_terminal_states`: the
+//!   full symbolic state of dead paths is not recoverable through the parallel
+//!   path.)
+//! * A stealing worker [`reattach`](StateMigrationPayload::reattach)es a payload
+//!   into *its own* thread-local context (every AST minted locally; the source
+//!   context is never read cross-thread — this is what makes the design sound
+//!   where the rejected `translate_state`-on-steal was not; hazard C on the
+//!   bead).
 //!
-//! Serializing even non-stolen successors is wasteful (a serde round-trip the
-//! single-threaded loop never pays); correctness-first accepts it. The
-//! optimization — keep locally-produced states as `RustSimState` and only
-//! serialize on an actual steal — is deferred, and 1ilq.5 must measure this
-//! overhead against the <5% migration-cost GO condition.
+//! The fraction of dispatched states that get serialized — `surplus_offloaded +
+//! materialized_terminals` over total dispatches — is the *honest steal
+//! fraction* the overhead gate's break-even `f*` bounds. See
+//! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
 
 use crate::state::{RustSimState, StateMigrationPayload};
-use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use crossbeam_deque::{Injector, Steal};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use z3::{Config, Context};
+
+/// High-water mark for a worker's local live queue. Above this the worker
+/// sheds surplus to the injector even with no idle sibling (Trigger B), bounding
+/// per-worker memory. Sized well above any narrow-frontier steady state so it is
+/// a safety cap, not the primary load-balancer (that is the idle-gated Trigger
+/// A). See [`offload_surplus`].
+const LOCAL_HWM: usize = 64;
 
 /// Cooperative cancellation shared across all workers.
 ///
@@ -86,17 +108,58 @@ impl CancelToken {
     }
 }
 
-/// What a worker produced from processing one migrated state, expressed in that
-/// worker's own Z3 context.
+/// How a non-materialized terminal ended, captured in a [`TerminalSummary`].
 ///
-/// The scheduler detaches every state here back into a `Send` payload **on the
-/// worker** before it crosses a thread, so the caller never has to reason
-/// about `!Send` state escaping a worker.
+/// Found/matched terminals are *not* represented here — they are materialized
+/// (fully serialized) so the caller can recover the satisfying state. These are
+/// the dispositions whose full symbolic state the parallel path discards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalDisposition {
+    Deadended,
+    Errored,
+    Avoided,
+    Pruned,
+}
+
+/// A lightweight record of a terminal state that did **not** need to cross the
+/// worker boundary as a full state. Built in the worker's own context from
+/// cheap scalar fields, so it pays no serde / Z3-AST-rebuild tax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSummary {
+    pub state_id: u64,
+    pub pc: u64,
+    pub disposition: TerminalDisposition,
+}
+
+impl TerminalSummary {
+    /// Summarize a terminal state without serializing it. The `state` is read
+    /// (cheap scalar fields only) and then dropped in its home context.
+    pub fn of(state: &RustSimState, disposition: TerminalDisposition) -> Self {
+        Self {
+            state_id: state.state_id(),
+            pc: state.pc(),
+            disposition,
+        }
+    }
+}
+
+/// What a worker produced from processing one state, expressed in that worker's
+/// own Z3 context.
+///
+/// `continue_states` stay live and local (no serde). `terminal_states` are
+/// *materialized* — fully serialized to cross the `thread::scope` join, for
+/// terminals the caller must recover (found/matched). `terminal_summaries` are
+/// lightweight records for dead paths that pay no serde.
 pub struct TaskOutcome {
-    /// Successors to keep exploring; re-injected as fresh tasks.
+    /// Successors to keep exploring; pushed live onto the worker's local queue.
     pub continue_states: Vec<RustSimState>,
-    /// Terminal states (found / deadended / errored / …) to collect as results.
+    /// Terminal states the caller must recover in full — serialized across the
+    /// join (found / matched). Keep this set small: it is part of the honest
+    /// steal fraction.
     pub terminal_states: Vec<RustSimState>,
+    /// Terminal states recorded as cheap summaries (deadended / errored / …);
+    /// dropped in the worker context, never serialized.
+    pub terminal_summaries: Vec<TerminalSummary>,
     /// Request global cancellation (e.g. the find target was reached).
     pub request_cancel: bool,
 }
@@ -107,22 +170,97 @@ impl TaskOutcome {
         Self {
             continue_states,
             terminal_states: Vec::new(),
+            terminal_summaries: Vec::new(),
             request_cancel: false,
         }
     }
 
-    /// All successors are terminal; collect them, generate no further work.
+    /// All successors are terminal and must be materialized; generate no further
+    /// work.
     pub fn terminal(terminal_states: Vec<RustSimState>) -> Self {
         Self {
             continue_states: Vec::new(),
             terminal_states,
+            terminal_summaries: Vec::new(),
+            request_cancel: false,
+        }
+    }
+
+    /// All successors are dead paths recorded as summaries; no further work, no
+    /// serde.
+    pub fn summarized(terminal_summaries: Vec<TerminalSummary>) -> Self {
+        Self {
+            continue_states: Vec::new(),
+            terminal_states: Vec::new(),
+            terminal_summaries,
             request_cancel: false,
         }
     }
 }
 
-/// A work-stealing pool that distributes [`StateMigrationPayload`]s across
-/// `num_workers` threads, each owning a private Z3 context.
+/// Counters accumulated across all workers during a run. Shared as atomics, read
+/// back into a [`SchedulerStats`] after the pool joins.
+#[derive(Default)]
+struct SchedulerCounters {
+    local_dispatches: AtomicUsize,
+    injector_dispatches: AtomicUsize,
+    surplus_offloaded: AtomicUsize,
+    materialized_terminals: AtomicUsize,
+    summarized_terminals: AtomicUsize,
+}
+
+/// Per-run accounting, the basis for the overhead-gate steal-fraction check.
+///
+/// The only states that pay the serde / Z3-AST-rebuild tax are
+/// `surplus_offloaded` (cross-worker steals) plus `materialized_terminals`
+/// (found states recovered across the join). [`honest_steal_fraction`] reports
+/// that as a fraction of non-seed dispatches — the quantity the gate's
+/// break-even `f*` bounds.
+///
+/// [`honest_steal_fraction`]: SchedulerStats::honest_steal_fraction
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SchedulerStats {
+    /// Initial payloads handed to [`ParallelScheduler::run_instrumented`].
+    pub seeds: usize,
+    /// Tasks dispatched from a worker's local live queue (zero serde).
+    pub local_dispatches: usize,
+    /// Tasks pulled from the injector (each paid one `reattach`). Includes the
+    /// initial seeds.
+    pub injector_dispatches: usize,
+    /// Continue-states detached to the injector on imbalance. The migration
+    /// count and the *only* continue-path serde site.
+    pub surplus_offloaded: usize,
+    /// Found/matched terminals serialized across the join.
+    pub materialized_terminals: usize,
+    /// Dead-path terminals recorded as summaries (no serde).
+    pub summarized_terminals: usize,
+}
+
+impl SchedulerStats {
+    /// Total states dispatched (the denominator of the steal fraction). Every
+    /// processed state is dispatched exactly once, from the local queue or the
+    /// injector. Matches the `parallel_tasks` denominator of the run loop's
+    /// `f_model` (helpers.rs), so the two steal fractions are comparable.
+    pub fn dispatches(&self) -> usize {
+        self.local_dispatches + self.injector_dispatches
+    }
+
+    /// The honest fraction of dispatched states that paid the serde tax:
+    /// `(surplus_offloaded + materialized_terminals) / dispatches`. This is the
+    /// number the overhead gate's break-even `f*` must bound for a GO. Returns
+    /// 0.0 when nothing was dispatched.
+    pub fn honest_steal_fraction(&self) -> f64 {
+        let d = self.dispatches();
+        if d == 0 {
+            return 0.0;
+        }
+        (self.surplus_offloaded + self.materialized_terminals) as f64 / d as f64
+    }
+}
+
+/// A work-stealing pool that explores worker-local live states across
+/// `num_workers` threads, each owning a private Z3 context, serializing a state
+/// only on an actual imbalance steal or to materialize a found terminal.
 pub struct ParallelScheduler {
     num_workers: usize,
 }
@@ -140,19 +278,9 @@ impl ParallelScheduler {
     }
 
     /// Run the pool to quiescence (or cancellation) and return the collected
-    /// terminal payloads.
-    ///
-    /// `process` runs on a worker thread with that worker's own Z3 context
-    /// installed as the thread-local; it receives a state already reattached
-    /// into that context. It must be `Send + Sync` (every worker shares one
-    /// `&process`). Successors it returns are detached back into payloads on
-    /// the same worker before being re-injected or collected.
-    ///
-    /// Quiescence is tracked with an `AtomicUsize` of outstanding tasks:
-    /// children are counted in *before* their parent is counted out, so the
-    /// global count never transiently reaches zero while work is still in
-    /// flight. A worker exits when it can find no task and the outstanding
-    /// count is zero, or as soon as cancellation is requested.
+    /// materialized terminal payloads. Convenience wrapper over
+    /// [`run_instrumented`](Self::run_instrumented) that drops the summaries and
+    /// stats.
     pub fn run<F>(
         &self,
         initial: Vec<StateMigrationPayload>,
@@ -161,112 +289,197 @@ impl ParallelScheduler {
     where
         F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync,
     {
+        self.run_instrumented(initial, process).0
+    }
+
+    /// Run the pool and return `(materialized payloads, terminal summaries,
+    /// stats)`.
+    ///
+    /// `process` runs on a worker thread with that worker's own Z3 context
+    /// installed as the thread-local; it receives a state already reattached
+    /// into that context (or, on the local fast path, one created there). It
+    /// must be `Send + Sync` (every worker shares one `&process`).
+    ///
+    /// Quiescence is tracked with an `AtomicUsize` of outstanding tasks:
+    /// children are counted in *before* their parent is counted out, so the
+    /// global count never transiently reaches zero while work is still in
+    /// flight — independent of whether a task sits on a worker's local queue or
+    /// on the injector (an offload is a relocation, not a completion). A worker
+    /// exits when it can find no task and the outstanding count is zero, or as
+    /// soon as cancellation is requested.
+    pub fn run_instrumented<F>(
+        &self,
+        initial: Vec<StateMigrationPayload>,
+        process: F,
+    ) -> (
+        Vec<StateMigrationPayload>,
+        Vec<TerminalSummary>,
+        SchedulerStats,
+    )
+    where
+        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync,
+    {
+        let seeds = initial.len();
         let injector = Injector::<StateMigrationPayload>::new();
-        let pending = AtomicUsize::new(initial.len());
+        let pending = AtomicUsize::new(seeds);
         for payload in initial {
             injector.push(payload);
         }
         let cancel = CancelToken::new();
         let results = Mutex::new(Vec::<StateMigrationPayload>::new());
-
-        // One local deque per worker; share their stealers with every worker.
-        let locals: Vec<Worker<StateMigrationPayload>> =
-            (0..self.num_workers).map(|_| Worker::new_lifo()).collect();
-        let stealers: Vec<Stealer<StateMigrationPayload>> =
-            locals.iter().map(|w| w.stealer()).collect();
+        let summaries = Mutex::new(Vec::<TerminalSummary>::new());
+        let idle_workers = AtomicUsize::new(0);
+        let counters = SchedulerCounters::default();
 
         std::thread::scope(|scope| {
-            for local in locals {
+            for _ in 0..self.num_workers {
                 let injector = &injector;
-                let stealers = &stealers;
                 let pending = &pending;
-                let results = &results;
                 let cancel = &cancel;
+                let results = &results;
+                let summaries = &summaries;
+                let idle_workers = &idle_workers;
+                let counters = &counters;
                 let process = &process;
                 scope.spawn(move || {
                     // Each worker owns a fresh Z3 context for its whole life and
-                    // installs it as the thread-local. `ctx` stays on this
-                    // stack frame until the worker exits, so every reattach
-                    // mints ASTs into a context this thread alone touches, and
-                    // the context is created and destroyed on the same thread.
+                    // installs it as the thread-local. `ctx` stays on this stack
+                    // frame until the worker exits, so every reattach mints ASTs
+                    // into a context this thread alone touches, and the context
+                    // is created and destroyed on the same thread. The local
+                    // live queue is created here too, so the irreducibly `!Send`
+                    // `RustSimState`s in it can never escape the thread (the
+                    // compiler enforces this via the `Scope::spawn` bound).
                     let ctx = Context::new(&Config::new());
                     Context::set_thread_local(&ctx);
                     worker_loop(
-                        &local, injector, stealers, pending, cancel, results, &ctx, process,
+                        injector,
+                        pending,
+                        cancel,
+                        results,
+                        summaries,
+                        idle_workers,
+                        counters,
+                        &ctx,
+                        process,
                     );
                 });
             }
         });
 
-        results.into_inner().expect("results mutex poisoned")
+        let stats = SchedulerStats {
+            seeds,
+            local_dispatches: counters.local_dispatches.load(Ordering::SeqCst),
+            injector_dispatches: counters.injector_dispatches.load(Ordering::SeqCst),
+            surplus_offloaded: counters.surplus_offloaded.load(Ordering::SeqCst),
+            materialized_terminals: counters.materialized_terminals.load(Ordering::SeqCst),
+            summarized_terminals: counters.summarized_terminals.load(Ordering::SeqCst),
+        };
+        (
+            results.into_inner().expect("results mutex poisoned"),
+            summaries.into_inner().expect("summaries mutex poisoned"),
+            stats,
+        )
     }
 }
 
-/// The per-worker loop: find a task, reattach it, process it, route successors.
+/// The per-worker loop: dispatch a live local state (or steal+reattach one),
+/// process it, push live successors locally, shed surplus on imbalance, and
+/// collect terminals.
 #[allow(clippy::too_many_arguments)] // worker context is genuinely this wide; bundling it would just move the noise
 fn worker_loop<F>(
-    local: &Worker<StateMigrationPayload>,
     injector: &Injector<StateMigrationPayload>,
-    stealers: &[Stealer<StateMigrationPayload>],
     pending: &AtomicUsize,
     cancel: &CancelToken,
     results: &Mutex<Vec<StateMigrationPayload>>,
+    summaries: &Mutex<Vec<TerminalSummary>>,
+    idle_workers: &AtomicUsize,
+    counters: &SchedulerCounters,
     ctx: &Context,
     process: &F,
 ) where
     F: Fn(RustSimState, &CancelToken) -> TaskOutcome,
 {
+    // Worker-local live states: home Z3 context, never serialized. Created
+    // inside the worker so the `!Send` states it holds cannot escape the thread.
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
     loop {
         if cancel.is_cancelled() {
             return;
         }
 
-        let Some(payload) = find_task(local, injector, stealers) else {
-            // No task available right now. If nothing is outstanding anywhere,
-            // no future task can ever appear (a task is only created by an
-            // in-flight task), so we are done. Otherwise another worker is
-            // mid-task and may yet push work — yield and retry.
-            if pending.load(Ordering::SeqCst) == 0 {
-                return;
+        // Dispatch: drain the live local queue first (LIFO — the freshest child
+        // is hottest in cache and the Z3 context). Only when it is empty do we
+        // touch the cross-thread injector and pay a reattach.
+        let state = match local.pop_back() {
+            Some(state) => {
+                counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
+                state
             }
-            std::thread::yield_now();
-            continue;
-        };
-
-        // Rebuild the state in THIS worker's context. The ptr-eq guard inside
-        // `reattach` holds because `ctx` is exactly this thread's thread-local.
-        let state = match payload.reattach(ctx) {
-            Ok(state) => state,
-            Err(err) => {
-                // Unreachable in practice (we set our own ctx as thread-local
-                // above), but never silently keep a phantom task outstanding.
-                log::error!("scheduler reattach failed, dropping task: {err:?}");
-                pending.fetch_sub(1, Ordering::SeqCst);
-                continue;
-            }
+            None => match steal_from_injector(injector, pending, cancel, idle_workers) {
+                Some(payload) => {
+                    counters.injector_dispatches.fetch_add(1, Ordering::SeqCst);
+                    // Rebuild the state in THIS worker's context. The ptr-eq
+                    // guard inside `reattach` holds because `ctx` is exactly this
+                    // thread's thread-local.
+                    match payload.reattach(ctx) {
+                        Ok(state) => state,
+                        Err(err) => {
+                            // Unreachable in practice (we set our own ctx as
+                            // thread-local above), but never silently keep a
+                            // phantom task outstanding.
+                            log::error!("scheduler reattach failed, dropping task: {err:?}");
+                            pending.fetch_sub(1, Ordering::SeqCst);
+                            continue;
+                        }
+                    }
+                }
+                // No task available and nothing outstanding anywhere (or
+                // cancelled): no future task can ever appear.
+                None => return,
+            },
         };
 
         let outcome = process(state, cancel);
 
-        // Detach successors back into Send payloads on THIS worker (correct
-        // context) before any of them can be stolen onto another thread.
-        let mut spawned = 0usize;
+        // Continue-states stay LIVE and LOCAL — no serde on the fast path.
+        let spawned = outcome.continue_states.len();
         for child in outcome.continue_states {
-            local.push(child.detach_for_migration());
-            spawned += 1;
+            local.push_back(child);
         }
+
+        // Materialized terminals must cross the join, so they are detached here
+        // (correct context). This is part of the honest steal fraction.
         if !outcome.terminal_states.is_empty() {
             let mut guard = results.lock().expect("results mutex poisoned");
             for terminal in outcome.terminal_states {
                 guard.push(terminal.detach_for_migration());
+                counters
+                    .materialized_terminals
+                    .fetch_add(1, Ordering::SeqCst);
             }
         }
 
+        // Summaries pay no serde — record and drop the full states in-context.
+        if !outcome.terminal_summaries.is_empty() {
+            let n = outcome.terminal_summaries.len();
+            let mut guard = summaries.lock().expect("summaries mutex poisoned");
+            guard.extend(outcome.terminal_summaries);
+            counters.summarized_terminals.fetch_add(n, Ordering::SeqCst);
+        }
+
         // Count children IN before counting this task OUT, so `pending` never
-        // dips to zero with live descendants queued.
+        // dips to zero with live descendants queued. Offload (below) only
+        // relocates already-counted states, so it leaves `pending` untouched.
         if spawned > 0 {
             pending.fetch_add(spawned, Ordering::SeqCst);
         }
+
+        // Shed surplus to the injector if a sibling is starving or we are over
+        // the high-water mark. This is the only continue-path serde site.
+        offload_surplus(&mut local, injector, idle_workers, counters);
+
         pending.fetch_sub(1, Ordering::SeqCst);
 
         if outcome.request_cancel {
@@ -276,41 +489,97 @@ fn worker_loop<F>(
     }
 }
 
-/// Standard crossbeam work-stealing search: drain the local deque first, then
-/// pull a batch from the global injector, then steal from siblings.
-fn find_task<T>(local: &Worker<T>, injector: &Injector<T>, stealers: &[Stealer<T>]) -> Option<T> {
-    // Fast path: our own deque.
-    if let Some(task) = local.pop() {
-        return Some(task);
-    }
-    // Slow path: keep retrying across the injector and sibling stealers until a
-    // round produces a definite result (no `Retry` left to resolve).
-    loop {
-        let mut retry = false;
-        match injector.steal_batch_and_pop(local) {
-            Steal::Success(task) => return Some(task),
-            Steal::Retry => retry = true,
-            Steal::Empty => {}
-        }
-        for stealer in stealers {
-            match stealer.steal() {
-                Steal::Success(task) => return Some(task),
-                Steal::Retry => retry = true,
-                Steal::Empty => {}
+/// Shed surplus live states from `local` to the shared `injector`, detaching
+/// each into a `Send` payload. Two triggers:
+///
+/// * **A — idle-gated (primary):** if any sibling is currently starving
+///   (`idle_workers > 0`) and we hold a backlog (`len >= 2`), offload up to half
+///   the backlog (hysteresis, never below one local state) so the starving
+///   sibling has work to steal. This mirrors the `record_migration_sample`
+///   imbalance model (helpers.rs) so the measured steal fraction lines up with
+///   the gate's `f_model`.
+/// * **B — high-water cap (safety):** if the local queue exceeds [`LOCAL_HWM`],
+///   shed down to `HWM/2` regardless of idle siblings, bounding per-worker
+///   memory. Rarely fires on a narrow frontier.
+///
+/// Offload is a relocation of already-counted tasks; it does not touch
+/// `pending`.
+fn offload_surplus(
+    local: &mut VecDeque<RustSimState>,
+    injector: &Injector<StateMigrationPayload>,
+    idle_workers: &AtomicUsize,
+    counters: &SchedulerCounters,
+) {
+    // Trigger A: idle-gated load sharing. Offload the COLDEST states (front),
+    // keeping our hot tail; at most half per production event for hysteresis.
+    if idle_workers.load(Ordering::SeqCst) > 0 && local.len() >= 2 {
+        let to_offload = local.len() / 2;
+        for _ in 0..to_offload {
+            if local.len() <= 1 {
+                break;
+            }
+            if let Some(state) = local.pop_front() {
+                injector.push(state.detach_for_migration());
+                counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
             }
         }
-        if !retry {
-            return None;
+    }
+
+    // Trigger B: hard memory cap.
+    if local.len() > LOCAL_HWM {
+        while local.len() > LOCAL_HWM / 2 {
+            if let Some(state) = local.pop_front() {
+                injector.push(state.detach_for_migration());
+                counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
+            } else {
+                break;
+            }
         }
     }
 }
 
+/// Pull one payload from the shared injector, blocking (cooperative yield) while
+/// work may still appear. Returns `None` only when the injector is empty AND no
+/// task is outstanding anywhere (a task is only created by an in-flight task, so
+/// none can ever appear again) — or when cancellation is requested.
+///
+/// Maintains the `idle_workers` signal across the wait so producers can detect
+/// starvation and offload (Trigger A).
+fn steal_from_injector(
+    injector: &Injector<StateMigrationPayload>,
+    pending: &AtomicUsize,
+    cancel: &CancelToken,
+    idle_workers: &AtomicUsize,
+) -> Option<StateMigrationPayload> {
+    idle_workers.fetch_add(1, Ordering::SeqCst);
+    let result = loop {
+        if cancel.is_cancelled() {
+            break None;
+        }
+        match injector.steal() {
+            Steal::Success(task) => break Some(task),
+            Steal::Retry => continue,
+            Steal::Empty => {
+                // Empty right now. If nothing is outstanding anywhere we are
+                // done; otherwise another worker is mid-task and may yet offload
+                // surplus — yield and retry.
+                if pending.load(Ordering::SeqCst) == 0 {
+                    break None;
+                }
+                std::thread::yield_now();
+            }
+        }
+    };
+    idle_workers.fetch_sub(1, Ordering::SeqCst);
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ParallelScheduler, TaskOutcome};
+    use super::{LOCAL_HWM, ParallelScheduler, TaskOutcome, TerminalDisposition, TerminalSummary};
     use crate::state::RustSimState;
     use crate::symbolic::RustBV;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use z3::Context;
 
@@ -461,6 +730,7 @@ mod tests {
             TaskOutcome {
                 continue_states: Vec::new(),
                 terminal_states: vec![state],
+                terminal_summaries: Vec::new(),
                 request_cancel: true,
             }
         });
@@ -478,5 +748,282 @@ mod tests {
             total,
             "each processed task is collected once"
         );
+    }
+
+    // angr-729vn: the home-context fast path pays zero continue-serde. A single
+    // worker explores a binary tree that never exceeds the high-water mark and
+    // has no idle sibling to offload to, so NOT ONE continue-state is
+    // serialized. `surplus_offloaded == 0` is the proof, since it is the only
+    // continue-path detach site.
+    #[test]
+    fn test_fast_path_never_serializes() {
+        const DEPTH: u64 = 5; // 32 leaves; DFS queue depth ~= DEPTH << HWM
+        const WITNESS: u64 = 0x5151;
+
+        let mut root = pinned_state("fast_acc", WITNESS);
+        root.set_register("rbx", RustBV::concrete(0, 64));
+
+        let sched = ParallelScheduler::new(1); // no sibling => Trigger A never fires
+        // Leaves are SUMMARIZED (no serde) so a single-worker DFS that stays
+        // below the high-water mark serializes nothing at all — continue-states
+        // stay live-local and dead leaves are summarized.
+        let (collected, summaries, stats) =
+            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker");
+                if depth >= DEPTH {
+                    return TaskOutcome::summarized(vec![TerminalSummary::of(
+                        &state,
+                        TerminalDisposition::Deadended,
+                    )]);
+                }
+                let next = RustBV::concrete((depth + 1) as u128, 64);
+                let mut left = state.fork();
+                let mut right = state.fork();
+                left.set_register("rbx", next.clone());
+                right.set_register("rbx", next);
+                TaskOutcome::continuing(vec![left, right])
+            });
+
+        assert!(
+            collected.is_empty(),
+            "nothing materialized => nothing serialized"
+        );
+        assert_eq!(summaries.len(), 1usize << DEPTH, "all leaves summarized");
+        assert_eq!(
+            stats.surplus_offloaded, 0,
+            "fast path must serialize zero continue-states",
+        );
+        assert_eq!(stats.materialized_terminals, 0, "no terminals serialized");
+        // Only the seed entered via the injector; all forks stayed live-local.
+        assert_eq!(stats.injector_dispatches, stats.seeds);
+        assert_eq!(
+            stats.honest_steal_fraction(),
+            0.0,
+            "zero serde events => zero honest steal fraction",
+        );
+    }
+
+    // angr-729vn: the high-water cap (Trigger B) sheds surplus deterministically
+    // even with a single worker (no idle sibling). A root that forks WIDE past
+    // the cap offloads down to HWM/2; exactly `width - HWM/2` states are
+    // serialized.
+    #[test]
+    fn test_surplus_offload_triggers_at_hwm() {
+        const WIDTH: usize = 200; // > LOCAL_HWM
+        const WITNESS: u64 = 0x7777;
+        const { assert!(WIDTH > LOCAL_HWM) };
+
+        let mut root = pinned_state("wide_root", WITNESS);
+        root.set_register("rbx", RustBV::concrete(0, 64));
+
+        let sched = ParallelScheduler::new(1);
+        let (collected, _summaries, stats) =
+            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker");
+                if depth >= 1 {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                // depth 0: fan out WIDTH leaves at once.
+                let one = RustBV::concrete(1, 64);
+                let children: Vec<RustSimState> = (0..WIDTH)
+                    .map(|_| {
+                        let mut c = state.fork();
+                        c.set_register("rbx", one.clone());
+                        c
+                    })
+                    .collect();
+                TaskOutcome::continuing(children)
+            });
+
+        assert_eq!(collected.len(), WIDTH, "all leaves collected");
+        assert_eq!(
+            stats.surplus_offloaded,
+            WIDTH - LOCAL_HWM / 2,
+            "Trigger B sheds the wide root's backlog down to HWM/2",
+        );
+    }
+
+    // angr-729vn: the injector steal path is exercised across workers, and every
+    // stolen leaf still re-proves its witness after detach -> steal ->
+    // reattach. A wide root with >=2 workers forces real injector traffic.
+    #[test]
+    fn test_steal_from_injector_path() {
+        const WIDTH: usize = 200;
+        const WITNESS: u64 = 0xBEEF;
+        let main_ctx = Context::thread_local();
+
+        let mut root = pinned_state("steal_root", WITNESS);
+        root.set_register("rbx", RustBV::concrete(0, 64));
+
+        let sched = ParallelScheduler::new(4);
+        let (collected, _summaries, stats) =
+            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker");
+                if depth >= 1 {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                let one = RustBV::concrete(1, 64);
+                let children: Vec<RustSimState> = (0..WIDTH)
+                    .map(|_| {
+                        let mut c = state.fork();
+                        c.set_register("rbx", one.clone());
+                        c
+                    })
+                    .collect();
+                TaskOutcome::continuing(children)
+            });
+
+        assert_eq!(collected.len(), WIDTH, "all leaves collected");
+        assert!(
+            stats.injector_dispatches > stats.seeds,
+            "injector steal path must be exercised: {} dispatches vs {} seeds",
+            stats.injector_dispatches,
+            stats.seeds,
+        );
+        for payload in collected {
+            let state = payload.reattach(&main_ctx).expect("reattach leaf");
+            let rax = state.get_register("rax").expect("rax on leaf");
+            assert_eq!(
+                state.solver().borrow().eval(&rax),
+                Some(WITNESS as u128),
+                "stolen leaf must re-prove the root constraint",
+            );
+        }
+    }
+
+    // angr-729vn: every dispatched task is accounted for exactly once across the
+    // two-tier (local + injector) model — quiescence under imbalance loses and
+    // duplicates nothing. A skewed tree on 4 workers; total dispatches must
+    // equal the exact task count.
+    #[test]
+    fn test_quiescence_accounting_under_imbalance() {
+        const DEPTH: u64 = 7; // 255 total tasks
+        const WITNESS: u64 = 0xABCD;
+
+        let mut root = pinned_state("quiesce_root", WITNESS);
+        root.set_register("rbx", RustBV::concrete(0, 64));
+
+        let sched = ParallelScheduler::new(4);
+        let (collected, _summaries, stats) =
+            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker");
+                if depth >= DEPTH {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                let next = RustBV::concrete((depth + 1) as u128, 64);
+                let mut left = state.fork();
+                let mut right = state.fork();
+                left.set_register("rbx", next.clone());
+                right.set_register("rbx", next);
+                TaskOutcome::continuing(vec![left, right])
+            });
+
+        let total_tasks = (1usize << (DEPTH + 1)) - 1; // full binary tree
+        assert_eq!(collected.len(), 1usize << DEPTH, "all leaves collected");
+        assert_eq!(
+            stats.local_dispatches + stats.injector_dispatches,
+            total_tasks,
+            "every task dispatched exactly once across local + injector tiers",
+        );
+    }
+
+    // angr-729vn: the result SET is deterministic despite nondeterministic steal
+    // ordering. Run the same independent-states workload K times and assert the
+    // multiset of recovered witnesses is identical every time (no lost,
+    // duplicated, or corrupted states). Ordering is NOT asserted (it is the
+    // downstream fingerprint gate's concern).
+    #[test]
+    fn test_determinism_result_set() {
+        const N: u64 = 64;
+        const K: usize = 5;
+        let main_ctx = Context::thread_local();
+
+        let mut runs: Vec<BTreeSet<u128>> = Vec::with_capacity(K);
+        for _ in 0..K {
+            let payloads: Vec<_> = (0..N)
+                .map(|i| pinned_state(&format!("det_{i}"), 0xC000 + i).detach_for_migration())
+                .collect();
+            let sched = ParallelScheduler::new(4);
+            let collected = sched.run(payloads, |state, _cancel| {
+                TaskOutcome::terminal(vec![state])
+            });
+            let witnesses: BTreeSet<u128> = collected
+                .into_iter()
+                .map(|p| {
+                    let s = p.reattach(&main_ctx).expect("reattach");
+                    let rax = s.get_register("rax").expect("rax");
+                    s.solver().borrow().eval(&rax).expect("concretizable")
+                })
+                .collect();
+            runs.push(witnesses);
+        }
+
+        let expected: BTreeSet<u128> = (0..N as u128).map(|i| 0xC000 + i).collect();
+        for (k, run) in runs.iter().enumerate() {
+            assert_eq!(*run, expected, "run {k} recovered a different witness set");
+        }
+    }
+
+    // angr-729vn: summaries pay no serde. A workload that splits terminals
+    // between materialized (found) and summarized (dead) paths. Summaries land
+    // in the summaries vec, never the results vec, and are excluded from the
+    // honest steal fraction; the only serde sites are materialized terminals +
+    // surplus offloads.
+    #[test]
+    fn test_summaries_pay_no_serde_and_fraction() {
+        const N: u64 = 100;
+        const FOUND_EVERY: u64 = 10; // 10 materialized, 90 summarized
+
+        let payloads: Vec<_> = (0..N)
+            .map(|i| pinned_state(&format!("term_{i}"), 0xD000 + i).detach_for_migration())
+            .collect();
+
+        let sched = ParallelScheduler::new(4);
+        let (collected, summaries, stats) = sched.run_instrumented(payloads, |state, _cancel| {
+            if state.state_id().is_multiple_of(FOUND_EVERY) {
+                TaskOutcome::terminal(vec![state]) // materialized (serialized)
+            } else {
+                TaskOutcome::summarized(vec![TerminalSummary::of(
+                    &state,
+                    TerminalDisposition::Deadended,
+                )]) // no serde
+            }
+        });
+
+        // Partition is exact and complete.
+        assert_eq!(
+            stats.materialized_terminals + stats.summarized_terminals,
+            N as usize,
+        );
+        assert_eq!(collected.len(), stats.materialized_terminals);
+        assert_eq!(summaries.len(), stats.summarized_terminals);
+        assert!(
+            stats.summarized_terminals > 0,
+            "test must exercise the summary path",
+        );
+
+        // No continue-states, so the only serde is materialized terminals.
+        assert_eq!(stats.surplus_offloaded, 0);
+        let expected_f = stats.materialized_terminals as f64 / stats.dispatches() as f64;
+        assert!(
+            (stats.honest_steal_fraction() - expected_f).abs() < 1e-9,
+            "honest steal fraction must exclude summaries",
+        );
+        // Summaries carry the right disposition and cheap fields only.
+        for s in &summaries {
+            assert_eq!(s.disposition, TerminalDisposition::Deadended);
+        }
     }
 }
