@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunErrorKind, RunResult};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON};
 use crate::memory::Permission;
@@ -33,12 +33,13 @@ use crate::state::{RustSimState, StateChanges};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 use crate::symbolic::{RustBV, SymContext};
-use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
+use crate::syscalls::NativeSyscallRegistry;
 
 use std::cell::Cell;
 
 mod callback_types;
 mod constraints;
+mod core_outcome;
 mod event;
 mod execution_env;
 mod helpers;

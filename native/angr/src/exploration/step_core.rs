@@ -39,6 +39,7 @@ use crate::state::RustSimState;
 use crate::vex::{IRSB, VexArch};
 
 use super::RustExplorationManager;
+use super::core_outcome::CcSnapshot;
 use super::stepping::InterpreterStepResult;
 
 /// Self-contained, `Send + Sync` bundle of the read-only configuration one
@@ -86,6 +87,21 @@ pub(crate) struct StepContext {
     pub(crate) find_needs_python: bool,
     /// Avoid condition has callable predicates (limits the run to 1 block).
     pub(crate) avoid_needs_python: bool,
+    /// Calling-convention scalar/vec snapshot the post-step native arms read
+    /// (angr-vh834). The CC trait object is not `Clone`, so we snapshot the
+    /// fields `write_syscall_return` / `extract_*_args` / `setup_native_subcall`
+    /// consult.
+    pub(crate) cc: CcSnapshot,
+    /// OS / SimOS name (lowercase). Drives syscall-table dispatch ("cgc" routes
+    /// to the DECREE table). Snapshot of `environment.os_name`.
+    pub(crate) os_name: String,
+    /// Manager-level deferred-fork mode (drives the `UnconstrainedJump` arm's
+    /// drop-vs-materialize decision). Distinct from the per-state
+    /// `force_eager_forks` override applied during interpreter stepping.
+    pub(crate) use_deferred_forks: bool,
+    /// Opt-in: materialize loop-exit forks at an `UnconstrainedJump` even in
+    /// deferred mode (angr-ckdy). Snapshot of `materialize_unconstrained_forks`.
+    pub(crate) materialize_unconstrained_forks: bool,
 }
 
 // Compile-time proof that the config bundle is `Send + Sync` — the property the
@@ -120,6 +136,23 @@ impl RustExplorationManager {
             block_granular: self.block_granular,
             find_needs_python: self.find_needs_python,
             avoid_needs_python: self.avoid_needs_python,
+            cc: {
+                let cc = &self.environment.calling_convention;
+                CcSnapshot {
+                    arg_registers: cc.arg_registers().to_vec(),
+                    syscall_arg_registers: cc.syscall_arg_registers().to_vec(),
+                    return_register: cc.return_register(),
+                    link_register: cc.link_register(),
+                    pops_return_addr: cc.pops_return_addr(),
+                    pointer_size: cc.pointer_size(),
+                    stack_arg_offset: cc.stack_arg_offset(),
+                    syscall_stack_arg_offset: cc.syscall_stack_arg_offset(),
+                    syscall_error_register: cc.syscall_error_register(),
+                }
+            },
+            os_name: self.environment.os_name.clone(),
+            use_deferred_forks: self.exec_config.use_deferred_forks,
+            materialize_unconstrained_forks: self.materialize_unconstrained_forks,
         }
     }
 }

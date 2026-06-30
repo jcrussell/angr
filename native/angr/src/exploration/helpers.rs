@@ -807,6 +807,11 @@ impl RustExplorationManager {
     /// and the slots are mapped — a symbolic SP ([`ExtractionError::SpSymbolic`])
     /// or an unmapped slot ([`ExtractionError::StackUnmapped`]) still falls
     /// through to Python rather than fabricating values.
+    ///
+    /// Retained as a direct-call test harness (`helpers_tests.rs`); the
+    /// production syscall path now extracts via `CcSnapshot::extract_syscall_args`
+    /// inside the post-step core (angr-vh834).
+    #[allow(dead_code)]
     pub(crate) fn extract_syscall_args(
         &self,
         state: &RustSimState,
