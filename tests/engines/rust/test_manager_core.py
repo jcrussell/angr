@@ -301,28 +301,38 @@ class TestRustExplorationManagerUnit:
         assert mgr.stats()["parallel_real_workers"] == 2
 
     def test_parallel_real_workers_env_runs_fauxware(self, fauxware_project, monkeypatch):
-        """RUST_PARALLEL_WORKERS=2 is a no-op via the delegating scaffold.
+        """RUST_PARALLEL_WORKERS=2 runs the real work-stealing wave loop.
 
         Drives the high-level manager on fauxware twice — once single-threaded
-        (default) and once with 2 real workers requested — and asserts identical
-        final stash counts. The 2a parallel path delegates to the single-threaded
-        loop, so enabling >1 workers must not change exploration results.
+        (default) and once with 2 real workers. The wave loop (angr-vh834
+        Phase 5) finds the same number of FOUND solutions and exposes real
+        scheduler counters.
+
+        NOTE: full ``stash_counts()`` parity is intentionally NOT asserted. By
+        design the parallel path records dead paths (deadended / pruned /
+        avoided) as cheap summaries and DROPS their full symbolic state across
+        the worker join (the scheduler's selective ``drop_terminal_states``), so
+        those stash counts legitimately differ from the single-threaded path.
+        Found-set equivalence (the user-visible contract) is covered in depth by
+        ``test_parallel_wave.py``.
         """
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
         baseline_mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
         assert baseline_mgr.stats["parallel_real_workers"] == 1
         baseline_mgr.run()
-        baseline_counts = baseline_mgr.stash_counts()
+        baseline_found = baseline_mgr.stash_counts()["found"]
 
         monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
         parallel_mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
         assert parallel_mgr.stats["parallel_real_workers"] == 2
         parallel_mgr.run()
-        parallel_counts = parallel_mgr.stash_counts()
+        parallel_found = parallel_mgr.stash_counts()["found"]
 
-        assert parallel_counts == baseline_counts, (
-            f"parallel scaffold changed results: {parallel_counts} != {baseline_counts}"
+        assert parallel_found == baseline_found, (
+            f"parallel changed the found count: {parallel_found} != {baseline_found}"
         )
+        # The wave loop did real concurrent work.
+        assert parallel_mgr.stats["parallel_tasks"] > 0
 
     @pytest.mark.parametrize("bad", ["0", "garbage", "-1", ""])
     def test_parallel_real_workers_bad_env_falls_back(self, monkeypatch, bad):

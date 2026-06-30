@@ -355,6 +355,16 @@ pub struct RustExplorationManager {
         std::sync::mpsc::Sender<Vec<u8>>,
         std::sync::mpsc::Receiver<u64>,
     )>,
+    /// angr-vh834 Phase 5 (M3): bounce states a parallel wave discovered but
+    /// could not dispatch yet, because an earlier bounce in the same wave already
+    /// surfaced its Python `need_callback` event (only one callback is surfaced
+    /// per `run()`). Carried on the manager — NOT pushed back to `STASH_ACTIVE` —
+    /// so the next `run()` dispatches them straight through `dispatch_bounce`
+    /// instead of letting a worker RE-STEP a state already parked at a hook, which
+    /// would re-run `run_post_step_core` and double-fold its fallback counters
+    /// (`simprocedure_python_fallback_count`, …). Each entry is
+    /// `(bounce state, BounceKind, lineage root)`. Empty in single-threaded mode.
+    pub(crate) pending_parallel_bounces: Vec<(RustSimState, self::core_outcome::BounceKind, u64)>,
 }
 
 #[pymethods]
@@ -443,6 +453,7 @@ impl RustExplorationManager {
             parallel_shadow_migration_states: 0,
             parallel_shadow_migration_bytes: 0,
             shadow_probe_chan: None,
+            pending_parallel_bounces: Vec::new(),
         })
     }
 

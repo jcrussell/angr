@@ -406,6 +406,18 @@ fn worker_loop<F>(
 
     loop {
         if cancel.is_cancelled() {
+            // Bug M1 (known limitation): on cancel (e.g. the run loop hit
+            // `num_find`) the worker stops HERE, at a task boundary, dropping
+            // whatever live states remain on its `local` queue (and any surplus
+            // still sitting on the injector). Those un-dispatched frontier states
+            // are NOT materialized back across the join, so the run loop's active
+            // stash loses them — `run_loop_parallel`'s post-`num_find`
+            // `active_count()` is smaller than the single-threaded loop's and the
+            // un-explored frontier is not resumable. The FOUND set is unaffected
+            // (every found terminal was materialized before cancel propagated).
+            // Draining + materializing the remainder here would pay serde for
+            // states we are about to discard, so it is deliberately not done; see
+            // the `run_loop_parallel` doc comment.
             return;
         }
 

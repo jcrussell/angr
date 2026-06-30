@@ -345,6 +345,7 @@ impl RoutingTag {
 /// handler builds the exact `PendingCallback`. Carrying the live state + step
 /// data (not a serialized `PendingCallback`) keeps the single-threaded path from
 /// re-running the interpreter, which would double-count profiling.
+#[derive(Clone)]
 pub(crate) enum BounceKind {
     /// Bare hook (zero-arg "unknown" SimProcedure callback).
     Hook { addr: u64 },
@@ -894,6 +895,48 @@ fn process_deferred_forks_into_core(
     }
 
     ParallelProfiling::add(&prof.deferred_fork_count, deferred_forks.len() as u64);
+}
+
+/// Worker-side helper (angr-vh834 Phase 5): turn the deferred forks that ride
+/// into a `NeedsPython` bounce into real, migratable fork states so the parallel
+/// wave loop can keep exploring them locally instead of losing them across the
+/// bounce boundary (the loose `RustBV` conditions are `!Send` and cannot cross
+/// a thread, but the materialized fork *states* can).
+///
+/// Uses `base` (the bounce state, PC parked at the bounce point, before the
+/// Python handler runs) as the fork base — the same logical base the
+/// single-threaded resume path uses at simproc-return time, so the forks are
+/// identical. Returns `(sat forks, unsat/pruned forks, minted fork ids)`.
+#[allow(clippy::type_complexity)]
+pub(crate) fn materialize_bounce_forks(
+    ctx: &StepContext,
+    prof: &ParallelProfiling,
+    base: &RustSimState,
+    deferred_forks: Vec<DeferredFork>,
+    stored_conditions: &FxHashMap<u64, RustBV>,
+    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    root_hint: u64,
+) -> (Vec<RustSimState>, Vec<RustSimState>, Vec<u64>) {
+    let mut forks_out: Vec<(RustSimState, RoutingTag)> = Vec::new();
+    let mut pruned_out: Vec<RustSimState> = Vec::new();
+    let mut fork_ids_out: Vec<u64> = Vec::new();
+    process_deferred_forks_into_core(
+        ctx,
+        prof,
+        base,
+        deferred_forks,
+        stored_conditions,
+        fork_snapshots,
+        root_hint,
+        &mut forks_out,
+        &mut pruned_out,
+        &mut fork_ids_out,
+    );
+    (
+        forks_out.into_iter().map(|(s, _)| s).collect(),
+        pruned_out,
+        fork_ids_out,
+    )
 }
 
 /// Mirror of `handle_symbolic_jump_target`.

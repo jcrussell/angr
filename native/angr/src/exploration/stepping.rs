@@ -1,6 +1,6 @@
 use super::core_outcome::{
-    BounceKind, CoreOutcome, CoreReturn, ParallelProfiling, PendingBounce, PostStepInputs,
-    run_post_step_core,
+    BounceKind, CoreCounters, CoreOutcome, CoreReturn, ParallelProfiling, PendingBounce,
+    PostStepInputs, run_post_step_core,
 };
 use super::*;
 use crate::arch::RegisterFile;
@@ -213,34 +213,7 @@ impl RustExplorationManager {
         prof.fold_into(&mut self.profiling.accumulated_stats);
 
         // 2. Fold manager-level counter deltas.
-        let nps = &mut self.profiling.native_proc_stats;
-        nps.native_calls += counters.native_calls;
-        nps.python_fallbacks += counters.native_python_fallbacks;
-        for (k, v) in counters.call_counts {
-            *nps.call_counts.entry(k).or_insert(0) += v;
-        }
-        for (k, v) in counters.symbolic_fallbacks_by_name {
-            *nps.symbolic_fallbacks_by_name.entry(k).or_insert(0) += v;
-        }
-        for (k, v) in counters.not_implemented_fallbacks_by_name {
-            *nps.not_implemented_fallbacks_by_name.entry(k).or_insert(0) += v;
-        }
-        for (k, v) in counters.other_fallbacks_by_name {
-            *nps.other_fallbacks_by_name.entry(k).or_insert(0) += v;
-        }
-        self.syscall_native_count += counters.syscall_native_count;
-        for (k, v) in counters.syscall_native_by_num {
-            *self.syscall_native_by_num.entry(k).or_insert(0) += v;
-        }
-        self.syscall_python_fallback_count += counters.syscall_python_fallback_count;
-        for (k, v) in counters.syscall_python_fallback_by_num {
-            *self.syscall_python_fallback_by_num.entry(k).or_insert(0) += v;
-        }
-        self.simprocedure_python_fallback_count += counters.simprocedure_python_fallback_count;
-        for (k, v) in counters.simprocedure_fallback_by_name {
-            *self.simprocedure_fallback_by_name.entry(k).or_insert(0) += v;
-        }
-        self.deferred_forks_dropped += counters.deferred_forks_dropped;
+        self.fold_core_counters(counters);
 
         // 3. set_root for every newly minted fork (SAT successors flagged
         //    `is_fork`, all pruned, and the eager unconstrained forks). Order
@@ -291,11 +264,47 @@ impl RustExplorationManager {
         }
     }
 
+    /// Fold a `CoreOutcome`'s manager-level counter deltas (native-proc /
+    /// syscall / simproc fallback counters, `deferred_forks_dropped`) into the
+    /// manager fields. Extracted from `apply_core_outcome` (step 2) so the
+    /// parallel wave loop can fold the counters its workers accumulated
+    /// (angr-vh834 Phase 5) through the exact same path.
+    pub(crate) fn fold_core_counters(&mut self, counters: CoreCounters) {
+        let nps = &mut self.profiling.native_proc_stats;
+        nps.native_calls += counters.native_calls;
+        nps.python_fallbacks += counters.native_python_fallbacks;
+        for (k, v) in counters.call_counts {
+            *nps.call_counts.entry(k).or_insert(0) += v;
+        }
+        for (k, v) in counters.symbolic_fallbacks_by_name {
+            *nps.symbolic_fallbacks_by_name.entry(k).or_insert(0) += v;
+        }
+        for (k, v) in counters.not_implemented_fallbacks_by_name {
+            *nps.not_implemented_fallbacks_by_name.entry(k).or_insert(0) += v;
+        }
+        for (k, v) in counters.other_fallbacks_by_name {
+            *nps.other_fallbacks_by_name.entry(k).or_insert(0) += v;
+        }
+        self.syscall_native_count += counters.syscall_native_count;
+        for (k, v) in counters.syscall_native_by_num {
+            *self.syscall_native_by_num.entry(k).or_insert(0) += v;
+        }
+        self.syscall_python_fallback_count += counters.syscall_python_fallback_count;
+        for (k, v) in counters.syscall_python_fallback_by_num {
+            *self.syscall_python_fallback_by_num.entry(k).or_insert(0) += v;
+        }
+        self.simprocedure_python_fallback_count += counters.simprocedure_python_fallback_count;
+        for (k, v) in counters.simprocedure_fallback_by_name {
+            *self.simprocedure_fallback_by_name.entry(k).or_insert(0) += v;
+        }
+        self.deferred_forks_dropped += counters.deferred_forks_dropped;
+    }
+
     /// Run the legacy Python-bouncing arm for a `NeedsPython` core outcome. The
     /// core already did any native dispatch and recorded its counters; these
     /// tails build the exact `PendingCallback` (and, for `UnmodeledCall`, run the
     /// `&mut self` resolve path) the single-threaded engine produced inline.
-    fn dispatch_bounce(
+    pub(crate) fn dispatch_bounce(
         &mut self,
         callbacks: &PythonCallbacks,
         bounce: PendingBounce,
