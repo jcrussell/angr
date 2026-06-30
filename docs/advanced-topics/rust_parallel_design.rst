@@ -472,6 +472,63 @@ If Option A is chosen, a staged rollout:
       (``angr-t3l5o``) that blocks both the 2c live wave loop
       (``angr-vh834``) and the parent ``angr-1ilq.3``.
 
+   .. important:: **Transport reduction + pivot (angr-t3l5o, 2026-06-30) —
+      transport win landed; the residual blocker is migration *count*, not
+      per-state cost.**
+
+      A measure-first attack on the transport cost split the migration
+      round-trip into six phases (Phase 0, ``bench_migration_phases`` +
+      env-gated ``ANGR_MIGRATE_PHASE_TIMERS`` counters) and confirmed the Z3
+      **SMT-LIB2 text round-trip** dominated: on ``codegate`` the full-solver
+      ``format!("{}", solver)`` emit + ``from_string`` reparse was 88.8 % of
+      the round-trip (emit alone 66 %). The assertions that text dumped were
+      largely the *assume class* already carried as reconstructible ``RustBV``
+      IR in ``assumed_constraints`` — pure redundant work.
+
+      **Phase 1** rebuilds the assume class on reattach by re-asserting
+      ``assumed_constraints`` via ``assume_true``/``assume_false`` (no text),
+      and carries only the *residual* no-``RustBV`` class
+      (``add_constraint_raw`` / ``add_bv_constraint`` / ``merge`` guards) as an
+      SMT-LIB2 dump that is **empty in the common case** (see
+      :rust:struct:`SymContextSnapshot` ``residual_smtlib2`` +
+      ``reassert_assumed``, and the ``non_bv_assertions`` two-class log on
+      :rust:struct:`SymContext`). Result: the text round-trip collapsed to
+      ~0, cutting ``codegate`` per-state tax **≈ 4.2×** (60 → 14.5 ms/state).
+      The gate verdict improved 0.07× → 0.25× — but is **still NO-GO**.
+
+      **Why transport alone cannot finish the job.** Post-Phase-1 attribution
+      shows the remaining ~14.5 ms/state is ~40 % serde and ~60 % an
+      *irreducible Z3-AST-rebuild floor* — re-asserting the constraints into
+      the consumer's context builds fresh Z3 ASTs, work that **every** sound
+      cross-thread transport must pay (``Z3_translate`` included; it is unsound
+      on the steal path anyway). On ``codegate`` that floor (~8 ms/state)
+      already exceeds the per-state *work* budget (3.5 s ÷ 844 states ≈
+      4.2 ms/state). A workload this wide-and-shallow is migration-bound at
+      *any* transport cost **if every state migrates**.
+
+      **The pivot — migration count is the lever.** The shadow probe models a
+      level-synchronous wave that migrates *every* dispatched state; a real
+      steal-on-imbalance scheduler migrates only a fraction ``f`` of states (an
+      actual cross-worker steal). The gate now reports the **break-even steal
+      fraction ``f*``** (and accepts ``--steal-fraction``):
+      ``codegate`` goes GO at ``f* ≈ 10.5–13.3 %`` — i.e. if work-stealing
+      migrates fewer than ~1 in 9 states. Crucially, Phase 1's 4.2× cheaper
+      transport **widened that budget from ~3 % (old 60 ms transport) to
+      ~13 %**, making the scheduler's target ~4× easier rather than flipping
+      the gate itself.
+
+      **Consequence for 2c.** The remaining work is *not* further transport
+      reduction — it is a scheduler whose deque holds **worker-local live
+      states** (in their home Z3 context, never serialized) and serializes a
+      state into a :rust:struct:`StateMigrationPayload` **only when it is
+      offered for stealing** (surplus/imbalance), keeping steals ≤ ``f*``. Note
+      the current ``exploration/scheduler.rs`` does the opposite — it
+      ``detach_for_migration``s *every* child onto the deque (eager
+      serialization), the level-synchronous worst case the gate measured. The
+      anti-migration redesign is the live blocker for ``angr-vh834`` /
+      ``angr-1ilq.3``; ``angr-t3l5o`` delivered the transport win that makes it
+      feasible.
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
