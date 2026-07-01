@@ -525,9 +525,9 @@ impl Drop for PersistentPool {
 fn worker_thread(worker_id: usize, job_rx: Receiver<WaveMsg>, done_tx: Sender<WaveDone>) {
     // Owned for the worker's whole life, installed as the thread-local. Every
     // reattach mints ASTs into a context this thread alone touches; created and
-    // destroyed on the same thread. The per-wave `local` live queue is created
-    // inside `worker_loop`, so the irreducibly `!Send` `RustSimState`s in it can
-    // never escape this thread.
+    // destroyed on the same thread. The `local` live queue is created below and
+    // threaded into `worker_loop` by `&mut`, so the irreducibly `!Send`
+    // `RustSimState`s in it can never escape this thread.
     let z3ctx = Context::new(&Config::new());
     Context::set_thread_local(&z3ctx);
     // Warm per-worker block cache (angr-vh834 Work Item 3), created ONCE and
@@ -538,8 +538,18 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WaveMsg>, done_tx: Sender<Wa
     let mut block_cache: LruCache<u64, Arc<IRSB>> = LruCache::new(
         NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
     );
+    // Persistent worker-local live frontier (angr-nkoct increment 1). Owned for
+    // the worker's WHOLE life alongside the Z3 context and warm block cache, NOT
+    // recreated per wave. The `!Send` `RustSimState`s it holds stay stack-local to
+    // this OS thread and never escape. Any states a wave did not drain to
+    // quiescence are RETAINED here for the next wave and dispatched WITHOUT a
+    // detach/reattach round trip — the mechanism that stops the coordinator from
+    // re-migrating an already-resident frontier. Today every wave runs its subtree
+    // to quiescence, so `local` is empty at each barrier and this is behaviour-
+    // neutral for pure-Rust workloads; it sets up the win for the bounce case.
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
     while let Ok(WaveMsg::Run(job)) = job_rx.recv() {
-        worker_loop(&job, &z3ctx, &mut block_cache);
+        worker_loop(&job, &z3ctx, &mut block_cache, &mut local);
         // Release this worker's Arc clone BEFORE signaling done — the invariant
         // that makes the coordinator's `Arc::into_inner` safe.
         drop(job);
@@ -629,12 +639,28 @@ impl ParallelScheduler {
 /// The per-worker loop: dispatch a live local state (or steal+reattach one),
 /// process it, push live successors locally, shed surplus on imbalance, and
 /// collect terminals. Reads all per-wave state from `job`; `ctx` is the worker's
-/// persistent Z3 context and `block_cache` its warm per-worker IRSB cache (both
-/// installed once at spawn by [`worker_thread`] and reused across waves).
-fn worker_loop(job: &WaveJob, ctx: &Context, block_cache: &mut LruCache<u64, Arc<IRSB>>) {
-    // Worker-local live states: home Z3 context, never serialized. Created
-    // inside the worker so the `!Send` states it holds cannot escape the thread.
-    let mut local: VecDeque<RustSimState> = VecDeque::new();
+/// persistent Z3 context, `block_cache` its warm per-worker IRSB cache, and
+/// `local` its persistent live frontier — all owned by [`worker_thread`] and
+/// reused across waves (angr-nkoct increment 1).
+///
+/// `local` may carry states RETAINED from a previous wave (none today: waves run
+/// to quiescence, so it is empty at entry). Any such carry-over is counted into
+/// `job.pending` up front so quiescence accounting stays balanced — each retained
+/// state's terminal `pending.fetch_sub(1)` is matched by this add. With an empty
+/// `local` (the invariant today) this is `fetch_add(0)`, a no-op, so the
+/// byte-stable scheduler unit tests and single-threaded parity are unaffected.
+fn worker_loop(
+    job: &WaveJob,
+    ctx: &Context,
+    block_cache: &mut LruCache<u64, Arc<IRSB>>,
+    local: &mut VecDeque<RustSimState>,
+) {
+    // Account for any frontier retained across the wave barrier so `pending`
+    // (the quiescence detector) covers every state that will be dispatched and
+    // `fetch_sub`'d below. No-op when `local` is empty (today's invariant).
+    if !local.is_empty() {
+        job.pending.fetch_add(local.len(), Ordering::SeqCst);
+    }
 
     loop {
         if job.cancel.is_cancelled() {
@@ -736,7 +762,7 @@ fn worker_loop(job: &WaveJob, ctx: &Context, block_cache: &mut LruCache<u64, Arc
 
         // Shed surplus to the injector if a sibling is starving or we are over
         // the high-water mark. This is the only continue-path serde site.
-        offload_surplus(&mut local, &job.injector, &job.idle_workers, &job.counters);
+        offload_surplus(local, &job.injector, &job.idle_workers, &job.counters);
 
         job.pending.fetch_sub(1, Ordering::SeqCst);
 
