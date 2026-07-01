@@ -680,6 +680,59 @@ If Option A is chosen, a staged rollout:
       approximated — the persistent pool is the prerequisite that now makes it
       possible.
 
+   .. important:: **angr-nkoct investigation + partial delivery (2026-07-01) —
+      the ">4x migration-dominated" framing above was BIMODAL-INFLATED; the real
+      overhead is a linear ~3x, and the full fix is deferred.**
+
+      A focused measurement pass (bd ``parallel-cliff-was-bimodal-not-superlinear``,
+      ``bounce-reduction-low-roi-corpus``) re-derived the parallel picture with
+      deterministic counters + repeats instead of single-sample wall times:
+
+      * A reproducible stress bench landed —
+        ``tests/benchmarks/synthetic_examples/fork_solve_trap_W5_S8_M12`` — that
+        forces a Python-SimProcedure bounce on every leaf at ``T`` sequential
+        program points (identity hook in ``solve.py``), so the frontier
+        re-migrates once per callback level.
+      * On a trivial-solve isolation variant (``--s 2 --m 8``) the workers=4
+        overhead is **LINEAR** in the callback count (T=1..4:
+        2.36 / 3.26 / 4.25 / ~5.0 s, three repeats confirming ~5 s), roughly
+        **~3x** vs workers=1 (~1.7 s), ``peak_mem`` flat. The earlier
+        ">4x SLOWER / TIMEOUT" observations (and an interim ">26x super-linear
+        cliff" claim) were **bimodal-Z3 variance** — single-run timeouts read as
+        signal. See :doc:`rust_bimodal_variance`. Gate on completion +
+        deterministic counters, never a single cross-worker wall time.
+      * **Root cause confirmed:** the per-wave full-frontier re-migration
+        (``STASH_ACTIVE.drain()`` → detach → seed → workers → materialize is
+        ~1 wave per callback level, each re-seeding the ~40-wide frontier). Not
+        reattach *volume* pathology (``parallel_reattaches`` ~1/bounce) and not
+        GIL work (sub-ms).
+      * **Bounce-reduction is a dry well.** Across 32 corpus benches, 86% of the
+        4584 Rust→Python callbacks are inherent pyvex block lifts; the rest are
+        user Python hooks or symbolic-arg SimProcedure declines (e.g. ``fseek``
+        with a symbolic offset). Only ~20 corpus-wide are cleanly reducible.
+        The engine already stays in Rust for ~everything reducible.
+
+      **Delivered:** ``parallel_reattaches`` / ``parallel_bounce_roundtrips`` /
+      ``parallel_resume_reinjects`` accounting + the duplex-protocol scaffolding
+      (``WorkerCtl`` / ``WorkerUp`` / ``RunSession``, ``Send + Sync``-proven but
+      unwired), and **increment 1: the persistent worker-local frontier** —
+      ``local`` lifted into ``worker_thread`` so a state crosses the ctx boundary
+      at most once per pool-lifetime. Behaviour-neutral today (waves quiesce, so
+      ``local`` is empty at each barrier).
+
+      **Deferred (deliberate follow-up, modest ROI):** exploiting the persistent
+      frontier requires the **steady-state loop** — remove the wave barrier so
+      workers step continuously and frontiers survive across the Python-callback
+      boundary. Critically, the ``fork_solve_trap`` stress bench canNOT show the
+      win: because every leaf bounces every level, each state must reattach in
+      the *coordinator's* Z3 context to run its Python callback, so its
+      per-bounce migration is ~inherent (feeding the resumed state back to a
+      worker saves nothing). The fix pays off on **partial-bounce** workloads
+      (most states continue worker-locally, zero serde; only a few bounce) —
+      which needs a partial-bounce demonstration bench, not the stress bench. Net
+      honest read: the parallel engine is in reasonable shape; the remaining win
+      is real but modest and best pursued as a scoped effort.
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
