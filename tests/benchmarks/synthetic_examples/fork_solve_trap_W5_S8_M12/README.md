@@ -45,27 +45,35 @@ quiescence worker-locally with no bounce, so `workers>1` is non-monotonic
 
 `num_find=32`, `.venv/bin/python tests/benchmarks/run_single.py
 fork_solve_trap_W5_S8_M12 --engine rust`, `RUST_PARALLEL_WORKERS` swept (this
-box, pre-angr-nkoct-fix HEAD, single sample each):
+box, pre-angr-nkoct-fix HEAD):
 
-| workers | wall (s)          | found | peak RSS |
-|---------|-------------------|-------|----------|
-| 1       | ~34               | 32    | ~0.7 GB  |
-| 2       | TIMEOUT (>180)    | 32    | < 3 GB   |
-| 4       | ~45               | 32    | ~0.9 GB  |
+| workers | wall              | found |
+|---------|-------------------|-------|
+| 1       | ~34 s             | 32    |
+| 2       | TIMEOUT (>180 s)  | 32    |
+| 4       | TIMEOUT (>180 s)  | 32    |
 
-Both `workers=2` and `workers=4` are slower than `workers=1` — the
-migration-dominated regression angr-nkoct must cure. Two caveats:
+`workers>1` is *catastrophically* slower — a **super-linear** callback-boundary
+pathology, not a linear "migration overhead". Characterized on a trivial-solve
+variant (`--s 2 --m 8`, so Z3 cost is negligible and the callback/migration
+machinery is isolated):
 
-- **Non-monotonic / bimodal.** `workers=2` is *dramatically* worse than
-  `workers=4` (2 workers serialize the offload/re-migration churn; 4 absorb it
-  faster) and single-sample wall times swing with the documented bimodal-Z3
-  variance (see `docs/advanced-topics/rust_bimodal_variance.rst`). Do NOT gate
-  on an absolute cross-worker threshold.
-- **Use same-config before/after.** The robust acceptance measurement is the
-  SAME worker count before vs after the fix (e.g. `workers=4`: ~45s -> target
-  well under `w1/2`), which cancels the bimodal variance. The fix's counter
-  proof (`parallel_reattaches` independent of bounce-level count) is the
-  primary GO signal; wall time is the secondary, variance-prone one.
+- `w1` completes in **~1.7 s** (181 callbacks, found=32).
+- `w4` wall **explodes** as the trap count `T` rises: `T=1` 2.5 s -> `T=2` 3.4 s
+  -> `T=4` **TIMEOUT (>90 s)** — a >26x cliff for a ~2x rise in callbacks.
+- Across that cliff `parallel_reattaches` stays ~linear (~1 per bounce: 43 at
+  T=1, 75 at T=2) and `gil_work_time_ns` is sub-millisecond. So the blow-up is
+  **neither reattach volume nor GIL work** — it is the per-Python-callback
+  `run()` re-entry (each of ~T*2^W bounces surfaces one callback, returns to
+  Python, and re-enters the parallel coordinator). That is the cost angr-nkoct
+  targets by keeping frontiers worker-local across the callback boundary.
+
+**Measurement guidance.** Wall time is bimodal (`docs/advanced-topics/
+rust_bimodal_variance.rst`) and often a timeout pre-fix, so gate on
+(a) *completion* — the fix must make `w2`/`w4` finish well under `w1` — and
+(b) the deterministic counters (`parallel_reattaches`,
+`parallel_bounce_roundtrips`, `python_callback_count`), not an absolute
+cross-worker wall threshold. Use the same worker count before vs after.
 
 ## Files
 

@@ -69,6 +69,8 @@ int main(void) {
      * workers>1. This is the migration-dominated cost the bench manufactures. */
     acc = trap_point(acc);
     acc = trap_point(acc);
+    acc = trap_point(acc);
+    acc = trap_point(acc);
 
     /* Partial-mask match: reaching reach_target requires the low M bits of the
      * mixed accumulator to equal a fixed pattern. A partial match over a
