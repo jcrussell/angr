@@ -317,6 +317,14 @@ pub struct RustExplorationManager {
     /// Denominator for the per-task duration the kill-gate's >100ms target uses
     /// (avg task duration = wall_time / parallel_tasks, computed Python-side).
     pub(crate) parallel_tasks: u64,
+    /// angr-vh834 steady-state redesign (Phase 1) — duplex-protocol accounting,
+    /// folded from `SchedulerStats` after each wave. `parallel_reattaches` counts
+    /// injector-steal reattaches (observability of the migration path);
+    /// `parallel_bounce_roundtrips` and `parallel_resume_reinjects` are wired in
+    /// later phases and stay 0 for now.
+    pub(crate) parallel_reattaches: u64,
+    pub(crate) parallel_bounce_roundtrips: u64,
+    pub(crate) parallel_resume_reinjects: u64,
     /// Largest schedulable frontier width (active stash + dispatched state)
     /// observed in a single step — the independent-state count over time.
     pub(crate) parallel_max_active_width: u64,
@@ -457,6 +465,9 @@ impl RustExplorationManager {
                 .unwrap_or(1),
             parallel_migrations: 0,
             parallel_tasks: 0,
+            parallel_reattaches: 0,
+            parallel_bounce_roundtrips: 0,
+            parallel_resume_reinjects: 0,
             parallel_max_active_width: 0,
             parallel_width_hist: [0; 5],
             parallel_worker_of: HashMap::new(),

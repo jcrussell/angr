@@ -153,6 +153,15 @@ impl RustExplorationManager {
         // `python_callback_time_ns` the GIL/callback fraction.
         dict.set_item("parallel_migrations", self.parallel_migrations)?;
         dict.set_item("parallel_tasks", self.parallel_tasks)?;
+        // angr-vh834 steady-state redesign (Phase 1): duplex-protocol accounting.
+        // `parallel_reattaches` tracks injector-steal reattaches; the other two
+        // stay 0 until the bounce / resume protocols are wired in later phases.
+        dict.set_item("parallel_reattaches", self.parallel_reattaches)?;
+        dict.set_item(
+            "parallel_bounce_roundtrips",
+            self.parallel_bounce_roundtrips,
+        )?;
+        dict.set_item("parallel_resume_reinjects", self.parallel_resume_reinjects)?;
         dict.set_item("parallel_num_workers", self.parallel_num_workers)?;
         dict.set_item("parallel_real_workers", self.parallel_real_workers)?;
         dict.set_item("parallel_max_active_width", self.parallel_max_active_width)?;

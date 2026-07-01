@@ -206,13 +206,28 @@ impl TaskOutcome {
 
 /// Counters accumulated across all workers during a run. Shared as atomics, read
 /// back into a [`SchedulerStats`] after the pool joins.
+///
+/// `pub(crate)` so the coordinator's forthcoming duplex-protocol `RunSession`
+/// (run_loop.rs) can own one directly (angr-vh834 steady-state redesign, Phase
+/// 1). The scheduler still constructs and reads it here.
 #[derive(Default)]
-struct SchedulerCounters {
+pub(crate) struct SchedulerCounters {
     local_dispatches: AtomicUsize,
     injector_dispatches: AtomicUsize,
     surplus_offloaded: AtomicUsize,
     materialized_terminals: AtomicUsize,
     summarized_terminals: AtomicUsize,
+    /// Payloads pulled from the injector and `reattach`ed into a worker's own Z3
+    /// context (the injector-steal path). Observability only — equals
+    /// `injector_dispatches` today; the two diverge once the steady-state
+    /// coordinator reattaches on paths other than an injector steal (Phase 2+).
+    reattaches: AtomicUsize,
+    /// Bounce states that made a full worker->coordinator->worker round trip.
+    /// Wired in a later phase (steady-state bounce protocol); 0 for now.
+    bounce_roundtrips: AtomicUsize,
+    /// States re-injected after a Python resume callback. Wired in a later phase
+    /// (Resume protocol); 0 for now.
+    resume_reinjects: AtomicUsize,
 }
 
 /// Per-run accounting, the basis for the overhead-gate steal-fraction check.
@@ -240,6 +255,15 @@ pub struct SchedulerStats {
     pub materialized_terminals: usize,
     /// Dead-path terminals recorded as summaries (no serde).
     pub summarized_terminals: usize,
+    /// Payloads reattached into a worker's own Z3 context (injector-steal path).
+    /// Observability only; see [`SchedulerCounters::reattaches`].
+    pub reattaches: usize,
+    /// Bounce states that round-tripped worker->coordinator->worker (0 until the
+    /// steady-state bounce protocol lands).
+    pub bounce_roundtrips: usize,
+    /// States re-injected after a Python resume (0 until the Resume protocol
+    /// lands).
+    pub resume_reinjects: usize,
 }
 
 impl SchedulerStats {
@@ -346,6 +370,9 @@ impl WaveJob {
             surplus_offloaded: self.counters.surplus_offloaded.load(Ordering::SeqCst),
             materialized_terminals: self.counters.materialized_terminals.load(Ordering::SeqCst),
             summarized_terminals: self.counters.summarized_terminals.load(Ordering::SeqCst),
+            reattaches: self.counters.reattaches.load(Ordering::SeqCst),
+            bounce_roundtrips: self.counters.bounce_roundtrips.load(Ordering::SeqCst),
+            resume_reinjects: self.counters.resume_reinjects.load(Ordering::SeqCst),
         }
     }
 
@@ -648,7 +675,12 @@ fn worker_loop(job: &WaveJob, ctx: &Context, block_cache: &mut LruCache<u64, Arc
                     // guard inside `reattach` holds because `ctx` is exactly this
                     // thread's thread-local.
                     match payload.reattach(ctx) {
-                        Ok(state) => state,
+                        Ok(state) => {
+                            // Observability only (angr-vh834 Phase 1): count every
+                            // injector-steal reattach. No routing change.
+                            job.counters.reattaches.fetch_add(1, Ordering::SeqCst);
+                            state
+                        }
                         Err(err) => {
                             // Unreachable in practice (we set our own ctx as
                             // thread-local above), but never silently keep a
