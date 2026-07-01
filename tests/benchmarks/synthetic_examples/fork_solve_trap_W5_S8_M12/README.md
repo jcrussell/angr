@@ -47,33 +47,39 @@ quiescence worker-locally with no bounce, so `workers>1` is non-monotonic
 fork_solve_trap_W5_S8_M12 --engine rust`, `RUST_PARALLEL_WORKERS` swept (this
 box, pre-angr-nkoct-fix HEAD):
 
-| workers | wall              | found |
-|---------|-------------------|-------|
-| 1       | ~34 s             | 32    |
-| 2       | TIMEOUT (>180 s)  | 32    |
-| 4       | TIMEOUT (>180 s)  | 32    |
+The **deterministic** shape (isolated on a trivial-solve variant `--s 2 --m 8`,
+so Z3 cost is negligible and the callback/migration machinery is what's
+measured), workers=4, sweeping the trap count `T` (each ~1 wave per trap level):
 
-`workers>1` is *catastrophically* slower — a **super-linear** callback-boundary
-pathology, not a linear "migration overhead". Characterized on a trivial-solve
-variant (`--s 2 --m 8`, so Z3 cost is negligible and the callback/migration
-machinery is isolated):
+| T (bounce levels) | w1     | w4     |
+|-------------------|--------|--------|
+| 1                 | —      | 2.36 s |
+| 2                 | —      | 3.26 s |
+| 3                 | —      | 4.25 s |
+| 4                 | ~1.7 s | ~5.0 s (4.97/5.05/5.20, 3 repeats) |
 
-- `w1` completes in **~1.7 s** (181 callbacks, found=32).
-- `w4` wall **explodes** as the trap count `T` rises: `T=1` 2.5 s -> `T=2` 3.4 s
-  -> `T=4` **TIMEOUT (>90 s)** — a >26x cliff for a ~2x rise in callbacks.
-- Across that cliff `parallel_reattaches` stays ~linear (~1 per bounce: 43 at
-  T=1, 75 at T=2) and `gil_work_time_ns` is sub-millisecond. So the blow-up is
-  **neither reattach volume nor GIL work** — it is the per-Python-callback
-  `run()` re-entry (each of ~T*2^W bounces surfaces one callback, returns to
-  Python, and re-enters the parallel coordinator). That is the cost angr-nkoct
-  targets by keeping frontiers worker-local across the callback boundary.
+So the parallel overhead is **LINEAR** in the callback count — ~1 s per trap
+level at w4 — a roughly **~3x** slowdown vs w1, `peak_mem` flat (~621 MB),
+`parallel_reattaches` ~1 per bounce, `gil_work_time_ns` sub-millisecond. The
+cost is the per-wave frontier re-migration (each callback level re-seeds the
+~40-wide frontier: detach+reattach serde), NOT a super-linear pathology.
 
-**Measurement guidance.** Wall time is bimodal (`docs/advanced-topics/
-rust_bimodal_variance.rst`) and often a timeout pre-fix, so gate on
-(a) *completion* — the fix must make `w2`/`w4` finish well under `w1` — and
+**Do NOT trust single-sample wall times.** On the full-solve `S8/M12` variant
+the same run swings from ~45 s to a >180 s "TIMEOUT" run-to-run: that is the
+documented **bimodal-Z3 variance** (`docs/advanced-topics/rust_bimodal_variance.rst`),
+not a deterministic cliff. (An earlier revision of this file mis-read those
+bimodal timeouts as a ">26x super-linear cliff" — corrected: it is linear.) Gate
+on (a) *completion* under the same worker count before vs after the fix and
 (b) the deterministic counters (`parallel_reattaches`,
-`parallel_bounce_roundtrips`, `python_callback_count`), not an absolute
-cross-worker wall threshold. Use the same worker count before vs after.
+`parallel_bounce_roundtrips`), never an absolute cross-worker wall threshold.
+
+**Scope note.** Because *every* leaf of this bench bounces to Python at every
+trap level, each state must reattach in the coordinator's Z3 context to run its
+callback — so its per-bounce migration is largely *inherent* and the
+persistent-frontier fix helps it only modestly. The fix's real target is
+**partial-bounce** workloads, where most states continue worker-locally (zero
+serde) and only a few bounce; there the eliminated per-wave re-seed is the whole
+cost. This bench is the migration *stress* case, not the ideal *win* case.
 
 ## Files
 
