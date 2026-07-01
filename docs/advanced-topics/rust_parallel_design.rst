@@ -620,6 +620,66 @@ If Option A is chosen, a staged rollout:
       Z3-context churn); (3) a **shared warm block cache** (eliminate the
       GIL-serialized per-worker re-lifts).
 
+   .. important:: **Persistent pool + warm cache delivered + measured
+      (angr-vh834 Work Items 1-3, 2026-07-01) — still NO wall-clock GO; the
+      remaining dominant cost is per-wave full-frontier migration, and that
+      is architectural.**
+
+      All three follow-ups from the note above landed and are correct:
+
+      * A wide-and-slow synthetic bench (commit ``3214347ac``,
+        ``tests/benchmarks/synthetic_examples/fork_solve_W6_S8``): tunable fork
+        width ``W`` and per-state Z3 solve cost ``S``, clearing the
+        ``run_width_audit.py`` GO shape (``frac_ge3 ~ 0.80``, ``ms/task`` in the
+        thousands) — the wide-AND-slow workload the corpus previously lacked.
+      * A **persistent worker pool** (commit ``fa441e13a``): N long-lived
+        threads each own a Z3 context for the pool's life, fed one wave at a
+        time over ``mpsc`` channels (``PersistentPool`` / ``WaveJob`` /
+        ``worker_thread`` in ``exploration/scheduler.rs``). Kills the per-wave
+        ``thread::scope`` + ``Context::new`` churn.
+      * A **warm per-worker block cache** (commit ``ec0a0b07d``): each worker's
+        ``LruCache<u64, Arc<IRSB>>`` persists across dispatches and waves;
+        ``block_cache_hits`` / ``block_cache_misses`` surfaced in ``mgr.stats()``.
+
+      Correctness held throughout (workers=1 byte-identical; workers=2
+      reproduces the found set — 4/4 ``test_parallel_wave``, 9/9 scheduler unit
+      tests, full rust suite green modulo one pre-existing snapshot failure).
+
+      **But there is still no wall-clock GO, and the measurement now isolates
+      why.** Two findings:
+
+      1. **num_find=1 (first-find) on a wide frontier is anti-parallel**
+         regardless of overhead: single-threaded BFS short-circuits at the
+         first satisfiable find (~1 ``satisfiable()``), while the parallel wave
+         speculatively runs the whole frontier's find-checks before the
+         cancellation lands. ``fork_solve_W6_S8`` num_find=1: workers=1 = 59.7s
+         vs workers=2 timed out > 180s. The parallel win therefore requires
+         **no-early-exit / exhaustive** workloads (find-all, coverage,
+         bug-sweep). See bd ``parallel-numfind1-speculative-waste``.
+      2. **Even exhaustive, per-wave full-frontier migration dominates.**
+         ``fork_solve_trap_W5_S8_M12`` exhaustive (found=32, ``frac_ge3 ~
+         0.99``, max width 45, ~119 steps): workers=1 = 32s, workers=2 and
+         workers=4 both timed out > 140s (>4x SLOWER). The warm cache was
+         near-perfect (15 misses / 590k hits), so block-lifting is *not* the
+         cost — the per-wave Z3-AST reattach of deep-constraint states is.
+         ``run_loop_parallel`` is still level-synchronous: every wave it drains
+         the entire ``STASH_ACTIVE`` into a shared ``Injector`` and workers
+         ``reattach`` each state into their own context. The anti-migration
+         scheduler (``angr-729vn``) keeps successors worker-local *within* a
+         wave, but the wave *boundary* re-migrates the full frontier. The
+         persistent pool and warm cache do not touch this cost. See bd
+         ``parallel-per-wave-migration-dominates``.
+
+      **Next lever (architectural): persistent worker-LOCAL frontiers ACROSS
+      waves** (``angr-nkoct``). Each persistent worker keeps its own live
+      frontier in its own Z3 context for the whole run; states stay put
+      wave-to-wave with zero serde, and cross-context migration happens only on
+      a genuine work-stealing steal or a terminal/callback that must reach the
+      coordinator. This is the real Option A (translate only at task
+      boundaries) that the current Model-B level-synchronous loop only
+      approximated — the persistent pool is the prerequisite that now makes it
+      possible.
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
