@@ -159,6 +159,14 @@
     "state_creations": 0,
     "steps": 0
   },
+  "fork_solve_W6_S8": {
+    "callback_count": 0,
+    "peak_memory_mb": 385.0,
+    "python_time": null,
+    "rust_time": 61.85,
+    "state_creations": 0,
+    "steps": 9
+  },
   "google2016_unbreakable_0": {
     "callback_count": 1,
     "peak_memory_mb": 428.2,
