@@ -51,8 +51,8 @@ use super::core_outcome::{
     materialize_bounce_forks, run_post_step_core,
 };
 use super::scheduler::{
-    CancelToken, ParallelScheduler, TaskOutcome, TerminalDisposition as SchedDisposition,
-    TerminalSummary,
+    CancelToken, PersistentPool, ProcessFn, TaskOutcome, TerminalDisposition as SchedDisposition,
+    TerminalSummary, WaveJob,
 };
 use super::step_core::run_interpreter_step_core;
 use crate::interpreter::BLOCK_CACHE_CAPACITY;
@@ -541,17 +541,29 @@ impl RustExplorationManager {
                 ));
             }
 
-            // Build the per-wave shared context.
+            // Lazily spawn the persistent worker pool on the first wave. Its N
+            // long-lived threads each own a Z3 context for the pool's whole life,
+            // so the thread-spawn + context-creation cost is paid ONCE per manager
+            // instead of once per wave (angr-vh834 Work Item 2).
+            if self.parallel_pool.is_none() {
+                self.parallel_pool = Some(PersistentPool::new(workers));
+            }
+
+            // Build the per-wave shared context. `prof` and `shared` are `Arc` so
+            // both the GIL-free `'static` worker closure and this coordinator can
+            // reach them: the closure holds a clone for the duration of the wave;
+            // once it is dropped (after the barrier) the coordinator recovers sole
+            // ownership to fold `prof` and read `shared`'s maps.
             let ctx = self.step_context();
-            let prof = ParallelProfiling::default();
-            let shared = ParallelShared {
+            let prof = Arc::new(ParallelProfiling::default());
+            let shared = Arc::new(ParallelShared {
                 root_map: Mutex::new(FxHashMap::default()),
                 kind_map: Mutex::new(FxHashMap::default()),
                 counters: Mutex::new(Vec::new()),
                 found_counter: AtomicUsize::new(self.found_count()),
                 num_find: self.num_find,
                 stepped: AtomicUsize::new(0),
-            };
+            });
             let mut seeds: Vec<StateMigrationPayload> = Vec::with_capacity(drained.len());
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
@@ -562,29 +574,51 @@ impl RustExplorationManager {
                 }
             }
 
-            let native_procs = &self.native_procedures;
-            let native_syscalls = &self.native_syscalls;
-            let scheduler = ParallelScheduler::new(workers);
+            // Snapshot the two native registries (O(1) `Arc::clone`) and clone the
+            // callbacks WHILE HOLDING THE GIL — `Py<T>::clone` needs the GIL, so
+            // it must never run inside a worker.
+            let wave_procs = Arc::clone(&self.native_procedures);
+            let wave_syscalls = Arc::clone(&self.native_syscalls);
+            let wave_callbacks = callbacks.clone();
+            let wave_prof = Arc::clone(&prof);
+            let wave_shared = Arc::clone(&shared);
 
-            // Release the GIL and run the pool to quiescence. The worker closure
-            // is GIL-free; its callbacks self-acquire via `Python::attach`
-            // (Phase 4). It is `Send + Sync` and touches no `&mut self`.
-            let (materialized, _summaries, stats) = py.detach(|| {
-                scheduler.run_instrumented(seeds, |state, cancel| {
-                    parallel_process_state(
-                        state,
-                        cancel,
-                        &ctx,
-                        &callbacks,
-                        &prof,
-                        native_procs,
-                        native_syscalls,
-                        &shared,
-                    )
-                })
+            // The GIL-free per-state processor. It owns `ctx` and `Arc`-shares the
+            // rest, so it is `'static` and lives in the `Arc<WaveJob>` the
+            // persistent workers share. Its callbacks self-acquire the GIL via
+            // `Python::attach` (Phase 4); it touches no `&mut self`.
+            let process: Box<ProcessFn> = Box::new(move |state, cancel| {
+                parallel_process_state(
+                    state,
+                    cancel,
+                    &ctx,
+                    &wave_callbacks,
+                    &wave_prof,
+                    &wave_procs,
+                    &wave_syscalls,
+                    &wave_shared,
+                )
             });
+            let job = WaveJob::new(seeds, process);
+
+            // Release the GIL and run the wave to quiescence on the persistent
+            // pool. Workers keep live successors thread-local (the f≈0 path) and
+            // materialize only found/bounce/unconstrained terminals across the
+            // barrier.
+            let pool = self
+                .parallel_pool
+                .as_ref()
+                .expect("parallel pool just created");
+            let (mut job, stats) = py.detach(|| pool.run_wave(job));
 
             // ---- Back on the GIL thread: apply deferred mutations. ----
+
+            // Recover the materialized terminals, then DROP the wave (and its
+            // process closure) to release the closure's `Arc` clones of `prof` /
+            // `shared` — required before `Arc::into_inner` can recover sole
+            // ownership of `shared` below.
+            let materialized = job.take_results();
+            drop(job);
 
             // M2: the count of dispatches that actually took an interpreter step
             // and produced a Successors/Terminal-equivalent outcome (the workers'
@@ -592,8 +626,11 @@ impl RustExplorationManager {
             // including pre-step find/avoid routes and bounces). See `stepped`.
             let worker_stepped = shared.stepped.load(Ordering::SeqCst) as u64;
 
-            // Fold the workers' solver timing + counters into the manager.
+            // Fold the workers' solver timing into the manager (via the `Arc`),
+            // then recover sole ownership of `shared` to drain its maps.
             prof.fold_into(&mut self.profiling.accumulated_stats);
+            let shared = Arc::into_inner(shared)
+                .expect("BUG: ParallelShared still referenced after the wave barrier");
             for counters in shared.counters.into_inner().expect("counters poisoned") {
                 self.fold_core_counters(counters);
             }

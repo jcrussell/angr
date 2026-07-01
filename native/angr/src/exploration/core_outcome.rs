@@ -276,6 +276,15 @@ impl ParallelProfiling {
     }
 }
 
+// Compile-time proof the profiling accumulator is `Send + Sync`, so the
+// persistent worker pool can `Arc`-share one across all workers for a wave
+// (angr-vh834 Phase 6 / Work Item 2). All fields are `AtomicU64`, so this holds;
+// the assertion fails the build (not a run) if a non-`Send`/`Sync` field lands.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ParallelProfiling>();
+};
+
 /// Manager-level (non-`accumulated_stats`) counter deltas the extracted arms
 /// produce. Each step touches at most one proc / syscall, so the maps usually
 /// hold a single entry. The coordinator folds these into the manager fields.

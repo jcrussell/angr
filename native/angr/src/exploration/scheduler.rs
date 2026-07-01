@@ -63,7 +63,9 @@ use crate::state::{RustSimState, StateMigrationPayload};
 use crossbeam_deque::{Injector, Steal};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use z3::{Config, Context};
 
 /// High-water mark for a worker's local live queue. Above this the worker
@@ -258,9 +260,256 @@ impl SchedulerStats {
     }
 }
 
-/// A work-stealing pool that explores worker-local live states across
-/// `num_workers` threads, each owning a private Z3 context, serializing a state
-/// only on an actual imbalance steal or to materialize a found terminal.
+/// A boxed, thread-safe per-state processor. Production (`run_loop.rs`) wraps
+/// `parallel_process_state`, capturing the owned `StepContext` plus `Arc`-shared
+/// callbacks / profiling / native registries / `ParallelShared`; the scheduler
+/// unit tests wrap synthetic closures. Boxing behind a `dyn` (one indirect call
+/// per dispatch — negligible) keeps [`WaveJob`] a single *concrete* `Send + Sync`
+/// type, so [`PersistentPool`]'s channels can carry `Arc<WaveJob>` without a
+/// generic parameter leaking onto the manager's `parallel_pool` field, and keeps
+/// this module fully decoupled from the run-loop's config types.
+pub(crate) type ProcessFn = dyn Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync;
+
+/// All per-wave state a worker touches, fed to the persistent pool as an
+/// `Arc<WaveJob>`. It bundles the coordination locals the former
+/// `run_instrumented` held on its stack (`injector`, `pending`, a fresh
+/// per-wave `cancel`, `results` / `summaries`, `idle_workers`, `counters`) with
+/// the boxed [`ProcessFn`] that owns/`Arc`-shares every input the per-state work
+/// needs. The coordinator recovers sole ownership after the wave barrier via
+/// `Arc::into_inner` (sound because each worker drops its clone before signaling
+/// `WaveDone`).
+pub(crate) struct WaveJob {
+    injector: Injector<StateMigrationPayload>,
+    pending: AtomicUsize,
+    cancel: CancelToken,
+    results: Mutex<Vec<StateMigrationPayload>>,
+    summaries: Mutex<Vec<TerminalSummary>>,
+    idle_workers: AtomicUsize,
+    counters: SchedulerCounters,
+    /// Initial seed count (the `SchedulerStats::seeds` field).
+    seeds: usize,
+    /// The per-state processor, invoked once per dispatched state.
+    process: Box<ProcessFn>,
+}
+
+// Compile-time proof the wave payload is `Send + Sync` — the property the
+// persistent worker pool depends on to share an `Arc<WaveJob>` across threads.
+// Mirrors the assertion on `StepContext` (step_core.rs). A non-`Send`/`Sync`
+// field (e.g. a captured `Rc` in the process closure) fails the build, not a run.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<WaveJob>();
+};
+
+impl WaveJob {
+    /// Build a wave from its seed payloads and a per-state processor. Seeds are
+    /// pushed onto the injector and counted into `pending`; the `CancelToken` is
+    /// fresh and private to this wave.
+    pub(crate) fn new(initial: Vec<StateMigrationPayload>, process: Box<ProcessFn>) -> Self {
+        let seeds = initial.len();
+        let injector = Injector::<StateMigrationPayload>::new();
+        for payload in initial {
+            injector.push(payload);
+        }
+        Self {
+            injector,
+            pending: AtomicUsize::new(seeds),
+            cancel: CancelToken::new(),
+            results: Mutex::new(Vec::new()),
+            summaries: Mutex::new(Vec::new()),
+            idle_workers: AtomicUsize::new(0),
+            counters: SchedulerCounters::default(),
+            seeds,
+            process,
+        }
+    }
+
+    /// Snapshot the accumulated counters into a [`SchedulerStats`]. Call after
+    /// the wave barrier, when this thread is the sole owner.
+    pub(crate) fn stats(&self) -> SchedulerStats {
+        SchedulerStats {
+            seeds: self.seeds,
+            local_dispatches: self.counters.local_dispatches.load(Ordering::SeqCst),
+            injector_dispatches: self.counters.injector_dispatches.load(Ordering::SeqCst),
+            surplus_offloaded: self.counters.surplus_offloaded.load(Ordering::SeqCst),
+            materialized_terminals: self.counters.materialized_terminals.load(Ordering::SeqCst),
+            summarized_terminals: self.counters.summarized_terminals.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Consume the recovered wave into `(materialized payloads, terminal
+    /// summaries, stats)` — the shape the old `run_instrumented` returned.
+    pub(crate) fn into_results(
+        self,
+    ) -> (
+        Vec<StateMigrationPayload>,
+        Vec<TerminalSummary>,
+        SchedulerStats,
+    ) {
+        let stats = self.stats();
+        (
+            self.results.into_inner().expect("results mutex poisoned"),
+            self.summaries
+                .into_inner()
+                .expect("summaries mutex poisoned"),
+            stats,
+        )
+    }
+
+    /// Take the materialized terminal payloads out of the recovered wave,
+    /// leaving the rest of the job (dropped by the caller). Used by the
+    /// coordinator, which reads `summaries` separately (or ignores them).
+    pub(crate) fn take_results(&mut self) -> Vec<StateMigrationPayload> {
+        std::mem::take(&mut *self.results.lock().expect("results mutex poisoned"))
+    }
+}
+
+/// A message to a persistent worker: run one wave, or shut down.
+enum WaveMsg {
+    Run(Arc<WaveJob>),
+    Shutdown,
+}
+
+/// A worker's per-wave completion signal — the wave-barrier token the
+/// coordinator counts `num_workers` of.
+struct WaveDone {
+    #[allow(dead_code)] // carried for debuggability / future targeted diagnostics
+    worker_id: usize,
+}
+
+/// `num_workers` long-lived OS threads, each owning a private Z3 context for the
+/// pool's whole life, fed one [`WaveJob`] at a time over per-worker channels.
+///
+/// This replaces the per-wave `std::thread::scope` + fresh `z3::Context::new()`
+/// that taxed every wave with a thread-spawn + Z3-context-creation cost (which
+/// erased any parallel speedup). Each worker installs its context ONCE at spawn;
+/// because the worker is pinned to one OS thread for the pool's life, that
+/// context is stable across waves, so `reattach`'s `target_ctx ==
+/// Context::thread_local()` pointer-equality guard keeps holding every wave.
+pub(crate) struct PersistentPool {
+    job_txs: Vec<Sender<WaveMsg>>,
+    /// Wrapped in a `Mutex` purely so `PersistentPool: Sync` holds — required
+    /// because the coordinator runs `run_wave` inside `py.detach`, whose closure
+    /// captures `&PersistentPool` and must be `Send` (`std::sync::mpsc::Receiver`
+    /// is itself `!Sync`). Only the single coordinator thread ever receives, so
+    /// the lock is uncontended.
+    done_rx: Mutex<Receiver<WaveDone>>,
+    handles: Vec<JoinHandle<()>>,
+    num_workers: usize,
+}
+
+impl PersistentPool {
+    /// Spawn `num_workers` (clamped to >= 1) persistent worker threads. Each
+    /// creates its Z3 context once and then blocks waiting for the first wave.
+    pub(crate) fn new(num_workers: usize) -> Self {
+        let num_workers = num_workers.max(1);
+        let (done_tx, done_rx) = mpsc::channel::<WaveDone>();
+        let mut job_txs = Vec::with_capacity(num_workers);
+        let mut handles = Vec::with_capacity(num_workers);
+        for worker_id in 0..num_workers {
+            let (job_tx, job_rx) = mpsc::channel::<WaveMsg>();
+            let done_tx = done_tx.clone();
+            job_txs.push(job_tx);
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("angr-worker-{worker_id}"))
+                    .spawn(move || worker_thread(worker_id, job_rx, done_tx))
+                    .expect("failed to spawn persistent worker thread"),
+            );
+        }
+        Self {
+            job_txs,
+            done_rx: Mutex::new(done_rx),
+            handles,
+            num_workers,
+        }
+    }
+
+    pub(crate) fn num_workers(&self) -> usize {
+        self.num_workers
+    }
+
+    /// Run one wave to quiescence (or cancellation) across all workers and hand
+    /// back the recovered [`WaveJob`] + its [`SchedulerStats`].
+    ///
+    /// Broadcasts an `Arc<WaveJob>` clone to every worker, blocks recv-ing
+    /// exactly `num_workers` [`WaveDone`] (the barrier), then `Arc::into_inner`
+    /// recovers sole ownership. That is sound *because* each worker drops its
+    /// `Arc` clone BEFORE signaling `WaveDone` (see [`worker_thread`]) and the
+    /// mpsc send→recv edge establishes the happens-before, so once all N dones
+    /// are received the strong count is exactly 1. The `Option` is unwrapped
+    /// with an explicit panic (not a silent `.expect`) because a `None` here is
+    /// a hard invariant violation, not an expected error.
+    pub(crate) fn run_wave(&self, job: WaveJob) -> (WaveJob, SchedulerStats) {
+        let job = Arc::new(job);
+        for tx in &self.job_txs {
+            tx.send(WaveMsg::Run(Arc::clone(&job)))
+                .expect("persistent worker died before wave dispatch");
+        }
+        {
+            let done_rx = self.done_rx.lock().expect("done_rx mutex poisoned");
+            for _ in 0..self.num_workers {
+                done_rx
+                    .recv()
+                    .expect("persistent worker died before signaling WaveDone");
+            }
+        }
+        let job = Arc::into_inner(job).unwrap_or_else(|| {
+            panic!(
+                "BUG: a worker still holds the WaveJob Arc after the wave barrier \
+                 (the drop(job)-before-WaveDone invariant was violated)"
+            )
+        });
+        let stats = job.stats();
+        (job, stats)
+    }
+}
+
+impl Drop for PersistentPool {
+    /// Broadcast `Shutdown` to every worker, then join. Each worker's Z3 context
+    /// drops on its own thread — never freed cross-thread.
+    fn drop(&mut self) {
+        for tx in &self.job_txs {
+            let _ = tx.send(WaveMsg::Shutdown);
+        }
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// A persistent worker: install a private Z3 context ONCE, then loop running one
+/// wave per `WaveMsg::Run`. It drops its `Arc<WaveJob>` clone BEFORE sending
+/// `WaveDone` so the coordinator's `Arc::into_inner` recovers sole ownership. On
+/// `Shutdown` (or a closed channel at pool teardown) it falls out of the loop,
+/// dropping its Z3 context on this same thread (no leak, no cross-thread free).
+fn worker_thread(worker_id: usize, job_rx: Receiver<WaveMsg>, done_tx: Sender<WaveDone>) {
+    // Owned for the worker's whole life, installed as the thread-local. Every
+    // reattach mints ASTs into a context this thread alone touches; created and
+    // destroyed on the same thread. The per-wave `local` live queue is created
+    // inside `worker_loop`, so the irreducibly `!Send` `RustSimState`s in it can
+    // never escape this thread.
+    let z3ctx = Context::new(&Config::new());
+    Context::set_thread_local(&z3ctx);
+    while let Ok(WaveMsg::Run(job)) = job_rx.recv() {
+        worker_loop(&job, &z3ctx);
+        // Release this worker's Arc clone BEFORE signaling done — the invariant
+        // that makes the coordinator's `Arc::into_inner` safe.
+        drop(job);
+        if done_tx.send(WaveDone { worker_id }).is_err() {
+            // Coordinator is gone; nothing to synchronize with. Bail so the
+            // context drops on this thread.
+            break;
+        }
+    }
+    // `WaveMsg::Shutdown` / channel closed / coordinator gone: `z3ctx` drops here.
+}
+
+/// A thin compatibility wrapper over a one-shot [`PersistentPool`], preserving
+/// the old `ParallelScheduler` surface for the byte-stable scheduler unit tests
+/// (`#[cfg(test)]` below). The run loop drives a long-lived `PersistentPool`
+/// directly; this spins one up per call, runs a single [`WaveJob`] built from
+/// the caller's synthetic `process`, and tears the pool down on return.
 pub struct ParallelScheduler {
     num_workers: usize,
 }
@@ -281,13 +530,18 @@ impl ParallelScheduler {
     /// materialized terminal payloads. Convenience wrapper over
     /// [`run_instrumented`](Self::run_instrumented) that drops the summaries and
     /// stats.
+    ///
+    /// `process` must be `'static` (unlike the former `thread::scope` API, which
+    /// let it borrow the caller's stack): the persistent pool hands each worker
+    /// an `Arc<WaveJob>` that outlives this frame, so the closure must own its
+    /// captures.
     pub fn run<F>(
         &self,
         initial: Vec<StateMigrationPayload>,
         process: F,
     ) -> Vec<StateMigrationPayload>
     where
-        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync,
+        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync + 'static,
     {
         self.run_instrumented(initial, process).0
     }
@@ -298,15 +552,8 @@ impl ParallelScheduler {
     /// `process` runs on a worker thread with that worker's own Z3 context
     /// installed as the thread-local; it receives a state already reattached
     /// into that context (or, on the local fast path, one created there). It
-    /// must be `Send + Sync` (every worker shares one `&process`).
-    ///
-    /// Quiescence is tracked with an `AtomicUsize` of outstanding tasks:
-    /// children are counted in *before* their parent is counted out, so the
-    /// global count never transiently reaches zero while work is still in
-    /// flight — independent of whether a task sits on a worker's local queue or
-    /// on the injector (an offload is a relocation, not a completion). A worker
-    /// exits when it can find no task and the outstanding count is zero, or as
-    /// soon as cancellation is requested.
+    /// must be `Send + Sync + 'static` (it is stored in the `Arc<WaveJob>` every
+    /// worker shares).
     pub fn run_instrumented<F>(
         &self,
         initial: Vec<StateMigrationPayload>,
@@ -317,95 +564,26 @@ impl ParallelScheduler {
         SchedulerStats,
     )
     where
-        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync,
+        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync + 'static,
     {
-        let seeds = initial.len();
-        let injector = Injector::<StateMigrationPayload>::new();
-        let pending = AtomicUsize::new(seeds);
-        for payload in initial {
-            injector.push(payload);
-        }
-        let cancel = CancelToken::new();
-        let results = Mutex::new(Vec::<StateMigrationPayload>::new());
-        let summaries = Mutex::new(Vec::<TerminalSummary>::new());
-        let idle_workers = AtomicUsize::new(0);
-        let counters = SchedulerCounters::default();
-
-        std::thread::scope(|scope| {
-            for _ in 0..self.num_workers {
-                let injector = &injector;
-                let pending = &pending;
-                let cancel = &cancel;
-                let results = &results;
-                let summaries = &summaries;
-                let idle_workers = &idle_workers;
-                let counters = &counters;
-                let process = &process;
-                scope.spawn(move || {
-                    // Each worker owns a fresh Z3 context for its whole life and
-                    // installs it as the thread-local. `ctx` stays on this stack
-                    // frame until the worker exits, so every reattach mints ASTs
-                    // into a context this thread alone touches, and the context
-                    // is created and destroyed on the same thread. The local
-                    // live queue is created here too, so the irreducibly `!Send`
-                    // `RustSimState`s in it can never escape the thread (the
-                    // compiler enforces this via the `Scope::spawn` bound).
-                    let ctx = Context::new(&Config::new());
-                    Context::set_thread_local(&ctx);
-                    worker_loop(
-                        injector,
-                        pending,
-                        cancel,
-                        results,
-                        summaries,
-                        idle_workers,
-                        counters,
-                        &ctx,
-                        process,
-                    );
-                });
-            }
-        });
-
-        let stats = SchedulerStats {
-            seeds,
-            local_dispatches: counters.local_dispatches.load(Ordering::SeqCst),
-            injector_dispatches: counters.injector_dispatches.load(Ordering::SeqCst),
-            surplus_offloaded: counters.surplus_offloaded.load(Ordering::SeqCst),
-            materialized_terminals: counters.materialized_terminals.load(Ordering::SeqCst),
-            summarized_terminals: counters.summarized_terminals.load(Ordering::SeqCst),
-        };
-        (
-            results.into_inner().expect("results mutex poisoned"),
-            summaries.into_inner().expect("summaries mutex poisoned"),
-            stats,
-        )
+        let pool = PersistentPool::new(self.num_workers);
+        let (job, _stats) = pool.run_wave(WaveJob::new(initial, Box::new(process)));
+        job.into_results()
+        // `pool` drops here → Shutdown broadcast + join of the one-shot workers.
     }
 }
 
 /// The per-worker loop: dispatch a live local state (or steal+reattach one),
 /// process it, push live successors locally, shed surplus on imbalance, and
-/// collect terminals.
-#[allow(clippy::too_many_arguments)] // worker context is genuinely this wide; bundling it would just move the noise
-fn worker_loop<F>(
-    injector: &Injector<StateMigrationPayload>,
-    pending: &AtomicUsize,
-    cancel: &CancelToken,
-    results: &Mutex<Vec<StateMigrationPayload>>,
-    summaries: &Mutex<Vec<TerminalSummary>>,
-    idle_workers: &AtomicUsize,
-    counters: &SchedulerCounters,
-    ctx: &Context,
-    process: &F,
-) where
-    F: Fn(RustSimState, &CancelToken) -> TaskOutcome,
-{
+/// collect terminals. Reads all per-wave state from `job`; `ctx` is the worker's
+/// persistent Z3 context (installed once at spawn by [`worker_thread`]).
+fn worker_loop(job: &WaveJob, ctx: &Context) {
     // Worker-local live states: home Z3 context, never serialized. Created
     // inside the worker so the `!Send` states it holds cannot escape the thread.
     let mut local: VecDeque<RustSimState> = VecDeque::new();
 
     loop {
-        if cancel.is_cancelled() {
+        if job.cancel.is_cancelled() {
             // Bug M1 (known limitation): on cancel (e.g. the run loop hit
             // `num_find`) the worker stops HERE, at a task boundary, dropping
             // whatever live states remain on its `local` queue (and any surplus
@@ -426,12 +604,19 @@ fn worker_loop<F>(
         // touch the cross-thread injector and pay a reattach.
         let state = match local.pop_back() {
             Some(state) => {
-                counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
+                job.counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
                 state
             }
-            None => match steal_from_injector(injector, pending, cancel, idle_workers) {
+            None => match steal_from_injector(
+                &job.injector,
+                &job.pending,
+                &job.cancel,
+                &job.idle_workers,
+            ) {
                 Some(payload) => {
-                    counters.injector_dispatches.fetch_add(1, Ordering::SeqCst);
+                    job.counters
+                        .injector_dispatches
+                        .fetch_add(1, Ordering::SeqCst);
                     // Rebuild the state in THIS worker's context. The ptr-eq
                     // guard inside `reattach` holds because `ctx` is exactly this
                     // thread's thread-local.
@@ -442,7 +627,7 @@ fn worker_loop<F>(
                             // thread-local above), but never silently keep a
                             // phantom task outstanding.
                             log::error!("scheduler reattach failed, dropping task: {err:?}");
-                            pending.fetch_sub(1, Ordering::SeqCst);
+                            job.pending.fetch_sub(1, Ordering::SeqCst);
                             continue;
                         }
                     }
@@ -453,7 +638,7 @@ fn worker_loop<F>(
             },
         };
 
-        let outcome = process(state, cancel);
+        let outcome = (job.process)(state, &job.cancel);
 
         // Continue-states stay LIVE and LOCAL — no serde on the fast path.
         let spawned = outcome.continue_states.len();
@@ -464,10 +649,10 @@ fn worker_loop<F>(
         // Materialized terminals must cross the join, so they are detached here
         // (correct context). This is part of the honest steal fraction.
         if !outcome.terminal_states.is_empty() {
-            let mut guard = results.lock().expect("results mutex poisoned");
+            let mut guard = job.results.lock().expect("results mutex poisoned");
             for terminal in outcome.terminal_states {
                 guard.push(terminal.detach_for_migration());
-                counters
+                job.counters
                     .materialized_terminals
                     .fetch_add(1, Ordering::SeqCst);
             }
@@ -476,26 +661,28 @@ fn worker_loop<F>(
         // Summaries pay no serde — record and drop the full states in-context.
         if !outcome.terminal_summaries.is_empty() {
             let n = outcome.terminal_summaries.len();
-            let mut guard = summaries.lock().expect("summaries mutex poisoned");
+            let mut guard = job.summaries.lock().expect("summaries mutex poisoned");
             guard.extend(outcome.terminal_summaries);
-            counters.summarized_terminals.fetch_add(n, Ordering::SeqCst);
+            job.counters
+                .summarized_terminals
+                .fetch_add(n, Ordering::SeqCst);
         }
 
         // Count children IN before counting this task OUT, so `pending` never
         // dips to zero with live descendants queued. Offload (below) only
         // relocates already-counted states, so it leaves `pending` untouched.
         if spawned > 0 {
-            pending.fetch_add(spawned, Ordering::SeqCst);
+            job.pending.fetch_add(spawned, Ordering::SeqCst);
         }
 
         // Shed surplus to the injector if a sibling is starving or we are over
         // the high-water mark. This is the only continue-path serde site.
-        offload_surplus(&mut local, injector, idle_workers, counters);
+        offload_surplus(&mut local, &job.injector, &job.idle_workers, &job.counters);
 
-        pending.fetch_sub(1, Ordering::SeqCst);
+        job.pending.fetch_sub(1, Ordering::SeqCst);
 
         if outcome.request_cancel {
-            cancel.cancel();
+            job.cancel.cancel();
             return;
         }
     }
@@ -592,6 +779,7 @@ mod tests {
     use crate::state::RustSimState;
     use crate::symbolic::RustBV;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use z3::Context;
 
@@ -728,7 +916,11 @@ mod tests {
     #[test]
     fn test_scheduler_cancellation_stops_workers() {
         const N: u64 = 512;
-        let processed = AtomicUsize::new(0);
+        // The persistent pool stores the `process` closure in an `Arc<WaveJob>`
+        // that outlives this frame, so the closure must be `'static` — it can no
+        // longer borrow a stack local. Share the counter via `Arc` and read it
+        // back after the wave.
+        let processed = Arc::new(AtomicUsize::new(0));
 
         let mut payloads = Vec::with_capacity(N as usize);
         for i in 0..N {
@@ -736,14 +928,17 @@ mod tests {
         }
 
         let sched = ParallelScheduler::new(4);
-        let collected = sched.run(payloads, |state, _cancel| {
-            processed.fetch_add(1, Ordering::SeqCst);
-            // Every task asks to cancel; the first to run trips the token.
-            TaskOutcome {
-                continue_states: Vec::new(),
-                terminal_states: vec![state],
-                terminal_summaries: Vec::new(),
-                request_cancel: true,
+        let collected = sched.run(payloads, {
+            let processed = Arc::clone(&processed);
+            move |state, _cancel| {
+                processed.fetch_add(1, Ordering::SeqCst);
+                // Every task asks to cancel; the first to run trips the token.
+                TaskOutcome {
+                    continue_states: Vec::new(),
+                    terminal_states: vec![state],
+                    terminal_summaries: Vec::new(),
+                    request_cancel: true,
+                }
             }
         });
 

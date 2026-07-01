@@ -329,6 +329,10 @@ pub trait NativeSimProcedure: Send + Sync {
 ///
 /// Maps procedure names to their native implementations.
 /// Used by the exploration manager to dispatch procedures.
+///
+/// `Clone` (cheap: all values are `Arc`) so the manager can hold it behind an
+/// `Arc` and mutate via `Arc::make_mut` at setup time (angr-vh834 Work Item 2).
+#[derive(Clone)]
 pub struct NativeProcedureRegistry {
     /// Name -> implementation mapping.
     procedures: HashMap<String, Arc<dyn NativeSimProcedure>>,

@@ -124,7 +124,7 @@ fn native_subcall_setup_and_resume_roundtrip() {
     Python::initialize();
     Python::attach(|_py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
-        mgr.native_procedures.register(Arc::new(SubcallTestProc));
+        Arc::make_mut(&mut mgr.native_procedures).register(Arc::new(SubcallTestProc));
 
         let sp = 0x7fff_0000u64;
         let caller_ret = 0x0040_0123u64;
@@ -235,7 +235,7 @@ fn path_a_captures_caller_return_addr_via_get_return_addr() {
     Python::initialize();
     Python::attach(|_py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
-        mgr.native_procedures.register(Arc::new(SubcallTestProc));
+        Arc::make_mut(&mut mgr.native_procedures).register(Arc::new(SubcallTestProc));
 
         let sp = 0x7fff_0000u64;
         let caller_ret = 0x0040_0123u64;

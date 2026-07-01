@@ -179,9 +179,16 @@ pub struct RustExplorationManager {
     /// Maximum steps per run iteration.
     pub(crate) max_steps_per_run: u32,
     /// Native procedure registry.
-    pub(crate) native_procedures: NativeProcedureRegistry,
+    ///
+    /// `Arc`-wrapped so the persistent parallel pool (angr-vh834 Work Item 2)
+    /// can snapshot it into a per-wave `WaveJob` with an O(1) `Arc::clone`.
+    /// Mutated at setup time via `Arc::make_mut` (refcount is 1 outside a wave,
+    /// so that is an in-place mutation, not a deep clone); read via `Deref`.
+    pub(crate) native_procedures: Arc<NativeProcedureRegistry>,
     /// Native syscall registry (skip Python `_handle_syscall_callback` round-trip).
-    pub(crate) native_syscalls: NativeSyscallRegistry,
+    /// `Arc`-wrapped for the same per-wave O(1) snapshot; never mutated after
+    /// construction, so no `Arc::make_mut` sites exist for it.
+    pub(crate) native_syscalls: Arc<NativeSyscallRegistry>,
     /// VEX fallback tracking: count and unique addresses.
     pub(crate) vex_fallback_count: u64,
     pub(crate) vex_fallback_addrs: HashMap<u64, String>,
@@ -365,6 +372,14 @@ pub struct RustExplorationManager {
     /// (`simprocedure_python_fallback_count`, …). Each entry is
     /// `(bounce state, BounceKind, lineage root)`. Empty in single-threaded mode.
     pub(crate) pending_parallel_bounces: Vec<(RustSimState, self::core_outcome::BounceKind, u64)>,
+    /// angr-vh834 Work Item 2: the persistent work-stealing worker pool. `None`
+    /// until the first parallel wave lazily spawns it (`run_loop_parallel`); the
+    /// N long-lived worker threads each own a Z3 context for the pool's whole
+    /// life, so subsequent waves pay no thread-spawn / context-creation tax. Only
+    /// ever populated on the `parallel_real_workers >= 2` path; the pool's `Drop`
+    /// broadcasts shutdown and joins the workers at manager teardown.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) parallel_pool: Option<self::scheduler::PersistentPool>,
 }
 
 #[pymethods]
@@ -403,8 +418,8 @@ impl RustExplorationManager {
             errors: Vec::new(),
             num_find: 1,
             max_steps_per_run: 5000,
-            native_procedures: NativeProcedureRegistry::new(),
-            native_syscalls: NativeSyscallRegistry::new(),
+            native_procedures: Arc::new(NativeProcedureRegistry::new()),
+            native_syscalls: Arc::new(NativeSyscallRegistry::new()),
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
@@ -454,6 +469,8 @@ impl RustExplorationManager {
             parallel_shadow_migration_bytes: 0,
             shadow_probe_chan: None,
             pending_parallel_bounces: Vec::new(),
+            #[cfg(feature = "vex-engine-z3")]
+            parallel_pool: None,
         })
     }
 
@@ -1737,12 +1754,12 @@ impl RustExplorationManager {
 
     /// Disable all native procedures (always use Python).
     pub fn disable_native_procedures(&mut self) {
-        self.native_procedures.disable_all();
+        Arc::make_mut(&mut self.native_procedures).disable_all();
     }
 
     /// Enable all native procedures.
     pub fn enable_native_procedures(&mut self) {
-        self.native_procedures.enable_all();
+        Arc::make_mut(&mut self.native_procedures).enable_all();
     }
 
     /// Check if native procedures are enabled.
@@ -1752,24 +1769,24 @@ impl RustExplorationManager {
 
     /// Disable a specific native procedure (fall back to Python).
     pub fn disable_native_procedure(&mut self, name: &str) {
-        self.native_procedures.disable(name);
+        Arc::make_mut(&mut self.native_procedures).disable(name);
     }
 
     /// Enable a specific native procedure.
     pub fn enable_native_procedure(&mut self, name: &str) {
-        self.native_procedures.enable(name);
+        Arc::make_mut(&mut self.native_procedures).enable(name);
     }
 
     /// Set a Python override for a procedure.
     ///
     /// When set, the native implementation is never called.
     pub fn set_python_override(&mut self, name: &str) {
-        self.native_procedures.set_python_override(name);
+        Arc::make_mut(&mut self.native_procedures).set_python_override(name);
     }
 
     /// Remove a Python override.
     pub fn remove_python_override(&mut self, name: &str) {
-        self.native_procedures.remove_python_override(name);
+        Arc::make_mut(&mut self.native_procedures).remove_python_override(name);
     }
 
     /// Get list of available native procedures.
@@ -1810,7 +1827,7 @@ impl RustExplorationManager {
         let proc = std::sync::Arc::new(crate::procedures::python_proc::PythonNativeProcedure::new(
             name, num_args, no_return, callable,
         ));
-        self.native_procedures.register(proc);
+        Arc::make_mut(&mut self.native_procedures).register(proc);
     }
 
     // =========================================================================
