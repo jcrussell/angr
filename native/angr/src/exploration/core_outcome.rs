@@ -255,6 +255,14 @@ pub(crate) struct ParallelProfiling {
     pub(crate) solver_sat_count: AtomicU64,
     pub(crate) deferred_fork_time_ns: AtomicU64,
     pub(crate) deferred_fork_count: AtomicU64,
+    /// IRSB block-cache hits/misses accumulated across the wave's dispatches
+    /// (angr-vh834 Work Item 3). The parallel worker folds each step's
+    /// `ExecutionStats::cache_hit_count`/`cache_miss_count` in here so the warm
+    /// per-worker cache win surfaces via `stats.cache_hit_count` /
+    /// `cache_miss_count` (the `block_cache_hits` / `block_cache_misses` keys in
+    /// `mgr.stats()`), consistent with the single-threaded `merge` path.
+    pub(crate) cache_hit_count: AtomicU64,
+    pub(crate) cache_miss_count: AtomicU64,
 }
 
 impl ParallelProfiling {
@@ -273,6 +281,11 @@ impl ParallelProfiling {
         stats.solver_sat_count += self.solver_sat_count.load(Ordering::Relaxed);
         stats.deferred_fork_time_ns += self.deferred_fork_time_ns.load(Ordering::Relaxed);
         stats.deferred_fork_count += self.deferred_fork_count.load(Ordering::Relaxed);
+        // ADD (never clobber) into the same accumulated_stats fields the
+        // single-threaded `merge` path populates, so both engines report the
+        // block-cache hit/miss counters consistently.
+        stats.cache_hit_count += self.cache_hit_count.load(Ordering::Relaxed);
+        stats.cache_miss_count += self.cache_miss_count.load(Ordering::Relaxed);
     }
 }
 

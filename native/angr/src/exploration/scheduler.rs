@@ -59,9 +59,13 @@
 //! fraction* the overhead gate's break-even `f*` bounds. See
 //! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
 
+use crate::interpreter::BLOCK_CACHE_CAPACITY;
 use crate::state::{RustSimState, StateMigrationPayload};
+use crate::vex::IRSB;
 use crossbeam_deque::{Injector, Steal};
+use lru::LruCache;
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -268,7 +272,15 @@ impl SchedulerStats {
 /// type, so [`PersistentPool`]'s channels can carry `Arc<WaveJob>` without a
 /// generic parameter leaking onto the manager's `parallel_pool` field, and keeps
 /// this module fully decoupled from the run-loop's config types.
-pub(crate) type ProcessFn = dyn Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync;
+///
+/// The `&mut LruCache` is the worker's WARM per-thread block cache
+/// (angr-vh834 Work Item 3): owned by [`worker_thread`], created ONCE alongside
+/// the Z3 context and threaded into every dispatch so lifted blocks persist
+/// across dispatches AND waves for that worker. `Arc<IRSB>` values are AST-free
+/// (no Z3 ASTs) and never cross worker threads, so warming this cache needs NO
+/// new Send/Sync bound.
+pub(crate) type ProcessFn =
+    dyn Fn(RustSimState, &CancelToken, &mut LruCache<u64, Arc<IRSB>>) -> TaskOutcome + Send + Sync;
 
 /// All per-wave state a worker touches, fed to the persistent pool as an
 /// `Arc<WaveJob>`. It bundles the coordination locals the former
@@ -491,8 +503,16 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WaveMsg>, done_tx: Sender<Wa
     // never escape this thread.
     let z3ctx = Context::new(&Config::new());
     Context::set_thread_local(&z3ctx);
+    // Warm per-worker block cache (angr-vh834 Work Item 3), created ONCE and
+    // reused across every dispatch AND every wave for this worker. `Arc<IRSB>`
+    // values are AST-free and never leave this thread, so this needs no Send/Sync
+    // bound and is context-safe: a warm cache returns identical (pure) lifts, so
+    // the found set and content fingerprints are unchanged.
+    let mut block_cache: LruCache<u64, Arc<IRSB>> = LruCache::new(
+        NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
+    );
     while let Ok(WaveMsg::Run(job)) = job_rx.recv() {
-        worker_loop(&job, &z3ctx);
+        worker_loop(&job, &z3ctx, &mut block_cache);
         // Release this worker's Arc clone BEFORE signaling done — the invariant
         // that makes the coordinator's `Arc::into_inner` safe.
         drop(job);
@@ -541,7 +561,10 @@ impl ParallelScheduler {
         process: F,
     ) -> Vec<StateMigrationPayload>
     where
-        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync + 'static,
+        F: Fn(RustSimState, &CancelToken, &mut LruCache<u64, Arc<IRSB>>) -> TaskOutcome
+            + Send
+            + Sync
+            + 'static,
     {
         self.run_instrumented(initial, process).0
     }
@@ -564,7 +587,10 @@ impl ParallelScheduler {
         SchedulerStats,
     )
     where
-        F: Fn(RustSimState, &CancelToken) -> TaskOutcome + Send + Sync + 'static,
+        F: Fn(RustSimState, &CancelToken, &mut LruCache<u64, Arc<IRSB>>) -> TaskOutcome
+            + Send
+            + Sync
+            + 'static,
     {
         let pool = PersistentPool::new(self.num_workers);
         let (job, _stats) = pool.run_wave(WaveJob::new(initial, Box::new(process)));
@@ -576,8 +602,9 @@ impl ParallelScheduler {
 /// The per-worker loop: dispatch a live local state (or steal+reattach one),
 /// process it, push live successors locally, shed surplus on imbalance, and
 /// collect terminals. Reads all per-wave state from `job`; `ctx` is the worker's
-/// persistent Z3 context (installed once at spawn by [`worker_thread`]).
-fn worker_loop(job: &WaveJob, ctx: &Context) {
+/// persistent Z3 context and `block_cache` its warm per-worker IRSB cache (both
+/// installed once at spawn by [`worker_thread`] and reused across waves).
+fn worker_loop(job: &WaveJob, ctx: &Context, block_cache: &mut LruCache<u64, Arc<IRSB>>) {
     // Worker-local live states: home Z3 context, never serialized. Created
     // inside the worker so the `!Send` states it holds cannot escape the thread.
     let mut local: VecDeque<RustSimState> = VecDeque::new();
@@ -638,7 +665,7 @@ fn worker_loop(job: &WaveJob, ctx: &Context) {
             },
         };
 
-        let outcome = (job.process)(state, &job.cancel);
+        let outcome = (job.process)(state, &job.cancel, block_cache);
 
         // Continue-states stay LIVE and LOCAL — no serde on the fast path.
         let spawned = outcome.continue_states.len();
@@ -822,7 +849,7 @@ mod tests {
         }
 
         let sched = ParallelScheduler::new(4);
-        let collected = sched.run(payloads, |state, _cancel| {
+        let collected = sched.run(payloads, |state, _cancel, _cache| {
             // Re-prove in the worker's context before passing it on. The
             // per-witness check happens on the main thread; here we only assert
             // the reattached constraint is still evaluable (a dropped or
@@ -874,21 +901,24 @@ mod tests {
         root.set_register("rbx", RustBV::concrete(0, 64)); // depth marker
 
         let sched = ParallelScheduler::new(4);
-        let collected = sched.run(vec![root.detach_for_migration()], |state, _cancel| {
-            let depth = state
-                .get_register("rbx")
-                .and_then(|d| d.as_u64())
-                .expect("depth marker present");
-            if depth >= DEPTH {
-                return TaskOutcome::terminal(vec![state]);
-            }
-            let next = RustBV::concrete((depth + 1) as u128, 64);
-            let mut left = state.fork();
-            let mut right = state.fork();
-            left.set_register("rbx", next.clone());
-            right.set_register("rbx", next);
-            TaskOutcome::continuing(vec![left, right])
-        });
+        let collected = sched.run(
+            vec![root.detach_for_migration()],
+            |state, _cancel, _cache| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker present");
+                if depth >= DEPTH {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                let next = RustBV::concrete((depth + 1) as u128, 64);
+                let mut left = state.fork();
+                let mut right = state.fork();
+                left.set_register("rbx", next.clone());
+                right.set_register("rbx", next);
+                TaskOutcome::continuing(vec![left, right])
+            },
+        );
 
         assert_eq!(
             collected.len(),
@@ -930,7 +960,7 @@ mod tests {
         let sched = ParallelScheduler::new(4);
         let collected = sched.run(payloads, {
             let processed = Arc::clone(&processed);
-            move |state, _cancel| {
+            move |state, _cancel, _cache| {
                 processed.fetch_add(1, Ordering::SeqCst);
                 // Every task asks to cancel; the first to run trips the token.
                 TaskOutcome {
@@ -974,8 +1004,9 @@ mod tests {
         // Leaves are SUMMARIZED (no serde) so a single-worker DFS that stays
         // below the high-water mark serializes nothing at all — continue-states
         // stay live-local and dead leaves are summarized.
-        let (collected, summaries, stats) =
-            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+        let (collected, summaries, stats) = sched.run_instrumented(
+            vec![root.detach_for_migration()],
+            |state, _cancel, _cache| {
                 let depth = state
                     .get_register("rbx")
                     .and_then(|d| d.as_u64())
@@ -992,7 +1023,8 @@ mod tests {
                 left.set_register("rbx", next.clone());
                 right.set_register("rbx", next);
                 TaskOutcome::continuing(vec![left, right])
-            });
+            },
+        );
 
         assert!(
             collected.is_empty(),
@@ -1027,8 +1059,9 @@ mod tests {
         root.set_register("rbx", RustBV::concrete(0, 64));
 
         let sched = ParallelScheduler::new(1);
-        let (collected, _summaries, stats) =
-            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+        let (collected, _summaries, stats) = sched.run_instrumented(
+            vec![root.detach_for_migration()],
+            |state, _cancel, _cache| {
                 let depth = state
                     .get_register("rbx")
                     .and_then(|d| d.as_u64())
@@ -1046,7 +1079,8 @@ mod tests {
                     })
                     .collect();
                 TaskOutcome::continuing(children)
-            });
+            },
+        );
 
         assert_eq!(collected.len(), WIDTH, "all leaves collected");
         assert_eq!(
@@ -1069,8 +1103,9 @@ mod tests {
         root.set_register("rbx", RustBV::concrete(0, 64));
 
         let sched = ParallelScheduler::new(4);
-        let (collected, _summaries, stats) =
-            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+        let (collected, _summaries, stats) = sched.run_instrumented(
+            vec![root.detach_for_migration()],
+            |state, _cancel, _cache| {
                 let depth = state
                     .get_register("rbx")
                     .and_then(|d| d.as_u64())
@@ -1087,7 +1122,8 @@ mod tests {
                     })
                     .collect();
                 TaskOutcome::continuing(children)
-            });
+            },
+        );
 
         assert_eq!(collected.len(), WIDTH, "all leaves collected");
         assert!(
@@ -1120,8 +1156,9 @@ mod tests {
         root.set_register("rbx", RustBV::concrete(0, 64));
 
         let sched = ParallelScheduler::new(4);
-        let (collected, _summaries, stats) =
-            sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel| {
+        let (collected, _summaries, stats) = sched.run_instrumented(
+            vec![root.detach_for_migration()],
+            |state, _cancel, _cache| {
                 let depth = state
                     .get_register("rbx")
                     .and_then(|d| d.as_u64())
@@ -1135,7 +1172,8 @@ mod tests {
                 left.set_register("rbx", next.clone());
                 right.set_register("rbx", next);
                 TaskOutcome::continuing(vec![left, right])
-            });
+            },
+        );
 
         let total_tasks = (1usize << (DEPTH + 1)) - 1; // full binary tree
         assert_eq!(collected.len(), 1usize << DEPTH, "all leaves collected");
@@ -1163,7 +1201,7 @@ mod tests {
                 .map(|i| pinned_state(&format!("det_{i}"), 0xC000 + i).detach_for_migration())
                 .collect();
             let sched = ParallelScheduler::new(4);
-            let collected = sched.run(payloads, |state, _cancel| {
+            let collected = sched.run(payloads, |state, _cancel, _cache| {
                 TaskOutcome::terminal(vec![state])
             });
             let witnesses: BTreeSet<u128> = collected
@@ -1198,16 +1236,17 @@ mod tests {
             .collect();
 
         let sched = ParallelScheduler::new(4);
-        let (collected, summaries, stats) = sched.run_instrumented(payloads, |state, _cancel| {
-            if state.state_id().is_multiple_of(FOUND_EVERY) {
-                TaskOutcome::terminal(vec![state]) // materialized (serialized)
-            } else {
-                TaskOutcome::summarized(vec![TerminalSummary::of(
-                    &state,
-                    TerminalDisposition::Deadended,
-                )]) // no serde
-            }
-        });
+        let (collected, summaries, stats) =
+            sched.run_instrumented(payloads, |state, _cancel, _cache| {
+                if state.state_id().is_multiple_of(FOUND_EVERY) {
+                    TaskOutcome::terminal(vec![state]) // materialized (serialized)
+                } else {
+                    TaskOutcome::summarized(vec![TerminalSummary::of(
+                        &state,
+                        TerminalDisposition::Deadended,
+                    )]) // no serde
+                }
+            });
 
         // Partition is exact and complete.
         assert_eq!(

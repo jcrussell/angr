@@ -40,7 +40,6 @@
 
 use super::*;
 
-use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -55,7 +54,6 @@ use super::scheduler::{
     TerminalSummary, WaveJob,
 };
 use super::step_core::run_interpreter_step_core;
-use crate::interpreter::BLOCK_CACHE_CAPACITY;
 use crate::state::StateMigrationPayload;
 use crate::vex::IRSB;
 
@@ -142,6 +140,7 @@ struct ParallelShared {
 fn parallel_process_state(
     mut state: RustSimState,
     cancel: &CancelToken,
+    block_cache: &mut LruCache<u64, std::sync::Arc<IRSB>>,
     ctx: &super::step_core::StepContext,
     callbacks: &PythonCallbacks,
     prof: &ParallelProfiling,
@@ -198,17 +197,32 @@ fn parallel_process_state(
     }
 
     // --- Step (PC is not a find/avoid address). ---
-    // MVP: a fresh, empty per-call block cache. Cold lifts re-acquire the GIL via
-    // the self-attaching callbacks (Phase 4) — correct, just slower than a warm
-    // shared cache. A per-worker warm cache is the Phase-6 optimization point.
-    let mut block_cache: LruCache<u64, std::sync::Arc<IRSB>> = LruCache::new(
-        NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-    );
-    let step =
-        run_interpreter_step_core(ctx, callbacks, &mut state, pc, None, None, &mut block_cache);
+    // Warm per-worker block cache (angr-vh834 Work Item 3): `block_cache` is
+    // owned by the worker thread and threaded in here, so lifted blocks persist
+    // across dispatches AND waves. Cache hits avoid a GIL-serialized re-lift; the
+    // warm cache returns identical (pure) `Arc<IRSB>` lifts, so the found set and
+    // content fingerprints are unchanged.
+    let step = run_interpreter_step_core(ctx, callbacks, &mut state, pc, None, None, block_cache);
+
+    // Fold this step's block-cache hit/miss into the shared profiling accumulator
+    // so the warm-cache win surfaces in `mgr.stats()` (block_cache_hits /
+    // block_cache_misses). Cache counters are always-on in the interpreter (not
+    // gated by profiling), so accumulate unconditionally; the coordinator adds
+    // these into `accumulated_stats` via `prof.fold_into` after the wave barrier.
+    prof.cache_hit_count
+        .fetch_add(step.step_stats.cache_hit_count, Ordering::Relaxed);
+    prof.cache_miss_count
+        .fetch_add(step.step_stats.cache_miss_count, Ordering::Relaxed);
+
+    // Restore the warm cache: `run_interpreter_step_core` swapped a fresh empty
+    // placeholder into `*block_cache` and handed the now-populated cache back in
+    // `updated_block_cache`. Write it back so the newly-lifted blocks persist for
+    // this worker's next dispatch (mirrors the single-threaded restore in
+    // `step_state_with_skip`: `self.environment.block_cache = step.updated_block_cache`).
+    *block_cache = step.updated_block_cache;
 
     // State-update preamble (mirror of step_state_with_skip). Worker drops the
-    // per-call step_stats / block cache (no shared accumulation in the MVP).
+    // rest of the per-call step_stats (no shared accumulation in the MVP).
     if let Some(mem) = step.recovered_memory {
         state.replace_memory(mem);
     }
@@ -587,10 +601,11 @@ impl RustExplorationManager {
             // rest, so it is `'static` and lives in the `Arc<WaveJob>` the
             // persistent workers share. Its callbacks self-acquire the GIL via
             // `Python::attach` (Phase 4); it touches no `&mut self`.
-            let process: Box<ProcessFn> = Box::new(move |state, cancel| {
+            let process: Box<ProcessFn> = Box::new(move |state, cancel, block_cache| {
                 parallel_process_state(
                     state,
                     cancel,
+                    block_cache,
                     &ctx,
                     &wave_callbacks,
                     &wave_prof,
