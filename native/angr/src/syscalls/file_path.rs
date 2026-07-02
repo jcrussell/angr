@@ -72,8 +72,8 @@
 //!
 //! ## `fstat` (angr-k3ol.3)
 //!
-//! `fstat(fd, statbuf) → 0 | -1` reads `(name, _, _, content_len, _)`
-//! from `FileSystem::fd_info(fd)` and writes a per-arch `struct stat`
+//! `fstat(fd, statbuf) → 0 | -1` reads the fd's content length from
+//! `FileSystem::effective_size(fd)` and writes a per-arch `struct stat`
 //! to `statbuf`. Mirrors `procedures/linux_kernel/fstat.py`, which
 //! delegates to `state.posix.fstat_with_result`. The Rust handler
 //! diverges in two intentional ways:
@@ -779,9 +779,10 @@ impl NativeSyscall for NativeFstatSyscall {
             )));
         }
 
-        // Look up fd — `content.len()` is `content_len` (index 3 in the
-        // tuple). Borrow ends before any memory_store.
-        let size_opt = state.file_system_ref().fd_info(fd as u32).map(|t| t.3);
+        // Look up fd — effective_size is the symbolic byte count when
+        // bounded symbolic content is attached (angr-0xyq2), else the
+        // concrete content length. Borrow ends before any memory_store.
+        let size_opt = state.file_system_ref().effective_size(fd as u32);
         let Some(size) = size_opt else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };

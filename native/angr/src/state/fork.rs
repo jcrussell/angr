@@ -128,9 +128,11 @@ impl RustSimState {
     /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
     /// this state whose every context-bound `RustBV` — register overlays,
     /// symbolic memory (`symbolic_objects` / `multi_objects` / pending
-    /// writes), path constraints, and `last_time` — has been `Z3_translate`d
-    /// into `target_ctx`. Every other field is context-independent and cloned
-    /// exactly as `fork` does.
+    /// writes), path constraints, filesystem symbolic content (fd
+    /// `content_sym` + the `file_contents` registry, angr-0xyq2), and
+    /// `last_time` — has been `Z3_translate`d into `target_ctx`. Every
+    /// other field is context-independent and cloned exactly as `fork`
+    /// does.
     ///
     /// Unlike `fork`, identity is preserved: `state_id` and `parent_id` carry
     /// over unchanged because this is the *same* state observed in a different
@@ -169,7 +171,7 @@ impl RustSimState {
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
-            fs: self.fs.clone(),
+            fs: self.fs.translate_into(target_ctx),
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,

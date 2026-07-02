@@ -328,6 +328,227 @@ fn test_filesystem_fork_isolation() {
     assert!(state.file_system_ref().is_open(3));
 }
 
+// angr-0xyq2 Phase 1: bounded symbolic file content (`content_sym` on the
+// fd + path-keyed `file_contents` registry). Data model only — read/fread
+// serve paths still consume the concrete buffer; these tests cover the
+// registry→open attach, cwd normalization, Arc sharing on fork, the
+// length consumers (SEEK_END / stat sizes), and the snapshot wire format
+// (including pre-angr-0xyq2 backward compat).
+
+/// `n` fresh 8-bit symbolic bytes named `{prefix}_{i}` (ids sit in
+/// 0x5f000+ to stay clear of other symbolic ids in these tests; the
+/// prefixes distinguish tests from each other).
+fn sym_file_bytes(n: usize, prefix: &str) -> Vec<RustBV> {
+    (0..n)
+        .map(|i| RustBV::symbolic_with_id(0x5f000 + i as u64, format!("{prefix}_{i}"), 8))
+        .collect()
+}
+
+#[test]
+fn test_register_file_content_open_attaches() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/flag", sym_file_bytes(4, "attach"));
+    // Registration alone makes the path visible to access/stat.
+    assert!(fs.is_path_known("/tmp/flag"));
+
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let attached = fs
+        .fd_content_sym(fd)
+        .expect("open attaches registry content");
+    let registered = fs.file_content_for_path("/tmp/flag").expect("registered");
+    // Shared Arc — refcount bump, not a deep BV-vector clone.
+    assert!(Arc::ptr_eq(&attached, &registered));
+
+    // Length consumers see the symbolic byte count (concrete buffer is empty).
+    assert_eq!(fs.effective_size(fd), Some(4));
+    assert_eq!(fs.content_size_for_path("/tmp/flag"), Some(4));
+    // Read-serve state is untouched: the concrete buffer stays empty.
+    assert_eq!(fs.fd_content(fd), b"");
+
+    // open_symbolic attaches too (stream flag and bounded content are
+    // orthogonal models).
+    let fd_sym = fs.open_symbolic("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    assert!(fs.is_symbolic(fd_sym));
+    assert!(Arc::ptr_eq(
+        &fs.fd_content_sym(fd_sym).unwrap(),
+        &registered
+    ));
+}
+
+#[test]
+fn test_register_file_content_cwd_relative_open() {
+    let mut fs = FileSystem::default();
+    fs.set_cwd(b"/home/user".to_vec());
+    // Relative registration keys under the cwd-normalized absolute path.
+    fs.register_file_content("flag.txt", sym_file_bytes(3, "rel"));
+    assert!(fs.is_path_known("/home/user/flag.txt"));
+
+    // Both the relative and the absolute spelling of the same file attach.
+    let fd_rel = fs.open("flag.txt".to_string(), FdFlags::ReadOnly);
+    let fd_abs = fs.open("/home/user/flag.txt".to_string(), FdFlags::ReadOnly);
+    let rel = fs.fd_content_sym(fd_rel).expect("relative open attaches");
+    let abs = fs.fd_content_sym(fd_abs).expect("absolute open attaches");
+    assert!(Arc::ptr_eq(&rel, &abs));
+}
+
+#[test]
+fn test_filesystem_normalize_path() {
+    let mut fs = FileSystem::default();
+    assert_eq!(fs.normalize_path("/a/b/../c/./d"), "/a/c/d");
+    assert_eq!(fs.normalize_path("/../.."), "/");
+    // Truncates at the first NUL, then resolves relative to cwd (/).
+    assert_eq!(fs.normalize_path("x\0junk"), "/x");
+
+    fs.set_cwd(b"/home/user".to_vec());
+    assert_eq!(fs.normalize_path("f.txt"), "/home/user/f.txt");
+    assert_eq!(fs.normalize_path("../f"), "/home/f");
+    assert_eq!(fs.normalize_path(""), "/home/user");
+}
+
+#[test]
+fn test_content_sym_fork_shares_arc() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/flag", sym_file_bytes(4, "fork"));
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+
+    let handle = fs.fd_content_sym(fd).expect("attached");
+    let before = Arc::strong_count(&handle);
+    let mut forked = fs.clone();
+    // The clone itself is O(1) (shared fd-map Arc): no new content refs yet.
+    assert_eq!(Arc::strong_count(&handle), before);
+    // A position advance forces CoW on the fork's fd map — the descriptor
+    // clone must bump the content Arc refcount, not deep-clone the BVs.
+    forked.seek(fd, 1, 0);
+    assert_eq!(Arc::strong_count(&handle), before + 1);
+    assert!(Arc::ptr_eq(&handle, &forked.fd_content_sym(fd).unwrap()));
+}
+
+#[test]
+fn test_seek_end_uses_effective_len() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/flag", sym_file_bytes(10, "seek"));
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+
+    // Concrete buffer is empty; SEEK_END must key off the symbolic length.
+    assert_eq!(fs.seek(fd, 0, 2), Some(10));
+    assert_eq!(fs.seek(fd, -3, 2), Some(7));
+    // SEEK_SET / SEEK_CUR are unaffected.
+    assert_eq!(fs.seek(fd, 2, 0), Some(2));
+    assert_eq!(fs.seek(fd, 1, 1), Some(3));
+}
+
+/// Fix 3 (angr-0xyq2 review): a concrete write past the symbolic end must
+/// not be masked by `content_sym` — `effective_len` is the max of both
+/// legs, mirroring Python `SimFile.write` size semantics.
+#[test]
+fn test_effective_len_concrete_write_past_symbolic_end() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/grow", sym_file_bytes(4, "grow"));
+    let fd = fs.open("/tmp/grow".to_string(), FdFlags::ReadOnly);
+    assert_eq!(fs.effective_size(fd), Some(4));
+
+    // Concrete write of 10 bytes at position 0: write end (10) exceeds the
+    // symbolic byte count (4) — the larger concrete length must win.
+    fs.write(fd, b"0123456789");
+    assert_eq!(fs.effective_size(fd), Some(10));
+    assert_eq!(fs.content_size_for_path("/tmp/grow"), Some(10));
+    assert_eq!(fs.seek(fd, 0, 2), Some(10));
+
+    // The symbolic content itself is untouched (Phase 2 write-demotion is
+    // the primary defense; this max is defense-in-depth).
+    assert_eq!(fs.fd_content_sym(fd).unwrap().len(), 4);
+}
+
+/// Fix 1 (angr-0xyq2 review): `content_size_for_path` must consult the
+/// registry, so a registered-but-never-opened path reports its content
+/// length (unit leg; the stat syscall leg lives in file_path_tests.rs).
+#[test]
+fn test_content_size_for_path_registry_without_fd() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/noopen", sym_file_bytes(6, "noopen"));
+    assert_eq!(fs.content_size_for_path("/tmp/noopen"), Some(6));
+    // Relative spelling of the same path agrees (both legs normalize).
+    assert_eq!(fs.content_size_for_path("tmp/noopen"), Some(6));
+    // Content-less register_known_path still reports None (stat's zero-size
+    // default path — pinned by stat_registered_path_without_fd_uses_zero_size).
+    fs.register_known_path("/etc/registered-only".to_string());
+    assert_eq!(fs.content_size_for_path("/etc/registered-only"), None);
+}
+
+#[test]
+fn test_open_without_registry_entry_unchanged() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open("plain.txt".to_string(), FdFlags::ReadOnly);
+    assert!(fs.fd_content_sym(fd).is_none());
+    assert_eq!(fs.effective_size(fd), Some(0));
+    assert_eq!(fs.seek(fd, 0, 2), Some(0));
+
+    let fd2 = fs.open_with_content("c.txt".to_string(), FdFlags::ReadOnly, b"abc".to_vec());
+    assert!(fs.fd_content_sym(fd2).is_none());
+    // effective_len falls back to the concrete buffer length.
+    assert_eq!(fs.effective_size(fd2), Some(3));
+    assert_eq!(fs.content_size_for_path("c.txt"), Some(3));
+}
+
+#[test]
+fn test_content_sym_serde_roundtrip() {
+    let mut fs = FileSystem::default();
+    let mut bytes = sym_file_bytes(2, "wire");
+    bytes.push(RustBV::concrete(0x41, 8)); // mixed file: concrete tail byte
+    fs.register_file_content("/tmp/flag", bytes);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+
+    let json = serde_json::to_string(&fs).expect("serialize");
+    let restored: FileSystem = serde_json::from_str(&json).expect("deserialize");
+
+    // Symbolic leaves rebuild by (name, width) via the RustBVData shadow.
+    let content = restored.fd_content_sym(fd).expect("content_sym survives");
+    assert_eq!(content.len(), 3);
+    match &content[0] {
+        RustBV::Symbolic { name, width, .. } => {
+            assert_eq!(&**name, "wire_0");
+            assert_eq!(*width, 8);
+        }
+        other => panic!("expected Symbolic, got {other:?}"),
+    }
+    assert!(matches!(
+        &content[2],
+        RustBV::Concrete {
+            value: 0x41,
+            width: 8
+        }
+    ));
+    // The path-keyed registry survives independently of the fd.
+    assert_eq!(
+        restored
+            .file_content_for_path("/tmp/flag")
+            .expect("registry survives")
+            .len(),
+        3
+    );
+    assert_eq!(restored.effective_size(fd), Some(3));
+}
+
+#[test]
+fn test_content_sym_snapshot_backward_compat() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/flag", sym_file_bytes(2, "compat"));
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+
+    // Simulate a pre-angr-0xyq2 snapshot: strip the new fields entirely.
+    let mut v = serde_json::to_value(&fs).expect("to_value");
+    v.as_object_mut().unwrap().remove("file_contents");
+    for fd_v in v["fds"].as_object_mut().unwrap().values_mut() {
+        fd_v.as_object_mut().unwrap().remove("content_sym");
+    }
+
+    let restored: FileSystem = serde_json::from_value(v).expect("old snapshot loads");
+    assert!(restored.fd_content_sym(fd).is_none());
+    assert!(restored.file_content_for_path("/tmp/flag").is_none());
+    // effective_len falls back to the (empty) concrete buffer.
+    assert_eq!(restored.effective_size(fd), Some(0));
+}
+
 #[test]
 fn test_filesystem_backward_compat() {
     // fd_buffer/write_fd should still work through FileSystem
@@ -753,6 +974,26 @@ fn test_translate_state_cross_context() {
     };
     state.add_constraint(constraint);
 
+    // angr-0xyq2 Fix 6: the filesystem carries context-bound RustBVs too
+    // (fd content_sym + the file_contents registry) — pin a symbolic file
+    // byte via a path constraint so a missed translate surfaces as a
+    // foreign-context AST when the target-context solver evals it.
+    let fbyte = {
+        let s = state.solver().borrow();
+        RustBV::symbolic(&s, "ahypj_file_byte", 8)
+    };
+    let fconstraint = {
+        let s = state.solver().borrow();
+        fbyte.eq(&RustBV::concrete(0x41, 8), &s)
+    };
+    state.add_constraint(fconstraint);
+    state
+        .file_system()
+        .register_file_content("/tmp/ahypj", vec![fbyte, RustBV::concrete(0x42, 8)]);
+    let fs_fd = state
+        .file_system()
+        .open("/tmp/ahypj".to_string(), FdFlags::ReadOnly);
+
     let original = Context::thread_local();
     let cfg = Config::new();
     let target = Context::new(&cfg);
@@ -769,6 +1010,20 @@ fn test_translate_state_cross_context() {
     let rax_t = translated.get_register("rax").expect("rax present");
     let got = translated.solver().borrow().eval(&rax_t);
     let sat = translated.solver().borrow().is_sat();
+    // Fix 6: the translated state's fs content BVs must live in the target
+    // context — eval them through the target-context solver (a plain-cloned
+    // foreign-context AST would misbehave here), mirroring the rax check.
+    let content_t = translated
+        .file_system_ref()
+        .fd_content_sym(fs_fd)
+        .expect("content_sym survives translate_state");
+    let fd_byte = translated.solver().borrow().eval(&content_t[0]);
+    let fd_concrete = content_t[1].as_u64();
+    let registry_t = translated
+        .file_system_ref()
+        .file_content_for_path("/tmp/ahypj")
+        .expect("file_contents registry survives translate_state");
+    let reg_byte = translated.solver().borrow().eval(&registry_t[0]);
     Context::set_thread_local(&original);
 
     assert_eq!(
@@ -777,6 +1032,21 @@ fn test_translate_state_cross_context() {
         "translated rax must resolve via the transferred constraint",
     );
     assert!(sat, "translated state's solver must remain SAT");
+    assert_eq!(
+        fd_byte,
+        Some(0x41),
+        "translated fd content_sym byte must re-prove its witness",
+    );
+    assert_eq!(
+        fd_concrete,
+        Some(0x42),
+        "concrete content_sym byte clones verbatim",
+    );
+    assert_eq!(
+        reg_byte,
+        Some(0x41),
+        "translated file_contents registry byte must re-prove its witness",
+    );
     assert_eq!(
         translated.state_id(),
         state.state_id(),

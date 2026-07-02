@@ -286,7 +286,7 @@ impl NativeSyscallRegistry {
         //   `state.fs._files` entries are NOT mirrored — same trade-off
         //   as the FD-allocating handlers.
         // fstat (5): native struct-stat write (angr-k3ol.3). Reads
-        //   content_len from FileSystem::fd_info(fd) and writes a
+        //   content_len from FileSystem::effective_size(fd) and writes a
         //   per-arch `struct stat` (AMD64/ARM64 use the 64-bit struct;
         //   i386/ARM/MIPS32 use the LFS struct stat64 via the `*64` numbers,
         //   mirroring `fstat64.py`). st_mode is the concrete S_IFREG|0o755

@@ -56,6 +56,24 @@ pub struct FileDescriptor {
     /// concrete-only fd, the prior behavior). Set only via `open_symbolic`.
     #[serde(default)]
     pub symbolic: bool,
+    /// Bounded symbolic file content: one 8-bit `RustBV` per byte (concrete
+    /// bytes in mixed files are concrete `RustBV` entries — uniform
+    /// representation). Models a cle `SimFile` with symbolic content and a
+    /// *finite* size, unlike the unbounded-stream `symbolic` flag above.
+    /// `Arc` keeps the per-read CoW position advance (`Arc::make_mut` on
+    /// the fd map) a refcount bump rather than a deep BV-vector clone.
+    /// Attached by [`FileSystem::open`] / [`FileSystem::open_symbolic`]
+    /// from the path-keyed `file_contents` registry. Phase 1 (angr-0xyq2):
+    /// data model only — read/fread serve paths still consume the concrete
+    /// `content` buffer; only length consumers (SEEK_END, stat/fstat) see
+    /// this via [`FileDescriptor::effective_len`]. `#[serde(default)]`
+    /// keeps pre-angr-0xyq2 snapshots loadable (reconstitutes to `None`).
+    /// Serialized via serde's `rc` feature: the `Arc<T>` goes on the wire
+    /// as `T` and each load rebuilds a fresh `Arc`, so Arc *sharing*
+    /// across fds / the registry is not preserved through serde —
+    /// acceptable, sharing is only a fork-time perf optimization.
+    #[serde(default)]
+    pub content_sym: Option<Arc<Vec<RustBV>>>,
 }
 
 impl FileDescriptor {
@@ -68,6 +86,7 @@ impl FileDescriptor {
             content: Vec::new(),
             is_open: true,
             symbolic: false,
+            content_sym: None,
         }
     }
 
@@ -80,6 +99,7 @@ impl FileDescriptor {
             content,
             is_open: true,
             symbolic: false,
+            content_sym: None,
         }
     }
 
@@ -93,7 +113,23 @@ impl FileDescriptor {
             content: Vec::new(),
             is_open: true,
             symbolic: true,
+            content_sym: None,
         }
+    }
+
+    /// Length in bytes of the fd's backing content: the max of the
+    /// concrete buffer length and the symbolic byte count (when
+    /// `content_sym` is attached), so a concrete write past the symbolic
+    /// end is not masked — mirrors Python `SimFile.write` size semantics
+    /// (size = max(old size, write end)). Phase 2's write-demotion is the
+    /// primary defense; this is defense-in-depth. Length consumers
+    /// (SEEK_END, stat/fstat st_size) go through this; the read/fread
+    /// serve paths intentionally still read the concrete buffer until
+    /// Phase 2 of angr-0xyq2.
+    pub fn effective_len(&self) -> usize {
+        self.content
+            .len()
+            .max(self.content_sym.as_ref().map_or(0, |v| v.len()))
     }
 }
 
@@ -132,6 +168,14 @@ pub struct FileSystem {
     /// NOT auto-mirrored). Queried by `NativeReadlinkSyscall` /
     /// `NativeReadlinkatSyscall` (angr-11djq.6.2).
     symlinks: Arc<HashMap<String, Vec<u8>>>,
+    /// Path-keyed symbolic-content registry: cwd-normalized absolute path
+    /// → per-byte symbolic content (see [`FileDescriptor::content_sym`]).
+    /// Seeded via [`register_file_content`](FileSystem::register_file_content)
+    /// (Phase 3 of angr-0xyq2 will push Python `state.fs._files` symbolic
+    /// SimFile content here); consulted by `open` / `open_symbolic` so a
+    /// native open attaches `content_sym` without a Python bounce. Arc'd
+    /// for O(1) fork, mirroring `known_paths`.
+    file_contents: Arc<HashMap<String, Arc<Vec<RustBV>>>>,
 }
 
 /// Serde shadow form for [`FileSystem`].
@@ -154,6 +198,15 @@ pub struct FileSystemData {
     /// reconstitutes to an empty map (no symlinks, `readlink` → `-1`).
     #[serde(default)]
     pub symlinks: std::collections::BTreeMap<String, Vec<u8>>,
+    /// Symbolic-content registry. The `Arc`s go on the wire as their
+    /// inner `Vec<RustBV>` via serde's `rc` feature (symbolic leaves
+    /// rebuild by (name, width) via the `RustBVData` shadow); each load
+    /// rebuilds fresh `Arc`s, so fd/registry sharing is not preserved
+    /// through serde. `#[serde(default)]` keeps pre-angr-0xyq2 snapshots
+    /// loadable — reconstitutes to an empty registry. BTreeMap keeps the
+    /// wire ordering deterministic.
+    #[serde(default)]
+    pub file_contents: std::collections::BTreeMap<String, Arc<Vec<RustBV>>>,
 }
 
 impl From<FileSystem> for FileSystemData {
@@ -167,32 +220,55 @@ impl From<FileSystem> for FileSystemData {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        let file_contents: std::collections::BTreeMap<String, Arc<Vec<RustBV>>> = fs
+            .file_contents
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
         FileSystemData {
             fds,
             next_fd: fs.next_fd,
             cwd: fs.cwd,
             known_paths,
             symlinks,
+            file_contents,
         }
     }
 }
 
 impl From<FileSystemData> for FileSystem {
+    // RustBV's Z3 AST makes FileDescriptor !Send; the Arcs here are
+    // per-state CoW handles that never cross threads (states migrate
+    // between workers via the serde snapshot, not by moving Arcs) —
+    // same rationale as the allows in symbolic/snapshot_fork_ops.rs.
+    #[allow(clippy::arc_with_non_send_sync)]
     fn from(d: FileSystemData) -> Self {
         let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
-        let known_paths: HashSet<String> = d.known_paths.into_iter().collect();
         let symlinks: HashMap<String, Vec<u8>> = d.symlinks.into_iter().collect();
-        FileSystem {
+        let file_contents: HashMap<String, Arc<Vec<RustBV>>> =
+            d.file_contents.into_iter().collect();
+        let mut fs = FileSystem {
             fds: Arc::new(fds),
             next_fd: d.next_fd,
             cwd: d.cwd,
-            known_paths: Arc::new(known_paths),
+            known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(symlinks),
-        }
+            file_contents: Arc::new(file_contents),
+        };
+        // Re-normalize known_paths on load: the key space is normalized at
+        // insertion (see `open`), but pre-normalization snapshots may carry
+        // raw relative entries. Absolute canonical entries are fixed points,
+        // so this is a no-op for current-format snapshots.
+        let known_paths: HashSet<String> =
+            d.known_paths.iter().map(|p| fs.normalize_path(p)).collect();
+        fs.known_paths = Arc::new(known_paths);
+        fs
     }
 }
 
 impl Default for FileSystem {
+    // See the allow rationale on `From<FileSystemData>` above.
+    #[allow(clippy::arc_with_non_send_sync)]
     fn default() -> Self {
         let mut fds = HashMap::new();
         // Pre-register standard file descriptors
@@ -214,6 +290,7 @@ impl Default for FileSystem {
             cwd: b"/".to_vec(),
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(HashMap::new()),
+            file_contents: Arc::new(HashMap::new()),
         }
     }
 }
@@ -227,19 +304,35 @@ impl FileSystem {
     /// drops a fresh `SimFile` into `state.fs` on creation — our model
     /// treats any successfully-opened path as "existing" from that
     /// point forward.
+    ///
+    /// When the (cwd-normalized) path has registered symbolic content
+    /// (see [`register_file_content`](Self::register_file_content)), the
+    /// new fd shares that content via `content_sym` (refcount bump, no
+    /// deep clone). Paths without a registry entry behave exactly as
+    /// before (`content_sym: None`).
     pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        Arc::make_mut(&mut self.known_paths).insert(name.clone());
-        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new(name, flags));
+        let content_sym = self.file_content_for_path(&name);
+        // known_paths keys on normalized paths; normalizing at insertion
+        // freezes cwd-at-open, which is POSIX-correct for relative paths.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        let mut desc = FileDescriptor::new(name, flags);
+        desc.content_sym = content_sym;
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
         fd
     }
 
-    /// Open a file descriptor with pre-loaded content (for file-backed SimFiles).
+    /// Open a file descriptor with pre-loaded content (for file-backed
+    /// SimFiles). Intentionally bypasses the `file_contents` registry — the
+    /// caller supplies explicit concrete content (test-seeding API).
     pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        Arc::make_mut(&mut self.known_paths).insert(name.clone());
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
         Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::with_content(name, flags, content));
         fd
     }
@@ -256,8 +349,15 @@ impl FileSystem {
     pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        Arc::make_mut(&mut self.known_paths).insert(name.clone());
-        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new_symbolic(name, flags));
+        // Attach registered bounded symbolic content just like `open` —
+        // the stream flag and bounded content are orthogonal models.
+        let content_sym = self.file_content_for_path(&name);
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        let mut desc = FileDescriptor::new_symbolic(name, flags);
+        desc.content_sym = content_sym;
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
         fd
     }
 
@@ -272,14 +372,81 @@ impl FileSystem {
     /// the Python state-export path to seed `state.fs._files` entries
     /// (`register_known_path` PyO3 setter) and by tests.
     pub fn register_known_path(&mut self, name: String) {
-        Arc::make_mut(&mut self.known_paths).insert(name);
+        // Normalized at insertion (freezes cwd-at-registration) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+    }
+
+    /// Normalize `path` against the current working directory, mirroring
+    /// Python `SimFilesystem._normalize_path` + `_join_chunks`
+    /// (`angr/state_plugins/filesystem.py`): truncate at the first NUL,
+    /// prefix `cwd` when relative, drop empty / `.` components, resolve
+    /// `..` against its parent (saturating at root), and re-join from
+    /// root (`/a/b`; bare root is `/`). Python `_files` keys are
+    /// cwd-normalized absolute paths, so the `file_contents` registry
+    /// keys and lookups both go through this.
+    ///
+    /// The native path model is UTF-8-lossy (paths enter via
+    /// `from_utf8_lossy` repo-wide), so Phase 3's export must skip
+    /// non-UTF-8 `_files` keys (Python fallback handles those).
+    pub fn normalize_path(&self, path: &str) -> String {
+        let path = path.split('\0').next().unwrap_or("");
+        let cwd = String::from_utf8_lossy(&self.cwd);
+        let full = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("{cwd}/{path}")
+        };
+        let mut keys: Vec<&str> = Vec::new();
+        for k in full.split('/') {
+            match k {
+                "" | "." => {}
+                ".." => {
+                    keys.pop();
+                }
+                _ => keys.push(k),
+            }
+        }
+        format!("/{}", keys.join("/"))
+    }
+
+    /// Register bounded symbolic content for `path`: one 8-bit `RustBV`
+    /// per byte (concrete bytes as concrete entries — see
+    /// [`FileDescriptor::content_sym`]). The path is cwd-normalized so a
+    /// later relative `open` of the same file still matches. Also
+    /// registers the normalized path in `known_paths` so `access(2)` /
+    /// `stat(2)` see the file before any fd exists. Overwrites any
+    /// previous registration for the same normalized path. Paths are
+    /// UTF-8-lossy (see [`normalize_path`](Self::normalize_path)) —
+    /// Phase 3 export must skip non-UTF-8 `_files` keys.
+    // See the allow rationale on `From<FileSystemData>` above.
+    #[allow(clippy::arc_with_non_send_sync)]
+    pub fn register_file_content(&mut self, path: &str, bytes: Vec<RustBV>) {
+        let norm = self.normalize_path(path);
+        Arc::make_mut(&mut self.known_paths).insert(norm.clone());
+        Arc::make_mut(&mut self.file_contents).insert(norm, Arc::new(bytes));
+    }
+
+    /// Look up registered symbolic content for a (possibly relative)
+    /// path. Returns a shared handle (refcount bump) when the
+    /// cwd-normalized path has a registry entry.
+    pub fn file_content_for_path(&self, path: &str) -> Option<Arc<Vec<RustBV>>> {
+        // Empty-registry fast path: keeps opens zero-alloc (no normalized
+        // String) when no symbolic content is registered — all production
+        // opens today.
+        if self.file_contents.is_empty() {
+            return None;
+        }
+        self.file_contents.get(&self.normalize_path(path)).cloned()
     }
 
     /// True if `name` was previously registered via `open` /
-    /// `open_with_content` / `register_known_path`. Drives
-    /// `NativeAccessSyscall`.
+    /// `open_with_content` / `register_known_path` /
+    /// `register_file_content`. Both the stored key space and this query
+    /// are cwd-normalized, so relative and absolute spellings of the same
+    /// file agree. Drives `NativeAccessSyscall`.
     pub fn is_path_known(&self, name: &str) -> bool {
-        self.known_paths.contains(name)
+        self.known_paths.contains(&self.normalize_path(name))
     }
 
     /// Register a symlink: `link` resolves to `target` (raw bytes, as
@@ -368,9 +535,9 @@ impl FileSystem {
         // and the whence value is valid.
         let desc = self.fds.get(&fd)?;
         let new_pos = match whence {
-            0 => offset.max(0) as u64,                               // SEEK_SET
-            1 => (desc.position as i64 + offset).max(0) as u64,      // SEEK_CUR
-            2 => (desc.content.len() as i64 + offset).max(0) as u64, // SEEK_END
+            0 => offset.max(0) as u64,                                 // SEEK_SET
+            1 => (desc.position as i64 + offset).max(0) as u64,        // SEEK_CUR
+            2 => (desc.effective_len() as i64 + offset).max(0) as u64, // SEEK_END
             _ => return None,
         };
         Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
@@ -438,16 +605,42 @@ impl FileSystem {
         })
     }
 
-    /// Largest `content_len` across all fds (open or closed) that share
-    /// the given name. Returns `None` when no fd has been opened with
-    /// that name. Drives `NativeStatSyscall`, which needs a content
-    /// length for the path without minting a fresh fd.
+    /// Largest [`effective_len`](FileDescriptor::effective_len) across all
+    /// fds (open or closed) that share the given (cwd-normalized) name,
+    /// maxed with the `file_contents` registry entry for that path — so a
+    /// registered-but-never-opened file still reports its content length.
+    /// Returns `None` when no fd has been opened with that name and the
+    /// registry has no entry (content-less `register_known_path` paths
+    /// keep reporting size 0 via the caller's default). Drives
+    /// `NativeStatSyscall`, which needs a content length for the path
+    /// without minting a fresh fd.
     pub fn content_size_for_path(&self, name: &str) -> Option<usize> {
-        self.fds
+        let norm = self.normalize_path(name);
+        // Stored `d.name` stays raw (fd_info exposes it to Python), so
+        // normalize the fd names on the fly for comparison.
+        let fd_max = self
+            .fds
             .values()
-            .filter(|d| d.name == name)
-            .map(|d| d.content.len())
-            .max()
+            .filter(|d| self.normalize_path(&d.name) == norm)
+            .map(|d| d.effective_len())
+            .max();
+        let reg_len = self.file_contents.get(&norm).map(|v| v.len());
+        fd_max.into_iter().chain(reg_len).max()
+    }
+
+    /// Shared handle to an fd's bounded symbolic content, if attached
+    /// (refcount bump, no deep clone). Used by tests now; the Phase 2
+    /// (angr-0xyq2) read-serve paths will fetch content through this.
+    pub fn fd_content_sym(&self, fd: u32) -> Option<Arc<Vec<RustBV>>> {
+        self.fds.get(&fd).and_then(|d| d.content_sym.clone())
+    }
+
+    /// Effective content length for an fd — symbolic byte count when
+    /// `content_sym` is attached, else the concrete buffer length. Drives
+    /// `NativeFstatSyscall` st_size. The read-serve paths keep using
+    /// `fd_info`'s concrete `content_len` until Phase 2 of angr-0xyq2.
+    pub fn effective_size(&self, fd: u32) -> Option<usize> {
+        self.fds.get(&fd).map(|d| d.effective_len())
     }
 
     /// List all file descriptor numbers (including closed ones).
@@ -545,5 +738,50 @@ impl FileSystem {
             FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly),
         );
         (read_fd, write_fd)
+    }
+
+    /// Cross-context twin of `clone` for `RustSimState::translate_state`
+    /// (angr-ahypj): every context-bound `RustBV` — each fd's
+    /// `content_sym` vec and each `file_contents` registry value — is
+    /// `Z3_translate`d into `target_ctx` via [`RustBV::translate_into`];
+    /// every other field is context-independent and cloned. Like the
+    /// serde path, Arc *sharing* between an fd and the registry is not
+    /// preserved through translation (each gets a fresh translated Arc) —
+    /// acceptable, sharing is only a fork-time perf optimization.
+    // See the allow rationale on `From<FileSystemData>` above.
+    #[allow(clippy::arc_with_non_send_sync)]
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn translate_into(&self, target_ctx: &z3::Context) -> Self {
+        // Fast path: no symbolic file content anywhere → nothing is
+        // context-bound, so the O(1) Arc-sharing clone (the pre-angr-0xyq2
+        // behavior) is correct. All production states today take this.
+        if self.file_contents.is_empty() && self.fds.values().all(|d| d.content_sym.is_none()) {
+            return self.clone();
+        }
+        let translate_vec = |v: &Arc<Vec<RustBV>>| -> Arc<Vec<RustBV>> {
+            Arc::new(v.iter().map(|bv| bv.translate_into(target_ctx)).collect())
+        };
+        let fds: HashMap<u32, FileDescriptor> = self
+            .fds
+            .iter()
+            .map(|(k, d)| {
+                let mut d = d.clone();
+                d.content_sym = d.content_sym.as_ref().map(&translate_vec);
+                (*k, d)
+            })
+            .collect();
+        let file_contents: HashMap<String, Arc<Vec<RustBV>>> = self
+            .file_contents
+            .iter()
+            .map(|(k, v)| (k.clone(), translate_vec(v)))
+            .collect();
+        FileSystem {
+            fds: Arc::new(fds),
+            next_fd: self.next_fd,
+            cwd: self.cwd.clone(),
+            known_paths: Arc::clone(&self.known_paths),
+            symlinks: Arc::clone(&self.symlinks),
+            file_contents: Arc::new(file_contents),
+        }
     }
 }

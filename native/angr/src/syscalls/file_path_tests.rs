@@ -1116,6 +1116,40 @@ fn fstat_known_fd_writes_amd64_layout_and_returns_zero() {
     assert_eq!(read_u64_le(&state, 0x4000 + 0x70), 0);
 }
 
+/// angr-0xyq2 Phase 1: an fd whose bounded symbolic content came from the
+/// `file_contents` registry reports the symbolic byte count as st_size
+/// (the concrete buffer is empty — `effective_size` must not read it).
+#[test]
+fn fstat_symbolic_content_fd_reports_symbolic_len() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let bytes: Vec<RustBV> = (0..21u64)
+        .map(|i| RustBV::symbolic_with_id(0x6f000 + i, format!("fstat_sym_{i}"), 8))
+        .collect();
+    state
+        .file_system()
+        .register_file_content("/tmp/symflag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/symflag".into(), FdFlags::ReadOnly);
+
+    let out = NativeFstatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x4000, 64),
+            ],
+        )
+        .expect("fstat ok");
+    assert_eq!(expect_continue(out), 0);
+
+    // st_size at offset 0x30 — the symbolic byte count.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 21);
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+}
+
 #[test]
 fn fstat_known_fd_writes_aarch64_layout_and_returns_zero() {
     let mut state = RustSimState::new("aarch64").expect("state");
@@ -1410,6 +1444,36 @@ fn stat_known_path_with_content_writes_amd64_layout() {
     assert_eq!(read_u64_le(&state, 0x4000 + 0x38), ST_BLKSIZE);
 }
 
+/// angr-0xyq2 Phase 1: `stat` on a path whose fd carries bounded symbolic
+/// content reports the symbolic byte count via `content_size_for_path`
+/// (which now keys off `effective_len`, not the empty concrete buffer).
+#[test]
+fn stat_symbolic_content_path_reports_symbolic_len() {
+    let mut state = state_with_path(b"/tmp/symstat");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let bytes: Vec<RustBV> = (0..9u64)
+        .map(|i| RustBV::symbolic_with_id(0x7f000 + i, format!("stat_sym_{i}"), 8))
+        .collect();
+    state
+        .file_system()
+        .register_file_content("/tmp/symstat", bytes);
+    let _fd = state
+        .file_system()
+        .open("/tmp/symstat".into(), FdFlags::ReadOnly);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+
+    // st_size at offset 0x30 — the symbolic byte count.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 9);
+}
+
 #[test]
 fn stat_registered_path_without_fd_uses_zero_size() {
     let mut state = state_with_path(b"/etc/registered-only");
@@ -1430,6 +1494,94 @@ fn stat_registered_path_without_fd_uses_zero_size() {
     // st_size defaults to 0 when content_size_for_path is None.
     assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 0);
     assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+}
+
+/// Fix 1 (angr-0xyq2 review): `content_size_for_path` consults the
+/// `file_contents` registry, so `stat` on a registered-but-never-opened
+/// path reports the registered content length (not the zero-size default).
+#[test]
+fn stat_registered_content_path_without_fd_reports_len() {
+    let mut state = state_with_path(b"/tmp/regonly");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let bytes: Vec<RustBV> = (0..7u64)
+        .map(|i| RustBV::symbolic_with_id(0x8f000 + i, format!("regonly_{i}"), 8))
+        .collect();
+    state
+        .file_system()
+        .register_file_content("/tmp/regonly", bytes);
+    // No open — the registry alone must supply the size.
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+    // st_size at offset 0x30 — the registered byte count.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 7);
+}
+
+/// Fix 2 failure A (angr-0xyq2 review): after `register_file_content` of a
+/// relative path, `access` and `stat` with the same relative spelling must
+/// succeed — known_paths stores the cwd-normalized key and `is_path_known`
+/// / `content_size_for_path` normalize their queries.
+#[test]
+fn access_and_stat_relative_spelling_after_relative_registration() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.file_system().set_cwd(b"/home/user".to_vec());
+    let bytes: Vec<RustBV> = (0..5u64)
+        .map(|i| RustBV::symbolic_with_id(0x9f000 + i, format!("relreg_{i}"), 8))
+        .collect();
+    state.file_system().register_file_content("flag.txt", bytes);
+    stage_path(&mut state, 0x2000, b"flag.txt");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeAccessSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+        )
+        .expect("access ok");
+    assert_eq!(expect_continue(out), 0);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+    // st_size at offset 0x30 — the registered byte count.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 5);
+}
+
+/// Fix 2 failure B (angr-0xyq2 review): after a relative `open` (the fd
+/// stores the raw relative name), `stat` of the absolute spelling must
+/// find the fd and report its size — `content_size_for_path` normalizes
+/// the stored fd names on the fly for comparison.
+#[test]
+fn stat_absolute_spelling_after_relative_open_reports_size() {
+    let mut state = state_with_path(b"/home/user/notes.txt");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+    state.file_system().set_cwd(b"/home/user".to_vec());
+
+    let _fd = state.file_system().open_with_content(
+        "notes.txt".into(),
+        FdFlags::ReadOnly,
+        b"hello".to_vec(),
+    );
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+    // st_size at offset 0x30 — the relative fd's concrete content length.
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 5);
 }
 
 #[test]
