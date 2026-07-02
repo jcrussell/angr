@@ -56,31 +56,18 @@ impl NativeSimProcedure for NativeFwrite {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let src = extract_concrete_arg(&args[0], "src")?;
-        let size = extract_concrete_arg(&args[1], "size")?;
-        let nmemb = extract_concrete_arg(&args[2], "nmemb")?;
-        let file_ptr = extract_concrete_arg(&args[3], "file_ptr")?;
-
-        let total = size.saturating_mul(nmemb);
-        if total > MAX_FWRITE_SIZE {
-            return Err(ProcedureError::Other(format!(
-                "fwrite byte count {} exceeds limit",
-                total
-            )));
-        }
-
-        // Resolve fd from the FILE struct.
-        let arch_name = state.arch().name();
-        let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
-            ProcedureError::Other(format!(
-                "fwrite: no _IO_FILE fd offset for arch {arch_name}"
-            ))
-        })?;
-        let fd_bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
-        let fd_raw = fd_bv
-            .as_u64()
-            .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
-        let fd_signed = fd_raw as u32 as i32;
+        // Resolve the fd FIRST: write-intent bounces below must know the
+        // target fd so they can demote its bounded symbolic content before
+        // falling back (angr-0xyq2 A4). An unresolvable fd (symbolic
+        // FILE* / _fileno, unmapped FILE struct, unknown arch) could alias
+        // any registered file, so it demotes everything.
+        let fd_signed = match resolve_fwrite_fd(state, &args[3]) {
+            Ok(fd) => fd,
+            Err(e) => {
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
 
         let bits = state.arch().bits();
         if fd_signed < 0 {
@@ -92,6 +79,41 @@ impl NativeSimProcedure for NativeFwrite {
         // Python fwrite's `simfd.write` for an arbitrary fd. No fd-1/2
         // narrowing — that was a stale holdover from when fwrite only reused
         // the stdout/stderr NativeWrite path.
+
+        // Deferred `?`: a concrete zero-length fwrite is a POSIX no-op that
+        // returns 0 WITHOUT demoting (A3); every other post-resolution
+        // bounce (symbolic size/nmemb/src, oversize) demotes first via the
+        // gate below (A4).
+        let src = extract_concrete_arg(&args[0], "src");
+        let size = extract_concrete_arg(&args[1], "size");
+        let nmemb = extract_concrete_arg(&args[2], "nmemb");
+        if let (Ok(s), Ok(n)) = (&size, &nmemb)
+            && s.saturating_mul(*n) == 0
+        {
+            return Ok(Some(RustBV::concrete(0, bits)));
+        }
+
+        // Write-demotion (angr-0xyq2 Phase 2): a write to a file with
+        // bounded symbolic content hands the file to Python for good.
+        if state
+            .file_system()
+            .demote_symbolic_content(fd_signed as u32)
+        {
+            return Err(ProcedureError::Other(format!(
+                "fwrite to fd={fd_signed} with symbolic content falls back to Python (demoted)"
+            )));
+        }
+
+        let src = src?;
+        let size = size?;
+        let nmemb = nmemb?;
+        let total = size.saturating_mul(nmemb);
+        if total > MAX_FWRITE_SIZE {
+            return Err(ProcedureError::Other(format!(
+                "fwrite byte count {} exceeds limit",
+                total
+            )));
+        }
 
         let mut bytes = Vec::with_capacity(total as usize);
         for i in 0..total {
@@ -107,10 +129,35 @@ impl NativeSimProcedure for NativeFwrite {
                 Err(e) => return Err(e.into()),
             }
         }
-        state.write_fd(fd_signed as u32, &bytes);
+        // Unreachable after the gate above; choke-point insurance (see
+        // FileSystem::write).
+        if !state.write_fd(fd_signed as u32, &bytes) {
+            return Err(ProcedureError::Other(format!(
+                "fwrite to fd={fd_signed} with symbolic content falls back to Python (demoted)"
+            )));
+        }
 
         Ok(Some(RustBV::concrete(total as u128, bits)))
     }
+}
+
+/// Resolve fwrite's `FILE *stream` argument (arg 3) to its `_fileno`,
+/// preserving the historical per-step error messages. Split out so the
+/// caller can demote-all on ANY resolution failure without repeating the
+/// error mapping.
+fn resolve_fwrite_fd(state: &RustSimState, stream: &RustBV) -> Result<i32, ProcedureError> {
+    let file_ptr = extract_concrete_arg(stream, "file_ptr")?;
+    let arch_name = state.arch().name();
+    let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
+        ProcedureError::Other(format!(
+            "fwrite: no _IO_FILE fd offset for arch {arch_name}"
+        ))
+    })?;
+    let fd_bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
+    let fd_raw = fd_bv
+        .as_u64()
+        .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
+    Ok(fd_raw as u32 as i32)
 }
 
 /// Native fflush implementation.
@@ -228,10 +275,13 @@ pub(crate) fn read_fileno_for_stream(
 /// ```
 ///
 /// Resolves `stream->_fileno`, then returns 1 if the fd's read position is at
-/// (or past) the content buffer end, and 0 otherwise. The Python proc
-/// (`procedures/libc/feof.py`) wraps the same check in a claripy `If` against
-/// `simfd.eof()`. In our model the content buffer is always concrete, so the
-/// boolean is concrete too.
+/// (or past) the content end (`FileSystem::fd_pos_and_size`, whose length leg
+/// is the max of the concrete buffer length and the bounded symbolic
+/// `content_sym` length, angr-0xyq2),
+/// and 0 otherwise. The Python proc (`procedures/libc/feof.py`) wraps the
+/// same check in a claripy `If` against `simfd.eof()`. In our model the
+/// content *length* is always concrete (bounded symbolic files have a
+/// concrete size), so the boolean is concrete too.
 ///
 /// Returns -1 if the fd is not tracked (matches the Python `simfd is None`
 /// → `None` short-circuit by signaling "fallback" via a non-zero status). We
@@ -264,8 +314,12 @@ impl NativeSimProcedure for NativeFeof {
         if fd < 0 {
             return Ok(Some(RustBV::concrete(0, bits)));
         }
-        let at_eof = match state.file_system_ref().fd_info(fd as u32) {
-            Some((_, pos, _, len, _)) => pos as usize >= len,
+        // effective_len = max(concrete, symbolic content_sym length)
+        // (angr-0xyq2 Phase 2) — identical to the concrete content length
+        // for fds without bounded symbolic content. Single map lookup:
+        // feof is hot in `while (!feof(f))` guest loops.
+        let at_eof = match state.file_system_ref().fd_pos_and_size(fd as u32) {
+            Some((pos, len)) => pos as usize >= len,
             None => false,
         };
         Ok(Some(RustBV::concrete(if at_eof { 1 } else { 0 }, bits)))
@@ -344,29 +398,52 @@ impl NativeSimProcedure for NativeFputs {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let str_addr = extract_concrete_arg(&args[0], "s")?;
         let file_ptr = extract_concrete_arg(&args[1], "stream")?;
-        let fd = read_fileno_for_stream(state, file_ptr)?;
+        let fd = match read_fileno_for_stream(state, file_ptr) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Unresolvable fd on a write path: any bounded symbolic
+                // file could be the target (angr-0xyq2 A4; O(1) when none
+                // attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         let bits = state.arch().bits();
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
         }
 
+        // No pre-scan demote gate: a zero-length fputs("") must stay a
+        // no-demotion no-op (A3), and only the scan can tell. The write
+        // choke point (FileSystem::write) demotes-and-refuses non-empty
+        // writes to symbolic-content fds; scan bounces demote explicitly
+        // below (A4) so a Python-handled write never leaves stale serving.
         let mut bytes = Vec::new();
-        for i in 0..MAX_FPUTS_LEN {
-            let bv = state.memory_load(str_addr.wrapping_add(i), 1)?;
-            let v = bv.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("symbolic byte at s+{i}"))
-            })?;
-            if v == 0 {
-                break;
+        let scan = (|| -> Result<(), ProcedureError> {
+            for i in 0..MAX_FPUTS_LEN {
+                let bv = state.memory_load(str_addr.wrapping_add(i), 1)?;
+                let v = bv.as_u64().ok_or_else(|| {
+                    ProcedureError::SymbolicArgument(format!("symbolic byte at s+{i}"))
+                })?;
+                if v == 0 {
+                    return Ok(());
+                }
+                bytes.push(v as u8);
             }
-            bytes.push(v as u8);
-            if i + 1 == MAX_FPUTS_LEN {
-                return Err(ProcedureError::Other(format!(
-                    "fputs source not NUL-terminated within {MAX_FPUTS_LEN} bytes"
-                )));
-            }
+            Err(ProcedureError::Other(format!(
+                "fputs source not NUL-terminated within {MAX_FPUTS_LEN} bytes"
+            )))
+        })();
+        if let Err(e) = scan {
+            // Write-intent bounce with the fd resolved — demote first (A4).
+            state.file_system().demote_symbolic_content(fd as u32);
+            return Err(e);
         }
-        state.write_fd(fd as u32, &bytes);
+        if !state.write_fd(fd as u32, &bytes) {
+            return Err(ProcedureError::Other(format!(
+                "fputs to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(Some(RustBV::concrete(1, bits)))
     }
 }

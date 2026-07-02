@@ -107,9 +107,7 @@ pub(crate) fn store_symbolic_line(
     };
 
     // Store the computed bytes at fixed offsets.
-    for (i, b) in store_bytes.into_iter().enumerate() {
-        state.memory_store(buf.wrapping_add(i as u64), b)?;
-    }
+    super::strings::write_bv_bytes(state, buf, store_bytes)?;
     // Apply constraints after storing (each borrows the solver).
     for c in constraints {
         state.add_constraint(c);
@@ -249,9 +247,7 @@ crate::declare_proc! {
         };
 
         // Store symbolic bytes to buffer
-        for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
-        }
+        super::strings::write_bv_bytes(state, buf, sym_bytes)?;
 
         // Apply the newline constraints after storing (add_constraint borrows
         // the solver, which the byte-creation block above held).

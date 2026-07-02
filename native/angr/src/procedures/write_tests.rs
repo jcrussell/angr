@@ -141,3 +141,100 @@ fn test_write_too_large() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn test_write_content_sym_demotes_and_falls_back() {
+    // angr-0xyq2 Phase 2 write-demotion: a native write to a bounded
+    // symbolic file clears content_sym on ALL fds for the path, drops the
+    // registry entry, and bounces to Python — the write itself and all
+    // subsequent I/O on the file are Python-owned.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hi", Permission::RWX);
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("wdem_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd1 = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+    let fd2 = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+
+    let result = NativeWrite.call(
+        &mut state,
+        &[
+            RustBV::concrete(fd1 as u128, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(2, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    {
+        let fs = state.file_system_ref();
+        assert!(fs.fd_content_sym(fd1).is_none(), "written fd demoted");
+        assert!(fs.fd_content_sym(fd2).is_none(), "sibling fd demoted");
+        assert!(
+            fs.file_content_for_path("/tmp/flag").is_none(),
+            "registry entry gone"
+        );
+        assert_eq!(fs.fd_content(fd1), b"", "nothing written natively");
+    }
+
+    // Subsequent read on the demoted fd is back to the old gap behavior:
+    // no content of either kind → Python fallback.
+    let read_result = crate::procedures::read::NativeRead.call(
+        &mut state,
+        &[
+            RustBV::concrete(fd2 as u128, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(2, 64),
+        ],
+    );
+    assert!(
+        read_result.is_err(),
+        "demoted file reads fall back to Python"
+    );
+}
+
+/// angr-0xyq2 A3: write(fd, buf, 0) is a POSIX no-op — it must return 0
+/// natively WITHOUT demoting the fd's bounded symbolic content.
+#[test]
+fn test_zero_length_write_does_not_demote() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("wzero_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+
+    let result = NativeWrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x1000, 64), // buf may even be unmapped
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("zero-length write served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_some(), "content_sym intact");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_some(),
+        "registry intact"
+    );
+}

@@ -62,18 +62,31 @@ pub struct FileDescriptor {
     /// *finite* size, unlike the unbounded-stream `symbolic` flag above.
     /// `Arc` keeps the per-read CoW position advance (`Arc::make_mut` on
     /// the fd map) a refcount bump rather than a deep BV-vector clone.
-    /// Attached by [`FileSystem::open`] / [`FileSystem::open_symbolic`]
-    /// from the path-keyed `file_contents` registry. Phase 1 (angr-0xyq2):
-    /// data model only — read/fread serve paths still consume the concrete
-    /// `content` buffer; only length consumers (SEEK_END, stat/fstat) see
-    /// this via [`FileDescriptor::effective_len`]. `#[serde(default)]`
-    /// keeps pre-angr-0xyq2 snapshots loadable (reconstitutes to `None`).
+    /// Attached by [`FileSystem::open`] from the path-keyed
+    /// `file_contents` registry (NOT by `open_symbolic` — the
+    /// symbolic-stream and bounded-file models have conflicting EOF
+    /// semantics, see [`FileSystem::open_symbolic`]). Served natively by
+    /// [`FileSystem::read_sym`] / [`FileSystem::read_sym_at`]
+    /// (angr-0xyq2 Phase 2). `#[serde(default)]` keeps pre-angr-0xyq2
+    /// snapshots loadable (reconstitutes to `None`).
     /// Serialized via serde's `rc` feature: the `Arc<T>` goes on the wire
     /// as `T` and each load rebuilds a fresh `Arc`, so Arc *sharing*
     /// across fds / the registry is not preserved through serde —
     /// acceptable, sharing is only a fork-time perf optimization.
     #[serde(default)]
     pub content_sym: Option<Arc<Vec<RustBV>>>,
+    /// The `file_contents` registry key this fd is linked to, recorded at
+    /// attach/registration time (cwd-normalized-at-that-moment absolute
+    /// path). [`FileSystem::demote_symbolic_content`] keys off this rather
+    /// than re-normalizing `name` against the *current* cwd, so a guest
+    /// `chdir` between open and write cannot decouple the fd from its
+    /// registry entry (and demotion needs no per-write path allocation).
+    /// Set by [`FileSystem::open`] when it attaches `content_sym`, and by
+    /// [`FileSystem::register_file_content`] on already-open fds of the
+    /// registered path. Cleared on demotion. `#[serde(default)]` keeps
+    /// earlier snapshots loadable (reconstitutes to `None`).
+    #[serde(default)]
+    pub registry_key: Option<String>,
 }
 
 impl FileDescriptor {
@@ -87,6 +100,7 @@ impl FileDescriptor {
             is_open: true,
             symbolic: false,
             content_sym: None,
+            registry_key: None,
         }
     }
 
@@ -100,6 +114,7 @@ impl FileDescriptor {
             is_open: true,
             symbolic: false,
             content_sym: None,
+            registry_key: None,
         }
     }
 
@@ -114,6 +129,7 @@ impl FileDescriptor {
             is_open: true,
             symbolic: true,
             content_sym: None,
+            registry_key: None,
         }
     }
 
@@ -121,11 +137,11 @@ impl FileDescriptor {
     /// concrete buffer length and the symbolic byte count (when
     /// `content_sym` is attached), so a concrete write past the symbolic
     /// end is not masked — mirrors Python `SimFile.write` size semantics
-    /// (size = max(old size, write end)). Phase 2's write-demotion is the
-    /// primary defense; this is defense-in-depth. Length consumers
-    /// (SEEK_END, stat/fstat st_size) go through this; the read/fread
-    /// serve paths intentionally still read the concrete buffer until
-    /// Phase 2 of angr-0xyq2.
+    /// (size = max(old size, write end)). The Phase 2 write choke point
+    /// ([`FileSystem::write`]) refuses concrete writes on attached fds, so
+    /// the mixed state can only arise from hand-built/legacy snapshots —
+    /// this max is defense-in-depth. Length consumers (SEEK_END,
+    /// stat/fstat st_size, feof) go through this.
     pub fn effective_len(&self) -> usize {
         self.content
             .len()
@@ -172,9 +188,10 @@ pub struct FileSystem {
     /// → per-byte symbolic content (see [`FileDescriptor::content_sym`]).
     /// Seeded via [`register_file_content`](FileSystem::register_file_content)
     /// (Phase 3 of angr-0xyq2 will push Python `state.fs._files` symbolic
-    /// SimFile content here); consulted by `open` / `open_symbolic` so a
-    /// native open attaches `content_sym` without a Python bounce. Arc'd
-    /// for O(1) fork, mirroring `known_paths`.
+    /// SimFile content here); consulted by `open` so a native open attaches
+    /// `content_sym` without a Python bounce (`open_symbolic` does NOT
+    /// attach — the stream model owns those fds). Arc'd for O(1) fork,
+    /// mirroring `known_paths`.
     file_contents: Arc<HashMap<String, Arc<Vec<RustBV>>>>,
 }
 
@@ -313,13 +330,19 @@ impl FileSystem {
     pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        let content_sym = self.file_content_for_path(&name);
         // known_paths keys on normalized paths; normalizing at insertion
         // freezes cwd-at-open, which is POSIX-correct for relative paths.
         let norm = self.normalize_path(&name);
-        Arc::make_mut(&mut self.known_paths).insert(norm);
+        let content_sym = self.file_contents.get(&norm).cloned();
         let mut desc = FileDescriptor::new(name, flags);
+        if content_sym.is_some() {
+            // Freeze the registry key on the descriptor so demotion can
+            // find the entry (and every sibling fd) without re-normalizing
+            // against a possibly-changed cwd. See `registry_key`.
+            desc.registry_key = Some(norm.clone());
+        }
         desc.content_sym = content_sym;
+        Arc::make_mut(&mut self.known_paths).insert(norm);
         Arc::make_mut(&mut self.fds).insert(fd, desc);
         fd
     }
@@ -346,18 +369,19 @@ impl FileSystem {
     /// the open/openat syscall path still uses the content-less `open`, so
     /// a real binary's `open()` is unaffected. See
     /// `FileDescriptor::symbolic` for the stream-vs-bounded-file distinction.
+    ///
+    /// Unlike `open`, registered bounded content (`file_contents`) is NOT
+    /// attached: the two models conflict rather than compose — a bounded
+    /// file returns 0 at EOF forever, while the stream model mints fresh
+    /// bytes forever. The stream model wins for `open_symbolic`; bounded
+    /// symbolic files come via `open()` on a registered path.
     pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        // Attach registered bounded symbolic content just like `open` —
-        // the stream flag and bounded content are orthogonal models.
-        let content_sym = self.file_content_for_path(&name);
         // Normalized at insertion (freezes cwd-at-open) — see `open`.
         let norm = self.normalize_path(&name);
         Arc::make_mut(&mut self.known_paths).insert(norm);
-        let mut desc = FileDescriptor::new_symbolic(name, flags);
-        desc.content_sym = content_sym;
-        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new_symbolic(name, flags));
         fd
     }
 
@@ -419,11 +443,29 @@ impl FileSystem {
     /// previous registration for the same normalized path. Paths are
     /// UTF-8-lossy (see [`normalize_path`](Self::normalize_path)) —
     /// Phase 3 export must skip non-UTF-8 `_files` keys.
+    ///
+    /// Fds already open on the registered path get their `registry_key`
+    /// stamped (their `content_sym` stays `None` — mid-stream reads keep
+    /// their pre-registration semantics), so a later native write through
+    /// such an fd still demotes the registry entry rather than leaving a
+    /// fresh `open` to serve stale content.
     // See the allow rationale on `From<FileSystemData>` above.
     #[allow(clippy::arc_with_non_send_sync)]
     pub fn register_file_content(&mut self, path: &str, bytes: Vec<RustBV>) {
         let norm = self.normalize_path(path);
         Arc::make_mut(&mut self.known_paths).insert(norm.clone());
+        let stamp: Vec<u32> = self
+            .fds
+            .iter()
+            .filter(|(_, d)| d.registry_key.is_none() && self.normalize_path(&d.name) == norm)
+            .map(|(k, _)| *k)
+            .collect();
+        if !stamp.is_empty() {
+            let fds = Arc::make_mut(&mut self.fds);
+            for k in stamp {
+                fds.get_mut(&k).expect("fd existed above").registry_key = Some(norm.clone());
+            }
+        }
         Arc::make_mut(&mut self.file_contents).insert(norm, Arc::new(bytes));
     }
 
@@ -480,6 +522,17 @@ impl FileSystem {
         }
     }
 
+    /// True when `fd` has bounded symbolic content or a live registry link
+    /// — the write choke point must refuse to mutate it. O(1), no
+    /// allocation: one hash lookup and two `Option` flag checks, so plain
+    /// concrete fds (all production fds today) pay nothing.
+    #[inline]
+    fn write_refused(&self, fd: u32) -> bool {
+        self.fds
+            .get(&fd)
+            .is_some_and(|d| d.content_sym.is_some() || d.registry_key.is_some())
+    }
+
     /// Write data to a file descriptor at its current position, advancing the
     /// position by `data.len()` (POSIX `write(2)` semantics).
     ///
@@ -490,7 +543,24 @@ impl FileSystem {
     /// EOF: there, append-only would corrupt the buffer relative to Python's
     /// position-aware `simfd.write`. Zero-fills any gap when `position` is at or
     /// past EOF (a sparse seek-then-write), mirroring [`write_at`].
-    pub fn write(&mut self, fd: u32, data: &[u8]) {
+    ///
+    /// **Choke point (angr-0xyq2 Phase 2):** an fd carrying bounded
+    /// symbolic content (`content_sym` / a live `registry_key`) is never
+    /// mutated here. Instead the content is demoted
+    /// ([`demote_symbolic_content`](Self::demote_symbolic_content)) and
+    /// `false` is returned — the caller must bounce the write to Python
+    /// (a fallback, NOT a state-killing error), which owns the file from
+    /// then on. Zero-length writes are a POSIX no-op: they return `true`
+    /// without demoting (and without creating a missing fd entry).
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if self.write_refused(fd) {
+            self.demote_symbolic_content(fd);
+            return false;
+        }
         let desc = Arc::make_mut(&mut self.fds)
             .entry(fd)
             .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
@@ -501,6 +571,7 @@ impl FileSystem {
         }
         desc.content[start..end].copy_from_slice(data);
         desc.position = end as u64;
+        true
     }
 
     /// Read up to `count` bytes from a file descriptor at its current position.
@@ -525,6 +596,157 @@ impl FileSystem {
         let data = desc.content[pos..pos + n].to_vec();
         desc.position += n as u64;
         data
+    }
+
+    /// Read up to `count` bytes of bounded symbolic content from `fd` at its
+    /// current position, advancing the position (CoW via `Arc::make_mut`,
+    /// like the concrete `read`). Returns `None` when the fd is absent, is
+    /// not open (`close` only flips the flag; `content_sym` stays attached
+    /// but must not serve), or has no `content_sym` attached — the caller
+    /// keeps its concrete-serve / Python-fallback logic. Returns
+    /// `Some(vec)` otherwise; an empty vec at EOF (caller returns 0),
+    /// matching Python `SimFile.read`'s `max(0, min(count, size - pos))`.
+    /// Each returned entry is a cheap `RustBV` clone of the shared
+    /// per-byte content.
+    ///
+    /// The slice is clamped to `content_sym` bounds only: positions beyond
+    /// the symbolic end (e.g. an unchecked `SEEK_SET`) serve 0 bytes
+    /// rather than panicking.
+    ///
+    /// Counter note: `symfile_reads_native` is bumped by the *call sites*
+    /// (once per guest call that served >0 bytes), not here — `readv`
+    /// calls this once per iovec segment.
+    pub fn read_sym(&mut self, fd: u32, count: usize) -> Option<Vec<RustBV>> {
+        // Peek to compute the byte count without forcing CoW at EOF.
+        let (start, n) = {
+            let desc = self.fds.get(&fd)?;
+            if !desc.is_open {
+                return None;
+            }
+            let content = desc.content_sym.as_ref()?;
+            let start = (desc.position as usize).min(content.len());
+            (start, count.min(content.len() - start))
+        };
+        if n == 0 {
+            return Some(Vec::new());
+        }
+        let desc = Arc::make_mut(&mut self.fds)
+            .get_mut(&fd)
+            .expect("fd existed above");
+        let content = desc.content_sym.as_ref().expect("content_sym peeked above");
+        let bytes = content[start..start + n].to_vec();
+        desc.position += n as u64;
+        Some(bytes)
+    }
+
+    /// Positioned twin of [`read_sym`](Self::read_sym): read up to `count`
+    /// bytes of bounded symbolic content starting at absolute `offset`,
+    /// WITHOUT touching the fd's position (POSIX `pread` semantics, like
+    /// [`read_at`](Self::read_at)). Same `None` / `Some(empty)` contract
+    /// (including the not-open guard and the call-site counter note).
+    pub fn read_sym_at(&self, fd: u32, offset: u64, count: usize) -> Option<Vec<RustBV>> {
+        let desc = self.fds.get(&fd)?;
+        if !desc.is_open {
+            return None;
+        }
+        let content = desc.content_sym.as_ref()?;
+        let start = (offset as usize).min(content.len());
+        let n = count.min(content.len() - start);
+        Some(content[start..start + n].to_vec())
+    }
+
+    /// Demote a fd's bounded symbolic content ahead of a native write:
+    /// drops the `file_contents` registry entry recorded on the fd
+    /// (`registry_key`, frozen at attach/registration time — NOT
+    /// re-normalized against the current cwd, so a guest `chdir` between
+    /// open and write cannot decouple siblings) AND clears
+    /// `content_sym`/`registry_key` on EVERY fd sharing that key (dup'd /
+    /// re-opened siblings included), so no stale native serving survives
+    /// anywhere. Returns `true` when anything was demoted — the caller
+    /// must then return its Python-fallback error, leaving the write
+    /// itself and ALL subsequent I/O on the file consistently Python-owned
+    /// (the Python SimFile model has the authoritative content from
+    /// Phase 3's export). No-op (`false`) for fds without symbolic content
+    /// — the common case, O(1) with no allocation, so native writes stay
+    /// cheap.
+    ///
+    /// Post-demotion trade-off (deliberate v1 scope): metadata ops on the
+    /// file — `feof` / `fstat` / `SEEK_END` / stat-by-path — keep
+    /// answering natively from the concrete buffer (size 0), identical to
+    /// the pre-feature behavior for natively-opened fds whose writes
+    /// bounce. Bouncing them to Python could not work either: natively
+    /// minted fds are not mirrored into Python's fd table (the angr-8j16
+    /// unsynced-fd trade-off). Target workloads (parsers *reading* a
+    /// symbolic input file) don't write the input file, so this only
+    /// bites guests that write their own symbolic input.
+    pub fn demote_symbolic_content(&mut self, fd: u32) -> bool {
+        let Some(desc) = self.fds.get(&fd) else {
+            return false;
+        };
+        let Some(key) = desc.registry_key.clone() else {
+            // Defensive: `content_sym` without a `registry_key` cannot be
+            // minted by `open` (which sets both), but a hand-built or
+            // legacy-snapshot descriptor could carry it — demote the
+            // single fd so it never serves stale bytes.
+            if desc.content_sym.is_none() {
+                return false;
+            }
+            Arc::make_mut(&mut self.fds)
+                .get_mut(&fd)
+                .expect("fd existed above")
+                .content_sym = None;
+            crate::symbolic::record_symfile_write_demotion();
+            return true;
+        };
+        if self.file_contents.contains_key(&key) {
+            Arc::make_mut(&mut self.file_contents).remove(&key);
+        }
+        // `fd` itself carries the key, so `matching` is never empty.
+        let matching: Vec<u32> = self
+            .fds
+            .iter()
+            .filter(|(_, d)| d.registry_key.as_deref() == Some(key.as_str()))
+            .map(|(k, _)| *k)
+            .collect();
+        let fds = Arc::make_mut(&mut self.fds);
+        for k in matching {
+            let d = fds.get_mut(&k).expect("matching fd existed above");
+            d.content_sym = None;
+            d.registry_key = None;
+        }
+        crate::symbolic::record_symfile_write_demotion();
+        true
+    }
+
+    /// Nuke ALL bounded symbolic content: every `file_contents` registry
+    /// entry plus every fd's `content_sym` / `registry_key`. Insurance for
+    /// write paths whose fd is symbolic/unresolvable — any registered file
+    /// could be the target, so Python must own them all from here on.
+    /// Returns `true` when anything was dropped. O(1) empty-registry check
+    /// plus a flag scan over the handful of open fds when nothing is
+    /// attached (all production states today), no allocation.
+    // See the allow rationale on `From<FileSystemData>` above.
+    #[allow(clippy::arc_with_non_send_sync)]
+    pub fn demote_all_symbolic_content(&mut self) -> bool {
+        let any_fd = self
+            .fds
+            .values()
+            .any(|d| d.content_sym.is_some() || d.registry_key.is_some());
+        if !any_fd && self.file_contents.is_empty() {
+            return false;
+        }
+        if !self.file_contents.is_empty() {
+            self.file_contents = Arc::new(HashMap::new());
+        }
+        if any_fd {
+            let fds = Arc::make_mut(&mut self.fds);
+            for d in fds.values_mut() {
+                d.content_sym = None;
+                d.registry_key = None;
+            }
+        }
+        crate::symbolic::record_symfile_write_demotion();
+        true
     }
 
     /// Seek a file descriptor. Returns the new position.
@@ -567,7 +789,19 @@ impl FileSystem {
     /// offset is unaffected). Extends the content buffer (zero-filling any
     /// gap) when `offset` is at or past EOF, so it is not append-only like
     /// `write`. Creates the fd entry if missing, matching `write`.
-    pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) {
+    ///
+    /// Same choke-point contract as [`write`](Self::write): symbolic-content
+    /// fds are demoted and refused (`false`), zero-length writes are a
+    /// no-demotion no-op (`true`).
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if self.write_refused(fd) {
+            self.demote_symbolic_content(fd);
+            return false;
+        }
         let desc = Arc::make_mut(&mut self.fds)
             .entry(fd)
             .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
@@ -577,6 +811,7 @@ impl FileSystem {
             desc.content.resize(end, 0);
         }
         desc.content[start..end].copy_from_slice(data);
+        true
     }
 
     /// Get the content buffer for a file descriptor (read-only).
@@ -629,16 +864,33 @@ impl FileSystem {
     }
 
     /// Shared handle to an fd's bounded symbolic content, if attached
-    /// (refcount bump, no deep clone). Used by tests now; the Phase 2
-    /// (angr-0xyq2) read-serve paths will fetch content through this.
+    /// (refcount bump, no deep clone). Prefer
+    /// [`has_content_sym`](Self::has_content_sym) when only a predicate is
+    /// needed.
     pub fn fd_content_sym(&self, fd: u32) -> Option<Arc<Vec<RustBV>>> {
         self.fds.get(&fd).and_then(|d| d.content_sym.clone())
     }
 
+    /// True when `fd` is open with bounded symbolic content attached — the
+    /// serve-gate predicate for the read paths (no Arc clone, matching
+    /// [`read_sym`](Self::read_sym)'s not-open guard).
+    pub fn has_content_sym(&self, fd: u32) -> bool {
+        self.fds
+            .get(&fd)
+            .is_some_and(|d| d.is_open && d.content_sym.is_some())
+    }
+
+    /// Position and [`effective_len`](FileDescriptor::effective_len) for an
+    /// fd, in a single map lookup. Drives `NativeFeof`, which is hot in
+    /// `while (!feof(f))` guest loops.
+    pub fn fd_pos_and_size(&self, fd: u32) -> Option<(u64, usize)> {
+        self.fds.get(&fd).map(|d| (d.position, d.effective_len()))
+    }
+
     /// Effective content length for an fd — symbolic byte count when
     /// `content_sym` is attached, else the concrete buffer length. Drives
-    /// `NativeFstatSyscall` st_size. The read-serve paths keep using
-    /// `fd_info`'s concrete `content_len` until Phase 2 of angr-0xyq2.
+    /// `NativeFstatSyscall` st_size; `NativeFeof` uses the combined
+    /// [`fd_pos_and_size`](Self::fd_pos_and_size) accessor instead.
     pub fn effective_size(&self, fd: u32) -> Option<usize> {
         self.fds.get(&fd).map(|d| d.effective_len())
     }

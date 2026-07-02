@@ -181,3 +181,41 @@ fn test_fputc_symbolic_stream_falls_back() {
     let result = NativeFputc.call(&mut state, &[RustBV::concrete(b'A' as u128, 32), sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
+
+/// angr-0xyq2 Phase 2 (A2): fputc had no per-site demote guard — the write
+/// choke point (`FileSystem::write`) must demote the fd's bounded symbolic
+/// content and bounce to Python, writing nothing natively.
+#[test]
+fn test_fputc_content_sym_fd_demotes_and_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("fputcfile_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFputc.call(
+        &mut state,
+        &[
+            RustBV::concrete(b'X' as u128, 32),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "no bytes written natively");
+}

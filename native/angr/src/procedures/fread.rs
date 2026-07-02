@@ -9,16 +9,22 @@
 //!   - serves concrete content from the Rust `FileSystem` when the fd is open
 //!     and still has unconsumed bytes (`pos < content_len`), advancing the
 //!     position — mirroring `read.rs`.
+//!   - serves bounded symbolic content (`content_sym`, angr-0xyq2 Phase 2)
+//!     via `FileSystem::read_sym`, returning the truncated item count
+//!     (bytes served / size) with the position advanced by bytes served —
+//!     Python fread semantics (`simfd.read(dst, size*nm)` then `ret // size`).
+//!     Totals beyond `MAX_FREAD_SIZE` are CLAMPED (short item count), never
+//!     bounced — a fallback would split the position cursor (angr-8j16).
 //!
 //! Falls back to Python (returns `Err`) for:
 //!   - symbolic `stream` pointer or symbolic `FILE._fileno`;
 //!   - symbolic `size` / `nmemb` (the macro rejects these before the body runs);
-//!   - `total = size * nmemb` beyond `MAX_FREAD_SIZE`;
+//!   - `total = size * nmemb` beyond `MAX_FREAD_SIZE` (non-`content_sym` fds);
 //!   - fds NOT open in the Rust `FileSystem` (Python's symbolic-file model owns
 //!     those — see the fd-table invariant in `read.rs`);
-//!   - fds with no concrete content (symbolic SimFiles) — Python's symbolic-file
-//!     model owns those, and synthesizing fresh bytes here would drop the
-//!     SimFile's own constraints.
+//!   - fds with neither concrete nor registered symbolic content — Python's
+//!     symbolic-file model owns those, and synthesizing fresh bytes here would
+//!     drop the SimFile's own constraints.
 //!
 //! NOTE (angr-m674p): this native fread does NOT fix asisctffinals2015_license.
 //! There `fread` is called with a SYMBOLIC `size` (the file size, rbp at
@@ -30,7 +36,7 @@
 //! concrete-content fread only.
 
 use super::ProcedureError;
-use super::strings::write_concrete_bytes;
+use super::strings::{write_bv_bytes, write_concrete_bytes};
 use crate::procedures::fileops::read_fileno;
 use crate::symbolic::RustBV;
 
@@ -49,12 +55,6 @@ crate::declare_proc! {
         let total = size.saturating_mul(nmemb);
         if total == 0 {
             return Ok(Some(RustBV::concrete(0, bits)));
-        }
-        if total > MAX_FREAD_SIZE {
-            return Err(ProcedureError::Other(format!(
-                "fread total {} exceeds limit",
-                total
-            )));
         }
 
         // Resolve the backing fd from the FILE struct. Symbolic stream pointer
@@ -81,6 +81,30 @@ crate::declare_proc! {
             )));
         }
 
+        // Bounded symbolic file content (angr-0xyq2 Phase 2): serve the
+        // registered per-byte BVs natively. Matches Python fread
+        // (`procedures/libc/fread.py`) exactly: `simfd.read(dst, size*nm)`
+        // consumes ALL available bytes up to size*nmemb (position advances by
+        // bytes read, not by items*size) and the return is the truncated item
+        // count `ret // size`. Oversized totals are clamped to
+        // MAX_FREAD_SIZE (a short item count, which fread callers must
+        // handle anyway) rather than bounced — see the module docs.
+        let clamped = total.min(MAX_FREAD_SIZE) as usize;
+        if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
+            let n = sym_bytes.len();
+            write_bv_bytes(state, dst, sym_bytes)?;
+            if n > 0 {
+                crate::symbolic::record_symfile_read_native();
+            }
+            let items = (n as u64) / size;
+            return Ok(Some(RustBV::concrete(items as u128, bits)));
+        }
+        if total > MAX_FREAD_SIZE {
+            return Err(ProcedureError::Other(format!(
+                "fread total {} exceeds limit",
+                total
+            )));
+        }
         // Empty / fully-consumed content defers to Python so the symbolic-file
         // model (cle simfs + SimFile) can produce symbolic bytes — mirroring
         // read.rs. Synthesizing fresh symbolic bytes here would lose the

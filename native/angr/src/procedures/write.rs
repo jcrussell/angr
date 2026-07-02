@@ -45,6 +45,23 @@ crate::declare_proc! {
                 fd
             )));
         }
+        // Zero-length write: POSIX no-op — return 0 natively WITHOUT
+        // demoting bounded symbolic content (angr-0xyq2 A3).
+        if count == 0 {
+            let bits = state.arch().bits();
+            return Ok(Some(RustBV::concrete(0, bits)));
+        }
+        // Write-demotion (angr-0xyq2 Phase 2): a write to a file with bounded
+        // symbolic content drops the content (all sibling fds + registry) and
+        // bounces to Python, so this write and all later I/O on the file are
+        // consistently Python-owned. Gated BEFORE the size/symbolic-byte
+        // bounces below — those fall back to Python too, and must not leave
+        // stale native serving behind.
+        if state.file_system().demote_symbolic_content(fd_u32) {
+            return Err(ProcedureError::Other(format!(
+                "write to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
 
         if count > MAX_WRITE_SIZE {
             return Err(ProcedureError::Other(format!(
@@ -72,7 +89,14 @@ crate::declare_proc! {
             }
         }
 
-        state.write_fd(fd_u32, &bytes);
+        // Unreachable after the gate above; kept as choke-point insurance
+        // (see FileSystem::write) so no future reordering can mutate a
+        // symbolic-content fd natively.
+        if !state.write_fd(fd_u32, &bytes) {
+            return Err(ProcedureError::Other(format!(
+                "write to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(count as u128, bits)))

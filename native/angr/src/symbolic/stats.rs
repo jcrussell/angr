@@ -215,6 +215,18 @@ pub(crate) static ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64:
 pub(crate) static Z3_ASSUME_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static Z3_ASSUME_DEDUP_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+// angr-0xyq2 Phase 2: bounded symbolic file content serving.
+/// Guest calls (read / fread / readv / pread64) that served >0 bytes
+/// natively from `FileDescriptor::content_sym`. Bumped once per guest call
+/// at the call sites — NOT inside `FileSystem::read_sym`, which `readv`
+/// invokes once per iovec segment. Phase 3's integration test asserts the
+/// read/fread Python-fallback counters stay 0 while this one is non-zero.
+pub(crate) static SYMFILE_READS_NATIVE: AtomicU64 = AtomicU64::new(0);
+/// Write-demotions: a native write hit a fd/path with bounded symbolic
+/// content; the content was dropped (fd + registry) and the write bounced
+/// to Python (see `FileSystem::demote_symbolic_content`).
+pub(crate) static SYMFILE_WRITE_DEMOTIONS: AtomicU64 = AtomicU64::new(0);
+
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
 pub(crate) const NUM_CHECK_SITES: usize = 9;
@@ -513,6 +525,15 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_assume_dedup_hit".into(),
         Z3_ASSUME_DEDUP_HIT_COUNT.load(Ordering::Relaxed),
     );
+    // angr-0xyq2 Phase 2: bounded symbolic file content serving.
+    stats.insert(
+        "symfile_reads_native".into(),
+        SYMFILE_READS_NATIVE.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "symfile_write_demotions".into(),
+        SYMFILE_WRITE_DEMOTIONS.load(Ordering::Relaxed),
+    );
     // angr-v5a5: shared-lineage solver telemetry. The counters live in
     // `super::lineage` and are atomically incremented by `switch_to`; this
     // is the only place that surfaces them to the Python caller via
@@ -614,6 +635,9 @@ pub fn reset_solver_stats() {
     ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_ASSUME_DEDUP_SCANNED_COUNT.store(0, Ordering::Relaxed);
     Z3_ASSUME_DEDUP_HIT_COUNT.store(0, Ordering::Relaxed);
+    // angr-0xyq2 Phase 2: bounded symbolic file content serving.
+    SYMFILE_READS_NATIVE.store(0, Ordering::Relaxed);
+    SYMFILE_WRITE_DEMOTIONS.store(0, Ordering::Relaxed);
     // angr-v5a5: clear lineage telemetry alongside the rest.
     #[cfg(feature = "vex-engine-z3")]
     super::lineage::reset_lineage_stats();
@@ -853,4 +877,23 @@ pub fn record_commutative_canonicalize(swapped: bool) {
     if swapped {
         RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// angr-0xyq2 Phase 2: record a guest read call (read / fread / readv /
+/// pread64) that served >0 bytes natively from bounded symbolic file
+/// content (`FileDescriptor::content_sym`) — each bump is one guest call
+/// that previously bounced to Python. Called once per guest call at the
+/// serve sites (readv counts once, not per segment).
+#[inline]
+pub fn record_symfile_read_native() {
+    SYMFILE_READS_NATIVE.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-0xyq2 Phase 2: record a write-demotion — a native write hit a fd /
+/// path with bounded symbolic content, so the content was dropped (all
+/// fds sharing the registry key + the registry entry; everything for
+/// `demote_all_symbolic_content`) and the write bounced to Python.
+#[inline]
+pub fn record_symfile_write_demotion() {
+    SYMFILE_WRITE_DEMOTIONS.fetch_add(1, Ordering::Relaxed);
 }

@@ -408,3 +408,174 @@ fn pwrite64_unknown_fd_falls_back() {
         .expect_err("fallback");
     assert!(matches!(err, SyscallError::Other(_)));
 }
+
+/// Register `n` symbolic bytes for `path` and open it. Returns the fd.
+fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..n)
+            .map(|i| RustBV::symbolic(&ctx, format!("fdiofile_{i}"), 8))
+            .collect()
+    };
+    state.file_system().register_file_content(path, bytes);
+    state
+        .file_system()
+        .open(path.to_string(), FdFlags::ReadOnly)
+}
+
+#[test]
+fn readv_content_sym_scatters_bvs() {
+    // angr-0xyq2 Phase 2: 3 symbolic bytes into two 2-byte segments — the
+    // first fills, the second gets the 1-byte remainder (EOF stops there).
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    write_iovec_array(&mut state, 0x2100, &[(0x2200, 2), (0x2300, 2)]);
+
+    let outcome = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2100, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    for addr in [0x2200u64, 0x2201, 0x2300] {
+        let byte = state.memory_load(addr, 1).expect("loaded");
+        assert!(
+            byte.as_u64().is_none(),
+            "byte at {addr:#x} should be symbolic"
+        );
+    }
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
+}
+
+#[test]
+fn pread64_content_sym_reads_at_offset_without_moving_position() {
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 4);
+
+    let outcome = NativePread64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2200, 64),
+                RustBV::concrete(8, 64), // clamped to the 3 bytes after offset 1
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    for i in 0..3u64 {
+        let byte = state.memory_load(0x2200 + i, 1).expect("loaded");
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
+    }
+    assert_eq!(
+        state.file_system_ref().fd_info(fd).unwrap().1,
+        0,
+        "pread does not move the position"
+    );
+}
+
+#[test]
+fn writev_content_sym_demotes_and_falls_back() {
+    // angr-0xyq2 Phase 2 write-demotion, writev leg.
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    state.map_memory_data(0x3000, b"hi", Permission::RWX);
+    write_iovec_array(&mut state, 0x2100, &[(0x3000, 2)]);
+
+    let err = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2100, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect_err("demoted write must fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "nothing written natively");
+}
+
+#[test]
+fn pwrite64_content_sym_demotes_and_falls_back() {
+    // angr-0xyq2 Phase 2 write-demotion, pwrite64 leg.
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    state.map_memory_data(0x3000, b"hi", Permission::RWX);
+
+    let err = NativePwrite64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(2, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect_err("demoted write must fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "nothing written natively");
+}
+
+/// angr-0xyq2 B3: readv bumps `symfile_reads_native` once per guest call,
+/// not once per iovec segment (read_sym runs per segment). The counter is
+/// process-global and other tests may bump it concurrently, so a mismatch
+/// is retried on a fresh state — concurrent noise passes on a later
+/// attempt, while a deterministic per-segment double-bump fails every
+/// attempt.
+#[test]
+fn readv_content_sym_bumps_counter_once_per_call() {
+    let mut observed = Vec::new();
+    for attempt in 0..3 {
+        let mut state = fresh_state();
+        let fd = open_registered_sym_file(&mut state, "/tmp/flag", 4);
+        write_iovec_array(&mut state, 0x2100, &[(0x2200, 2), (0x2300, 2)]);
+
+        let before = crate::symbolic::get_solver_stats()["symfile_reads_native"];
+        let outcome = NativeReadvSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x2100, 64),
+                    RustBV::concrete(2, 64),
+                ],
+            )
+            .expect("served natively");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 4, "both segments served"),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        let delta = crate::symbolic::get_solver_stats()["symfile_reads_native"] - before;
+        if delta == 1 {
+            return; // exactly one bump for a two-segment readv
+        }
+        observed.push((attempt, delta));
+    }
+    panic!("readv must bump symfile_reads_native once per call; observed deltas {observed:?}");
+}

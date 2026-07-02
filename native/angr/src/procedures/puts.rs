@@ -31,9 +31,16 @@ crate::declare_proc! {
         // or the cap quietly stops the scan (puts prints what it has).
         let buf = crate::procedures::strings::scan_concrete_lossy(state, s, MAX_PUTS_LEN);
 
-        // Append string + newline to stdout buffer
-        state.write_stdout(&buf);
-        state.write_stdout(b"\n");
+        // Append string + newline to stdout buffer. A refusal (fd 1 dup2'd
+        // onto a bounded-symbolic-content fd, now demoted) bounces to
+        // Python — see FileSystem::write. The newline write cannot be
+        // refused once the first write succeeded (the fd is demoted, not
+        // re-attached, between them).
+        if !(state.write_stdout(&buf) && state.write_stdout(b"\n")) {
+            return Err(crate::procedures::ProcedureError::Other(
+                "puts to stdout with symbolic content falls back to Python (demoted)".to_string(),
+            ));
+        }
 
         let len = buf.len() as u128 + 1; // +1 for newline
         Ok(Some(RustBV::concrete(len, 32)))
@@ -53,7 +60,13 @@ crate::declare_proc! {
     args = [c: concrete],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        state.write_stdout(&[byte]);
+        // Refusal contract — see NativePuts.
+        if !state.write_stdout(&[byte]) {
+            return Err(crate::procedures::ProcedureError::Other(
+                "putchar to stdout with symbolic content falls back to Python (demoted)"
+                    .to_string(),
+            ));
+        }
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
@@ -78,11 +91,27 @@ crate::declare_proc! {
     aliases = ["fputc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Unresolvable fd on a write path: any bounded symbolic
+                // file could be the target (angr-0xyq2 A4; O(1) when none
+                // attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }
-        state.write_fd(fd as u32, &[byte]);
+        // A refusal means the fd carried bounded symbolic content (now
+        // demoted) — bounce to Python, which owns the file from here
+        // (angr-0xyq2 Phase 2 choke point; see FileSystem::write).
+        if !state.write_fd(fd as u32, &[byte]) {
+            return Err(crate::procedures::ProcedureError::Other(format!(
+                "fputc to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }
@@ -97,11 +126,23 @@ crate::declare_proc! {
     aliases = ["putc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // See NativeFputc.
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }
-        state.write_fd(fd as u32, &[byte]);
+        // Refusal contract — see NativeFputc.
+        if !state.write_fd(fd as u32, &[byte]) {
+            return Err(crate::procedures::ProcedureError::Other(format!(
+                "putc to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(Some(RustBV::concrete(byte as u128, 32)))
     }
 }

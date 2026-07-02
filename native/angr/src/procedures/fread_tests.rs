@@ -106,6 +106,104 @@ fn test_fread_empty_content_falls_back() {
     assert!(matches!(result, Err(ProcedureError::Other(_))));
 }
 
+/// Register `n` symbolic bytes for `path` and open it. Returns the fd.
+fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..n)
+            .map(|i| RustBV::symbolic(&ctx, format!("freadfile_{i}"), 8))
+            .collect()
+    };
+    state.file_system().register_file_content(path, bytes);
+    state
+        .file_system()
+        .open(path.to_string(), FdFlags::ReadOnly)
+}
+
+#[test]
+fn test_fread_content_sym_serves_natively() {
+    // angr-0xyq2 Phase 2 counterpart of test_fread_empty_content_falls_back:
+    // registered symbolic content is served natively (Ok, not a fallback Err).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 5);
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let result = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64), // size
+                RustBV::concrete(5, 64), // nmemb
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    assert_eq!(result.unwrap().as_u64(), Some(5));
+    for i in 0..5u64 {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
+    }
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 5);
+}
+
+#[test]
+fn test_fread_content_sym_item_rounding_matches_python() {
+    // 10 symbolic bytes left, size=4, nmemb=3 (total 12): Python fread does
+    // simfd.read(dst, 12) -> 10 bytes (position advances by ALL bytes read,
+    // not items*size) and returns ret // size = 2 complete items.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 10);
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let result = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64), // size
+                RustBV::concrete(3, 64), // nmemb
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(2), "10 bytes / 4 = 2 items");
+    assert_eq!(
+        state.file_system_ref().fd_info(fd).unwrap().1,
+        10,
+        "position advances by bytes read (Python simfd.read semantics)"
+    );
+}
+
+#[test]
+fn test_fread_content_sym_eof_returns_zero_items() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    // Drain, then fread again: 0 items at EOF, still no fallback.
+    for want in [3u64, 0] {
+        let result = NativeFread
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(1, 64),
+                    RustBV::concrete(4, 64),
+                    RustBV::concrete(file_ptr as u128, 64),
+                ],
+            )
+            .expect("served natively");
+        assert_eq!(result.unwrap().as_u64(), Some(want));
+    }
+}
+
 #[test]
 fn test_fread_zero_count() {
     let mut state = RustSimState::new("amd64").unwrap();

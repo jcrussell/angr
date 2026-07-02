@@ -42,7 +42,16 @@ impl NativeSyscall for NativeWriteSyscall {
                 args.len()
             )));
         }
-        let fd = extract_concrete_arg(&args[0], "write fd")?;
+        let fd = match extract_concrete_arg(&args[0], "write fd") {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Symbolic fd on a write path: any bounded symbolic file
+                // could be the target — hand them all to Python before the
+                // fallback (angr-0xyq2 A4; O(1) when none attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd == 0 {
             return Err(SyscallError::Other(
                 "write to fd=0 (stdin) falls back to Python".to_string(),
@@ -55,8 +64,22 @@ impl NativeSyscall for NativeWriteSyscall {
                 fd
             )));
         }
-        let buf = extract_concrete_arg(&args[1], "write buf")?;
-        let count = extract_concrete_arg(&args[2], "write count")?;
+        // Deferred `?`: a symbolic buf/count on a symbolic-content fd must
+        // demote before bouncing (the gate below), but a concrete
+        // zero-length write is a POSIX no-op that must NOT demote (A3).
+        let buf = extract_concrete_arg(&args[1], "write buf");
+        let count = extract_concrete_arg(&args[2], "write count");
+        if let Ok(0) = count {
+            return Ok(SyscallOutcome::Continue { ret: 0 });
+        }
+        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
+        if state.file_system().demote_symbolic_content(fd_u32) {
+            return Err(SyscallError::Other(format!(
+                "write to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
+        let buf = buf?;
+        let count = count?;
 
         if count > MAX_WRITE_SIZE {
             return Err(SyscallError::Other(format!(
@@ -82,7 +105,13 @@ impl NativeSyscall for NativeWriteSyscall {
             }
         }
 
-        state.write_fd(fd_u32, &bytes);
+        // Unreachable after the gate above; choke-point insurance (see
+        // FileSystem::write).
+        if !state.write_fd(fd_u32, &bytes) {
+            return Err(SyscallError::Other(format!(
+                "write to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(SyscallOutcome::Continue { ret: count })
     }
 }

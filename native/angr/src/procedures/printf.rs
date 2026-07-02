@@ -58,8 +58,15 @@ crate::declare_proc! {
             }
         }
 
-        // Append to stdout buffer
-        state.write_stdout(&buf);
+        // Append to stdout buffer. A refusal (fd 1 dup2'd onto a bounded-
+        // symbolic-content fd, now demoted) bounces to Python — see
+        // FileSystem::write.
+        if !state.write_stdout(&buf) {
+            return Err(crate::procedures::ProcedureError::Other(
+                "printf to stdout with symbolic content falls back to Python (demoted)"
+                    .to_string(),
+            ));
+        }
 
         let len = buf.len() as u128;
         Ok(Some(RustBV::concrete(if len == 0 { 1 } else { len }, 32)))
@@ -92,12 +99,27 @@ crate::declare_proc! {
     args = [stream: concrete, fmt_addr: concrete],
     aliases = ["vfprintf"],
     call |state| {
-        let fd = crate::procedures::stdio::read_fileno_for_stream(state, stream)?;
+        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Unresolvable fd on a write path: any bounded symbolic
+                // file could be the target (angr-0xyq2 A4; O(1) when none
+                // attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }
         let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_PRINTF_LEN);
-        state.write_fd(fd as u32, &buf);
+        // A refusal means the fd carried bounded symbolic content (now
+        // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point).
+        if !state.write_fd(fd as u32, &buf) {
+            return Err(crate::procedures::ProcedureError::Other(format!(
+                "fprintf to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(Some(RustBV::concrete(buf.len() as u128, 32)))
     }
 }

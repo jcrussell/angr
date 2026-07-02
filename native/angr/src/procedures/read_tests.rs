@@ -172,6 +172,78 @@ fn test_read_empty_content_fd_falls_back() {
     assert!(result.is_err());
 }
 
+/// Register mixed bounded symbolic content for `path` (index 1 is a
+/// concrete 0x41 entry, the rest symbolic) and open it. Returns the fd.
+fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..n)
+            .map(|i| {
+                if i == 1 {
+                    RustBV::concrete(0x41, 8)
+                } else {
+                    RustBV::symbolic(&ctx, format!("symfile_{i}"), 8)
+                }
+            })
+            .collect()
+    };
+    state.file_system().register_file_content(path, bytes);
+    state
+        .file_system()
+        .open(path.to_string(), crate::state::FdFlags::ReadOnly)
+}
+
+#[test]
+fn test_read_content_sym_serves_natively() {
+    // angr-0xyq2 Phase 2 counterpart of test_read_empty_content_fd_falls_back:
+    // registered symbolic content is served natively (Ok, not a fallback Err).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 4);
+
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    assert_eq!(result.unwrap().as_u64(), Some(3));
+
+    // Destination buffer carries the served BVs: symbolic where symbolic,
+    // the concrete 0x41 entry at index 1 (mixed content).
+    assert!(state.memory_load(0x2000, 1).unwrap().as_u64().is_none());
+    assert_eq!(state.memory_load(0x2001, 1).unwrap().as_u64(), Some(0x41));
+    assert!(state.memory_load(0x2002, 1).unwrap().as_u64().is_none());
+    // Position advanced.
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
+}
+
+#[test]
+fn test_read_content_sym_eof_returns_zero() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 2);
+
+    // Drain both bytes, then read again: 0 at EOF (no fallback).
+    for (want, buf) in [(2u64, 0x2000u64), (0, 0x2010)] {
+        let result = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(buf as u128, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .expect("served natively");
+        assert_eq!(result.unwrap().as_u64(), Some(want));
+    }
+}
+
 #[test]
 fn test_read_closed_fd_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -258,4 +330,54 @@ fn test_read_too_large() {
         ],
     );
     assert!(result.is_err());
+}
+
+/// angr-0xyq2 B1: an oversized read (count > MAX_READ_SIZE) on a
+/// content_sym fd is CLAMPED to a POSIX-legal short read and served
+/// natively — never bounced, since a Python fallback would split the
+/// position cursor (natively-minted fds are not mirrored, angr-8j16).
+#[test]
+fn test_read_content_sym_oversized_count_clamps_natively() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x10000, 0x2000, crate::memory::Permission::RWX);
+    // 4100 bytes of registered content (concrete entries keep the test
+    // fast; mixed files are a supported representation).
+    let bytes: Vec<RustBV> = (0..4100u32)
+        .map(|i| RustBV::concrete((i & 0xff) as u128, 8))
+        .collect();
+    state.file_system().register_file_content("/tmp/big", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/big".to_string(), crate::state::FdFlags::ReadOnly);
+
+    // count=5000 > 4096: serve exactly 4096 bytes, no fallback error.
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x10000, 64),
+                RustBV::concrete(5000, 64),
+            ],
+        )
+        .expect("clamped read served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(4096));
+    assert_eq!(
+        state.file_system_ref().fd_info(fd).unwrap().1,
+        4096,
+        "position advances by the served (clamped) byte count"
+    );
+    // The next oversized read picks up where the clamp left off.
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x11000, 64),
+                RustBV::concrete(5000, 64),
+            ],
+        )
+        .expect("served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(4));
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 4100);
 }

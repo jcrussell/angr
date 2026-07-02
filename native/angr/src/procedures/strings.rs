@@ -140,6 +140,25 @@ pub fn write_concrete_bytes(
     Ok(())
 }
 
+/// Write a vector of byte-wide (possibly symbolic) `RustBV`s into memory,
+/// one 8-bit store per entry — the symbolic sibling of
+/// [`write_concrete_bytes`]. Used by the `content_sym` serve paths
+/// (read/fread/readv/pread64, angr-0xyq2 Phase 2) and the symbolic-byte
+/// minting loops (stdin reads, fgets). Returns the raw
+/// [`MemoryError`](crate::memory::MemoryError) so both procedure
+/// (`ProcedureError`) and syscall (`SyscallError`) callers can `?` it
+/// through their `#[from]` conversions.
+pub fn write_bv_bytes(
+    state: &mut RustSimState,
+    addr: u64,
+    bytes: Vec<RustBV>,
+) -> Result<(), crate::memory::MemoryError> {
+    for (i, b) in bytes.into_iter().enumerate() {
+        state.memory_store(addr.wrapping_add(i as u64), b)?;
+    }
+    Ok(())
+}
+
 /// Write `bytes` followed by a trailing NUL terminator at `addr + bytes.len()`.
 ///
 /// Used by the C-string-producing procedures (strcpy, strdup, strcat,

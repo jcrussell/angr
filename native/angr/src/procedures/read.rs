@@ -9,14 +9,20 @@
 //!   - any other fd open in the Rust `FileSystem` that has remaining concrete
 //!     content (pos < content_len) — bytes are served from the FS buffer,
 //!     advancing the position.
+//!   - fds with bounded symbolic content (`content_sym`, angr-0xyq2 Phase 2):
+//!     the registered per-byte BVs are stored to the buffer natively via
+//!     `FileSystem::read_sym`, advancing the position; EOF returns 0. Counts
+//!     beyond `MAX_READ_SIZE` are CLAMPED (a POSIX-legal short read), never
+//!     bounced — a Python fallback would split the position cursor, since
+//!     natively-minted fds are not mirrored into Python (angr-8j16).
 //!
 //! Falls back to Python for:
 //!   - symbolic fd/buf/count
-//!   - count beyond `MAX_READ_SIZE`
+//!   - count beyond `MAX_READ_SIZE` (stdin and concrete-content fds only)
 //!   - fds not open in the Rust `FileSystem` (which includes any fd Python
 //!     created via its symbolic-file plumbing; see fd-table invariant below).
-//!   - non-stdin open fds with empty / fully-consumed content (Python's
-//!     symbolic-file model owns those reads).
+//!   - non-stdin open fds with neither concrete nor symbolic content
+//!     (Python's symbolic-file model owns those reads).
 //!
 //! ## Fd-table sync invariant (angr-8j16)
 //!
@@ -26,7 +32,7 @@
 //! symbolic-file model can take over. See bd memory
 //! `invariant-rust-filesystem-no-python-sync`.
 
-use super::strings::write_concrete_bytes;
+use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -43,19 +49,18 @@ crate::declare_proc! {
     struct = NativeRead,
     args = [fd: concrete, buf: concrete, count: concrete],
     call |state| {
-        if count > MAX_READ_SIZE {
-            return Err(ProcedureError::Other(format!(
-                "read count {} exceeds limit",
-                count
-            )));
-        }
-
         if count == 0 {
             let bits = state.arch().bits();
             return Ok(Some(RustBV::concrete(0, bits)));
         }
 
         if fd == 0 {
+            if count > MAX_READ_SIZE {
+                return Err(ProcedureError::Other(format!(
+                    "read count {} exceeds limit",
+                    count
+                )));
+            }
             return read_stdin_symbolic(state, buf, count);
         }
 
@@ -68,6 +73,28 @@ crate::declare_proc! {
             return Err(ProcedureError::Other(format!(
                 "read from fd={} (not open in Rust FileSystem) falls back to Python",
                 fd
+            )));
+        }
+        // Bounded symbolic file content (angr-0xyq2 Phase 2): serve the
+        // per-byte BVs registered for this fd's path natively, advancing the
+        // position. An empty vec means EOF — return 0, matching the concrete
+        // EOF shape below and Python SimFile's max(0, min(count, size - pos)).
+        // Oversized counts are clamped to MAX_READ_SIZE (POSIX-legal short
+        // read) rather than bounced — see the module docs.
+        let clamped = count.min(MAX_READ_SIZE) as usize;
+        if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
+            let n = sym_bytes.len();
+            write_bv_bytes(state, buf, sym_bytes)?;
+            if n > 0 {
+                crate::symbolic::record_symfile_read_native();
+            }
+            let bits = state.arch().bits();
+            return Ok(Some(RustBV::concrete(n as u128, bits)));
+        }
+        if count > MAX_READ_SIZE {
+            return Err(ProcedureError::Other(format!(
+                "read count {} exceeds limit",
+                count
             )));
         }
         // Empty / no-content fds defer to Python so the symbolic-file model
@@ -109,9 +136,7 @@ fn read_stdin_symbolic(
         state.record_stdin_symbol(name.clone(), 8);
     }
 
-    for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-        state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
-    }
+    write_bv_bytes(state, buf, sym_bytes)?;
 
     let bits = state.arch().bits();
 

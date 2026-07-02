@@ -20,6 +20,15 @@
 //! concrete byte across all segments *before* touching the fd buffer — a
 //! symbolic byte aborts with `SymbolicArgument` and leaves the fd untouched.
 //!
+//! Bounded symbolic file content (angr-0xyq2 Phase 2): `readv` / `pread64`
+//! serve the fd's registered per-byte BVs (`FileSystem::read_sym` /
+//! `read_sym_at`), clamping oversized requests to the caps (POSIX-legal
+//! short reads) instead of bouncing — a fallback would split the position
+//! cursor (angr-8j16). `writev` / `pwrite64` demote the content
+//! (`demote_symbolic_content`) and bounce to Python before mutating;
+//! zero-length writes are a no-demotion no-op, and a symbolic fd demotes
+//! everything (`demote_all_symbolic_content`) before falling back.
+//!
 //!   - `pread64(fd, buf, nbyte, offset)` / `pwrite64(fd, buf, nbyte, offset)`
 //!     (angr-dbb1) mirror `posix/pread64.py` / `pwrite64.py`: positioned I/O
 //!     that does NOT disturb the fd's current position. `pread64` serves
@@ -31,6 +40,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -137,7 +147,16 @@ impl NativeSyscall for NativeWritevSyscall {
                 args.len()
             )));
         }
-        let fd = extract_concrete_arg(&args[0], "writev fd")?;
+        let fd = match extract_concrete_arg(&args[0], "writev fd") {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Symbolic fd on a write path: any bounded symbolic file
+                // could be the target — hand them all to Python before the
+                // fallback (angr-0xyq2 A4; O(1) when none attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd == 0 {
             return Err(SyscallError::Other(
                 "writev to fd=0 (stdin) falls back to Python".to_string(),
@@ -148,8 +167,21 @@ impl NativeSyscall for NativeWritevSyscall {
                 "writev to fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
-        let iov = extract_concrete_arg(&args[1], "writev iov")?;
-        let iovcnt = extract_concrete_arg(&args[2], "writev iovcnt")?;
+        // Deferred `?` + zero-check before the demote gate — see
+        // syscalls/write.rs (A3/A4 ordering).
+        let iov = extract_concrete_arg(&args[1], "writev iov");
+        let iovcnt = extract_concrete_arg(&args[2], "writev iovcnt");
+        if let Ok(0) = iovcnt {
+            return Ok(SyscallOutcome::Continue { ret: 0 });
+        }
+        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
+        if state.file_system().demote_symbolic_content(fd as u32) {
+            return Err(SyscallError::Other(format!(
+                "writev to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
+        let iov = iov?;
+        let iovcnt = iovcnt?;
         if iovcnt > MAX_IOVCNT {
             return Err(SyscallError::Other(format!(
                 "writev iovcnt {iovcnt} exceeds limit"
@@ -183,7 +215,13 @@ impl NativeSyscall for NativeWritevSyscall {
         }
 
         let total = bytes.len() as u64;
-        state.write_fd(fd as u32, &bytes);
+        // Unreachable after the gate above; choke-point insurance (see
+        // FileSystem::write).
+        if !state.write_fd(fd as u32, &bytes) {
+            return Err(SyscallError::Other(format!(
+                "writev to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(SyscallOutcome::Continue { ret: total })
     }
 }
@@ -222,12 +260,17 @@ impl NativeSyscall for NativeReadvSyscall {
 
         let word = state.arch().bytes();
 
+        // Bounded-symbolic-content fds clamp oversized segments instead of
+        // bouncing (see the serve loop below), so the per-segment cap only
+        // applies to the stdin / concrete paths.
+        let serve_sym = fd != 0 && state.file_system_ref().has_content_sym(fd as u32);
+
         // Decode all segments up front (symbolic iov fields → fallback) so a
         // mid-loop symbolic field doesn't leave a partial scatter.
         let mut segments: Vec<(u64, u64)> = Vec::with_capacity(iovcnt as usize);
         for idx in 0..iovcnt {
             let (base, len) = read_iovec(state, iov, idx, word)?;
-            if len > MAX_IO_SIZE {
+            if !serve_sym && len > MAX_IO_SIZE {
                 return Err(SyscallError::Other(format!(
                     "readv iov_len {len} exceeds limit"
                 )));
@@ -247,9 +290,7 @@ impl NativeSyscall for NativeReadvSyscall {
                         .map(|i| RustBV::symbolic(&ctx, format!("sys_readv_{read_id}_{i}"), 8))
                         .collect()
                 };
-                for (i, b) in sym_bytes.into_iter().enumerate() {
-                    state.memory_store(base.wrapping_add(i as u64), b)?;
-                }
+                write_bv_bytes(state, base, sym_bytes)?;
                 total += len;
             }
             return Ok(SyscallOutcome::Continue { ret: total });
@@ -266,6 +307,35 @@ impl NativeSyscall for NativeReadvSyscall {
             return Err(SyscallError::Other(format!(
                 "readv from fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
+        }
+        // Bounded symbolic file content (angr-0xyq2 Phase 2): scatter the
+        // registered per-byte BVs per segment via read_sym, mirroring the
+        // concrete loop below (position advances; EOF stops scattering).
+        // Oversized segments are clamped to MAX_IO_SIZE, ending the scatter
+        // there — a POSIX-legal short read. A mid-loop `None` (impossible
+        // while the predicate holds, but not worth an `expect`) degrades to
+        // a short read too.
+        if serve_sym {
+            let mut total = 0u64;
+            for (base, len) in segments {
+                let serve = (len as usize).min(MAX_IO_SIZE as usize);
+                let Some(sym_bytes) = state.file_system().read_sym(fd as u32, serve) else {
+                    break;
+                };
+                let n = sym_bytes.len();
+                write_bv_bytes(state, base, sym_bytes)?;
+                total += n as u64;
+                if (n as u64) < len {
+                    break; // EOF or clamp — stop scattering further segments.
+                }
+            }
+            // One counter bump per guest readv that served bytes (NOT per
+            // segment) — keeps `symfile_reads_native` comparable across
+            // read/fread/readv/pread64.
+            if total > 0 {
+                crate::symbolic::record_symfile_read_native();
+            }
+            return Ok(SyscallOutcome::Continue { ret: total });
         }
         if content_len == 0 {
             return Err(SyscallError::Other(format!(
@@ -319,11 +389,6 @@ impl NativeSyscall for NativePread64Syscall {
         // Symbolic offset is unsupported by Python's pread64 (raises
         // SimPosixError); fall back so Python produces the authoritative error.
         let offset = extract_concrete_arg(&args[3], "pread64 offset")?;
-        if nbyte > MAX_IO_SIZE {
-            return Err(SyscallError::Other(format!(
-                "pread64 nbyte {nbyte} exceeds limit"
-            )));
-        }
         // stdin (fd=0) is owned by Python's symbolic-packet model; positioned
         // reads of it are unusual — defer rather than fabricate.
         if fd == 0 {
@@ -338,6 +403,27 @@ impl NativeSyscall for NativePread64Syscall {
         if !open {
             return Err(SyscallError::Other(format!(
                 "pread64 from fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
+        }
+        // Bounded symbolic file content (angr-0xyq2 Phase 2): positioned
+        // serve of the registered per-byte BVs; the fd position is untouched.
+        // Oversized nbyte is clamped (POSIX-legal short read) — see module
+        // docs — so the cap bounce below only applies to concrete content.
+        let clamped = nbyte.min(MAX_IO_SIZE) as usize;
+        if let Some(sym_bytes) = state
+            .file_system_ref()
+            .read_sym_at(fd as u32, offset, clamped)
+        {
+            let n = sym_bytes.len() as u64;
+            write_bv_bytes(state, buf, sym_bytes)?;
+            if n > 0 {
+                crate::symbolic::record_symfile_read_native();
+            }
+            return Ok(SyscallOutcome::Continue { ret: n });
+        }
+        if nbyte > MAX_IO_SIZE {
+            return Err(SyscallError::Other(format!(
+                "pread64 nbyte {nbyte} exceeds limit"
             )));
         }
         if content_len == 0 {
@@ -383,10 +469,14 @@ impl NativeSyscall for NativePwrite64Syscall {
                 args.len()
             )));
         }
-        let fd = extract_concrete_arg(&args[0], "pwrite64 fd")?;
-        let buf = extract_concrete_arg(&args[1], "pwrite64 buf")?;
-        let nbyte = extract_concrete_arg(&args[2], "pwrite64 nbyte")?;
-        let offset = extract_concrete_arg(&args[3], "pwrite64 offset")?;
+        let fd = match extract_concrete_arg(&args[0], "pwrite64 fd") {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Symbolic fd on a write path — see writev above (A4).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         if fd == 0 {
             return Err(SyscallError::Other(
                 "pwrite64 to fd=0 (stdin) falls back to Python".to_string(),
@@ -397,6 +487,23 @@ impl NativeSyscall for NativePwrite64Syscall {
                 "pwrite64 to fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
+        // Deferred `?` + zero-check before the demote gate — see
+        // syscalls/write.rs (A3/A4 ordering).
+        let buf = extract_concrete_arg(&args[1], "pwrite64 buf");
+        let nbyte = extract_concrete_arg(&args[2], "pwrite64 nbyte");
+        let offset = extract_concrete_arg(&args[3], "pwrite64 offset");
+        if let Ok(0) = nbyte {
+            return Ok(SyscallOutcome::Continue { ret: 0 });
+        }
+        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
+        if state.file_system().demote_symbolic_content(fd as u32) {
+            return Err(SyscallError::Other(format!(
+                "pwrite64 to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
+        let buf = buf?;
+        let nbyte = nbyte?;
+        let offset = offset?;
         if nbyte > MAX_IO_SIZE {
             return Err(SyscallError::Other(format!(
                 "pwrite64 nbyte {nbyte} exceeds limit"
@@ -420,7 +527,13 @@ impl NativeSyscall for NativePwrite64Syscall {
         }
 
         let total = bytes.len() as u64;
-        state.file_system().write_at(fd as u32, offset, &bytes);
+        // Unreachable after the gate above; choke-point insurance (see
+        // FileSystem::write_at).
+        if !state.file_system().write_at(fd as u32, offset, &bytes) {
+            return Err(SyscallError::Other(format!(
+                "pwrite64 to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         Ok(SyscallOutcome::Continue { ret: total })
     }
 }

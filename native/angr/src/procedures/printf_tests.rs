@@ -118,3 +118,42 @@ fn test_fprintf_symbolic_stream_falls_back() {
     let result = NativeFprintf.call(&mut state, &[sym, RustBV::concrete(0x1000, 64)]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
+
+/// angr-0xyq2 Phase 2 (A2): fprintf had no per-site demote guard — the
+/// write choke point (`FileSystem::write`) must demote the fd's bounded
+/// symbolic content and bounce to Python, writing nothing natively.
+#[test]
+fn test_fprintf_content_sym_fd_demotes_and_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"log line\0", Permission::RWX);
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("fprintffile_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(file_ptr as u128, 64),
+            RustBV::concrete(0x1000, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "no bytes written natively");
+}

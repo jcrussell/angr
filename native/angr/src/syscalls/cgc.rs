@@ -125,7 +125,16 @@ impl NativeSyscall for NativeTransmitSyscall {
                 args.len()
             )));
         }
-        let fd = extract_concrete_arg(&args[0], "transmit fd")?;
+        let fd = match extract_concrete_arg(&args[0], "transmit fd") {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Symbolic fd on a write path: any bounded symbolic file
+                // could be the target — hand them all to Python before the
+                // fallback (angr-0xyq2 A4; O(1) when none attached).
+                state.file_system().demote_all_symbolic_content();
+                return Err(e);
+            }
+        };
         let buf = extract_concrete_arg(&args[1], "transmit buf")?;
         let count = extract_concrete_arg(&args[2], "transmit count")?;
         let tx_bytes = extract_concrete_arg(&args[3], "transmit tx_bytes")?;
@@ -163,7 +172,14 @@ impl NativeSyscall for NativeTransmitSyscall {
             }
         }
 
-        state.write_fd(fd_u32, &bytes);
+        // A refusal means the fd carried bounded symbolic content (now
+        // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point; see
+        // FileSystem::write).
+        if !state.write_fd(fd_u32, &bytes) {
+            return Err(SyscallError::Other(format!(
+                "transmit to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
         // Bump the unique-name counter so Python-side correlation IDs
         // never collide if a Python transmit also runs (e.g. after a
         // fallback to allocate/deallocate then back to native).

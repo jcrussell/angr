@@ -458,3 +458,44 @@ fn test_gets_nul_at_real_size_bounded() {
     assert!(sat, "a length-5 short read must be reachable under gets");
     state.add_constraint(cons);
 }
+
+#[test]
+fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
+    // angr-0xyq2 Phase 2 guard: bounded symbolic file content is served by
+    // read/fread, but fgets keeps its Python fallback (the newline-constraint
+    // model is a separate bead) — and must not half-serve: the destination
+    // buffer stays untouched.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x2000, &[0xAAu8; 16], Permission::RWX);
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("fgetsfile_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(10, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(result.is_err(), "non-stdin fgets falls back to Python");
+    // No half-serve: every destination byte still carries the 0xAA prefill.
+    for i in 0..10u64 {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(0xAA), "byte {i} untouched");
+    }
+    // The content itself is untouched too (fallback, not demotion).
+    assert!(state.file_system_ref().fd_content_sym(fd).is_some());
+}

@@ -223,3 +223,43 @@ fn write_symbolic_byte_falls_back() {
     // No partial write to stdout must have occurred.
     assert_eq!(state.stdout_buffer(), b"");
 }
+
+#[test]
+fn write_content_sym_demotes_and_falls_back() {
+    // angr-0xyq2 Phase 2 write-demotion — syscall twin of
+    // procedures/write_tests.rs::test_write_content_sym_demotes_and_falls_back.
+    let h = NativeWriteSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory_data(0x1000, b"hi", Permission::RWX);
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("syswdem_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+        .expect_err("demoted write must fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry entry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "nothing written natively");
+}

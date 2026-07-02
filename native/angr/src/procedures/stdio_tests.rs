@@ -236,6 +236,158 @@ fn test_feof_after_consuming_all_bytes_is_eof() {
     assert_eq!(result.unwrap().as_u64(), Some(1));
 }
 
+/// Register `n` symbolic bytes for `path` and open it. Returns the fd.
+fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..n)
+            .map(|i| RustBV::symbolic(&ctx, format!("stdiofile_{i}"), 8))
+            .collect()
+    };
+    state.file_system().register_file_content(path, bytes);
+    state
+        .file_system()
+        .open(path.to_string(), crate::state::FdFlags::ReadOnly)
+}
+
+#[test]
+fn test_feof_content_sym_uses_effective_len() {
+    // angr-0xyq2 Phase 2: a bounded symbolic file (empty concrete buffer,
+    // 3-byte content_sym) is not at EOF until the position reaches the
+    // symbolic length.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFeof
+        .call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)])
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0), "pos 0 < 3: not EOF");
+
+    // Consume all symbolic bytes; pos == symbolic length → EOF.
+    let served = state.file_system().read_sym(fd, 3).unwrap();
+    assert_eq!(served.len(), 3);
+    let result = NativeFeof
+        .call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)])
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(1), "pos 3 >= 3: EOF");
+}
+
+#[test]
+fn test_fwrite_content_sym_demotes_and_falls_back() {
+    // angr-0xyq2 Phase 2 write-demotion: fwrite to a bounded symbolic file
+    // drops the content (fd + registry) and bounces to Python.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello", Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFwrite.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(1, 64),
+            RustBV::concrete(5, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "no bytes written natively");
+}
+
+#[test]
+fn test_fputs_content_sym_demotes_and_falls_back() {
+    // fputs shares NativeFwrite's demote-then-fallback discipline.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hi\0", Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFputs.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_none(), "content_sym cleared");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_none(),
+        "registry gone"
+    );
+    assert_eq!(fs.fd_content(fd), b"", "no bytes written natively");
+}
+
+/// angr-0xyq2 A3: fwrite(p, 0, 0, f) (or any size*nmemb == 0) is a POSIX
+/// no-op — 0 is returned natively WITHOUT demoting the fd's bounded
+/// symbolic content.
+#[test]
+fn test_fwrite_zero_total_does_not_demote() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // src may even be unmapped
+                RustBV::concrete(0, 64),
+                RustBV::concrete(7, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("zero-length fwrite served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_some(), "content_sym intact");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_some(),
+        "registry intact"
+    );
+}
+
+/// angr-0xyq2 A3: fputs("") writes nothing — success without demotion (the
+/// choke point's empty-write no-op; there is deliberately no pre-scan gate
+/// in fputs).
+#[test]
+fn test_fputs_empty_string_does_not_demote() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"\0", Permission::RWX);
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFputs
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("empty fputs served natively");
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_some(), "content_sym intact");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_some(),
+        "registry intact"
+    );
+}
+
 #[test]
 fn test_feof_negative_fd_returns_zero() {
     let mut state = RustSimState::new("amd64").unwrap();

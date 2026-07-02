@@ -45,8 +45,9 @@ pub use stats::{
     record_export_sound_clz, record_export_unconstrained_clz, record_export_unconstrained_fp,
     record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_load,
     record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
-    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop, record_zext_cmp_collapse,
-    record_zext_cmp_trivial_decide, reset_solver_stats,
+    record_symfile_read_native, record_symfile_write_demotion, record_vex_binop, record_vex_qop,
+    record_vex_triop, record_vex_unop, record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
+    reset_solver_stats,
 };
 pub use table::RustSymbolTable;
 pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV};

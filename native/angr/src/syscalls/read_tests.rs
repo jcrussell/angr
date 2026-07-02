@@ -337,3 +337,60 @@ fn symbolic_count_falls_back() {
         .expect_err("must fall back");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
+
+#[test]
+fn read_content_sym_serves_natively_and_eof_returns_zero() {
+    // angr-0xyq2 Phase 2: registered bounded symbolic content is served
+    // natively (mirrors procedures/read_tests.rs; the old behavior was the
+    // empty-content Python fallback).
+    let h = NativeReadSyscall;
+    let mut state = fresh_state_with_buf();
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("sys_symfile_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(8, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 3, "clamped to symbolic length"),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    for i in 0..3u64 {
+        let byte = state.memory_load(0x2000 + i, 1).expect("loaded");
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
+    }
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
+
+    // Second read: EOF returns 0 (a bounded file, unlike the stream model).
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2100, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .expect("EOF is served natively too");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+}

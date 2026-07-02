@@ -292,23 +292,24 @@ fn test_filesystem_write_position_aware() {
     let fd = fs.open("out.bin".to_string(), FdFlags::WriteOnly);
 
     // Sequential writes (no seek): position-aware path is byte-identical to a
-    // plain append, and advances the position to EOF each time.
-    fs.write(fd, b"abc");
-    fs.write(fd, b"def");
+    // plain append, and advances the position to EOF each time. `true` =
+    // accepted (no bounded symbolic content on the fd).
+    assert!(fs.write(fd, b"abc"));
+    assert!(fs.write(fd, b"def"));
     assert_eq!(fs.fd_content(fd), b"abcdef");
 
     // Seek back and overwrite in place (the case append-only would corrupt).
     assert_eq!(fs.seek(fd, 0, 0), Some(0));
-    fs.write(fd, b"XY");
+    assert!(fs.write(fd, b"XY"));
     assert_eq!(fs.fd_content(fd), b"XYcdef");
 
     // A subsequent write continues from the advanced position (after "XY").
-    fs.write(fd, b"Z");
+    assert!(fs.write(fd, b"Z"));
     assert_eq!(fs.fd_content(fd), b"XYZdef");
 
     // Sparse seek past EOF zero-fills the gap, like write_at/pwrite.
     assert_eq!(fs.seek(fd, 8, 0), Some(8));
-    fs.write(fd, b"!");
+    assert!(fs.write(fd, b"!"));
     assert_eq!(fs.fd_content(fd), b"XYZdef\x00\x00!");
 }
 
@@ -365,14 +366,12 @@ fn test_register_file_content_open_attaches() {
     // Read-serve state is untouched: the concrete buffer stays empty.
     assert_eq!(fs.fd_content(fd), b"");
 
-    // open_symbolic attaches too (stream flag and bounded content are
-    // orthogonal models).
+    // open_symbolic does NOT attach: the stream model (mint-forever) and
+    // the bounded-file model (EOF at size) have conflicting EOF semantics,
+    // and the stream model wins for open_symbolic (angr-0xyq2 A5).
     let fd_sym = fs.open_symbolic("/tmp/flag".to_string(), FdFlags::ReadOnly);
     assert!(fs.is_symbolic(fd_sym));
-    assert!(Arc::ptr_eq(
-        &fs.fd_content_sym(fd_sym).unwrap(),
-        &registered
-    ));
+    assert!(fs.fd_content_sym(fd_sym).is_none());
 }
 
 #[test]
@@ -437,9 +436,13 @@ fn test_seek_end_uses_effective_len() {
     assert_eq!(fs.seek(fd, 1, 1), Some(3));
 }
 
-/// Fix 3 (angr-0xyq2 review): a concrete write past the symbolic end must
-/// not be masked by `content_sym` — `effective_len` is the max of both
-/// legs, mirroring Python `SimFile.write` size semantics.
+/// Fix 3 (angr-0xyq2 review): a concrete buffer grown past the symbolic end
+/// must not be masked by `content_sym` — `effective_len` is the max of both
+/// legs, mirroring Python `SimFile.write` size semantics. The Phase 2 write
+/// choke point refuses (and demotes) concrete writes on attached fds, so
+/// the mixed state can no longer arise via `FileSystem::write` — build it
+/// through the serde shadow (`FileSystemData`) to keep pinning the
+/// defense-in-depth `max()`.
 #[test]
 fn test_effective_len_concrete_write_past_symbolic_end() {
     let mut fs = FileSystem::default();
@@ -447,9 +450,11 @@ fn test_effective_len_concrete_write_past_symbolic_end() {
     let fd = fs.open("/tmp/grow".to_string(), FdFlags::ReadOnly);
     assert_eq!(fs.effective_size(fd), Some(4));
 
-    // Concrete write of 10 bytes at position 0: write end (10) exceeds the
-    // symbolic byte count (4) — the larger concrete length must win.
-    fs.write(fd, b"0123456789");
+    // Concrete content of 10 bytes: its end (10) exceeds the symbolic byte
+    // count (4) — the larger concrete length must win.
+    let mut data = FileSystemData::from(fs);
+    data.fds.get_mut(&fd).expect("fd on the wire").content = b"0123456789".to_vec();
+    let mut fs = FileSystem::from(data);
     assert_eq!(fs.effective_size(fd), Some(10));
     assert_eq!(fs.content_size_for_path("/tmp/grow"), Some(10));
     assert_eq!(fs.seek(fd, 0, 2), Some(10));
@@ -549,15 +554,239 @@ fn test_content_sym_snapshot_backward_compat() {
     assert_eq!(restored.effective_size(fd), Some(0));
 }
 
+// angr-0xyq2 Phase 2: native serving (`read_sym` / `read_sym_at`) and
+// write-demotion (`demote_symbolic_content`). The procedure/syscall wiring
+// legs live in the respective *_tests.rs files; these pin the FileSystem
+// primitives.
+
+#[test]
+fn test_read_sym_serves_clamps_and_advances() {
+    let mut fs = FileSystem::default();
+    let content = sym_file_bytes(5, "rs");
+    fs.register_file_content("/tmp/f", content.clone());
+    let fd = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly);
+
+    // First read: the served BVs are the registered entries, in order.
+    // (Debug compare: RustBV's PartialEq is concrete-only by design, so
+    // symbolic leaves never compare equal structurally.)
+    let first = fs.read_sym(fd, 3).expect("content_sym attached");
+    assert_eq!(format!("{first:?}"), format!("{:?}", &content[..3]));
+    assert_eq!(fs.fd_info(fd).unwrap().1, 3, "position advanced");
+
+    // Over-long read clamps to the remainder (Python max(0, min(...))).
+    let rest = fs.read_sym(fd, 10).expect("content_sym attached");
+    assert_eq!(format!("{rest:?}"), format!("{:?}", &content[3..]));
+
+    // EOF: Some(empty) — the caller returns 0 — and position stays put.
+    assert_eq!(fs.read_sym(fd, 4).expect("still attached"), Vec::new());
+    assert_eq!(fs.fd_info(fd).unwrap().1, 5);
+
+    // Fds without content_sym return None (caller keeps concrete logic).
+    let plain = fs.open_with_content("p.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec());
+    assert!(fs.read_sym(plain, 1).is_none());
+}
+
+/// A position beyond `content_sym.len()` (e.g. an unchecked `SEEK_SET`)
+/// must serve 0 bytes (slice within symbolic bounds only), not panic.
+#[test]
+fn test_read_sym_position_past_symbolic_end_serves_empty() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/mixed", sym_file_bytes(4, "mixededge"));
+    let fd = fs.open("/tmp/mixed".to_string(), FdFlags::ReadOnly);
+    assert_eq!(fs.seek(fd, 6, 0), Some(6)); // SEEK_SET does not clamp to len
+    assert_eq!(
+        fs.read_sym(fd, 3).expect("content_sym attached"),
+        Vec::new()
+    );
+    assert_eq!(
+        fs.fd_info(fd).unwrap().1,
+        6,
+        "position untouched at sym-EOF"
+    );
+}
+
+#[test]
+fn test_read_sym_at_does_not_move_position() {
+    let mut fs = FileSystem::default();
+    let content = sym_file_bytes(4, "rsat");
+    fs.register_file_content("/tmp/pread", content.clone());
+    let fd = fs.open("/tmp/pread".to_string(), FdFlags::ReadOnly);
+
+    // Debug compare — see test_read_sym_serves_clamps_and_advances.
+    let got = fs.read_sym_at(fd, 1, 2).expect("content_sym attached");
+    assert_eq!(format!("{got:?}"), format!("{:?}", &content[1..3]));
+    assert_eq!(
+        fs.fd_info(fd).unwrap().1,
+        0,
+        "pread semantics: position unmoved"
+    );
+    // Past-EOF offset serves empty, no panic.
+    assert_eq!(fs.read_sym_at(fd, 9, 2).expect("attached"), Vec::new());
+    // No content_sym → None.
+    let plain = fs.open_with_content("q.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec());
+    assert!(fs.read_sym_at(plain, 0, 1).is_none());
+}
+
+#[test]
+fn test_demote_symbolic_content_clears_all_fds_and_registry() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/d", sym_file_bytes(4, "dem"));
+    // Three handles on the same file: absolute, relative spelling, dup.
+    let fd1 = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite);
+    let fd2 = fs.open("tmp/d".to_string(), FdFlags::ReadOnly);
+    let dup = fs.dup(fd1).expect("dup");
+    // An unrelated symbolic file must survive the demotion.
+    fs.register_file_content("/tmp/other", sym_file_bytes(2, "demother"));
+    let other = fs.open("/tmp/other".to_string(), FdFlags::ReadOnly);
+
+    assert!(fs.demote_symbolic_content(fd1), "demotion reported");
+    for fd in [fd1, fd2, dup] {
+        assert!(fs.fd_content_sym(fd).is_none(), "fd {fd} demoted");
+    }
+    assert!(
+        fs.file_content_for_path("/tmp/d").is_none(),
+        "registry entry gone"
+    );
+    // A fresh open no longer attaches — Python owns the file from here.
+    let fd3 = fs.open("/tmp/d".to_string(), FdFlags::ReadOnly);
+    assert!(fs.fd_content_sym(fd3).is_none());
+    // Second demotion is a no-op (nothing left to demote).
+    assert!(!fs.demote_symbolic_content(fd1));
+    // Unrelated file untouched.
+    assert!(fs.fd_content_sym(other).is_some());
+    assert!(fs.file_content_for_path("/tmp/other").is_some());
+    // Plain fds report false (the cheap common case).
+    let plain = fs.open("plain.txt".to_string(), FdFlags::WriteOnly);
+    assert!(!fs.demote_symbolic_content(plain));
+}
+
+/// Registration AFTER open leaves the fd without `content_sym` but stamps
+/// its `registry_key`, so the registry stays populated yet a write through
+/// that fd still drops the entry (or a later open would serve stale
+/// content natively).
+#[test]
+fn test_demote_registry_only_entry() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open("/tmp/late".to_string(), FdFlags::ReadWrite);
+    fs.register_file_content("/tmp/late", sym_file_bytes(2, "late"));
+    assert!(fs.fd_content_sym(fd).is_none());
+    assert!(fs.demote_symbolic_content(fd));
+    assert!(fs.file_content_for_path("/tmp/late").is_none());
+}
+
+/// cwd-drift (angr-0xyq2 A1): the registry key is frozen on the descriptor
+/// at attach time, so a guest `chdir` between open and write cannot decouple
+/// the registry entry or differently-spelled sibling fds from the demotion.
+#[test]
+fn test_demote_survives_cwd_drift() {
+    let mut fs = FileSystem::default();
+    fs.set_cwd(b"/a".to_vec());
+    // Relative registration + opens key under cwd-at-the-time: "/a/f".
+    fs.register_file_content("f", sym_file_bytes(3, "drift"));
+    let fd_rel = fs.open("f".to_string(), FdFlags::ReadWrite);
+    let fd_abs = fs.open("/a/f".to_string(), FdFlags::ReadOnly);
+    assert!(fs.fd_content_sym(fd_rel).is_some());
+    assert!(fs.fd_content_sym(fd_abs).is_some());
+
+    // Guest chdir: re-normalizing "f" now would yield "/b/f" and miss both
+    // the registry entry and the sibling — registry_key must not care.
+    fs.set_cwd(b"/b".to_vec());
+    assert!(fs.demote_symbolic_content(fd_rel), "demotion reported");
+    assert!(fs.fd_content_sym(fd_rel).is_none(), "written fd demoted");
+    assert!(fs.fd_content_sym(fd_abs).is_none(), "sibling fd demoted");
+    assert!(
+        fs.file_content_for_path("/a/f").is_none(),
+        "registry entry gone despite the cwd drift"
+    );
+    // The choke point agrees: a concrete write on the demoted fd proceeds.
+    assert!(fs.write(fd_rel, b"ok"));
+}
+
+/// The write choke point itself demotes when a caller skips its per-site
+/// gate: nothing is written, the registry and all siblings are dropped.
+#[test]
+fn test_write_choke_point_refuses_and_demotes() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/choke", sym_file_bytes(2, "choke"));
+    let fd = fs.open("/tmp/choke".to_string(), FdFlags::ReadWrite);
+
+    // Zero-length writes are a POSIX no-op: accepted, NOT demoted (A3).
+    assert!(fs.write(fd, b""));
+    assert!(fs.write_at(fd, 5, b""));
+    assert!(
+        fs.fd_content_sym(fd).is_some(),
+        "no-op write must not demote"
+    );
+
+    // Non-empty write: refused, demoted, nothing written.
+    assert!(!fs.write(fd, b"x"));
+    assert!(fs.fd_content_sym(fd).is_none());
+    assert!(fs.file_content_for_path("/tmp/choke").is_none());
+    assert_eq!(fs.fd_content(fd), b"", "refused write must not mutate");
+    // Post-demotion writes are plain concrete writes again.
+    assert!(fs.write(fd, b"x"));
+
+    // write_at leg.
+    fs.register_file_content("/tmp/choke2", sym_file_bytes(2, "choke2"));
+    let fd2 = fs.open("/tmp/choke2".to_string(), FdFlags::ReadWrite);
+    assert!(!fs.write_at(fd2, 1, b"y"));
+    assert!(fs.fd_content_sym(fd2).is_none());
+    assert_eq!(fs.fd_content(fd2), b"");
+}
+
+/// B2 (angr-0xyq2): `close` only flips the flag — `content_sym` stays
+/// attached — but a closed fd must not serve.
+#[test]
+fn test_read_sym_closed_fd_returns_none() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/closed", sym_file_bytes(3, "closed"));
+    let fd = fs.open("/tmp/closed".to_string(), FdFlags::ReadOnly);
+    assert!(fs.has_content_sym(fd));
+    assert!(fs.close(fd));
+    // The content is still attached (fd_content_sym is flag-blind) ...
+    assert!(fs.fd_content_sym(fd).is_some());
+    // ... but neither primitive serves it, and the predicate agrees.
+    assert!(fs.read_sym(fd, 1).is_none());
+    assert!(fs.read_sym_at(fd, 0, 1).is_none());
+    assert!(!fs.has_content_sym(fd));
+}
+
+/// A4 insurance (angr-0xyq2): a symbolic/unresolvable write fd could alias
+/// any registered file — `demote_all_symbolic_content` clears every
+/// registry entry and every fd's attachment in one shot.
+#[test]
+fn test_demote_all_symbolic_content_clears_everything() {
+    let mut fs = FileSystem::default();
+    // Nothing attached: O(1) no-op.
+    assert!(!fs.demote_all_symbolic_content());
+
+    fs.register_file_content("/tmp/a", sym_file_bytes(2, "alla"));
+    fs.register_file_content("/tmp/b", sym_file_bytes(3, "allb"));
+    let fd_a = fs.open("/tmp/a".to_string(), FdFlags::ReadWrite);
+    let fd_b = fs.open("/tmp/b".to_string(), FdFlags::ReadOnly);
+    let dup_b = fs.dup(fd_b).expect("dup");
+
+    assert!(fs.demote_all_symbolic_content());
+    for fd in [fd_a, fd_b, dup_b] {
+        assert!(fs.fd_content_sym(fd).is_none(), "fd {fd} demoted");
+    }
+    assert!(fs.file_content_for_path("/tmp/a").is_none());
+    assert!(fs.file_content_for_path("/tmp/b").is_none());
+    // Fresh opens no longer attach; a second sweep is a no-op.
+    let fd_c = fs.open("/tmp/a".to_string(), FdFlags::ReadOnly);
+    assert!(fs.fd_content_sym(fd_c).is_none());
+    assert!(!fs.demote_all_symbolic_content());
+}
+
 #[test]
 fn test_filesystem_backward_compat() {
     // fd_buffer/write_fd should still work through FileSystem
     let mut state = RustSimState::new("amd64").unwrap();
-    state.write_stdout(b"hello");
+    assert!(state.write_stdout(b"hello"));
     assert_eq!(state.stdout_buffer(), b"hello");
     assert!(state.has_stdout());
 
-    state.write_fd(2, b"err");
+    assert!(state.write_fd(2, b"err"));
     assert_eq!(state.fd_buffer(2), b"err");
 }
 

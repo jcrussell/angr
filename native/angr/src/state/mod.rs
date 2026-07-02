@@ -752,9 +752,12 @@ impl RustSimState {
         self.fd_buffer(1)
     }
 
-    /// Append bytes to the stdout buffer (fd=1).
-    pub fn write_stdout(&mut self, data: &[u8]) {
-        self.write_fd(1, data);
+    /// Append bytes to the stdout buffer (fd=1). Same refusal contract as
+    /// [`write_fd`](Self::write_fd) — `false` only when fd 1 was rebound
+    /// (`dup2`) onto a bounded-symbolic-content fd, which is then demoted.
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write_stdout(&mut self, data: &[u8]) -> bool {
+        self.write_fd(1, data)
     }
 
     /// Check if stdout has been written to.
@@ -768,8 +771,15 @@ impl RustSimState {
     }
 
     /// Append bytes to a file descriptor's output buffer.
-    pub fn write_fd(&mut self, fd: u32, data: &[u8]) {
-        self.fs.write(fd, data);
+    ///
+    /// Choke-point contract (angr-0xyq2 Phase 2, see `FileSystem::write`):
+    /// returns `false` — with the fd's bounded symbolic content demoted and
+    /// NOTHING written — when the fd carried `content_sym`. The caller must
+    /// convert that into its own Python-fallback error (never a hard/state
+    /// -killing error). Zero-length writes are a no-demotion no-op (`true`).
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write_fd(&mut self, fd: u32, data: &[u8]) -> bool {
+        self.fs.write(fd, data)
     }
 
     /// Get a mutable reference to the file system state.

@@ -7,12 +7,17 @@
 //!   - any other fd open in the Rust `FileSystem` that has remaining
 //!     concrete content (pos < content_len). Serves bytes from the FS buffer
 //!     and advances the position.
+//!   - fds with bounded symbolic content (`content_sym`, angr-0xyq2
+//!     Phase 2): the registered per-byte BVs are stored to the buffer
+//!     natively via `FileSystem::read_sym`; EOF returns 0. Oversized counts
+//!     are clamped to `MAX_READ_SIZE` (POSIX-legal short read), never
+//!     bounced — a fallback would split the position cursor (angr-8j16).
 //!
 //! Falls back to the Python `_handle_syscall_callback` path
 //! (`state.posix.get_fd(fd).read(...)`) for: symbolic args, counts beyond
-//! `MAX_READ_SIZE`, fds not open in Rust's `FileSystem`, and non-stdin open
-//! fds with empty / fully-consumed content (Python's symbolic-file model
-//! owns those reads).
+//! `MAX_READ_SIZE` (stdin / concrete-content fds), fds not open in Rust's
+//! `FileSystem`, and non-stdin open fds with neither concrete nor symbolic
+//! content (Python's symbolic-file model owns those reads).
 //!
 //! The dirty pages produced here are picked up by `_replay_rust_dirty_pages`
 //! (rust_state_sync.py) on the next Python callback, so a downstream Python
@@ -24,6 +29,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -61,18 +67,17 @@ impl NativeSyscall for NativeReadSyscall {
         let buf = extract_concrete_arg(&args[1], "read buf")?;
         let count = extract_concrete_arg(&args[2], "read count")?;
 
-        if count > MAX_READ_SIZE {
-            return Err(SyscallError::Other(format!(
-                "read count {} exceeds limit",
-                count
-            )));
-        }
-
         if count == 0 {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
         if fd == 0 {
+            if count > MAX_READ_SIZE {
+                return Err(SyscallError::Other(format!(
+                    "read count {} exceeds limit",
+                    count
+                )));
+            }
             return read_symbolic(state, buf, count, "sys_read");
         }
 
@@ -85,6 +90,28 @@ impl NativeSyscall for NativeReadSyscall {
             return Err(SyscallError::Other(format!(
                 "read from fd={} (not open in Rust FileSystem) falls back to Python",
                 fd
+            )));
+        }
+        // Bounded symbolic file content (angr-0xyq2 Phase 2): serve the
+        // per-byte BVs registered for this fd's path natively, advancing the
+        // position. Checked before the symbolic-stream branch — a finite
+        // symbolic *file* returns 0 at EOF rather than minting fresh bytes.
+        // Oversized counts are clamped (POSIX-legal short read) instead of
+        // bounced: a Python fallback would split the position cursor, since
+        // natively-minted fds are not mirrored into Python (angr-8j16).
+        let clamped = count.min(MAX_READ_SIZE) as usize;
+        if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
+            let n = sym_bytes.len();
+            write_bv_bytes(state, buf, sym_bytes)?;
+            if n > 0 {
+                crate::symbolic::record_symfile_read_native();
+            }
+            return Ok(SyscallOutcome::Continue { ret: n as u64 });
+        }
+        if count > MAX_READ_SIZE {
+            return Err(SyscallError::Other(format!(
+                "read count {} exceeds limit",
+                count
             )));
         }
         if content_len == 0 {
@@ -131,9 +158,7 @@ fn read_symbolic(
             .collect()
     };
 
-    for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-        state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
-    }
+    write_bv_bytes(state, buf, sym_bytes)?;
 
     Ok(SyscallOutcome::Continue { ret: count })
 }
