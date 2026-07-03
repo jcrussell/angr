@@ -619,6 +619,26 @@ impl RustExplorationManager {
         self.finalize_steady_session(py)
     }
 
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn finalize_parallel_session(&mut self) -> PyResult<()> {
+        Ok(())
+    }
+
+    /// Whether a steady-state session is currently live (angr-nkoct). True only
+    /// while worker frontiers are resident across a `need_callback` return, so
+    /// some live states are inside worker Z3 contexts rather than any stash.
+    /// The Python driver reads this to skip state-cache cleanup that would
+    /// mis-classify a resident state as dead. Always false on non-Z3 builds.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn parallel_session_active(&self) -> bool {
+        self.parallel_session.is_some()
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn parallel_session_active(&self) -> bool {
+        false
+    }
+
     /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
     pub fn set_state_selection_lifo(&mut self) {
         self.steady_config_guard();

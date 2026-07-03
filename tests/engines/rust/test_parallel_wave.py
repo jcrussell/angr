@@ -178,22 +178,22 @@ class TestParallelWaveBounceFind:
 def _explore_steady(project, monkeypatch, num_find=2):
     """Explore fauxware under the steady-state loop (angr-nkoct).
 
-    Enables both engagement conditions the driver does not yet set (the
-    residency flag is wired driver-side in Phase C2): ``RUST_PARALLEL_STEADY``
-    and ``set_parallel_frontier_residency(True)`` on the raw manager.
+    Only sets ``RUST_PARALLEL_STEADY`` + workers; the DRIVER engages the loop by
+    setting the frontier-residency flag for this address-based, no-``until``
+    exploration (Phase C2). No manual ``set_parallel_frontier_residency`` — so
+    these tests exercise the real driver wiring end to end.
     """
     monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
     monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
     mgr = RustExplorationManager(project, [project.factory.entry_state()])
-    mgr._rust_mgr.set_parallel_frontier_residency(True)
     mgr.explore(find=FAUXWARE_ACCEPTED_ADDR, num_find=num_find)
     return mgr
 
 
 class TestParallelSteady:
     """Steady-state loop (angr-nkoct): frontiers resident across the
-    Python-callback boundary. Enabled explicitly here; the driver wires the
-    engagement flag in Phase C2."""
+    Python-callback boundary, engaged automatically by the driver for
+    address-based exploration under RUST_PARALLEL_STEADY=1 (Phase C1 + C2)."""
 
     def test_steady_found_set_matches_single_threaded(self, fauxware_project, monkeypatch):
         base = _path_set(_explore(fauxware_project, 1, monkeypatch))

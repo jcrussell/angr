@@ -4111,6 +4111,18 @@ class RustExplorationManager(
         steps_taken = 0
         need_per_step = (until is not None) or bool(self._active_techniques)
 
+        # angr-nkoct steady-state: this address-based loop (no predicates, no
+        # techniques — those route to _explore_with_predicates) reads nothing
+        # from the ACTIVE stash between run() calls except guarded cache
+        # cleanup, so worker frontiers may stay resident across the
+        # Python-callback boundary. Eligible only for the full-batch path
+        # (until is None); an `until` predicate inspects state each step and is
+        # not eligible. This is one of the Rust-side steady engagement
+        # conditions (also gated on RUST_PARALLEL_STEADY and >=2 workers), so
+        # it is a safe no-op when steady mode is off.
+        residency = not need_per_step
+        self._set_frontier_residency(residency)
+
         while True:
             if self._check_limits(start_time, steps_taken, timeout, max_steps):
                 break
@@ -4204,6 +4216,15 @@ class RustExplorationManager(
                     # cat-(c) WRONG-ANSWER RISK: until predicate raised; exploration
                     # continues past the user's intended stop. Already warns.
                     l.warning(f"until predicate error: {e}")
+
+        # Every loop exit above is a `break`, so this runs on all normal exits:
+        # drain any resident worker frontier back into STASH_ACTIVE so the
+        # post-explore stashes are truthful, then clear the residency flag. An
+        # exception propagating out of the loop is handled by the manager's Drop
+        # (cancel + pool teardown), so a try/finally is not required here.
+        self._finalize_parallel_session()
+        if residency:
+            self._set_frontier_residency(False)
 
         return self
 
@@ -4371,6 +4392,25 @@ class RustExplorationManager(
             l.debug("clear_state_metadata(sid=%d) after drop_copy failed: %s: %s", copy_state_id, type(e).__name__, e)
         return True
 
+    def _set_frontier_residency(self, enabled):
+        """Toggle the Rust steady-state frontier-residency engagement flag.
+
+        No-op on older Rust builds without the pymethod (steady mode absent).
+        """
+        try:
+            self._rust_mgr.set_parallel_frontier_residency(bool(enabled))
+        except AttributeError:
+            pass
+
+    def _finalize_parallel_session(self):
+        """Drain any live steady-state session's resident frontier back into the
+        stashes (angr-nkoct). No-op without a live session or on older Rust
+        builds."""
+        try:
+            self._rust_mgr.finalize_parallel_session()
+        except AttributeError:
+            pass
+
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
 
@@ -4394,6 +4434,18 @@ class RustExplorationManager(
         Per-state Rust metadata is dropped exclusively by ``RustSimState``'s
         own ``Drop`` when the state leaves every stash.
         """
+        # angr-nkoct steady-state: while a session is live, some frontier states
+        # are RESIDENT inside worker Z3 contexts and appear in NO stash. Pruning
+        # now would treat them as dead and evict their _state_roots mirror,
+        # causing a blank-state fallback when one later bounces. Skip the tick;
+        # the session finalizes (draining every state back into the stashes) at
+        # the step budget / find / exhaustion, where cleanup resumes normally.
+        try:
+            if self._rust_mgr.parallel_session_active():
+                return
+        except AttributeError:
+            pass
+
         try:
             active_set = set(self._rust_mgr.get_state_ids("active"))
             found_set = set(self._rust_mgr.get_state_ids("found"))
