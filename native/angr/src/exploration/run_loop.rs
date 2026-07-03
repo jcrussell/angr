@@ -50,8 +50,8 @@ use super::core_outcome::{
     materialize_bounce_forks, run_post_step_core,
 };
 use super::scheduler::{
-    CancelToken, PersistentPool, ProcessFn, SchedulerCounters, TaskOutcome,
-    TerminalDisposition as SchedDisposition, TerminalSummary, WaveJob,
+    CancelToken, PersistentPool, ProcessFn, TaskOutcome, TerminalDisposition as SchedDisposition,
+    TerminalSummary, WaveJob,
 };
 use super::step_core::run_interpreter_step_core;
 use crate::state::StateMigrationPayload;
@@ -76,85 +76,10 @@ pub(crate) enum MatKind {
     ActiveResidual,
 }
 
-// ---------------------------------------------------------------------------
-// Steady-state duplex protocol (angr-vh834 redesign, Phase 1 scaffolding).
-//
-// PURE SCAFFOLDING: these types define the coordinator<->worker message shapes
-// and the persistent per-run session the steady-state loop will own. Nothing
-// below is wired into `run_loop_parallel` yet (Phase 2+). They are gated with
-// `#[allow(dead_code)]` and exist mainly to PROVE — via the compile-time
-// assertion at the end of this block — that the redesign's shared/session type
-// (`RunSession`) is `Send + Sync` and its channel payloads (`WorkerUp` /
-// `WorkerCtl`) are `Send`, before any behaviour is built on them.
-// ---------------------------------------------------------------------------
-
-/// Downstream control message: coordinator -> worker.
-#[allow(dead_code)]
-pub(crate) enum WorkerCtl {
-    /// Begin/continue processing against a shared run session.
-    Run(Arc<RunSession>),
-    /// Resume a set of states migrated back from the coordinator (e.g. after a
-    /// Python bounce round-trip).
-    Resume(Vec<StateMigrationPayload>),
-    /// Stop pulling work at the next task boundary and report `Paused`.
-    Pause,
-    /// Terminate the worker thread.
-    Shutdown,
-}
-
-/// Upstream report message: worker -> coordinator.
-#[allow(dead_code)]
-pub(crate) enum WorkerUp {
-    /// A materialized terminal the coordinator must route (found / unconstrained
-    /// / bounce), tagged with its [`MatKind`] and lineage root.
-    Terminal {
-        payload: StateMigrationPayload,
-        kind: MatKind,
-        root: u64,
-    },
-    /// Per-step manager-level counters to fold into the manager after the wave.
-    Counters(super::core_outcome::CoreCounters),
-    /// Acknowledgement of a `Pause` at a task boundary.
-    Paused { worker_id: usize },
-    /// The worker observed global quiescence (its view of no outstanding work).
-    Quiesced { worker_id: usize },
-}
-
-/// The persistent per-run session shared (by `Arc`) across all steady-state
-/// workers. Interior-mutable throughout so the `Fn + Sync` worker body can touch
-/// it without `&mut`. The `Send + Sync` proof below is the whole point of Phase
-/// 1: it certifies the redesign's central shared type is thread-safe before the
-/// steady-state loop is built on it.
-#[allow(dead_code)]
-pub(crate) struct RunSession {
-    /// Shared work queue of migratable states.
-    injector: crossbeam_deque::Injector<StateMigrationPayload>,
-    /// Count of dispatched-but-not-yet-completed tasks (quiescence detector).
-    outstanding: AtomicUsize,
-    /// Cooperative cancellation, checked at task boundaries.
-    cancel: CancelToken,
-    /// Number of workers currently blocked waiting for work (starvation signal).
-    idle_workers: AtomicUsize,
-    /// Duplex-protocol accounting (reattaches / bounce round-trips / resume
-    /// reinjects), folded into the manager after the run.
-    counters: SchedulerCounters,
-    /// Upstream channel each worker reports on.
-    up_tx: std::sync::mpsc::Sender<WorkerUp>,
-    /// The per-state processor invoked once per dispatched state.
-    process: Box<ProcessFn>,
-}
-
-// Compile-time proof (angr-vh834 Phase 1): the steady-state session is
-// `Send + Sync` and both channel payloads are `Send`. If any of these fail to
-// compile, a field/variant type is not thread-safe and the redesign must adjust
-// that type — do NOT paper over it with `unsafe`.
-const _: fn() = || {
-    fn assert_send_sync<T: Send + Sync>() {}
-    fn assert_send<T: Send>() {}
-    assert_send_sync::<RunSession>();
-    assert_send::<WorkerUp>();
-    assert_send::<WorkerCtl>();
-};
+// NOTE (angr-nkoct steady-state Phase B): the duplex-protocol types this file
+// used to scaffold (`WorkerCtl` / `WorkerUp` / `RunSession`, with their
+// Send/Sync compile-time proof) now live in `scheduler.rs`, implemented and
+// unit-tested — the scheduler owns the transport; this file owns routing.
 
 /// The find/avoid-checkable target address a materialized bounce carries.
 ///
