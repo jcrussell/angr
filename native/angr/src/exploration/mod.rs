@@ -388,6 +388,30 @@ pub struct RustExplorationManager {
     /// broadcasts shutdown and joins the workers at manager teardown.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) parallel_pool: Option<self::scheduler::PersistentPool>,
+    /// angr-nkoct steady-state: the live cross-`run()` parallel session, when
+    /// one exists. `Some` only while the steady loop is running or parked
+    /// across a `need_callback` return (workers keep stepping their local
+    /// frontiers while Python services the callback). Finalized — residual
+    /// frontier drained back to `STASH_ACTIVE` — on every other event return,
+    /// on any exploration-config mutation (`steady_config_guard`), and at
+    /// manager teardown.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) parallel_session: Option<self::run_loop::SteadySession>,
+    /// The Python driver's promise that nothing reads or mutates the active
+    /// stash between `run()` calls (set per explore loop by rust_manager.py;
+    /// default false). One of the steady-state engagement conditions — without
+    /// it a live resident frontier would be invisible to driver-side cache
+    /// cleanup / state-index rebuilds.
+    pub(crate) parallel_frontier_residency: bool,
+    /// `RUST_PARALLEL_STEADY` env flag, read once at construction (same
+    /// per-manager pattern as `RUST_PARALLEL_WORKERS`, so tests can
+    /// monkeypatch it). Opt-in for the steady-state loop during angr-nkoct
+    /// phases C-D; flipped to opt-out once the measurement gate passes.
+    pub(crate) parallel_steady_env: bool,
+    /// Residual live frontier states a steady-session finalize returned to
+    /// `STASH_ACTIVE` instead of dropping (wave-mode Bug M1's fix), folded
+    /// from `SchedulerStats::residual_drains`.
+    pub(crate) parallel_residual_drains: u64,
 }
 
 #[pymethods]
@@ -482,6 +506,13 @@ impl RustExplorationManager {
             pending_parallel_bounces: Vec::new(),
             #[cfg(feature = "vex-engine-z3")]
             parallel_pool: None,
+            #[cfg(feature = "vex-engine-z3")]
+            parallel_session: None,
+            parallel_frontier_residency: false,
+            parallel_steady_env: std::env::var("RUST_PARALLEL_STEADY")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+            parallel_residual_drains: 0,
         })
     }
 
@@ -528,6 +559,7 @@ impl RustExplorationManager {
 
     /// Set find addresses.
     pub fn set_find_addrs(&mut self, addrs: Vec<u64>) {
+        self.steady_config_guard();
         self.find_addrs = addrs.into_iter().collect();
         self.find_needs_python = false;
         self.rebuild_stop_addrs();
@@ -535,6 +567,7 @@ impl RustExplorationManager {
 
     /// Set avoid addresses.
     pub fn set_avoid_addrs(&mut self, addrs: Vec<u64>) {
+        self.steady_config_guard();
         self.avoid_addrs = addrs.into_iter().collect();
         self.avoid_needs_python = false;
         self.rebuild_stop_addrs();
@@ -553,44 +586,75 @@ impl RustExplorationManager {
 
     /// Mark that find condition has callable predicates (needs Python).
     pub fn set_find_needs_python(&mut self, needs: bool) {
+        self.steady_config_guard();
         self.find_needs_python = needs;
     }
 
     /// Mark that avoid condition has callable predicates (needs Python).
     pub fn set_avoid_needs_python(&mut self, needs: bool) {
+        self.steady_config_guard();
         self.avoid_needs_python = needs;
+    }
+
+    /// angr-nkoct steady-state opt-in: the Python driver's promise that nothing
+    /// reads or mutates the ACTIVE stash between `run()` calls, which is what
+    /// makes it safe for worker-local frontiers to stay resident across a
+    /// `need_callback` return. rust_manager.py sets this per explore loop
+    /// (address-based explore without `until`/techniques); every other driver
+    /// path must leave it false. Turning it off finalizes any live session.
+    pub fn set_parallel_frontier_residency(&mut self, enabled: bool) {
+        if !enabled {
+            self.steady_config_guard();
+        }
+        self.parallel_frontier_residency = enabled;
+    }
+
+    /// Finalize a live steady-state session, if any (angr-nkoct): cancel it,
+    /// drain every worker's residual frontier and the injector surplus back
+    /// into the active stash, and fold its counters. rust_manager.py calls
+    /// this at explore-loop exits so a timeout/error break never leaves states
+    /// parked inside worker Z3 contexts. No-op without a live session.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn finalize_parallel_session(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.finalize_steady_session(py)
     }
 
     /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
     pub fn set_state_selection_lifo(&mut self) {
+        self.steady_config_guard();
         self.use_lifo = true;
         log::debug!("State selection set to LIFO (DFS)");
     }
 
     /// P9 fix: Set state selection to FIFO (BFS - breadth-first search).
     pub fn set_state_selection_fifo(&mut self) {
+        self.steady_config_guard();
         self.use_lifo = false;
         log::debug!("State selection set to FIFO (BFS)");
     }
 
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
+        self.steady_config_guard();
         self.num_find = n;
     }
 
     /// Set maximum steps per run iteration.
     pub fn set_max_steps_per_run(&mut self, n: u32) {
+        self.steady_config_guard();
         self.max_steps_per_run = n;
     }
 
     /// Enable lazy solves mode (skip satisfiability checks on forks).
     pub fn set_lazy_solves(&mut self, enabled: bool) {
+        self.steady_config_guard();
         self.constraint_solver.lazy_solves = enabled;
     }
 
     /// Enable zero-fill for unconstrained memory reads.
     /// When true, unmapped memory returns zero instead of fresh symbolic values.
     pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
+        self.steady_config_guard();
         self.memory_config.zero_fill_unconstrained = enabled;
     }
 
@@ -603,6 +667,11 @@ impl RustExplorationManager {
     /// deferred and, only if it exhausts to `active_empty` without finding,
     /// re-seeds the initial states with this set to `false`.
     pub fn set_use_deferred_forks(&mut self, enabled: bool) {
+        // Steady-state note: today's only caller mid-explore is
+        // `_maybe_phase2_eager_retry`, which fires on `active_empty` — where
+        // the session is already finalized — so this guard is a no-op there;
+        // it exists for any future caller that flips the mode mid-session.
+        self.steady_config_guard();
         self.exec_config.use_deferred_forks = enabled;
     }
 
@@ -618,6 +687,7 @@ impl RustExplorationManager {
     /// benchmark throughput. Returns the previous value so callers (e.g. a
     /// scoped step-loop) can restore it.
     pub fn set_block_granular(&mut self, enabled: bool) -> bool {
+        self.steady_config_guard();
         let prev = self.block_granular;
         self.block_granular = enabled;
         prev
@@ -639,6 +709,7 @@ impl RustExplorationManager {
     /// explodes. Default `false`: dropping is what `explore()`'s two-phase
     /// eager retry relies on, so this stays opt-in. Returns the previous value.
     pub fn set_materialize_unconstrained_forks(&mut self, enabled: bool) -> bool {
+        self.steady_config_guard();
         let prev = self.materialize_unconstrained_forks;
         self.materialize_unconstrained_forks = enabled;
         prev
@@ -684,6 +755,7 @@ impl RustExplorationManager {
     /// Level 0: no optimization. Level 1: standard. Level 2-3: aggressive.
     #[pyo3(signature = (level=None))]
     pub fn set_vex_opt_level(&mut self, level: Option<i32>) {
+        self.steady_config_guard();
         self.memory_config.vex_opt_level = level;
         // Invalidate block cache since opt_level affects IR output
         self.environment.block_cache.clear();
@@ -697,6 +769,7 @@ impl RustExplorationManager {
     /// Set a per-address VEX optimization level override.
     /// Blocks at this address will be lifted with the specified opt_level.
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
+        self.steady_config_guard();
         self.memory_config
             .vex_opt_level_overrides
             .insert(addr, level);
@@ -920,7 +993,15 @@ impl RustExplorationManager {
     }
 
     /// Register multiple SimProcedures.
+    ///
+    /// Steady-state note: a live session's workers snapshot `hooks` /
+    /// `simprocedures` into their `StepContext` at session creation, so a
+    /// mid-session change here MUST finalize first (the guard) or workers
+    /// would keep stepping against the stale hook set. Continuation
+    /// SimProcedures re-hook mid-run by design, so continuation-heavy
+    /// workloads finalize repeatedly — steady mode degrades gracefully there.
     pub fn register_simprocedures(&mut self, procs: Vec<(u64, String, usize, bool)>) {
+        self.steady_config_guard();
         for (addr, name, num_args, no_return) in procs {
             self.hooks.insert(addr);
             self.simprocedures.insert(addr, (name, num_args, no_return));
@@ -931,6 +1012,7 @@ impl RustExplorationManager {
     /// live manager). Removes each address from both the hook set and the
     /// SimProcedure table so a stale hook no longer fires (angr-969g).
     pub fn unregister_simprocedures(&mut self, addrs: Vec<u64>) {
+        self.steady_config_guard();
         for addr in addrs {
             self.hooks.remove(&addr);
             self.simprocedures.remove(&addr);
@@ -956,6 +1038,7 @@ impl RustExplorationManager {
     /// See `state_lifecycle::_add_state` for the body.
     #[pyo3(signature = (stash, state))]
     pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
+        self.steady_config_guard();
         self._add_state(stash, state)
     }
 
@@ -1116,6 +1199,9 @@ impl RustExplorationManager {
     /// See `pending_api::_active_states_map_memory` for the body.
     #[pyo3(signature = (addr, data, permissions=7))]
     pub fn active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
+        // Steady-state: this iterates STASH_ACTIVE, which misses a resident
+        // frontier — finalize first so every live state is back in the stash.
+        self.steady_config_guard();
         self._active_states_map_memory(addr, data, permissions)
     }
 
@@ -1883,6 +1969,7 @@ impl RustExplorationManager {
     /// are moved to 'not_unique' stash. This replaces the Python
     /// CheckUniqueness technique with zero FFI overhead.
     pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
+        self.steady_config_guard();
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.uniqueness_set.clear();
         // Ensure not_unique stash exists
@@ -1894,6 +1981,7 @@ impl RustExplorationManager {
 
     /// Disable the native uniqueness filter.
     pub fn disable_uniqueness_filter(&mut self) {
+        self.steady_config_guard();
         self.constraint_tracker.uniqueness_registers.clear();
         self.constraint_tracker.uniqueness_set.clear();
     }
@@ -2519,6 +2607,34 @@ impl RustExplorationManager {
             .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {}", e)))?;
         self.sm = restored;
         Ok(())
+    }
+}
+
+/// Steady-state Drop safety (angr-nkoct). `PersistentPool::drop` broadcasts
+/// `Shutdown` and JOINS the workers; with a live steady session a worker may be
+/// mid-dispatch blocked in `Python::attach` (cold VEX lift), which deadlocks if
+/// the dropping thread holds the GIL across the join (pyclass dealloc runs
+/// GIL-held). So: cancel the session and wake parked workers so every worker
+/// reaches its ctl channel, then release the GIL around the pool teardown. The
+/// wave-mode path (no session) keeps the previous plain field-drop behaviour —
+/// its workers are always parked between waves, so the join cannot block on
+/// the GIL there.
+impl Drop for RustExplorationManager {
+    fn drop(&mut self) {
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            let had_session = self.parallel_session.is_some();
+            if let Some(sess) = self.parallel_session.take() {
+                sess.cancel_and_wake(self.parallel_pool.as_ref());
+                // `sess` (and its up_rx) drops here; late worker sends fail
+                // silently by design.
+            }
+            if had_session {
+                if let Some(pool) = self.parallel_pool.take() {
+                    Python::attach(|py| py.detach(move || drop(pool)));
+                }
+            }
+        }
     }
 }
 

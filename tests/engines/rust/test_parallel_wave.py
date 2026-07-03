@@ -173,3 +173,55 @@ class TestParallelWaveBounceFind:
             f"parallel bounce-find diverged: parallel={[hex(a) for a in par_addrs]} "
             f"baseline={[hex(a) for a in base_addrs]}"
         )
+
+
+def _explore_steady(project, monkeypatch, num_find=2):
+    """Explore fauxware under the steady-state loop (angr-nkoct).
+
+    Enables both engagement conditions the driver does not yet set (the
+    residency flag is wired driver-side in Phase C2): ``RUST_PARALLEL_STEADY``
+    and ``set_parallel_frontier_residency(True)`` on the raw manager.
+    """
+    monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+    monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
+    mgr = RustExplorationManager(project, [project.factory.entry_state()])
+    mgr._rust_mgr.set_parallel_frontier_residency(True)
+    mgr.explore(find=FAUXWARE_ACCEPTED_ADDR, num_find=num_find)
+    return mgr
+
+
+class TestParallelSteady:
+    """Steady-state loop (angr-nkoct): frontiers resident across the
+    Python-callback boundary. Enabled explicitly here; the driver wires the
+    engagement flag in Phase C2."""
+
+    def test_steady_found_set_matches_single_threaded(self, fauxware_project, monkeypatch):
+        base = _path_set(_explore(fauxware_project, 1, monkeypatch))
+        steady = _path_set(_explore_steady(fauxware_project, monkeypatch))
+        assert steady == base, f"steady found-set diverged: steady={steady} baseline={base}"
+        assert steady == {
+            (FAUXWARE_ACCEPTED_ADDR, True),
+            (FAUXWARE_ACCEPTED_ADDR, False),
+        }
+
+    def test_steady_bounce_and_resume_counters(self, fauxware_project, monkeypatch):
+        """The steady bounce/resume protocol is exercised: both previously
+        always-zero counters go positive when a Python SimProcedure bounce is
+        serviced and its successors re-injected."""
+        mgr = _explore_steady(fauxware_project, monkeypatch)
+        stats = mgr.stats
+        assert stats["parallel_real_workers"] == 2
+        assert stats["parallel_bounce_roundtrips"] > 0, "no bounce round-tripped in steady mode"
+        assert stats["parallel_resume_reinjects"] > 0, "no resumed state re-injected in steady mode"
+
+    def test_steady_path_set_stable_across_runs(self, fauxware_project, monkeypatch):
+        run_a = _path_set(_explore_steady(fauxware_project, monkeypatch))
+        run_b = _path_set(_explore_steady(fauxware_project, monkeypatch))
+        assert (
+            run_a
+            == run_b
+            == {
+                (FAUXWARE_ACCEPTED_ADDR, True),
+                (FAUXWARE_ACCEPTED_ADDR, False),
+            }
+        )

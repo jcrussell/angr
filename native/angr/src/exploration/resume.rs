@@ -214,10 +214,12 @@ impl RustExplorationManager {
             }
         }
 
-        // Add to active stash, checking find/avoid first
-        for s in final_successors {
-            self.route_successor(s, false);
-        }
+        // Add to active stash, checking find/avoid first. In steady-state mode
+        // this re-injects active-bound successors straight into the live
+        // session (they re-enter the resident frontier without a STASH_ACTIVE
+        // round-trip) and counts them as resume_reinjects; otherwise it routes
+        // to STASH_ACTIVE as before.
+        self.route_resume_successors(final_successors);
 
         // Add to pruned stash
         for s in pruned_states {
@@ -230,6 +232,41 @@ impl RustExplorationManager {
         self.apply_native_techniques();
 
         Ok(())
+    }
+
+    /// Route successors produced by a Python resume callback. In steady-state
+    /// mode (angr-nkoct) with a live session, active-bound successors are
+    /// re-injected into the session's injector (+ `resume_reinjects`) and the
+    /// workers woken, so a resumed state re-enters the resident frontier
+    /// directly; find/avoid-bound successors still route through
+    /// `route_successor`. Without a live session this is exactly
+    /// `for s in successors { route_successor(s, false) }`.
+    pub(crate) fn route_resume_successors(&mut self, successors: Vec<RustSimState>) {
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if self.parallel_session.is_some() {
+                // Stamp roots + detach active-bound successors (owned pass over
+                // `&self.sm`); route find/avoid ones normally. The detached
+                // batch is handed to the run-loop's session-injection helper
+                // (which owns the private `SteadySession` internals).
+                let mut inject: Vec<(u64, u64, crate::state::StateMigrationPayload)> = Vec::new();
+                for s in successors {
+                    let pc = s.pc();
+                    if self.find_addrs.contains(&pc) || self.avoid_addrs.contains(&pc) {
+                        self.route_successor(s, false);
+                    } else {
+                        let id = s.state_id();
+                        let root = self.sm.root_or_self(id);
+                        inject.push((id, root, s.detach_for_migration()));
+                    }
+                }
+                self.steady_inject_resumed(inject);
+                return;
+            }
+        }
+        for s in successors {
+            self.route_successor(s, false);
+        }
     }
 
     /// Inner body of the pymethods-exposed `deadend_pending_callback`.

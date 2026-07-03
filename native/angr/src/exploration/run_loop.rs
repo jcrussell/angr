@@ -50,12 +50,14 @@ use super::core_outcome::{
     materialize_bounce_forks, run_post_step_core,
 };
 use super::scheduler::{
-    CancelToken, PersistentPool, ProcessFn, TaskOutcome, TerminalDisposition as SchedDisposition,
-    TerminalSummary, WaveJob,
+    CancelToken, PersistentPool, ProcessFn, RunSession, TaskOutcome,
+    TerminalDisposition as SchedDisposition, TerminalSummary, WaveJob, WorkerUp,
 };
 use super::step_core::run_interpreter_step_core;
 use crate::state::StateMigrationPayload;
 use crate::vex::IRSB;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 /// Materialized-terminal disposition the parallel worker stamps into
 /// [`ParallelShared::kind_map`] so the coordinator can route a state recovered
@@ -80,6 +82,58 @@ pub(crate) enum MatKind {
 // used to scaffold (`WorkerCtl` / `WorkerUp` / `RunSession`, with their
 // Send/Sync compile-time proof) now live in `scheduler.rs`, implemented and
 // unit-tested — the scheduler owns the transport; this file owns routing.
+
+/// The coordinator-side handle to a live steady-state parallel session
+/// (angr-nkoct). Held on the manager (`parallel_session`) across `run()`
+/// returns while workers keep their frontiers resident. Bundles the scheduler
+/// session, the coordinator's receiving half of the upstream channel, and the
+/// `Arc`-shared routing maps / profiling the `ProcessFn` closure also holds —
+/// so the coordinator can route streamed terminals and fold counters without
+/// recovering sole ownership (workers keep their clones for the session's
+/// life).
+pub(crate) struct SteadySession {
+    session: Arc<RunSession>,
+    /// Wrapped in a `Mutex` only so `SteadySession: Sync` holds — required
+    /// because the coordinator recv's inside `py.detach`, whose closure must be
+    /// `Send` (`mpsc::Receiver` is itself `!Sync`). Only the single coordinator
+    /// thread ever receives, so the lock is uncontended (mirrors
+    /// `PersistentPool::done_rx`).
+    up_rx: Mutex<Receiver<WorkerUp>>,
+    shared: Arc<ParallelShared>,
+    prof: Arc<ParallelProfiling>,
+    workers: usize,
+    /// Worker ids currently parked (Quiesced/Paused), cleared whenever the
+    /// coordinator injects new work and re-wakes. `len() == workers` with
+    /// `session.pending() == 0` is the quiescence condition.
+    parked: Vec<usize>,
+}
+
+impl SteadySession {
+    /// Cancel the session and wake every worker so it observes the cancel at
+    /// its next task boundary. Does NOT wait for the drain — used by the
+    /// manager `Drop`, where the pool's own `join` completes teardown.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn cancel_and_wake(&self, pool: Option<&PersistentPool>) {
+        self.session.cancel();
+        if let Some(pool) = pool {
+            for w in 0..self.workers {
+                pool.wake_worker(w, &self.session);
+            }
+        }
+    }
+}
+
+/// What `steady_pump` hands back to the steady coordinator loop.
+enum SteadyOutcome {
+    /// Bounce terminals to dispatch through `process_parallel_bounce_queue`
+    /// (may be empty — a signal to re-check `num_find` at the loop top).
+    Bounces(Vec<(RustSimState, BounceKind, u64)>),
+    /// The resident frontier is exhausted (all workers parked, nothing
+    /// outstanding).
+    Quiesced,
+    /// This `run()` hit its step budget; yield to Python.
+    Budget,
+}
 
 /// The find/avoid-checkable target address a materialized bounce carries.
 ///
@@ -448,7 +502,23 @@ impl RustExplorationManager {
         if self.parallel_real_workers <= 1 {
             return self.run_loop_single_threaded(n);
         }
+        if self.steady_state_eligible() {
+            return self.run_loop_parallel_steady(py, n);
+        }
         self.run_loop_parallel(py, n)
+    }
+
+    /// Whether the steady-state loop (angr-nkoct) engages for this `run()`.
+    /// ALL must hold: opt-in env flag; the Python driver's frontier-residency
+    /// promise (address-based explore, no `until`, no techniques — nothing
+    /// reads the active stash between `run()` calls); and no callable
+    /// find/avoid predicates (the wave/single-threaded skip-state tracking has
+    /// no steady analogue). Otherwise fall through to the wave loop.
+    fn steady_state_eligible(&self) -> bool {
+        self.parallel_steady_env
+            && self.parallel_frontier_residency
+            && !self.find_needs_python
+            && !self.avoid_needs_python
     }
 
     /// Parallel coordinator path (angr-vh834 Phase 5): a real work-stealing wave
@@ -898,6 +968,534 @@ impl RustExplorationManager {
         self.pending_parallel_bounces = iter.collect();
         event
     }
+
+    // =====================================================================
+    // Steady-state coordinator (angr-nkoct). One long-lived `SteadySession`
+    // spans many `run()` calls: workers keep their frontiers RESIDENT across
+    // the Python-callback boundary, so a bounce costs one materialize +
+    // re-inject instead of a full-frontier detach/reattach re-seed. Engaged
+    // only when `steady_state_eligible()`; the wave loop remains the fallback.
+    // =====================================================================
+
+    /// The steady-state parallel run loop. Reuses `parallel_process_state` +
+    /// `ParallelShared` (session-scoped instead of wave-scoped) and the shared
+    /// `route_materialized_terminal` / `process_parallel_bounce_queue` routing
+    /// helpers; the difference from the wave loop is purely the driver:
+    /// terminals stream up an mpsc channel and workers stay resident rather
+    /// than synchronizing at a per-wave barrier.
+    pub(crate) fn run_loop_parallel_steady(
+        &mut self,
+        py: Python<'_>,
+        n: Option<u32>,
+    ) -> PyResult<ExplorationEvent> {
+        let callbacks = self
+            .callbacks
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("callbacks not set"))?
+            .clone();
+        if !callbacks.is_ready() {
+            return Err(PyRuntimeError::new_err("callbacks not ready"));
+        }
+
+        let _gil_wall = crate::gil_profile::RunLoopWallGuard::new(self.profiling.profiling_enabled);
+        let max_steps = n.unwrap_or(self.max_steps_per_run) as u64;
+
+        // Create the session on first entry; on re-entry (after a need_callback
+        // return) it is already live with workers stepping resident frontiers.
+        self.ensure_steady_session();
+        let dispatched_at_entry = self.steady_dispatched_total();
+
+        loop {
+            // I8(a): enough solutions — finalize (drains the resident frontier
+            // back to STASH_ACTIVE so the post-run stashes are truthful) and
+            // report found.
+            if self.found_count() >= self.num_find {
+                self.finalize_steady_session(py)?;
+                return Ok(ExplorationEvent::found(
+                    self.found_count(),
+                    self.active_count(),
+                    self.steps,
+                ));
+            }
+
+            // Dispatch bounces parked from a prior run() (M3) straight through
+            // dispatch_bounce; natively-resolved successors land in STASH_ACTIVE
+            // and are re-injected below, first-needing-callback returns its
+            // event with the session left LIVE.
+            if !self.pending_parallel_bounces.is_empty() {
+                let queue = std::mem::take(&mut self.pending_parallel_bounces);
+                if let Some(event) = self.process_parallel_bounce_queue(&callbacks, queue) {
+                    return Ok(event);
+                }
+            }
+
+            // Feed any freshly-routed active states (initial seeds on first
+            // entry; natively-resolved bounce successors on later passes) into
+            // the session and wake the workers.
+            self.seed_steady_session_from_active();
+
+            // Pump worker reports until something needs the coordinator's
+            // attention. The recv waits run under `py.detach` (GIL released) so
+            // workers — which self-acquire the GIL for lifts/callbacks — never
+            // block on us.
+            match self.steady_pump(py, &callbacks, dispatched_at_entry, max_steps)? {
+                SteadyOutcome::Bounces(queue) => {
+                    if let Some(event) = self.process_parallel_bounce_queue(&callbacks, queue) {
+                        return Ok(event);
+                    }
+                    // Natively-resolved bounce successors are now in
+                    // STASH_ACTIVE; loop to re-seed and keep pumping.
+                }
+                SteadyOutcome::Quiesced => {
+                    // Frontier exhausted with no bounces outstanding. Finalize
+                    // (a no-op drain — workers are already parked empty) and
+                    // report.
+                    self.finalize_steady_session(py)?;
+                    if self.found_count() > 0 {
+                        return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
+                    }
+                    return Ok(ExplorationEvent::active_empty(
+                        self.found_count(),
+                        self.steps,
+                    ));
+                }
+                SteadyOutcome::Budget => {
+                    self.finalize_steady_session(py)?;
+                    return Ok(ExplorationEvent::step_complete(
+                        self.found_count(),
+                        self.active_count(),
+                        self.steps,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Lazily create the persistent pool + steady session. On re-entry with a
+    /// live session this is a no-op. Builds one `ParallelShared` + `ProcessFn`
+    /// for the session's whole life (unlike the wave loop's per-wave rebuild),
+    /// so the resident frontier is stepped against a stable config snapshot —
+    /// the `steady_config_guard` finalizes the session before any config
+    /// mutation, which is what keeps that snapshot valid.
+    fn ensure_steady_session(&mut self) {
+        if self.parallel_session.is_some() {
+            return;
+        }
+        let workers = self.parallel_real_workers.max(2);
+        if self.parallel_pool.is_none() {
+            self.parallel_pool = Some(PersistentPool::new(workers));
+        }
+        let ctx = self.step_context();
+        let prof = Arc::new(ParallelProfiling::default());
+        let shared = Arc::new(ParallelShared {
+            root_map: Mutex::new(FxHashMap::default()),
+            kind_map: Mutex::new(FxHashMap::default()),
+            counters: Mutex::new(Vec::new()),
+            found_counter: AtomicUsize::new(self.found_count()),
+            num_find: self.num_find,
+            stepped: AtomicUsize::new(0),
+        });
+        let proc_procs = Arc::clone(&self.native_procedures);
+        let proc_syscalls = Arc::clone(&self.native_syscalls);
+        let proc_callbacks = self
+            .callbacks
+            .as_ref()
+            .expect("callbacks checked by caller")
+            .clone();
+        let proc_prof = Arc::clone(&prof);
+        let proc_shared = Arc::clone(&shared);
+        let process: Box<ProcessFn> = Box::new(move |state, cancel, block_cache| {
+            parallel_process_state(
+                state,
+                cancel,
+                block_cache,
+                &ctx,
+                &proc_callbacks,
+                &proc_prof,
+                &proc_procs,
+                &proc_syscalls,
+                &proc_shared,
+            )
+        });
+        let (session, up_rx) = RunSession::new(process);
+        let workers = self.parallel_pool.as_ref().expect("pool set").num_workers();
+        self.parallel_pool
+            .as_ref()
+            .expect("pool set")
+            .start_session(&session);
+        self.parallel_session = Some(SteadySession {
+            session,
+            up_rx: Mutex::new(up_rx),
+            shared,
+            prof,
+            workers,
+            parked: Vec::new(),
+        });
+    }
+
+    /// Drain STASH_ACTIVE into the live session's injector (stamping each
+    /// state's lineage root into `root_map` so descendants inherit it) and wake
+    /// the workers. No-op when the stash is empty (the common re-entry case:
+    /// resume feeds the session injector directly).
+    fn seed_steady_session_from_active(&mut self) {
+        let drained: Vec<RustSimState> = match self.sm.get_mut(STASH_ACTIVE) {
+            Some(s) if !s.is_empty() => s.drain(..).collect(),
+            _ => return,
+        };
+        let sess = self
+            .parallel_session
+            .as_mut()
+            .expect("session live during seed");
+        let mut payloads = Vec::with_capacity(drained.len());
+        {
+            let mut rm = sess.shared.root_map.lock().expect("root_map poisoned");
+            for state in drained {
+                let root = self.sm.root_or_self(state.state_id());
+                rm.insert(state.state_id(), root);
+                payloads.push(state.detach_for_migration());
+            }
+        }
+        sess.session.inject_seeds(payloads);
+        // New work landed: every parked worker must be re-pinged, and our
+        // parked-tracking is stale.
+        sess.parked.clear();
+        if let Some(pool) = &self.parallel_pool {
+            for w in 0..sess.workers {
+                pool.wake_worker(w, &sess.session);
+            }
+        }
+    }
+
+    /// Inject a batch of `(state_id, root, payload)` resumed successors into the
+    /// live session (angr-nkoct): stamp each root into `root_map`, inject as
+    /// `resume_reinjects`, and wake the workers. Called by
+    /// `route_resume_successors` (resume.rs) after it partitions off find/avoid
+    /// successors; no-op on an empty batch or absent session.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn steady_inject_resumed(&mut self, inject: Vec<(u64, u64, StateMigrationPayload)>) {
+        if inject.is_empty() {
+            return;
+        }
+        let Some(sess) = self.parallel_session.as_mut() else {
+            return;
+        };
+        {
+            let mut rm = sess.shared.root_map.lock().expect("root_map poisoned");
+            for (id, root, _) in &inject {
+                rm.insert(*id, *root);
+            }
+        }
+        let payloads: Vec<_> = inject.into_iter().map(|(_, _, p)| p).collect();
+        sess.session.inject_resumed(payloads);
+        sess.parked.clear();
+        if let Some(pool) = &self.parallel_pool {
+            for w in 0..sess.workers {
+                pool.wake_worker(w, &sess.session);
+            }
+        }
+    }
+
+    /// Monotonic dispatch count for the live session (0 if none) — the steady
+    /// analogue of the wave loop's `dispatched_total`, used for the step budget.
+    fn steady_dispatched_total(&self) -> u64 {
+        self.parallel_session
+            .as_ref()
+            .map(|s| s.session.stats().dispatches() as u64)
+            .unwrap_or(0)
+    }
+
+    /// Pump worker `WorkerUp` reports, routing terminals as they stream in,
+    /// until the coordinator must act: bounces to dispatch, quiescence, or the
+    /// step budget. Found/unconstrained/residual terminals route immediately;
+    /// bounce terminals accumulate and are returned in a batch (so the caller
+    /// surfaces at most one Python callback per `run()` via
+    /// `process_parallel_bounce_queue`). All recv waits release the GIL.
+    fn steady_pump(
+        &mut self,
+        py: Python<'_>,
+        _callbacks: &PythonCallbacks,
+        dispatched_at_entry: u64,
+        max_steps: u64,
+    ) -> PyResult<SteadyOutcome> {
+        let mut bounce_queue: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
+        loop {
+            // Budget check (approximate, mirrors the wave loop): finalize and
+            // yield to Python once this run() has dispatched its allotment.
+            if self
+                .steady_dispatched_total()
+                .saturating_sub(dispatched_at_entry)
+                >= max_steps
+                && bounce_queue.is_empty()
+            {
+                return Ok(SteadyOutcome::Budget);
+            }
+
+            let recv = {
+                let sess = self
+                    .parallel_session
+                    .as_ref()
+                    .expect("session live in pump");
+                py.detach(|| {
+                    sess.up_rx
+                        .lock()
+                        .expect("up_rx poisoned")
+                        .recv_timeout(Duration::from_millis(50))
+                })
+            };
+            match recv {
+                Ok(WorkerUp::Terminal { payload }) => {
+                    self.route_steady_terminal(payload, &mut bounce_queue);
+                    // Surface accumulated bounces promptly (they block their
+                    // lineage on a Python hook); found short-circuits win too.
+                    if !bounce_queue.is_empty() {
+                        return Ok(SteadyOutcome::Bounces(std::mem::take(&mut bounce_queue)));
+                    }
+                    if self.found_count() >= self.num_find {
+                        return Ok(SteadyOutcome::Bounces(Vec::new())); // caller re-checks num_find
+                    }
+                }
+                Ok(WorkerUp::Quiesced { worker_id }) | Ok(WorkerUp::Paused { worker_id }) => {
+                    let sess = self.parallel_session.as_mut().expect("session live");
+                    if !sess.parked.contains(&worker_id) {
+                        sess.parked.push(worker_id);
+                    }
+                    if sess.parked.len() >= sess.workers && sess.session.pending() == 0 {
+                        // All workers parked and no queued/in-flight work: drain
+                        // any straggler terminals, then it's genuine quiescence
+                        // (unless bounces are pending — hand those back first).
+                        self.drain_steady_stragglers(&mut bounce_queue);
+                        if !bounce_queue.is_empty() {
+                            return Ok(SteadyOutcome::Bounces(std::mem::take(&mut bounce_queue)));
+                        }
+                        return Ok(SteadyOutcome::Quiesced);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    // Periodic re-check of quiescence/budget (guards against a
+                    // lost wakeup): loop re-evaluates the conditions above.
+                    let sess = self.parallel_session.as_ref().expect("session live");
+                    if sess.parked.len() >= sess.workers && sess.session.pending() == 0 {
+                        self.drain_steady_stragglers(&mut bounce_queue);
+                        if !bounce_queue.is_empty() {
+                            return Ok(SteadyOutcome::Bounces(std::mem::take(&mut bounce_queue)));
+                        }
+                        return Ok(SteadyOutcome::Quiesced);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Every worker's Sender dropped — the pool is gone. Nothing
+                    // more can arrive; treat as quiescence.
+                    return Ok(SteadyOutcome::Quiesced);
+                }
+            }
+        }
+    }
+
+    /// Non-blocking drain of any terminals still buffered in the session mpsc
+    /// (routes found/unconstrained/residual, accumulates bounces). Called once
+    /// all workers have parked, where no further message can be produced.
+    fn drain_steady_stragglers(&mut self, bounce_queue: &mut Vec<(RustSimState, BounceKind, u64)>) {
+        loop {
+            let msg = {
+                let sess = self.parallel_session.as_ref().expect("session live");
+                sess.up_rx.lock().expect("up_rx poisoned").try_recv()
+            };
+            match msg {
+                Ok(WorkerUp::Terminal { payload }) => {
+                    self.route_steady_terminal(payload, bounce_queue)
+                }
+                Ok(WorkerUp::Quiesced { worker_id }) | Ok(WorkerUp::Paused { worker_id }) => {
+                    let sess = self.parallel_session.as_mut().expect("session live");
+                    if !sess.parked.contains(&worker_id) {
+                        sess.parked.push(worker_id);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Reattach one streamed terminal into the main Z3 context and route it via
+    /// the shared `route_materialized_terminal` helper (the coordinator owns
+    /// `kind_map`/`root_map`, REMOVING each entry as it routes so the maps do
+    /// not grow O(all-states-ever) over a long session). Bounce roundtrips are
+    /// counted here; the returned `bounce_queue` is dispatched by the caller.
+    fn route_steady_terminal(
+        &mut self,
+        payload: StateMigrationPayload,
+        bounce_queue: &mut Vec<(RustSimState, BounceKind, u64)>,
+    ) {
+        let main_ctx = z3::Context::thread_local();
+        let state = match payload.reattach(&main_ctx) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("steady: reattach failed, dropping terminal: {e:?}");
+                return;
+            }
+        };
+        let id = state.state_id();
+        let sess = self.parallel_session.as_ref().expect("session live");
+        let root = sess
+            .shared
+            .root_map
+            .lock()
+            .expect("root_map poisoned")
+            .get(&id)
+            .copied()
+            .unwrap_or(id);
+        let kind = sess
+            .shared
+            .kind_map
+            .lock()
+            .expect("kind_map poisoned")
+            .remove(&id);
+        if matches!(kind, Some(MatKind::Bounce(_))) {
+            sess.session.count_bounce_roundtrip();
+        }
+        let before = bounce_queue.len();
+        self.route_materialized_terminal(state, kind, root, bounce_queue);
+        // A bounce routed to a find/avoid address short-circuits inside the
+        // helper (no push); if it landed in FOUND, the outer num_find check
+        // will finalize + cancel, stopping the workers.
+        let _ = before;
+    }
+
+    /// Finalize the live steady session (angr-nkoct): cancel it, wake every
+    /// worker so it observes the cancel and drains its resident frontier
+    /// upstream, route those residuals + the injector surplus back to
+    /// STASH_ACTIVE, and fold the session's counters/profiling into the
+    /// manager. No-op without a live session. This is the ONLY path that
+    /// returns resident frontier states to the stashes, so it must run on
+    /// every non-`need_callback` exit and before any config mutation (the
+    /// `steady_config_guard`).
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn finalize_steady_session(&mut self, py: Python<'_>) -> PyResult<()> {
+        let Some(mut sess) = self.parallel_session.take() else {
+            return Ok(());
+        };
+        sess.session.cancel();
+        if let Some(pool) = &self.parallel_pool {
+            for w in 0..sess.workers {
+                pool.wake_worker(w, &sess.session);
+            }
+        }
+
+        // Collect every worker's Paused ack, routing residual terminals as they
+        // stream in. All recv waits release the GIL (workers may self-acquire
+        // it while draining). A generous deadline turns a lost-wakeup bug into a
+        // visible error rather than a silent hang.
+        let mut paused: Vec<usize> = Vec::new();
+        let mut residuals: Vec<StateMigrationPayload> = Vec::new();
+        while paused.len() < sess.workers {
+            let recv = py.detach(|| {
+                sess.up_rx
+                    .lock()
+                    .expect("up_rx poisoned")
+                    .recv_timeout(Duration::from_secs(60))
+            });
+            match recv {
+                Ok(WorkerUp::Terminal { payload }) => residuals.push(payload),
+                Ok(WorkerUp::Paused { worker_id }) => {
+                    if !paused.contains(&worker_id) {
+                        paused.push(worker_id);
+                    }
+                }
+                Ok(WorkerUp::Quiesced { worker_id }) => {
+                    // A worker that quiesced before observing cancel: the wake
+                    // ping re-enters it, it sees cancel, drains, and acks
+                    // Paused. Count nothing yet.
+                    let _ = worker_id;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(PyRuntimeError::new_err(
+                        "steady finalize timed out waiting for workers to drain",
+                    ));
+                }
+            }
+        }
+        // Injector surplus (offloaded but never stolen) — safe now that every
+        // worker is parked.
+        residuals.extend(sess.session.drain_residual_payloads());
+
+        // Route residuals back to STASH_ACTIVE (untagged ⇒ active successor).
+        let main_ctx = z3::Context::thread_local();
+        let mut discard: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
+        for payload in residuals {
+            let state = match payload.reattach(&main_ctx) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("steady finalize: reattach failed, dropping residual: {e:?}");
+                    continue;
+                }
+            };
+            let id = state.state_id();
+            let root = sess
+                .shared
+                .root_map
+                .lock()
+                .expect("root_map poisoned")
+                .get(&id)
+                .copied()
+                .unwrap_or(id);
+            let kind = sess
+                .shared
+                .kind_map
+                .lock()
+                .expect("kind_map poisoned")
+                .remove(&id);
+            self.route_materialized_terminal(state, kind, root, &mut discard);
+        }
+        // A residual should never be a bounce (bounces materialize during the
+        // pump, not the drain); if one slips through, route it as active so
+        // nothing is lost.
+        for (state, _kind, root) in discard {
+            let id = state.state_id();
+            self.sm.set_root(id, root);
+            self.route_successor(state, true);
+        }
+
+        // Fold session accounting into the manager (counters + profiling).
+        sess.parked.clear();
+        let stats = sess.session.stats();
+        let worker_stepped = sess.shared.stepped.swap(0, Ordering::SeqCst) as u64;
+        self.steps += worker_stepped;
+        self.parallel_tasks += stats.dispatches() as u64;
+        self.parallel_migrations += (stats.surplus_offloaded + stats.materialized_terminals) as u64;
+        self.parallel_reattaches += stats.reattaches as u64;
+        self.parallel_bounce_roundtrips += stats.bounce_roundtrips as u64;
+        self.parallel_resume_reinjects += stats.resume_reinjects as u64;
+        self.parallel_residual_drains += stats.residual_drains as u64;
+        {
+            let drained =
+                std::mem::take(&mut *sess.shared.counters.lock().expect("counters poisoned"));
+            for counters in drained {
+                self.fold_core_counters(counters);
+            }
+        }
+        sess.prof.drain_into(&mut self.profiling.accumulated_stats);
+
+        self.apply_uniqueness_filter();
+        self.apply_native_techniques();
+        Ok(())
+    }
+
+    /// Finalize a live steady session if a config mutation is about to
+    /// invalidate its snapshotted `StepContext` (find/avoid addrs, hooks,
+    /// solver/memory config) or touch the active stash. GIL-free build stub is
+    /// a no-op. Called from the guarded `set_*` / `register_*` pymethods.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn steady_config_guard(&mut self) {
+        if self.parallel_session.is_some() {
+            // A pymethod may be called without a Python token in hand, but we
+            // are always on the GIL thread here (pymethods hold the GIL), so
+            // reacquire it to drain the session.
+            let _ = Python::attach(|py| self.finalize_steady_session(py));
+        }
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub(crate) fn steady_config_guard(&mut self) {}
 
     /// Inner body of the pymethods-exposed `run`. See `run` in `mod.rs`.
     ///

@@ -287,6 +287,22 @@ impl ParallelProfiling {
         stats.cache_hit_count += self.cache_hit_count.load(Ordering::Relaxed);
         stats.cache_miss_count += self.cache_miss_count.load(Ordering::Relaxed);
     }
+
+    /// Like [`fold_into`](Self::fold_into) but SWAPS each atomic to zero, so it
+    /// is safe to call repeatedly against a long-lived accumulator — the
+    /// steady-state coordinator folds deltas at every event return while
+    /// workers keep adding (angr-nkoct). A wave calling this once is
+    /// byte-identical to `fold_into` (the wave's accumulator dies right after).
+    pub(crate) fn drain_into(&self, stats: &mut ExecutionStats) {
+        stats.solver_fork_time_ns += self.solver_fork_time_ns.swap(0, Ordering::Relaxed);
+        stats.solver_fork_count += self.solver_fork_count.swap(0, Ordering::Relaxed);
+        stats.solver_sat_time_ns += self.solver_sat_time_ns.swap(0, Ordering::Relaxed);
+        stats.solver_sat_count += self.solver_sat_count.swap(0, Ordering::Relaxed);
+        stats.deferred_fork_time_ns += self.deferred_fork_time_ns.swap(0, Ordering::Relaxed);
+        stats.deferred_fork_count += self.deferred_fork_count.swap(0, Ordering::Relaxed);
+        stats.cache_hit_count += self.cache_hit_count.swap(0, Ordering::Relaxed);
+        stats.cache_miss_count += self.cache_miss_count.swap(0, Ordering::Relaxed);
+    }
 }
 
 // Compile-time proof the profiling accumulator is `Send + Sync`, so the
