@@ -135,6 +135,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "angr parallel-symex GO gate (bd plan work-item 1): wide-AND-slow synthetic. W=6 -> 64 leaves that BFS materializes concurrently before any reaches the find address (peak width ~28, frac_ge3~0.80); S=8 nonlinear mixing rounds + a 20-bit partial-mask match ((acc & 0xfffff)==0xffee) make the first-find satisfiable() a real bounded Z3 solve (ms/task in the thousands with num_find=1). A full-word equality instead forces pathological UNSAT proofs (W4/S4 took 94s, W6 full-sweep timed out >200s), so the gate uses a partial mask + num_find=1. Built gcc -O0 -no-pie x86-64 by build.py; auto_load_libs=False, no libc callbacks -> clean parallel frontier. Measured rust ~62s, peak ~385MB (< 3GB cap), found=1. rust_only.",
     },
+    "fork_solve_pbounce_W6_S8_M12_B2": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "angr-nkoct steady-state DEMONSTRATOR (partial-bounce). Sibling of the full-bounce fork_solve_trap stress bench: W=6 -> 64 leaves, but only B=2^-2 (1/4, ~16 leaves) bounce at each of T=4 interleaved levels — the rest keep stepping worker-locally, the overlap the steady loop converts into a win. The gate tests CONCRETE bits of the per-leaf index s, so it partitions the 64 leaves with NO extra fork/solve (solve.py asserts found==64). Exhaustive: num_find=64 (steady helps only no-early-exit workloads; num_find=1 first-find is anti-parallel). Drive under RUST_PARALLEL_WORKERS>=2 + RUST_PARALLEL_STEADY=1 to measure steady vs the wave loop. rust_only; NOT in a regression suite (measurement/characterization bench). Built gcc -O0 -no-pie by build_pbounce.py; resolves via SYNTHETIC_EXAMPLES_DIR.",
+    },
     "xmllint_getenv": {
         "tier": "fast",
         "rust_ok": True,
