@@ -246,6 +246,48 @@ impl RustExplorationManager {
         })
     }
 
+    // -------------------------------------------------------------------------
+    // Symbolic file content export (angr-0xyq2 Phase 3)
+    // -------------------------------------------------------------------------
+
+    pub(crate) fn _set_fs_cwd(&mut self, state_id: u64, cwd: &str) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.file_system().set_cwd(cwd.as_bytes().to_vec());
+            Ok(())
+        })
+    }
+
+    pub(crate) fn _register_file_content(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        path: &str,
+        byte_asts: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bytes: Vec<crate::symbolic::RustBV> = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let mut bytes = Vec::with_capacity(byte_asts.len());
+                for (idx, item) in byte_asts.iter().enumerate() {
+                    let bv = claripy_to_rustbv(py, &item, &sym_ctx).map_err(|e| {
+                        PyValueError::new_err(format!("AST conversion (byte {idx}): {e}"))
+                    })?;
+                    if bv.width() != 8 {
+                        return Err(PyValueError::new_err(format!(
+                            "file content byte {idx} has width {} (expected 8)",
+                            bv.width()
+                        )));
+                    }
+                    bytes.push(bv);
+                }
+                bytes
+            };
+            state.file_system().register_file_content(path, bytes);
+            Ok(())
+        })
+    }
+
     pub(crate) fn _import_symbolic_memory(
         &mut self,
         py: Python<'_>,

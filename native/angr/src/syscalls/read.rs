@@ -9,8 +9,9 @@
 //!     and advances the position.
 //!   - fds with bounded symbolic content (`content_sym`, angr-0xyq2
 //!     Phase 2): the registered per-byte BVs are stored to the buffer
-//!     natively via `FileSystem::read_sym`; EOF returns 0. Oversized counts
-//!     are clamped to `MAX_READ_SIZE` (POSIX-legal short read), never
+//!     natively via `FileSystem::read_sym`; EOF returns 0. Counts are
+//!     clamped to `MAX_SYMFILE_SERVE_SIZE` (= the export cap, so any
+//!     registered file serves in one call, matching Python), never
 //!     bounced — a fallback would split the position cursor (angr-8j16).
 //!
 //! Falls back to the Python `_handle_syscall_callback` path
@@ -30,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::procedures::strings::write_bv_bytes;
+use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -96,10 +98,11 @@ impl NativeSyscall for NativeReadSyscall {
         // per-byte BVs registered for this fd's path natively, advancing the
         // position. Checked before the symbolic-stream branch — a finite
         // symbolic *file* returns 0 at EOF rather than minting fresh bytes.
-        // Oversized counts are clamped (POSIX-legal short read) instead of
-        // bounced: a Python fallback would split the position cursor, since
-        // natively-minted fds are not mirrored into Python (angr-8j16).
-        let clamped = count.min(MAX_READ_SIZE) as usize;
+        // Clamped to MAX_SYMFILE_SERVE_SIZE (= the export cap; whole file in
+        // one call, matching Python) instead of bounced: a Python fallback
+        // would split the position cursor, since natively-minted fds are not
+        // mirrored into Python (angr-8j16).
+        let clamped = count.min(MAX_SYMFILE_SERVE_SIZE) as usize;
         if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
             let n = sym_bytes.len();
             write_bv_bytes(state, buf, sym_bytes)?;

@@ -149,6 +149,17 @@ impl FileDescriptor {
     }
 }
 
+/// Serve cap (bytes per call) for reads on bounded-symbolic-content fds
+/// (`content_sym`), shared by the read/fread/readv/pread64 serve paths.
+/// Matches the Python export gate (`_FS_EXPORT_MAX_FILE_SIZE` in
+/// rust_manager.py), so any registered file can be consumed in ONE guest
+/// read — Python's `SimFile.read` serves the full request in one call, and
+/// a smaller cap would silently diverge (short read Python never produces;
+/// for fread, `items = served / size` could even round to 0 forever).
+/// `read_sym`/`read_sym_at` clamp to the remaining content anyway; this cap
+/// only bounds the per-call `Vec` allocation for absurd guest counts.
+pub const MAX_SYMFILE_SERVE_SIZE: u64 = 65536;
+
 /// File system state tracking.
 ///
 /// Manages file descriptors beyond stdin/stdout/stderr. Tracks open/close/read/write/seek

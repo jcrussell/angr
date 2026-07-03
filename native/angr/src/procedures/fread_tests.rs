@@ -179,6 +179,41 @@ fn test_fread_content_sym_item_rounding_matches_python() {
     );
 }
 
+/// angr-0xyq2 Phase 3 review: fread of ONE item larger than the old 4096
+/// clamp must return 1 item, not 0. Under the old `MAX_FREAD_SIZE` clamp,
+/// `fread(buf, 8192, 1, f)` on an 8192-byte file served 4096 bytes and
+/// returned `4096 / 8192 = 0` items — forever (the cursor half-advanced,
+/// so the retry also returned 0). Python (`ret // size` after
+/// `simfd.read(dst, size*nmemb)`) returns 1.
+#[test]
+fn test_fread_content_sym_item_over_4096_returns_full_item() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x10000, 0x3000, Permission::RWX);
+    let bytes: Vec<RustBV> = (0..8192u32)
+        .map(|i| RustBV::concrete((i & 0xff) as u128, 8))
+        .collect();
+    state.file_system().register_file_content("/tmp/big", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/big".to_string(), FdFlags::ReadOnly);
+    let file_ptr = 0x12800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let result = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x10000, 64),
+                RustBV::concrete(8192, 64), // size (one item > old 4096 clamp)
+                RustBV::concrete(1, 64),    // nmemb
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("served natively, no fallback");
+    assert_eq!(result.unwrap().as_u64(), Some(1), "one complete 8192B item");
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 8192);
+}
+
 #[test]
 fn test_fread_content_sym_eof_returns_zero_items() {
     let mut state = RustSimState::new("amd64").unwrap();

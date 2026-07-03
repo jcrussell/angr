@@ -12,9 +12,10 @@
 //!   - fds with bounded symbolic content (`content_sym`, angr-0xyq2 Phase 2):
 //!     the registered per-byte BVs are stored to the buffer natively via
 //!     `FileSystem::read_sym`, advancing the position; EOF returns 0. Counts
-//!     beyond `MAX_READ_SIZE` are CLAMPED (a POSIX-legal short read), never
-//!     bounced — a Python fallback would split the position cursor, since
-//!     natively-minted fds are not mirrored into Python (angr-8j16).
+//!     are clamped to `MAX_SYMFILE_SERVE_SIZE` (= the export cap, so any
+//!     registered file serves in one call, matching Python `SimFile.read`),
+//!     never bounced — a Python fallback would split the position cursor,
+//!     since natively-minted fds are not mirrored into Python (angr-8j16).
 //!
 //! Falls back to Python for:
 //!   - symbolic fd/buf/count
@@ -34,6 +35,7 @@
 
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
+use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -79,9 +81,9 @@ crate::declare_proc! {
         // per-byte BVs registered for this fd's path natively, advancing the
         // position. An empty vec means EOF — return 0, matching the concrete
         // EOF shape below and Python SimFile's max(0, min(count, size - pos)).
-        // Oversized counts are clamped to MAX_READ_SIZE (POSIX-legal short
-        // read) rather than bounced — see the module docs.
-        let clamped = count.min(MAX_READ_SIZE) as usize;
+        // Clamped to MAX_SYMFILE_SERVE_SIZE (= the export cap; whole file in
+        // one call, matching Python) rather than bounced — see module docs.
+        let clamped = count.min(MAX_SYMFILE_SERVE_SIZE) as usize;
         if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
             let n = sym_bytes.len();
             write_bv_bytes(state, buf, sym_bytes)?;

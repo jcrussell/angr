@@ -141,7 +141,7 @@ import claripy
 from claripy.errors import ClaripyError
 from pyvex.errors import PyVEXError
 
-from angr.errors import SimEngineError, SimError
+from angr.errors import SimEngineError, SimError, SimSolverError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker
 
@@ -3303,6 +3303,99 @@ class RustExplorationManager(
             "full matrix."
         )
 
+    # Maximum concretized file size (bytes) eligible for the Rust-side
+    # symbolic-content export (angr-0xyq2 Phase 3 v1 scope gate). One RustBV
+    # per byte, so this bounds both export time and per-state memory.
+    _FS_EXPORT_MAX_FILE_SIZE = 65536
+
+    def _export_fs_files_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
+        """Export eligible ``state.fs._files`` entries into the Rust
+        FileSystem's path-keyed symbolic-content registry (angr-0xyq2
+        Phase 3), so a native guest ``open()`` attaches the content and
+        reads are served in Rust instead of bouncing to Python.
+
+        Scope gate (v1) — a file is exported iff ALL of:
+
+        * ``type(simfile) is SimFile`` exactly (subclasses like
+          ``SimFileStream`` / ``SimPackets`` have different position/EOF
+          models),
+        * ``simfile.has_end is True`` (bounded-EOF model only),
+        * ``simfile.seekable`` is truthy,
+        * ``simfile.file_exists is True`` (the native ``open()`` model
+          cannot express Python's ``If(file_exists, fd, -1)`` return),
+        * ``simfile.endness == "Iend_BE"`` (an LE file's Python read
+          window is address-reversed per read, so no fixed byte order
+          matches it — review-verified),
+        * the size concretizes uniquely (``solver.eval_one``) to
+          ``0 < size <= _FS_EXPORT_MAX_FILE_SIZE``,
+        * the path decodes as UTF-8 (the Rust path model is UTF-8-lossy).
+
+        Anything else is skipped silently — those files keep today's
+        Python-fallback behavior. Already-open ``state.posix.fd`` entries
+        are deliberately NOT synced (v1): the Rust and Python fd tables are
+        unsynced by design (angr-8j16), so only path-keyed content that a
+        future native ``open()`` attaches is pushed.
+
+        Known v1 limitation: this also runs on mid-run re-adds (legacy
+        Python-fork push, ``merge()``, cross-manager transfer), where it
+        re-registers content on a path an ancestor's native write had
+        demoted to Python ownership. That serves the same bytes Python
+        would (the refused write never landed in either model — the guest
+        saw ``-1``), so it re-arms the documented write-demotion
+        limitation rather than corrupting content. Lineage-aware demotion
+        tracking is a follow-up.
+        """
+        try:
+            from angr.storage.file import SimFile
+
+            fs = angr_state.fs
+            # Python ``_files`` keys are cwd-normalized (default
+            # ``/home/user``) while the Rust FileSystem cwd defaults to
+            # ``/`` — push the cwd unconditionally (even with no files) so
+            # native getcwd/relative-path normalization matches Python
+            # regardless of whether any SimFile was inserted. cwd is
+            # always bytes on the Python side.
+            self._rust_mgr.set_fs_cwd(state_id, fs.cwd.decode("utf-8"))
+            files = fs._files
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: fs export preamble failed (non-UTF-8
+            # cwd, missing fs plugin, FFI error); every file in this state
+            # stays Python-served (the pre-Phase-3 behavior). Debug-logs.
+            l.debug("fs file export skipped for state %d: %s: %s", state_id, type(e).__name__, e)
+            return
+
+        exported = 0
+        for path, simfile in files.items():
+            try:
+                # v1 scope gate — see docstring. Exact-type check on purpose.
+                if type(simfile) is not SimFile:
+                    continue
+                if simfile.has_end is not True:
+                    continue
+                if not simfile.seekable:
+                    continue
+                if simfile.file_exists is not True:
+                    continue
+                if simfile.endness != "Iend_BE":
+                    continue
+                try:
+                    size = angr_state.solver.eval_one(simfile.size)
+                except SimSolverError:
+                    continue  # symbolic size without a unique value (or unsat)
+                if not 0 < size <= self._FS_EXPORT_MAX_FILE_SIZE:
+                    continue
+                path_str = path.decode("utf-8")
+                # Big-endian load: chop(8)[0] is the byte at file offset 0.
+                data = simfile.load(0, size, disable_actions=True, inspect=False)
+                self._rust_mgr.register_file_content(state_id, path_str, data.chop(8))
+                exported += 1
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: this file stays Python-served
+                # (the pre-Phase-3 behavior). Debug-logs.
+                l.debug("fs file export failed for %r: %s: %s", path, type(e).__name__, e)
+        if exported:
+            l.debug("Exported %d symbolic file(s) to Rust state %d", exported, state_id)
+
     def _add_rust_state(self, stash: str, angr_state: angr.SimState):
         """Add an angr state to a Rust stash.
 
@@ -3541,6 +3634,14 @@ class RustExplorationManager(
                         # new state has fewer constraints than the source state — eval /
                         # satisfiable on it may produce wrong values. Already warns.
                         l.warning(f"Failed to install initial constraints: {e}")
+
+            # Export eligible symbolic files from state.fs into the Rust
+            # path-keyed content registry so native open()/read() serve them
+            # without a Python bounce (angr-0xyq2 Phase 3). After the
+            # constraint install: the bridge import preserves BVS identity,
+            # so content bytes referenced by installed constraints resolve
+            # to the same Rust symbols.
+            self._export_fs_files_to_rust(angr_state, actual_state_id)
 
             self._state_cache[actual_state_id] = angr_state
             # Track this as a root state for plugin restoration

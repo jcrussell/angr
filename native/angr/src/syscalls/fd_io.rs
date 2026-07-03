@@ -22,9 +22,10 @@
 //!
 //! Bounded symbolic file content (angr-0xyq2 Phase 2): `readv` / `pread64`
 //! serve the fd's registered per-byte BVs (`FileSystem::read_sym` /
-//! `read_sym_at`), clamping oversized requests to the caps (POSIX-legal
-//! short reads) instead of bouncing — a fallback would split the position
-//! cursor (angr-8j16). `writev` / `pwrite64` demote the content
+//! `read_sym_at`), clamping requests to `MAX_SYMFILE_SERVE_SIZE` (= the
+//! export cap, so any registered file serves in one call, matching Python)
+//! instead of bouncing — a fallback would split the position cursor
+//! (angr-8j16). `writev` / `pwrite64` demote the content
 //! (`demote_symbolic_content`) and bounce to Python before mutating;
 //! zero-length writes are a no-demotion no-op, and a symbolic fd demotes
 //! everything (`demote_all_symbolic_content`) before falling back.
@@ -41,6 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::procedures::strings::write_bv_bytes;
+use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -311,14 +313,15 @@ impl NativeSyscall for NativeReadvSyscall {
         // Bounded symbolic file content (angr-0xyq2 Phase 2): scatter the
         // registered per-byte BVs per segment via read_sym, mirroring the
         // concrete loop below (position advances; EOF stops scattering).
-        // Oversized segments are clamped to MAX_IO_SIZE, ending the scatter
-        // there — a POSIX-legal short read. A mid-loop `None` (impossible
-        // while the predicate holds, but not worth an `expect`) degrades to
-        // a short read too.
+        // Segments are clamped to MAX_SYMFILE_SERVE_SIZE (= the export cap;
+        // a whole registered file fits in one segment, matching Python),
+        // ending the scatter there. A mid-loop `None` (impossible while the
+        // predicate holds, but not worth an `expect`) degrades to a short
+        // read too.
         if serve_sym {
             let mut total = 0u64;
             for (base, len) in segments {
-                let serve = (len as usize).min(MAX_IO_SIZE as usize);
+                let serve = (len as usize).min(MAX_SYMFILE_SERVE_SIZE as usize);
                 let Some(sym_bytes) = state.file_system().read_sym(fd as u32, serve) else {
                     break;
                 };
@@ -407,9 +410,10 @@ impl NativeSyscall for NativePread64Syscall {
         }
         // Bounded symbolic file content (angr-0xyq2 Phase 2): positioned
         // serve of the registered per-byte BVs; the fd position is untouched.
-        // Oversized nbyte is clamped (POSIX-legal short read) — see module
-        // docs — so the cap bounce below only applies to concrete content.
-        let clamped = nbyte.min(MAX_IO_SIZE) as usize;
+        // nbyte is clamped to MAX_SYMFILE_SERVE_SIZE (= the export cap;
+        // whole file in one call, matching Python) — see module docs — so
+        // the cap bounce below only applies to concrete content.
+        let clamped = nbyte.min(MAX_SYMFILE_SERVE_SIZE) as usize;
         if let Some(sym_bytes) = state
             .file_system_ref()
             .read_sym_at(fd as u32, offset, clamped)

@@ -1238,6 +1238,38 @@ impl RustExplorationManager {
         self._import_symbolic_memory(py, state_id, addr, ast)
     }
 
+    /// Replace a state's filesystem current working directory (angr-0xyq2
+    /// Phase 3). Python `state.fs._files` keys are cwd-normalized (default
+    /// `/home/user`) while the Rust `FileSystem` cwd defaults to `/`, so the
+    /// init-time export must push the Python cwd BEFORE registering file
+    /// content — otherwise a relative guest `open()` never matches the
+    /// registry keys. Non-UTF-8 cwds are gated out by the Python caller
+    /// (the Rust path model is UTF-8-lossy).
+    /// See `pending_api::_set_fs_cwd` for the body.
+    pub fn set_fs_cwd(&mut self, state_id: u64, cwd: &str) -> PyResult<()> {
+        self._set_fs_cwd(state_id, cwd)
+    }
+
+    /// Register bounded symbolic file content for `path` on a state's
+    /// filesystem (angr-0xyq2 Phase 3): one 8-bit claripy AST per byte,
+    /// converted to `RustBV` via the claripy bridge (which preserves BVS
+    /// identity by hash and name+width, so constraints added natively on
+    /// these bytes evaluate correctly against the original Python ASTs on
+    /// the found state — no sync-back injection needed). A subsequent
+    /// native `open()` of the (cwd-normalized) path attaches the content
+    /// and reads are served natively. Errors (not panics) on unknown
+    /// `state_id`, a non-convertible AST, or a non-8-bit entry.
+    /// See `pending_api::_register_file_content` for the body.
+    pub fn register_file_content(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        path: &str,
+        byte_asts: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        self._register_file_content(py, state_id, path, byte_asts)
+    }
+
     /// Get memory from pending state.
     /// See `pending_api::_get_pending_memory` for the body.
     pub fn get_pending_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {

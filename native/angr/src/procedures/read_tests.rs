@@ -332,12 +332,14 @@ fn test_read_too_large() {
     assert!(result.is_err());
 }
 
-/// angr-0xyq2 B1: an oversized read (count > MAX_READ_SIZE) on a
-/// content_sym fd is CLAMPED to a POSIX-legal short read and served
-/// natively — never bounced, since a Python fallback would split the
+/// angr-0xyq2 B1 (revised at Phase 3 review): a single read whose count
+/// exceeds the old 4096 clamp on a content_sym fd serves the WHOLE
+/// remaining content in one call — matching Python `SimFile.read`'s
+/// `min(count, size - pos)`, which never produces a 4096-byte short read.
+/// Served natively, never bounced: a Python fallback would split the
 /// position cursor (natively-minted fds are not mirrored, angr-8j16).
 #[test]
-fn test_read_content_sym_oversized_count_clamps_natively() {
+fn test_read_content_sym_over_4096_serves_whole_file_like_python() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x10000, 0x2000, crate::memory::Permission::RWX);
     // 4100 bytes of registered content (concrete entries keep the test
@@ -350,7 +352,7 @@ fn test_read_content_sym_oversized_count_clamps_natively() {
         .file_system()
         .open("/tmp/big".to_string(), crate::state::FdFlags::ReadOnly);
 
-    // count=5000 > 4096: serve exactly 4096 bytes, no fallback error.
+    // count=5000 > old 4096 clamp: serve all 4100 bytes in one call.
     let result = NativeRead
         .call(
             &mut state,
@@ -360,14 +362,20 @@ fn test_read_content_sym_oversized_count_clamps_natively() {
                 RustBV::concrete(5000, 64),
             ],
         )
-        .expect("clamped read served natively");
-    assert_eq!(result.unwrap().as_u64(), Some(4096));
+        .expect("served natively, no fallback");
+    assert_eq!(result.unwrap().as_u64(), Some(4100));
     assert_eq!(
         state.file_system_ref().fd_info(fd).unwrap().1,
-        4096,
-        "position advances by the served (clamped) byte count"
+        4100,
+        "position advances by the full served byte count"
     );
-    // The next oversized read picks up where the clamp left off.
+    // Spot-check both ends of the buffer landed (no 4096 truncation).
+    assert_eq!(state.memory_load(0x10000, 1).unwrap().as_u64(), Some(0));
+    assert_eq!(
+        state.memory_load(0x10000 + 4099, 1).unwrap().as_u64(),
+        Some(4099 & 0xff)
+    );
+    // The next read is at EOF: 0, still native.
     let result = NativeRead
         .call(
             &mut state,
@@ -378,6 +386,5 @@ fn test_read_content_sym_oversized_count_clamps_natively() {
             ],
         )
         .expect("served natively");
-    assert_eq!(result.unwrap().as_u64(), Some(4));
-    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 4100);
+    assert_eq!(result.unwrap().as_u64(), Some(0));
 }
