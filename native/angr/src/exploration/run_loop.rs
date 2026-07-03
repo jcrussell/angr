@@ -721,22 +721,17 @@ impl RustExplorationManager {
             let materialized = job.take_results();
             drop(job);
 
-            // M2: the count of dispatches that actually took an interpreter step
-            // and produced a Successors/Terminal-equivalent outcome (the workers'
-            // `stepped` counter), NOT `stats.dispatches()` (which over-counts by
-            // including pre-step find/avoid routes and bounces). See `stepped`.
-            let worker_stepped = shared.stepped.load(Ordering::SeqCst) as u64;
-
-            // Fold the workers' solver timing into the manager (via the `Arc`),
-            // then recover sole ownership of `shared` to drain its maps.
+            // M2 + counter fold: drain the workers' `stepped` count and queued
+            // `CoreCounters` through the shared reference (lock + take, safe to
+            // call while workers still hold `Arc` clones — the steady-state loop
+            // reuses this mid-session), then fold the solver timing and recover
+            // sole ownership of `shared` to drain its maps.
+            let worker_stepped = self.fold_parallel_shared_counters(&shared);
             prof.fold_into(&mut self.profiling.accumulated_stats);
             let shared = Arc::into_inner(shared)
                 .expect("BUG: ParallelShared still referenced after the wave barrier");
-            for counters in shared.counters.into_inner().expect("counters poisoned") {
-                self.fold_core_counters(counters);
-            }
 
-            let kind_map = shared.kind_map.into_inner().expect("kind_map poisoned");
+            let mut kind_map = shared.kind_map.into_inner().expect("kind_map poisoned");
             let root_map = shared.root_map.into_inner().expect("root_map poisoned");
 
             // Reattach + route each materialized terminal. Found / unconstrained
@@ -746,79 +741,13 @@ impl RustExplorationManager {
             let main_ctx = z3::Context::thread_local();
             let mut bounce_queue: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
             for payload in materialized {
-                let mut state = payload
+                let state = payload
                     .reattach(&main_ctx)
                     .map_err(|e| PyRuntimeError::new_err(format!("reattach failed: {e:?}")))?;
                 let id = state.state_id();
                 let root = root_map.get(&id).copied().unwrap_or(id);
-                match kind_map.get(&id) {
-                    Some(MatKind::Found) => {
-                        self.sm.set_root(id, root);
-                        self.sm
-                            .stashes_mut()
-                            .entry(STASH_FOUND.to_string())
-                            .or_default()
-                            .push_back(state);
-                    }
-                    Some(MatKind::Unconstrained) => {
-                        self.sm.set_root(id, root);
-                        self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
-                    }
-                    Some(MatKind::Bounce(kind)) => {
-                        // Bug C1: a bounce whose target is a find/avoid ADDRESS
-                        // must route to FOUND/AVOID/PRUNED exactly as
-                        // single-threaded `step_one`'s NeedCallback→find/avoid
-                        // special case does — NOT to a spurious Python bounce,
-                        // which would LOSE the found state. The worker already
-                        // materialized this bounce's deferred forks as
-                        // `continue_states` (explored locally), so we route ONLY
-                        // the parked main state here; no fork is re-created. The
-                        // `set_pc(addr)` + `add_to_history(addr)` mirrors
-                        // `dispatch_bounce` so the routed state reports the target.
-                        match bounce_target_addr(kind) {
-                            Some(addr) if self.find_addrs.contains(&addr) => {
-                                state.set_pc(addr);
-                                state.add_to_history(addr);
-                                self.sm.set_root(id, root);
-                                if self.constraint_solver.lazy_solves || state.satisfiable() {
-                                    self.sm
-                                        .stashes_mut()
-                                        .entry(STASH_FOUND.to_string())
-                                        .or_default()
-                                        .push_back(state);
-                                } else {
-                                    log::debug!(
-                                        "parallel: bounce at find addr 0x{:x} is UNSAT, pruning",
-                                        addr
-                                    );
-                                    self.push_or_drop_terminal(STASH_PRUNED, state);
-                                }
-                            }
-                            Some(addr) if self.avoid_addrs.contains(&addr) => {
-                                state.set_pc(addr);
-                                state.add_to_history(addr);
-                                self.sm.set_root(id, root);
-                                self.push_or_drop_terminal(STASH_AVOID, state);
-                            }
-                            _ => bounce_queue.push((state, kind.clone(), root)),
-                        }
-                    }
-                    Some(MatKind::ActiveResidual) => {
-                        // Phase 1 scaffolding: no path produces this yet. Its
-                        // future semantics (a live frontier state drained back on
-                        // cancel) is a bare active successor, so route it as one —
-                        // nothing is silently lost if a later phase emits it before
-                        // wiring the full cancel-drain handler.
-                        self.sm.set_root(id, root);
-                        self.route_successor(state, true);
-                    }
-                    None => {
-                        // Untagged materialized state — should not happen; treat
-                        // as a bare active successor so nothing is silently lost.
-                        log::error!("parallel: untagged materialized state {id}; re-routing");
-                        self.route_successor(state, true);
-                    }
-                }
+                let kind = kind_map.remove(&id);
+                self.route_materialized_terminal(state, kind, root, &mut bounce_queue);
             }
 
             // Per-wave bookkeeping (mirror of the single-threaded post-step
@@ -859,6 +788,108 @@ impl RustExplorationManager {
                     self.active_count(),
                     self.steps,
                 ));
+            }
+        }
+    }
+
+    /// Drain the per-dispatch accounting out of a [`ParallelShared`] through the
+    /// shared reference: takes the queued `CoreCounters` (lock + `mem::take`) and
+    /// swaps the `stepped` counter to zero, returning its value (M2 semantics —
+    /// see the `stepped` field doc). Deliberately does NOT require sole ownership
+    /// of the `Arc`, so the steady-state coordinator can fold incrementally at
+    /// every event return while workers still hold clones; the wave loop calls it
+    /// once per wave right before `Arc::into_inner`.
+    fn fold_parallel_shared_counters(&mut self, shared: &ParallelShared) -> u64 {
+        let worker_stepped = shared.stepped.swap(0, Ordering::SeqCst) as u64;
+        let drained = std::mem::take(&mut *shared.counters.lock().expect("counters poisoned"));
+        for counters in drained {
+            self.fold_core_counters(counters);
+        }
+        worker_stepped
+    }
+
+    /// Route one reattached materialized terminal by its [`MatKind`] tag —
+    /// the per-payload body of the wave loop's post-barrier routing, extracted
+    /// so the steady-state coordinator can route terminals one at a time as they
+    /// stream in. The caller looks up (and REMOVES — entries must not accumulate
+    /// over a long steady session) the state's `kind_map`/`root_map` entries and
+    /// passes them per-state; true bounces are pushed to `bounce_queue` for
+    /// `process_parallel_bounce_queue` rather than dispatched inline, so both
+    /// loops surface at most one Python callback per `run()`.
+    fn route_materialized_terminal(
+        &mut self,
+        mut state: RustSimState,
+        kind: Option<MatKind>,
+        root: u64,
+        bounce_queue: &mut Vec<(RustSimState, BounceKind, u64)>,
+    ) {
+        let id = state.state_id();
+        match kind {
+            Some(MatKind::Found) => {
+                self.sm.set_root(id, root);
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_default()
+                    .push_back(state);
+            }
+            Some(MatKind::Unconstrained) => {
+                self.sm.set_root(id, root);
+                self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
+            }
+            Some(MatKind::Bounce(kind)) => {
+                // Bug C1: a bounce whose target is a find/avoid ADDRESS
+                // must route to FOUND/AVOID/PRUNED exactly as
+                // single-threaded `step_one`'s NeedCallback→find/avoid
+                // special case does — NOT to a spurious Python bounce,
+                // which would LOSE the found state. The worker already
+                // materialized this bounce's deferred forks as
+                // `continue_states` (explored locally), so we route ONLY
+                // the parked main state here; no fork is re-created. The
+                // `set_pc(addr)` + `add_to_history(addr)` mirrors
+                // `dispatch_bounce` so the routed state reports the target.
+                match bounce_target_addr(&kind) {
+                    Some(addr) if self.find_addrs.contains(&addr) => {
+                        state.set_pc(addr);
+                        state.add_to_history(addr);
+                        self.sm.set_root(id, root);
+                        if self.constraint_solver.lazy_solves || state.satisfiable() {
+                            self.sm
+                                .stashes_mut()
+                                .entry(STASH_FOUND.to_string())
+                                .or_default()
+                                .push_back(state);
+                        } else {
+                            log::debug!(
+                                "parallel: bounce at find addr 0x{:x} is UNSAT, pruning",
+                                addr
+                            );
+                            self.push_or_drop_terminal(STASH_PRUNED, state);
+                        }
+                    }
+                    Some(addr) if self.avoid_addrs.contains(&addr) => {
+                        state.set_pc(addr);
+                        state.add_to_history(addr);
+                        self.sm.set_root(id, root);
+                        self.push_or_drop_terminal(STASH_AVOID, state);
+                    }
+                    _ => bounce_queue.push((state, kind, root)),
+                }
+            }
+            Some(MatKind::ActiveResidual) => {
+                // Phase 1 scaffolding: no path produces this yet. Its
+                // future semantics (a live frontier state drained back on
+                // cancel) is a bare active successor, so route it as one —
+                // nothing is silently lost if a later phase emits it before
+                // wiring the full cancel-drain handler.
+                self.sm.set_root(id, root);
+                self.route_successor(state, true);
+            }
+            None => {
+                // Untagged materialized state — should not happen; treat
+                // as a bare active successor so nothing is silently lost.
+                log::error!("parallel: untagged materialized state {id}; re-routing");
+                self.route_successor(state, true);
             }
         }
     }
