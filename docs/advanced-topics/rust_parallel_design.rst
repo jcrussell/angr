@@ -733,6 +733,76 @@ If Option A is chosen, a staged rollout:
       honest read: the parallel engine is in reasonable shape; the remaining win
       is real but modest and best pursued as a scoped effort.
 
+   .. important:: **angr-nkoct steady-state loop DELIVERED (2026-07-03), opt-in
+      via** ``RUST_PARALLEL_STEADY=1``\ **.**
+
+      The deferred steady-state loop above is now implemented behind the
+      ``RUST_PARALLEL_STEADY`` env flag (default off). One long-lived
+      ``RunSession`` (``exploration/scheduler.rs``) spans many ``run()`` calls:
+      workers keep their frontiers **resident** across the Python-callback
+      boundary, streaming materialized terminals up an mpsc channel instead of
+      synchronizing at a per-wave barrier, so a bounce costs one materialize +
+      re-inject rather than a full-frontier detach/reattach re-seed. It engages
+      only when ``RUST_PARALLEL_STEADY=1`` **and** the driver's address-based,
+      no-``until``, no-technique path sets ``parallel_frontier_residency``
+      **and** ``RUST_PARALLEL_WORKERS >= 2``; otherwise the wave loop runs
+      unchanged (``workers <= 1`` stays byte-identical). On cancel/finalize the
+      resident frontier is drained back to ``STASH_ACTIVE`` — the steady-path
+      fix for wave-mode **Bug M1** (``residual_drains`` counter). New counters
+      ``parallel_bounce_roundtrips`` / ``parallel_resume_reinjects`` /
+      ``parallel_residual_drains`` (previously always 0) are now live.
+
+      **Demonstrator** (``synthetic_examples/fork_solve_pbounce_W6_S8_M12_B2``,
+      built to bounce only ``2^-k`` of the ``2^W`` leaves per level — the
+      partial-bounce case the trap stress bench could not show):
+
+      .. list-table::
+         :header-rows: 1
+
+         * - config
+           - wall (median of 2)
+           - peak_mem
+         * - workers=1
+           - **56 s**
+           - 1088 MB
+         * - workers=2 **wave**
+           - **TIMEOUT (>240 s)**
+           - —
+         * - workers=2 **steady**
+           - **~55 s**
+           - 700 MB
+         * - workers=4 **wave**
+           - **TIMEOUT (>240 s)**
+           - —
+         * - workers=4 **steady**
+           - **~60 s**
+           - 825 MB
+
+      The headline is **steady vs wave**: the wave loop's per-bounce
+      full-frontier re-migration **times out** (>4x) on this partial-bounce
+      workload, while steady **completes at workers=1 parity with lower peak
+      memory**. Steady does **not** beat single-threaded here because the wall
+      is bounce-service-dominated (64 serialized Python SimProcedure callbacks
+      through the GIL); the parallelizable Z3-solve fraction is not the critical
+      path (consistent with the low ``solver_frac`` in the GIL-strategy
+      analysis). Correctness is by the **leaf-index projection**, not raw
+      content fingerprints — the latter differ across worker counts because
+      ``StateMigrationPayload`` does not preserve the Python-exported constraint
+      log (an orthogonal migration property); the projected found-set is
+      identical (all 64 leaves) across workers=1 and steady workers=2.
+
+      **Why it stays opt-in (default NOT flipped).** Parallel exploration is
+      itself opt-in (``RUST_PARALLEL_WORKERS``), and on the CTF corpus it is
+      net-negative: most benches are ``num_find=1`` first-find on a wide
+      frontier, which is anti-parallel by nature
+      (bd ``parallel-numfind1-speculative-waste``) — steady's barrier-free
+      exploration *amplifies* the speculative waste (e.g. ``xmllint_getenv``'s
+      glibc-init bounce storm). Steady is the right choice **only** for a
+      parallel, **exhaustive** (find-all / coverage), **partial-bounce**
+      workload, where it converts the wave loop's migration timeout into
+      completion. Recommend it there via the env flag; keep ``workers=1`` the
+      default for general use.
+
 If Option B is chosen instead, the migration is shorter but the
 benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on

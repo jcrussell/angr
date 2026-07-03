@@ -50,3 +50,4 @@ tests/benchmarks/debug_*.py
 .claude/loop-stdout.log
 .claude/loop.pid
 .claude/scheduled_tasks.lock
+tests/benchmarks/synthetic_examples/fork_solve_pbounce_W6_S8_M12_B2/__pycache__/
