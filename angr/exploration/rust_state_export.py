@@ -311,12 +311,23 @@ class _LazySimStateRef:
     def _materialize(self):
         return self._lazy_mgr._materialize_single_state(self._lazy_state_id)
 
+    # SimState internals that angr core calls on user-provided states —
+    # e.g. ``SimProcedure.execute(found, ...)`` fires ``state._inspect``
+    # (asisctffinals2015_license's inline-strlen pattern). These names
+    # materialize on demand like public attributes; other private names
+    # only delegate once the state is already materialized (below).
+    _MATERIALIZING_PRIVATE = frozenset({"_inspect", "_inspect_getattr", "_ip"})
+
     def __getattr__(self, name):
         # __getattr__ only fires when normal lookup misses, so the two slot
         # attributes never recurse. Guard private/dunder names so debugger /
-        # pickle / inspect probes don't accidentally materialize the state.
-        if name.startswith("_") or name.startswith("__"):
-            raise AttributeError(name)
+        # pickle / inspect probes (IPython uses single-underscore probes like
+        # ``_repr_html_``) don't accidentally materialize the state — EXCEPT
+        # the known angr-core entry points above, and any private name once
+        # the state is already materialized (delegation is then free).
+        if name.startswith("_") and name not in self._MATERIALIZING_PRIVATE:
+            if name.startswith("__") or self._lazy_state_id not in self._lazy_mgr._state_cache:
+                raise AttributeError(name)
         return getattr(self._materialize(), name)
 
     def __setattr__(self, name, value):

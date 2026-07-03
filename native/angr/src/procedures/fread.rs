@@ -28,14 +28,15 @@
 //!     symbolic-file model owns those, and synthesizing fresh bytes here would
 //!     drop the SimFile's own constraints.
 //!
-//! NOTE (angr-m674p): this native fread does NOT fix asisctffinals2015_license.
-//! There `fread` is called with a SYMBOLIC `size` (the file size, rbp at
-//! 0x400a4e), so the macro returns `SymbolicArgument` before this body runs and
-//! the call falls back to Python. The license hang is the Rust→Python state
-//! export for that callback churning the shared Z3 solver on the symbolic
-//! `filesize_*` — NOT the fread logic itself. See bd memory
-//! `license-timeout-fread-root-cause`. This procedure is an additive win for
-//! concrete-content fread only.
+//! NOTE (angr-m674p, superseded by angr-0xyq2): pre-Phase-3, this native
+//! fread did NOT fix asisctffinals2015_license — `fread`'s `size` came from
+//! fstat/ftell on the symbolic file (symbolic `filesize_*`), so the macro
+//! bounced `SymbolicArgument` and the Rust→Python export churned the shared
+//! Z3 solver. With the bounded-symbolic-content export (angr-0xyq2 Phase 3),
+//! the file is registered natively and `effective_len` makes fstat/ftell
+//! CONCRETE, so the same fread arrives with a concrete size and is served
+//! from `content_sym` — the license bench now passes in ~0.9s. See bd
+//! memory `license-timeout-fread-root-cause`.
 
 use super::ProcedureError;
 use super::strings::{write_bv_bytes, write_concrete_bytes};

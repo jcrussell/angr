@@ -50,8 +50,8 @@ pub struct FileDescriptor {
     /// mint fresh symbolic bytes natively (the stdin model) instead of
     /// falling back to Python. Models an fd backed by a symbolic stream
     /// (`SimPackets`), like stdin — NOT a bounded symbolic *file* with a
-    /// finite symbolic size (that EOF-aware case is still deferred; reads on
-    /// a symbolic-stream fd never hit EOF). Defaults false; `#[serde(default)]`
+    /// finite size (that EOF-aware case is `content_sym` below, angr-0xyq2;
+    /// reads on a symbolic-stream fd never hit EOF). Defaults false; `#[serde(default)]`
     /// keeps pre-angr-11djq.6.1 snapshots loadable (reconstitutes to a
     /// concrete-only fd, the prior behavior). Set only via `open_symbolic`.
     #[serde(default)]

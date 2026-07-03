@@ -958,3 +958,56 @@ class TestEdgeCases:
             )
         finally:
             mgr._materialize_single_state = orig_materialize
+
+    def test_lazy_ref_private_name_delegation_contract(self, fauxware_project):
+        """angr-0xyq2 Phase 4: ``_LazySimStateRef`` private-name rules.
+
+        ``SimProcedure.execute(found, ...)`` calls ``state._inspect`` (the
+        asisctffinals2015_license inline-strlen pattern), so the wrapper must
+        forward angr-core private entry points — while still refusing to
+        materialize on arbitrary private probes (IPython ``_repr_html_``-style)
+        and always refusing dunders.
+        """
+        from angr.exploration.rust_state_export import _LazySimStateRef
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Seed states are cached at _add_rust_state time, so step until a
+        # FORKED successor (fresh Rust-side id, no cached SimState) shows up.
+        fresh = None
+        for _ in range(40):
+            mgr.step(n=1)
+            fresh = next(
+                (s for s in mgr.active if s._lazy_state_id not in mgr._state_cache),
+                None,
+            )
+            if fresh is not None:
+                break
+        assert fresh is not None, "expected an uncached forked successor"
+        assert isinstance(fresh, _LazySimStateRef)
+        sid = fresh._lazy_state_id
+
+        # (1) Arbitrary private probe on an UNmaterialized ref: refuse
+        # without materializing.
+        with pytest.raises(AttributeError):
+            _ = fresh._repr_html_
+        assert sid not in mgr._state_cache, "private probe must not materialize"
+        # Dunders likewise (functools/decorator protocol probes).
+        with pytest.raises(AttributeError):
+            _ = fresh.__wrapped__
+        assert sid not in mgr._state_cache
+
+        # (2) The angr-core allowlist (_inspect et al.) materializes on
+        # demand, like a public attribute.
+        inspect_method = fresh._inspect
+        assert callable(inspect_method)
+        assert sid in mgr._state_cache, "_inspect must materialize the state"
+
+        # (3) Once materialized, other private names delegate to the real
+        # SimState (delegation is free at that point)...
+        assert fresh._ip is mgr._state_cache[sid]._ip or fresh._ip.op == mgr._state_cache[sid]._ip.op
+        with pytest.raises(AttributeError):
+            _ = fresh._no_such_private_attr  # ...but misses still raise.
+        # Dunders keep raising even when materialized.
+        with pytest.raises(AttributeError):
+            _ = fresh.__wrapped__

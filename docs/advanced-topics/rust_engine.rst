@@ -134,6 +134,31 @@ keep using the Python engine or wait for a future major release.
   "behavioral parity" contract that lets ``RustExplorationManager``
   drop in for ``SimulationManager`` without surprising users.
 
+* **Bounded symbolic file content is served natively (angr-0xyq2).**
+  At state-add time, eligible ``state.fs._files`` entries are exported
+  into the Rust ``FileSystem``'s path-keyed registry
+  (``RustExplorationManager._export_fs_files_to_rust``), so a native
+  guest ``open()`` attaches the per-byte content ASTs and
+  ``read``/``fread``/``pread64``/``readv`` serve them without a Python
+  bounce; ``fstat``/``fseek``+``ftell``/``feof`` see concrete sizes.
+  The claripy bridge preserves BVS identity on import, so constraints
+  added by native branching bind the original Python ASTs on the found
+  state (``found.solver.eval(content)`` and ``SimFile.concretize()``
+  both work). The v1 scope gate exports a file iff it is exactly
+  ``SimFile`` with ``has_end=True``, seekable, ``file_exists=True``,
+  big-endian load model, and a uniquely-concretizable size in
+  (0, 64 KiB]; everything else (``SimPackets``, streams, symbolic
+  sizes) keeps the Python-fallback path. Guest *writes* to an exported
+  file demote it to Python ownership (native serving stops); file
+  *position* is not synced back to ``state.fs`` (same pre-existing gap
+  as concrete fds), and a mid-run re-add (``merge()``, cross-manager
+  transfer, legacy fork push) re-registers the export, re-arming the
+  write-demotion limitation. Proof point:
+  ``asisctffinals2015_license`` (34-byte symbolic license file) went
+  from TIMEOUT >60 s to ~0.9 s (~1.9x faster than the Python engine)
+  once its symbolic-fread-size explosion collapsed to concrete sizes.
+  Tests: ``tests/engines/rust/test_symbolic_files.py``.
+
 This scope decision is informed by the Send/Sync audit
 (``angr-8fo6``, 2026-06-01) and the FFI ownership audit
 (``angr-t1w7``, 2026-06-03) — both audits confirmed the

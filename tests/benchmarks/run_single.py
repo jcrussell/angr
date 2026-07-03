@@ -91,8 +91,12 @@ EXAMPLE_CATALOG = {
     },
     "asisctffinals2015_license": {
         "tier": "medium",
-        "rust_ok": False,
-        "notes": "2026-06-06 refresh (angr-oh6a): TIMEOUT >60s (no longer the 'list index error' the catalog historically claimed; pre-iter-497 note replaced)",
+        "rust_ok": True,
+        "notes": "2026-07-03 (angr-0xyq2): Rust OK ~0.9s vs Python ~1.7s (~1.9x), correct flag. Unlocked by the "
+        "bounded-symbolic-file export (the 34-byte license SimFile is served natively; "
+        "fstat/ftell return concrete sizes, killing the symbolic-fread-size explosion "
+        "that made this TIMEOUT >60s) plus the _LazySimStateRef._inspect delegation "
+        "for solve.py's inline-strlen post-processing.",
     },
     "0ctf_momo_3": {"tier": "very_slow", "rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018": {"tier": "fast", "rust_ok": True, "notes": "Callable predicates, stdout check"},
