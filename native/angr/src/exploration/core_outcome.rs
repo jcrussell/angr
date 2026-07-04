@@ -498,13 +498,13 @@ struct ForkSink<'a> {
 
 /// Arguments for entering a native guest routine via a sub-call continuation
 /// (mirror of `NativeProcDisposition::SubCall` plus the caller return address).
-struct NativeSubcall {
-    proc_name: String,
-    saved_args: Vec<RustBV>,
-    caller_return_addr: u64,
-    target: u64,
-    sub_args: Vec<RustBV>,
-    resume_tag: u32,
+pub(crate) struct NativeSubcall {
+    pub(crate) proc_name: String,
+    pub(crate) saved_args: Vec<RustBV>,
+    pub(crate) caller_return_addr: u64,
+    pub(crate) target: u64,
+    pub(crate) sub_args: Vec<RustBV>,
+    pub(crate) resume_tag: u32,
 }
 
 /// The `RunResult::SimProcedure` descriptor fields (bundled to keep

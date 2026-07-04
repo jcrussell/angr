@@ -1,6 +1,6 @@
 use super::core_outcome::{
-    BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, ParallelProfiling, PendingBounce,
-    PostStepInputs, run_post_step_core,
+    BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, NativeSubcall, ParallelProfiling,
+    PendingBounce, PostStepInputs, run_post_step_core,
 };
 use super::*;
 use crate::arch::RegisterFile;
@@ -463,17 +463,19 @@ impl RustExplorationManager {
     /// it). The original caller address rides in the frame's
     /// `caller_return_addr`, not the stack. Link-register ABI: write the
     /// sentinel into the link register (requires `link_register()`).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn setup_native_subcall(
         &self,
         state: &mut RustSimState,
-        proc_name: String,
-        saved_args: Vec<RustBV>,
-        caller_return_addr: u64,
-        target: u64,
-        sub_args: Vec<RustBV>,
-        resume_tag: u32,
+        sub: NativeSubcall,
     ) -> Result<(), SubcallSetupError> {
+        let NativeSubcall {
+            proc_name,
+            saved_args,
+            caller_return_addr,
+            target,
+            sub_args,
+            resume_tag,
+        } = sub;
         let cc = &self.environment.calling_convention;
         let arg_regs = cc.arg_registers();
         if sub_args.len() > arg_regs.len() {
@@ -593,12 +595,14 @@ impl RustExplorationManager {
                 // forward so the final return still lands at `caller_return_addr`.
                 if let Err(e) = self.setup_native_subcall(
                     &mut state,
-                    frame.proc_name.clone(),
-                    frame.saved_args.clone(),
-                    frame.caller_return_addr,
-                    target,
-                    sub_args,
-                    resume_tag,
+                    NativeSubcall {
+                        proc_name: frame.proc_name.clone(),
+                        saved_args: frame.saved_args.clone(),
+                        caller_return_addr: frame.caller_return_addr,
+                        target,
+                        sub_args,
+                        resume_tag,
+                    },
                 ) {
                     log::error!("native resume nested sub-call setup failed ({e:?}); deadending");
                     return Err(StepError::Deadended(state));

@@ -57,8 +57,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use lru::LruCache;
 
 use super::core_outcome::{
-    BounceKind, CoreCtx, CoreReturn, ParallelProfiling, PendingBounce, PostStepInputs,
-    materialize_bounce_forks, run_post_step_core,
+    BounceKind, CoreCtx, CoreReturn, NativeSubcall, ParallelProfiling, PendingBounce,
+    PostStepInputs, materialize_bounce_forks, run_post_step_core,
 };
 use super::scheduler::{
     CancelToken, PersistentPool, ProcessFn, RunSession, TaskOutcome,
@@ -212,16 +212,12 @@ struct ParallelShared {
 ///   state for the coordinator's `dispatch_bounce` and keeps its deferred forks
 ///   local (re-materialized in-thread so no path is lost across the `!Send`
 ///   loose-condition boundary).
-#[allow(clippy::too_many_arguments)]
 fn parallel_process_state(
     mut state: RustSimState,
     cancel: &CancelToken,
     block_cache: &mut LruCache<u64, std::sync::Arc<IRSB>>,
-    ctx: &super::step_core::StepContext,
+    cc: &CoreCtx,
     callbacks: &PythonCallbacks,
-    prof: &ParallelProfiling,
-    native_procs: &NativeProcedureRegistry,
-    native_syscalls: &NativeSyscallRegistry,
     shared: &ParallelShared,
 ) -> TaskOutcome {
     let pc = state.pc();
@@ -235,14 +231,14 @@ fn parallel_process_state(
         .unwrap_or(id);
 
     // --- Pre-step address-based find / avoid (mirror of step_one). ---
-    if ctx.avoid_addrs.contains(&pc) {
+    if cc.ctx.avoid_addrs.contains(&pc) {
         return TaskOutcome::summarized(vec![TerminalSummary::of(
             &state,
             SchedDisposition::Avoided,
         )]);
     }
-    if ctx.find_addrs.contains(&pc) {
-        if ctx.lazy_solves || state.satisfiable() {
+    if cc.ctx.find_addrs.contains(&pc) {
+        if cc.ctx.lazy_solves || state.satisfiable() {
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
                 rm.insert(id, root_hint);
@@ -278,16 +274,19 @@ fn parallel_process_state(
     // across dispatches AND waves. Cache hits avoid a GIL-serialized re-lift; the
     // warm cache returns identical (pure) `Arc<IRSB>` lifts, so the found set and
     // content fingerprints are unchanged.
-    let step = run_interpreter_step_core(ctx, callbacks, &mut state, pc, None, None, block_cache);
+    let step =
+        run_interpreter_step_core(cc.ctx, callbacks, &mut state, pc, None, None, block_cache);
 
     // Fold this step's block-cache hit/miss into the shared profiling accumulator
     // so the warm-cache win surfaces in `mgr.stats()` (block_cache_hits /
     // block_cache_misses). Cache counters are always-on in the interpreter (not
     // gated by profiling), so accumulate unconditionally; the coordinator adds
     // these into `accumulated_stats` via `prof.fold_into` after the wave barrier.
-    prof.cache_hit_count
+    cc.prof
+        .cache_hit_count
         .fetch_add(step.step_stats.cache_hit_count, Ordering::Relaxed);
-    prof.cache_miss_count
+    cc.prof
+        .cache_miss_count
         .fetch_add(step.step_stats.cache_miss_count, Ordering::Relaxed);
 
     // Restore the warm cache: `run_interpreter_step_core` swapped a fresh empty
@@ -318,13 +317,7 @@ fn parallel_process_state(
         stored_conditions: step.stored_conditions,
         fork_snapshots: step.fork_snapshots,
     };
-    let cc = CoreCtx {
-        ctx,
-        prof,
-        native_procs,
-        native_syscalls,
-    };
-    let outcome = run_post_step_core(&cc, state, inputs, root_hint);
+    let outcome = run_post_step_core(cc, state, inputs, root_hint);
 
     // Dead-path side effects (UNSAT pruned forks, no-return deadended main):
     // recorded as cheap summaries; their full symbolic state is not recoverable
@@ -411,7 +404,7 @@ fn parallel_process_state(
             // Materialize the bounce's deferred forks in-thread so no unexplored
             // branch is lost across the (!Send loose-condition) bounce boundary.
             let (forks, pruned2, _ids) = materialize_bounce_forks(
-                &cc,
+                cc,
                 &bstate,
                 deferred_forks,
                 stored_conditions,
@@ -691,15 +684,18 @@ impl RustExplorationManager {
             // persistent workers share. Its callbacks self-acquire the GIL via
             // `Python::attach` (Phase 4); it touches no `&mut self`.
             let process: Box<ProcessFn> = Box::new(move |state, cancel, block_cache| {
+                let cc = CoreCtx {
+                    ctx: &ctx,
+                    prof: &wave_prof,
+                    native_procs: &wave_procs,
+                    native_syscalls: &wave_syscalls,
+                };
                 parallel_process_state(
                     state,
                     cancel,
                     block_cache,
-                    &ctx,
+                    &cc,
                     &wave_callbacks,
-                    &wave_prof,
-                    &wave_procs,
-                    &wave_syscalls,
                     &wave_shared,
                 )
             });
@@ -1113,15 +1109,18 @@ impl RustExplorationManager {
         let proc_prof = Arc::clone(&prof);
         let proc_shared = Arc::clone(&shared);
         let process: Box<ProcessFn> = Box::new(move |state, cancel, block_cache| {
+            let cc = CoreCtx {
+                ctx: &ctx,
+                prof: &proc_prof,
+                native_procs: &proc_procs,
+                native_syscalls: &proc_syscalls,
+            };
             parallel_process_state(
                 state,
                 cancel,
                 block_cache,
-                &ctx,
+                &cc,
                 &proc_callbacks,
-                &proc_prof,
-                &proc_procs,
-                &proc_syscalls,
                 &proc_shared,
             )
         });
@@ -1891,12 +1890,14 @@ impl RustExplorationManager {
                                     Some(caller_return_addr) => self
                                         .setup_native_subcall(
                                             &mut state,
-                                            name.clone(),
-                                            args,
-                                            caller_return_addr,
-                                            target,
-                                            sub_args,
-                                            resume_tag,
+                                            NativeSubcall {
+                                                proc_name: name.clone(),
+                                                saved_args: args,
+                                                caller_return_addr,
+                                                target,
+                                                sub_args,
+                                                resume_tag,
+                                            },
                                         )
                                         .map_err(|e| format!("{e:?}")),
                                     None => Err("no concrete return address".to_string()),

@@ -9,6 +9,7 @@
 //! sentinel return slot: `sp += 8`, `pc = sentinel`) so the test stays focused
 //! on the new dispatcher logic and free of a full lift/execute harness.
 
+use super::core_outcome::NativeSubcall;
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::{
@@ -133,12 +134,14 @@ fn native_subcall_setup_and_resume_roundtrip() {
         let saved_args = vec![RustBV::concrete(41, 64)];
         mgr.setup_native_subcall(
             &mut state,
-            "subcall_test".into(),
-            saved_args,
-            caller_ret,
-            SubcallTestProc::GUEST_TARGET,
-            vec![],
-            SubcallTestProc::RESUME_TAG,
+            NativeSubcall {
+                proc_name: "subcall_test".into(),
+                saved_args,
+                caller_return_addr: caller_ret,
+                target: SubcallTestProc::GUEST_TARGET,
+                sub_args: vec![],
+                resume_tag: SubcallTestProc::RESUME_TAG,
+            },
         )
         .unwrap();
 
@@ -201,12 +204,14 @@ fn setup_native_subcall_rejects_too_many_args() {
         let err = mgr
             .setup_native_subcall(
                 &mut state,
-                "subcall_test".into(),
-                vec![],
-                0x400123,
-                0x401000,
-                too_many,
-                0,
+                NativeSubcall {
+                    proc_name: "subcall_test".into(),
+                    saved_args: vec![],
+                    caller_return_addr: 0x400123,
+                    target: 0x401000,
+                    sub_args: too_many,
+                    resume_tag: 0,
+                },
             )
             .unwrap_err();
         assert!(matches!(
@@ -251,12 +256,14 @@ fn path_a_captures_caller_return_addr_via_get_return_addr() {
         // Drive the same sequence Path A's CallAndResume arm performs.
         mgr.setup_native_subcall(
             &mut state,
-            "subcall_test".into(),
-            vec![RustBV::concrete(41, 64)],
-            captured,
-            SubcallTestProc::GUEST_TARGET,
-            vec![],
-            SubcallTestProc::RESUME_TAG,
+            NativeSubcall {
+                proc_name: "subcall_test".into(),
+                saved_args: vec![RustBV::concrete(41, 64)],
+                caller_return_addr: captured,
+                target: SubcallTestProc::GUEST_TARGET,
+                sub_args: vec![],
+                resume_tag: SubcallTestProc::RESUME_TAG,
+            },
         )
         .unwrap();
         assert_eq!(state.pc(), SubcallTestProc::GUEST_TARGET);

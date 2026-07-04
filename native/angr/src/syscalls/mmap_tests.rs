@@ -468,19 +468,9 @@ fn fork_preserves_mmap_base() {
 // --- Legacy mmap (struct-arg) tests -----------------------------------
 
 /// Write six little-endian 32-bit fields into memory at `ptr`,
-/// matching the layout `mmap_arg_struct` reads.
-#[allow(clippy::too_many_arguments)]
-fn write_struct_le(
-    state: &mut RustSimState,
-    ptr: u64,
-    addr: u32,
-    length: u32,
-    prot: u32,
-    flags: u32,
-    fd: u32,
-    offset: u32,
-) {
-    let fields = [addr, length, prot, flags, fd, offset];
+/// matching the layout `mmap_arg_struct` reads
+/// (`[addr, length, prot, flags, fd, offset]`).
+fn write_struct_le(state: &mut RustSimState, ptr: u64, fields: [u32; 6]) {
     for (i, f) in fields.iter().enumerate() {
         state
             .memory_store(ptr + (i as u64) * 4, RustBV::concrete(*f as u128, 32))
@@ -498,12 +488,14 @@ fn old_mmap_dispatches_anonymous_struct_call() {
     write_struct_le(
         &mut state,
         ptr,
-        0,      // addr
-        0x1000, // length
-        0x3,    // prot RW
-        ANON_PRIVATE as u32,
-        ANON_FD as u32,
-        0, // offset
+        [
+            0,      // addr
+            0x1000, // length
+            0x3,    // prot RW
+            ANON_PRIVATE as u32,
+            ANON_FD as u32,
+            0, // offset
+        ],
     );
 
     let outcome = h
@@ -530,12 +522,7 @@ fn old_mmap_bad_flags_returns_neg_one() {
     write_struct_le(
         &mut state,
         ptr,
-        0,
-        0x1000,
-        0x3,
-        MAP_ANONYMOUS as u32,
-        ANON_FD as u32,
-        0,
+        [0, 0x1000, 0x3, MAP_ANONYMOUS as u32, ANON_FD as u32, 0],
     );
     let outcome = h
         .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
@@ -553,7 +540,7 @@ fn old_mmap_file_backed_falls_back() {
     let ptr: u64 = 0x4000;
     state.map_memory(ptr, 0x1000, Permission::RW);
     // fd=3 + no MAP_ANONYMOUS → Python.
-    write_struct_le(&mut state, ptr, 0, 0x1000, 0x3, MAP_PRIVATE as u32, 3, 0);
+    write_struct_le(&mut state, ptr, [0, 0x1000, 0x3, MAP_PRIVATE as u32, 3, 0]);
     let err = h
         .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
         .expect_err("fall back");
@@ -571,12 +558,7 @@ fn old_mmap_symbolic_field_falls_back() {
     write_struct_le(
         &mut state,
         ptr,
-        0,
-        0x1000,
-        0x3,
-        ANON_PRIVATE as u32,
-        ANON_FD as u32,
-        0,
+        [0, 0x1000, 0x3, ANON_PRIVATE as u32, ANON_FD as u32, 0],
     );
     let ctx = SymContext::new();
     state
