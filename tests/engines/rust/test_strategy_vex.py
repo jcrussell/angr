@@ -58,7 +58,35 @@ class TestExplorationStrategy:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
-            mgr.set_exploration_strategy("random")
+            mgr.set_exploration_strategy("bogus")
+
+    def test_set_exploration_strategy_random(self, fauxware_project):
+        """'random' (angr-a32jl.2 prototype) selects and still finds the goal.
+
+        Seeded so the run is reproducible; the invariant we assert is only that
+        uniform-random selection is a valid searcher that reaches the target.
+        """
+
+        find_addr = 0x4006ED
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("random", seed=1234)
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "random selection should still find at least one state"
+
+    def test_set_exploration_strategy_random_reproducible(self, fauxware_project):
+        """Same seed reproduces the found-input set (deterministic selection)."""
+
+        find_addr = 0x4006ED
+
+        def run(seed):
+            state = fauxware_project.factory.entry_state()
+            mgr = RustExplorationManager(fauxware_project, [state])
+            mgr.set_exploration_strategy("random", seed=seed)
+            mgr.explore(find=find_addr)
+            return self._found_inputs(mgr)
+
+        assert run(99) == run(99), "a fixed seed must reproduce the found-input set"
 
     def test_uniqueness_filter_knobs(self, fauxware_project):
         """register/disable/enabled uniqueness-filter knobs are wired to Rust.
@@ -133,7 +161,7 @@ class TestExplorationStrategy:
 
         state = fauxware_project.factory.entry_state()
         with pytest.raises(ValueError, match="Unknown exploration strategy"):
-            RustExplorationManager(fauxware_project, [state], exploration_strategy="random")
+            RustExplorationManager(fauxware_project, [state], exploration_strategy="bogus")
 
     @staticmethod
     def _found_inputs(mgr):

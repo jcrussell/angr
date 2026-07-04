@@ -3967,15 +3967,24 @@ class RustExplorationManager(
         self._progress_interval = interval_steps
         self._progress_last_fired = 0
 
-    def set_exploration_strategy(self, strategy: str):
-        """Set exploration strategy: 'bfs' (default) or 'dfs'."""
+    def set_exploration_strategy(self, strategy: str, seed: int = 0):
+        """Set exploration strategy: 'bfs' (default), 'dfs', or 'random'.
+
+        Args:
+            strategy: 'bfs' (FIFO), 'dfs' (LIFO), or 'random' (uniformly-random
+                active-state selection; angr-a32jl.2 prototype, opt-in only).
+            seed: SplitMix64 seed for 'random' — fixes the selection stream so a
+                run is reproducible. Ignored for 'bfs'/'dfs'.
+        """
         strategy = strategy.lower()
         if strategy == "dfs":
             self._rust_mgr.set_state_selection_lifo()
         elif strategy == "bfs":
             self._rust_mgr.set_state_selection_fifo()
+        elif strategy == "random":
+            self._rust_mgr.set_state_selection_random(int(seed) & 0xFFFFFFFFFFFFFFFF)
         else:
-            raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs' or 'dfs'.")
+            raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs', 'dfs', or 'random'.")
 
     def register_uniqueness_filter(self, register_names: list[str]):
         """Enable the native uniqueness filter keyed on the given registers.

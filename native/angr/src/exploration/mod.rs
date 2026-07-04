@@ -660,6 +660,16 @@ impl RustExplorationManager {
         log::debug!("State selection set to FIFO (BFS)");
     }
 
+    /// angr-a32jl.2 prototype: set state selection to random-state — step a
+    /// uniformly-random active state, seeded for reproducibility. Opt-in only;
+    /// never a default. `seed` fixes the SplitMix64 stream so a run is
+    /// byte-reproducible.
+    pub fn set_state_selection_random(&mut self, seed: u64) {
+        self.steady_config_guard();
+        self.policy = Arc::new(selection_policy::RandomState::new(seed));
+        log::debug!("State selection set to RANDOM (seed={seed})");
+    }
+
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
         self.steady_config_guard();
