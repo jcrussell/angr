@@ -88,6 +88,21 @@ class TestExplorationStrategy:
 
         assert run(99) == run(99), "a fixed seed must reproduce the found-input set"
 
+    def test_set_exploration_strategy_coverage(self, fauxware_project):
+        """'coverage' (angr-m9fpp prototype) new-block-first still finds the goal.
+
+        Coverage-guided selection prioritizes states parked on never-dispatched
+        blocks and degrades to FIFO once all are seen; the invariant asserted
+        here is that it remains a valid searcher that reaches the target.
+        """
+
+        find_addr = 0x4006ED
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("coverage")
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "coverage-guided selection should still find at least one state"
+
     def test_uniqueness_filter_knobs(self, fauxware_project):
         """register/disable/enabled uniqueness-filter knobs are wired to Rust.
 

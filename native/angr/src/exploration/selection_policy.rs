@@ -17,7 +17,7 @@
 //! Both append new forks at the tail — matching the historical `push_back`
 //! at every fork site — so step traces are byte-identical under either.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
 
 use crate::state::RustSimState;
@@ -142,12 +142,80 @@ impl SelectionPolicy for RandomState {
     }
 }
 
+/// Coverage-guided new-block-first selection (angr-m9fpp prototype): step the
+/// oldest active state whose next block (its current `pc`) has never been
+/// dispatched before, so the searcher pushes toward unexplored code rather than
+/// re-treading already-covered blocks. When every active state sits on an
+/// already-seen block the policy degrades gracefully to FIFO (front), keeping a
+/// deterministic tie-break and never starving the queue.
+///
+/// The novelty signal is a self-contained seen-set of dispatched block
+/// addresses maintained inside the policy — no lift-cache plumbing or seam
+/// widening. Each state already exposes its next-block address via
+/// [`RustSimState::pc`], so the two-hook seam is sufficient: `select` scans the
+/// deque for the first novel `pc`, marks it seen, and removes it. This is a
+/// coarse per-address novelty (not per-path), which is the intended cheap
+/// prototype — a state re-reaching a covered block loses its novelty boost,
+/// which is exactly the coverage-guided behavior.
+///
+/// Opt-in only via `set_state_selection_coverage`; never a default.
+#[derive(Default)]
+pub struct CoverageGuided {
+    /// Block addresses already dispatched. Behind a `Mutex` for interior
+    /// mutability under the `&self` `select` hook while preserving the
+    /// `Send + Sync` supertrait so a parallel scheduler can share the `Arc`.
+    seen: Mutex<HashSet<u64>>,
+}
+
+impl CoverageGuided {
+    /// Construct with an empty seen-set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl SelectionPolicy for CoverageGuided {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        if active.is_empty() {
+            return None;
+        }
+        let mut seen = self.seen.lock().expect("CoverageGuided seen-set poisoned");
+        // First active state sitting on a block we have never dispatched. Front
+        // scan keeps FIFO order among equally-novel states (deterministic).
+        let pick = active
+            .iter()
+            .position(|st| !seen.contains(&st.pc()))
+            // All active blocks already seen — degrade to FIFO front.
+            .unwrap_or(0);
+        let state = active
+            .remove(pick)
+            .expect("index from non-empty deque is valid");
+        seen.insert(state.pc());
+        Some(state)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        active.push_back(state);
+    }
+
+    fn name(&self) -> &'static str {
+        "coverage"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RandomState, SelectionPolicy};
+    use super::{CoverageGuided, RandomState, SelectionPolicy};
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
     use z3::Context;
+
+    /// Build a fresh amd64 state parked at `pc`.
+    fn state_at(pc: u64) -> RustSimState {
+        let mut st = RustSimState::new("amd64").unwrap();
+        st.set_pc(pc);
+        st
+    }
 
     /// Run a full drain under `RandomState(seed)` over `n` fresh states and
     /// return the dispatch order expressed as *insertion indices* (0..n). Two
@@ -213,5 +281,68 @@ mod tests {
     #[test]
     fn test_random_policy_name() {
         assert_eq!(RandomState::new(0).name(), "random");
+    }
+
+    /// Drain a `CoverageGuided` policy over states parked at the given `pcs`
+    /// and return the dispatch order as `pc` values.
+    fn coverage_drain(pcs: &[u64]) -> Vec<u64> {
+        let _ctx = Context::thread_local();
+        let policy = CoverageGuided::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        for &pc in pcs {
+            active.push_back(state_at(pc));
+        }
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.pc());
+        }
+        order
+    }
+
+    #[test]
+    fn test_coverage_prefers_novel_blocks() {
+        // Two states share block 0x1000; one is at the novel 0x2000. With the
+        // front at a duplicate-able block, the policy must still pull the novel
+        // 0x2000 before re-treading 0x1000 a second time.
+        // Layout: [0x1000, 0x1000, 0x2000].
+        // Step 1: 0x1000 novel (front) -> dispatch, mark seen.
+        // Step 2: front 0x1000 now seen, 0x2000 novel -> dispatch 0x2000.
+        // Step 3: only the second 0x1000 remains -> dispatch it.
+        assert_eq!(
+            coverage_drain(&[0x1000, 0x1000, 0x2000]),
+            vec![0x1000, 0x2000, 0x1000],
+        );
+    }
+
+    #[test]
+    fn test_coverage_is_permutation() {
+        let mut order = coverage_drain(&[0x10, 0x20, 0x10, 0x30, 0x20]);
+        assert_eq!(order.len(), 5, "every inserted state must be dispatched");
+        order.sort_unstable();
+        assert_eq!(order, vec![0x10, 0x10, 0x20, 0x20, 0x30]);
+    }
+
+    #[test]
+    fn test_coverage_all_seen_degrades_to_fifo() {
+        // Every state parked on the same already-dispatched block: after the
+        // first dispatch marks 0x4000 seen, the rest are non-novel and must
+        // drain front-to-back (FIFO), never stalling.
+        assert_eq!(
+            coverage_drain(&[0x4000, 0x4000, 0x4000]),
+            vec![0x4000, 0x4000, 0x4000],
+        );
+    }
+
+    #[test]
+    fn test_coverage_empty_is_none() {
+        let _ctx = Context::thread_local();
+        let policy = CoverageGuided::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        assert!(policy.select(&mut active).is_none());
+    }
+
+    #[test]
+    fn test_coverage_policy_name() {
+        assert_eq!(CoverageGuided::new().name(), "coverage");
     }
 }

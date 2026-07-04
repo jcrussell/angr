@@ -670,6 +670,16 @@ impl RustExplorationManager {
         log::debug!("State selection set to RANDOM (seed={seed})");
     }
 
+    /// angr-m9fpp prototype: set state selection to coverage-guided
+    /// new-block-first — step the oldest active state parked on a block never
+    /// dispatched before, degrading to FIFO once all active blocks are seen.
+    /// Opt-in only; never a default.
+    pub fn set_state_selection_coverage(&mut self) {
+        self.steady_config_guard();
+        self.policy = Arc::new(selection_policy::CoverageGuided::new());
+        log::debug!("State selection set to COVERAGE (new-block-first)");
+    }
+
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
         self.steady_config_guard();

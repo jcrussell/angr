@@ -3968,13 +3968,15 @@ class RustExplorationManager(
         self._progress_last_fired = 0
 
     def set_exploration_strategy(self, strategy: str, seed: int = 0):
-        """Set exploration strategy: 'bfs' (default), 'dfs', or 'random'.
+        """Set exploration strategy: 'bfs' (default), 'dfs', 'random', or 'coverage'.
 
         Args:
-            strategy: 'bfs' (FIFO), 'dfs' (LIFO), or 'random' (uniformly-random
-                active-state selection; angr-a32jl.2 prototype, opt-in only).
+            strategy: 'bfs' (FIFO), 'dfs' (LIFO), 'random' (uniformly-random
+                active-state selection; angr-a32jl.2 prototype), or 'coverage'
+                (new-block-first; angr-m9fpp prototype). All non-default
+                strategies are opt-in only.
             seed: SplitMix64 seed for 'random' — fixes the selection stream so a
-                run is reproducible. Ignored for 'bfs'/'dfs'.
+                run is reproducible. Ignored for 'bfs'/'dfs'/'coverage'.
         """
         strategy = strategy.lower()
         if strategy == "dfs":
@@ -3983,8 +3985,10 @@ class RustExplorationManager(
             self._rust_mgr.set_state_selection_fifo()
         elif strategy == "random":
             self._rust_mgr.set_state_selection_random(int(seed) & 0xFFFFFFFFFFFFFFFF)
+        elif strategy == "coverage":
+            self._rust_mgr.set_state_selection_coverage()
         else:
-            raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs', 'dfs', or 'random'.")
+            raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs', 'dfs', 'random', or 'coverage'.")
 
     def register_uniqueness_filter(self, register_names: list[str]):
         """Enable the native uniqueness filter keyed on the given registers.
