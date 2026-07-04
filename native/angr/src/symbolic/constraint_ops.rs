@@ -121,7 +121,52 @@ impl SymContext {
             return false;
         }
         Z3_ASSUME_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
-        Self::contains_or_insert_ptr(local, constraint)
+        let dup = Self::contains_or_insert_ptr(local, constraint);
+        // angr-gmad2 diagnostic: a dedup HIT should always be backed by a
+        // live, structurally-equal Bool in shared+local z3_assertions —
+        // Z3 hash-consing returns an existing ptr only for a live equal AST.
+        // If a HIT ptr is NOT backed by any live assertion, it is a stale-ptr
+        // false positive (a freed AST's address reused) and we would have
+        // dropped an INTENDED constraint. Gated behind Debug so it is
+        // zero-cost in production; run with RUST_LOG=debug to audit.
+        if dup && log::log_enabled!(log::Level::Debug) {
+            self.debug_verify_dedup_backing(local, constraint);
+        }
+        dup
+    }
+
+    /// angr-gmad2 diagnostic (Debug-gated): verify a dedup HIT's Z3_ast ptr is
+    /// backed by a live structurally-equal Bool in `z3_assertions_shared` or
+    /// `local.z3_assertions`. Emits `debug!` when backed (sound true-positive)
+    /// and `warn!` when unbacked (stale-ptr false positive — a dropped
+    /// constraint). O(N) scan, so only invoked under Debug logging.
+    #[cfg(feature = "vex-engine-z3")]
+    fn debug_verify_dedup_backing(&self, local: &LocalConstraints, constraint: &z3::ast::Bool) {
+        use z3::ast::Ast;
+        let ptr = constraint.get_z3_ast().as_ptr() as usize;
+        let in_local = local
+            .z3_assertions
+            .iter()
+            .any(|c| c.get_z3_ast().as_ptr() as usize == ptr);
+        let in_shared = {
+            let shared = Arc::clone(&self.z3_assertions_shared.lock());
+            shared
+                .iter()
+                .any(|c| c.get_z3_ast().as_ptr() as usize == ptr)
+        };
+        if in_local || in_shared {
+            log::debug!(
+                target: "rustylib::symbolic",
+                "assume-dedup HIT ptr={:#x} backed (local={in_local} shared={in_shared}) -- sound true-positive",
+                ptr
+            );
+        } else {
+            log::warn!(
+                target: "rustylib::symbolic",
+                "assume-dedup HIT ptr={:#x} UNBACKED by any live z3_assertion -- STALE-PTR FALSE POSITIVE (intended constraint dropped)",
+                ptr
+            );
+        }
     }
 
     /// Add a constraint from a typed Z3 AST handle (shared context fast path).
