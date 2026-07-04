@@ -53,24 +53,27 @@ impl RustSimState {
     // Forking
     // =========================================================================
 
-    /// Fork the state (O(1) copy-on-write).
+    /// Shared constructor for the plain-fork family (`fork`, `fork_true`,
+    /// `fork_false`, `fork_from_snapshot`). These four differ *only* in how
+    /// they derive `registers`, `memory`, `solver`, and the child `state_id`;
+    /// every other field is carried from `self` by the identical
+    /// clone/copy/`clone_py_metadata` logic. Extracting that logic here keeps
+    /// the ~30 per-field carries in one place (DRY, angr-0mqkc.7) so a new
+    /// `RustSimState` field only has to be threaded through one struct literal
+    /// on this path instead of four. `merge` and `translate_state` keep their
+    /// own literals because they merge/`Z3_translate` most fields rather than
+    /// plain-carrying them.
     ///
-    /// Creates a new state that shares memory pages via CoW.
-    /// The solver context is forked to preserve constraints.
-    ///
-    /// See module-level `state-id-never-reused` (child gets a fresh
-    /// monotonic ID, parent's ID is preserved on the parent),
-    /// `arc-make-mut-cow` (registers/memory/hooks/environment/fs share Arc
-    /// or persistent backing with the parent), and `state-metadata-dataclass`
-    /// (the three `Py<PyAny>` metadata maps are cloned under the GIL).
-    ///
-    /// # Returns
-    /// A new state with the same register/memory/constraint state.
-    pub fn fork(&self) -> Self {
-        let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork()));
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
-
-        let child_id = next_state_id();
+    /// The caller supplies the already-derived divergent fields; `child_id`
+    /// must come from [`next_state_id`] (the monotonic-increase invariant is
+    /// asserted here). `parent_id` is always `Some(self.state_id)`.
+    fn fork_with(
+        &self,
+        registers: RegisterFile,
+        memory: SymbolicMemory,
+        solver: SymContext,
+        child_id: u64,
+    ) -> Self {
         // `state-id-never-reused`: monotonic counter must produce a value
         // strictly greater than the parent's ID. Tautological today; this
         // assert fires if a future refactor reorders the allocation or
@@ -81,13 +84,13 @@ impl RustSimState {
             child_id,
             self.state_id,
         );
-
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
-            registers: self.registers.fork(),
-            memory: self.memory.fork(),
-            solver: forked_solver,
+            registers,
+            memory,
+            solver: Rc::new(RefCell::new(solver)),
             pc: self.pc,
             state_id: child_id,
             parent_id: Some(self.state_id),
@@ -123,6 +126,28 @@ impl RustSimState {
             cgc_sinkholes: self.cgc_sinkholes.clone(),
             sim_options: self.sim_options.clone(),
         }
+    }
+
+    /// Fork the state (O(1) copy-on-write).
+    ///
+    /// Creates a new state that shares memory pages via CoW.
+    /// The solver context is forked to preserve constraints.
+    ///
+    /// See module-level `state-id-never-reused` (child gets a fresh
+    /// monotonic ID, parent's ID is preserved on the parent),
+    /// `arc-make-mut-cow` (registers/memory/hooks/environment/fs share Arc
+    /// or persistent backing with the parent), and `state-metadata-dataclass`
+    /// (the three `Py<PyAny>` metadata maps are cloned under the GIL).
+    ///
+    /// # Returns
+    /// A new state with the same register/memory/constraint state.
+    pub fn fork(&self) -> Self {
+        self.fork_with(
+            self.registers.fork(),
+            self.memory.fork(),
+            self.solver.borrow().fork(),
+            next_state_id(),
+        )
     }
 
     /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
@@ -213,98 +238,22 @@ impl RustSimState {
 
     /// Fork with a constraint on the true branch.
     pub fn fork_true(&self, condition: &RustBV) -> Self {
-        let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork_true(condition)));
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
-
-        RustSimState {
-            arch: self.arch.clone(),
-            vex_arch: self.vex_arch,
-            registers: self.registers.fork(),
-            memory: self.memory.fork(),
-            solver: forked_solver,
-            pc: self.pc,
-            state_id: next_state_id(),
-            parent_id: Some(self.state_id),
-            history: self.history.clone(),
-            detailed_history: self.detailed_history.clone(),
-            max_history: self.max_history,
-            hooks: self.hooks.clone(),
-            concretizer: self.concretizer.clone(),
-            track_history: self.track_history,
-            fs: self.fs.clone(),
-            heap_brk: self.heap_brk,
-            posix_brk: self.posix_brk,
-            mmap_base: self.mmap_base,
-            getopt_optind: self.getopt_optind,
-            getopt_optchar: self.getopt_optchar,
-            getopt_extern: self.getopt_extern,
-            native_resume_stack: self.native_resume_stack.clone(),
-            ctype_loc: self.ctype_loc,
-            stdin_symbols: self.stdin_symbols.clone(),
-            call_stack: self.call_stack.clone(),
-            heap_metadata: self.heap_metadata.clone(),
-            inspection: self.inspection.clone(),
-            environment: self.environment.clone(),
-            symbolic_pages,
-            hook_symbolic_memory,
-            addr_to_ast,
-            last_time: self.last_time.clone(),
-            no_ip_concretization: self.no_ip_concretization,
-            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
-            keep_ip_symbolic: self.keep_ip_symbolic,
-            force_eager_forks: self.force_eager_forks,
-            cgc_allocation_base: self.cgc_allocation_base,
-            cgc_sinkholes: self.cgc_sinkholes.clone(),
-            sim_options: self.sim_options.clone(),
-        }
+        self.fork_with(
+            self.registers.fork(),
+            self.memory.fork(),
+            self.solver.borrow().fork_true(condition),
+            next_state_id(),
+        )
     }
 
     /// Fork with a constraint on the false branch.
     pub fn fork_false(&self, condition: &RustBV) -> Self {
-        let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork_false(condition)));
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
-
-        RustSimState {
-            arch: self.arch.clone(),
-            vex_arch: self.vex_arch,
-            registers: self.registers.fork(),
-            memory: self.memory.fork(),
-            solver: forked_solver,
-            pc: self.pc,
-            state_id: next_state_id(),
-            parent_id: Some(self.state_id),
-            history: self.history.clone(),
-            detailed_history: self.detailed_history.clone(),
-            max_history: self.max_history,
-            hooks: self.hooks.clone(),
-            concretizer: self.concretizer.clone(),
-            track_history: self.track_history,
-            fs: self.fs.clone(),
-            heap_brk: self.heap_brk,
-            posix_brk: self.posix_brk,
-            mmap_base: self.mmap_base,
-            getopt_optind: self.getopt_optind,
-            getopt_optchar: self.getopt_optchar,
-            getopt_extern: self.getopt_extern,
-            native_resume_stack: self.native_resume_stack.clone(),
-            ctype_loc: self.ctype_loc,
-            stdin_symbols: self.stdin_symbols.clone(),
-            call_stack: self.call_stack.clone(),
-            heap_metadata: self.heap_metadata.clone(),
-            inspection: self.inspection.clone(),
-            environment: self.environment.clone(),
-            symbolic_pages,
-            hook_symbolic_memory,
-            addr_to_ast,
-            last_time: self.last_time.clone(),
-            no_ip_concretization: self.no_ip_concretization,
-            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
-            keep_ip_symbolic: self.keep_ip_symbolic,
-            force_eager_forks: self.force_eager_forks,
-            cgc_allocation_base: self.cgc_allocation_base,
-            cgc_sinkholes: self.cgc_sinkholes.clone(),
-            sim_options: self.sim_options.clone(),
-        }
+        self.fork_with(
+            self.registers.fork(),
+            self.memory.fork(),
+            self.solver.borrow().fork_false(condition),
+            next_state_id(),
+        )
     }
 
     /// Replace the solver context with a different one.
@@ -318,49 +267,8 @@ impl RustSimState {
     /// The resulting state has the correct state from the branch point, not from
     /// the continuation of the taken path.
     pub fn fork_from_snapshot(&self, snapshot: crate::interpreter::BranchSnapshot) -> Self {
-        let forked_solver = Rc::new(RefCell::new(snapshot.solver));
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
-        RustSimState {
-            arch: self.arch.clone(),
-            vex_arch: self.vex_arch,
-            registers: snapshot.registers,
-            memory: snapshot.memory.unwrap_or_else(|| self.memory.fork()),
-            solver: forked_solver,
-            pc: self.pc,
-            state_id: next_state_id(),
-            parent_id: Some(self.state_id),
-            history: self.history.clone(),
-            detailed_history: self.detailed_history.clone(),
-            max_history: self.max_history,
-            hooks: self.hooks.clone(),
-            concretizer: self.concretizer.clone(),
-            track_history: self.track_history,
-            fs: self.fs.clone(),
-            heap_brk: self.heap_brk,
-            posix_brk: self.posix_brk,
-            mmap_base: self.mmap_base,
-            getopt_optind: self.getopt_optind,
-            getopt_optchar: self.getopt_optchar,
-            getopt_extern: self.getopt_extern,
-            native_resume_stack: self.native_resume_stack.clone(),
-            ctype_loc: self.ctype_loc,
-            stdin_symbols: self.stdin_symbols.clone(),
-            call_stack: self.call_stack.clone(),
-            heap_metadata: self.heap_metadata.clone(),
-            inspection: self.inspection.clone(),
-            environment: self.environment.clone(),
-            symbolic_pages,
-            hook_symbolic_memory,
-            addr_to_ast,
-            last_time: self.last_time.clone(),
-            no_ip_concretization: self.no_ip_concretization,
-            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
-            keep_ip_symbolic: self.keep_ip_symbolic,
-            force_eager_forks: self.force_eager_forks,
-            cgc_allocation_base: self.cgc_allocation_base,
-            cgc_sinkholes: self.cgc_sinkholes.clone(),
-            sim_options: self.sim_options.clone(),
-        }
+        let memory = snapshot.memory.unwrap_or_else(|| self.memory.fork());
+        self.fork_with(snapshot.registers, memory, snapshot.solver, next_state_id())
     }
 
     /// Merge this state with one or more other states using symbolic merge conditions.
