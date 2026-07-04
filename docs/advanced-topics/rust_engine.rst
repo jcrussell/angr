@@ -3133,6 +3133,36 @@ The ``RustExecError`` Rust enum is ``#[non_exhaustive]``
 (``errors.rs:76``) so new variants can land in minor versions
 without breaking downstream code that matches on it.
 
+Internal error convention
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The taxonomy above is *user-facing* — it exists to hand Python typed
+exceptions. It is **not** the type internal Rust functions thread
+through. Contributors adding fallible code below the PyO3 boundary
+should follow the crate-wide convention (authoritative copy in the
+``errors.rs`` module doc comment, angr-0mqkc.10):
+
+* **``PyResult<T>`` lives strictly at the boundary.** Only
+  ``#[pymethods]`` / ``#[pyfunction]`` entry points return ``PyResult``
+  and construct a ``PyErr``. An internal helper that never touches the
+  Python bridge should not return ``PyResult``.
+* **Internal functions return ``Result<T, DomainError>``** with a
+  subsystem-local, ``thiserror``-derived enum, composed upward via
+  ``#[from]``. Canonical set: ``CbExecutionError`` (interpreter),
+  ``StepError`` / ``SubcallSetupError`` (exploration), ``MemoryError``,
+  ``OpError``, ``ProcedureError``, ``SyscallError``, ``BridgeError``,
+  ``LiftError``. Reuse/grow one of these rather than inventing an
+  ad-hoc type.
+* **No stringly-typed errors (``Result<_, String>``) and no ``anyhow``**
+  (deliberately not a dependency). Errors collapse to a ``String`` or a
+  ``PyErr`` *only* at the boundary — the errored-stash record and
+  ``From<RustExecError> for PyErr`` are the two sanctioned collapse
+  points.
+
+The ``interpreter/`` and ``exploration/`` subsystems already follow
+this end-to-end (no ``Result<_, String>``, no ``anyhow``); new code
+there — and ideally elsewhere in the crate — should keep to it.
+
 NotImplementedError at manager construction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

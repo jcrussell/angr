@@ -39,6 +39,43 @@
 //! the production contract; the typed subclasses are a test-harness
 //! affordance. Carrying the typed error through the live path is the
 //! deferred option (b) on angr-ghwsd.3.
+//!
+//! # Internal error-typing convention (angr-0mqkc.10)
+//!
+//! `RustExecError` above is the **user-facing** taxonomy — it exists to
+//! give Python typed exceptions to `pytest.raises` against, and (per the
+//! note above) is reached only from the test-only hooks. It is **not** the
+//! type internal fallible functions should thread through. The crate-wide
+//! convention for everything *below* the PyO3 boundary is:
+//!
+//! 1. **`PyResult<T>` lives strictly at the boundary.** Only `#[pymethods]`
+//!    and `#[pyfunction]` entry points return `PyResult`; they are the sole
+//!    place a `PyErr` is constructed. An internal helper that never touches
+//!    the interpreter/Python bridge should not return `PyResult`.
+//!
+//! 2. **Internal functions return `Result<T, DomainError>` with a
+//!    subsystem-local, `thiserror`-derived enum.** Each subsystem owns its
+//!    error type and composes upward via `#[from]`. The canonical set:
+//!    `CbExecutionError` (`interpreter/mod.rs`), `StepError` /
+//!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
+//!    (`memory/mod.rs`), `OpError` (`vex/ops.rs`), `ProcedureError`
+//!    (`procedures/mod.rs`), `SyscallError` (`syscalls/mod.rs`),
+//!    `BridgeError` (`claripy_bridge/mod.rs`), `LiftError`
+//!    (`vex/lifter.rs`), and friends. Prefer growing/reusing one of these
+//!    over inventing an ad-hoc type.
+//!
+//! 3. **No stringly-typed errors and no `anyhow`.** `Result<_, String>`
+//!    loses the variant a caller needs to branch on; `anyhow` is
+//!    deliberately not a dependency. Errors collapse to a `String` (or a
+//!    `PyErr`) *only* at the boundary — the errored-stash record and the
+//!    `From<RustExecError> for PyErr` map below are the two sanctioned
+//!    collapse points.
+//!
+//! `interpreter/` and `exploration/` already follow this end-to-end (no
+//! `Result<_, String>`, no `anyhow`); new code in those subsystems — and
+//! ideally the rest of the crate — should keep to it. The mirror of this
+//! note for doc readers lives in the "Internal error convention"
+//! subsection of `docs/advanced-topics/rust_engine.rst`.
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
