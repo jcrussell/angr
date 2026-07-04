@@ -810,8 +810,9 @@ impl RustExplorationManager {
     ///
     /// Retained as a direct-call test harness (`helpers_tests.rs`); the
     /// production syscall path now extracts via `CcSnapshot::extract_syscall_args`
-    /// inside the post-step core (angr-vh834).
-    #[allow(dead_code)]
+    /// inside the post-step core (angr-vh834). Gated to test builds — no
+    /// production caller, so it compiles only when the test harness needs it.
+    #[cfg(test)]
     pub(crate) fn extract_syscall_args(
         &self,
         state: &RustSimState,

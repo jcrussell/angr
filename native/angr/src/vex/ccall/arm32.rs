@@ -19,8 +19,12 @@ pub mod arm_cc_op {
 }
 
 /// ARM condition codes
-// Full 0-15 encoding table; some variants are documentation-only and unused.
-#[allow(dead_code)]
+// Full 0-15 encoding table. Production `armg_calculate_condition` matches on
+// `cond & !1`, so it only names the even variants plus AL/NV; the odd
+// inverse-condition variants (NE, LO, PL, VC, LS, LT, LE) are referenced only
+// by the ccall test suite. Kept complete for the arch-BE campaign (angr-ig3o)
+// and as a readable ABI reference; allow(dead_code) applies to non-test builds.
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod arm_cond {
     pub const ARM_COND_EQ: u64 = 0; // Z=1
     pub const ARM_COND_NE: u64 = 1; // Z=0

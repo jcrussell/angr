@@ -1326,12 +1326,15 @@ impl VEXOps {
 
     /// Execute a ternary operation (for ITE, etc.).
     #[inline]
-    #[allow(unused_variables)]
     pub fn ternop(
         op: IROp,
         arg1: RustBV,
-        arg2: RustBV,
-        arg3: RustBV,
+        // The only ternary op currently dispatched here (`Extract`) reads just
+        // `arg1`; the trailing operands are consumed by the arity contract but
+        // unused. Prefixed rather than suppressed wholesale so a future
+        // multi-operand ternary op re-enables the warning if it forgets one.
+        _arg2: RustBV,
+        _arg3: RustBV,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         match op {
