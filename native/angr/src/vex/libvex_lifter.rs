@@ -253,7 +253,13 @@ unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
     };
     IRCallee {
         name,
-        addr: (*cee).addr as u64,
+        // The C `IRCallee.addr` is the *host* address of the helper (e.g. the
+        // in-process pointer to `amd64g_calculate_condition`), which is
+        // non-deterministic across loads and unused by the Rust interpreter — it
+        // dispatches CCalls by `name`. The pyvex serializer hardcodes `addr: 0`
+        // (`rust_irsb_serializer._serialize_cee`), so normalize to 0 here to stay
+        // a byte-for-byte drop-in for the pyvex-serialized path (corpus parity gate).
+        addr: 0,
         mcx_mask: (*cee).mcx_mask,
     }
 }
@@ -548,3 +554,8 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64) -> IRSB {
 #[cfg(test)]
 #[path = "libvex_lifter_tests.rs"]
 mod tests;
+
+// Corpus IRSB parity gate (native vs pyvex-serialized) — the real Stage-1 gate.
+#[cfg(test)]
+#[path = "libvex_corpus_tests.rs"]
+mod corpus_tests;
