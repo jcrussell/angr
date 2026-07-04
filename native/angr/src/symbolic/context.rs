@@ -143,6 +143,16 @@ pub struct SymContextSnapshot {
     /// (legacy / mock) on the common re-assert path.
     #[serde(default = "default_true")]
     pub reassert_assumed: bool,
+    /// The source context's authoritative `constraint_count` at capture time
+    /// (angr-kenpr). Restore pins `constraint_count` back to this after the
+    /// assume-class IR replay so `state_constraint_count` round-trips exactly —
+    /// the replay can re-assert `assumed`-log entries that were live-deduped
+    /// away on the source solver, inflating the counter otherwise.
+    ///
+    /// `#[serde(default)]` yields `0` for legacy snapshots, which restore reads
+    /// as "not captured" and skips the pin (keeps the replayed count).
+    #[serde(default)]
+    pub constraint_count: usize,
 }
 
 /// serde default for [`SymContextSnapshot::reassert_assumed`] — the common

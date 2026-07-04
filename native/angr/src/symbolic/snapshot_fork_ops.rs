@@ -137,6 +137,17 @@ impl SymContext {
             assumed_constraints,
             residual_smtlib2,
             reassert_assumed,
+            // angr-kenpr: capture the authoritative live assertion count so
+            // restore can report the SAME `num_constraints` the source had.
+            // The assume-class IR replay (Phase 1) rebuilds from the `assumed`
+            // LOG, which preserves entries that were live-deduped away on the
+            // source solver (ptr-dedup in `check_z3_dedup_if_seeded`). Those
+            // entries re-assert on restore under fresh ptrs, so a naive replay
+            // over-counts. Pinning `constraint_count` to the source value keeps
+            // the round-trip contract (`state_constraint_count` preserved) that
+            // the pre-Phase-1 full-solver dump gave for free. See bd memory
+            // `snapshot-constraint-count-pin`.
+            constraint_count: self.num_constraints(),
         }
     }
 
@@ -242,6 +253,19 @@ impl SymContext {
                 // restored context's `non_bv_assertions` log is rebuilt too.
                 if !snap.residual_smtlib2.is_empty() {
                     self.replay_residual_smtlib2(&snap.residual_smtlib2);
+                }
+                // (iii) angr-kenpr: pin `constraint_count` back to the source's
+                // authoritative value. The assume-class IR replay above can
+                // re-assert `assumed`-log entries that were live-deduped away on
+                // the source solver (ptr-dedup fires against a since-freed AST
+                // that is not reproduced under the fresh restore ptrs), which
+                // inflates the counter. The source count is the round-trip
+                // contract `state_constraint_count` must preserve; the extra
+                // re-asserted Bool is a logically-redundant no-op on the solver.
+                // Legacy snapshots (pre-kenpr) carry 0 here → skip the pin and
+                // keep the replayed count. See bd `snapshot-constraint-count-pin`.
+                if snap.constraint_count > 0 {
+                    self.set_constraint_count(snap.constraint_count);
                 }
             } else {
                 // Merge fallback: the `assumed` pairs are export-only. Replay

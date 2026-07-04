@@ -34,6 +34,15 @@ impl SymContext {
         self.constraint_count.load(Ordering::SeqCst)
     }
 
+    /// Overwrite the constraint counter. Used only by
+    /// [`SymContext::restore_from_snapshot`](crate::symbolic::SymContext::restore_from_snapshot)
+    /// to pin the count back to the source's captured value after the
+    /// assume-class IR replay (angr-kenpr — the replay can re-assert
+    /// live-deduped entries and inflate the counter).
+    pub fn set_constraint_count(&self, count: usize) {
+        self.constraint_count.store(count, Ordering::SeqCst);
+    }
+
     // =========================================================================
     // Symbol Management
     // =========================================================================
