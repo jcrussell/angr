@@ -58,6 +58,37 @@
 //! materialized_terminals` over total dispatches — is the *honest steal
 //! fraction* the overhead gate's break-even `f*` bounds. See
 //! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
+//!
+//! # Panic policy: why the `.expect` sites are invariant guards, not error paths
+//!
+//! The shipped `.so` is built with `[profile.release] panic = "abort"`
+//! (workspace `Cargo.toml`, angr-1cue). That single fact settles the
+//! panic-hardening audit (CQ .8) for this module:
+//!
+//! * **Mutex poisoning cannot happen.** A `Mutex` is only poisoned when a
+//!   thread *unwinds* out of a live `MutexGuard`. Under `panic = "abort"` there
+//!   is no unwind: a panic while a guard is held aborts the process at the panic
+//!   site, before the guard's `Drop` could ever flag the lock. Every
+//!   `.lock().expect("… poisoned")` here (results/summaries/done_rx) is
+//!   therefore *provably unreachable* — the message names a state that this
+//!   build can never produce.
+//! * **A worker cannot "die" mid-wave into a live-pool disconnect.** A worker
+//!   thread leaves [`worker_thread`] only on `Shutdown`/closed-channel (clean
+//!   teardown) or by panicking — and a panic aborts the whole process. So while
+//!   a wave is in flight every worker is alive; the coordinator's
+//!   `.send(...).expect("persistent worker died …")` and
+//!   `.recv().expect("… WaveDone")` can only observe disconnect at pool
+//!   teardown, never during [`run_wave`](PersistentPool::run_wave).
+//!
+//! Consequently there is **no fallible site here to propagate** and **no
+//! "surface as a Python exception" path to build**: under `panic = "abort"` a
+//! genuine bug in a worker surfaces as a process abort (SIGABRT), by design —
+//! the same constraint `symbolic::value_z3::fresh_unconstrained_raw` documents
+//! for its own `catch_unwind`-is-useless reasoning. The `.expect` messages are
+//! kept as invariant labels: if one ever *did* fire it would mean the
+//! panic-strategy assumption changed, which is exactly the signal a future
+//! reader wants. A forced-poison test is deliberately **not** added — it cannot
+//! observe a Python exception under this profile, only an abort.
 
 use crate::exploration::selection_policy::SelectionPolicy;
 // `Lifo` is the pre-seam default policy, now only used by the `#[cfg(test)]`

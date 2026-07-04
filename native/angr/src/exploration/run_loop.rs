@@ -37,6 +37,17 @@
 //! like DFS — the technique made `_active_techniques` non-empty, routing
 //! through the Python predicate path, which never saw the Rust find.
 //! See module-level I8 in `state.rs`.
+//!
+//! **Panic policy (CQ .8):** the parallel-driver half of this module locks the
+//! `ParallelShared` mutexes (`root_map`, `kind_map`, `counters`, `up_rx`) via
+//! `.lock().expect("… poisoned")`. Those poison messages are invariant guards,
+//! not error paths: the crate ships with `panic = "abort"`, so a thread can
+//! never unwind out of a held `MutexGuard` to poison a lock (it aborts at the
+//! panic site first), and the `expect("session live"/"pool set")` sites guard
+//! state-machine invariants the driver upholds locally. See the "Panic policy"
+//! section of [`scheduler`](super::scheduler) for the full argument — the same
+//! reasoning covers every `.expect` in this file, so there is no fallible site
+//! to propagate and no Python-exception path to build under this profile.
 
 use super::*;
 
