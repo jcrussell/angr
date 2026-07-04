@@ -119,6 +119,52 @@ class TestExplorationStrategy:
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "loop-head round-robin selection should still find at least one state"
 
+    def test_set_exploration_strategy_directed(self, fauxware_project):
+        """'directed' (angr-a32jl.4) CFG-distance beam still reaches the goal.
+
+        A minimal distance snapshot steering toward the find address must not
+        break search; the invariant here is that the directed policy remains a
+        valid searcher. A trivial one-entry map (target at distance 0) with the
+        default beam_width=2 is enough to exercise the wiring end-to-end.
+        """
+
+        find_addr = 0x4006ED
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("directed", distances={find_addr: 0})
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "directed selection should still find at least one state"
+
+    def test_set_exploration_strategy_directed_requires_distances(self, fauxware_project):
+        """'directed' with no distance map is a hard ValueError (fail-fast wiring)."""
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="requires a non-empty distances map"):
+            mgr.set_exploration_strategy("directed")
+
+    def test_cfg_distance_map_drives_directed_search(self, fauxware_project):
+        """cfg_distance_map builds a real snapshot that steers directed search.
+
+        End-to-end angr-a32jl.4 workflow: build the CFG once, snapshot
+        addr->distance-to-target Python-side, ship it into the Rust directed
+        policy. The target block must be at distance 0 and reachable states must
+        find it.
+        """
+        from angr.exploration.rust_manager import cfg_distance_map
+
+        find_addr = 0x4006ED
+        cfg = fauxware_project.analyses.CFGFast(normalize=True)
+        distances = cfg_distance_map(cfg, find_addr)
+        assert distances.get(find_addr) == 0, "target sits at distance 0 from itself"
+        assert len(distances) > 1, "snapshot should map more than just the target"
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("directed", distances=distances, beam_width=2)
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "CFG-directed selection should reach the target"
+
     def test_uniqueness_filter_knobs(self, fauxware_project):
         """register/disable/enabled uniqueness-filter knobs are wired to Rust.
 

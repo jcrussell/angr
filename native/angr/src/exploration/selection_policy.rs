@@ -307,9 +307,123 @@ impl SelectionPolicy for LoopHeadRoundRobin {
     }
 }
 
+/// CFG-distance directed beam selection (angr-a32jl.4): step the active states
+/// closest to a find target first, where "distance" is a one-time
+/// `addr -> distance-to-target` snapshot computed Python-side from the angr CFG
+/// and shipped in as plain metadata. Zero runtime bounces — the map is
+/// immutable after construction and consulted purely from the next-block `pc`
+/// each state already exposes, so the policy stays entirely in Rust.
+///
+/// **Not pure-greedy** (bd memory `ds-directed-search-greedy-trap`): a
+/// `beam_width == 1` best-first search TRAPS on data-dependent reachability —
+/// correct- and wrong-branch successors of a char check share an *identical*
+/// CFG distance, so best-first cannot pick between them and stalls. The default
+/// `beam_width >= 2` steps the whole near-optimal frontier, recovering the
+/// data-dependent case (matching BFS steps-to-goal with a smaller per-round
+/// active frontier). Within the beam, dispatch round-robins by `pc` so no
+/// single closest state monopolizes the frontier; a path-depth (history length)
+/// tiebreak supplies the "data/constraint" signal, and the front index is the
+/// final deterministic tie-break.
+///
+/// **Bounded discard is deliberately omitted.** Per the greedy-trap memory the
+/// beam defers rather than discards overflow, and there is no *total*-memory win
+/// over BFS on the corpus; hard-dropping a path would also risk soundness. Wide
+/// (`distance == u64::MAX`) states — blocks the CFG snapshot never mapped, i.e.
+/// with no known route to the target — sort to the back and only enter the beam
+/// when fewer than `beam_width` reachable states remain. That is the "re-add
+/// safety valve": an unreachable state is never permanently dropped and `select`
+/// never returns `None` while the deque is non-empty.
+///
+/// Opt-in only via `set_state_selection_directed`; never a default.
+pub struct DirectedCfgDistance {
+    /// One-time `addr -> distance-to-target` snapshot from the angr CFG.
+    /// Immutable after construction — no runtime Python bounces.
+    distances: HashMap<u64, u64>,
+    /// Number of closest states forming the beam. Clamped to `>= 1` at
+    /// construction; the Python setter defaults it to 2 so best-first never
+    /// degrades to the greedy trap by accident.
+    beam_width: usize,
+    /// Per-`pc` dispatch counts for round-robin fairness within the beam.
+    /// Behind a `Mutex` for interior mutability under the `&self` `select` hook
+    /// while preserving `Send + Sync`.
+    dispatched: Mutex<HashMap<u64, u64>>,
+}
+
+impl DirectedCfgDistance {
+    /// Construct from a distance snapshot and beam width. `beam_width` is
+    /// clamped to at least 1 (0 would make the beam empty); callers should pass
+    /// `>= 2` to avoid the greedy trap.
+    pub fn new(distances: HashMap<u64, u64>, beam_width: usize) -> Self {
+        Self {
+            distances,
+            beam_width: beam_width.max(1),
+            dispatched: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Distance-to-target for a state's next block. Unmapped blocks (no known
+    /// route to the target) get `u64::MAX` so they sort behind every reachable
+    /// state.
+    fn distance(&self, state: &RustSimState) -> u64 {
+        self.distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
+    }
+}
+
+impl SelectionPolicy for DirectedCfgDistance {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        let len = active.len();
+        if len == 0 {
+            return None;
+        }
+        // Distance for every active state (single pass; indices stay stable).
+        let dists: Vec<u64> = active.iter().map(|st| self.distance(st)).collect();
+        // The beam = the `beam_width` closest states by distance (front index
+        // breaks distance ties so beam membership is deterministic).
+        let mut ranked: Vec<usize> = (0..len).collect();
+        ranked.sort_by_key(|&i| (dists[i], i));
+        let beam = &ranked[..self.beam_width.min(len)];
+
+        let mut dispatched = self
+            .dispatched
+            .lock()
+            .expect("DirectedCfgDistance counts poisoned");
+        // Within the beam: least-dispatched first (round-robin), then closest,
+        // then deeper path (data/constraint tiebreak via history length), then
+        // front index (deterministic).
+        let pick = *beam
+            .iter()
+            .min_by_key(|&&i| {
+                let count = dispatched.get(&active[i].pc()).copied().unwrap_or(0);
+                (
+                    count,
+                    dists[i],
+                    std::cmp::Reverse(active[i].history().len()),
+                    i,
+                )
+            })
+            .expect("beam is non-empty for a non-empty deque");
+        let key = active[pick].pc();
+        let state = active
+            .remove(pick)
+            .expect("index from non-empty deque is valid");
+        *dispatched.entry(key).or_insert(0) += 1;
+        Some(state)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        active.push_back(state);
+    }
+
+    fn name(&self) -> &'static str {
+        "directed"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CoverageGuided, LoopHeadRoundRobin, RandomState, SelectionPolicy};
+    use super::{
+        CoverageGuided, DirectedCfgDistance, LoopHeadRoundRobin, RandomState, SelectionPolicy,
+    };
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
     use z3::Context;
@@ -555,5 +669,128 @@ mod tests {
     #[test]
     fn test_loop_head_policy_name() {
         assert_eq!(LoopHeadRoundRobin::new().name(), "loop_head");
+    }
+
+    // ---- DirectedCfgDistance (angr-a32jl.4) ----
+
+    /// Drain a `DirectedCfgDistance` over states parked at `pcs` (distinct)
+    /// against the `dist` snapshot and return the dispatch order as `pc`s.
+    fn directed_drain(dist: &[(u64, u64)], pcs: &[u64], beam: usize) -> Vec<u64> {
+        let _ctx = Context::thread_local();
+        let policy = DirectedCfgDistance::new(dist.iter().copied().collect(), beam);
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        for &pc in pcs {
+            active.push_back(state_at(pc));
+        }
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.pc());
+        }
+        order
+    }
+
+    #[test]
+    fn test_directed_prefers_closest() {
+        // With a beam wide enough to cover every state, round-robin counts all
+        // start at 0, so the tie-break collapses to distance-ascending: the
+        // state nearest the target is dispatched first.
+        let dist = [(0x1000, 5), (0x2000, 1), (0x3000, 3)];
+        assert_eq!(
+            directed_drain(&dist, &[0x1000, 0x2000, 0x3000], 3),
+            vec![0x2000, 0x3000, 0x1000],
+        );
+    }
+
+    #[test]
+    fn test_directed_beam_round_robin_fairness() {
+        // Two states share pc 0x1000 (distance 1); a third sits far at 0x2000
+        // (distance 5). beam_width=2 keeps both nearest states in the beam, and
+        // round-robin fairness serves the fresh far bucket before re-serving the
+        // already-dispatched 0x1000 bucket:
+        //   Step 1: A0/A1 (count 0, d1) beat B (d5) -> front A0.  (0x1000 -> 1)
+        //   Step 2: A1 bucket=1, B bucket=0 -> B despite d5 > d1. (0x2000 -> 1)
+        //   Step 3: only A1 remains -> A1.
+        let _ctx = Context::thread_local();
+        let policy =
+            DirectedCfgDistance::new([(0x1000u64, 1u64), (0x2000, 5)].into_iter().collect(), 2);
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let a0 = state_at(0x1000);
+        let a1 = state_at(0x1000);
+        let b = state_at(0x2000);
+        let (a0id, a1id, bid) = (a0.state_id(), a1.state_id(), b.state_id());
+        active.push_back(a0);
+        active.push_back(a1);
+        active.push_back(b);
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.state_id());
+        }
+        assert_eq!(
+            order,
+            vec![a0id, bid, a1id],
+            "round-robin serves the fresh bucket before re-serving 0x1000",
+        );
+    }
+
+    #[test]
+    fn test_directed_unreachable_sorts_last_but_survives() {
+        // 0x99 is absent from the snapshot (no known route to target => u64::MAX
+        // distance). It sorts behind the reachable state yet is still dispatched
+        // — the re-add safety valve never permanently drops a path.
+        let dist = [(0x10, 3)];
+        assert_eq!(directed_drain(&dist, &[0x10, 0x99], 2), vec![0x10, 0x99],);
+    }
+
+    #[test]
+    fn test_directed_is_permutation() {
+        let _ctx = Context::thread_local();
+        let policy = DirectedCfgDistance::new(
+            [(0x10u64, 1u64), (0x20, 2), (0x30, 3)]
+                .into_iter()
+                .collect(),
+            2,
+        );
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let ids: Vec<u64> = [0x10u64, 0x20, 0x30, 0x20, 0x10]
+            .iter()
+            .map(|&pc| {
+                let st = state_at(pc);
+                let id = st.state_id();
+                active.push_back(st);
+                id
+            })
+            .collect();
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.state_id());
+        }
+        order.sort_unstable();
+        let mut want = ids.clone();
+        want.sort_unstable();
+        assert_eq!(order, want, "drain is a permutation: no drops or dupes");
+    }
+
+    #[test]
+    fn test_directed_empty_is_none() {
+        let _ctx = Context::thread_local();
+        let policy = DirectedCfgDistance::new(HashMap::new(), 2);
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        assert!(policy.select(&mut active).is_none());
+    }
+
+    #[test]
+    fn test_directed_beam_width_clamped_to_one() {
+        // beam_width 0 would make the beam empty; construction clamps to 1 so a
+        // non-empty deque always yields a state.
+        let dist = [(0x10, 1)];
+        assert_eq!(directed_drain(&dist, &[0x10], 0), vec![0x10]);
+    }
+
+    #[test]
+    fn test_directed_policy_name() {
+        assert_eq!(
+            DirectedCfgDistance::new(HashMap::new(), 2).name(),
+            "directed"
+        );
     }
 }

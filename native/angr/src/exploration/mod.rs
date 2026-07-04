@@ -689,6 +689,25 @@ impl RustExplorationManager {
         log::debug!("State selection set to LOOP_HEAD (round-robin fairness)");
     }
 
+    /// angr-a32jl.4: set state selection to CFG-distance directed beam search.
+    /// `distances` is a one-time `addr -> distance-to-target` snapshot computed
+    /// Python-side from the angr CFG and shipped in as plain metadata (zero
+    /// runtime bounces); `beam_width` (default 2 from the Python setter) keeps
+    /// best-first out of the greedy trap on data-dependent targets. Opt-in
+    /// only; never a default.
+    pub fn set_state_selection_directed(
+        &mut self,
+        distances: std::collections::HashMap<u64, u64>,
+        beam_width: usize,
+    ) {
+        self.steady_config_guard();
+        let n = distances.len();
+        self.policy = Arc::new(selection_policy::DirectedCfgDistance::new(
+            distances, beam_width,
+        ));
+        log::debug!("State selection set to DIRECTED (beam={beam_width}, {n} mapped blocks)");
+    }
+
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
         self.steady_config_guard();

@@ -457,6 +457,54 @@ def set_rust_log_level(level: str = "info") -> None:
     _set_level(level)
 
 
+def cfg_distance_map(cfg, target_addr: int) -> dict[int, int]:
+    """Build an ``addr -> distance-to-target`` snapshot from an angr CFG.
+
+    Computed **once** at setup for the 'directed' exploration strategy
+    (angr-a32jl.4). Distance is the shortest block-count path *to* the target,
+    measured by a reverse-BFS over the CFG transition graph so every node's
+    value is the number of blocks between it and ``target_addr``. When several
+    context-sensitive CFG nodes share a block address, the smallest distance
+    wins. Blocks with no path to the target are simply absent from the map (the
+    Rust ``DirectedCfgDistance`` policy treats absent blocks as unreachable).
+
+    Args:
+        cfg: an angr CFG with a ``.graph`` networkx ``DiGraph`` of nodes that
+            expose ``.addr`` (``CFGFast`` / ``CFGEmulated`` both qualify).
+        target_addr: the block address to steer toward.
+
+    Returns:
+        Mapping of block address to distance-in-blocks from that block to the
+        target. Suitable to pass as ``distances=`` to
+        :meth:`RustExplorationManager.set_exploration_strategy`.
+    """
+    import collections
+
+    graph = cfg.graph
+    targets = [n for n in graph if getattr(n, "addr", None) == target_addr]
+    if not targets:
+        raise ValueError(f"target address {target_addr:#x} not found in CFG")
+
+    # Reverse-BFS from the target node(s): a hop against a real edge means one
+    # block closer, so BFS depth on the reversed graph is distance-to-target.
+    dist: dict[int, int] = {}
+    seen: set = set()
+    queue: collections.deque = collections.deque()
+    for t in targets:
+        seen.add(t)
+        queue.append((t, 0))
+    while queue:
+        node, d = queue.popleft()
+        addr = getattr(node, "addr", None)
+        if addr is not None and d < dist.get(addr, 1 << 62):
+            dist[addr] = d
+        for pred in graph.predecessors(node):
+            if pred not in seen:
+                seen.add(pred)
+                queue.append((pred, d + 1))
+    return dist
+
+
 _rust_log_env_applied = False
 
 
@@ -3967,18 +4015,32 @@ class RustExplorationManager(
         self._progress_interval = interval_steps
         self._progress_last_fired = 0
 
-    def set_exploration_strategy(self, strategy: str, seed: int = 0):
-        """Set exploration strategy: 'bfs' (default), 'dfs', 'random', 'coverage', or 'loop_head'.
+    def set_exploration_strategy(
+        self,
+        strategy: str,
+        seed: int = 0,
+        distances: dict[int, int] | None = None,
+        beam_width: int = 2,
+    ):
+        """Set exploration strategy: 'bfs' (default), 'dfs', 'random', 'coverage', 'loop_head', or 'directed'.
 
         Args:
             strategy: 'bfs' (FIFO), 'dfs' (LIFO), 'random' (uniformly-random
                 active-state selection; angr-a32jl.2 prototype), 'coverage'
-                (new-block-first; angr-m9fpp prototype), or 'loop_head'
+                (new-block-first; angr-m9fpp prototype), 'loop_head'
                 (round-robin over (loop-head, callstack-class) buckets;
-                angr-caplg prototype). All non-default strategies are opt-in
-                only.
+                angr-caplg prototype), or 'directed' (CFG-distance beam search;
+                angr-a32jl.4). All non-default strategies are opt-in only.
             seed: SplitMix64 seed for 'random' — fixes the selection stream so a
                 run is reproducible. Ignored for the other strategies.
+            distances: required for 'directed' — an ``addr -> distance-to-target``
+                snapshot computed once from the angr CFG (e.g. via
+                :func:`cfg_distance_map`). Shipped into Rust as immutable
+                metadata; unmapped blocks are treated as unreachable.
+            beam_width: for 'directed', the number of closest states stepped as a
+                beam (default 2). ``beam_width == 1`` is greedy best-first and
+                traps on data-dependent targets (see the Rust
+                ``DirectedCfgDistance`` docs); ``>= 2`` recovers.
         """
         strategy = strategy.lower()
         if strategy == "dfs":
@@ -3991,9 +4053,15 @@ class RustExplorationManager(
             self._rust_mgr.set_state_selection_coverage()
         elif strategy == "loop_head":
             self._rust_mgr.set_state_selection_loop_head()
+        elif strategy == "directed":
+            if not distances:
+                raise ValueError("strategy 'directed' requires a non-empty distances map")
+            dmap = {int(a) & 0xFFFFFFFFFFFFFFFF: int(d) & 0xFFFFFFFFFFFFFFFF for a, d in distances.items()}
+            self._rust_mgr.set_state_selection_directed(dmap, int(beam_width))
         else:
             raise ValueError(
-                f"Unknown exploration strategy: {strategy!r}. Use 'bfs', 'dfs', 'random', 'coverage', or 'loop_head'."
+                f"Unknown exploration strategy: {strategy!r}. "
+                "Use 'bfs', 'dfs', 'random', 'coverage', 'loop_head', or 'directed'."
             )
 
     def register_uniqueness_filter(self, register_names: list[str]):
