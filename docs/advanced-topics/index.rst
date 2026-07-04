@@ -13,6 +13,7 @@ Advanced Topics
    rust_engine_characterization
    rust_engine_flame_comparison
    rust_lazy_memory_design
+   rust_libvex_ffi
    rust_parallel_design
    rust_proxy_writes_design
    rust_wheel_distribution
