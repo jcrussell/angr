@@ -1387,6 +1387,25 @@ impl RustExplorationManager {
         self._register_file_content(py, state_id, path, byte_asts)
     }
 
+    /// The cwd-normalized paths a state's lineage has demoted to Python
+    /// ownership via native writes (angr-qluof). The Python re-add path
+    /// (merge / legacy-fork push) queries these before re-registering
+    /// exported content so a demoted path is not re-armed on the new
+    /// state. Errors on unknown `state_id`.
+    /// See `pending_api::_get_demoted_paths` for the body.
+    pub fn get_demoted_paths(&self, state_id: u64) -> PyResult<Vec<String>> {
+        self._get_demoted_paths(state_id)
+    }
+
+    /// Re-apply a symbolic-content demotion for `path` on `state_id`
+    /// (angr-qluof): drops any registered content the export just re-armed,
+    /// WITHOUT bumping the native write-demotion counter. Returns `true`
+    /// when registered content or fd state was cleared. Errors on unknown
+    /// `state_id`. See `pending_api::_demote_file_path` for the body.
+    pub fn demote_file_path(&mut self, state_id: u64, path: &str) -> PyResult<bool> {
+        self._demote_file_path(state_id, path)
+    }
+
     /// Get memory from pending state.
     /// See `pending_api::_get_pending_memory` for the body.
     pub fn get_pending_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {

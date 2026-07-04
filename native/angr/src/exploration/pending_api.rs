@@ -284,6 +284,16 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _get_demoted_paths(&self, state_id: u64) -> PyResult<Vec<String>> {
+        self.with_state(state_id, |state| {
+            Ok(state.file_system_ref().demoted_paths())
+        })
+    }
+
+    pub(crate) fn _demote_file_path(&mut self, state_id: u64, path: &str) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| Ok(state.file_system().demote_path(path)))
+    }
+
     pub(crate) fn _import_symbolic_memory(
         &mut self,
         py: Python<'_>,

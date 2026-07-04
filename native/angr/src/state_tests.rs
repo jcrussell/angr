@@ -660,6 +660,46 @@ fn test_demote_symbolic_content_clears_all_fds_and_registry() {
     assert!(!fs.demote_symbolic_content(plain));
 }
 
+/// angr-qluof: a native write-demotion records the cwd-normalized path in
+/// the persistent `demoted_paths` set, and `demote_path` re-applies the
+/// demotion on a fresh re-registration (the Python re-add correction).
+#[test]
+fn test_demoted_paths_tracking_and_re_demote() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/d", sym_file_bytes(4, "qd"));
+    let fd = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite);
+    assert!(fs.demoted_paths().is_empty(), "nothing demoted yet");
+    assert!(fs.demote_symbolic_content(fd));
+    assert_eq!(
+        fs.demoted_paths(),
+        vec!["/tmp/d".to_string()],
+        "demoted path recorded (normalized)"
+    );
+    // A Python re-add re-registers the content (re-arming the demotion)...
+    fs.register_file_content("/tmp/d", sym_file_bytes(4, "qd2"));
+    assert!(
+        fs.file_content_for_path("/tmp/d").is_some(),
+        "re-registered"
+    );
+    // ...and the re-add correction (relative spelling) drops it again.
+    assert!(
+        fs.demote_path("tmp/d"),
+        "re-demote cleared re-armed content"
+    );
+    assert!(
+        fs.file_content_for_path("/tmp/d").is_none(),
+        "demoted again"
+    );
+    // Idempotent: re-demoting an already-clean path reports no change but
+    // keeps the path in the set.
+    assert!(!fs.demote_path("/tmp/d"));
+    assert_eq!(fs.demoted_paths(), vec!["/tmp/d".to_string()]);
+    // The set survives a snapshot round-trip (worker migration).
+    let data = FileSystemData::from(fs);
+    let fs2: FileSystem = data.into();
+    assert_eq!(fs2.demoted_paths(), vec!["/tmp/d".to_string()]);
+}
+
 /// Registration AFTER open leaves the fd without `content_sym` but stamps
 /// its `registry_key`, so the registry stays populated yet a write through
 /// that fd still drops the entry (or a later open would serve stale

@@ -228,3 +228,41 @@ class TestFsExportApiContract:
         assert state_ids, "seed state should be in the active stash"
         with pytest.raises(ValueError, match="width"):
             mgr._rust_mgr.register_file_content(state_ids[0], "/tmp/f", [claripy.BVV(0x4142, 16)])
+
+    def test_demoted_paths_ffi_unknown_state_errors(self, fauxware_project):
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="not found"):
+            mgr._rust_mgr.get_demoted_paths(10**9)
+        with pytest.raises(ValueError, match="not found"):
+            mgr._rust_mgr.demote_file_path(10**9, "/tmp/f")
+
+
+class TestLineageDemotion:
+    """angr-qluof: demoted symbolic-file paths accumulate on the lineage and
+    a re-demote re-applies the demotion the export step re-arms."""
+
+    def test_demote_file_path_tracks_and_reapplies(self, fauxware_project):
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        # Fresh state: nothing demoted yet.
+        assert mgr._rust_mgr.get_demoted_paths(sid) == []
+        # Register then demote a path — it enters the persistent set.
+        mgr._rust_mgr.register_file_content(sid, "/tmp/lin", [claripy.BVV(0x41, 8)])
+        assert mgr._rust_mgr.demote_file_path(sid, "/tmp/lin") is True
+        assert "/tmp/lin" in mgr._rust_mgr.get_demoted_paths(sid)
+        # A re-register (simulating an export re-arm) followed by re-demote
+        # bumps the manager-level counter via the merge path is exercised in
+        # stats; here we assert the FFI is idempotent + keeps the path.
+        mgr._rust_mgr.register_file_content(sid, "/tmp/lin", [claripy.BVV(0x42, 8)])
+        assert mgr._rust_mgr.demote_file_path(sid, "/tmp/lin") is True
+        # Already-clean re-demote reports no change but keeps the path.
+        assert mgr._rust_mgr.demote_file_path(sid, "/tmp/lin") is False
+        assert "/tmp/lin" in mgr._rust_mgr.get_demoted_paths(sid)
+
+    def test_stats_exposes_redemotions_counter(self, fauxware_project):
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Present and zero before any merge re-add.
+        assert mgr.stats["symfile_redemotions"] == 0

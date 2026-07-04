@@ -1196,6 +1196,10 @@ class RustExplorationManager(
             ),
             0,
         )
+        # angr-qluof: count re-applied symbolic-file demotions on the merged
+        # re-add path (lineage-aware demotion), a measurement surface for the
+        # write-demotion re-arm.
+        self._stats_symfile_redemotions = 0
         self._init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -3365,8 +3369,11 @@ class RustExplorationManager(
         demoted to Python ownership. That serves the same bytes Python
         would (the refused write never landed in either model — the guest
         saw ``-1``), so it re-arms the documented write-demotion
-        limitation rather than corrupting content. Lineage-aware demotion
-        tracking is a follow-up.
+        limitation rather than corrupting content. ``merge()`` now closes
+        this gap (angr-qluof): it queries each source lineage's demoted
+        paths via ``get_demoted_paths`` and re-applies them with
+        ``demote_file_path`` after the re-add. The legacy-fork-push and
+        cross-manager-transfer re-add sites are not yet covered.
         """
         try:
             from angr.storage.file import SimFile
@@ -3443,6 +3450,11 @@ class RustExplorationManager(
 
         Note: Rust internally forks the state, so we need to get the actual
         state ID from Rust after adding to properly cache the angr state.
+
+        Returns the resolved Rust state id (the id-diff result, or the
+        Python-side fallback id when the diff was inconclusive) so callers
+        like ``merge()`` can post-process the freshly added state
+        (angr-qluof lineage-aware demotion).
         """
         # Concretize stack-relative registers for Rust compatibility
         self._concretize_stack_registers(angr_state)
@@ -3766,34 +3778,35 @@ class RustExplorationManager(
             # Enforce state cache limit
             self._cleanup_state_cache()
             l.debug(f"Cached angr state with Rust state ID {actual_state_id}")
-        else:
-            # Fallback: cache with the Python-side state ID
-            self._state_cache[rust_state.state_id] = angr_state
-            # Track this as a root state for plugin restoration
-            self._state_roots[rust_state.state_id] = rust_state.state_id
-            symbolic_pages = self._extract_symbolic_pages(angr_state)
-            if symbolic_pages:
-                self._rust_mgr.set_state_symbolic_pages(rust_state.state_id, symbolic_pages)
-                # Import symbolic regions to Rust's symbolic memory
-                for addr, ast in symbolic_pages.items():
-                    try:
-                        import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
-                        self._rust_mgr.import_symbolic_to_state(rust_state.state_id, addr, import_ast)
-                        self._register_handle(
-                            id(ast),
-                            ast,
-                            addr=addr,
-                            size=ast.length // 8 if hasattr(ast, "length") else 1,
-                            state_id=rust_state.state_id,
-                        )
-                    except (TypeError, ValueError, RuntimeError):
-                        # cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path
-                        # where actual_state_id was not determined; Python-side state ID is
-                        # used. Debug-logs (with exc_info).
-                        l.debug("Failed to import symbolic region at 0x%x", addr, exc_info=True)
-            # Enforce state cache limit
-            self._cleanup_state_cache()
-            l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
+            return actual_state_id
+        # Fallback: cache with the Python-side state ID
+        self._state_cache[rust_state.state_id] = angr_state
+        # Track this as a root state for plugin restoration
+        self._state_roots[rust_state.state_id] = rust_state.state_id
+        symbolic_pages = self._extract_symbolic_pages(angr_state)
+        if symbolic_pages:
+            self._rust_mgr.set_state_symbolic_pages(rust_state.state_id, symbolic_pages)
+            # Import symbolic regions to Rust's symbolic memory
+            for addr, ast in symbolic_pages.items():
+                try:
+                    import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
+                    self._rust_mgr.import_symbolic_to_state(rust_state.state_id, addr, import_ast)
+                    self._register_handle(
+                        id(ast),
+                        ast,
+                        addr=addr,
+                        size=ast.length // 8 if hasattr(ast, "length") else 1,
+                        state_id=rust_state.state_id,
+                    )
+                except (TypeError, ValueError, RuntimeError):
+                    # cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path
+                    # where actual_state_id was not determined; Python-side state ID is
+                    # used. Debug-logs (with exc_info).
+                    l.debug("Failed to import symbolic region at 0x%x", addr, exc_info=True)
+        # Enforce state cache limit
+        self._cleanup_state_cache()
+        l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
+        return rust_state.state_id
 
     # Field descriptor types for table-driven serialization:
     #   'val'  — copy attribute value directly (int, str)
@@ -4981,6 +4994,7 @@ class RustExplorationManager(
         result["symfile_exports"] = self._stats_symfile_exports
         for reason, count in self._stats_symfile_export_skips.items():
             result[f"symfile_export_skip_{reason}"] = count
+        result["symfile_redemotions"] = self._stats_symfile_redemotions
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, "_time_in_rust_run_ns"):
             result["time_in_rust_run"] = self._time_in_rust_run_ns / 1e9
@@ -5469,10 +5483,24 @@ class RustExplorationManager(
         # Export all states to Python SimStates for merging
         try:
             py_states = []
+            # Map each exported py_state back to its source Rust state id so
+            # the merged re-add can inherit the group's demoted symbolic-file
+            # paths (angr-qluof lineage-aware demotion). Queried BEFORE the
+            # _merge_drop below removes the source states.
+            sid_by_state_key = {}
+            demoted_by_sid = {}
             for sid in state_ids:
                 py_state = self.get_state_by_id(sid)
                 if py_state is not None:
                     py_states.append(py_state)
+                    sid_by_state_key[id(py_state)] = sid
+                    try:
+                        demoted_by_sid[sid] = self._rust_mgr.get_demoted_paths(sid)
+                    except Exception as e:
+                        # Non-fatal: a missing demoted-path query just means the
+                        # merged state may re-arm a native write-demotion (the
+                        # documented, content-harmless v1 limitation).
+                        l.debug("get_demoted_paths(%d) failed: %s: %s", sid, type(e).__name__, e)
 
             if len(py_states) <= 1:
                 return self
@@ -5486,29 +5514,43 @@ class RustExplorationManager(
                 key = merge_key(s)
                 groups.setdefault(key, []).append(s)
 
+            # Each entry pairs a state to re-add with the set of symbolic-file
+            # paths its source lineage(s) demoted, so the re-add can re-apply
+            # the demotion the export step re-arms (angr-qluof).
             merged = []
+
+            def _group_demoted(grp):
+                paths = set()
+                for s in grp:
+                    sid = sid_by_state_key.get(id(s))
+                    if sid is not None:
+                        paths.update(demoted_by_sid.get(sid, ()))
+                return paths
+
             for key, group in groups.items():
+                group_demoted = _group_demoted(group)
                 if len(group) <= 1:
-                    merged.extend(group)
+                    # Unmerged single state keeps its own demoted paths.
+                    merged.extend((s, _group_demoted([s])) for s in group)
                 elif merge_func is not None:
                     try:
-                        merged.append(merge_func(*group))
+                        merged.append((merge_func(*group), group_demoted))
                     except (TypeError, ValueError, RuntimeError):
                         # cat-(b) FALLBACK WITH LOSS: user merge_func failed for this
                         # group; keep the group's states unmerged. Already warns.
                         l.warning("merge_func failed for group at %s, keeping unmerged", key)
-                        merged.extend(group)
+                        merged.extend((s, _group_demoted([s])) for s in group)
                 else:
                     try:
                         base = group[0]
                         others = group[1:]
                         m, _, _ = base.merge(*others)
-                        merged.append(m)
+                        merged.append((m, group_demoted))
                     except (AttributeError, TypeError, ValueError):
                         # cat-(b) FALLBACK WITH LOSS: built-in state.merge() failed;
                         # keep the group unmerged. Already warns.
                         l.warning("State merge failed for group at %s, keeping unmerged", key)
-                        merged.extend(group)
+                        merged.extend((s, _group_demoted([s])) for s in group)
 
             # Clear the Rust stash and re-add merged states
             for sid in state_ids:
@@ -5525,10 +5567,28 @@ class RustExplorationManager(
                 pass
 
             # Re-add merged states
-            for ms in merged:
+            for ms, ms_demoted in merged:
                 try:
-                    self._add_rust_state(stash, ms)
+                    new_sid = self._add_rust_state(stash, ms)
                     l.debug("Added merged state to %s at 0x%x", stash, ms.addr)
+                    # Lineage-aware demotion (angr-qluof): _add_rust_state's
+                    # _export_fs_files_to_rust re-registers eligible SimFiles,
+                    # re-arming any path an ancestor's native write had demoted.
+                    # Re-apply those demotions on the new state so the guest
+                    # keeps seeing the (content-identical) Python fallback.
+                    if new_sid is not None and ms_demoted:
+                        for path in ms_demoted:
+                            try:
+                                if self._rust_mgr.demote_file_path(new_sid, path):
+                                    self._stats_symfile_redemotions += 1
+                            except Exception as e:
+                                l.debug(
+                                    "re-demote %r on state %s failed: %s: %s",
+                                    path,
+                                    new_sid,
+                                    type(e).__name__,
+                                    e,
+                                )
                 except Exception as e:
                     # cat-(c) WRONG-ANSWER RISK: failed to re-add merged state; the
                     # merge result is lost — caller sees fewer states than expected.

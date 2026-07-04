@@ -204,6 +204,18 @@ pub struct FileSystem {
     /// attach — the stream model owns those fds). Arc'd for O(1) fork,
     /// mirroring `known_paths`.
     file_contents: Arc<HashMap<String, Arc<Vec<RustBV>>>>,
+    /// Cwd-normalized paths whose registered symbolic content was demoted
+    /// to Python ownership by a native write ([`demote_symbolic_content`]
+    /// / [`demote_all_symbolic_content`]). Unlike `file_contents`, entries
+    /// here are *never* removed — the set accumulates over the lineage so a
+    /// mid-run Python re-add (merge / legacy-fork push / cross-manager
+    /// transfer) can query it and avoid re-registering a path an ancestor
+    /// already demoted, keeping the write-demotion in effect (angr-qluof).
+    /// Arc'd for O(1) fork, mirroring `known_paths`.
+    ///
+    /// [`demote_symbolic_content`]: FileSystem::demote_symbolic_content
+    /// [`demote_all_symbolic_content`]: FileSystem::demote_all_symbolic_content
+    demoted_paths: Arc<HashSet<String>>,
 }
 
 /// Serde shadow form for [`FileSystem`].
@@ -235,6 +247,12 @@ pub struct FileSystemData {
     /// wire ordering deterministic.
     #[serde(default)]
     pub file_contents: std::collections::BTreeMap<String, Arc<Vec<RustBV>>>,
+    /// Accumulated demoted-path set (angr-qluof). `#[serde(default)]` keeps
+    /// pre-angr-qluof snapshots loadable — reconstitutes to an empty set
+    /// (no lineage-demotion memory, matching the previous behavior).
+    /// BTreeSet keeps the wire ordering deterministic.
+    #[serde(default)]
+    pub demoted_paths: std::collections::BTreeSet<String>,
 }
 
 impl From<FileSystem> for FileSystemData {
@@ -253,6 +271,8 @@ impl From<FileSystem> for FileSystemData {
             .iter()
             .map(|(k, v)| (k.clone(), Arc::clone(v)))
             .collect();
+        let demoted_paths: std::collections::BTreeSet<String> =
+            fs.demoted_paths.iter().cloned().collect();
         FileSystemData {
             fds,
             next_fd: fs.next_fd,
@@ -260,6 +280,7 @@ impl From<FileSystem> for FileSystemData {
             known_paths,
             symlinks,
             file_contents,
+            demoted_paths,
         }
     }
 }
@@ -275,6 +296,9 @@ impl From<FileSystemData> for FileSystem {
         let symlinks: HashMap<String, Vec<u8>> = d.symlinks.into_iter().collect();
         let file_contents: HashMap<String, Arc<Vec<RustBV>>> =
             d.file_contents.into_iter().collect();
+        // demoted_paths keys are always normalized at insertion, so no
+        // re-normalization pass is needed (unlike known_paths below).
+        let demoted_paths: HashSet<String> = d.demoted_paths.into_iter().collect();
         let mut fs = FileSystem {
             fds: Arc::new(fds),
             next_fd: d.next_fd,
@@ -282,6 +306,7 @@ impl From<FileSystemData> for FileSystem {
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(symlinks),
             file_contents: Arc::new(file_contents),
+            demoted_paths: Arc::new(demoted_paths),
         };
         // Re-normalize known_paths on load: the key space is normalized at
         // insertion (see `open`), but pre-normalization snapshots may carry
@@ -319,6 +344,7 @@ impl Default for FileSystem {
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(HashMap::new()),
             file_contents: Arc::new(HashMap::new()),
+            demoted_paths: Arc::new(HashSet::new()),
         }
     }
 }
@@ -725,6 +751,9 @@ impl FileSystem {
             d.content_sym = None;
             d.registry_key = None;
         }
+        // Remember the demoted path so a later Python re-add (merge /
+        // legacy-fork push) does not re-register it (angr-qluof).
+        Arc::make_mut(&mut self.demoted_paths).insert(key);
         crate::symbolic::record_symfile_write_demotion();
         true
     }
@@ -747,6 +776,11 @@ impl FileSystem {
             return false;
         }
         if !self.file_contents.is_empty() {
+            // Record every registry path as demoted before nuking so a
+            // later Python re-add skips re-registering them (angr-qluof).
+            let keys: Vec<String> = self.file_contents.keys().cloned().collect();
+            let demoted = Arc::make_mut(&mut self.demoted_paths);
+            demoted.extend(keys);
             self.file_contents = Arc::new(HashMap::new());
         }
         if any_fd {
@@ -758,6 +792,48 @@ impl FileSystem {
         }
         crate::symbolic::record_symfile_write_demotion();
         true
+    }
+
+    /// The cwd-normalized paths this lineage has demoted (angr-qluof).
+    /// Sorted for a deterministic FFI order. Consumed by the Python
+    /// re-add path to skip re-registering an ancestor's demoted content.
+    pub fn demoted_paths(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.demoted_paths.iter().cloned().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Re-apply a demotion for `path` (angr-qluof): drop any registered
+    /// content and clear matching fds, exactly as a native write would,
+    /// WITHOUT bumping the write-demotion counter (this is a re-add
+    /// correction, not a fresh guest write). Records the path in
+    /// `demoted_paths` even when nothing was currently registered, so the
+    /// demotion sticks across future re-adds. Returns `true` if any
+    /// registered content or fd state was cleared.
+    pub fn demote_path(&mut self, path: &str) -> bool {
+        let norm = self.normalize_path(path);
+        let mut changed = false;
+        if self.file_contents.contains_key(&norm) {
+            Arc::make_mut(&mut self.file_contents).remove(&norm);
+            changed = true;
+        }
+        let matching: Vec<u32> = self
+            .fds
+            .iter()
+            .filter(|(_, d)| d.registry_key.as_deref() == Some(norm.as_str()))
+            .map(|(k, _)| *k)
+            .collect();
+        if !matching.is_empty() {
+            let fds = Arc::make_mut(&mut self.fds);
+            for k in matching {
+                let d = fds.get_mut(&k).expect("matching fd existed above");
+                d.content_sym = None;
+                d.registry_key = None;
+            }
+            changed = true;
+        }
+        Arc::make_mut(&mut self.demoted_paths).insert(norm);
+        changed
     }
 
     /// Seek a file descriptor. Returns the new position.
@@ -1045,6 +1121,7 @@ impl FileSystem {
             known_paths: Arc::clone(&self.known_paths),
             symlinks: Arc::clone(&self.symlinks),
             file_contents: Arc::new(file_contents),
+            demoted_paths: Arc::clone(&self.demoted_paths),
         }
     }
 }
