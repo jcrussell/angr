@@ -419,10 +419,97 @@ impl SelectionPolicy for DirectedCfgDistance {
     }
 }
 
+/// Find-directed novelty/CFG-distance selection (angr-lnzcu): under
+/// `num_find == 1`, dispatch the active state most likely to reach a find
+/// target first. It fuses the two signals the a32jl policy family already
+/// exposes inside the two-hook seam — a one-time `addr -> distance-to-target`
+/// CFG snapshot (the [`DirectedCfgDistance`] steering signal) and a
+/// self-contained seen-block novelty set (the [`CoverageGuided`] forward-progress
+/// signal) — into a single find-first ordering.
+///
+/// **Why novelty is primary, distance secondary.** A num_find=1 run wants to
+/// reach *a* find state as fast as possible, so it should never re-tread a block
+/// while an un-dispatched block remains reachable: novel blocks rank ahead of
+/// seen ones. Distance-to-find then steers *among the novel frontier* toward the
+/// target. This ordering also sidesteps the greedy trap
+/// (`ds-directed-search-greedy-trap`) without a beam: at a char-check fork the
+/// correct- and wrong-branch successors share an identical CFG distance, but
+/// both are novel, so both are dispatched (closest-first) before either block is
+/// re-tread — best-first can never stall on the tie. A path that wanders away
+/// from the target drifts into higher-distance / unmapped (`u64::MAX`) blocks and
+/// sinks behind the still-advancing frontier, but is never permanently dropped
+/// (`select` returns `None` only for an empty deque).
+///
+/// Distinct from [`DirectedCfgDistance`], which uses a fixed-width beam with
+/// per-`pc` round-robin *fairness* (deliberately anti-greedy so no closest state
+/// monopolizes a multi-find sweep). `FindDirected` is intentionally the opposite:
+/// greedy toward the single find, with novelty — not fairness — as the anti-trap
+/// mechanism. Opt-in only via `set_state_selection_find_directed`; never a
+/// default.
+pub struct FindDirected {
+    /// One-time `addr -> distance-to-find` snapshot from the angr CFG.
+    /// Immutable after construction — no runtime Python bounces.
+    distances: HashMap<u64, u64>,
+    /// Block addresses already dispatched. Behind a `Mutex` for interior
+    /// mutability under the `&self` `select` hook while preserving `Send + Sync`
+    /// so a parallel scheduler can share the `Arc`.
+    seen: Mutex<HashSet<u64>>,
+}
+
+impl FindDirected {
+    /// Construct from a distance-to-find snapshot with an empty seen-set.
+    pub fn new(distances: HashMap<u64, u64>) -> Self {
+        Self {
+            distances,
+            seen: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Distance-to-find for a state's next block. Unmapped blocks (no known
+    /// route to the find target) get `u64::MAX` so they sink behind every
+    /// reachable state.
+    fn distance(&self, state: &RustSimState) -> u64 {
+        self.distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
+    }
+}
+
+impl SelectionPolicy for FindDirected {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        if active.is_empty() {
+            return None;
+        }
+        let mut seen = self.seen.lock().expect("FindDirected seen-set poisoned");
+        // Novelty primary (0 = never-dispatched block, 1 = already seen),
+        // distance-to-find secondary (closest steers the novel frontier), front
+        // index the deterministic final tie-break.
+        let pick = (0..active.len())
+            .min_by_key(|&i| {
+                let pc = active[i].pc();
+                let novelty = u8::from(seen.contains(&pc));
+                (novelty, self.distance(&active[i]), i)
+            })
+            .expect("index range from non-empty deque is non-empty");
+        let state = active
+            .remove(pick)
+            .expect("index from non-empty deque is valid");
+        seen.insert(state.pc());
+        Some(state)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        active.push_back(state);
+    }
+
+    fn name(&self) -> &'static str {
+        "find_directed"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CoverageGuided, DirectedCfgDistance, LoopHeadRoundRobin, RandomState, SelectionPolicy,
+        CoverageGuided, DirectedCfgDistance, FindDirected, LoopHeadRoundRobin, RandomState,
+        SelectionPolicy,
     };
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
@@ -792,5 +879,100 @@ mod tests {
             DirectedCfgDistance::new(HashMap::new(), 2).name(),
             "directed"
         );
+    }
+
+    // ---- FindDirected (angr-lnzcu) ----
+
+    /// Drain a `FindDirected` over states parked at `pcs` against the `dist`
+    /// snapshot and return the dispatch order as `pc`s.
+    fn find_directed_drain(dist: &[(u64, u64)], pcs: &[u64]) -> Vec<u64> {
+        let _ctx = Context::thread_local();
+        let policy = FindDirected::new(dist.iter().copied().collect());
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        for &pc in pcs {
+            active.push_back(state_at(pc));
+        }
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.pc());
+        }
+        order
+    }
+
+    #[test]
+    fn test_find_directed_novel_frontier_steers_by_distance() {
+        // All three blocks are novel on the first pass, so novelty ties and
+        // distance-to-find decides: the closest (0x2000, d1) goes first, then
+        // 0x3000 (d3), then 0x1000 (d5).
+        let dist = [(0x1000, 5), (0x2000, 1), (0x3000, 3)];
+        assert_eq!(
+            find_directed_drain(&dist, &[0x1000, 0x2000, 0x3000]),
+            vec![0x2000, 0x3000, 0x1000],
+        );
+    }
+
+    #[test]
+    fn test_find_directed_novelty_beats_distance() {
+        // Layout [0x1000(d5), 0x1000(d5), 0x2000(d1)]: the near 0x2000 is novel
+        // and wins step 1. Step 2 both 0x1000s are still novel (0x2000 now seen)
+        // so a 0x1000 goes despite its larger distance — a novel block outranks a
+        // closer already-seen one. Step 3 the remaining seen 0x1000 drains.
+        //   Step 1: 0x2000 novel d1 -> dispatch (seen {0x2000}).
+        //   Step 2: both 0x1000 novel (rank 0) beat nothing else -> 0x1000.
+        //   Step 3: last 0x1000 seen -> dispatch.
+        let dist = [(0x1000, 5), (0x2000, 1)];
+        assert_eq!(
+            find_directed_drain(&dist, &[0x1000, 0x1000, 0x2000]),
+            vec![0x2000, 0x1000, 0x1000],
+        );
+    }
+
+    #[test]
+    fn test_find_directed_char_check_fork_dispatches_both_branches() {
+        // Greedy-trap shape: a char check forks two successors at an identical
+        // CFG distance (both d2, both novel distinct blocks) plus a far sibling.
+        // Novelty dispatches BOTH equal-distance branches before re-treading, so
+        // best-first never stalls on the tie.
+        //   Step 1: 0x10 & 0x11 novel d2 beat 0x20 d9; front 0x10 wins.
+        //   Step 2: 0x11 still novel d2 -> dispatch (over far novel 0x20 d9).
+        //   Step 3: only 0x20 remains -> dispatch.
+        let dist = [(0x10, 2), (0x11, 2), (0x20, 9)];
+        assert_eq!(
+            find_directed_drain(&dist, &[0x10, 0x11, 0x20]),
+            vec![0x10, 0x11, 0x20],
+        );
+    }
+
+    #[test]
+    fn test_find_directed_unmapped_sinks_but_survives() {
+        // 0x99 is absent from the snapshot (u64::MAX distance). On the novel
+        // frontier it sorts behind the mapped 0x10 yet is still dispatched — no
+        // reachable-or-not path is permanently dropped.
+        let dist = [(0x10, 3)];
+        assert_eq!(find_directed_drain(&dist, &[0x99, 0x10]), vec![0x10, 0x99]);
+    }
+
+    #[test]
+    fn test_find_directed_is_permutation() {
+        let mut order = find_directed_drain(
+            &[(0x10, 1), (0x20, 2), (0x30, 3)],
+            &[0x10, 0x20, 0x10, 0x30, 0x20],
+        );
+        assert_eq!(order.len(), 5, "every inserted state must be dispatched");
+        order.sort_unstable();
+        assert_eq!(order, vec![0x10, 0x10, 0x20, 0x20, 0x30]);
+    }
+
+    #[test]
+    fn test_find_directed_empty_is_none() {
+        let _ctx = Context::thread_local();
+        let policy = FindDirected::new(HashMap::new());
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        assert!(policy.select(&mut active).is_none());
+    }
+
+    #[test]
+    fn test_find_directed_policy_name() {
+        assert_eq!(FindDirected::new(HashMap::new()).name(), "find_directed");
     }
 }

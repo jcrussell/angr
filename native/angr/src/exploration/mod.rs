@@ -708,6 +708,23 @@ impl RustExplorationManager {
         log::debug!("State selection set to DIRECTED (beam={beam_width}, {n} mapped blocks)");
     }
 
+    /// angr-lnzcu: set state selection to find-directed novelty/CFG-distance —
+    /// under `num_find == 1`, dispatch the active state most likely to reach a
+    /// find target first, ranking novel (never-dispatched) blocks ahead of seen
+    /// ones and steering the novel frontier by `distances` (an
+    /// `addr -> distance-to-find` snapshot computed Python-side from the angr
+    /// CFG, zero runtime bounces). Novelty is the anti-greedy-trap mechanism, so
+    /// no beam width is needed. Opt-in only; never a default.
+    pub fn set_state_selection_find_directed(
+        &mut self,
+        distances: std::collections::HashMap<u64, u64>,
+    ) {
+        self.steady_config_guard();
+        let n = distances.len();
+        self.policy = Arc::new(selection_policy::FindDirected::new(distances));
+        log::debug!("State selection set to FIND_DIRECTED ({n} mapped blocks)");
+    }
+
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
         self.steady_config_guard();

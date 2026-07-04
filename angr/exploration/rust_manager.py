@@ -4022,20 +4022,23 @@ class RustExplorationManager(
         distances: dict[int, int] | None = None,
         beam_width: int = 2,
     ):
-        """Set exploration strategy: 'bfs' (default), 'dfs', 'random', 'coverage', 'loop_head', or 'directed'.
+        """Set exploration strategy: 'bfs' (default), 'dfs', 'random', 'coverage', 'loop_head', 'directed', or 'find_directed'.
 
         Args:
             strategy: 'bfs' (FIFO), 'dfs' (LIFO), 'random' (uniformly-random
                 active-state selection; angr-a32jl.2 prototype), 'coverage'
                 (new-block-first; angr-m9fpp prototype), 'loop_head'
                 (round-robin over (loop-head, callstack-class) buckets;
-                angr-caplg prototype), or 'directed' (CFG-distance beam search;
-                angr-a32jl.4). All non-default strategies are opt-in only.
+                angr-caplg prototype), 'directed' (CFG-distance beam search;
+                angr-a32jl.4), or 'find_directed' (novelty/CFG-distance find-first
+                dispatch under num_find=1; angr-lnzcu). All non-default strategies
+                are opt-in only.
             seed: SplitMix64 seed for 'random' — fixes the selection stream so a
                 run is reproducible. Ignored for the other strategies.
-            distances: required for 'directed' — an ``addr -> distance-to-target``
-                snapshot computed once from the angr CFG (e.g. via
-                :func:`cfg_distance_map`). Shipped into Rust as immutable
+            distances: required for 'directed' and 'find_directed' — an
+                ``addr -> distance-to-target`` snapshot computed once from the
+                angr CFG (e.g. via :func:`cfg_distance_map`; pass the find address
+                as the target for 'find_directed'). Shipped into Rust as immutable
                 metadata; unmapped blocks are treated as unreachable.
             beam_width: for 'directed', the number of closest states stepped as a
                 beam (default 2). ``beam_width == 1`` is greedy best-first and
@@ -4058,10 +4061,15 @@ class RustExplorationManager(
                 raise ValueError("strategy 'directed' requires a non-empty distances map")
             dmap = {int(a) & 0xFFFFFFFFFFFFFFFF: int(d) & 0xFFFFFFFFFFFFFFFF for a, d in distances.items()}
             self._rust_mgr.set_state_selection_directed(dmap, int(beam_width))
+        elif strategy == "find_directed":
+            if not distances:
+                raise ValueError("strategy 'find_directed' requires a non-empty distances map")
+            dmap = {int(a) & 0xFFFFFFFFFFFFFFFF: int(d) & 0xFFFFFFFFFFFFFFFF for a, d in distances.items()}
+            self._rust_mgr.set_state_selection_find_directed(dmap)
         else:
             raise ValueError(
                 f"Unknown exploration strategy: {strategy!r}. "
-                "Use 'bfs', 'dfs', 'random', 'coverage', 'loop_head', or 'directed'."
+                "Use 'bfs', 'dfs', 'random', 'coverage', 'loop_head', 'directed', or 'find_directed'."
             )
 
     def register_uniqueness_filter(self, register_names: list[str]):

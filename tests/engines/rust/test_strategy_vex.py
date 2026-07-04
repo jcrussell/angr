@@ -165,6 +165,49 @@ class TestExplorationStrategy:
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "CFG-directed selection should reach the target"
 
+    def test_set_exploration_strategy_find_directed(self, fauxware_project):
+        """'find_directed' (angr-lnzcu) novelty/CFG-distance find-first search.
+
+        A minimal distance snapshot steering toward the find address must still
+        reach the goal — the invariant is that the find-directed policy remains a
+        valid searcher under num_find=1. A trivial one-entry map (target at
+        distance 0) exercises the wiring end-to-end.
+        """
+
+        find_addr = 0x4006ED
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("find_directed", distances={find_addr: 0})
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "find_directed selection should still find at least one state"
+
+    def test_set_exploration_strategy_find_directed_requires_distances(self, fauxware_project):
+        """'find_directed' with no distance map is a hard ValueError (fail-fast wiring)."""
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="requires a non-empty distances map"):
+            mgr.set_exploration_strategy("find_directed")
+
+    def test_cfg_distance_map_drives_find_directed_search(self, fauxware_project):
+        """cfg_distance_map snapshot steers find_directed search end-to-end.
+
+        angr-lnzcu workflow: build the CFG once, snapshot addr->distance-to-find
+        Python-side, ship it into the Rust find-directed policy, and confirm
+        reachable states still find the target.
+        """
+        from angr.exploration.rust_manager import cfg_distance_map
+
+        find_addr = 0x4006ED
+        cfg = fauxware_project.analyses.CFGFast(normalize=True)
+        distances = cfg_distance_map(cfg, find_addr)
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("find_directed", distances=distances)
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "CFG find-directed selection should reach the target"
+
     def test_uniqueness_filter_knobs(self, fauxware_project):
         """register/disable/enabled uniqueness-filter knobs are wired to Rust.
 
