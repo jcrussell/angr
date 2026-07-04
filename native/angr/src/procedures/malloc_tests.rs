@@ -230,9 +230,7 @@ fn test_memalign_returns_aligned_addr() {
         assert_eq!(
             addr % alignment,
             0,
-            "addr {:#x} not aligned to {}",
-            addr,
-            alignment
+            "addr {addr:#x} not aligned to {alignment}"
         );
         assert!(state.heap_metadata().is_allocated(addr));
     }

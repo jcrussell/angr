@@ -122,7 +122,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
     let ctx = SymContext::new();
     const NVARS: usize = 32;
     let vars: Vec<RustBV> = (0..NVARS)
-        .map(|i| RustBV::symbolic(&ctx, format!("rt_scaled_x{}_9o4n", i), 32))
+        .map(|i| RustBV::symbolic(&ctx, format!("rt_scaled_x{i}_9o4n"), 32))
         .collect();
 
     // For each var: low(x) > i, low(x) < i+100 — gives a range constraint.
@@ -169,9 +169,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
     // We assert that the new model also satisfies the constraint (0 < v0 < 100).
     assert!(
         new_v0 > 0 && new_v0 < 100,
-        "new model v0={} must satisfy 0 < v0 < 100; original was {}",
-        new_v0,
-        original_v0,
+        "new model v0={new_v0} must satisfy 0 < v0 < 100; original was {original_v0}",
     );
 
     let n_assertions = NVARS * 2 + (NVARS - 1);
@@ -330,15 +328,13 @@ fn test_smtlib2_cross_context_round_trip() {
     );
     assert_eq!(
         new_x_val as u128, x_witness,
-        "cross-context model must give x=11 via name lookup; got {} \
+        "cross-context model must give x=11 via name lookup; got {new_x_val} \
          (=0 would mean the by-name constant in the new context is \
-         disconnected from the parsed assertions)",
-        new_x_val
+         disconnected from the parsed assertions)"
     );
     assert_eq!(
         new_y_val as u128, y_witness,
-        "cross-context model must give y=7 via name lookup; got {}",
-        new_y_val
+        "cross-context model must give y=7 via name lookup; got {new_y_val}"
     );
 
     eprintln!(

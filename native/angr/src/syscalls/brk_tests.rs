@@ -87,8 +87,7 @@ fn brk_grow_across_page_boundary_maps_pages() {
         assert_eq!(
             state.memory().page_permissions(pn),
             Some(Permission::RWX),
-            "page_num {:#x} should be mapped RWX",
-            pn,
+            "page_num {pn:#x} should be mapped RWX",
         );
     }
     // Page after the new break must remain unmapped.

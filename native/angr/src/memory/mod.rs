@@ -111,8 +111,7 @@ impl ConcretizationResult {
         match self {
             ConcretizationResult::TooLarge { min, max, .. } => Some(MemoryError::SymbolicAddress {
                 description: format!(
-                    "address range too large for concretization: 0x{:x} - 0x{:x}",
-                    min, max
+                    "address range too large for concretization: 0x{min:x} - 0x{max:x}"
                 ),
             }),
             ConcretizationResult::Failed(reason) => Some(MemoryError::SymbolicAddress {
@@ -778,7 +777,7 @@ impl SymbolicMemory {
     /// Get the permissions for the page containing `page_num` (`addr >> 12`).
     /// Returns `None` if the page is unmapped.
     pub fn page_permissions(&self, page_num: u64) -> Option<Permission> {
-        self.pages.get(&page_num).map(|p| p.permissions())
+        self.pages.get(&page_num).map(page::MemoryPage::permissions)
     }
 
     /// Set the permissions on the page at `page_num` (`addr >> 12`).
@@ -934,7 +933,7 @@ impl SymbolicMemory {
     ) {
         let page_addr = page_addr.into();
         let page_num = page_addr.page_num();
-        let page = MemoryPage::from_data(page_addr.raw(), data, permissions);
+        let page = MemoryPage::from_data(page_addr.raw(), &data, permissions);
         self.pages.insert(page_num, page);
     }
 

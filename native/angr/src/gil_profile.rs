@@ -68,13 +68,13 @@ pub fn reset() {
 /// Cumulative GIL-work nanoseconds on this thread (the Amdahl numerator).
 #[inline]
 pub fn gil_work_ns() -> u64 {
-    GIL_ACCUM_NS.with(|a| a.get())
+    GIL_ACCUM_NS.with(std::cell::Cell::get)
 }
 
 /// Cumulative run-loop wall-clock nanoseconds on this thread (the denominator).
 #[inline]
 pub fn run_wall_ns() -> u64 {
-    WALL_ACCUM_NS.with(|w| w.get())
+    WALL_ACCUM_NS.with(std::cell::Cell::get)
 }
 
 /// RAII guard bracketing a Python-touching region. Only the outermost live
@@ -89,7 +89,7 @@ pub struct GilWorkGuard {
 impl GilWorkGuard {
     #[inline]
     pub fn enter() -> Self {
-        if !ACTIVE.with(|a| a.get()) {
+        if !ACTIVE.with(std::cell::Cell::get) {
             return GilWorkGuard { active: false };
         }
         let prev = DEPTH.with(|d| {
@@ -116,7 +116,7 @@ impl Drop for GilWorkGuard {
             n
         });
         if now == 0
-            && let Some(start) = REGION_START.with(|s| s.take())
+            && let Some(start) = REGION_START.with(std::cell::Cell::take)
         {
             let elapsed = start.elapsed().as_nanos() as u64;
             GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
@@ -139,7 +139,7 @@ pub struct RunLoopWallGuard {
 impl RunLoopWallGuard {
     #[inline]
     pub fn new(enabled: bool) -> Self {
-        let prev_active = ACTIVE.with(|a| a.get());
+        let prev_active = ACTIVE.with(std::cell::Cell::get);
         if enabled {
             ACTIVE.with(|a| a.set(true));
         }

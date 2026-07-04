@@ -58,16 +58,16 @@ fn test_neon_q_registers() {
 
     // V registers alias Q registers (same offset, same width).
     for i in 0..32 {
-        let q = format!("q{}", i);
-        let v = format!("v{}", i);
+        let q = format!("q{i}");
+        let v = format!("v{i}");
         assert_eq!(arch.register_offset(&q), arch.register_offset(&v));
         assert_eq!(arch.register_size(&q), arch.register_size(&v));
     }
 
     // D registers are the lower 64 bits of the matching Q register.
     for i in 0..32 {
-        let q = format!("q{}", i);
-        let d = format!("d{}", i);
+        let q = format!("q{i}");
+        let d = format!("d{i}");
         assert_eq!(arch.register_offset(&q), arch.register_offset(&d));
         assert_eq!(arch.register_size(&d), Some(8));
     }

@@ -1109,11 +1109,11 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     // Bucket C: hooks + env.
     assert!(restored.is_hooked(0x401200));
     assert_eq!(
-        restored.getenv(b"PATH").map(|v| v.to_vec()),
+        restored.getenv(b"PATH").map(<[u8]>::to_vec),
         Some(b"/usr/bin".to_vec())
     );
     assert_eq!(
-        restored.getenv(b"HOME").map(|v| v.to_vec()),
+        restored.getenv(b"HOME").map(<[u8]>::to_vec),
         Some(b"/root".to_vec())
     );
 

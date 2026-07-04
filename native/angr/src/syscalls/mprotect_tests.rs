@@ -102,8 +102,7 @@ fn multi_page_updates_all_pages() {
         assert_eq!(
             state.memory().page_permissions(pn),
             Some(Permission::R),
-            "page_num {}",
-            pn,
+            "page_num {pn}",
         );
     }
 }

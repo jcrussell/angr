@@ -39,7 +39,7 @@ fn read_stdin_returns_count_and_writes_symbolic_bytes() {
     }
     for i in 0..4u64 {
         let byte = state.memory_load(0x2000 + i, 1).expect("loaded");
-        assert!(byte.as_u64().is_none(), "byte {} should be symbolic", i);
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
     }
 }
 
@@ -209,7 +209,7 @@ fn read_symbolic_fd_serves_symbolic_bytes_natively() {
     }
     for i in 0..4u64 {
         let byte = state.memory_load(0x2000 + i, 1).expect("loaded");
-        assert!(byte.as_u64().is_none(), "byte {} should be symbolic", i);
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
     }
 }
 

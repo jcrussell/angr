@@ -162,11 +162,9 @@ impl StashManager {
     pub fn ensure_stash(&mut self, name: &str) -> &mut VecDeque<RustSimState> {
         if !self.stashes.contains_key(name) {
             log::warn!(
-                "Rust exploration: creating new stash '{}' (not one of the \
-                 standard stashes {:?}); if this is a typo, the state will be \
+                "Rust exploration: creating new stash '{name}' (not one of the \
+                 standard stashes {STANDARD_STASHES:?}); if this is a typo, the state will be \
                  invisible to mgr.active / mgr.found / mgr.deadended etc.",
-                name,
-                STANDARD_STASHES,
             );
         }
         self.stashes.entry(name.to_string()).or_default()
@@ -179,19 +177,25 @@ impl StashManager {
     /// Number of states in the active stash.
     #[inline]
     pub fn active_count(&self) -> usize {
-        self.stashes.get(STASH_ACTIVE).map_or(0, |s| s.len())
+        self.stashes
+            .get(STASH_ACTIVE)
+            .map_or(0, std::collections::VecDeque::len)
     }
 
     /// Number of states in the found stash.
     #[inline]
     pub fn found_count(&self) -> usize {
-        self.stashes.get(STASH_FOUND).map_or(0, |s| s.len())
+        self.stashes
+            .get(STASH_FOUND)
+            .map_or(0, std::collections::VecDeque::len)
     }
 
     /// Number of states in a named stash.
     #[inline]
     pub fn count(&self, stash: &str) -> usize {
-        self.stashes.get(stash).map_or(0, |s| s.len())
+        self.stashes
+            .get(stash)
+            .map_or(0, std::collections::VecDeque::len)
     }
 
     /// Whether the active stash is non-empty.
@@ -206,7 +210,7 @@ impl StashManager {
     pub fn state_ids(&self, stash: &str) -> Vec<u64> {
         self.stashes
             .get(stash)
-            .map(|s| s.iter().map(|state| state.state_id()).collect())
+            .map(|s| s.iter().map(super::state::RustSimState::state_id).collect())
             .unwrap_or_default()
     }
 
@@ -335,7 +339,9 @@ impl StashManager {
 
     /// Get the stash name for a state by ID.
     pub fn stash_of(&self, state_id: u64) -> Option<&str> {
-        self.state_index.get(&state_id).map(|s| s.as_str())
+        self.state_index
+            .get(&state_id)
+            .map(std::string::String::as_str)
     }
 
     // =========================================================================
@@ -482,7 +488,14 @@ impl StashManager {
         let stashes: std::collections::BTreeMap<String, Vec<crate::state::RustSimStateSnapshot>> =
             self.stashes
                 .iter()
-                .map(|(k, v)| (k.clone(), v.iter().map(|s| s.to_snapshot()).collect()))
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.iter()
+                            .map(super::state::RustSimState::to_snapshot)
+                            .collect(),
+                    )
+                })
                 .collect();
         let state_roots: std::collections::BTreeMap<u64, u64> =
             self.state_roots.iter().map(|(k, v)| (*k, *v)).collect();

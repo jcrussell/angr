@@ -237,7 +237,7 @@ fn map_fixed_collision_unmaps_and_remaps_natively() {
         .expect("MAP_FIXED collision must succeed natively");
     match outcome {
         SyscallOutcome::Continue { ret } => assert_eq!(ret, target),
-        _ => panic!("expected Continue, got {:?}", outcome),
+        _ => panic!("expected Continue, got {outcome:?}"),
     }
     // The page is now RX (the new perms), not RW (the old perms).
     assert_eq!(
@@ -274,7 +274,7 @@ fn map_fixed_multi_page_collision_discards_all_overlapped_pages() {
         .expect("MAP_FIXED multi-page collision must succeed natively");
     match outcome {
         SyscallOutcome::Continue { ret } => assert_eq!(ret, base),
-        _ => panic!("expected Continue, got {:?}", outcome),
+        _ => panic!("expected Continue, got {outcome:?}"),
     }
     // All three pages now carry the new RWX perms.
     for i in 0..3 {

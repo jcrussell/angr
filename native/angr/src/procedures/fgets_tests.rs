@@ -43,7 +43,7 @@ fn test_fgets_basic() {
     // First 9 bytes should be symbolic
     for i in 0..9u64 {
         let byte = state.memory_load(0x2000 + i, 1).unwrap();
-        assert!(byte.as_u64().is_none(), "byte {} should be symbolic", i);
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
     }
 
     // Byte 9 should be NUL terminator

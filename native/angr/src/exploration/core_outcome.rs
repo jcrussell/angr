@@ -627,7 +627,7 @@ pub(crate) fn run_post_step_core(
         }
 
         RunResult::NeedPythonVEX { addr, reason } => {
-            log::debug!("VEX fallback at 0x{:x}: {}", addr, reason);
+            log::debug!("VEX fallback at 0x{addr:x}: {reason}");
             state.set_pc(addr);
             bounce(
                 BounceKind::PythonVEXFallback { addr, reason },
@@ -644,7 +644,7 @@ pub(crate) fn run_post_step_core(
         RunResult::NeedLift { addr } => {
             state.set_pc(addr);
             CoreOutcome {
-                ret: CoreReturn::Errored(state, format!("need lift at 0x{:x}", addr)),
+                ret: CoreReturn::Errored(state, format!("need lift at 0x{addr:x}")),
                 pruned: Vec::new(),
                 fork_ids: Vec::new(),
                 terminal_pushes: Vec::new(),
@@ -1178,11 +1178,7 @@ fn handle_simprocedure_core(
             let proc_no_return = native_proc.no_return();
             match ctx.cc.extract_procedure_args(&state, num_args) {
                 Err(e) => {
-                    log::debug!(
-                        "Skipping native procedure {} (arg extraction failed: {:?})",
-                        name,
-                        e
-                    );
+                    log::debug!("Skipping native procedure {name} (arg extraction failed: {e:?})");
                     counters.native_python_fallbacks += 1;
                     *counters
                         .other_fallbacks_by_name
@@ -1214,9 +1210,7 @@ fn handle_simprocedure_core(
                     }
                     Err(e) => {
                         log::debug!(
-                            "Native procedure {} returned error, falling back to Python: {:?}",
-                            name,
-                            e
+                            "Native procedure {name} returned error, falling back to Python: {e:?}"
                         );
                         counters.native_python_fallbacks += 1;
                         let bucket = match e {
@@ -1274,9 +1268,7 @@ fn handle_simprocedure_core(
             Ok(()) => Some(false),
             Err(e) => {
                 log::debug!(
-                    "native sub-call setup failed ({:?}); falling back to Python for {}",
-                    e,
-                    name
+                    "native sub-call setup failed ({e:?}); falling back to Python for {name}"
                 );
                 None
             }

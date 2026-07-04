@@ -73,14 +73,13 @@ impl RustExplorationManager {
                 .get(&condition_id)
                 .ok_or_else(|| {
                     PyValueError::new_err(format!(
-                        "condition {} not found in stored_conditions",
-                        condition_id
+                        "condition {condition_id} not found in stored_conditions"
                     ))
                 })?;
 
             let claripy = py.import("claripy")?;
             rustbv_to_claripy(py, condition, claripy.as_any())
-                .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {e}")))
         })
     }
 
@@ -94,7 +93,7 @@ impl RustExplorationManager {
                 .state
                 .get_register(name)
                 .map(|bv| bv.as_u128())
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))
         })
     }
 
@@ -108,10 +107,10 @@ impl RustExplorationManager {
             let bv = pending
                 .state
                 .get_register(name)
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
             let claripy = py.import("claripy")?;
             rustbv_to_claripy(py, &bv, claripy.as_any())
-                .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {}", e)))
+                .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {e}")))
         })
     }
 
@@ -153,14 +152,13 @@ impl RustExplorationManager {
                 .state
                 .arch()
                 .register_size(name)
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
             let bv = crate::symbolic::RustBV::concrete(value, size * 8);
             if pending.state.set_register(name, bv) {
                 Ok(())
             } else {
                 Err(PyValueError::new_err(format!(
-                    "failed to set register: {}",
-                    name
+                    "failed to set register: {name}"
                 )))
             }
         })
@@ -188,8 +186,7 @@ impl RustExplorationManager {
                 Ok(())
             } else {
                 Err(PyValueError::new_err(format!(
-                    "failed to set register: {}",
-                    name
+                    "failed to set register: {name}"
                 )))
             }
         })
@@ -208,17 +205,16 @@ impl RustExplorationManager {
             let ctx_ref: &SymContext = &sym_ctx;
 
             let bv = claripy_to_rustbv(py, ast, ctx_ref)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
+                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?;
 
             drop(sym_ctx);
 
             if pending.state.set_register(reg_name, bv) {
-                log::debug!("Set symbolic register {} from claripy AST", reg_name);
+                log::debug!("Set symbolic register {reg_name} from claripy AST");
                 Ok(())
             } else {
                 Err(PyValueError::new_err(format!(
-                    "failed to set register: {}",
-                    reg_name
+                    "failed to set register: {reg_name}"
                 )))
             }
         })
@@ -239,7 +235,7 @@ impl RustExplorationManager {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
+                .map_err(|e| PyValueError::new_err(format!("AST conversion: {e}")))?;
             drop(sym_ctx);
             state.memory_mut().import_symbolic_value(addr, bv, None);
             Ok(())
@@ -299,14 +295,14 @@ impl RustExplorationManager {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
+                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?;
             drop(sym_ctx);
 
             pending
                 .state
                 .memory_mut()
                 .import_symbolic_value(addr, bv, None);
-            log::debug!("Imported symbolic memory at 0x{:x}", addr);
+            log::debug!("Imported symbolic memory at 0x{addr:x}");
             Ok(())
         })
     }
@@ -386,7 +382,7 @@ impl RustExplorationManager {
                         result.push(ast);
                     }
                     Err(e) => {
-                        log::debug!("Could not convert stored condition to claripy: {}", e);
+                        log::debug!("Could not convert stored condition to claripy: {e}");
                     }
                 }
             }
@@ -552,7 +548,7 @@ impl RustExplorationManager {
                             }
                         }
                     } else {
-                        log::debug!("Could not convert constraint {} from Python", i);
+                        log::debug!("Could not convert constraint {i} from Python");
                     }
                 }
             }
@@ -586,7 +582,7 @@ impl RustExplorationManager {
                 .state
                 .memory()
                 .load_page_concrete(page_addr)
-                .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
+                .map_err(|e| PyValueError::new_err(format!("page load failed: {e}")))
         })
     }
 
@@ -673,7 +669,7 @@ impl RustExplorationManager {
                     .state
                     .memory_mut()
                     .store_concrete(chunk_addr, bv)
-                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {e}")))
             })
         })
     }
@@ -700,7 +696,7 @@ impl RustExplorationManager {
     pub(crate) fn _set_skip_hook_addr(&mut self, addr: u64) {
         let expiry = self.steps + 2;
         self.skip_hook_stack.push((addr, expiry));
-        log::debug!("Added skip hook 0x{:x} with expiry step {}", addr, expiry);
+        log::debug!("Added skip hook 0x{addr:x} with expiry step {expiry}");
     }
 
     pub(crate) fn _clear_skip_hook_addr(&mut self) {

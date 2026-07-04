@@ -398,10 +398,10 @@ fn test_parse_pairwise_routing() {
     for (op, e, c) in pwadd_cases {
         match parse_opcode(op) {
             IROp::VPwAdd { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VPwAdd, got {:?}", op, other),
+            other => panic!("{op}: expected VPwAdd, got {other:?}"),
         }
     }
 
@@ -426,11 +426,11 @@ fn test_parse_pairwise_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VPwAddL, got {:?}", op, other),
+            other => panic!("{op}: expected VPwAddL, got {other:?}"),
         }
     }
 
@@ -449,11 +449,11 @@ fn test_parse_pairwise_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VPwMin, got {:?}", op, other),
+            other => panic!("{op}: expected VPwMin, got {other:?}"),
         }
     }
 
@@ -472,11 +472,11 @@ fn test_parse_pairwise_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VPwMax, got {:?}", op, other),
+            other => panic!("{op}: expected VPwMax, got {other:?}"),
         }
     }
 
@@ -487,7 +487,7 @@ fn test_parse_pairwise_routing() {
             assert_eq!(elem, IRType::F32, "PwAdd32Fx2: elem");
             assert_eq!(count, 2, "PwAdd32Fx2: count");
         }
-        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {:?}", other),
+        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {other:?}"),
     }
 }
 
@@ -722,11 +722,11 @@ fn test_parse_avg_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VAvg, got {:?}", op, other),
+            other => panic!("{op}: expected VAvg, got {other:?}"),
         }
     }
 }

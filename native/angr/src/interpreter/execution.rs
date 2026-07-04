@@ -278,7 +278,7 @@ impl<'a> VEXInterpreter<'a> {
                                 RunResult::SymbolicJumpTarget {
                                     targets,
                                     condition_id,
-                                    jumpkind: format!("{:?}", jumpkind),
+                                    jumpkind: format!("{jumpkind:?}"),
                                 },
                                 blocks_executed,
                                 forks,
@@ -296,7 +296,7 @@ impl<'a> VEXInterpreter<'a> {
                                     min_target,
                                     max_target,
                                     limit,
-                                    jumpkind: format!("{:?}", jumpkind),
+                                    jumpkind: format!("{jumpkind:?}"),
                                 },
                                 blocks_executed,
                                 forks,
@@ -417,7 +417,7 @@ impl<'a> VEXInterpreter<'a> {
 
         let irsb_json = callbacks
             .call_lift_block(addr, opt_level, dirty_bytes.as_deref())
-            .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
+            .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {e}")))?;
         if self.profiling_enabled {
             self.stats.python_callback_count += 1;
         }
@@ -437,7 +437,7 @@ impl<'a> VEXInterpreter<'a> {
             ));
         }
         let irsb = deserialize_irsb(&irsb_json).map_err(|e| {
-            CbExecutionError::InvalidIR(format!("IRSB deserialization failed: {}", e))
+            CbExecutionError::InvalidIR(format!("IRSB deserialization failed: {e}"))
         })?;
 
         profile_add!(lift_start, self.stats.lift_time_ns);

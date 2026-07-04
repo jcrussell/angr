@@ -65,11 +65,11 @@ pub(crate) fn store_symbolic_line(
     let read_count = size - 1;
     let (real_size, constraints, store_bytes) = {
         let ctx = state.solver().borrow();
-        let real_size = RustBV::symbolic(&ctx, format!("{}_realsize_{}", label, read_id), bits);
+        let real_size = RustBV::symbolic(&ctx, format!("{label}_realsize_{read_id}"), bits);
         // EOF is unknown for native symbolic stdin; a fresh symbolic bit soundly
         // over-approximates `simfd.eof()` (the solver may pick eof=true to
         // justify a short read, matching Python).
-        let eof = RustBV::symbolic(&ctx, format!("{}_eof_{}", label, read_id), 1);
+        let eof = RustBV::symbolic(&ctx, format!("{label}_eof_{read_id}"), 1);
         let nl = RustBV::concrete(b'\n' as u128, 8);
         let nul = RustBV::concrete(0, 8);
 
@@ -170,8 +170,7 @@ crate::declare_proc! {
 
         if size > MAX_FGETS_SIZE {
             return Err(ProcedureError::Other(format!(
-                "fgets size {} exceeds limit",
-                size
+                "fgets size {size} exceeds limit"
             )));
         }
 
@@ -183,8 +182,7 @@ crate::declare_proc! {
         }
         if fd != 0 {
             return Err(ProcedureError::Other(format!(
-                "fgets from fd={} (non-stdin) falls back to Python",
-                fd
+                "fgets from fd={fd} (non-stdin) falls back to Python"
             )));
         }
 
@@ -194,7 +192,7 @@ crate::declare_proc! {
 
         // Create symbolic bytes and record for stdin tracking
         let names: Vec<String> = (0..read_count)
-            .map(|i| format!("stdin_fgets_{}_{}", read_id, i))
+            .map(|i| format!("stdin_fgets_{read_id}_{i}"))
             .collect();
 
         let sym_bytes: Vec<RustBV> = {
@@ -292,12 +290,11 @@ crate::declare_proc! {
         }
         if fd != 0 {
             return Err(ProcedureError::Other(format!(
-                "fgetc from fd={} (non-stdin) falls back to Python",
-                fd
+                "fgetc from fd={fd} (non-stdin) falls back to Python"
             )));
         }
         let read_id = symbol_counter("fgetc");
-        let name = format!("stdin_fgetc_{}", read_id);
+        let name = format!("stdin_fgetc_{read_id}");
         let short_reads = state.has_option("SHORT_READS");
         let result = {
             let ctx = state.solver().borrow();
@@ -310,7 +307,7 @@ crate::declare_proc! {
                 // soundly over-approximates simfd.eof() (the solver may pick
                 // eof=true to justify a zero-length read). Matches the eof
                 // handling in the fgets short-read path above (angr-qx81x).
-                let eof = RustBV::symbolic(&ctx, format!("fgetc_eof_{}", read_id), 1);
+                let eof = RustBV::symbolic(&ctx, format!("fgetc_eof_{read_id}"), 1);
                 let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
                 eof.ite(&neg_one, &byte_ze, &ctx)
             } else {
@@ -338,7 +335,7 @@ crate::declare_proc! {
     aliases = ["getchar_unlocked"],
     call |state| {
         let read_id = symbol_counter("getchar");
-        let name = format!("stdin_getchar_{}", read_id);
+        let name = format!("stdin_getchar_{read_id}");
         let short_reads = state.has_option("SHORT_READS");
         let result = {
             let ctx = state.solver().borrow();
@@ -349,7 +346,7 @@ crate::declare_proc! {
                 // SHORT_READS: model the EOF return, like fgetc above. Python
                 // getchar == fgetc(stdin) returns If(real_length == 0, -1, byte);
                 // a fresh symbolic eof bit over-approximates simfd.eof().
-                let eof = RustBV::symbolic(&ctx, format!("getchar_eof_{}", read_id), 1);
+                let eof = RustBV::symbolic(&ctx, format!("getchar_eof_{read_id}"), 1);
                 let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
                 eof.ite(&neg_one, &byte_ze, &ctx)
             } else {
@@ -398,7 +395,7 @@ crate::declare_proc! {
 
         // Create symbolic stdin bytes and record them for posix.dumps(0) export.
         let names: Vec<String> = (0..read_count)
-            .map(|i| format!("stdin_gets_{}_{}", read_id, i))
+            .map(|i| format!("stdin_gets_{read_id}_{i}"))
             .collect();
         let sym_bytes: Vec<RustBV> = {
             let ctx = state.solver().borrow();

@@ -157,14 +157,12 @@ impl SymContext {
         if in_local || in_shared {
             log::debug!(
                 target: "rustylib::symbolic",
-                "assume-dedup HIT ptr={:#x} backed (local={in_local} shared={in_shared}) -- sound true-positive",
-                ptr
+                "assume-dedup HIT ptr={ptr:#x} backed (local={in_local} shared={in_shared}) -- sound true-positive"
             );
         } else {
             log::warn!(
                 target: "rustylib::symbolic",
-                "assume-dedup HIT ptr={:#x} UNBACKED by any live z3_assertion -- STALE-PTR FALSE POSITIVE (intended constraint dropped)",
-                ptr
+                "assume-dedup HIT ptr={ptr:#x} UNBACKED by any live z3_assertion -- STALE-PTR FALSE POSITIVE (intended constraint dropped)"
             );
         }
     }
@@ -490,7 +488,7 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
         let idx = self.constraint_count.load(Ordering::SeqCst);
-        let track_name = format!("__track_{}", idx);
+        let track_name = format!("__track_{idx}");
         let track_bool = z3::ast::Bool::new_const(track_name.as_str());
 
         let tracker_idx = {

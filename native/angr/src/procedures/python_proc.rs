@@ -72,7 +72,7 @@ impl NativeSimProcedure for PythonNativeProcedure {
         // Extract concrete arg values. Symbolic args fall back to Python.
         let mut concrete_args: Vec<u64> = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
-            let v = extract_concrete_arg(arg, &format!("arg{}", i))?;
+            let v = extract_concrete_arg(arg, &format!("arg{i}"))?;
             concrete_args.push(v);
         }
 

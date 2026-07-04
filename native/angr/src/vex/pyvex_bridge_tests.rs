@@ -186,11 +186,10 @@ fn test_addss_irsb_parsing() {
             right: _,
         } = data
         {
-            println!("Parsed opcode: {:?}", op);
+            println!("Parsed opcode: {op:?}");
             assert!(
                 matches!(op, IROp::VFAddS { elem: IRType::F32 }),
-                "Expected VFAddS{{F32}}, got {:?}",
-                op
+                "Expected VFAddS{{F32}}, got {op:?}"
             );
         } else {
             panic!("Expected Binop expression");

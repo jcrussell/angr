@@ -41,8 +41,7 @@ crate::declare_proc! {
         let fd_u32 = fd as u32;
         if !state.file_system_ref().is_open(fd_u32) {
             return Err(ProcedureError::Other(format!(
-                "write to fd={} (not open in Rust FileSystem) falls back to Python",
-                fd
+                "write to fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
         // Zero-length write: POSIX no-op — return 0 natively WITHOUT
@@ -65,8 +64,7 @@ crate::declare_proc! {
 
         if count > MAX_WRITE_SIZE {
             return Err(ProcedureError::Other(format!(
-                "write count {} exceeds limit",
-                count
+                "write count {count} exceeds limit"
             )));
         }
 
@@ -78,8 +76,7 @@ crate::declare_proc! {
                         bytes.push(val as u8);
                     } else {
                         return Err(ProcedureError::SymbolicArgument(format!(
-                            "symbolic byte at buf+{}",
-                            i
+                            "symbolic byte at buf+{i}"
                         )));
                     }
                 }

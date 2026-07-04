@@ -329,7 +329,7 @@ impl<'a> VEXInterpreter<'a> {
                 self.build_ite_load_from_callbacks(callbacks, &addrs, addr_val, size)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
-                let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                let descr = format!("range 0x{min:x}-0x{max:x}");
                 self.fallback_load_symbolic_full(callbacks, addr_val, size, "Load", &descr)
             }
             ConcretizationResult::Failed(reason) => {
@@ -337,7 +337,7 @@ impl<'a> VEXInterpreter<'a> {
                 // strategy applies). Try the full symbolic load callback;
                 // Python's memory model can still resolve it via its
                 // own address concretization strategies.
-                let descr = format!("concretize failed: {}", reason);
+                let descr = format!("concretize failed: {reason}");
                 self.fallback_load_symbolic_full(callbacks, addr_val, size, "Load", &descr)
             }
         }
@@ -743,7 +743,7 @@ impl<'a> VEXInterpreter<'a> {
 
         for (i, addr) in addrs.iter().enumerate() {
             let value = self.convert_load_result(&load_results, i, width, || {
-                format!("ite_load_{:x}_{}", addr, size)
+                format!("ite_load_{addr:x}_{size}")
             });
 
             let addr_const = RustBV::concrete(*addr as u128, addr_width);
@@ -795,7 +795,7 @@ impl<'a> VEXInterpreter<'a> {
             let cond = addr_expr.eq(&addr_const, self.ctx);
 
             let current = self.convert_load_result(&load_results, i, val_width, || {
-                format!("ite_store_cur_{:x}", addr)
+                format!("ite_store_cur_{addr:x}")
             });
 
             let ite_value = cond.ite(data_val, &current, self.ctx);
@@ -849,7 +849,7 @@ impl<'a> VEXInterpreter<'a> {
             }
             ConcretizationResult::Multiple(addrs) => {
                 let a = *addrs.first().ok_or_else(|| {
-                    CbExecutionError::Unsupported(format!("{} with empty address set", context))
+                    CbExecutionError::Unsupported(format!("{context} with empty address set"))
                 })?;
                 self.load_from_callback(callbacks, a, load_size)
             }
@@ -858,18 +858,15 @@ impl<'a> VEXInterpreter<'a> {
                 stride,
                 count,
             } => {
-                let descr = format!(
-                    "strided base=0x{:x} stride=0x{:x} count={}",
-                    base, stride, count
-                );
+                let descr = format!("strided base=0x{base:x} stride=0x{stride:x} count={count}");
                 self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
-                let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                let descr = format!("range 0x{min:x}-0x{max:x}");
                 self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
             ConcretizationResult::Failed(reason) => {
-                let descr = format!("concretize failed: {}", reason);
+                let descr = format!("concretize failed: {reason}");
                 self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
             }
         }
@@ -972,9 +969,7 @@ impl<'a> VEXInterpreter<'a> {
                 size: unmapped_size,
             }) => {
                 log::debug!(
-                    "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
-                    addr,
-                    unmapped_size
+                    "Unmapped memory load at 0x{addr:x} (size={unmapped_size}), falling back to Python"
                 );
                 Ok(None)
             }

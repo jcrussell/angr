@@ -19,7 +19,7 @@ crate::declare_proc! {
     args = [],
     call |state| {
         let counter = symbol_counter("rand");
-        let name = format!("rand_{}", counter);
+        let name = format!("rand_{counter}");
 
         // Create a 31-bit symbolic variable (matches angr's rand which uses 31 bits)
         let ctx = state.solver().borrow();

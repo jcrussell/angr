@@ -156,8 +156,7 @@ fn do_mmap(
     //     remap at the requested address — handled below (no fallback).
     if !is_fixed && range_collides(state, candidate, length) {
         return Err(SyscallError::Other(format!(
-            "mmap: collision at {:#x}+{:#x} — fall back",
-            candidate, length,
+            "mmap: collision at {candidate:#x}+{length:#x} — fall back",
         )));
     }
 

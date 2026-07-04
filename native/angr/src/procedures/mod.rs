@@ -720,7 +720,10 @@ impl NativeProcedureRegistry {
 
     /// Get all registered procedure names.
     pub fn procedure_names(&self) -> Vec<&str> {
-        self.procedures.keys().map(|s| s.as_str()).collect()
+        self.procedures
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// Get statistics about the registry.

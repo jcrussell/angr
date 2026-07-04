@@ -32,7 +32,7 @@ fn concretize_cached_read_short_circuits_concrete_addr() {
     let result = interp.concretize_cached_read(&addr);
     match &*result {
         ConcretizationResult::Single(a) => assert_eq!(*a, 0x4000),
-        other => panic!("expected Single(0x4000), got {:?}", other),
+        other => panic!("expected Single(0x4000), got {other:?}"),
     }
 }
 
@@ -59,7 +59,7 @@ fn concretize_cached_read_applies_any_fallback_on_cached_toolarge() {
     // read_fallback_any -> ctx.eval(addr) -> Single(model value).
     match &*result {
         ConcretizationResult::Single(_) => {}
-        other => panic!("expected Single from Any fallback, got {:?}", other),
+        other => panic!("expected Single from Any fallback, got {other:?}"),
     }
 }
 
@@ -86,7 +86,7 @@ fn concretize_cached_read_keeps_toolarge_when_fallback_disabled() {
         ConcretizationResult::TooLarge { min, max, limit } => {
             assert_eq!((*min, *max, *limit), (0, u64::MAX, 1024));
         }
-        other => panic!("expected TooLarge unchanged, got {:?}", other),
+        other => panic!("expected TooLarge unchanged, got {other:?}"),
     }
 }
 
@@ -112,7 +112,7 @@ fn concretize_cached_write_applies_max_fallback_on_cached_toolarge() {
     // write_fallback_max -> ctx.range(addr) -> Single(max) (or eval fallback).
     match &*result {
         ConcretizationResult::Single(_) => {}
-        other => panic!("expected Single from Max fallback, got {:?}", other),
+        other => panic!("expected Single from Max fallback, got {other:?}"),
     }
 }
 
@@ -138,6 +138,6 @@ fn concretize_cached_write_keeps_toolarge_when_fallback_disabled() {
         ConcretizationResult::TooLarge { min, max, limit } => {
             assert_eq!((*min, *max, *limit), (0, u64::MAX, 128));
         }
-        other => panic!("expected TooLarge unchanged, got {:?}", other),
+        other => panic!("expected TooLarge unchanged, got {other:?}"),
     }
 }

@@ -84,7 +84,7 @@ pub fn set_serializing(on: bool) -> bool {
 /// `from_serialized`.
 #[inline]
 pub fn serializing() -> bool {
-    SERIALIZING.with(|c| c.get())
+    SERIALIZING.with(std::cell::Cell::get)
 }
 
 /// Run `f`; when phase timers are enabled AND the current thread is inside a

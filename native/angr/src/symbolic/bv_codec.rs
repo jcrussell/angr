@@ -36,7 +36,7 @@ pub(super) fn extract_bv_value(bv: &z3::ast::BV) -> Option<u128> {
 /// Extract a BV value by parsing its string representation.
 /// Handles arbitrarily large values, returns low 128 bits.
 pub(super) fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
-    let s = format!("{}", bv);
+    let s = format!("{bv}");
     // Z3 uses formats: #xHEXDIGITS, #bBINARY, or decimal
     if let Some(hex_str) = s.strip_prefix("#x") {
         // Parse as hex, taking low 128 bits
@@ -53,7 +53,7 @@ pub(super) fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
 /// Extract an arbitrarily large BV value as a Vec<u8> (big-endian).
 /// Used for values > 128 bits where we need the full value.
 pub(super) fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<u8>> {
-    let s = format!("{}", bv);
+    let s = format!("{bv}");
     if let Some(hex_str) = s.strip_prefix("#x") {
         // Parse full hex value to bytes
         parse_hex_to_bytes(hex_str, width)

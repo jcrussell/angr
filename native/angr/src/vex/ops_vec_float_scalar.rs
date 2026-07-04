@@ -36,8 +36,7 @@ impl VEXOps {
                 kind,
                 FloatOpKind::Add | FloatOpKind::Sub | FloatOpKind::Mul | FloatOpKind::Div
             ),
-            "vec_float_scalar_op only supports Add/Sub/Mul/Div, got {:?}",
-            kind,
+            "vec_float_scalar_op only supports Add/Sub/Mul/Div, got {kind:?}",
         );
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {

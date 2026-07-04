@@ -80,8 +80,7 @@ impl RustExplorationManager {
         debug_assert_ne!(
             state_id,
             state.inner().state_id(),
-            "fork() must mint a fresh state_id, got duplicate {}",
-            state_id,
+            "fork() must mint a fresh state_id, got duplicate {state_id}",
         );
 
         // Propagate memory options
@@ -127,10 +126,7 @@ impl RustExplorationManager {
     pub(crate) fn _fork_state_to_stash(&mut self, parent_id: u64, stash: &str) -> PyResult<u64> {
         let forked = {
             let parent = self.find_state(parent_id).ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "fork_state_to_stash: state {} not found",
-                    parent_id
-                ))
+                PyValueError::new_err(format!("fork_state_to_stash: state {parent_id} not found"))
             })?;
             parent.fork()
         };
@@ -138,8 +134,7 @@ impl RustExplorationManager {
         // `state-id-never-reused`: fork() must mint a fresh monotonic ID.
         debug_assert_ne!(
             new_id, parent_id,
-            "fork() must mint a fresh state_id, got duplicate {}",
-            new_id
+            "fork() must mint a fresh state_id, got duplicate {new_id}"
         );
 
         // Inherit the parent's lineage root so descendants of a SimProc fork
@@ -179,7 +174,7 @@ impl RustExplorationManager {
                 }
             }
             if !found {
-                return Err(PyValueError::new_err(format!("state {} not found", sid)));
+                return Err(PyValueError::new_err(format!("state {sid} not found")));
             }
         }
 
@@ -187,7 +182,7 @@ impl RustExplorationManager {
         let solver = states[0].solver();
         let merge_conditions: Vec<RustBV> = (0..states.len())
             .map(|i| {
-                let name = format!("merge_flag_{}", i);
+                let name = format!("merge_flag_{i}");
                 solver.borrow().new_bv(&name, 1)
             })
             .collect();
@@ -307,8 +302,7 @@ impl RustExplorationManager {
         let moved = self._move_state(found_state_id, "found", "active")?;
         if !moved {
             return Err(PyValueError::new_err(format!(
-                "state {} not found in 'found' stash",
-                found_state_id
+                "state {found_state_id} not found in 'found' stash"
             )));
         }
 

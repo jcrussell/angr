@@ -547,7 +547,7 @@ impl RustSimState {
     /// Create a new state with explicit endianness override.
     pub fn new_with_endian(arch_name: &str, little_endian: Option<bool>) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
-            .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
+            .ok_or_else(|| format!("unknown architecture: {arch_name}"))?;
         let vex_arch = arch.vex_arch();
         let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
         let endness = if is_le { Endness::Little } else { Endness::Big };
@@ -661,7 +661,7 @@ impl RustSimState {
         little_endian: Option<bool>,
     ) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
-            .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
+            .ok_or_else(|| format!("unknown architecture: {arch_name}"))?;
         let vex_arch = arch.vex_arch();
         let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
         let endness = if is_le { Endness::Little } else { Endness::Big };
@@ -811,7 +811,7 @@ impl RustSimState {
 
     /// Get an environment variable value by key.
     pub fn getenv(&self, key: &[u8]) -> Option<&[u8]> {
-        self.environment.get(key).map(|v| v.as_slice())
+        self.environment.get(key).map(std::vec::Vec::as_slice)
     }
 
     /// Set an environment variable.
@@ -1933,7 +1933,7 @@ impl PyRustSimState {
         self.inner
             .get_register(name)
             .and_then(|bv| bv.as_u128())
-            .ok_or_else(|| PyValueError::new_err(format!("cannot read register {}", name)))
+            .ok_or_else(|| PyValueError::new_err(format!("cannot read register {name}")))
     }
 
     /// Set a register value by name.
@@ -1942,14 +1942,13 @@ impl PyRustSimState {
             .inner
             .arch()
             .register_size(name)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
         let bv = RustBV::concrete(value, size * 8);
         if self.inner.set_register(name, bv) {
             Ok(())
         } else {
             Err(PyValueError::new_err(format!(
-                "failed to set register: {}",
-                name
+                "failed to set register: {name}"
             )))
         }
     }
@@ -1976,7 +1975,7 @@ impl PyRustSimState {
                 .inner
                 .arch()
                 .register_size(&name)
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
             // I5 cross-check: register_size returning Some implies the
             // register has a RegisterFile slot. This debug assert documents
             // intent and would catch a regression where arch lookup and
@@ -1984,8 +1983,7 @@ impl PyRustSimState {
             #[cfg(debug_assertions)]
             debug_assert!(
                 size > 0,
-                "I5: register {} has zero size — arch table is malformed",
-                name
+                "I5: register {name} has zero size — arch table is malformed"
             );
             let bv = RustBV::concrete(value, size * 8);
             self.inner.set_register(&name, bv);
@@ -2023,7 +2021,7 @@ impl PyRustSimState {
             .inner
             .arch()
             .register_size(name)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
         if width != size * 8 {
             return Err(PyValueError::new_err(format!(
                 "width mismatch: register {} is {} bits, got {} bits",
@@ -2053,8 +2051,7 @@ impl PyRustSimState {
             Ok(())
         } else {
             Err(PyValueError::new_err(format!(
-                "failed to set register: {}",
-                name
+                "failed to set register: {name}"
             )))
         }
     }
@@ -2081,12 +2078,12 @@ impl PyRustSimState {
             .inner
             .arch()
             .register_size(name)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
         let solver = self.inner.solver().clone();
         let bv = {
             let ctx = solver.borrow();
             crate::claripy_bridge::claripy_to_rustbv(py, ast, &ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?
+                .map_err(|e| PyValueError::new_err(format!("AST conversion: {e}")))?
         };
         if bv.width() != size * 8 {
             return Err(PyValueError::new_err(format!(
@@ -2100,8 +2097,7 @@ impl PyRustSimState {
             Ok(())
         } else {
             Err(PyValueError::new_err(format!(
-                "failed to set register: {}",
-                name
+                "failed to set register: {name}"
             )))
         }
     }

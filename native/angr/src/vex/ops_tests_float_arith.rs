@@ -52,7 +52,7 @@ fn test_qop_rejects_non_quaternary() {
     let err = VEXOps::qop(IROp::Add(IRType::I64), a, b, c, &ctx).unwrap_err();
     match err {
         OpError::NotQuaternary(_) => (),
-        other => panic!("expected NotQuaternary, got {:?}", other),
+        other => panic!("expected NotQuaternary, got {other:?}"),
     }
 }
 
@@ -80,8 +80,7 @@ fn test_float_add_symbolic_constraint() {
     let result_f = f32::from_bits(model_x as u32);
     assert!(
         (result_f - 3.0).abs() < 1e-6,
-        "Expected x == 3.0, got {}",
-        result_f
+        "Expected x == 3.0, got {result_f}"
     );
 }
 
@@ -103,8 +102,7 @@ fn test_float_sqrt_symbolic_constraint() {
     let result_f = f64::from_bits(model_x as u64);
     assert!(
         (result_f - 16.0).abs() < 1e-9,
-        "Expected x == 16.0, got {}",
-        result_f
+        "Expected x == 16.0, got {result_f}"
     );
 }
 
@@ -191,8 +189,7 @@ fn test_float_div_with_symbolic_rm_f32() {
     let low2 = model_rm & 0x3;
     assert!(
         low2 == 1 || low2 == 3,
-        "expected rm low2 ∈ {{1, 3}} (RD/RZ), got {}",
-        low2
+        "expected rm low2 ∈ {{1, 3}} (RD/RZ), got {low2}"
     );
 }
 

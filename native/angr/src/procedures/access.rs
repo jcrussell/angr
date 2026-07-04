@@ -34,7 +34,7 @@ crate::declare_proc! {
     args = [_path: bv, _mode: bv],
     call |state| {
         let counter = symbol_counter("access");
-        let name = format!("access_{}", counter);
+        let name = format!("access_{counter}");
 
         // sizeof(int) == 32 on all supported arches (matches rand.rs/system.rs).
         let constraint = {

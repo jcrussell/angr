@@ -26,7 +26,7 @@ impl<'a> VEXInterpreter<'a> {
         let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
         RustBV::symbolic(
             self.ctx,
-            format!("symbolic_read_unconstrained_{}", id),
+            format!("symbolic_read_unconstrained_{id}"),
             (size * 8) as u32,
         )
     }

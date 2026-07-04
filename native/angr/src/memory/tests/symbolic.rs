@@ -119,9 +119,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
         assert_eq!(
             ctx.eval(&byte_bv),
             Some(expected),
-            "BE byte at offset {} expected 0x{:02x}",
-            i,
-            expected
+            "BE byte at offset {i} expected 0x{expected:02x}"
         );
     }
 
@@ -134,8 +132,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected_word),
-        "BE 4-byte load at offset 4 expected 0x{:08x}",
-        expected_word
+        "BE 4-byte load at offset 4 expected 0x{expected_word:08x}"
     );
 
     // 8-byte halves: high half at offset 0, low half at offset 8.
@@ -146,8 +143,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&qhi),
         Some(expected_qhi),
-        "BE high qword expected 0x{:016x}",
-        expected_qhi
+        "BE high qword expected 0x{expected_qhi:016x}"
     );
 
     let qlo = mem
@@ -157,8 +153,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&qlo),
         Some(expected_qlo),
-        "BE low qword expected 0x{:016x}",
-        expected_qlo
+        "BE low qword expected 0x{expected_qlo:016x}"
     );
 }
 
@@ -209,9 +204,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
         assert_eq!(
             ctx.eval(&byte_bv),
             Some(expected),
-            "LE byte at offset {} expected 0x{:02x}",
-            i,
-            expected
+            "LE byte at offset {i} expected 0x{expected:02x}"
         );
     }
 
@@ -224,8 +217,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected_word),
-        "LE 4-byte load at offset 4 expected 0x{:08x}",
-        expected_word
+        "LE 4-byte load at offset 4 expected 0x{expected_word:08x}"
     );
 
     // 8-byte halves: low half at offset 0, high half at offset 8.
@@ -236,8 +228,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&qlo),
         Some(expected_qlo),
-        "LE low qword expected 0x{:016x}",
-        expected_qlo
+        "LE low qword expected 0x{expected_qlo:016x}"
     );
 
     let qhi = mem
@@ -247,8 +238,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     assert_eq!(
         ctx.eval(&qhi),
         Some(expected_qhi),
-        "LE high qword expected 0x{:016x}",
-        expected_qhi
+        "LE high qword expected 0x{expected_qhi:016x}"
     );
 }
 
@@ -270,7 +260,7 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: [u128; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
     for (i, &val) in pinned.iter().enumerate() {
-        let sym = RustBV::symbolic(&ctx, format!("byte{}", i), 8);
+        let sym = RustBV::symbolic(&ctx, format!("byte{i}"), 8);
         ctx.assume_true(&sym.eq(&RustBV::concrete(val, 8), &ctx));
         mem.store_concrete(0x1000 + i as u64, sym).unwrap();
     }
@@ -292,8 +282,7 @@ fn test_per_byte_symbolic_concat_little_endian() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected),
-        "LE per-byte concat expected 0x{:08x}",
-        expected
+        "LE per-byte concat expected 0x{expected:08x}"
     );
 }
 
@@ -308,8 +297,7 @@ fn test_per_byte_symbolic_concat_big_endian() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected),
-        "BE per-byte concat expected 0x{:08x}",
-        expected
+        "BE per-byte concat expected 0x{expected:08x}"
     );
 }
 
@@ -350,8 +338,7 @@ fn test_wide_linear_scan_little_endian() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected),
-        "LE linear scan expected 0x{:08x}",
-        expected
+        "LE linear scan expected 0x{expected:08x}"
     );
 }
 
@@ -366,8 +353,7 @@ fn test_wide_linear_scan_big_endian() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected),
-        "BE linear scan expected 0x{:08x}",
-        expected
+        "BE linear scan expected 0x{expected:08x}"
     );
 }
 
@@ -459,8 +445,7 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
     assert_eq!(
         ctx.eval(&word),
         Some(expected),
-        "LE spans-first slow path expected 0x{:08x}",
-        expected
+        "LE spans-first slow path expected 0x{expected:08x}"
     );
 }
 
@@ -569,14 +554,12 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
     assert!(
         solutions.contains(&expected_at_1ffc),
         "solver must enumerate the 0x1FFC slice in loaded value; \
-         got {:?}",
-        solutions
+         got {solutions:?}"
     );
     assert!(
         solutions.contains(&expected_at_2ffc),
         "solver must enumerate the 0x2FFC slice in loaded value; \
-         got {:?}",
-        solutions
+         got {solutions:?}"
     );
 }
 
@@ -772,7 +755,7 @@ fn test_permission_enforcement_unaligned_store_two_pages_middle_readonly() {
             assert_eq!(required, Permission::W);
             assert_eq!(actual, Permission::R);
         }
-        other => panic!("expected Permission error, got {:?}", other),
+        other => panic!("expected Permission error, got {other:?}"),
     }
 }
 
@@ -806,7 +789,7 @@ fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
             assert_eq!(required, Permission::W);
             assert_eq!(actual, Permission::R);
         }
-        other => panic!("expected Permission error, got {:?}", other),
+        other => panic!("expected Permission error, got {other:?}"),
     }
 }
 
@@ -851,9 +834,7 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
         ctx.eval(&loaded),
         Some(expected),
         "load(0x1000, 8) must merge sym1's low half with sym2's low half; \
-         expected 0x{:016x}, the bug would return sym1 entire (0x{:016x})",
-        expected,
-        k1,
+         expected 0x{expected:016x}, the bug would return sym1 entire (0x{k1:016x})",
     );
 
     // Sanity checks for the unaffected ranges:
@@ -1010,7 +991,7 @@ fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
             assert_eq!(required, Permission::R);
             assert_eq!(actual, Permission::W);
         }
-        other => panic!("expected Permission error, got {:?}", other),
+        other => panic!("expected Permission error, got {other:?}"),
     }
 }
 
@@ -1232,9 +1213,7 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
         ctx.eval(&loaded),
         Some(expected),
         "load(0x1000, 8) must reflect the concrete byte at 0x1003; \
-         expected 0x{:016x}, the bug returns the original sym (0x{:016x})",
-        expected,
-        k,
+         expected 0x{expected:016x}, the bug returns the original sym (0x{k:016x})",
     );
 }
 
@@ -1335,12 +1314,11 @@ fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
     for survivor in 0x1004u64..0x1008 {
         let byte = mem
             .load_concrete(survivor, 1, &ctx)
-            .unwrap_or_else(|e| panic!("load(0x{:x}, 1) must succeed: {:?}", survivor, e));
+            .unwrap_or_else(|e| panic!("load(0x{survivor:x}, 1) must succeed: {e:?}"));
         assert_eq!(
             ctx.eval(&byte),
             Some(0),
-            "load(0x{:x}, 1) survivor byte must be concrete 0",
-            survivor
+            "load(0x{survivor:x}, 1) survivor byte must be concrete 0"
         );
     }
 

@@ -824,8 +824,7 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<RustBV, CbExecutionError> {
         if !callbacks.has_memory_load_symbolic_full() {
             return Err(CbExecutionError::Unsupported(format!(
-                "{} with symbolic address ({}): no memory_load_symbolic_full callback",
-                context, addr_descr
+                "{context} with symbolic address ({addr_descr}): no memory_load_symbolic_full callback"
             )));
         }
 
@@ -833,8 +832,7 @@ impl<'a> VEXInterpreter<'a> {
             .call_memory_load_symbolic_full(addr_val, size as u32)
             .map_err(|e| {
                 CbExecutionError::Callback(format!(
-                    "{} symbolic load full callback failed ({}): {}",
-                    context, addr_descr, e
+                    "{context} symbolic load full callback failed ({addr_descr}): {e}"
                 ))
             })?;
 
@@ -843,7 +841,7 @@ impl<'a> VEXInterpreter<'a> {
         // diagnostic is dropped in favor of the shared ladder.)
         Ok(
             self.try_convert_symbolic_value(Some(&result_ast), (size * 8) as u32, || {
-                format!("sym_pyref_{}_{}", addr_descr, size)
+                format!("sym_pyref_{addr_descr}_{size}")
             }),
         )
     }
@@ -866,8 +864,7 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<(), CbExecutionError> {
         if !callbacks.has_memory_store_symbolic_full() {
             return Err(CbExecutionError::Unsupported(format!(
-                "{} with symbolic address ({}): no memory_store_symbolic_full callback",
-                context, addr_descr
+                "{context} with symbolic address ({addr_descr}): no memory_store_symbolic_full callback"
             )));
         }
 
@@ -875,8 +872,7 @@ impl<'a> VEXInterpreter<'a> {
             .call_memory_store_symbolic_full(addr_val, data_val)
             .map_err(|e| {
                 CbExecutionError::Callback(format!(
-                    "{} symbolic store full callback failed ({}): {}",
-                    context, addr_descr, e
+                    "{context} symbolic store full callback failed ({addr_descr}): {e}"
                 ))
             })?;
         Ok(())
@@ -923,7 +919,7 @@ impl<'a> VEXInterpreter<'a> {
                 }
             }
             // Fallback: create a fresh symbolic value
-            let name = format!("mem_{:x}_{}", addr_concrete, size);
+            let name = format!("mem_{addr_concrete:x}_{size}");
             let bits = (size * 8) as u32;
             let bv = RustBV::symbolic(self.ctx, &name, bits);
             // angr-vfst: symbolic_variable BP_AFTER for engine-internal fresh
@@ -1138,7 +1134,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Get a block from the cache.
     pub fn get_cached_block(&mut self, addr: u64) -> Option<&IRSB> {
-        self.block_cache.get(&addr).map(|arc| arc.as_ref())
+        self.block_cache.get(&addr).map(std::convert::AsRef::as_ref)
     }
 
     /// Swap in a shared block cache, returning the interpreter's current cache.
@@ -1192,7 +1188,10 @@ impl<'a> VEXInterpreter<'a> {
             pending_symbolic_stores: FxHashMap::default(),
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW
-            rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
+            rust_memory: self
+                .rust_memory
+                .as_ref()
+                .map(super::memory::SymbolicMemory::fork),
             use_rust_memory: self.use_rust_memory,
             lazy_solves: self.lazy_solves,
             no_ip_concretization: self.no_ip_concretization,

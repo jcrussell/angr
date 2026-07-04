@@ -137,7 +137,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("int arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 // Interpret as signed
                 let signed_val = if long || long_long {
@@ -146,11 +146,11 @@ fn format_string(
                     val as i32 as i64
                 };
                 let formatted = if plus_sign && signed_val >= 0 {
-                    format!("+{}", signed_val)
+                    format!("+{signed_val}")
                 } else if space_sign && signed_val >= 0 {
-                    format!(" {}", signed_val)
+                    format!(" {signed_val}")
                 } else {
-                    format!("{}", signed_val)
+                    format!("{signed_val}")
                 };
                 pad_and_push(
                     &mut output,
@@ -165,14 +165,14 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("uint arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
                 } else {
                     val as u32 as u64
                 };
-                let formatted = format!("{}", unsigned_val);
+                let formatted = format!("{unsigned_val}");
                 pad_and_push(
                     &mut output,
                     formatted.as_bytes(),
@@ -186,7 +186,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("hex arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
@@ -194,13 +194,13 @@ fn format_string(
                     val as u32 as u64
                 };
                 let mut formatted = if spec == b'x' {
-                    format!("{:x}", unsigned_val)
+                    format!("{unsigned_val:x}")
                 } else {
-                    format!("{:X}", unsigned_val)
+                    format!("{unsigned_val:X}")
                 };
                 if hash_flag && unsigned_val != 0 {
                     let prefix = if spec == b'x' { "0x" } else { "0X" };
-                    formatted = format!("{}{}", prefix, formatted);
+                    formatted = format!("{prefix}{formatted}");
                 }
                 pad_and_push(
                     &mut output,
@@ -215,16 +215,16 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("octal arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
                 } else {
                     val as u32 as u64
                 };
-                let mut formatted = format!("{:o}", unsigned_val);
+                let mut formatted = format!("{unsigned_val:o}");
                 if hash_flag && unsigned_val != 0 {
-                    formatted = format!("0{}", formatted);
+                    formatted = format!("0{formatted}");
                 }
                 pad_and_push(
                     &mut output,
@@ -239,7 +239,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("char arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let ch = [val as u8];
                 pad_and_push(&mut output, &ch, width, left_align, false, false);
@@ -248,7 +248,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("string arg".to_string()));
                 }
-                let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let s = read_string(state, str_addr)?;
                 let s = if let Some(prec) = _precision {
@@ -262,9 +262,9 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("ptr arg".to_string()));
                 }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let formatted = format!("0x{:x}", val);
+                let formatted = format!("0x{val:x}");
                 pad_and_push(
                     &mut output,
                     formatted.as_bytes(),

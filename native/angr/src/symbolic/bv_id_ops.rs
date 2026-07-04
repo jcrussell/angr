@@ -56,6 +56,6 @@ impl SymContext {
     /// Create a unique name for a symbol.
     pub fn unique_name(&self, base: &str) -> String {
         let id = self.next_id();
-        format!("{}_{}", base, id)
+        format!("{base}_{id}")
     }
 }

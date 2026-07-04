@@ -735,13 +735,13 @@ impl fmt::Debug for RustBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RustBV::Concrete { value, width } => {
-                write!(f, "Concrete(0x{:x}, {})", value, width)
+                write!(f, "Concrete(0x{value:x}, {width})")
             }
             RustBV::Symbolic { width, name, .. } => {
-                write!(f, "Symbolic({}, {})", name, width)
+                write!(f, "Symbolic({name}, {width})")
             }
             RustBV::Constrained { value, width, .. } => {
-                write!(f, "Constrained(0x{:x}, {})", value, width)
+                write!(f, "Constrained(0x{value:x}, {width})")
             }
             RustBV::Expression {
                 width,
@@ -765,16 +765,16 @@ impl fmt::Display for RustBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RustBV::Concrete { value, width } => {
-                write!(f, "<BV{} 0x{:x}>", width, value)
+                write!(f, "<BV{width} 0x{value:x}>")
             }
             RustBV::Symbolic { width, name, .. } => {
-                write!(f, "<BV{} {}>", width, name)
+                write!(f, "<BV{width} {name}>")
             }
             RustBV::Constrained { value, width, .. } => {
-                write!(f, "<BV{} 0x{:x} (constrained)>", width, value)
+                write!(f, "<BV{width} 0x{value:x} (constrained)>")
             }
             RustBV::Expression { width, op, .. } => {
-                write!(f, "<BV{} {:?}>", width, op)
+                write!(f, "<BV{width} {op:?}>")
             }
         }
     }

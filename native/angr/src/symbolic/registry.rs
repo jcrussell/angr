@@ -107,7 +107,7 @@ impl SymbolicIdentityRegistry {
         // D2 Fix: Include width in the name key to prevent collisions
         // when symbols have the same name but different widths.
         // E.g., "x" with width 32 vs "x" with width 64 should not collide.
-        let qualified_name = format!("{}_w{}", name, width);
+        let qualified_name = format!("{name}_w{width}");
         self.name_to_info.write().insert(
             qualified_name,
             SymbolInfo {
@@ -150,7 +150,7 @@ impl SymbolicIdentityRegistry {
     /// Returns the SymbolInfo if a symbol with this name and width was registered.
     /// This is the preferred method after D2 fix which uses width-qualified names.
     pub fn lookup_by_name_and_width(&self, name: &str, width: u32) -> Option<SymbolInfo> {
-        let qualified_name = format!("{}_w{}", name, width);
+        let qualified_name = format!("{name}_w{width}");
         self.name_to_info.read().get(&qualified_name).cloned()
     }
 

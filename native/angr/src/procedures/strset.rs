@@ -56,7 +56,7 @@ crate::declare_proc! {
         for i in 0..MAX_SCAN as u64 {
             let byte_addr = s_addr.wrapping_add(i);
             let byte_val = state.memory_load(byte_addr, 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{}]", i))? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
             if byte == 0 {
                 return Ok(Some(RustBV::concrete(0u128, bits)));
             }
@@ -84,7 +84,7 @@ crate::declare_proc! {
 
         for i in 0..MAX_SCAN as u64 {
             let byte_val = state.memory_load(s_addr.wrapping_add(i), 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{}]", i))? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
             if byte == 0 || !accept[byte as usize] {
                 return Ok(Some(RustBV::concrete(i as u128, bits)));
             }
@@ -109,7 +109,7 @@ crate::declare_proc! {
 
         for i in 0..MAX_SCAN as u64 {
             let byte_val = state.memory_load(s_addr.wrapping_add(i), 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{}]", i))? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
             if byte == 0 || reject[byte as usize] {
                 return Ok(Some(RustBV::concrete(i as u128, bits)));
             }

@@ -213,7 +213,10 @@ impl<'a> VEXInterpreter<'a> {
                         BranchSnapshot {
                             solver: self.ctx.fork(),
                             registers: self.registers.fork(),
-                            memory: self.rust_memory.as_ref().map(|m| m.fork()),
+                            memory: self
+                                .rust_memory
+                                .as_ref()
+                                .map(super::super::memory::SymbolicMemory::fork),
                         },
                     );
 
@@ -361,8 +364,7 @@ impl<'a> VEXInterpreter<'a> {
                         // Load-linked: load value at addr, write to result temp.
                         let result_ty = irsb.tyenv.get(*result).ok_or_else(|| {
                             CbExecutionError::InvalidIR(format!(
-                                "LLSC result temp {} not in tyenv",
-                                result
+                                "LLSC result temp {result} not in tyenv"
                             ))
                         })?;
                         let load_expr = IRExpr::Load {
@@ -642,7 +644,7 @@ impl<'a> VEXInterpreter<'a> {
 
             // Determine the load size from the destination temp type
             let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
-                CbExecutionError::InvalidIR(format!("LoadG destination temp {} not in tyenv", dst))
+                CbExecutionError::InvalidIR(format!("LoadG destination temp {dst} not in tyenv"))
             })?;
             let load_size = match cvt {
                 IRLoadGOp::Identity => dst_ty.bytes() as usize,

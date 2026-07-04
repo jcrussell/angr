@@ -69,8 +69,7 @@ crate::declare_proc! {
         if let Some(size) = size_bv.as_u64() {
             if size > MAX_MEMSET_SIZE {
                 return Err(ProcedureError::Other(format!(
-                    "memset size {} exceeds maximum {}",
-                    size, MAX_MEMSET_SIZE
+                    "memset size {size} exceeds maximum {MAX_MEMSET_SIZE}"
                 )));
             }
             if size == 0 {

@@ -57,7 +57,7 @@ impl SymbolicMemory {
             RustBV::concrete(0, size * 8)
         } else {
             let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
-            RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{}", id), size * 8)
+            RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{id}"), size * 8)
         }
     }
 
@@ -446,7 +446,7 @@ impl SymbolicMemory {
                 if ready_addrs.is_empty() {
                     return Ok(RustBV::symbolic(
                         ctx,
-                        format!("mem_all_unmapped_{}", size),
+                        format!("mem_all_unmapped_{size}"),
                         size * 8,
                     ));
                 }

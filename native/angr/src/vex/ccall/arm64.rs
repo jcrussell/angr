@@ -86,7 +86,7 @@ pub(super) fn arm64g_calc_flag_z(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Optio
     }
     let (op, nb) = arm64_decode(cc_op)?;
     let res = arm64_res(op, nb, d1, d2, d3);
-    Some(if res == 0 { 1 } else { 0 })
+    Some(u64::from(res == 0))
 }
 
 pub(super) fn arm64g_calc_flag_c(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
@@ -100,33 +100,23 @@ pub(super) fn arm64g_calc_flag_c(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Optio
     Some(match op {
         Arm64Op::Add => {
             let res = a.wrapping_add(b) & mask;
-            if res < a { 1 } else { 0 }
+            u64::from(res < a)
         }
-        Arm64Op::Sub => {
-            if a >= b {
-                1
-            } else {
-                0
-            }
-        }
+        Arm64Op::Sub => u64::from(a >= b),
         Arm64Op::Adc => {
             let res = a.wrapping_add(b).wrapping_add(d3) & mask;
             // Python keys the comparison off cc_dep2 (b), not the carry-in.
             if b != 0 {
-                if res <= a { 1 } else { 0 }
-            } else if res < a {
-                1
+                u64::from(res <= a)
             } else {
-                0
+                u64::from(res < a)
             }
         }
         Arm64Op::Sbc => {
             if b != 0 {
-                if a >= b { 1 } else { 0 }
-            } else if a > b {
-                1
+                u64::from(a >= b)
             } else {
-                0
+                u64::from(a > b)
             }
         }
         Arm64Op::Logic => 0,

@@ -121,7 +121,7 @@ impl SymContext {
     /// Debug: dump solver state as string for comparison.
     #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_string(&self) -> String {
-        self.with_z3_solver(|solver| format!("{}", solver))
+        self.with_z3_solver(|solver| format!("{solver}"))
     }
 
     // =========================================================================

@@ -28,7 +28,7 @@ fn test_vmul_8x8_concrete() {
     // lane i (bits [8i+7:8i]) should equal i*i.
     for i in 0u128..8 {
         let lane = (v >> (i * 8)) & 0xFF;
-        assert_eq!(lane, (i * i) & 0xFF, "lane {} of Mul8x8", i);
+        assert_eq!(lane, (i * i) & 0xFF, "lane {i} of Mul8x8");
     }
 }
 
@@ -54,7 +54,7 @@ fn test_vmul_8x16_concrete() {
     let v = res.as_u128().unwrap();
     for i in 0..16 {
         let lane = (v >> (i * 8)) & 0xFF;
-        assert_eq!(lane, 15, "lane {} of Mul8x16", i);
+        assert_eq!(lane, 15, "lane {i} of Mul8x16");
     }
 }
 
@@ -85,7 +85,7 @@ fn test_vget_elem_8x8_concrete() {
         )
         .unwrap();
         assert_eq!(res.width(), 8);
-        assert_eq!(res.as_u128().unwrap(), expected, "lane {}", lane);
+        assert_eq!(res.as_u128().unwrap(), expected, "lane {lane}");
     }
 }
 
@@ -418,5 +418,5 @@ fn test_vget_elem_symbolic_idx() {
     assert!(ctx.is_sat(), "expected SAT for lane==0x66");
     let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
     // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
-    assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {}", model_idx);
+    assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {model_idx}");
 }

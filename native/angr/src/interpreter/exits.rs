@@ -147,8 +147,7 @@ impl<'a> VEXInterpreter<'a> {
                 limit: self.config.max_symbolic_ip_targets,
             }),
             ConcretizationResult::Failed(msg) => Err(CbExecutionError::Unsupported(format!(
-                "jump target concretization failed: {}",
-                msg
+                "jump target concretization failed: {msg}"
             ))),
         }
     }

@@ -37,7 +37,7 @@ crate::declare_proc! {
 
             // Check first byte of haystack at this position
             let first_val = state.memory_load(h_addr, 1)?;
-            let first = extract_concrete_arg(&first_val, &format!("haystack[{}]", i))? as u8;
+            let first = extract_concrete_arg(&first_val, &format!("haystack[{i}]"))? as u8;
 
             // End of haystack
             if first == 0 {

@@ -22,8 +22,7 @@ fn test_vec_float_scalar_add() {
 
     assert!(
         (result_f32 - 6.0).abs() < 0.0001,
-        "Expected 6.0, got {}",
-        result_f32
+        "Expected 6.0, got {result_f32}"
     );
 }
 
@@ -46,8 +45,7 @@ fn test_vec_float_scalar_div() {
 
     assert!(
         (result_f32 - 3.0).abs() < 0.0001,
-        "Expected 3.0, got {}",
-        result_f32
+        "Expected 3.0, got {result_f32}"
     );
 }
 
@@ -79,8 +77,7 @@ fn test_vec_float_scalar_add_symbolic() {
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 3.0).abs() < 1e-6,
-        "Expected lane0 == 3.0, got {}",
-        lane0
+        "Expected lane0 == 3.0, got {lane0}"
     );
 
     // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
@@ -114,8 +111,7 @@ fn test_vec_float_scalar_sqrt_symbolic() {
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 16.0).abs() < 1e-4,
-        "Expected lane0 == 16.0, got {}",
-        lane0
+        "Expected lane0 == 16.0, got {lane0}"
     );
 }
 
@@ -144,8 +140,7 @@ fn test_vec_float_scalar_max_symbolic() {
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 5.0).abs() < 1e-6,
-        "Expected lane0 == 5.0 (since max(lane0, 3.0) == 5.0), got {}",
-        lane0
+        "Expected lane0 == 5.0 (since max(lane0, 3.0) == 5.0), got {lane0}"
     );
 }
 
@@ -172,8 +167,7 @@ fn test_vec_float_scalar_min_symbolic() {
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 1.0).abs() < 1e-6,
-        "Expected lane0 == 1.0 (since min(lane0, 3.0) == 1.0), got {}",
-        lane0
+        "Expected lane0 == 1.0 (since min(lane0, 3.0) == 1.0), got {lane0}"
     );
 }
 
@@ -192,11 +186,7 @@ fn test_vec_float_scalar_sub_concrete_lane_isolation() {
     let result = VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
     let rv = result.as_u128().unwrap();
     let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
-    assert!(
-        (lane0 - 7.0).abs() < 1e-6,
-        "10.0 - 3.0 == 7.0, got {}",
-        lane0
-    );
+    assert!((lane0 - 7.0).abs() < 1e-6, "10.0 - 3.0 == 7.0, got {lane0}");
     assert_eq!(
         rv & !0xFFFF_FFFFu128,
         upper_pattern,
@@ -219,8 +209,7 @@ fn test_vec_float_scalar_mul_concrete_lane_isolation() {
     let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 10.0).abs() < 1e-6,
-        "4.0 * 2.5 == 10.0, got {}",
-        lane0
+        "4.0 * 2.5 == 10.0, got {lane0}"
     );
     assert_eq!(
         rv & !0xFFFF_FFFFu128,
@@ -255,16 +244,12 @@ fn test_vec_float_scalar_all_variants_f64() {
         let lane0 = f64::from_bits((rv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
         assert!(
             (lane0 - expected).abs() < 1e-9,
-            "{:?}: lane0={} expected={}",
-            op,
-            lane0,
-            expected,
+            "{op:?}: lane0={lane0} expected={expected}",
         );
         assert_eq!(
             rv & !0xFFFF_FFFF_FFFF_FFFFu128,
             upper_pattern,
-            "{:?}: upper 64 bits must pass through",
-            op,
+            "{op:?}: upper 64 bits must pass through",
         );
     }
 
@@ -275,8 +260,7 @@ fn test_vec_float_scalar_all_variants_f64() {
     let sqrt_lane0 = f64::from_bits((sv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
     assert!(
         (sqrt_lane0 - 4.0).abs() < 1e-9,
-        "VFSqrtS{{F64}}: lane0={} expected=4.0",
-        sqrt_lane0,
+        "VFSqrtS{{F64}}: lane0={sqrt_lane0} expected=4.0",
     );
     assert_eq!(
         sv & !0xFFFF_FFFF_FFFF_FFFFu128,
@@ -301,8 +285,7 @@ fn test_vec_float_scalar_max_nan_concrete() {
     // NaN > 3.0 is false, so max picks 3.0 (the right operand).
     assert!(
         (lane0 - 3.0).abs() < 1e-6,
-        "MAXSS(NaN, 3.0) returns the right operand, got {}",
-        lane0
+        "MAXSS(NaN, 3.0) returns the right operand, got {lane0}"
     );
 }
 
@@ -528,13 +511,13 @@ fn test_int_recip_rsqrt_opcode_routing() {
     for (name, count) in [("Iop_RecipEst32Ux2", 2u8), ("Iop_RecipEst32Ux4", 4)] {
         match parse_opcode(name) {
             IROp::VIRecipEst { count: c } => assert_eq!(c, count),
-            other => panic!("{}: expected VIRecipEst, got {:?}", name, other),
+            other => panic!("{name}: expected VIRecipEst, got {other:?}"),
         }
     }
     for (name, count) in [("Iop_RSqrtEst32Ux2", 2u8), ("Iop_RSqrtEst32Ux4", 4)] {
         match parse_opcode(name) {
             IROp::VIRSqrtEst { count: c } => assert_eq!(c, count),
-            other => panic!("{}: expected VIRSqrtEst, got {:?}", name, other),
+            other => panic!("{name}: expected VIRSqrtEst, got {other:?}"),
         }
     }
 }
@@ -559,7 +542,7 @@ fn test_recip_rsqrt_opcode_routing() {
                 assert_eq!(e, elem);
                 assert_eq!(c, count);
             }
-            other => panic!("{}: expected VFRecipEst, got {:?}", name, other),
+            other => panic!("{name}: expected VFRecipEst, got {other:?}"),
         }
     }
     assert!(matches!(
@@ -578,7 +561,7 @@ fn test_recip_rsqrt_opcode_routing() {
                 assert_eq!(e, elem);
                 assert_eq!(c, count);
             }
-            other => panic!("{}: expected VFRSqrtEst, got {:?}", name, other),
+            other => panic!("{name}: expected VFRSqrtEst, got {other:?}"),
         }
     }
     assert!(matches!(
@@ -597,7 +580,7 @@ fn test_recip_rsqrt_opcode_routing() {
                 assert_eq!(e, elem);
                 assert_eq!(c, count);
             }
-            other => panic!("{}: expected VFRecipStep, got {:?}", name, other),
+            other => panic!("{name}: expected VFRecipStep, got {other:?}"),
         }
     }
     let rsqrt_step_pairs = [
@@ -611,7 +594,7 @@ fn test_recip_rsqrt_opcode_routing() {
                 assert_eq!(e, elem);
                 assert_eq!(c, count);
             }
-            other => panic!("{}: expected VFRSqrtStep, got {:?}", name, other),
+            other => panic!("{name}: expected VFRSqrtStep, got {other:?}"),
         }
     }
     // Suppress the unused-helper lint when running this test alone:

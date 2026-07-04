@@ -169,7 +169,7 @@ impl RustExplorationManager {
         let sid = state_id.into();
         let state = self
             .find_state(sid)
-            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", sid)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("state {sid} not found")))?;
         f(state)
     }
 
@@ -184,7 +184,7 @@ impl RustExplorationManager {
         let sid = state_id.into();
         let state = self
             .find_state_mut(sid)
-            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", sid)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("state {sid} not found")))?;
         f(state)
     }
 
@@ -203,10 +203,9 @@ impl RustExplorationManager {
                 // fork loops. Pruned states are also surfaced via the
                 // `pruned` stash counter.
                 log::warn!(
-                    "max_active_states limit ({}) reached; pruning excess forks \
+                    "max_active_states limit ({limit}) reached; pruning excess forks \
                      (likely path explosion). Raise/disable max_active_states if \
-                     this is a legitimately wide exploration.",
-                    limit
+                     this is a legitimately wide exploration."
                 );
                 self.max_active_warned = true;
             } else {
@@ -404,8 +403,7 @@ impl RustExplorationManager {
                     let start = start_time.get_or_insert_with(std::time::Instant::now);
                     if start.elapsed().as_secs_f64() > *timeout_secs {
                         log::info!(
-                            "Native Timeout: exploration timed out after {:.1}s",
-                            timeout_secs
+                            "Native Timeout: exploration timed out after {timeout_secs:.1}s"
                         );
                         // Move all active states to "timeout" stash
                         if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
@@ -625,8 +623,7 @@ impl RustExplorationManager {
                                     }
                                     Err(import_err) => {
                                         log::debug!(
-                                            "claripy.backends.z3 unavailable for fallback: {}",
-                                            import_err
+                                            "claripy.backends.z3 unavailable for fallback: {import_err}"
                                         );
                                         None
                                     }
@@ -644,9 +641,7 @@ impl RustExplorationManager {
                                 z3_ptr_fallback_count += 1;
                                 success_count += 1;
                                 log::debug!(
-                                    "Constraint {} fell back to Z3 ptr (claripy_to_rustbv: {})",
-                                    i,
-                                    e
+                                    "Constraint {i} fell back to Z3 ptr (claripy_to_rustbv: {e})"
                                 );
                                 continue;
                             }
@@ -654,9 +649,7 @@ impl RustExplorationManager {
 
                         failed_count += 1;
                         log::warn!(
-                            "Constraint {} conversion failed: {}. Solver state may diverge.",
-                            i,
-                            e
+                            "Constraint {i} conversion failed: {e}. Solver state may diverge."
                         );
                     }
                 }
@@ -665,8 +658,7 @@ impl RustExplorationManager {
 
         if z3_ptr_fallback_count > 0 {
             log::debug!(
-                "sync_constraints_from_python: {} constraints rescued via Z3 ptr fallback",
-                z3_ptr_fallback_count
+                "sync_constraints_from_python: {z3_ptr_fallback_count} constraints rescued via Z3 ptr fallback"
             );
         }
 
@@ -679,7 +671,7 @@ impl RustExplorationManager {
         }
 
         if success_count > 0 {
-            log::debug!("Synced {} constraints from Python to Rust", success_count);
+            log::debug!("Synced {success_count} constraints from Python to Rust");
         }
 
         // P12: Check satisfiability and return status so callers can prune UNSAT states
@@ -688,10 +680,8 @@ impl RustExplorationManager {
             let is_sat = sym_ctx.is_sat();
             if !is_sat {
                 log::debug!(
-                    "P12: Constraints are UNSAT after syncing {} from Python (failed={}). \
-                     Returning false to trigger pruning.",
-                    success_count,
-                    failed_count
+                    "P12: Constraints are UNSAT after syncing {success_count} from Python (failed={failed_count}). \
+                     Returning false to trigger pruning."
                 );
                 return Ok(false);
             }

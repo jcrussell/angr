@@ -85,7 +85,10 @@ fn parse_concrete_prefix(
         // disambiguate 0/0x/decimal — default to base 10.
         match bytes[idx].as_u64() {
             Some(b) if (b as u8) == b'0' => {
-                match bytes.get(idx + 1).and_then(|b| b.as_u64()) {
+                match bytes
+                    .get(idx + 1)
+                    .and_then(super::super::symbolic::RustBV::as_u64)
+                {
                     Some(n) if (n as u8) == b'x' || (n as u8) == b'X' => {
                         idx += 2;
                         16
@@ -109,7 +112,9 @@ fn parse_concrete_prefix(
     } else if base_arg == 16 {
         if let (Some(b0), Some(b1)) = (
             bytes[idx].as_u64(),
-            bytes.get(idx + 1).and_then(|b| b.as_u64()),
+            bytes
+                .get(idx + 1)
+                .and_then(super::super::symbolic::RustBV::as_u64),
         ) && (b0 as u8) == b'0'
             && ((b1 as u8) == b'x' || (b1 as u8) == b'X')
         {

@@ -145,10 +145,7 @@ fn test_vec_reverse_double_apply_is_identity() {
         ctx.add_constraint(twice.to_z3_ast().eq(arg.to_z3_ast()).not());
         assert!(
             !ctx.is_sat(),
-            "double-apply must equal identity for sub_width={} elem={:?} count={}",
-            sub_width,
-            elem,
-            count
+            "double-apply must equal identity for sub_width={sub_width} elem={elem:?} count={count}"
         );
         ctx.pop();
     }

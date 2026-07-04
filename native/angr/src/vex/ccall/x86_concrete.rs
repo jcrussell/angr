@@ -16,11 +16,7 @@ pub(super) struct Flags {
 pub(super) fn calc_parity(val: u64) -> u8 {
     let byte = val as u8;
     // Count 1 bits in the byte, return 1 if even (even parity)
-    if byte.count_ones().is_multiple_of(2) {
-        1
-    } else {
-        0
-    }
+    u8::from(byte.count_ones().is_multiple_of(2))
 }
 
 /// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).
@@ -64,21 +60,17 @@ pub(super) fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     let res = arg_l.wrapping_sub(arg_r) & mask;
 
     // CF: set if borrow (unsigned: arg_l < arg_r)
-    let cf = if arg_l < arg_r { 1 } else { 0 };
+    let cf = u8::from(arg_l < arg_r);
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative (sign bit set)
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: set if signed overflow
     // Overflow occurs if: (arg_l ^ arg_r) & (arg_l ^ res) has sign bit set
-    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 {
-        1
-    } else {
-        0
-    };
+    let of = u8::from(((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -94,23 +86,19 @@ pub(super) fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     let res = arg_l.wrapping_add(arg_r) & mask;
 
     // CF: set if carry (unsigned overflow: res < arg_l)
-    let cf = if res < arg_l { 1 } else { 0 };
+    let cf = u8::from(res < arg_l);
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: set if signed overflow
     // For addition: overflow if both operands have same sign and result has different sign
     // OF = ((arg_l ^ arg_r ^ mask) & (arg_l ^ res)) has sign bit set
     // Simplified: same sign operands, different sign result
-    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 {
-        1
-    } else {
-        0
-    };
+    let of = u8::from(((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -129,10 +117,10 @@ pub(super) fn calc_flags_logic(nbits: u32, result: u64) -> Flags {
     let of = 0;
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -150,13 +138,13 @@ pub(super) fn calc_flags_inc(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     let cf = ((cc_ndep >> flag_shift::G_CC_SHIFT_C) & 1) as u8;
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: set if res == 0x80...0 (incremented from 0x7F...F)
-    let of = if res == sign_bit { 1 } else { 0 };
+    let of = u8::from(res == sign_bit);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -174,13 +162,13 @@ pub(super) fn calc_flags_dec(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     let cf = ((cc_ndep >> flag_shift::G_CC_SHIFT_C) & 1) as u8;
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: set if res == 0x7F...F (decremented from 0x80...0)
-    let of = if res == (sign_bit - 1) { 1 } else { 0 };
+    let of = u8::from(res == (sign_bit - 1));
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -199,10 +187,10 @@ pub(super) fn calc_flags_shl(nbits: u32, remaining: u64, shifted: u64) -> Flags 
     let cf = ((shifted >> (nbits - 1)) & 1) as u8;
 
     // ZF: set if result is zero
-    let zf = if remaining == 0 { 1 } else { 0 };
+    let zf = u8::from(remaining == 0);
 
     // SF: set if result is negative
-    let sf = if (remaining & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((remaining & sign_bit) != 0);
 
     // OF: XOR of CF and SF (for shift by 1)
     let of = cf ^ sf;
@@ -224,10 +212,10 @@ pub(super) fn calc_flags_shr(nbits: u32, remaining: u64, shifted: u64) -> Flags 
     let cf = (shifted & 1) as u8;
 
     // ZF: set if result is zero
-    let zf = if remaining == 0 { 1 } else { 0 };
+    let zf = u8::from(remaining == 0);
 
     // SF: set if result is negative
-    let sf = if (remaining & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((remaining & sign_bit) != 0);
 
     // OF: MSB of original value (for shift by 1)
     let of = ((shifted >> (nbits - 1)) ^ (remaining >> (nbits - 1))) as u8 & 1;
@@ -288,23 +276,19 @@ pub(super) fn calc_flags_adc(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u6
 
     // CF: carry out
     let cf = if old_c != 0 {
-        if res <= arg_l { 1 } else { 0 }
+        u8::from(res <= arg_l)
     } else {
-        if res < arg_l { 1 } else { 0 }
+        u8::from(res < arg_l)
     };
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: signed overflow
-    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 {
-        1
-    } else {
-        0
-    };
+    let of = u8::from(((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -324,23 +308,19 @@ pub(super) fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u6
 
     // CF: borrow out
     let cf = if old_c != 0 {
-        if arg_l <= arg_r { 1 } else { 0 }
+        u8::from(arg_l <= arg_r)
     } else {
-        if arg_l < arg_r { 1 } else { 0 }
+        u8::from(arg_l < arg_r)
     };
 
     // ZF: set if result is zero
-    let zf = if res == 0 { 1 } else { 0 };
+    let zf = u8::from(res == 0);
 
     // SF: set if result is negative
-    let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
+    let sf = u8::from((res & sign_bit) != 0);
 
     // OF: signed overflow
-    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 {
-        1
-    } else {
-        0
-    };
+    let of = u8::from(((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0);
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -363,11 +343,11 @@ pub(super) fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     };
 
     // CF/OF: set if high part is non-zero
-    let cf = if hi != 0 { 1 } else { 0 };
+    let cf = u8::from(hi != 0);
     let of = cf;
 
     // ZF, SF, PF are undefined but we compute them anyway
-    let zf = if lo == 0 { 1 } else { 0 };
+    let zf = u8::from(lo == 0);
     let sf = ((lo >> (nbits - 1)) & 1) as u8;
     let pf = calc_parity(lo);
 
@@ -395,11 +375,11 @@ pub(super) fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     };
 
     // CF/OF: set if hi != sign extension of lo
-    let cf = if hi != lo_sign_ext { 1 } else { 0 };
+    let cf = u8::from(hi != lo_sign_ext);
     let of = cf;
 
     // ZF, SF, PF
-    let zf = if lo == 0 { 1 } else { 0 };
+    let zf = u8::from(lo == 0);
     let sf = ((lo >> (nbits - 1)) & 1) as u8;
     let pf = calc_parity(lo);
 

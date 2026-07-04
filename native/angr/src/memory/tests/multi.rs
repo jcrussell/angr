@@ -674,7 +674,7 @@ fn test_phase2_safe_install_lazy_region_signals() {
         MemoryError::UnmappedPageInRegion { page_addr } => {
             assert_eq!(page_addr, 0x2000, "must point at the lazy page");
         }
-        other => panic!("expected UnmappedPageInRegion, got {:?}", other),
+        other => panic!("expected UnmappedPageInRegion, got {other:?}"),
     }
     // No Multi cells installed on the partial run.
     assert_eq!(mem.multi_cell_count(), 0);

@@ -246,7 +246,7 @@ impl RustExplorationManager {
         dict.set_item("count", self.vex_fallback_count)?;
         let addrs = PyDict::new(py);
         for (&addr, reason) in &self.vex_fallback_addrs {
-            addrs.set_item(format!("0x{:x}", addr), reason)?;
+            addrs.set_item(format!("0x{addr:x}"), reason)?;
         }
         dict.set_item("addresses", addrs)?;
         dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;

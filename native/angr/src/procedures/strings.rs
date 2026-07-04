@@ -39,7 +39,7 @@ pub fn scan_concrete_until_null(
     let mut buf = Vec::with_capacity(256.min(max));
     for i in 0..max as u64 {
         let byte_val = state.memory_load(addr.wrapping_add(i), 1)?;
-        let byte = extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("{addr_label}[{i}]"))? as u8;
         if byte == 0 {
             return Ok(buf);
         }
@@ -65,7 +65,7 @@ pub fn scan_concrete_bounded(
     let mut buf = Vec::with_capacity(max);
     for i in 0..max as u64 {
         let byte_val = state.memory_load(addr.wrapping_add(i), 1)?;
-        let byte = extract_concrete_arg(&byte_val, &format!("{}[{}]", addr_label, i))? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("{addr_label}[{i}]"))? as u8;
         if byte == 0 {
             return Ok((buf, true));
         }
@@ -111,7 +111,7 @@ pub fn find_null_addr(
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state.memory_load(byte_addr, 1)?;
         let byte =
-            extract_concrete_arg(&byte_val, &format!("{} at 0x{:x}", addr_label, byte_addr))? as u8;
+            extract_concrete_arg(&byte_val, &format!("{addr_label} at 0x{byte_addr:x}"))? as u8;
         if byte == 0 {
             return Ok(byte_addr);
         }

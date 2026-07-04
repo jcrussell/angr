@@ -49,7 +49,7 @@ fn test_neon_q_and_d_registers() {
     // Q registers are 16 bytes wide and start at the matching even
     // D register: Qn lives at offset of D(2n).
     for n in 0..16usize {
-        let q = format!("q{}", n);
+        let q = format!("q{n}");
         let d_even = format!("d{}", 2 * n);
         assert_eq!(arch.register_offset(&q), arch.register_offset(&d_even));
         assert_eq!(arch.register_size(&q), Some(16));

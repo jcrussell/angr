@@ -27,8 +27,7 @@ fn test_float_cmp_lt_symbolic_constraint() {
     let result_f = f32::from_bits(model_x as u32);
     assert!(
         result_f > 1.0 && result_f < 2.0,
-        "Expected 1.0 < x < 2.0, got {}",
-        result_f
+        "Expected 1.0 < x < 2.0, got {result_f}"
     );
 }
 
@@ -183,8 +182,7 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 2.0).abs() < 1e-6,
-        "expected lane0==2.0, got {}",
-        lane0
+        "expected lane0==2.0, got {lane0}"
     );
 }
 
@@ -243,8 +241,7 @@ fn test_fcom_cc_symbolic_lt() {
     let xf = f64::from_bits(model_x as u64);
     assert!(
         !xf.is_nan() && xf < 5.0,
-        "expected x < 5.0 and not NaN, got {}",
-        xf
+        "expected x < 5.0 and not NaN, got {xf}"
     );
 }
 
@@ -481,7 +478,6 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
     let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
     assert!(
         lane0 < 5.0 && !lane0.is_nan(),
-        "expected lane0 < 5.0 and not NaN, got {}",
-        lane0
+        "expected lane0 < 5.0 and not NaN, got {lane0}"
     );
 }

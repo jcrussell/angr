@@ -15,7 +15,7 @@ fn futex_wake_returns_zero_concretely() {
     let mut state = fresh_state();
     let bits = state.arch().bits();
     let args: Vec<RustBV> = (0..6)
-        .map(|i| RustBV::concrete(if i == 1 { 1 } else { 0 }, bits)) // op=1 = FUTEX_WAKE
+        .map(|i| RustBV::concrete(u128::from(i == 1), bits)) // op=1 = FUTEX_WAKE
         .collect();
     let outcome = h.call(&mut state, &args).expect("ok");
     match outcome {

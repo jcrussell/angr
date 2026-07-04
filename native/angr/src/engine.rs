@@ -88,11 +88,11 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
 #[pyfunction]
 pub fn execute_irsb_for_test(irsb_json: &str, arch_name: &str) -> PyResult<()> {
     let arch = arch_from_name(arch_name)
-        .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {}", arch_name)))?;
+        .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {arch_name}")))?;
     let vex_arch = arch.vex_arch();
 
     let irsb = deserialize_irsb(irsb_json)
-        .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {e}")))?;
 
     let ctx = SymContext::new_mock();
     let callbacks = PythonCallbacks::new();
@@ -269,9 +269,8 @@ fn set_rust_log_level(level: &str) -> PyResult<()> {
             "error" | "warn" | "warning" | "info" | "debug" | "trace" | "off" => {}
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "invalid log level '{}': use error/warn/info/debug/trace/off, \
-                     or a RUST_LOG-style spec like 'angr::stepping=debug'",
-                    level
+                    "invalid log level '{level}': use error/warn/info/debug/trace/off, \
+                     or a RUST_LOG-style spec like 'angr::stepping=debug'"
                 )));
             }
         }
@@ -312,7 +311,12 @@ fn register_size_for_arch(arch_name: &str, reg_name: &str) -> Option<u32> {
 #[pyfunction]
 fn register_names_for_arch(arch_name: &str) -> Vec<String> {
     arch_from_name(arch_name)
-        .map(|a| a.register_names().iter().map(|s| s.to_string()).collect())
+        .map(|a| {
+            a.register_names()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 

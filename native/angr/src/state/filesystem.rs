@@ -516,7 +516,7 @@ impl FileSystem {
     /// `path` is a registered symlink, else `None` (the path is not a
     /// symlink, so `readlink` returns `-1`).
     pub fn readlink_target(&self, path: &str) -> Option<&[u8]> {
-        self.symlinks.get(path).map(|v| v.as_slice())
+        self.symlinks.get(path).map(std::vec::Vec::as_slice)
     }
 
     /// Close a file descriptor. Returns true if it was open.
@@ -868,7 +868,7 @@ impl FileSystem {
             .fds
             .values()
             .filter(|d| self.normalize_path(&d.name) == norm)
-            .map(|d| d.effective_len())
+            .map(FileDescriptor::effective_len)
             .max();
         let reg_len = self.file_contents.get(&norm).map(|v| v.len());
         fd_max.into_iter().chain(reg_len).max()
@@ -903,7 +903,7 @@ impl FileSystem {
     /// `NativeFstatSyscall` st_size; `NativeFeof` uses the combined
     /// [`fd_pos_and_size`](Self::fd_pos_and_size) accessor instead.
     pub fn effective_size(&self, fd: u32) -> Option<usize> {
-        self.fds.get(&fd).map(|d| d.effective_len())
+        self.fds.get(&fd).map(FileDescriptor::effective_len)
     }
 
     /// List all file descriptor numbers (including closed ones).

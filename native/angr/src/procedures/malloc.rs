@@ -42,8 +42,7 @@ crate::declare_proc! {
 
         if total > 1024 * 1024 {
             return Err(ProcedureError::Other(format!(
-                "calloc size {} exceeds 1MB limit",
-                total
+                "calloc size {total} exceeds 1MB limit"
             )));
         }
 
@@ -79,8 +78,7 @@ crate::declare_proc! {
     call |state| {
         if size > 1024 * 1024 {
             return Err(ProcedureError::Other(format!(
-                "realloc size {} exceeds 1MB limit",
-                size
+                "realloc size {size} exceeds 1MB limit"
             )));
         }
 
@@ -125,14 +123,12 @@ crate::declare_proc! {
     call |state| {
         if alignment > 1 && !alignment.is_power_of_two() {
             return Err(ProcedureError::Other(format!(
-                "memalign alignment {} is not a power of two",
-                alignment
+                "memalign alignment {alignment} is not a power of two"
             )));
         }
         if size > 1024 * 1024 {
             return Err(ProcedureError::Other(format!(
-                "memalign size {} exceeds 1MB limit",
-                size
+                "memalign size {size} exceeds 1MB limit"
             )));
         }
 
@@ -164,8 +160,7 @@ crate::declare_proc! {
         }
         if size > 1024 * 1024 {
             return Err(ProcedureError::Other(format!(
-                "posix_memalign size {} exceeds 1MB limit",
-                size
+                "posix_memalign size {size} exceeds 1MB limit"
             )));
         }
 

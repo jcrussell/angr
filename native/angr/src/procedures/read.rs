@@ -59,8 +59,7 @@ crate::declare_proc! {
         if fd == 0 {
             if count > MAX_READ_SIZE {
                 return Err(ProcedureError::Other(format!(
-                    "read count {} exceeds limit",
-                    count
+                    "read count {count} exceeds limit"
                 )));
             }
             return read_stdin_symbolic(state, buf, count);
@@ -73,8 +72,7 @@ crate::declare_proc! {
         };
         if !open {
             return Err(ProcedureError::Other(format!(
-                "read from fd={} (not open in Rust FileSystem) falls back to Python",
-                fd
+                "read from fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
         // Bounded symbolic file content (angr-0xyq2 Phase 2): serve the
@@ -95,16 +93,14 @@ crate::declare_proc! {
         }
         if count > MAX_READ_SIZE {
             return Err(ProcedureError::Other(format!(
-                "read count {} exceeds limit",
-                count
+                "read count {count} exceeds limit"
             )));
         }
         // Empty / no-content fds defer to Python so the symbolic-file model
         // (cle simfs + SimFile) can produce symbolic bytes.
         if content_len == 0 {
             return Err(ProcedureError::Other(format!(
-                "read from fd={} has no concrete content; falling back to Python",
-                fd
+                "read from fd={fd} has no concrete content; falling back to Python"
             )));
         }
 
@@ -123,9 +119,7 @@ fn read_stdin_symbolic(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let read_id = symbol_counter("read");
 
-    let names: Vec<String> = (0..count)
-        .map(|i| format!("stdin_{}_{}", read_id, i))
-        .collect();
+    let names: Vec<String> = (0..count).map(|i| format!("stdin_{read_id}_{i}")).collect();
     let sym_bytes: Vec<RustBV> = {
         let ctx = state.solver().borrow();
         names
@@ -157,7 +151,7 @@ fn read_stdin_symbolic(
     if state.has_option("SHORT_READS") {
         let real_size = {
             let ctx = state.solver().borrow();
-            let real_size = RustBV::symbolic(&ctx, format!("read_realsize_{}", read_id), bits);
+            let real_size = RustBV::symbolic(&ctx, format!("read_realsize_{read_id}"), bits);
             // 0 <= real_size <= count (lower bound implicit for unsigned).
             let bound = real_size.ule(&RustBV::concrete(count as u128, bits), &ctx);
             (real_size, bound)

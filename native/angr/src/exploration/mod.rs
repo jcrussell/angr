@@ -91,7 +91,7 @@ pub(crate) type InspectionEventInfo = (u8, String, u64, u32, u64);
 /// Get the current stepping state ID (safe to call from callbacks).
 #[pyfunction]
 pub fn get_stepping_state_id() -> Option<u64> {
-    STEPPING_STATE_ID.with(|cell| cell.get())
+    STEPPING_STATE_ID.with(std::cell::Cell::get)
 }
 
 pub use self::callback_types::CallbackReason;
@@ -424,7 +424,7 @@ impl RustExplorationManager {
     #[pyo3(signature = (arch="amd64", little_endian=None))]
     pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
         let arch_info = arch_from_name(arch)
-            .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {}", arch)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {arch}")))?;
 
         let vex_arch = arch_info.vex_arch();
 
@@ -540,7 +540,10 @@ impl RustExplorationManager {
 
     /// Get active state count.
     pub fn active_count(&self) -> usize {
-        self.sm.get(STASH_ACTIVE).map(|s| s.len()).unwrap_or(0)
+        self.sm
+            .get(STASH_ACTIVE)
+            .map(std::collections::VecDeque::len)
+            .unwrap_or(0)
     }
 
     /// Get found state count.
@@ -548,7 +551,7 @@ impl RustExplorationManager {
         self.sm
             .stashes()
             .get(STASH_FOUND)
-            .map(|s| s.len())
+            .map(std::collections::VecDeque::len)
             .unwrap_or(0)
     }
 
@@ -1096,7 +1099,7 @@ impl RustExplorationManager {
         self.sm
             .get(stash)
             .and_then(|s| s.get(index))
-            .map(|s| s.pc())
+            .map(super::state::RustSimState::pc)
     }
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
@@ -1143,7 +1146,7 @@ impl RustExplorationManager {
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {
         self.sm
             .get(stash)
-            .map(|s| s.iter().map(|state| state.state_id()).collect())
+            .map(|s| s.iter().map(super::state::RustSimState::state_id).collect())
             .unwrap_or_default()
     }
 
@@ -1170,14 +1173,18 @@ impl RustExplorationManager {
     /// Get the number of states in a stash (O(1), no allocation).
     #[pyo3(signature = (stash="active"))]
     pub fn stash_count(&self, stash: &str) -> usize {
-        self.sm.get(stash).map_or(0, |s| s.len())
+        self.sm
+            .get(stash)
+            .map_or(0, std::collections::VecDeque::len)
     }
 
     /// Get the stash name a state currently belongs to (O(1) via state index).
     /// Returns None if the state isn't found in any stash. Used by
     /// RustStateProxy.__repr__ for cheap REPL debugging output.
     pub fn state_stash(&self, state_id: u64) -> Option<String> {
-        self.sm.stash_of(state_id).map(|s| s.to_string())
+        self.sm
+            .stash_of(state_id)
+            .map(std::string::ToString::to_string)
     }
 
     /// Get the number of solver constraints for a state (O(1), reads
@@ -1947,7 +1954,7 @@ impl RustExplorationManager {
         self.native_procedures
             .procedure_names()
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     }
 
@@ -2628,7 +2635,7 @@ impl RustExplorationManager {
     /// `ValueError`.
     pub fn load_snapshot_bytes(&mut self, bytes: &[u8]) -> PyResult<()> {
         let restored = StashManager::load_snapshot(bytes)
-            .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {e}")))?;
         self.sm = restored;
         Ok(())
     }

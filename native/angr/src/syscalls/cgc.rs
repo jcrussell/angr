@@ -141,8 +141,7 @@ impl NativeSyscall for NativeTransmitSyscall {
 
         if count > MAX_CGC_BYTES {
             return Err(SyscallError::Other(format!(
-                "transmit count {} exceeds limit",
-                count
+                "transmit count {count} exceeds limit"
             )));
         }
 
@@ -152,8 +151,7 @@ impl NativeSyscall for NativeTransmitSyscall {
         let fd_u32 = fd as u32;
         if fd == 0 || !state.file_system_ref().is_open(fd_u32) {
             return Err(SyscallError::Other(format!(
-                "transmit fd={} falls back to Python",
-                fd
+                "transmit fd={fd} falls back to Python"
             )));
         }
 
@@ -224,8 +222,7 @@ impl NativeSyscall for NativeReceiveSyscall {
 
         if count > MAX_CGC_BYTES {
             return Err(SyscallError::Other(format!(
-                "receive count {} exceeds limit",
-                count
+                "receive count {count} exceeds limit"
             )));
         }
         if count == 0 {
@@ -238,8 +235,7 @@ impl NativeSyscall for NativeReceiveSyscall {
         if fd != 0 {
             // Non-stdin receive: defer to Python's symbolic-file model.
             return Err(SyscallError::Other(format!(
-                "receive fd={} falls back to Python",
-                fd
+                "receive fd={fd} falls back to Python"
             )));
         }
 
@@ -386,8 +382,7 @@ impl NativeSyscall for NativeRandomSyscall {
 
         if count > MAX_CGC_BYTES {
             return Err(SyscallError::Other(format!(
-                "random count {} exceeds limit",
-                count
+                "random count {count} exceeds limit"
             )));
         }
         if count == 0 {

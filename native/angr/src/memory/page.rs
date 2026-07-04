@@ -168,7 +168,7 @@ impl MemoryPage {
     }
 
     /// Create a page from existing data.
-    pub fn from_data(base_addr: u64, data: Vec<u8>, permissions: Permission) -> Self {
+    pub fn from_data(base_addr: u64, data: &[u8], permissions: Permission) -> Self {
         let mut page_data = vec![0u8; PAGE_SIZE as usize];
         let copy_len = data.len().min(PAGE_SIZE as usize);
         page_data[..copy_len].copy_from_slice(&data[..copy_len]);
@@ -261,10 +261,7 @@ impl MemoryPage {
     pub fn mark_symbolic(&mut self, offset: u16, size: u16) {
         debug_assert!(
             (offset as usize + size as usize) <= PAGE_SIZE as usize,
-            "mark_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
-            offset,
-            size,
-            PAGE_SIZE
+            "mark_symbolic: offset {offset} + size {size} exceeds PAGE_SIZE {PAGE_SIZE}"
         );
         let bitmap = self
             .symbolic_bitmap
@@ -283,10 +280,7 @@ impl MemoryPage {
     pub fn clear_symbolic(&mut self, offset: u16, size: u16) {
         debug_assert!(
             (offset as usize + size as usize) <= PAGE_SIZE as usize,
-            "clear_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
-            offset,
-            size,
-            PAGE_SIZE
+            "clear_symbolic: offset {offset} + size {size} exceeds PAGE_SIZE {PAGE_SIZE}"
         );
         let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
         clear_bitmap_range(&mut self.symbolic_bitmap, offset, loop_end);
@@ -312,8 +306,7 @@ impl MemoryPage {
     pub fn mark_multi(&mut self, offset: u16) {
         debug_assert!(
             (offset as usize) < PAGE_SIZE as usize,
-            "mark_multi: offset {} out of range",
-            offset
+            "mark_multi: offset {offset} out of range"
         );
         let bitmap = self
             .multi_bitmap

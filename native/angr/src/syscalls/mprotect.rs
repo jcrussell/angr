@@ -92,7 +92,7 @@ impl NativeSyscall for NativeMprotectSyscall {
             // Pages confirmed mapped above; assert via debug_assert and
             // tolerate concurrent unmaps (unlikely but cheap to handle).
             let updated = memory.set_page_permissions(page_num, new_perm);
-            debug_assert!(updated, "mprotect: page {:#x} disappeared", page_addr);
+            debug_assert!(updated, "mprotect: page {page_addr:#x} disappeared");
             page_addr += PAGE_SIZE;
         }
 

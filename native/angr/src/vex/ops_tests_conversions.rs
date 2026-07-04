@@ -136,8 +136,7 @@ fn test_f64_to_f32_overflow() {
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!(
         f.is_infinite() && f.is_sign_positive(),
-        "1e300 → +inf, got {}",
-        f
+        "1e300 → +inf, got {f}"
     );
 }
 

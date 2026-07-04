@@ -110,8 +110,7 @@ impl NativeSimProcedure for NativeFwrite {
         let total = size.saturating_mul(nmemb);
         if total > MAX_FWRITE_SIZE {
             return Err(ProcedureError::Other(format!(
-                "fwrite byte count {} exceeds limit",
-                total
+                "fwrite byte count {total} exceeds limit"
             )));
         }
 
@@ -322,7 +321,7 @@ impl NativeSimProcedure for NativeFeof {
             Some((pos, len)) => pos as usize >= len,
             None => false,
         };
-        Ok(Some(RustBV::concrete(if at_eof { 1 } else { 0 }, bits)))
+        Ok(Some(RustBV::concrete(u128::from(at_eof), bits)))
     }
 }
 

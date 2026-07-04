@@ -336,11 +336,7 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
                 if let Some(start) = hook_fork_start {
-                    let fork_count = if pre_callback_snapshot.is_some() {
-                        1u64
-                    } else {
-                        0u64
-                    };
+                    let fork_count = u64::from(pre_callback_snapshot.is_some());
                     self.profiling.accumulated_stats.solver_fork_time_ns +=
                         start.elapsed().as_nanos() as u64;
                     self.profiling.accumulated_stats.solver_fork_count += fork_count;
@@ -660,11 +656,7 @@ impl RustExplorationManager {
                 Ok(Some((name, num_args, no_return))) => {
                     // Function resolved! Register it and return to Python for execution
                     log::debug!(
-                        "Resolved unmodeled call at 0x{:x} -> {} (args={}, no_return={})",
-                        addr,
-                        name,
-                        num_args,
-                        no_return
+                        "Resolved unmodeled call at 0x{addr:x} -> {name} (args={num_args}, no_return={no_return})"
                     );
 
                     // Register the procedure so future calls are hooked
@@ -705,10 +697,10 @@ impl RustExplorationManager {
                 }
                 Err(e) => {
                     // Callback error - treat as execution error
-                    log::warn!("resolve_function callback error at 0x{:x}: {}", addr, e);
+                    log::warn!("resolve_function callback error at 0x{addr:x}: {e}");
                     Err(StepError::Error(
                         state,
-                        format!("resolve_function error: {}", e),
+                        format!("resolve_function error: {e}"),
                     ))
                 }
             }
@@ -738,9 +730,7 @@ impl RustExplorationManager {
         fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         log::debug!(
-            "P21: Unmodeled call at 0x{:x} - generic skip (ret=0) to return_addr=0x{:x}",
-            addr,
-            return_addr
+            "P21: Unmodeled call at 0x{addr:x} - generic skip (ret=0) to return_addr=0x{return_addr:x}"
         );
 
         // Set return register to 0 (symbolic unconstrained would be better but
@@ -848,11 +838,7 @@ impl RustExplorationManager {
         // call_inspect_fork self-attaches the GIL (angr-vh834 Phase 4), so no
         // explicit Python::attach wrapper is needed here.
         if let Err(e) = cb.call_inspect_fork(forked_state_id as i64, "after") {
-            log::debug!(
-                "fork inspect dispatch raised (state {}): {}",
-                forked_state_id,
-                e
-            );
+            log::debug!("fork inspect dispatch raised (state {forked_state_id}): {e}");
         }
     }
 }

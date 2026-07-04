@@ -115,10 +115,8 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
         i += m_adv;
         let long_count: u8 = if matches!(modifier, LengthModifier::LongLong) {
             2
-        } else if modifier.is_64bit() {
-            1
         } else {
-            0
+            u8::from(modifier.is_64bit())
         };
 
         if i >= fmt.len() {
@@ -252,14 +250,14 @@ fn do_scanf(
             break;
         }
 
-        let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {}", arg_idx))?;
+        let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {arg_idx}"))?;
         arg_idx += 1;
 
         if spec.is_string {
             // %s: create symbolic bytes + NUL terminator
             let str_len = spec.max_str_len;
             let names: Vec<String> = (0..str_len)
-                .map(|j| format!("{}_scanf_{}_s{}_{}", source, scan_id, spec_idx, j))
+                .map(|j| format!("{source}_scanf_{scan_id}_s{spec_idx}_{j}"))
                 .collect();
 
             let sym_bytes: Vec<RustBV> = {
@@ -284,7 +282,7 @@ fn do_scanf(
             state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
-            let name = format!("{}_scanf_{}_{}", source, scan_id, spec_idx);
+            let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
             let sym_val = {
                 let ctx = state.solver().borrow();
                 RustBV::symbolic(&ctx, &name, spec.bits)

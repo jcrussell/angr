@@ -42,8 +42,7 @@ fn test_vec_shl_n_symbolic_shift() {
         let expected = ((i as u128 + 1) << 4) & 0xFFFF;
         assert_eq!(
             lane, expected,
-            "lane {} expected {:#x}, got {:#x}",
-            i, expected, lane
+            "lane {i} expected {expected:#x}, got {lane:#x}"
         );
     }
 }
@@ -86,8 +85,7 @@ fn test_vec_shr_n_symbolic_shift() {
         let expected = lane >> 8;
         assert_eq!(
             got, expected,
-            "lane {} expected {:#x}, got {:#x}",
-            i, expected, got
+            "lane {i} expected {expected:#x}, got {got:#x}"
         );
     }
 }
@@ -128,11 +126,7 @@ fn test_vec_sar_n_symbolic_shift() {
     for (i, lane) in lanes.iter().enumerate() {
         let got = ((model >> (i * 16)) & 0xFFFF) as u16 as i16;
         let expected = lane >> 4; // arithmetic shift in Rust on i16
-        assert_eq!(
-            got, expected,
-            "lane {} expected {}, got {}",
-            i, expected, got
-        );
+        assert_eq!(got, expected, "lane {i} expected {expected}, got {got}");
     }
 }
 
@@ -448,10 +442,10 @@ fn test_parse_vshift_routing() {
     for (op, e, c) in shl_cases {
         match parse_opcode(op) {
             IROp::VShl { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VShl, got {:?}", op, other),
+            other => panic!("{op}: expected VShl, got {other:?}"),
         }
     }
 
@@ -468,10 +462,10 @@ fn test_parse_vshift_routing() {
     for (op, e, c) in shr_cases {
         match parse_opcode(op) {
             IROp::VShr { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VShr, got {:?}", op, other),
+            other => panic!("{op}: expected VShr, got {other:?}"),
         }
     }
 
@@ -488,10 +482,10 @@ fn test_parse_vshift_routing() {
     for (op, e, c) in sar_cases {
         match parse_opcode(op) {
             IROp::VSar { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VSar, got {:?}", op, other),
+            other => panic!("{op}: expected VSar, got {other:?}"),
         }
     }
 }

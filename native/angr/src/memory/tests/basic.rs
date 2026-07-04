@@ -248,7 +248,7 @@ fn test_permission_enforcement_blocks_write_to_readonly() {
             assert!(!actual.write);
             assert!(actual.read);
         }
-        other => panic!("expected Permission error, got {:?}", other),
+        other => panic!("expected Permission error, got {other:?}"),
     }
 }
 
@@ -271,7 +271,7 @@ fn test_permission_enforcement_blocks_read_from_writeonly() {
             assert!(required.read);
             assert!(!actual.read);
         }
-        other => panic!("expected Permission error, got {:?}", other),
+        other => panic!("expected Permission error, got {other:?}"),
     }
 }
 
@@ -334,7 +334,7 @@ fn test_check_executable_rejects_non_x_page() {
             assert_eq!(required, Permission::X);
             assert_eq!(actual, Permission::RW);
         }
-        _ => panic!("expected Permission error, got {:?}", err),
+        _ => panic!("expected Permission error, got {err:?}"),
     }
 }
 

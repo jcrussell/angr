@@ -308,26 +308,22 @@ pub(super) fn armg_calc_flag_z(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> O
         ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_Z) & 1),
         ARMG_CC_OP_ADD => {
             let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
-            Some(if res == 0 { 1 } else { 0 })
+            Some(u64::from(res == 0))
         }
         ARMG_CC_OP_SUB => {
             let res = dep1.wrapping_sub(dep2) & 0xFFFFFFFF;
-            Some(if res == 0 { 1 } else { 0 })
+            Some(u64::from(res == 0))
         }
         ARMG_CC_OP_ADC => {
             let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
-            Some(if res == 0 { 1 } else { 0 })
+            Some(u64::from(res == 0))
         }
         ARMG_CC_OP_SBB => {
             let res = dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1) & 0xFFFFFFFF;
-            Some(if res == 0 { 1 } else { 0 })
+            Some(u64::from(res == 0))
         }
-        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => Some(if (dep1 & 0xFFFFFFFF) == 0 { 1 } else { 0 }),
-        ARMG_CC_OP_MULL => Some(if (dep1 | dep2) & 0xFFFFFFFF == 0 {
-            1
-        } else {
-            0
-        }),
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => Some(u64::from((dep1 & 0xFFFFFFFF) == 0)),
+        ARMG_CC_OP_MULL => Some(u64::from((dep1 | dep2) & 0xFFFFFFFF == 0)),
         _ => None,
     }
 }
@@ -342,22 +338,22 @@ pub(super) fn armg_calc_flag_c(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> O
         ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_C) & 1),
         ARMG_CC_OP_ADD => {
             let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
-            Some(if res < dep1 { 1 } else { 0 })
+            Some(u64::from(res < dep1))
         }
-        ARMG_CC_OP_SUB => Some(if dep1 >= dep2 { 1 } else { 0 }),
+        ARMG_CC_OP_SUB => Some(u64::from(dep1 >= dep2)),
         ARMG_CC_OP_ADC => {
             let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
             if ndep != 0 {
-                Some(if res <= dep1 { 1 } else { 0 })
+                Some(u64::from(res <= dep1))
             } else {
-                Some(if res < dep1 { 1 } else { 0 })
+                Some(u64::from(res < dep1))
             }
         }
         ARMG_CC_OP_SBB => {
             if ndep != 0 {
-                Some(if dep1 >= dep2 { 1 } else { 0 })
+                Some(u64::from(dep1 >= dep2))
             } else {
-                Some(if dep1 > dep2 { 1 } else { 0 })
+                Some(u64::from(dep1 > dep2))
             }
         }
         ARMG_CC_OP_LOGIC => Some(dep2 & 1), // shifter_carry_out

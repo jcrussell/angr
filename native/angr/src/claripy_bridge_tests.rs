@@ -167,7 +167,7 @@ fn test_export_symbolic_bitcount_is_sound() {
                     BVOp::Popcount => b.count_ones() as u128,
                     _ => unreachable!(),
                 };
-                assert_eq!(got, expected, "{:?}({:#x}) width=8", op, v);
+                assert_eq!(got, expected, "{op:?}({v:#x}) width=8");
             }
         }
     });

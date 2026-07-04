@@ -36,7 +36,7 @@ pub(super) fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
 
     // Pad hex string to even length
     let padded = if s.len() % 2 == 1 {
-        format!("0{}", s)
+        format!("0{s}")
     } else {
         s.to_string()
     };

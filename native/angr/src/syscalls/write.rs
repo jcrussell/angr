@@ -60,8 +60,7 @@ impl NativeSyscall for NativeWriteSyscall {
         let fd_u32 = fd as u32;
         if !state.file_system_ref().is_open(fd_u32) {
             return Err(SyscallError::Other(format!(
-                "write to fd={} (not open in Rust FileSystem) falls back to Python",
-                fd
+                "write to fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
         // Deferred `?`: a symbolic buf/count on a symbolic-content fd must
@@ -83,8 +82,7 @@ impl NativeSyscall for NativeWriteSyscall {
 
         if count > MAX_WRITE_SIZE {
             return Err(SyscallError::Other(format!(
-                "write count {} exceeds limit",
-                count
+                "write count {count} exceeds limit"
             )));
         }
 

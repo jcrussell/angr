@@ -37,7 +37,7 @@ fn main() {
     let elapsed = start.elapsed();
     let calls = ITERS * samples.len();
     let avg_ns = elapsed.as_nanos() as f64 / calls as f64;
-    let total_bytes: usize = samples.iter().map(|s| s.len()).sum();
+    let total_bytes: usize = samples.iter().map(std::string::String::len).sum();
     println!(
         "full deserialize_irsb: {} calls in {:.3}s = {:.1}us/call ({:.1} MB/s, total stmts={})",
         calls,

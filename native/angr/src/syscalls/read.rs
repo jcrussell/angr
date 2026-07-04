@@ -76,8 +76,7 @@ impl NativeSyscall for NativeReadSyscall {
         if fd == 0 {
             if count > MAX_READ_SIZE {
                 return Err(SyscallError::Other(format!(
-                    "read count {} exceeds limit",
-                    count
+                    "read count {count} exceeds limit"
                 )));
             }
             return read_symbolic(state, buf, count, "sys_read");
@@ -90,8 +89,7 @@ impl NativeSyscall for NativeReadSyscall {
         };
         if !open {
             return Err(SyscallError::Other(format!(
-                "read from fd={} (not open in Rust FileSystem) falls back to Python",
-                fd
+                "read from fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
         // Bounded symbolic file content (angr-0xyq2 Phase 2): serve the
@@ -113,8 +111,7 @@ impl NativeSyscall for NativeReadSyscall {
         }
         if count > MAX_READ_SIZE {
             return Err(SyscallError::Other(format!(
-                "read count {} exceeds limit",
-                count
+                "read count {count} exceeds limit"
             )));
         }
         if content_len == 0 {
@@ -125,8 +122,7 @@ impl NativeSyscall for NativeReadSyscall {
                 return read_symbolic(state, buf, count, &format!("sys_read_fd{fd}"));
             }
             return Err(SyscallError::Other(format!(
-                "read from fd={} has no concrete content; falling back to Python",
-                fd
+                "read from fd={fd} has no concrete content; falling back to Python"
             )));
         }
 
@@ -155,7 +151,7 @@ fn read_symbolic(
         let ctx = state.solver().borrow();
         (0..count)
             .map(|i| {
-                let name = format!("{}_{}_{}", prefix, read_id, i);
+                let name = format!("{prefix}_{read_id}_{i}");
                 RustBV::symbolic(&ctx, &name, 8)
             })
             .collect()

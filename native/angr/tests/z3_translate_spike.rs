@@ -98,15 +98,13 @@ fn translate_cost_micro() {
 
     let ns_per_node = elapsed.as_nanos() / node_count as u128;
     eprintln!(
-        "Z3_translate micro: N={}, ~{} AST nodes, total {:?}, {} ns/node",
-        N, node_count, elapsed, ns_per_node
+        "Z3_translate micro: N={N}, ~{node_count} AST nodes, total {elapsed:?}, {ns_per_node} ns/node"
     );
 
     // Sanity: 1000-iter chain must translate in well under a second.
     assert!(
         elapsed.as_secs() < 5,
-        "translate took unreasonably long: {:?}",
-        elapsed
+        "translate took unreasonably long: {elapsed:?}"
     );
 }
 
@@ -153,8 +151,7 @@ fn translate_cost_state_export_shape() {
     let ns_per_node = elapsed.as_nanos() / node_count as u128;
 
     eprintln!(
-        "Z3_translate state-shape: {} leaves + {} constraints (~{} nodes), total {:?}, {} ns/node",
-        NUM_LEAVES, NUM_CONSTRAINTS, node_count, elapsed, ns_per_node
+        "Z3_translate state-shape: {NUM_LEAVES} leaves + {NUM_CONSTRAINTS} constraints (~{node_count} nodes), total {elapsed:?}, {ns_per_node} ns/node"
     );
 
     // sanity: translated objects must equal original count

@@ -144,7 +144,7 @@ fn test_with_z3_solver_no_lineage_uses_local_solver() {
 
     // Closure asserts via with_z3_solver — must hit the same solver
     // that holds the assume_true constraint.
-    let sat = ctx.with_z3_solver(|solver| solver.check());
+    let sat = ctx.with_z3_solver(z3::Solver::check);
     assert_eq!(sat, z3::SatResult::Sat);
 
     // Add a contradictory temporary constraint inside the closure and
@@ -183,7 +183,7 @@ fn test_with_z3_solver_routes_to_lineage() {
     let pre = super::super::lineage::lineage_stats();
     let pre_switch = pre[0].1;
 
-    let result = ctx.with_z3_solver(|solver| solver.check());
+    let result = ctx.with_z3_solver(z3::Solver::check);
     assert_eq!(
         result,
         z3::SatResult::Sat,

@@ -386,7 +386,7 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
 
     // Three calls with the same Z3_ast — dedup must catch reps 2 and 3.
@@ -545,7 +545,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
     assert!(!child.local_constraints.lock().dedup_set_seeded);
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
     child.add_constraint_raw(ast_for_child);
     // Seeded from shared; the ptr was already there, so this call is
@@ -611,8 +611,7 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     let core = ctx.unsat_core();
     assert!(
         core.contains(&idx1) && core.contains(&idx2),
-        "None branch unsat_core must include both tracker indices; got {:?}",
-        core
+        "None branch unsat_core must include both tracker indices; got {core:?}"
     );
 }
 

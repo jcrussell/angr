@@ -174,7 +174,7 @@ impl SymContext {
             any = true;
         }
         if any {
-            format!("{}", temp)
+            format!("{temp}")
         } else {
             String::new()
         }
@@ -203,7 +203,7 @@ impl SymContext {
             any = true;
         }
         if any {
-            format!("{}", temp)
+            format!("{temp}")
         } else {
             String::new()
         }

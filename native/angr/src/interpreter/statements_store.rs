@@ -89,18 +89,13 @@ impl<'a> VEXInterpreter<'a> {
                 size: unmapped_size,
             }) => {
                 log::debug!(
-                    "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
-                    addr,
-                    unmapped_size
+                    "Unmapped memory store at 0x{addr:x} (size={unmapped_size}), falling back to Python"
                 );
                 Ok(false)
             }
             Err(MemoryError::SymbolicAddress { description }) => {
                 // Address range too large or symbolic — Python's memory model handles natively
-                log::debug!(
-                    "Symbolic address store: {}, falling back to Python",
-                    description
-                );
+                log::debug!("Symbolic address store: {description}, falling back to Python");
                 Ok(false)
             }
             Err(e) => Err(CbExecutionError::Memory(e.to_string())),
@@ -387,16 +382,14 @@ impl<'a> VEXInterpreter<'a> {
                         .call_memory_store_symbolic_full(addr_val, data_val)
                         .map_err(|e| {
                             CbExecutionError::Callback(format!(
-                                "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
-                                min, max, e
+                                "symbolic store full callback failed at 0x{min:x}-0x{max:x}: {e}"
                             ))
                         })?;
                     Ok(())
                 } else {
                     Err(CbExecutionError::Unsupported(format!(
-                        "symbolic store with too-large address range 0x{:x}-0x{:x}: \
-                         no memory_store_symbolic_full callback",
-                        min, max
+                        "symbolic store with too-large address range 0x{min:x}-0x{max:x}: \
+                         no memory_store_symbolic_full callback"
                     )))
                 }
             }
@@ -404,7 +397,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Concretization failed entirely. Try the full symbolic
                 // store callback so Python's memory model can still resolve
                 // the address; only error out if the callback isn't wired up.
-                let descr = format!("concretize failed: {}", reason);
+                let descr = format!("concretize failed: {reason}");
                 self.fallback_store_symbolic_full(callbacks, addr_val, data_val, "store", &descr)
             }
         }

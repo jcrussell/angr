@@ -87,7 +87,7 @@ fn test_unmapped_opcode() {
     // RustUnsupportedVexOpError.
     match parse_opcode("Iop_UnknownOp") {
         IROp::Unmapped(name) => assert_eq!(name, "Iop_UnknownOp"),
-        other => panic!("expected Unmapped, got {:?}", other),
+        other => panic!("expected Unmapped, got {other:?}"),
     }
     // The interner must dedupe — same name returns the same pointer.
     let a = match parse_opcode("Iop_UnknownOp") {
@@ -117,7 +117,7 @@ fn test_neon_unimplemented_scaffold_is_empty() {
             assert_eq!(elem, IRType::F32);
             assert_eq!(count, 2);
         }
-        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {:?}", other),
+        other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {other:?}"),
     }
 }
 
@@ -227,11 +227,11 @@ fn test_parse_vreverse_routing() {
                 elem,
                 count,
             } => {
-                assert_eq!(sub_width, *sw, "{}: sub_width", op_str);
-                assert_eq!(elem, *e, "{}: elem", op_str);
-                assert_eq!(count, *c, "{}: count", op_str);
+                assert_eq!(sub_width, *sw, "{op_str}: sub_width");
+                assert_eq!(elem, *e, "{op_str}: elem");
+                assert_eq!(count, *c, "{op_str}: count");
             }
-            other => panic!("{}: expected VReverse, got {:?}", op_str, other),
+            other => panic!("{op_str}: expected VReverse, got {other:?}"),
         }
     }
 }

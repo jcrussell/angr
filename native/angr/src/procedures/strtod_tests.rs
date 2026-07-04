@@ -110,7 +110,7 @@ fn test_strtod_symbolic_byte_falls_back() {
     );
     match res {
         Err(ProcedureError::SymbolicArgument(_)) => {}
-        other => panic!("expected SymbolicArgument fallback, got {:?}", other),
+        other => panic!("expected SymbolicArgument fallback, got {other:?}"),
     }
 }
 

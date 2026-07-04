@@ -118,7 +118,7 @@ fn test_concat_balanced_depth_is_log() {
     // tree should be 3 (log2(8)).
     let ctx = SymContext::new_mock();
     let parts: Vec<RustBV> = (0..8)
-        .map(|i| RustBV::symbolic(&ctx, format!("b{}", i), 8))
+        .map(|i| RustBV::symbolic(&ctx, format!("b{i}"), 8))
         .collect();
     let balanced = RustBV::concat_balanced(&parts, &ctx);
     assert_eq!(balanced.width(), 64);
@@ -137,7 +137,7 @@ fn test_concat_balanced_odd_length() {
     // Odd length (5) should still produce ceil(log2(5))=3-deep tree.
     let ctx = SymContext::new_mock();
     let parts: Vec<RustBV> = (0..5)
-        .map(|i| RustBV::symbolic(&ctx, format!("o{}", i), 8))
+        .map(|i| RustBV::symbolic(&ctx, format!("o{i}"), 8))
         .collect();
     let balanced = RustBV::concat_balanced(&parts, &ctx);
     assert_eq!(balanced.width(), 40);
@@ -335,7 +335,7 @@ fn test_shl_concrete_amount_rewrites_to_concat() {
             assert_eq!(operands[1].width(), 4);
             assert_eq!(operands[0].width(), 28); // top bits extracted from x
         }
-        other => panic!("expected Concat, got {:?}", other),
+        other => panic!("expected Concat, got {other:?}"),
     }
     // Behavior preserved when LHS happens to be concrete (still constant-folds).
     let v = RustBV::concrete(0x1234, 32);
@@ -373,7 +373,7 @@ fn test_lshr_concrete_amount_rewrites_to_concat() {
             assert_eq!(operands[0].width(), 8);
             assert_eq!(operands[1].width(), 24);
         }
-        other => panic!("expected Concat, got {:?}", other),
+        other => panic!("expected Concat, got {other:?}"),
     }
     let r = x.lshr(&RustBV::concrete(32, 32), &ctx);
     assert_eq!(r.as_u128(), Some(0));
@@ -395,7 +395,7 @@ fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
         } => {
             assert_eq!(operands[0].width(), 28);
         }
-        other => panic!("expected SignExt(4), got {:?}", other),
+        other => panic!("expected SignExt(4), got {other:?}"),
     }
     // Beyond width: SignExt of MSB (1-bit slice extended by 31 bits).
     let r = x.ashr(&RustBV::concrete(64, 32), &ctx);
@@ -408,7 +408,7 @@ fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
         } => {
             assert_eq!(operands[0].width(), 1);
         }
-        other => panic!("expected SignExt(31), got {:?}", other),
+        other => panic!("expected SignExt(31), got {other:?}"),
     }
 }
 
@@ -430,7 +430,7 @@ fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
             assert_eq!(operands[1].width(), 3);
             assert_eq!(operands[0].width(), 29);
         }
-        other => panic!("expected Concat (via Shl), got {:?}", other),
+        other => panic!("expected Concat (via Shl), got {other:?}"),
     }
     // Commutative case: 8 * sym → same shape.
     let r = eight.mul(&x, &ctx);
@@ -443,7 +443,7 @@ fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
             assert_eq!(operands[1].as_u128(), Some(0));
             assert_eq!(operands[1].width(), 3);
         }
-        other => panic!("expected Concat (commutative), got {:?}", other),
+        other => panic!("expected Concat (commutative), got {other:?}"),
     }
 }
 
@@ -455,7 +455,7 @@ fn test_mul_by_non_power_of_two_stays_as_mul() {
     let r = x.mul(&RustBV::concrete(3, 32), &ctx);
     match r {
         RustBV::Expression { op: BVOp::Mul, .. } => {}
-        other => panic!("expected Mul, got {:?}", other),
+        other => panic!("expected Mul, got {other:?}"),
     }
 }
 
@@ -538,7 +538,7 @@ fn test_reverse_z3_emission_concat_of_bytes() {
     // be Concat(b7, b6, ..., b0) — the byte-reversed value.
     let ctx = SymContext::new_mock();
     let bytes: Vec<RustBV> = (0..8u32)
-        .map(|i| RustBV::symbolic(&ctx, format!("b{}", i), 8))
+        .map(|i| RustBV::symbolic(&ctx, format!("b{i}"), 8))
         .collect();
     // Build claripy-style Concat(b0, b1, ..., b7) with b0 as high.
     let mut concat = bytes[0].clone();
@@ -830,7 +830,7 @@ fn test_zext_eq_high_bits_zero_collapses() {
             assert_eq!(operands[1].width(), 8);
             assert_eq!(operands[1].as_u64(), Some(0x42));
         }
-        _ => panic!("expected narrowed Eq expression, got {:?}", r),
+        _ => panic!("expected narrowed Eq expression, got {r:?}"),
     }
 }
 
@@ -931,7 +931,7 @@ fn test_zext_cmp_no_fold_when_both_symbolic() {
             assert_eq!(operands[0].width(), 16);
             assert_eq!(operands[1].width(), 16);
         }
-        _ => panic!("expected Eq expression, got {:?}", r),
+        _ => panic!("expected Eq expression, got {r:?}"),
     }
 }
 
@@ -948,7 +948,7 @@ fn test_zext_cmp_no_fold_for_signed_ops() {
             assert_eq!(*op, BVOp::Eq);
             assert_eq!(operands[0].width(), 16);
         }
-        _ => panic!("expected Eq expression, got {:?}", r),
+        _ => panic!("expected Eq expression, got {r:?}"),
     }
 }
 
@@ -980,7 +980,7 @@ fn test_zext_cmp_chain_collapse_to_narrowest() {
             assert_eq!(operands[0].width(), 8);
             assert_eq!(operands[1].as_u64(), Some(0xFF));
         }
-        _ => panic!("expected narrowed Eq, got {:?}", r),
+        _ => panic!("expected narrowed Eq, got {r:?}"),
     }
 }
 
@@ -1076,9 +1076,7 @@ fn commutative_ops_canonicalize_operand_order() {
         assert_eq!(
             lhs.to_z3_ast().get_z3_ast().as_ptr(),
             rhs.to_z3_ast().get_z3_ast().as_ptr(),
-            "{}(x,y) and {}(y,x) should canonicalize to the same Z3 AST",
-            name,
-            name
+            "{name}(x,y) and {name}(y,x) should canonicalize to the same Z3 AST"
         );
     }
 }

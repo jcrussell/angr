@@ -261,7 +261,9 @@ fn apply_uniqueness_filter_drops_duplicate_when_drop_terminal() {
     let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
     assert_eq!(active.len(), 1, "one unique state remains active");
     assert!(
-        mgr.sm.get("not_unique").is_none_or(|s| s.is_empty()),
+        mgr.sm
+            .get("not_unique")
+            .is_none_or(std::collections::VecDeque::is_empty),
         "duplicate dropped, not parked in not_unique"
     );
 }
@@ -411,6 +413,9 @@ fn multi_pending_entries_resume_independently() {
 
     // Both states landed in the errored stash, with their own ids.
     let errored = mgr.sm.get(STASH_ERRORED).expect("errored stash");
-    let ids: Vec<u64> = errored.iter().map(|s| s.state_id()).collect();
+    let ids: Vec<u64> = errored
+        .iter()
+        .map(crate::state::RustSimState::state_id)
+        .collect();
     assert!(ids.contains(&sid_a) && ids.contains(&sid_b));
 }

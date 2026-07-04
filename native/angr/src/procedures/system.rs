@@ -31,7 +31,7 @@ crate::declare_proc! {
     args = [_command: bv],
     call |state| {
         let counter = symbol_counter("system");
-        let name = format!("system_returncode_{}", counter);
+        let name = format!("system_returncode_{counter}");
 
         let ctx = state.solver().borrow();
         // 8-bit unconstrained return code, zero-extended to the 32-bit C int

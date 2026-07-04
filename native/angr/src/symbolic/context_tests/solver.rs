@@ -300,7 +300,7 @@ fn test_add_constraints_raw_batch_drops_inconsistent_model() {
     let first = ctx.eval(&x).unwrap();
     // Now batch-add x == new_val (forces a value distinct from `first`
     // but still within [0,99]), which invalidates the cached model.
-    let new_val = if first == 0 { 1 } else { 0 };
+    let new_val = u128::from(first == 0);
     let pinned = RustBV::concrete(new_val, 32);
     let entries = vec![batch_entry(&x.eq(&pinned, &ctx))];
     ctx.add_constraints_raw_batch(entries);

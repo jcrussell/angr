@@ -235,7 +235,7 @@ pub fn get_stable_ast_id(ast: &Bound<'_, PyAny>) -> Result<i64, BridgeError> {
     // Fall back to PyAny.hash() which calls Python's hash()
     ast.hash()
         .map(|h| h as i64)
-        .map_err(|e| BridgeError::PythonError(format!("hash failed: {}", e)))
+        .map_err(|e| BridgeError::PythonError(format!("hash failed: {e}")))
 }
 
 /// Get the width (in bits) of a claripy AST.

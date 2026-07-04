@@ -42,13 +42,10 @@ fn ensure_claripy_ast(
                 .name()
                 .map(|n| n.to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
-            log::debug!(
-                "ensure_claripy_ast: object {} missing 'op' attr, wrapping",
-                type_name
-            );
+            log::debug!("ensure_claripy_ast: object {type_name} missing 'op' attr, wrapping");
         }
         Err(e) => {
-            log::warn!("ensure_claripy_ast: hasattr('op') failed: {}", e);
+            log::warn!("ensure_claripy_ast: hasattr('op') failed: {e}");
         }
     }
 
@@ -68,12 +65,14 @@ fn ensure_claripy_ast(
         // If width hint is provided, wrap as BVV (for use in BV operations)
         // Otherwise wrap as BoolV (for use in Bool operations)
         if let Some(w) = width_hint {
-            let val: i64 = if bool_val { 1 } else { 0 };
-            return claripy_mod.call_method1("BVV", (val, w)).map(|o| o.into());
+            let val: i64 = i64::from(bool_val);
+            return claripy_mod
+                .call_method1("BVV", (val, w))
+                .map(std::convert::Into::into);
         }
         return claripy_mod
             .call_method1("BoolV", (bool_val,))
-            .map(|o| o.into());
+            .map(std::convert::Into::into);
     }
 
     // If it's an int, wrap in BVV with the provided width hint
@@ -82,38 +81,28 @@ fn ensure_claripy_ast(
         let width = width_hint.unwrap_or(64);
         // Try to extract as i128 for larger values
         if let Ok(int_val) = bound.extract::<i128>() {
-            log::debug!(
-                "ensure_claripy_ast: wrapping int {} in BVV with width {}",
-                int_val,
-                width
-            );
+            log::debug!("ensure_claripy_ast: wrapping int {int_val} in BVV with width {width}");
             // For values that fit in i64, use that (more compatible)
             if int_val >= i64::MIN as i128 && int_val <= i64::MAX as i128 {
                 return claripy_mod
                     .call_method1("BVV", (int_val as i64, width))
-                    .map(|o| o.into());
+                    .map(std::convert::Into::into);
             } else {
                 // For larger values, pass as Python int directly
                 return claripy_mod
                     .call_method1("BVV", (&bound, width))
-                    .map(|o| o.into());
+                    .map(std::convert::Into::into);
             }
         }
         // Fallback: pass the Python object directly and let claripy handle it
-        log::debug!(
-            "ensure_claripy_ast: wrapping large int in BVV with width {}",
-            width
-        );
+        log::debug!("ensure_claripy_ast: wrapping large int in BVV with width {width}");
         return claripy_mod
             .call_method1("BVV", (&bound, width))
-            .map(|o| o.into());
+            .map(std::convert::Into::into);
     }
 
     // Otherwise return as-is and hope for the best
-    log::warn!(
-        "ensure_claripy_ast: unknown type {}, returning as-is",
-        type_name
-    );
+    log::warn!("ensure_claripy_ast: unknown type {type_name}, returning as-is");
     Ok(obj.clone())
 }
 
@@ -254,7 +243,7 @@ fn rustbv_to_claripy_memo(
             if *width <= 64 {
                 claripy_mod
                     .call_method1("BVV", (*value as i64, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             } else if *width % 8 == 0 && *width as usize / 8 <= 16 {
                 // Byte-aligned and fits in u128 (16 bytes): use bytes for
                 // exact representation. Wider Concrete widths cannot exceed
@@ -266,7 +255,7 @@ fn rustbv_to_claripy_memo(
                 let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             } else {
                 // Non-byte-aligned OR width > 128: use Python int to avoid
                 // string/size mismatch. claripy.BVV(int_value, width) works
@@ -274,7 +263,7 @@ fn rustbv_to_claripy_memo(
                 let py_int = PyInt::new(py, *value);
                 claripy_mod
                     .call_method1("BVV", (py_int, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             }
         }
         RustBV::Symbolic {
@@ -284,14 +273,14 @@ fn rustbv_to_claripy_memo(
             // Create new claripy.BVS(name, width)
             claripy_mod
                 .call_method1("BVS", (&**name, *width))
-                .map(|obj| obj.into())
+                .map(std::convert::Into::into)
         }
         RustBV::Constrained { value, width, .. } => {
             // For constrained values, return the concrete value
             if *width <= 64 {
                 claripy_mod
                     .call_method1("BVV", (*value as i64, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             } else if *width % 8 == 0 {
                 let byte_count = *width as usize / 8;
                 let bytes = value.to_be_bytes();
@@ -299,13 +288,13 @@ fn rustbv_to_claripy_memo(
                 let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             } else {
                 // Non-byte-aligned: use Python int
                 let py_int = PyInt::new(py, *value);
                 claripy_mod
                     .call_method1("BVV", (py_int, *width))
-                    .map(|obj| obj.into())
+                    .map(std::convert::Into::into)
             }
         }
         RustBV::Expression { op, operands, .. } => {
@@ -320,7 +309,7 @@ fn rustbv_to_claripy_memo(
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
-                    let width = operands.get(i).map(|o| o.width());
+                    let width = operands.get(i).map(super::super::symbolic::RustBV::width);
                     ensure_claripy_ast(py, arg, claripy_mod, width)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -378,31 +367,34 @@ fn rustbv_to_claripy_memo(
                 // Arithmetic operations (binary, use method on first arg)
                 BVOp::Add => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__add__", (&args[1],)).map(|o| o.into())
+                    arg0.call_method1("__add__", (&args[1],))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::Sub => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__sub__", (&args[1],)).map(|o| o.into())
+                    arg0.call_method1("__sub__", (&args[1],))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::Mul => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__mul__", (&args[1],)).map(|o| o.into())
+                    arg0.call_method1("__mul__", (&args[1],))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::UDiv => claripy_mod
                     .call_method1("UDiv", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::SDiv => claripy_mod
                     .call_method1("SDiv", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::URem => claripy_mod
                     .call_method1("URem", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::SRem => claripy_mod
                     .call_method1("SMod", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Neg => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method0("__neg__").map(|o| o.into())
+                    arg0.call_method0("__neg__").map(std::convert::Into::into)
                 }
 
                 // Bitwise operations
@@ -446,16 +438,15 @@ fn rustbv_to_claripy_memo(
                         let w0: String = args[0]
                             .bind(py)
                             .getattr("length")
-                            .map(|l| format!("{}", l))
+                            .map(|l| format!("{l}"))
                             .unwrap_or("?".into());
                         let w1: String = args[1]
                             .bind(py)
                             .getattr("length")
-                            .map(|l| format!("{}", l))
+                            .map(|l| format!("{l}"))
                             .unwrap_or("?".into());
                         return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                            "__or__ NotImpl: {}(w={}) | {}(w={})",
-                            t0, w0, t1, w1
+                            "__or__ NotImpl: {t0}(w={w0}) | {t1}(w={w1})"
                         )));
                     }
                     Ok(result.into())
@@ -477,29 +468,30 @@ fn rustbv_to_claripy_memo(
                 }
                 BVOp::Not => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method0("__invert__").map(|o| o.into())
+                    arg0.call_method0("__invert__")
+                        .map(std::convert::Into::into)
                 }
 
                 // Shift operations
                 BVOp::Shl => {
                     let arg0 = args[0].bind(py);
                     arg0.call_method1("__lshift__", (&args[1],))
-                        .map(|o| o.into())
+                        .map(std::convert::Into::into)
                 }
                 BVOp::Lshr => claripy_mod
                     .call_method1("LShR", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Ashr => {
                     let arg0 = args[0].bind(py);
                     arg0.call_method1("__rshift__", (&args[1],))
-                        .map(|o| o.into())
+                        .map(std::convert::Into::into)
                 }
                 BVOp::RotL => claripy_mod
                     .call_method1("RotateLeft", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::RotR => claripy_mod
                     .call_method1("RotateRight", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
 
                 // Extension operations (args already validated)
                 BVOp::ZeroExt(extend_bits) => {
@@ -519,11 +511,11 @@ fn rustbv_to_claripy_memo(
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
                         claripy_mod
                             .call_method1("ZeroExt", (*extend_bits, bv1))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         claripy_mod
                             .call_method1("ZeroExt", (*extend_bits, &args[0]))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     }
                 }
                 BVOp::SignExt(extend_bits) => {
@@ -542,11 +534,11 @@ fn rustbv_to_claripy_memo(
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
                         claripy_mod
                             .call_method1("SignExt", (*extend_bits, bv1))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         claripy_mod
                             .call_method1("SignExt", (*extend_bits, &args[0]))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     }
                 }
                 BVOp::Extract(high, low) => {
@@ -565,11 +557,11 @@ fn rustbv_to_claripy_memo(
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
                         claripy_mod
                             .call_method1("Extract", (*high, *low, bv1))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         claripy_mod
                             .call_method1("Extract", (*high, *low, &args[0]))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     }
                 }
                 BVOp::Concat => {
@@ -577,13 +569,13 @@ fn rustbv_to_claripy_memo(
                     if args.len() == 2 {
                         claripy_mod
                             .call_method1("Concat", (&args[0], &args[1]))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         // For multi-arg concat, build a tuple
                         let args_tuple = pyo3::types::PyTuple::new(py, &args)?;
                         claripy_mod
                             .call_method1("Concat", args_tuple)
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     }
                 }
 
@@ -599,7 +591,7 @@ fn rustbv_to_claripy_memo(
                     if let Ok(bool_val) = result.extract::<bool>() {
                         claripy_mod
                             .call_method1("BoolV", (bool_val,))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         Ok(result.into())
                     }
@@ -613,48 +605,48 @@ fn rustbv_to_claripy_memo(
                     if let Ok(bool_val) = result.extract::<bool>() {
                         claripy_mod
                             .call_method1("BoolV", (bool_val,))
-                            .map(|o| o.into())
+                            .map(std::convert::Into::into)
                     } else {
                         Ok(result.into())
                     }
                 }
                 BVOp::Ult => claripy_mod
                     .call_method1("ULT", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Ule => claripy_mod
                     .call_method1("ULE", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Ugt => claripy_mod
                     .call_method1("UGT", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Uge => claripy_mod
                     .call_method1("UGE", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Slt => claripy_mod
                     .call_method1("SLT", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Sle => claripy_mod
                     .call_method1("SLE", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Sgt => claripy_mod
                     .call_method1("SGT", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Sge => claripy_mod
                     .call_method1("SGE", (&args[0], &args[1]))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
 
                 // Conditional
                 BVOp::Ite => {
                     // If(cond, then_val, else_val)
                     claripy_mod
                         .call_method1("If", (&args[0], &args[1], &args[2]))
-                        .map(|o| o.into())
+                        .map(std::convert::Into::into)
                 }
 
                 // Utility operations
                 BVOp::Reverse => claripy_mod
                     .call_method1("Reverse", (&args[0],))
-                    .map(|o| o.into()),
+                    .map(std::convert::Into::into),
                 BVOp::Clz | BVOp::Ctz | BVOp::Popcount => {
                     let op_name = match op {
                         BVOp::Clz => "clz",
@@ -695,7 +687,7 @@ fn rustbv_to_claripy_memo(
                         };
                         return claripy_mod
                             .call_method1("BVV", (result as i64, width))
-                            .map(|o| o.into());
+                            .map(std::convert::Into::into);
                     }
 
                     // Symbolic input. For width<=64 emit a sound encoding tied
@@ -708,12 +700,11 @@ fn rustbv_to_claripy_memo(
                     } else {
                         crate::symbolic::record_export_unconstrained_clz();
                         log::debug!(
-                            "Creating unconstrained {} result for symbolic width>64 input (constraint relationship lost)",
-                            op_name
+                            "Creating unconstrained {op_name} result for symbolic width>64 input (constraint relationship lost)"
                         );
                         claripy_mod
-                            .call_method1("BVS", (format!("{}_result", op_name), width))
-                            .map(|o| o.into())
+                            .call_method1("BVS", (format!("{op_name}_result"), width))
+                            .map(std::convert::Into::into)
                     };
                     // Stabilize identity: repeated exports of the same RustBV
                     // (same operands Arc) return the identical claripy AST via
@@ -739,10 +730,10 @@ fn rustbv_to_claripy_memo(
                     let width = kind.result_bits(*prec);
                     let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
                     crate::symbolic::record_export_unconstrained_fp();
-                    let name = format!("fp_{:?}_{:?}_result", kind, prec);
+                    let name = format!("fp_{kind:?}_{prec:?}_result");
                     let ast_res: PyResult<Py<PyAny>> = claripy_mod
                         .call_method1("BVS", (name, width))
-                        .map(|o| o.into());
+                        .map(std::convert::Into::into);
                     // Stabilize identity across repeated exports (angr-acoq).
                     if let Ok(ref ast) = ast_res {
                         store_expression_ast_by_operands(

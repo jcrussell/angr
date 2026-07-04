@@ -84,8 +84,7 @@ impl NativeSyscall for NativeBrkSyscall {
                 let page_num = page_addr >> 12;
                 if memory.page_permissions(page_num).is_some() {
                     return Err(SyscallError::Other(format!(
-                        "brk: page {:#x} already mapped (collision)",
-                        page_addr
+                        "brk: page {page_addr:#x} already mapped (collision)"
                     )));
                 }
                 page_addr += PAGE_SIZE;

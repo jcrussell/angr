@@ -250,7 +250,7 @@ impl SymContext {
             solver
                 .get_unsat_core()
                 .iter()
-                .map(|ast| format!("{}", ast))
+                .map(|ast| format!("{ast}"))
                 .collect()
         });
 
@@ -260,7 +260,7 @@ impl SymContext {
         // Match core tracking booleans to stored tracker indices by string representation
         for core_str in &core_strs {
             for (i, tracker) in trackers.iter().enumerate() {
-                if format!("{}", tracker) == *core_str {
+                if format!("{tracker}") == *core_str {
                     result.push(i);
                     break;
                 }
@@ -281,7 +281,7 @@ impl SymContext {
             solver
                 .get_assertions()
                 .iter()
-                .map(|a| format!("{}", a))
+                .map(|a| format!("{a}"))
                 .collect()
         })
     }

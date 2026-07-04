@@ -80,8 +80,7 @@ crate::declare_proc! {
         if !open {
             // Not a Rust-tracked fd — Python's symbolic-file model owns it.
             return Err(ProcedureError::Other(format!(
-                "fread from fd={} (not open in Rust FileSystem) falls back to Python",
-                fd
+                "fread from fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
 
@@ -105,8 +104,7 @@ crate::declare_proc! {
         }
         if total > MAX_FREAD_SIZE {
             return Err(ProcedureError::Other(format!(
-                "fread total {} exceeds limit",
-                total
+                "fread total {total} exceeds limit"
             )));
         }
         // Empty / fully-consumed content defers to Python so the symbolic-file
@@ -116,8 +114,7 @@ crate::declare_proc! {
         // diverging from Python and risking path explosion.
         if content_len == 0 {
             return Err(ProcedureError::Other(format!(
-                "fread from fd={} has no concrete content; falling back to Python",
-                fd
+                "fread from fd={fd} has no concrete content; falling back to Python"
             )));
         }
 

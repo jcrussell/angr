@@ -713,7 +713,7 @@ impl RustBV {
             return Self::concrete(0, 1);
         }
         match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
+            (Some(a), Some(b)) => Self::concrete(u128::from(a == b), 1),
             _ => {
                 // angr-g7nq pattern (b): `Eq(ZeroExt(k, x), BVV(c, W))`.
                 // ZeroExt is zero in the top k bits, so:
@@ -747,7 +747,7 @@ impl RustBV {
     pub fn ne_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a != b { 1 } else { 0 }, 1),
+            (Some(a), Some(b)) => Self::concrete(u128::from(a != b), 1),
             _ => {
                 // angr-g7nq pattern (b), see `eq_into`. For Ne the trivial-decide
                 // direction inverts (high-bit-nonzero const → always not-equal).

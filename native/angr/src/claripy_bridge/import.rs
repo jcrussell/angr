@@ -71,8 +71,7 @@ pub fn python_to_rustbv(
             .map(|s| s.to_string())
             .unwrap_or_else(|_| "unknown".to_string());
         Err(BridgeError::TypeMismatch(format!(
-            "expected RustBVHandle or claripy AST, got {}",
-            type_name
+            "expected RustBVHandle or claripy AST, got {type_name}"
         )))
     }
 }
@@ -432,14 +431,12 @@ pub fn claripy_to_rustbv(
             // P5 fix: Validate Extract bounds to prevent runtime errors
             if high >= val_width {
                 return Err(BridgeError::InvalidArgs(format!(
-                    "Extract high={} >= width={}",
-                    high, val_width
+                    "Extract high={high} >= width={val_width}"
                 )));
             }
             if low > high {
                 return Err(BridgeError::InvalidArgs(format!(
-                    "Extract low={} > high={}",
-                    low, high
+                    "Extract low={low} > high={high}"
                 )));
             }
 
@@ -569,7 +566,7 @@ pub fn claripy_to_rustbv(
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let value: bool = args_tuple.get_item(0)?.extract()?;
             // Return 1-bit BV (1 for true, 0 for false)
-            Ok(RustBV::concrete(if value { 1 } else { 0 }, 1))
+            Ok(RustBV::concrete(u128::from(value), 1))
         }
 
         // Symbolic boolean (angr-q6r1): claripy.BoolS("name") is a 1-bit

@@ -35,7 +35,7 @@ impl<'a> VEXInterpreter<'a> {
         // Call Python to fetch the page
         let (data, permissions, is_mapped) = callbacks
             .call_fetch_page(page_addr)
-            .map_err(|e| CbExecutionError::Callback(format!("fetch_page failed: {}", e)))?;
+            .map_err(|e| CbExecutionError::Callback(format!("fetch_page failed: {e}")))?;
 
         if !is_mapped {
             // Page doesn't exist in Python memory either
@@ -73,7 +73,7 @@ impl<'a> VEXInterpreter<'a> {
         // Call Python to fetch pages in batch
         let results = callbacks
             .call_batch_fetch_pages(page_addrs)
-            .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {}", e)))?;
+            .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {e}")))?;
 
         let mut fetched = 0;
 
@@ -407,7 +407,7 @@ impl<'a> VEXInterpreter<'a> {
                     self.try_convert_symbolic_value(
                         symbolic_ast.as_ref(),
                         (size * 8) as u32,
-                        || format!("prefetch_{:x}_{}", addr, size),
+                        || format!("prefetch_{addr:x}_{size}"),
                     )
                 } else {
                     bytes_to_bv(data, (size * 8) as u32)

@@ -868,8 +868,7 @@ impl RustExplorationManager {
                                 .push_back(state);
                         } else {
                             log::debug!(
-                                "parallel: bounce at find addr 0x{:x} is UNSAT, pruning",
-                                addr
+                                "parallel: bounce at find addr 0x{addr:x} is UNSAT, pruning"
                             );
                             self.push_or_drop_terminal(STASH_PRUNED, state);
                         }
@@ -1736,7 +1735,7 @@ impl RustExplorationManager {
                     .or_default()
                     .push_back(state);
             } else {
-                log::debug!("State at find address 0x{:x} is UNSAT, pruning", pc);
+                log::debug!("State at find address 0x{pc:x} is UNSAT, pruning");
                 self.push_or_drop_terminal(STASH_PRUNED, state);
             }
             return Ok(StepOutcome::Routed);
@@ -1780,9 +1779,7 @@ impl RustExplorationManager {
                     match self.extract_procedure_args(&state, num_args) {
                         Err(e) => {
                             log::debug!(
-                                "Skipping native procedure {} (arg extraction failed: {:?})",
-                                name,
-                                e
+                                "Skipping native procedure {name} (arg extraction failed: {e:?})"
                             );
                             self.profiling.native_proc_stats.python_fallbacks += 1;
                             *self
@@ -1921,10 +1918,8 @@ impl RustExplorationManager {
                                     }
                                     Err(reason) => {
                                         log::debug!(
-                                            "native sub-call setup failed ({}); \
-                                             falling back to Python for {}",
-                                            reason,
-                                            name
+                                            "native sub-call setup failed ({reason}); \
+                                             falling back to Python for {name}"
                                         );
                                         self.profiling.native_proc_stats.python_fallbacks += 1;
                                         *self
@@ -2106,7 +2101,7 @@ impl RustExplorationManager {
                                 .or_default()
                                 .push_back(pending.state);
                         } else {
-                            log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
+                            log::debug!("State at find address 0x{addr:x} is UNSAT, pruning");
                             self.push_or_drop_terminal(STASH_PRUNED, pending.state);
                         }
                     } else {
@@ -2247,9 +2242,7 @@ impl RustExplorationManager {
                     if self.dcas_warned_states.insert(state_id) {
                         log::warn!(
                             "DCAS (cmpxchg16b) unsupported in Rust interpreter at \
-                             0x{:x} (state {}); falling back to Python VEX engine",
-                            addr,
-                            state_id
+                             0x{addr:x} (state {state_id}); falling back to Python VEX engine"
                         );
                     }
                 }

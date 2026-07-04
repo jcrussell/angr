@@ -33,7 +33,7 @@ fn test_strcat() {
             .unwrap()
             .as_u64()
             .unwrap() as u8;
-        assert_eq!(byte, expected, "byte {} mismatch", i);
+        assert_eq!(byte, expected, "byte {i} mismatch");
     }
 }
 
@@ -66,6 +66,6 @@ fn test_strncat() {
             .unwrap()
             .as_u64()
             .unwrap() as u8;
-        assert_eq!(byte, expected, "byte {} mismatch", i);
+        assert_eq!(byte, expected, "byte {i} mismatch");
     }
 }

@@ -42,7 +42,7 @@ fn handle_exit_syscall_returns_syscall_variant() {
     let result = interp.handle_exit(0x1234, JumpKind::Sys_syscall);
     match result {
         BlockResult::Syscall { num } => assert_eq!(num, Some(60)),
-        other => panic!("expected Syscall, got {:?}", other),
+        other => panic!("expected Syscall, got {other:?}"),
     }
     // PC is updated even for syscalls.
     assert_eq!(interp.get_pc(), 0x1234);
@@ -56,7 +56,7 @@ fn handle_exit_hooked_address_returns_hook() {
     interp.add_hook(0x1500);
     match interp.handle_exit(0x1500, JumpKind::Boring) {
         BlockResult::Hook { addr } => assert_eq!(addr, 0x1500),
-        other => panic!("expected Hook, got {:?}", other),
+        other => panic!("expected Hook, got {other:?}"),
     }
 }
 
@@ -74,7 +74,7 @@ fn handle_exit_call_to_external_returns_unmodeled_call() {
             // Calls don't get __extern_addr__ tag — that's the post-call path.
             assert_eq!(symbol_name, None);
         }
-        other => panic!("expected UnmodeledCall, got {:?}", other),
+        other => panic!("expected UnmodeledCall, got {other:?}"),
     }
 }
 
@@ -96,7 +96,7 @@ fn handle_exit_ret_with_empty_call_stack_returns_unconstrained() {
             assert_eq!(max_target, 0x9000);
             assert!(jumpkind.is_ret());
         }
-        other => panic!("expected UnconstrainedJump, got {:?}", other),
+        other => panic!("expected UnconstrainedJump, got {other:?}"),
     }
 }
 
@@ -114,7 +114,7 @@ fn handle_exit_ret_to_internal_address_is_block_end() {
             assert_eq!(next_addr, 0x1800);
             assert!(jumpkind.is_ret());
         }
-        other => panic!("expected BlockEnd, got {:?}", other),
+        other => panic!("expected BlockEnd, got {other:?}"),
     }
 }
 
@@ -131,7 +131,7 @@ fn handle_exit_external_non_call_non_ret_returns_unmodeled_call() {
             assert_eq!(addr, 0x9000);
             assert_eq!(symbol_name.as_deref(), Some("__extern_addr__"));
         }
-        other => panic!("expected UnmodeledCall, got {:?}", other),
+        other => panic!("expected UnmodeledCall, got {other:?}"),
     }
 }
 
@@ -149,7 +149,7 @@ fn handle_exit_internal_block_end_carries_jumpkind() {
             assert_eq!(next_addr, 0x1234);
             assert!(jumpkind.is_call());
         }
-        other => panic!("expected BlockEnd, got {:?}", other),
+        other => panic!("expected BlockEnd, got {other:?}"),
     }
 }
 
@@ -174,7 +174,7 @@ fn handle_exit_ret_with_nonempty_call_stack_to_external_is_unmodeled() {
             assert_eq!(addr, 0x9000);
             assert_eq!(symbol_name.as_deref(), Some("__extern_addr__"));
         }
-        other => panic!("expected UnmodeledCall, got {:?}", other),
+        other => panic!("expected UnmodeledCall, got {other:?}"),
     }
 }
 

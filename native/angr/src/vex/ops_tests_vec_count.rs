@@ -426,16 +426,16 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
     // VCnt
     for (op, c) in &[("Iop_Cnt8x8", 8u8), ("Iop_Cnt8x16", 16)] {
         match parse_opcode(op) {
-            IROp::VCnt { count } => assert_eq!(count, *c, "{}: count", op),
-            other => panic!("{}: expected VCnt, got {:?}", op, other),
+            IROp::VCnt { count } => assert_eq!(count, *c, "{op}: count"),
+            other => panic!("{op}: expected VCnt, got {other:?}"),
         }
     }
 
     // VGetMSBs
     for (op, c) in &[("Iop_GetMSBs8x8", 8u8), ("Iop_GetMSBs8x16", 16)] {
         match parse_opcode(op) {
-            IROp::VGetMSBs { count } => assert_eq!(count, *c, "{}: count", op),
-            other => panic!("{}: expected VGetMSBs, got {:?}", op, other),
+            IROp::VGetMSBs { count } => assert_eq!(count, *c, "{op}: count"),
+            other => panic!("{op}: expected VGetMSBs, got {other:?}"),
         }
     }
 
@@ -451,10 +451,10 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
     for (op, e, c) in clz_cases {
         match parse_opcode(op) {
             IROp::VClz { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VClz, got {:?}", op, other),
+            other => panic!("{op}: expected VClz, got {other:?}"),
         }
     }
 
@@ -470,10 +470,10 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
     for (op, e, c) in cls_cases {
         match parse_opcode(op) {
             IROp::VCls { elem, count } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
             }
-            other => panic!("{}: expected VCls, got {:?}", op, other),
+            other => panic!("{op}: expected VCls, got {other:?}"),
         }
     }
 
@@ -486,10 +486,10 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
     for (op, c, w) in pmul_cases {
         match parse_opcode(op) {
             IROp::VPolynomialMul { count, widen } => {
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(widen, *w, "{}: widen", op);
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(widen, *w, "{op}: widen");
             }
-            other => panic!("{}: expected VPolynomialMul, got {:?}", op, other),
+            other => panic!("{op}: expected VPolynomialMul, got {other:?}"),
         }
     }
 }

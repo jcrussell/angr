@@ -67,7 +67,7 @@ fn ranges_predicate(
     let bits = state.arch().bits();
     if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(
-            if concrete_check(c as u8) { 1 } else { 0 },
+            u128::from(concrete_check(c as u8)),
             bits,
         )));
     }
@@ -95,7 +95,7 @@ fn set_predicate(
     let bits = state.arch().bits();
     if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(
-            if concrete_check(c as u8) { 1 } else { 0 },
+            u128::from(concrete_check(c as u8)),
             bits,
         )));
     }

@@ -29,7 +29,7 @@ fn test_vnarrow_un_16to8x8_concrete() {
     // Each output lane = low byte of input lane.
     for (i, &lane) in lanes_in.iter().enumerate() {
         let got = (out >> (i * 8)) & 0xFF;
-        assert_eq!(got, (lane & 0xFF) as u128, "out lane {}", i);
+        assert_eq!(got, (lane & 0xFF) as u128, "out lane {i}");
     }
 }
 
@@ -66,11 +66,11 @@ fn test_vnarrow_bin_16to8x16_concrete() {
     let out = res.as_u128().unwrap();
     for (i, &lane) in lanes_l.iter().enumerate() {
         let got = (out >> (i * 8)) & 0xFF;
-        assert_eq!(got, (lane & 0xFF) as u128, "left lane {}", i);
+        assert_eq!(got, (lane & 0xFF) as u128, "left lane {i}");
     }
     for (i, &lane) in lanes_r.iter().enumerate() {
         let got = (out >> ((8 + i) * 8)) & 0xFF;
-        assert_eq!(got, (lane & 0xFF) as u128, "right lane {}", i);
+        assert_eq!(got, (lane & 0xFF) as u128, "right lane {i}");
     }
 }
 
@@ -460,11 +460,11 @@ fn test_parse_vqaddsub_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VQAdd, got {:?}", op, other),
+            other => panic!("{op}: expected VQAdd, got {other:?}"),
         }
     }
 
@@ -480,11 +480,11 @@ fn test_parse_vqaddsub_routing() {
                 count,
                 signed,
             } => {
-                assert_eq!(elem, *e, "{}: elem", op);
-                assert_eq!(count, *c, "{}: count", op);
-                assert_eq!(signed, *s, "{}: signed", op);
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+                assert_eq!(signed, *s, "{op}: signed");
             }
-            other => panic!("{}: expected VQSub, got {:?}", op, other),
+            other => panic!("{op}: expected VQSub, got {other:?}"),
         }
     }
 }
@@ -662,18 +662,18 @@ fn test_parse_vqshlsat_routing() {
     ];
     for (sfx, elem_e, count_e) in shapes {
         for (prefix, want_signed) in [("Iop_QShl", false), ("Iop_QSal", true)] {
-            let name = format!("{}{}", prefix, sfx);
+            let name = format!("{prefix}{sfx}");
             match parse_opcode(&name) {
                 IROp::VQShlSat {
                     elem,
                     count,
                     signed,
                 } => {
-                    assert_eq!(elem, *elem_e, "{}: elem", name);
-                    assert_eq!(count, *count_e, "{}: count", name);
-                    assert_eq!(signed, want_signed, "{}: signed", name);
+                    assert_eq!(elem, *elem_e, "{name}: elem");
+                    assert_eq!(count, *count_e, "{name}: count");
+                    assert_eq!(signed, want_signed, "{name}: signed");
                 }
-                other => panic!("{}: expected VQShlSat, got {:?}", name, other),
+                other => panic!("{name}: expected VQShlSat, got {other:?}"),
             }
         }
     }

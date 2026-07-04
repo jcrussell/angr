@@ -261,7 +261,7 @@ impl SymbolicMemory {
         if addrs.is_empty() {
             return Ok(RustBV::symbolic(
                 ctx,
-                format!("mem_empty_ite_{}", size),
+                format!("mem_empty_ite_{size}"),
                 size * 8,
             ));
         }

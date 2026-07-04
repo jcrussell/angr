@@ -78,11 +78,11 @@ impl RustExplorationManager {
                         added += 1;
                     }
                     Err(e) => {
-                        log::debug!("Could not convert initial constraint: {}", e);
+                        log::debug!("Could not convert initial constraint: {e}");
                     }
                 }
             }
-            log::debug!("Added {} initial constraints to state {}", added, state_id);
+            log::debug!("Added {added} initial constraints to state {state_id}");
             Ok(state.satisfiable())
         })
     }
@@ -355,7 +355,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
         let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("fork_state_solver: state {} not found", state_id))
+            PyValueError::new_err(format!("fork_state_solver: state {state_id} not found"))
         })?;
         let solver_ref = state.solver();
         let forked_ctx = solver_ref.borrow().fork();
@@ -384,16 +384,17 @@ impl RustExplorationManager {
         if let Some(pending) = self.pending_callbacks.get_mut(&StateId::new(state_id)) {
             return Ok(pending.state.flush_and_export_full());
         }
-        Err(PyValueError::new_err(format!(
-            "state {} not found",
-            state_id
-        )))
+        Err(PyValueError::new_err(format!("state {state_id} not found")))
     }
 
     pub(crate) fn _export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
         self.sm
             .get(stash)
-            .map(|s| s.iter().map(|state| state.export_full()).collect())
+            .map(|s| {
+                s.iter()
+                    .map(super::super::state::RustSimState::export_full)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -403,7 +404,7 @@ impl RustExplorationManager {
         if let Some(states) = self.sm.get_mut(STASH_FOUND) {
             states
                 .iter_mut()
-                .map(|s| s.flush_and_export_full())
+                .map(super::super::state::RustSimState::flush_and_export_full)
                 .collect()
         } else {
             Vec::new()
@@ -439,7 +440,9 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| {
             let mem = state.memory();
             let total = mem.symbolic_object_count();
-            let has_at_addr = mem.get_symbolic_object(addr).map(|bv| bv.width());
+            let has_at_addr = mem
+                .get_symbolic_object(addr)
+                .map(super::super::symbolic::RustBV::width);
             let page_num = addr >> 12;
             let offset = (addr & 0xFFF) as u16;
             let page_info = if let Some(page) = mem.pages().get(&page_num) {
@@ -448,8 +451,7 @@ impl RustExplorationManager {
                 "page=unmapped".to_string()
             };
             Ok(format!(
-                "total_sym_objs={} at_0x{:x}={:?} {}",
-                total, addr, has_at_addr, page_info
+                "total_sym_objs={total} at_0x{addr:x}={has_at_addr:?} {page_info}"
             ))
         })
     }
@@ -561,7 +563,7 @@ impl RustExplorationManager {
             };
             let claripy = py.import("claripy")?;
             let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
-                PyRuntimeError::new_err(format!("register {} AST conversion failed: {}", name, e))
+                PyRuntimeError::new_err(format!("register {name} AST conversion failed: {e}"))
             })?;
             Ok(Some(ast))
         })
@@ -589,14 +591,13 @@ impl RustExplorationManager {
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?
+                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
             };
             if state.set_register(reg_name, bv) {
                 Ok(())
             } else {
                 Err(PyValueError::new_err(format!(
-                    "failed to set register: {}",
-                    reg_name
+                    "failed to set register: {reg_name}"
                 )))
             }
         })
@@ -663,8 +664,7 @@ impl RustExplorationManager {
                 let claripy = py.import("claripy")?;
                 let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
                     PyRuntimeError::new_err(format!(
-                        "memory AST conversion at addr 0x{:x} size {}: {}",
-                        addr, size, e
+                        "memory AST conversion at addr 0x{addr:x} size {size}: {e}"
                     ))
                 })?;
                 Ok(Some(ast))
@@ -716,7 +716,7 @@ impl RustExplorationManager {
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?
+                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
             };
             state
                 .memory_store(addr, bv)
@@ -750,20 +750,14 @@ impl RustExplorationManager {
                 let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
                     Ok(bv) => bv,
                     Err(e) => {
-                        log::debug!(
-                            "state_memory_store_symbolic_multi: addr convert failed: {}",
-                            e
-                        );
+                        log::debug!("state_memory_store_symbolic_multi: addr convert failed: {e}");
                         return Ok(false);
                     }
                 };
                 let data_bv = match claripy_to_rustbv(py, data_ast, ctx) {
                     Ok(bv) => bv,
                     Err(e) => {
-                        log::debug!(
-                            "state_memory_store_symbolic_multi: data convert failed: {}",
-                            e
-                        );
+                        log::debug!("state_memory_store_symbolic_multi: data convert failed: {e}");
                         return Ok(false);
                     }
                 };
@@ -772,7 +766,7 @@ impl RustExplorationManager {
             match state.memory_store_symbolic_multi(addr_bv, data_bv) {
                 Ok(()) => Ok(true),
                 Err(e) => {
-                    log::debug!("state_memory_store_symbolic_multi: store failed: {:?}", e);
+                    log::debug!("state_memory_store_symbolic_multi: store failed: {e:?}");
                     Ok(false)
                 }
             }
@@ -785,7 +779,8 @@ impl RustExplorationManager {
 
     pub(crate) fn _has_state_stdout(&self, state_id: u64) -> bool {
         // find_state already checks pending_callback first.
-        self.find_state(state_id).is_some_and(|s| s.has_stdout())
+        self.find_state(state_id)
+            .is_some_and(super::super::state::RustSimState::has_stdout)
     }
 
     pub(crate) fn _get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
@@ -798,7 +793,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _has_state_stdin_symbols(&self, state_id: u64) -> bool {
         self.find_state(state_id)
-            .is_some_and(|s| s.has_stdin_symbols())
+            .is_some_and(super::super::state::RustSimState::has_stdin_symbols)
     }
 
     pub(crate) fn _get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
@@ -882,7 +877,7 @@ impl RustExplorationManager {
         event_type: u8,
     ) -> PyResult<()> {
         let event = crate::state::InspectEvent::from_u8(event_type)
-            .ok_or_else(|| PyValueError::new_err(format!("invalid event type: {}", event_type)))?;
+            .ok_or_else(|| PyValueError::new_err(format!("invalid event type: {event_type}")))?;
         self.with_state_mut(state_id, |state| {
             state.inspection_mut().enable(event);
             Ok(())

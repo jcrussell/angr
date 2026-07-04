@@ -39,8 +39,7 @@ fn test_ite_dedup_zero_page_load() {
     // Dedup contract: identical zero loads collapse to a single Concrete leaf.
     assert!(
         !is_ite(&loaded),
-        "expected dedup → single leaf, got ITE: {:?}",
-        loaded
+        "expected dedup → single leaf, got ITE: {loaded:?}"
     );
     assert_eq!(
         loaded.as_u64(),
@@ -77,8 +76,7 @@ fn test_ite_dedup_repeated_initializer_collapses() {
 
     assert!(
         !is_ite(&loaded),
-        "expected dedup → single leaf, got ITE: {:?}",
-        loaded
+        "expected dedup → single leaf, got ITE: {loaded:?}"
     );
     assert_eq!(loaded.as_u64(), Some(0xDEAD_BEEF));
 }
@@ -110,8 +108,7 @@ fn test_ite_dedup_distinct_values_keeps_ite() {
     // Distinct contents → ITE is required. Verifies the dedup is conservative.
     assert!(
         is_ite(&loaded),
-        "distinct candidate values must keep the ITE, got: {:?}",
-        loaded
+        "distinct candidate values must keep the ITE, got: {loaded:?}"
     );
 }
 
@@ -144,8 +141,7 @@ fn test_ite_dedup_strided_zero_collapses() {
 
     assert!(
         !is_ite(&loaded),
-        "strided zero load expected to collapse to a leaf, got: {:?}",
-        loaded
+        "strided zero load expected to collapse to a leaf, got: {loaded:?}"
     );
     assert_eq!(loaded.as_u64(), Some(0));
 }

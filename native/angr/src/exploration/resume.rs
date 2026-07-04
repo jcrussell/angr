@@ -324,10 +324,7 @@ impl RustExplorationManager {
         let state_id = pending.state.state_id();
 
         log::warn!(
-            "P17: Moving state {} to errored stash after callback error at 0x{:x}: {}",
-            state_id,
-            pc,
-            error_msg
+            "P17: Moving state {state_id} to errored stash after callback error at 0x{pc:x}: {error_msg}"
         );
 
         // Record the error
@@ -544,9 +541,7 @@ impl RustExplorationManager {
         }
 
         log::debug!(
-            "Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
-            true_pc,
-            false_pc
+            "Resumed after symbolic branch: true_pc=0x{true_pc:x}, false_pc=0x{false_pc:x}"
         );
 
         // Apply native uniqueness filter if enabled
