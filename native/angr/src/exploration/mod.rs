@@ -858,6 +858,18 @@ impl RustExplorationManager {
         self.memory_config.vex_opt_level
     }
 
+    /// Enable/disable native (in-process) libVEX cold-block lifting.
+    ///
+    /// Propagated to every per-step `VEXInterpreter` (z087y Stage-2). Only
+    /// effective on a `libvex-ffi` build; on the default build the
+    /// interpreter setter is a no-op stub. Python gates the `True` call on
+    /// `libvex_ffi_enabled()` + AMD64, so a mistaken enable on an
+    /// unsupported build is inert either way.
+    pub fn set_native_lift_enabled(&mut self, enabled: bool) {
+        self.steady_config_guard();
+        self.memory_config.native_lift_enabled = enabled;
+    }
+
     /// Set a per-address VEX optimization level override.
     /// Blocks at this address will be lifted with the specified opt_level.
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {

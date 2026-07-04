@@ -377,6 +377,17 @@ fn _raise_typed_test_error(
     Err(err.into())
 }
 
+/// Report whether the `libvex-ffi` build feature was compiled in.
+///
+/// Python wiring (`rust_manager.py`) gates the native cold-block lifting
+/// flag on this so it only calls `set_native_lift_enabled(True)` on a build
+/// that actually carries the FFI lifter (z087y Stage-2). Returns `false` for
+/// the default build, where the interpreter setter is a no-op stub anyway.
+#[pyfunction]
+fn libvex_ffi_enabled() -> bool {
+    cfg!(feature = "libvex-ffi")
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Typed exception classes (angr-tkbr.3).
@@ -411,6 +422,7 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(clear_ast_cache, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(libvex_ffi_enabled, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

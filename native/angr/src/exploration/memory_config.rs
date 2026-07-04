@@ -29,4 +29,9 @@ pub(crate) struct MemoryConfiguration {
     pub(crate) vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
     pub(crate) vex_opt_level_overrides: FxHashMap<u64, i32>,
+    /// Enable native (in-process) libVEX cold-block lifting on each
+    /// interpreter. Only meaningful on a `libvex-ffi` build — the default
+    /// build's `VEXInterpreter::set_native_lift_enabled` is a no-op stub.
+    /// Python gates this on `libvex_ffi_enabled()` + AMD64 (z087y Stage-2).
+    pub(crate) native_lift_enabled: bool,
 }

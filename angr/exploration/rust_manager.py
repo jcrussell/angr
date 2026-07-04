@@ -828,6 +828,7 @@ class RustExplorationManager(
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         use_simproc_fork_via_rust: bool | None = None,
+        use_native_lift: bool = False,
         symlinks: dict | None = None,
         **kwargs,
     ):
@@ -969,6 +970,7 @@ class RustExplorationManager(
             max_history,
             exploration_strategy,
             deterministic,
+            use_native_lift,
         )
         self._phase_config(
             use_shared_lineage_solver,
@@ -1007,6 +1009,7 @@ class RustExplorationManager(
         max_history,
         exploration_strategy,
         deterministic,
+        use_native_lift,
     ):
         """Phase 1 (boot): construct the Rust manager and apply basic config."""
         # Ensure Z3 context is shared (one-time setup)
@@ -1056,6 +1059,21 @@ class RustExplorationManager(
         # a non-default value to keep the FFI surface quiet in the common case)
         if max_history != 1000:
             self._rust_mgr.set_max_history(max_history)
+
+        # z087y Stage-2: opt into native (in-process) libVEX cold-block
+        # lifting. Only flip the flag when the .so was compiled with the
+        # `libvex-ffi` feature (probed via `libvex_ffi_enabled()`) AND the
+        # target is AMD64 — the only arch the native lifter marshals today.
+        # Off by default; on unsupported builds the Rust setter is a no-op
+        # stub, so the guard is belt-and-suspenders.
+        self._use_native_lift = bool(use_native_lift)
+        if self._use_native_lift:
+            try:
+                from angr.rustylib.vex_engine import libvex_ffi_enabled
+            except ImportError:
+                libvex_ffi_enabled = None
+            if libvex_ffi_enabled is not None and libvex_ffi_enabled() and project.arch.name == "AMD64":
+                self._rust_mgr.set_native_lift_enabled(True)
 
         # Configure exploration strategy. Reuses the post-init setter so the
         # validation and FFI-call shape live in one place. Always invoke so a
