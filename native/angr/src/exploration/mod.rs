@@ -252,7 +252,7 @@ pub struct RustExplorationManager {
     /// Governs which active state is stepped next and where new forks land.
     /// Defaults to [`Fifo`] (BFS); `set_state_selection_lifo` swaps in [`Lifo`]
     /// (DFS). Replaces the former `use_lifo: bool`.
-    pub(crate) policy: Box<dyn SelectionPolicy>,
+    pub(crate) policy: Arc<dyn SelectionPolicy>,
     /// Solver configuration: lazy_solves flag and Z3 timeout.
     pub(crate) constraint_solver: ConstraintSolver,
     /// Memory and VEX configuration: zero-fill, concretizer, vex opt levels.
@@ -473,7 +473,7 @@ impl RustExplorationManager {
             syscall_native_by_num: HashMap::new(),
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
-            policy: Box::new(selection_policy::Fifo), // Default to BFS (FIFO)
+            policy: Arc::new(selection_policy::Fifo), // Default to BFS (FIFO)
             constraint_solver: ConstraintSolver::new(),
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,
@@ -652,14 +652,14 @@ impl RustExplorationManager {
     /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
     pub fn set_state_selection_lifo(&mut self) {
         self.steady_config_guard();
-        self.policy = Box::new(selection_policy::Lifo);
+        self.policy = Arc::new(selection_policy::Lifo);
         log::debug!("State selection set to LIFO (DFS)");
     }
 
     /// P9 fix: Set state selection to FIFO (BFS - breadth-first search).
     pub fn set_state_selection_fifo(&mut self) {
         self.steady_config_guard();
-        self.policy = Box::new(selection_policy::Fifo);
+        self.policy = Arc::new(selection_policy::Fifo);
         log::debug!("State selection set to FIFO (BFS)");
     }
 

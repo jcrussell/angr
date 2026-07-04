@@ -695,7 +695,7 @@ impl RustExplorationManager {
                     &wave_shared,
                 )
             });
-            let job = WaveJob::new(seeds, process);
+            let job = WaveJob::new_with_policy(seeds, process, Arc::clone(&self.policy));
 
             // Release the GIL and run the wave to quiescence on the persistent
             // pool. Workers keep live successors thread-local (the f≈0 path) and
@@ -1118,7 +1118,7 @@ impl RustExplorationManager {
                 &proc_shared,
             )
         });
-        let (session, up_rx) = RunSession::new(process);
+        let (session, up_rx) = RunSession::new_with_policy(process, Arc::clone(&self.policy));
         let workers = self.parallel_pool.as_ref().expect("pool set").num_workers();
         self.parallel_pool
             .as_ref()

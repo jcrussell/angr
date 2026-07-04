@@ -432,10 +432,24 @@ const _: fn() = || {
 impl WaveJob {
     /// Build a wave from its seed payloads and a per-state processor. Seeds are
     /// pushed onto the injector and counted into `pending`; the `CancelToken` is
-    /// fresh and private to this wave.
+    /// fresh and private to this wave. Defaults the worker-local selection
+    /// policy to [`Lifo`] — use [`WaveJob::new_with_policy`] to honor the
+    /// run loop's configured policy (angr-x1fya).
     pub(crate) fn new(initial: Vec<StateMigrationPayload>, process: Box<ProcessFn>) -> Self {
+        Self::new_with_policy(initial, process, Arc::new(Lifo))
+    }
+
+    /// Build a wave with an explicit worker-local [`SelectionPolicy`]. The
+    /// run loop threads its own `self.policy` here so a FIFO-configured
+    /// (BFS) run does not silently drop to the scheduler's LIFO default
+    /// under parallel dispatch (angr-x1fya).
+    pub(crate) fn new_with_policy(
+        initial: Vec<StateMigrationPayload>,
+        process: Box<ProcessFn>,
+        policy: Arc<dyn SelectionPolicy>,
+    ) -> Self {
         let seeds = initial.len();
-        let transport = WorkTransport::new();
+        let transport = WorkTransport::with_policy(policy);
         for payload in initial {
             transport.injector.push(payload);
         }
@@ -553,10 +567,20 @@ impl RunSession {
     /// dropping it makes late worker sends fail silently — workers ignore send
     /// errors for exactly that shutdown race).
     pub(crate) fn new(process: Box<ProcessFn>) -> (Arc<Self>, Receiver<WorkerUp>) {
+        Self::new_with_policy(process, Arc::new(Lifo))
+    }
+
+    /// Build a session with an explicit worker-local [`SelectionPolicy`], so
+    /// the steady-state `explore()` path honors the run loop's configured
+    /// policy instead of the scheduler's LIFO default (angr-x1fya).
+    pub(crate) fn new_with_policy(
+        process: Box<ProcessFn>,
+        policy: Arc<dyn SelectionPolicy>,
+    ) -> (Arc<Self>, Receiver<WorkerUp>) {
         let (up_tx, up_rx) = mpsc::channel();
         (
             Arc::new(Self {
-                transport: WorkTransport::new(),
+                transport: WorkTransport::with_policy(policy),
                 seeds: AtomicUsize::new(0),
                 up_tx,
                 process,
