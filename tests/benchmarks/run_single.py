@@ -299,8 +299,10 @@ def _run_in_child(
                 deterministic=deterministic,
             )
             rust_mgr_instance.enable_profiling()
-            if strategy == "dfs":
-                rust_mgr_instance.set_exploration_strategy("dfs")
+            if strategy != "bfs":
+                # bfs is the FIFO default; dfs/random/coverage/loop_head are
+                # opt-in SelectionPolicy prototypes (angr-a32jl.2 / .2d matrix).
+                rust_mgr_instance.set_exploration_strategy(strategy)
             if diff_state:
                 install_snapshotter(
                     rust_mgr_instance, snapshots, interval=diff_interval, max_snapshots=diff_max_snapshots
@@ -884,7 +886,12 @@ def main():
         help=f"Memory limit in MB (default: {DEFAULT_MEM_LIMIT_MB})",
     )
     parser.add_argument("--list", action="store_true", help="List all cataloged examples")
-    parser.add_argument("--strategy", choices=["bfs", "dfs"], default="bfs", help="Exploration strategy (default: bfs)")
+    parser.add_argument(
+        "--strategy",
+        choices=["bfs", "dfs", "random", "coverage", "loop_head"],
+        default="bfs",
+        help="Exploration strategy (default: bfs); random/coverage/loop_head are angr-a32jl.2 policy prototypes",
+    )
     parser.add_argument(
         "--suite",
         choices=["fast", "medium", "all"],
