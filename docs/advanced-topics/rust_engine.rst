@@ -1213,6 +1213,36 @@ incorrect results on ``csgames2018`` and ``securityfest_fairlight``
 unwrap). Avoid pipelines beginning with ``sat-preprocess`` until that
 is debugged.
 
+Experimental: ``ANGR_Z3_PARAMS`` extra solver-param override
+------------------------------------------------------------
+
+``ANGR_Z3_PARAMS`` appends arbitrary Z3 solver params to every fresh
+solver, *after* the baked defaults (``timeout``, ``bv_extract_prop``,
+``mul2concat``), so a param survey can override or extend them without a
+rebuild. The value is a comma-separated list of ``key=value`` pairs, read
+once per process on first solver construction and cached in a
+``OnceLock``:
+
+.. code-block:: bash
+
+    ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0" \
+        python tests/benchmarks/run_single.py fauxware --engine rust
+
+``value`` of ``true`` / ``false`` (case-insensitive) sets a bool param;
+any other value is parsed as a ``u32``. Unparseable entries are skipped
+silently rather than aborting the run — a survey harness sweeping many
+candidate specs stays robust to a typo. Because a later ``key`` overrides
+an earlier one, listing ``timeout=...`` here also overrides the
+per-solver timeout Z3 would otherwise receive.
+
+**Default behavior (env unset) is unchanged** — the override list is
+empty and only the baked defaults apply. This knob exists for the
+A/B param surveys under ``angr-ovqja`` (z3/ffi/concretize hotpath perf):
+capture ``--counters-json`` across candidate specs without recompiling
+per candidate. It is *not* a supported production tuning surface — no
+value is baked into a default, and unknown Z3 param names are handled by
+Z3 itself (which may ignore or reject them).
+
 Shared-lineage Z3 solver — rejected
 -----------------------------------
 
