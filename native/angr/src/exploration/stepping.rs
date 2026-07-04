@@ -545,8 +545,10 @@ impl RustExplorationManager {
     ///
     /// Retained as a focused direct-call test harness (`subcall_tests.rs`); the
     /// production single-threaded path now resumes via
-    /// `core_outcome::handle_native_resume_core` (angr-vh834).
-    #[allow(dead_code)]
+    /// `core_outcome::handle_native_resume_core` (angr-vh834). Gated to test
+    /// builds — its only caller is the `#[cfg(test)]` `subcall_tests` module —
+    /// so it carries no `dead_code` allow (angr-0mqkc.2).
+    #[cfg(test)]
     fn handle_native_resume(
         &mut self,
         mut state: RustSimState,
