@@ -1173,6 +1173,29 @@ class RustExplorationManager(
         self._stats_proxy_mem_ast_writes = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
+        # angr-4ref8: symbolic-file export observability. Every v1 scope-gate
+        # rejection in _export_fs_files_to_rust was debug-log-only, so a file
+        # silently losing native serving (e.g. a 65537-byte file over the size
+        # cap) was not counter-attributable against the symfile_* surface.
+        # Count successful exports plus per-reason skips; pre-seed every reason
+        # so the keys always appear (stable for bench_diff / --dump-counters).
+        # Reasons mirror the docstring scope gate; `error`/`preamble` are the
+        # two cat-(b) fallback-with-loss paths.
+        self._stats_symfile_exports = 0
+        self._stats_symfile_export_skips = dict.fromkeys(
+            (
+                "subclass",
+                "has_end",
+                "not_seekable",
+                "file_exists",
+                "endness",
+                "size",
+                "path_utf8",
+                "error",
+                "preamble",
+            ),
+            0,
+        )
         self._init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -3361,6 +3384,7 @@ class RustExplorationManager(
             # cat-(b) FALLBACK WITH LOSS: fs export preamble failed (non-UTF-8
             # cwd, missing fs plugin, FFI error); every file in this state
             # stays Python-served (the pre-Phase-3 behavior). Debug-logs.
+            self._stats_symfile_export_skips["preamble"] += 1
             l.debug("fs file export skipped for state %d: %s: %s", state_id, type(e).__name__, e)
             return
 
@@ -3368,23 +3392,39 @@ class RustExplorationManager(
         for path, simfile in files.items():
             try:
                 # v1 scope gate — see docstring. Exact-type check on purpose.
+                # Each rejection bumps a per-reason counter (angr-4ref8) so a
+                # file dropping out of native serving is attributable.
                 if type(simfile) is not SimFile:
+                    self._stats_symfile_export_skips["subclass"] += 1
                     continue
                 if simfile.has_end is not True:
+                    self._stats_symfile_export_skips["has_end"] += 1
                     continue
                 if not simfile.seekable:
+                    self._stats_symfile_export_skips["not_seekable"] += 1
                     continue
                 if simfile.file_exists is not True:
+                    self._stats_symfile_export_skips["file_exists"] += 1
                     continue
                 if simfile.endness != "Iend_BE":
+                    self._stats_symfile_export_skips["endness"] += 1
                     continue
                 try:
                     size = angr_state.solver.eval_one(simfile.size)
                 except SimSolverError:
-                    continue  # symbolic size without a unique value (or unsat)
-                if not 0 < size <= self._FS_EXPORT_MAX_FILE_SIZE:
+                    # symbolic size without a unique value (or unsat)
+                    self._stats_symfile_export_skips["size"] += 1
                     continue
-                path_str = path.decode("utf-8")
+                if not 0 < size <= self._FS_EXPORT_MAX_FILE_SIZE:
+                    self._stats_symfile_export_skips["size"] += 1
+                    continue
+                try:
+                    path_str = path.decode("utf-8")
+                except UnicodeDecodeError:
+                    # the Rust path model is UTF-8-lossy — a non-UTF-8 path
+                    # can't be keyed natively.
+                    self._stats_symfile_export_skips["path_utf8"] += 1
+                    continue
                 # Big-endian load: chop(8)[0] is the byte at file offset 0.
                 data = simfile.load(0, size, disable_actions=True, inspect=False)
                 self._rust_mgr.register_file_content(state_id, path_str, data.chop(8))
@@ -3392,7 +3432,9 @@ class RustExplorationManager(
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: this file stays Python-served
                 # (the pre-Phase-3 behavior). Debug-logs.
+                self._stats_symfile_export_skips["error"] += 1
                 l.debug("fs file export failed for %r: %s: %s", path, type(e).__name__, e)
+        self._stats_symfile_exports += exported
         if exported:
             l.debug("Exported %d symbolic file(s) to Rust state %d", exported, state_id)
 
@@ -4930,6 +4972,15 @@ class RustExplorationManager(
         result["proxy_mem_ast_writes"] = self._stats_proxy_mem_ast_writes
         result["proxy_reg_writes"] = self._stats_proxy_reg_writes
         result["proxy_solver_adds"] = self._stats_proxy_solver_adds
+        # angr-4ref8: symbolic-file export observability. `symfile_exports` is
+        # the count of files handed to the native registry; each
+        # `symfile_export_skip_<reason>` attributes a v1 scope-gate rejection
+        # (subclass/has_end/not_seekable/file_exists/endness/size/path_utf8) or
+        # a cat-(b) fallback (error/preamble). Complements the Rust-side
+        # symfile_reads_native / symfile_write_demotions counters.
+        result["symfile_exports"] = self._stats_symfile_exports
+        for reason, count in self._stats_symfile_export_skips.items():
+            result[f"symfile_export_skip_{reason}"] = count
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, "_time_in_rust_run_ns"):
             result["time_in_rust_run"] = self._time_in_rust_run_ns / 1e9

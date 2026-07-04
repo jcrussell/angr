@@ -123,6 +123,10 @@ class TestSymbolicFileNativeServe:
         stats = mgr.stats
         assert stats["symfile_reads_native"] >= 1, "read was not served from the Rust registry"
         assert stats["symfile_write_demotions"] == 0
+        # angr-4ref8: an eligible file was handed to the native registry and no
+        # scope-gate reason fired for it.
+        assert stats["symfile_exports"] >= 1
+        assert stats["symfile_export_skip_endness"] == 0
         _assert_no_read_fallbacks(stats)
 
     def test_no_content_simfile_fresh_symbolic_bytes(self, fauxware_project):
@@ -143,14 +147,16 @@ class TestSymbolicFileNativeServe:
         _assert_no_read_fallbacks(stats)
 
     @pytest.mark.parametrize(
-        "ineligible_kwargs",
+        ("ineligible_kwargs", "skip_reason"),
         [
-            pytest.param({"has_end": False}, id="unbounded"),
-            pytest.param({"has_end": True, "file_exists": False}, id="nonexistent"),
-            pytest.param({"has_end": True, "endness": "Iend_LE"}, id="little_endian"),
+            pytest.param({"has_end": False}, "has_end", id="unbounded"),
+            pytest.param({"has_end": True, "file_exists": False}, "file_exists", id="nonexistent"),
+            pytest.param({"has_end": True, "endness": "Iend_LE"}, "endness", id="little_endian"),
         ],
     )
-    def test_ineligible_file_skipped_still_explores_via_fallback(self, fauxware_project, ineligible_kwargs):
+    def test_ineligible_file_skipped_still_explores_via_fallback(
+        self, fauxware_project, ineligible_kwargs, skip_reason
+    ):
         """A file failing the v1 scope gate (unbounded ``has_end=False``,
         ``file_exists=False``, or a little-endian load model) is skipped:
         nothing is registered (``symfile_reads_native == 0``), the guest read
@@ -173,6 +179,10 @@ class TestSymbolicFileNativeServe:
         assert stats["symfile_reads_native"] == 0, "ineligible file must not be served from the registry"
         assert stats["simprocedure_python_fallback_count"] > 0, "expected the guest read to bounce to Python"
         assert stats["simprocedure_fallback_by_name"].get("read", 0) > 0, stats["simprocedure_fallback_by_name"]
+        # angr-4ref8: the scope-gate rejection is attributed to its reason
+        # counter, and nothing was exported for this state.
+        assert stats[f"symfile_export_skip_{skip_reason}"] >= 1, f"expected symfile_export_skip_{skip_reason} to fire"
+        assert stats["symfile_exports"] == 0
 
     def test_parallel_workers_content_survives_migration(self, fauxware_project, monkeypatch):
         """workers=2: registered content survives cross-worker state migration
