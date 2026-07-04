@@ -175,3 +175,51 @@ impl InspectionManager {
         self.enabled = mask;
     }
 }
+
+use super::*;
+
+impl RustSimState {
+    /// Get the inspection manager (read-only).
+    pub fn inspection(&self) -> &InspectionManager {
+        &self.inspection
+    }
+
+    /// Get the inspection manager (mutable).
+    pub fn inspection_mut(&mut self) -> &mut InspectionManager {
+        &mut self.inspection
+    }
+
+    /// Record a memory read event (if mem_read inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_mem_read(&mut self, addr: u64, size: u32) {
+        if self.inspection.is_enabled(InspectEvent::MemRead) {
+            self.inspection
+                .record(InspectEvent::MemRead, addr, size, self.pc);
+        }
+    }
+
+    /// Record a memory write event (if mem_write inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_mem_write(&mut self, addr: u64, size: u32) {
+        if self.inspection.is_enabled(InspectEvent::MemWrite) {
+            self.inspection
+                .record(InspectEvent::MemWrite, addr, size, self.pc);
+        }
+    }
+
+    /// Record a fork event (if fork inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_fork(&mut self) {
+        if self.inspection.is_enabled(InspectEvent::Fork) {
+            self.inspection.record(InspectEvent::Fork, 0, 0, self.pc);
+        }
+    }
+
+    /// Record an exit event (if exit inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_exit(&mut self) {
+        if self.inspection.is_enabled(InspectEvent::Exit) {
+            self.inspection.record(InspectEvent::Exit, 0, 0, self.pc);
+        }
+    }
+}
