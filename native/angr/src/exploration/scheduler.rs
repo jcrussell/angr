@@ -59,6 +59,7 @@
 //! fraction* the overhead gate's break-even `f*` bounds. See
 //! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
 
+use crate::exploration::selection_policy::{Lifo, SelectionPolicy};
 use crate::interpreter::BLOCK_CACHE_CAPACITY;
 use crate::state::{RustSimState, StateMigrationPayload};
 use crate::vex::IRSB;
@@ -370,16 +371,34 @@ pub(crate) struct WorkTransport {
     /// [`offload_surplus`] Trigger A).
     idle_workers: AtomicUsize,
     counters: SchedulerCounters,
+    /// Active-state selection / fork-insertion policy for the worker-local
+    /// frontier (angr-1ilq.9). [`dispatch_next`] routes its local pop through
+    /// [`SelectionPolicy::select`] and [`absorb_continues`] through
+    /// [`SelectionPolicy::on_fork`], so a find-aware policy can reorder the
+    /// per-worker frontier without touching the dispatch skeleton. Defaults to
+    /// [`Lifo`] — the pre-seam behavior was an open-coded `pop_back` /
+    /// `push_back`, exactly what `Lifo` reproduces, so the default is
+    /// byte-for-byte zero-regression. Shared across worker threads as an `Arc`
+    /// (the trait is `Send + Sync`).
+    policy: Arc<dyn SelectionPolicy>,
 }
 
 impl WorkTransport {
     fn new() -> Self {
+        Self::with_policy(Arc::new(Lifo))
+    }
+
+    /// Build a transport with an explicit selection policy. The `new()` default
+    /// is `Lifo` (verbatim pre-seam dispatch); callers that want a different
+    /// per-worker ordering (find-aware dispatch — angr-1ilq.9) supply it here.
+    fn with_policy(policy: Arc<dyn SelectionPolicy>) -> Self {
         Self {
             injector: Injector::new(),
             pending: AtomicUsize::new(0),
             cancel: CancelToken::new(),
             idle_workers: AtomicUsize::new(0),
             counters: SchedulerCounters::default(),
+            policy,
         }
     }
 }
@@ -1155,7 +1174,10 @@ fn dispatch_next(
     ctx: &Context,
 ) -> Option<RustSimState> {
     loop {
-        match local.pop_back() {
+        // Local frontier pop goes through the selection policy (angr-1ilq.9):
+        // `Lifo` (the default) reproduces the pre-seam `pop_back`; a find-aware
+        // policy can reorder without touching this skeleton.
+        match t.policy.select(local) {
             Some(state) => {
                 t.counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
                 return Some(state);
@@ -1203,7 +1225,10 @@ fn absorb_continues(
 ) {
     let spawned = continue_states.len();
     for child in continue_states {
-        local.push_back(child);
+        // Fork insertion goes through the selection policy (angr-1ilq.9); both
+        // built-ins append at the tail (`push_back`), so the default is
+        // identical to the pre-seam open-coded push.
+        t.policy.on_fork(local, child);
     }
     if spawned > 0 {
         t.pending.fetch_add(spawned, Ordering::SeqCst);
@@ -1297,10 +1322,14 @@ fn steal_from_injector(
 
 #[cfg(test)]
 mod tests {
-    use super::{LOCAL_HWM, ParallelScheduler, TaskOutcome, TerminalDisposition, TerminalSummary};
+    use super::{
+        LOCAL_HWM, ParallelScheduler, TaskOutcome, TerminalDisposition, TerminalSummary,
+        WorkTransport, dispatch_next,
+    };
+    use crate::exploration::selection_policy::{Fifo, Lifo};
     use crate::state::RustSimState;
     use crate::symbolic::RustBV;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use z3::Context;
@@ -1320,6 +1349,49 @@ mod tests {
         };
         state.add_constraint(c);
         state
+    }
+
+    // angr-1ilq.9: the worker-local frontier pop honors the injected
+    // `SelectionPolicy`. Push three states front-to-back onto one worker's
+    // `local` queue and drain it via `dispatch_next` (empty injector, so no
+    // steal path is reached), returning `(insertion_order, dispatch_order)` of
+    // `state_id`s. Both policies see three FRESH states in the SAME insertion
+    // order; only the pop policy differs.
+    fn drain_local_with(policy: &'static str) -> (Vec<u64>, Vec<u64>) {
+        let ctx = Context::thread_local();
+        let transport = match policy {
+            "fifo" => WorkTransport::with_policy(Arc::new(Fifo)),
+            _ => WorkTransport::with_policy(Arc::new(Lifo)),
+        };
+        let mut local: VecDeque<RustSimState> = VecDeque::new();
+        let mut inserted = Vec::new();
+        for i in 0..3u64 {
+            let st = pinned_state(&format!("order_{policy}_{i}"), 0xB000 + i);
+            inserted.push(st.state_id());
+            local.push_back(st);
+        }
+        let mut dispatched = Vec::new();
+        while let Some(st) = dispatch_next(&transport, &mut local, &ctx) {
+            dispatched.push(st.state_id());
+        }
+        (inserted, dispatched)
+    }
+
+    #[test]
+    fn test_dispatch_next_honors_selection_policy() {
+        let (fifo_in, fifo_out) = drain_local_with("fifo");
+        assert_eq!(
+            fifo_out, fifo_in,
+            "Fifo must dispatch the worker-local frontier oldest-first (insertion order)",
+        );
+
+        let (lifo_in, lifo_out) = drain_local_with("lifo");
+        let mut lifo_expected = lifo_in.clone();
+        lifo_expected.reverse();
+        assert_eq!(
+            lifo_out, lifo_expected,
+            "Lifo (the default) must dispatch the worker-local frontier newest-first (reverse)",
+        );
     }
 
     // angr-1ilq.3: N independent states are distributed across W workers, each
