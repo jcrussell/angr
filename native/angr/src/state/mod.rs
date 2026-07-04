@@ -170,6 +170,7 @@ mod migration;
 mod options;
 mod registers;
 mod snapshot;
+mod solver;
 mod types;
 
 pub use export::*;
@@ -1027,50 +1028,6 @@ impl RustSimState {
     // NO_SYMBOLIC_JUMP_RESOLUTION / KEEP_IP_SYMBOLIC, `set_option`/`has_option`,
     // eager-fork forcing, and the `SharedLineageSolver` opt-in) lives in
     // `options.rs`.
-
-    // =========================================================================
-    // Solver/Constraint Access
-    // =========================================================================
-
-    /// Get a reference to the solver context.
-    pub fn solver(&self) -> &Rc<RefCell<SymContext>> {
-        &self.solver
-    }
-
-    /// Add a constraint.
-    pub fn add_constraint(&self, constraint: RustBV) {
-        let ctx = self.solver.borrow();
-        ctx.assume_true(&constraint);
-    }
-
-    /// Check if current constraints are satisfiable.
-    pub fn satisfiable(&self) -> bool {
-        let ctx = self.solver.borrow();
-        ctx.is_sat()
-    }
-
-    /// Prime the SAT cache (avoids redundant Z3 checks after branch forking).
-    pub fn set_sat_cache(&self, value: bool) {
-        self.solver.borrow().set_sat_cache(value);
-    }
-
-    /// Evaluate an expression to a concrete value.
-    pub fn eval(&self, expr: &RustBV) -> Option<u128> {
-        let ctx = self.solver.borrow();
-        ctx.eval(expr)
-    }
-
-    /// Get minimum value of an expression.
-    pub fn min(&self, expr: &RustBV, signed: bool) -> Option<u128> {
-        let ctx = self.solver.borrow();
-        ctx.min(expr, signed)
-    }
-
-    /// Get maximum value of an expression.
-    pub fn max(&self, expr: &RustBV, signed: bool) -> Option<u128> {
-        let ctx = self.solver.borrow();
-        ctx.max(expr, signed)
-    }
 
     // =========================================================================
     // Hooks
