@@ -214,6 +214,7 @@ def _run_in_child(
     diff_max_snapshots=200,
     use_shared_lineage_solver=False,
     deterministic=False,
+    native_lift=False,
 ):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import importlib.util
@@ -297,6 +298,7 @@ def _run_in_child(
                 states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
                 deterministic=deterministic,
+                use_native_lift=native_lift,
             )
             rust_mgr_instance.enable_profiling()
             if strategy != "bfs":
@@ -676,6 +678,7 @@ def run_example(
     counters_json=False,
     use_shared_lineage_solver=False,
     deterministic=False,
+    native_lift=False,
 ):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
@@ -700,6 +703,7 @@ def run_example(
                 diff_max_snapshots,
                 use_shared_lineage_solver,
                 deterministic,
+                native_lift,
             ),
         )
         result = async_result.get(timeout=timeout)
@@ -947,6 +951,14 @@ def main():
         "knob for the bimodal benches (angr-9w6ad.10 P4-spike-A); narrows "
         "but does not close residual Z3 4.13 heuristic latitude.",
     )
+    parser.add_argument(
+        "--native-lift",
+        action="store_true",
+        help="Rust engine only. Construct RustExplorationManager with "
+        "use_native_lift=True so cold-block lifting uses the in-process "
+        "native libVEX seam (z087y Stage-2). No-op unless the .so was "
+        "built --features libvex-ffi AND the project arch is AMD64.",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -978,6 +990,7 @@ def main():
                     counters_json=args.counters_json,
                     use_shared_lineage_solver=args.use_shared_lineage_solver,
                     deterministic=args.deterministic,
+                    native_lift=args.native_lift,
                 )
             else:
                 run_example(
@@ -990,6 +1003,7 @@ def main():
                     counters_json=args.counters_json,
                     use_shared_lineage_solver=args.use_shared_lineage_solver,
                     deterministic=args.deterministic,
+                    native_lift=args.native_lift,
                 )
         return
 
@@ -1011,6 +1025,7 @@ def main():
             counters_json=args.counters_json,
             use_shared_lineage_solver=args.use_shared_lineage_solver,
             deterministic=args.deterministic,
+            native_lift=args.native_lift,
         )
     else:
         run_example(
@@ -1023,6 +1038,7 @@ def main():
             counters_json=args.counters_json,
             use_shared_lineage_solver=args.use_shared_lineage_solver,
             deterministic=args.deterministic,
+            native_lift=args.native_lift,
         )
 
 
