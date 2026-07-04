@@ -18,7 +18,7 @@ automaton = ["indexmap", "fixedbitset"]
 # venv's pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Kept off
 # the default set so the bench-regression gate takes on no libpyvex.so rpath
 # dependency. See docs/advanced-topics/rust_libvex_ffi.rst.
-libvex-ffi = []
+libvex-ffi = ["dep:bindgen"]
 
 [dependencies]
 backtrace = "0.3.76"
@@ -60,6 +60,13 @@ icicle-vm = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed
 libafl = { version = "=0.15.3", optional = true }
 libafl_bolts = { version = "=0.15.3", optional = true }
 pcode = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
+
+# Optional build-dep: only pulled in by the non-default `libvex-ffi` feature.
+# Pinned to the same major bindgen z3-sys already resolves in Cargo.lock so no
+# new registry fetch is needed. Generates the pyvex FFI decls from the vendored
+# cdef header (vendor/pyvex_ffi.h) at build time — see build.rs.
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
 
 [dev-dependencies]
 tempfile = "3.24.0"

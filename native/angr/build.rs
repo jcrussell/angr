@@ -11,6 +11,7 @@ fn main() {
     // build takes on no new rpath dependency. See rust_libvex_ffi.rst.
     if env::var("CARGO_FEATURE_LIBVEX_FFI").is_ok() {
         configure_pyvex_ffi();
+        generate_pyvex_ffi_bindings();
     }
 
     // Only configure Z3 paths when the z3 feature is enabled.
@@ -52,6 +53,58 @@ fn configure_pyvex_ffi() {
         );
     }
 }
+
+/// Generate Rust FFI declarations for the libVEX seam from the vendored cffi
+/// cdef (`vendor/pyvex_ffi.h`, extracted from `pyvex.vex_ffi.ffi_str` — see
+/// tools/regen-pyvex-ffi-header.py). bindgen writes `pyvex_ffi_bindings.rs`
+/// into `OUT_DIR`, which `vex/libvex_ffi.rs` includes. Binding against pyvex's
+/// own cdef keeps the struct ABI (VEXLiftResult, IRSB, IRStmt/IRExpr) in lock
+/// step with the object we link, which is the parity guarantee.
+#[cfg(feature = "libvex-ffi")]
+fn generate_pyvex_ffi_bindings() {
+    let header = "vendor/pyvex_ffi.h";
+    println!("cargo:rerun-if-changed={header}");
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
+    let bindings = bindgen::Builder::default()
+        .header(header)
+        // Only the libVEX seam + its reachable IR types — not stddef.h noise.
+        .allowlist_function("vex_lift")
+        .allowlist_function("vex_init")
+        .allowlist_function("register_readonly_region")
+        .allowlist_function("deregister_all_readonly_regions")
+        .allowlist_function("register_initial_register_value")
+        .allowlist_function("reset_initial_register_values")
+        .allowlist_type("VEXLiftResult")
+        .allowlist_type("IRSB")
+        .allowlist_type("VexArch")
+        .allowlist_type("VexArchInfo")
+        // Pull in every type reachable from the allowlisted roots (IRStmt,
+        // IRExpr, IRConst, ExitInfo, DataRef, ConstVal, …).
+        .allowlist_recursively(true)
+        // Rustified enums are ergonomic but risk UB on unknown discriminants
+        // coming from C; a newtype-with-consts is the safe default for FFI.
+        .default_enum_style(bindgen::EnumVariation::NewType {
+            is_bitfield: false,
+            is_global: false,
+        })
+        .layout_tests(false)
+        .generate_comments(false)
+        .generate()
+        .expect("bindgen failed to generate pyvex FFI bindings from vendor/pyvex_ffi.h");
+
+    bindings
+        .write_to_file(out_dir.join("pyvex_ffi_bindings.rs"))
+        .expect("failed to write pyvex_ffi_bindings.rs into OUT_DIR");
+}
+
+/// No-op when the `libvex-ffi` feature is off so the unconditional call site in
+/// `main()` stays simple. The call is already guarded by the runtime
+/// `CARGO_FEATURE_LIBVEX_FFI` check, so this branch is never reached in a
+/// default build; it exists only to keep the code compiling without the
+/// `bindgen` build-dependency.
+#[cfg(not(feature = "libvex-ffi"))]
+fn generate_pyvex_ffi_bindings() {}
 
 /// Locate the directory containing `libpyvex.so`. Prefers an explicit override
 /// (also set by `setup.py::_resolve_pyvex_libdir`), then the active venv's
