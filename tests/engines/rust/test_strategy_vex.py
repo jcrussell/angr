@@ -103,6 +103,22 @@ class TestExplorationStrategy:
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "coverage-guided selection should still find at least one state"
 
+    def test_set_exploration_strategy_loop_head(self, fauxware_project):
+        """'loop_head' (angr-caplg prototype) round-robin still finds the goal.
+
+        Loop-head round-robin rotates dispatch across (loop-head,
+        callstack-class) buckets so a looping state cannot starve siblings; the
+        invariant asserted here is that it remains a valid searcher reaching
+        the target.
+        """
+
+        find_addr = 0x4006ED
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy("loop_head")
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "loop-head round-robin selection should still find at least one state"
+
     def test_uniqueness_filter_knobs(self, fauxware_project):
         """register/disable/enabled uniqueness-filter knobs are wired to Rust.
 

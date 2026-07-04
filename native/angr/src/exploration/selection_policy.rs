@@ -17,7 +17,7 @@
 //! Both append new forks at the tail — matching the historical `push_back`
 //! at every fork site — so step traces are byte-identical under either.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use crate::state::RustSimState;
@@ -203,9 +203,113 @@ impl SelectionPolicy for CoverageGuided {
     }
 }
 
+/// Loop-head round-robin fairness (angr-caplg): rotate dispatch across
+/// *(loop-head, callstack-class)* buckets so a state spinning in a loop cannot
+/// monopolize the frontier while sibling paths starve.
+///
+/// The bucket key mirrors the two signals native LoopBound and the
+/// reconvergence sampler already use, both reachable per-state inside the
+/// two-hook seam — so no seam widening or LoopBound-technique plumbing is
+/// needed (the `selection-policy-seam-limits` caution does not apply here):
+///   * *loop-head* — the address visited most often in the state's history
+///     (the block it is currently spinning on). Matches LoopBound's
+///     history-frequency loop test (`Self::exceeds_loop_bound`). Falls back to
+///     the next-block `pc` when the state is not looping (all history
+///     addresses distinct).
+///   * *callstack-class* — the return-address chain, exactly the hash the
+///     reconvergence sampler folds in (`record_reconvergence_sample`).
+///
+/// `select` picks the active state whose bucket has been dispatched the fewest
+/// times (FIFO front tie-break for determinism) and bumps that bucket's count.
+/// A looping state re-buckets to the same key each visit, so its count climbs
+/// and fresher buckets are served ahead of it — round-robin fairness without
+/// dropping or reordering the deque itself.
+///
+/// Opt-in only via `set_state_selection_loop_head`; never a default.
+#[derive(Default)]
+pub struct LoopHeadRoundRobin {
+    /// Per-bucket dispatch counts. Behind a `Mutex` for interior mutability
+    /// under the `&self` `select` hook while preserving `Send + Sync` so a
+    /// parallel scheduler can share the `Arc`.
+    dispatched: Mutex<HashMap<u64, u64>>,
+}
+
+impl LoopHeadRoundRobin {
+    /// Construct with empty per-bucket dispatch counts.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold a state's *(loop-head, callstack-class)* into a single bucket key.
+    fn bucket_key(state: &RustSimState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        // Loop head = the most-frequently visited history address (the block
+        // the state is spinning on). Ties break to the first address to reach
+        // the running max, which is deterministic given history order. When no
+        // address repeats the state is not looping, so head stays the
+        // next-block pc.
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        let mut head = state.pc();
+        let mut best = 1usize;
+        for &addr in state.history() {
+            let c = counts.entry(addr).or_insert(0);
+            *c += 1;
+            if *c > best {
+                best = *c;
+                head = addr;
+            }
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        head.hash(&mut h);
+        for entry in state.call_stack() {
+            entry.return_addr.hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
+impl SelectionPolicy for LoopHeadRoundRobin {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        if active.is_empty() {
+            return None;
+        }
+        let mut dispatched = self
+            .dispatched
+            .lock()
+            .expect("LoopHeadRoundRobin counts poisoned");
+        // Least-served bucket wins; front scan with strict `<` keeps FIFO order
+        // among equally-starved buckets (deterministic).
+        let mut pick = 0usize;
+        let mut best_count = u64::MAX;
+        let mut best_key = 0u64;
+        for (i, st) in active.iter().enumerate() {
+            let key = Self::bucket_key(st);
+            let count = dispatched.get(&key).copied().unwrap_or(0);
+            if count < best_count {
+                best_count = count;
+                pick = i;
+                best_key = key;
+            }
+        }
+        let state = active
+            .remove(pick)
+            .expect("index from non-empty deque is valid");
+        *dispatched.entry(best_key).or_insert(0) += 1;
+        Some(state)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        active.push_back(state);
+    }
+
+    fn name(&self) -> &'static str {
+        "loop_head"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CoverageGuided, RandomState, SelectionPolicy};
+    use super::{CoverageGuided, LoopHeadRoundRobin, RandomState, SelectionPolicy};
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
     use z3::Context;
@@ -344,5 +448,112 @@ mod tests {
     #[test]
     fn test_coverage_policy_name() {
         assert_eq!(CoverageGuided::new().name(), "coverage");
+    }
+
+    // ---- LoopHeadRoundRobin (angr-caplg) ----
+
+    /// Build a state parked at `pc` whose history is `hist` (so the loop-head
+    /// signal is the most-frequent address in `hist`).
+    fn state_with_history(pc: u64, hist: &[u64]) -> RustSimState {
+        let mut st = state_at(pc);
+        for &addr in hist {
+            st.add_to_history(addr);
+        }
+        st
+    }
+
+    #[test]
+    fn test_loop_head_round_robin_fairness() {
+        // Two states in bucket A (pc 0x1000, no history) and one in bucket B
+        // (pc 0x2000). Fair scheduling must serve B before re-serving A:
+        //   Step 1: all buckets count 0 -> front A0.       (A now count 1)
+        //   Step 2: A1 bucket=1, B0 bucket=0 -> B0.        (B now count 1)
+        //   Step 3: only A1 remains -> A1.
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let a0 = state_at(0x1000);
+        let a1 = state_at(0x1000);
+        let b0 = state_at(0x2000);
+        let (a0id, a1id, b0id) = (a0.state_id(), a1.state_id(), b0.state_id());
+        active.push_back(a0);
+        active.push_back(a1);
+        active.push_back(b0);
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.state_id());
+        }
+        assert_eq!(
+            order,
+            vec![a0id, b0id, a1id],
+            "round-robin must serve the fresh bucket before re-serving A",
+        );
+    }
+
+    #[test]
+    fn test_loop_head_buckets_by_loop_head_not_pc() {
+        // s0 and s1 both spin on loop-head 0xAA (history frequency) but sit at
+        // different next-block pcs; a pc-keyed policy would split them, a
+        // loop-head-keyed one groups them. s2 is a fresh distinct bucket.
+        //   Step 1: front s0 (all count 0).          (bucket-0xAA now 1)
+        //   Step 2: s1 bucket=1, s2 bucket=0 -> s2.  (s2 bucket now 1)
+        //   Step 3: only s1 remains -> s1.
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let s0 = state_with_history(0xB0, &[0xAA, 0xAA, 0xAA]);
+        let s1 = state_with_history(0xB1, &[0xAA, 0xAA, 0xAA]);
+        let s2 = state_at(0xC0);
+        let (s0id, s1id, s2id) = (s0.state_id(), s1.state_id(), s2.state_id());
+        active.push_back(s0);
+        active.push_back(s1);
+        active.push_back(s2);
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.state_id());
+        }
+        assert_eq!(
+            order,
+            vec![s0id, s2id, s1id],
+            "s0 and s1 must share a loop-head bucket despite differing pc",
+        );
+    }
+
+    #[test]
+    fn test_loop_head_is_permutation() {
+        // Distinct fresh buckets all start at count 0 -> pure FIFO drain, no
+        // drops or dupes.
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let ids: Vec<u64> = (0..5u64)
+            .map(|i| {
+                let st = state_at(0x100 + i);
+                let id = st.state_id();
+                active.push_back(st);
+                id
+            })
+            .collect();
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(st.state_id());
+        }
+        assert_eq!(
+            order, ids,
+            "distinct fresh buckets drain FIFO front-to-back"
+        );
+    }
+
+    #[test]
+    fn test_loop_head_empty_is_none() {
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        assert!(policy.select(&mut active).is_none());
+    }
+
+    #[test]
+    fn test_loop_head_policy_name() {
+        assert_eq!(LoopHeadRoundRobin::new().name(), "loop_head");
     }
 }

@@ -680,6 +680,15 @@ impl RustExplorationManager {
         log::debug!("State selection set to COVERAGE (new-block-first)");
     }
 
+    /// angr-caplg prototype: set state selection to loop-head round-robin —
+    /// rotate dispatch across (loop-head, callstack-class) buckets so a looping
+    /// state cannot starve sibling paths. Opt-in only; never a default.
+    pub fn set_state_selection_loop_head(&mut self) {
+        self.steady_config_guard();
+        self.policy = Arc::new(selection_policy::LoopHeadRoundRobin::new());
+        log::debug!("State selection set to LOOP_HEAD (round-robin fairness)");
+    }
+
     /// Set the number of solutions to find before stopping.
     pub fn set_num_find(&mut self, n: usize) {
         self.steady_config_guard();
