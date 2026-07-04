@@ -1,5 +1,5 @@
 use super::core_outcome::{
-    BounceKind, CoreCounters, CoreOutcome, CoreReturn, ParallelProfiling, PendingBounce,
+    BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, ParallelProfiling, PendingBounce,
     PostStepInputs, run_post_step_core,
 };
 use super::*;
@@ -174,15 +174,13 @@ impl RustExplorationManager {
             stored_conditions,
             fork_snapshots,
         };
-        let outcome = run_post_step_core(
-            &ctx,
-            &prof,
-            &self.native_procedures,
-            &self.native_syscalls,
-            state,
-            inputs,
-            root_hint,
-        );
+        let cc = CoreCtx {
+            ctx: &ctx,
+            prof: &prof,
+            native_procs: &self.native_procedures,
+            native_syscalls: &self.native_syscalls,
+        };
+        let outcome = run_post_step_core(&cc, state, inputs, root_hint);
         self.apply_core_outcome(callbacks, &prof, outcome)
     }
 

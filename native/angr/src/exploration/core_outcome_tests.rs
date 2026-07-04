@@ -46,7 +46,17 @@ fn block_end_no_forks_returns_single_main_successor() {
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
         };
-        let outcome = run_post_step_core(&ctx, &prof, &procs, &syscalls, state, inputs, sid);
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+            },
+            state,
+            inputs,
+            sid,
+        );
 
         assert!(outcome.pruned.is_empty());
         assert!(outcome.fork_ids.is_empty());
@@ -93,7 +103,17 @@ fn block_end_missing_condition_fork_is_materialized_and_dispatched() {
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
         };
-        let outcome = run_post_step_core(&ctx, &prof, &procs, &syscalls, state, inputs, sid);
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+            },
+            state,
+            inputs,
+            sid,
+        );
 
         assert!(outcome.pruned.is_empty(), "fresh state is SAT");
         assert_eq!(outcome.fork_ids.len(), 1, "one fork dispatched");
@@ -136,7 +156,17 @@ fn error_deadend_kind_routes_to_deadended() {
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
         };
-        let outcome = run_post_step_core(&ctx, &prof, &procs, &syscalls, state, inputs, sid);
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+            },
+            state,
+            inputs,
+            sid,
+        );
         match outcome.ret {
             CoreReturn::Deadended(s) => {
                 assert_eq!(s.state_id(), sid);
@@ -169,7 +199,17 @@ fn error_fatal_kind_routes_to_errored() {
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
         };
-        let outcome = run_post_step_core(&ctx, &prof, &procs, &syscalls, state, inputs, sid);
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+            },
+            state,
+            inputs,
+            sid,
+        );
         match outcome.ret {
             CoreReturn::Errored(s, msg) => {
                 assert_eq!(s.state_id(), sid);
@@ -201,7 +241,17 @@ fn symbolic_branch_bounces_to_python() {
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
         };
-        let outcome = run_post_step_core(&ctx, &prof, &procs, &syscalls, state, inputs, 0);
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+            },
+            state,
+            inputs,
+            0,
+        );
         assert!(matches!(
             outcome.ret,
             CoreReturn::NeedsPython(PendingBounce {

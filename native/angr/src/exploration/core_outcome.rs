@@ -177,17 +177,19 @@ impl CcSnapshot {
     }
 
     /// Mirror of `RustExplorationManager::setup_native_subcall` (no `&self`).
-    #[allow(clippy::too_many_arguments)] // mirrors the manager method's signature 1:1
     fn setup_native_subcall(
         &self,
         state: &mut RustSimState,
-        proc_name: String,
-        saved_args: Vec<RustBV>,
-        caller_return_addr: u64,
-        target: u64,
-        sub_args: Vec<RustBV>,
-        resume_tag: u32,
+        sub: NativeSubcall,
     ) -> Result<(), SubcallSetupError> {
+        let NativeSubcall {
+            proc_name,
+            saved_args,
+            caller_return_addr,
+            target,
+            sub_args,
+            resume_tag,
+        } = sub;
         let arg_regs = &self.arg_registers;
         if sub_args.len() > arg_regs.len() {
             return Err(SubcallSetupError::TooManyArgs {
@@ -465,6 +467,55 @@ const _: fn() = || {
     assert_send_sync::<CcSnapshot>();
 };
 
+/// Shared immutable context bundle threaded through every post-step arm.
+///
+/// Bundling the four references the arms all read retires the
+/// `too_many_arguments` allows they used to carry (angr-0mqkc.6). Passed by
+/// shared reference, so this is zero-cost (four pointers behind one pointer).
+pub(crate) struct CoreCtx<'a> {
+    pub(crate) ctx: &'a StepContext,
+    pub(crate) prof: &'a ParallelProfiling,
+    pub(crate) native_procs: &'a NativeProcedureRegistry,
+    pub(crate) native_syscalls: &'a NativeSyscallRegistry,
+}
+
+/// The deferred-fork payload the post-step arms thread through and, on a Python
+/// bounce, hand to the coordinator. Owns all four pieces; the arm consumes it
+/// exactly once (either materializing the forks or moving them into a bounce).
+struct ForkPayload {
+    deferred_forks: Vec<DeferredFork>,
+    last_condition: Option<RustBV>,
+    stored_conditions: FxHashMap<u64, RustBV>,
+    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+}
+
+/// The three fork output vecs the materialization helpers append to.
+struct ForkSink<'a> {
+    forks: &'a mut Vec<(RustSimState, RoutingTag)>,
+    pruned: &'a mut Vec<RustSimState>,
+    fork_ids: &'a mut Vec<u64>,
+}
+
+/// Arguments for entering a native guest routine via a sub-call continuation
+/// (mirror of `NativeProcDisposition::SubCall` plus the caller return address).
+struct NativeSubcall {
+    proc_name: String,
+    saved_args: Vec<RustBV>,
+    caller_return_addr: u64,
+    target: u64,
+    sub_args: Vec<RustBV>,
+    resume_tag: u32,
+}
+
+/// The `RunResult::SimProcedure` descriptor fields (bundled to keep
+/// `handle_simprocedure_core` under the argument threshold).
+struct SimProcCall {
+    addr: u64,
+    name: String,
+    num_args: usize,
+    return_addr: u64,
+}
+
 /// Post-interpreter inputs the arms consume (the already-drained pieces of the
 /// `InterpreterStepResult`). The state-update preamble in `step_state_with_skip`
 /// runs before this, so only these fields remain.
@@ -480,12 +531,8 @@ pub(crate) struct PostStepInputs {
 ///
 /// Takes the stepped `state` by value (it becomes a successor / terminal /
 /// bounce state) and returns a [`CoreOutcome`] of deferred mutations.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_post_step_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
-    native_procs: &NativeProcedureRegistry,
-    native_syscalls: &NativeSyscallRegistry,
+    cc: &CoreCtx,
     mut state: RustSimState,
     inputs: PostStepInputs,
     root_hint: u64,
@@ -497,6 +544,12 @@ pub(crate) fn run_post_step_core(
         stored_conditions,
         fork_snapshots,
     } = inputs;
+    let payload = ForkPayload {
+        deferred_forks,
+        last_condition,
+        stored_conditions,
+        fork_snapshots,
+    };
 
     let mut counters = CoreCounters::default();
 
@@ -509,17 +562,16 @@ pub(crate) fn run_post_step_core(
             let mut pruned = Vec::new();
             let mut fork_ids = Vec::new();
             materialize_deferred_forks_core(
-                ctx,
-                prof,
+                cc,
                 &state,
-                deferred_forks,
-                &stored_conditions,
-                fork_snapshots,
+                payload,
                 root_hint,
                 false,
-                &mut forks_out,
-                &mut pruned,
-                &mut fork_ids,
+                ForkSink {
+                    forks: &mut forks_out,
+                    pruned: &mut pruned,
+                    fork_ids: &mut fork_ids,
+                },
             );
             let mut succ = Vec::with_capacity(forks_out.len() + 1);
             succ.push((state, RoutingTag::main()));
@@ -537,10 +589,7 @@ pub(crate) fn run_post_step_core(
         RunResult::Hook { addr } => bounce(
             BounceKind::Hook { addr },
             state,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
+            payload,
             counters,
             root_hint,
         ),
@@ -551,36 +600,22 @@ pub(crate) fn run_post_step_core(
             num_args,
             return_addr,
         } => handle_simprocedure_core(
-            ctx,
-            prof,
-            native_procs,
+            cc,
             &mut counters,
             state,
-            addr,
-            name,
-            num_args,
-            return_addr,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
+            SimProcCall {
+                addr,
+                name,
+                num_args,
+                return_addr,
+            },
+            payload,
             root_hint,
         ),
 
-        RunResult::Syscall { num, pc } => handle_syscall_core(
-            ctx,
-            prof,
-            native_syscalls,
-            &mut counters,
-            state,
-            num,
-            pc,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
-            root_hint,
-        ),
+        RunResult::Syscall { num, pc } => {
+            handle_syscall_core(cc, &mut counters, state, num, pc, payload, root_hint)
+        }
 
         RunResult::SymbolicBranch {
             condition_id,
@@ -596,10 +631,7 @@ pub(crate) fn run_post_step_core(
                     false_target,
                 },
                 state,
-                deferred_forks,
-                last_condition,
-                stored_conditions,
-                fork_snapshots,
+                payload,
                 counters,
                 root_hint,
             )
@@ -632,10 +664,7 @@ pub(crate) fn run_post_step_core(
             bounce(
                 BounceKind::PythonVEXFallback { addr, reason },
                 state,
-                deferred_forks,
-                last_condition,
-                stored_conditions,
-                fork_snapshots,
+                payload,
                 counters,
                 root_hint,
             )
@@ -658,14 +687,11 @@ pub(crate) fn run_post_step_core(
             condition_id,
             jumpkind: _,
         } => handle_symbolic_jump_target_core(
-            ctx,
-            prof,
+            cc,
             state,
             targets,
             condition_id,
-            deferred_forks,
-            &stored_conditions,
-            fork_snapshots,
+            payload,
             counters,
             root_hint,
         ),
@@ -673,25 +699,24 @@ pub(crate) fn run_post_step_core(
         RunResult::UnconstrainedJump { .. } => {
             // Main state -> unconstrained stash; accumulated loop-exit forks are
             // either dropped (deferred mode) or materialized eagerly (angr-027h).
-            let forks = if ctx.use_deferred_forks && !ctx.materialize_unconstrained_forks {
-                counters.deferred_forks_dropped += deferred_forks.len() as u64;
+            let forks = if cc.ctx.use_deferred_forks && !cc.ctx.materialize_unconstrained_forks {
+                counters.deferred_forks_dropped += payload.deferred_forks.len() as u64;
                 Vec::new()
             } else {
                 let mut forks_out = Vec::new();
                 let mut pruned_tmp = Vec::new();
                 let mut fork_ids_tmp = Vec::new();
                 materialize_deferred_forks_core(
-                    ctx,
-                    prof,
+                    cc,
                     &state,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
+                    payload,
                     root_hint,
                     true,
-                    &mut forks_out,
-                    &mut pruned_tmp,
-                    &mut fork_ids_tmp,
+                    ForkSink {
+                        forks: &mut forks_out,
+                        pruned: &mut pruned_tmp,
+                        fork_ids: &mut fork_ids_tmp,
+                    },
                 );
                 // The eager forks become Unconstrained's routed forks; their
                 // set_root happened via tags, dispatch via fork_ids, pruned via
@@ -729,10 +754,7 @@ pub(crate) fn run_post_step_core(
                 symbol_name,
             },
             state,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
+            payload,
             counters,
             root_hint,
         ),
@@ -741,17 +763,19 @@ pub(crate) fn run_post_step_core(
 
 /// Package a Python-bouncing outcome (no fork materialization here — the
 /// deferred forks ride into the `PendingCallback` the coordinator builds).
-#[allow(clippy::too_many_arguments)]
 fn bounce(
     kind: BounceKind,
     state: RustSimState,
-    deferred_forks: Vec<DeferredFork>,
-    last_condition: Option<RustBV>,
-    stored_conditions: FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     counters: CoreCounters,
     root_hint: u64,
 ) -> CoreOutcome {
+    let ForkPayload {
+        deferred_forks,
+        last_condition,
+        stored_conditions,
+        fork_snapshots,
+    } = payload;
     CoreOutcome {
         ret: CoreReturn::NeedsPython(PendingBounce {
             kind,
@@ -772,20 +796,27 @@ fn bounce(
 /// Mirror of `materialize_deferred_forks`: SAT forks -> `forks_out` (tagged
 /// fork), UNSAT -> `pruned_out`; every minted fork id -> `fork_ids_out`
 /// (dispatch order). Solver timing -> `prof`.
-#[allow(clippy::too_many_arguments)]
 fn materialize_deferred_forks_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
+    cc: &CoreCtx,
     base: &RustSimState,
-    deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
-    mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     root_hint: u64,
     force_eager: bool,
-    forks_out: &mut Vec<(RustSimState, RoutingTag)>,
-    pruned_out: &mut Vec<RustSimState>,
-    fork_ids_out: &mut Vec<u64>,
+    sink: ForkSink,
 ) {
+    let ctx = cc.ctx;
+    let prof = cc.prof;
+    let ForkPayload {
+        deferred_forks,
+        stored_conditions,
+        mut fork_snapshots,
+        ..
+    } = payload;
+    let ForkSink {
+        forks: forks_out,
+        pruned: pruned_out,
+        fork_ids: fork_ids_out,
+    } = sink;
     let deferred_fork_start = if ctx.profiling_enabled {
         Some(Instant::now())
     } else {
@@ -885,19 +916,26 @@ fn materialize_deferred_forks_core(
 
 /// Mirror of `process_deferred_forks_into` (no fork/sat timers; the final
 /// `deferred_fork_count` bump is UNCONDITIONAL, matching the legacy site).
-#[allow(clippy::too_many_arguments)]
 fn process_deferred_forks_into_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
+    cc: &CoreCtx,
     base: &RustSimState,
-    deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
-    mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     root_hint: u64,
-    forks_out: &mut Vec<(RustSimState, RoutingTag)>,
-    pruned_out: &mut Vec<RustSimState>,
-    fork_ids_out: &mut Vec<u64>,
+    sink: ForkSink,
 ) {
+    let ctx = cc.ctx;
+    let prof = cc.prof;
+    let ForkPayload {
+        deferred_forks,
+        stored_conditions,
+        mut fork_snapshots,
+        ..
+    } = payload;
+    let ForkSink {
+        forks: forks_out,
+        pruned: pruned_out,
+        fork_ids: fork_ids_out,
+    } = sink;
     if deferred_forks.is_empty() {
         return;
     }
@@ -947,28 +985,32 @@ fn process_deferred_forks_into_core(
 /// identical. Returns `(sat forks, unsat/pruned forks, minted fork ids)`.
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_bounce_forks(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
+    cc: &CoreCtx,
     base: &RustSimState,
     deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
+    stored_conditions: FxHashMap<u64, RustBV>,
     fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     root_hint: u64,
 ) -> (Vec<RustSimState>, Vec<RustSimState>, Vec<u64>) {
+    let payload = ForkPayload {
+        deferred_forks,
+        last_condition: None,
+        stored_conditions,
+        fork_snapshots,
+    };
     let mut forks_out: Vec<(RustSimState, RoutingTag)> = Vec::new();
     let mut pruned_out: Vec<RustSimState> = Vec::new();
     let mut fork_ids_out: Vec<u64> = Vec::new();
     process_deferred_forks_into_core(
-        ctx,
-        prof,
+        cc,
         base,
-        deferred_forks,
-        stored_conditions,
-        fork_snapshots,
+        payload,
         root_hint,
-        &mut forks_out,
-        &mut pruned_out,
-        &mut fork_ids_out,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned_out,
+            fork_ids: &mut fork_ids_out,
+        },
     );
     (
         forks_out.into_iter().map(|(s, _)| s).collect(),
@@ -978,20 +1020,16 @@ pub(crate) fn materialize_bounce_forks(
 }
 
 /// Mirror of `handle_symbolic_jump_target`.
-#[allow(clippy::too_many_arguments)]
 fn handle_symbolic_jump_target_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
+    cc: &CoreCtx,
     state: RustSimState,
     targets: Vec<u64>,
     condition_id: u64,
-    deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     counters: CoreCounters,
     root_hint: u64,
 ) -> CoreOutcome {
-    let target_expr = stored_conditions.get(&condition_id).cloned();
+    let target_expr = payload.stored_conditions.get(&condition_id).cloned();
 
     if targets.is_empty() {
         return CoreOutcome {
@@ -1026,16 +1064,15 @@ fn handle_symbolic_jump_target_core(
         }
         let mut forks_out = Vec::new();
         process_deferred_forks_into_core(
-            ctx,
-            prof,
+            cc,
             &first,
-            deferred_forks,
-            stored_conditions,
-            fork_snapshots,
+            payload,
             root_hint,
-            &mut forks_out,
-            &mut pruned,
-            &mut fork_ids,
+            ForkSink {
+                forks: &mut forks_out,
+                pruned: &mut pruned,
+                fork_ids: &mut fork_ids,
+            },
         );
         let mut succ = Vec::with_capacity(forks_out.len() + 1);
         succ.push((first, RoutingTag::main()));
@@ -1091,16 +1128,15 @@ fn handle_symbolic_jump_target_core(
 
     let mut deferred_out = Vec::new();
     process_deferred_forks_into_core(
-        ctx,
-        prof,
+        cc,
         &first_state,
-        deferred_forks,
-        stored_conditions,
-        fork_snapshots,
+        payload,
         root_hint,
-        &mut deferred_out,
-        &mut pruned,
-        &mut fork_ids,
+        ForkSink {
+            forks: &mut deferred_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
     );
 
     let mut succ = Vec::with_capacity(1 + target_forks.len() + deferred_out.len());
@@ -1136,36 +1172,25 @@ enum NativeProcDisposition {
 
 /// Mirror of `handle_simprocedure` (native fast path + native resume; Python
 /// fallback bounces).
-#[allow(clippy::too_many_arguments)]
 fn handle_simprocedure_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
-    native_procs: &NativeProcedureRegistry,
+    cc: &CoreCtx,
     counters: &mut CoreCounters,
     mut state: RustSimState,
-    addr: u64,
-    name: String,
-    num_args: usize,
-    return_addr: u64,
-    deferred_forks: Vec<DeferredFork>,
-    last_condition: Option<RustBV>,
-    stored_conditions: FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    call: SimProcCall,
+    payload: ForkPayload,
     root_hint: u64,
 ) -> CoreOutcome {
+    let ctx = cc.ctx;
+    let native_procs = cc.native_procs;
+    let SimProcCall {
+        addr,
+        name,
+        num_args,
+        return_addr,
+    } = call;
     // Native sub-call resume sentinel: a guest routine returns here.
     if name == NATIVE_RESUME_SENTINEL_NAME {
-        return handle_native_resume_core(
-            ctx,
-            prof,
-            native_procs,
-            state,
-            deferred_forks,
-            &stored_conditions,
-            fork_snapshots,
-            std::mem::take(counters),
-            root_hint,
-        );
+        return handle_native_resume_core(cc, state, payload, std::mem::take(counters), root_hint);
     }
 
     let is_in_binary = ctx
@@ -1258,12 +1283,14 @@ fn handle_simprocedure_core(
             resume_tag,
         } => match ctx.cc.setup_native_subcall(
             &mut state,
-            proc_name,
-            saved_args,
-            return_addr,
-            target,
-            sub_args,
-            resume_tag,
+            NativeSubcall {
+                proc_name,
+                saved_args,
+                caller_return_addr: return_addr,
+                target,
+                sub_args,
+                resume_tag,
+            },
         ) {
             Ok(()) => Some(false),
             Err(e) => {
@@ -1281,16 +1308,15 @@ fn handle_simprocedure_core(
         let mut pruned = Vec::new();
         let mut fork_ids = Vec::new();
         process_deferred_forks_into_core(
-            ctx,
-            prof,
+            cc,
             &state,
-            deferred_forks,
-            &stored_conditions,
-            fork_snapshots,
+            payload,
             root_hint,
-            &mut forks_out,
-            &mut pruned,
-            &mut fork_ids,
+            ForkSink {
+                forks: &mut forks_out,
+                pruned: &mut pruned,
+                fork_ids: &mut fork_ids,
+            },
         );
         if no_return {
             // Deadend the main state; surviving forks continue.
@@ -1331,10 +1357,7 @@ fn handle_simprocedure_core(
                 return_addr,
             },
             state,
-            deferred_forks,
-            last_condition,
-            stored_conditions,
-            fork_snapshots,
+            payload,
             std::mem::take(counters),
             root_hint,
         )
@@ -1342,18 +1365,15 @@ fn handle_simprocedure_core(
 }
 
 /// Mirror of `handle_native_resume`.
-#[allow(clippy::too_many_arguments)]
 fn handle_native_resume_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
-    native_procs: &NativeProcedureRegistry,
+    cc: &CoreCtx,
     mut state: RustSimState,
-    deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     counters: CoreCounters,
     root_hint: u64,
 ) -> CoreOutcome {
+    let ctx = cc.ctx;
+    let native_procs = cc.native_procs;
     let frame = match state.pop_native_resume_frame() {
         Some(f) => f,
         None => {
@@ -1387,12 +1407,14 @@ fn handle_native_resume_core(
         }) => {
             if let Err(e) = ctx.cc.setup_native_subcall(
                 &mut state,
-                frame.proc_name.clone(),
-                frame.saved_args.clone(),
-                frame.caller_return_addr,
-                target,
-                sub_args,
-                resume_tag,
+                NativeSubcall {
+                    proc_name: frame.proc_name.clone(),
+                    saved_args: frame.saved_args.clone(),
+                    caller_return_addr: frame.caller_return_addr,
+                    target,
+                    sub_args,
+                    resume_tag,
+                },
             ) {
                 log::error!("native resume nested sub-call setup failed ({e:?}); deadending");
                 return deadend(state, counters, root_hint);
@@ -1412,16 +1434,15 @@ fn handle_native_resume_core(
     let mut pruned = Vec::new();
     let mut fork_ids = Vec::new();
     process_deferred_forks_into_core(
-        ctx,
-        prof,
+        cc,
         &state,
-        deferred_forks,
-        stored_conditions,
-        fork_snapshots,
+        payload,
         root_hint,
-        &mut forks_out,
-        &mut pruned,
-        &mut fork_ids,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
     );
     let mut succ = Vec::with_capacity(forks_out.len() + 1);
     succ.push((state, RoutingTag::main()));
@@ -1437,21 +1458,17 @@ fn handle_native_resume_core(
 }
 
 /// Mirror of the `Syscall` arm (native fast path; Python fallback bounces).
-#[allow(clippy::too_many_arguments)]
 fn handle_syscall_core(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
-    native_syscalls: &NativeSyscallRegistry,
+    cc: &CoreCtx,
     counters: &mut CoreCounters,
     mut state: RustSimState,
     num: Option<u64>,
     pc: u64,
-    deferred_forks: Vec<DeferredFork>,
-    last_condition: Option<RustBV>,
-    stored_conditions: FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     root_hint: u64,
 ) -> CoreOutcome {
+    let ctx = cc.ctx;
+    let native_syscalls = cc.native_syscalls;
     state.set_pc(pc);
     state.add_to_history(pc);
 
@@ -1481,10 +1498,7 @@ fn handle_syscall_core(
             return bounce(
                 BounceKind::SyscallPython { num },
                 state,
-                deferred_forks,
-                last_condition,
-                stored_conditions,
-                fork_snapshots,
+                payload,
                 std::mem::take(counters),
                 root_hint,
             );
@@ -1504,12 +1518,9 @@ fn handle_syscall_core(
                 let ret_bv = RustBV::concrete(ret as u128, bits);
                 ctx.cc.write_syscall_return(&mut state, ret_reg, ret_bv);
                 return syscall_continue(
-                    ctx,
-                    prof,
+                    cc,
                     state,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
+                    payload,
                     std::mem::take(counters),
                     root_hint,
                     false,
@@ -1519,12 +1530,9 @@ fn handle_syscall_core(
                 let ret_reg = ctx.cc.return_register;
                 ctx.cc.write_syscall_return(&mut state, ret_reg, ret);
                 return syscall_continue(
-                    ctx,
-                    prof,
+                    cc,
                     state,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
+                    payload,
                     std::mem::take(counters),
                     root_hint,
                     false,
@@ -1532,12 +1540,9 @@ fn handle_syscall_core(
             }
             Ok(SyscallOutcome::Exit) => {
                 return syscall_continue(
-                    ctx,
-                    prof,
+                    cc,
                     state,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
+                    payload,
                     std::mem::take(counters),
                     root_hint,
                     true,
@@ -1557,24 +1562,17 @@ fn handle_syscall_core(
     bounce(
         BounceKind::SyscallPython { num },
         state,
-        deferred_forks,
-        last_condition,
-        stored_conditions,
-        fork_snapshots,
+        payload,
         std::mem::take(counters),
         root_hint,
     )
 }
 
 /// Shared continue/exit tail for the three native syscall outcomes.
-#[allow(clippy::too_many_arguments)]
 fn syscall_continue(
-    ctx: &StepContext,
-    prof: &ParallelProfiling,
+    cc: &CoreCtx,
     state: RustSimState,
-    deferred_forks: Vec<DeferredFork>,
-    stored_conditions: &FxHashMap<u64, RustBV>,
-    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+    payload: ForkPayload,
     counters: CoreCounters,
     root_hint: u64,
     exit: bool,
@@ -1583,16 +1581,15 @@ fn syscall_continue(
     let mut pruned = Vec::new();
     let mut fork_ids = Vec::new();
     process_deferred_forks_into_core(
-        ctx,
-        prof,
+        cc,
         &state,
-        deferred_forks,
-        stored_conditions,
-        fork_snapshots,
+        payload,
         root_hint,
-        &mut forks_out,
-        &mut pruned,
-        &mut fork_ids,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
     );
     if exit {
         CoreOutcome {

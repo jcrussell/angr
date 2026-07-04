@@ -57,7 +57,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use lru::LruCache;
 
 use super::core_outcome::{
-    BounceKind, CoreReturn, ParallelProfiling, PendingBounce, PostStepInputs,
+    BounceKind, CoreCtx, CoreReturn, ParallelProfiling, PendingBounce, PostStepInputs,
     materialize_bounce_forks, run_post_step_core,
 };
 use super::scheduler::{
@@ -318,15 +318,13 @@ fn parallel_process_state(
         stored_conditions: step.stored_conditions,
         fork_snapshots: step.fork_snapshots,
     };
-    let outcome = run_post_step_core(
+    let cc = CoreCtx {
         ctx,
         prof,
         native_procs,
         native_syscalls,
-        state,
-        inputs,
-        root_hint,
-    );
+    };
+    let outcome = run_post_step_core(&cc, state, inputs, root_hint);
 
     // Dead-path side effects (UNSAT pruned forks, no-return deadended main):
     // recorded as cheap summaries; their full symbolic state is not recoverable
@@ -413,11 +411,10 @@ fn parallel_process_state(
             // Materialize the bounce's deferred forks in-thread so no unexplored
             // branch is lost across the (!Send loose-condition) bounce boundary.
             let (forks, pruned2, _ids) = materialize_bounce_forks(
-                ctx,
-                prof,
+                &cc,
                 &bstate,
                 deferred_forks,
-                &stored_conditions,
+                stored_conditions,
                 fork_snapshots,
                 root_hint,
             );
