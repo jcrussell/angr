@@ -2135,12 +2135,15 @@ class RustCallbackDispatchMixin:
                 or getattr(self, "_use_callback_callstack_proxy", False)
             ):
                 self._stats_state_creations += 1
+                _sc_copy_start = time.perf_counter_ns()
                 state = cached_state.copy()
+                self._perf_stats.add_state_create_subphase("copy", time.perf_counter_ns() - _sc_copy_start)
             else:
                 state = cached_state
 
             # Use the callback bundle API to get registers + solver + history
             # in a single FFI call instead of ~20 individual calls.
+            _sc_bundle_start = time.perf_counter_ns()
             try:
                 arch = self._project.arch
                 reg_names = self._get_arch_register_names(arch)
@@ -2229,10 +2232,15 @@ class RustCallbackDispatchMixin:
                 if not getattr(self, "_use_callback_register_proxy", False):
                     self._sync_registers_from_rust_pending(state)
 
+            self._perf_stats.add_state_create_subphase("bundle", time.perf_counter_ns() - _sc_bundle_start)
+
             # Install memory proxy: wrap state.memory.load to check Rust
             # memory first for addresses that the Python state doesn't have
             # (stack frames created during VEX execution).
+            _sc_memory_start = time.perf_counter_ns()
             self._install_rust_memory_proxy(state)
+            self._perf_stats.add_state_create_subphase("meminstall", time.perf_counter_ns() - _sc_memory_start)
+            _sc_replay_start = time.perf_counter_ns()
 
             # angr-3tek.2: replay Rust-side memory mutations (concrete +
             # symbolic) recorded in dirty_pages since the last callback.
@@ -2243,14 +2251,18 @@ class RustCallbackDispatchMixin:
             # per page so they overwrite concrete defaults at the same
             # addresses — see invariant-3tek2-replay-ordering.
             self._replay_rust_dirty_pages(state)
+            self._perf_stats.add_state_create_subphase("memreplay", time.perf_counter_ns() - _sc_replay_start)
+            self._perf_stats.add_state_create_subphase("memory", time.perf_counter_ns() - _sc_memory_start)
 
             # Restore symbolic memory regions — only needed for copied states
             # (predicates case) or on first callback for a new state.
             # When reusing the same state object, symbolic pages persist.
+            _sc_sympage_start = time.perf_counter_ns()
             if has_predicates or not getattr(state, "_rust_sympage_restored", False):
                 self._restore_symbolic_pages(state, lookup_state_id)
                 self._restore_hook_symbolic_memory(state, lookup_state_id)
                 state._rust_sympage_restored = True
+            self._perf_stats.add_state_create_subphase("sympage", time.perf_counter_ns() - _sc_sympage_start)
 
             if _DBG:
                 l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")

@@ -36,6 +36,19 @@ class PerformanceTracker:
         "callback_simprocedure_execute_ns",
         "callback_simprocedure_sync_back_ns",
         "callback_simprocedure_state_copy_ns",
+        # angr-gorvf.2 (ZeroPy .3, measure-first): sub-attribution of the
+        # ``state_create`` phase (_create_state_for_callback) so the
+        # lazy/delta-SimState-views build targets the dominant internal cost.
+        # copy   = cached_state.copy() (full SimState reconstruction);
+        # bundle = export_callback_bundle FFI + register apply;
+        # memory = _install_rust_memory_proxy + _replay_rust_dirty_pages;
+        # sympage = _restore_symbolic_pages + _restore_hook_symbolic_memory.
+        "callback_simprocedure_sc_copy_ns",
+        "callback_simprocedure_sc_bundle_ns",
+        "callback_simprocedure_sc_memory_ns",
+        "callback_simprocedure_sc_sympage_ns",
+        "callback_simprocedure_sc_meminstall_ns",
+        "callback_simprocedure_sc_memreplay_ns",
         "callback_memory_load_count",
         "callback_memory_load_total_ns",
         "callback_fetch_page_count",
@@ -83,6 +96,14 @@ class PerformanceTracker:
     def add_simprocedure_phase(self, phase: str, ns: int) -> None:
         """phase: state_create, execute, sync_back, state_copy."""
         self._stats[f"callback_simprocedure_{phase}_ns"] += ns
+
+    def add_state_create_subphase(self, subphase: str, ns: int) -> None:
+        """subphase: copy, bundle, memory, sympage (angr-gorvf.2 measure-first).
+
+        Sub-attributes the ``state_create`` phase of a SimProcedure callback
+        into its internal components inside ``_create_state_for_callback``.
+        """
+        self._stats[f"callback_simprocedure_sc_{subphase}_ns"] += ns
 
     def record_memory_load(self, ns: int) -> None:
         self._stats["callback_memory_load_count"] += 1
