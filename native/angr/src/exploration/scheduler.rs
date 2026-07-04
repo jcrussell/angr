@@ -234,6 +234,16 @@ pub(crate) struct SchedulerCounters {
     /// `materialized_terminals` so residual drains never pollute the honest
     /// steal fraction. 0 in wave mode.
     residual_drains: AtomicUsize,
+    /// Steps a worker executed AFTER cancellation was already requested by a
+    /// *different* origin (a peer worker's find or the coordinator's num_find
+    /// route) — the post-find speculative waste (angr-1ilq.8). A step counts
+    /// here when `cancel` is set on `process` return but this step did not
+    /// itself raise the cancel (`!request_cancel`). Because both worker loops
+    /// re-check `cancel` at the top of every iteration, this captures exactly
+    /// the in-flight steps that were committed before the cancel became
+    /// visible: the wasted work the find-aware dispatch bead (angr-1ilq.9)
+    /// aims to eliminate. 0 until the first find raises a cancel.
+    post_cancel_steps: AtomicUsize,
 }
 
 /// Per-run accounting, the basis for the overhead-gate steal-fraction check.
@@ -273,6 +283,10 @@ pub struct SchedulerStats {
     /// Still-live frontier states drained back to the coordinator on session
     /// cancel/finalize (0 in wave mode, which drops them — Bug M1).
     pub residual_drains: usize,
+    /// Post-find speculative steps: work committed on a worker after another
+    /// origin already requested cancel (angr-1ilq.8). See
+    /// [`SchedulerCounters::post_cancel_steps`].
+    pub post_cancel_steps: usize,
 }
 
 impl SchedulerStats {
@@ -312,6 +326,7 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
         bounce_roundtrips: counters.bounce_roundtrips.load(Ordering::SeqCst),
         resume_reinjects: counters.resume_reinjects.load(Ordering::SeqCst),
         residual_drains: counters.residual_drains.load(Ordering::SeqCst),
+        post_cancel_steps: counters.post_cancel_steps.load(Ordering::SeqCst),
     }
 }
 
@@ -955,6 +970,13 @@ fn worker_loop(
 
         let outcome = (job.process)(state, &t.cancel, block_cache);
 
+        // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
+        // `worker_session_loop`. Wave mode drops rather than drains the residual
+        // frontier (Bug M1), but the in-flight step itself was still executed.
+        if t.cancel.is_cancelled() && !outcome.request_cancel {
+            t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
+        }
+
         // Continue-states stay LIVE and LOCAL — no serde on the fast path.
         absorb_continues(t, local, outcome.continue_states);
 
@@ -1057,6 +1079,16 @@ fn worker_session_loop(
         };
 
         let outcome = (session.process)(state, &t.cancel, block_cache);
+
+        // Post-find speculative-waste accounting (angr-1ilq.8): the top-of-loop
+        // guard means we only reach here with `cancel` unset at dispatch time,
+        // so a cancel visible NOW that this step did not itself raise was
+        // requested by a peer/coordinator while this step was in flight — the
+        // work is speculative (its products are drained back on the next
+        // iteration's cancel check).
+        if t.cancel.is_cancelled() && !outcome.request_cancel {
+            t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
+        }
 
         absorb_continues(t, local, outcome.continue_states);
 
@@ -1447,6 +1479,85 @@ mod tests {
             collected.len(),
             total,
             "each processed task is collected once"
+        );
+    }
+
+    // angr-1ilq.8 (post-find speculative waste): the FIRST task to start becomes
+    // the "finder" and trips the shared cancel immediately; every other worker
+    // that was already in-flight (sleeping) observes that cancel on its next
+    // return WITHOUT having raised it, so it lands in `post_cancel_steps`. The
+    // finder itself (request_cancel=true) is EXCLUDED — the counter measures
+    // wasted peer work, not the find. Proves the counter increments exactly on
+    // cross-worker speculative steps and never on the finder's own step.
+    #[test]
+    fn test_post_cancel_steps_counts_peer_speculation() {
+        use std::time::Duration;
+        const N: u64 = 8;
+        let run_order = Arc::new(AtomicUsize::new(0));
+
+        let mut payloads = Vec::with_capacity(N as usize);
+        for i in 0..N {
+            payloads.push(pinned_state(&format!("spec_{i}"), 0x2000 + i).detach_for_migration());
+        }
+
+        let sched = ParallelScheduler::new(4);
+        let (_collected, _summaries, stats) = sched.run_instrumented(payloads, {
+            let run_order = Arc::clone(&run_order);
+            move |state, _cancel, _cache| {
+                let request_cancel = if run_order.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // First to start: cancel immediately, before peers wake.
+                    true
+                } else {
+                    // Peer: stay in-flight long enough for the finder's cancel to
+                    // land, then return a normal terminal (does NOT self-cancel).
+                    std::thread::sleep(Duration::from_millis(50));
+                    false
+                };
+                TaskOutcome {
+                    continue_states: Vec::new(),
+                    terminal_states: vec![state],
+                    terminal_summaries: Vec::new(),
+                    request_cancel,
+                }
+            }
+        });
+
+        assert!(
+            stats.post_cancel_steps >= 1,
+            "at least one peer must commit a step after the finder cancelled \
+             (post_cancel_steps={})",
+            stats.post_cancel_steps,
+        );
+        // The finder's own terminating step is never counted, so at most (N-1)
+        // peer steps can be speculative.
+        assert!(
+            stats.post_cancel_steps < N as usize,
+            "the finder's own step must be excluded (post_cancel_steps={})",
+            stats.post_cancel_steps,
+        );
+    }
+
+    // angr-1ilq.8 invariant: when EVERY step self-cancels, none is speculative —
+    // each processed step raised its own cancel, so the `!request_cancel`
+    // exclusion keeps `post_cancel_steps` at zero.
+    #[test]
+    fn test_post_cancel_steps_excludes_self_cancel() {
+        const N: u64 = 256;
+        let mut payloads = Vec::with_capacity(N as usize);
+        for i in 0..N {
+            payloads.push(pinned_state(&format!("self_{i}"), 0x3000 + i).detach_for_migration());
+        }
+        let sched = ParallelScheduler::new(4);
+        let (_collected, _summaries, stats) =
+            sched.run_instrumented(payloads, |state, _c, _cache| TaskOutcome {
+                continue_states: Vec::new(),
+                terminal_states: vec![state],
+                terminal_summaries: Vec::new(),
+                request_cancel: true,
+            });
+        assert_eq!(
+            stats.post_cancel_steps, 0,
+            "self-cancelling steps are the finder, not speculative waste",
         );
     }
 

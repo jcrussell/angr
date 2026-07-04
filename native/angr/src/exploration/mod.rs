@@ -416,6 +416,11 @@ pub struct RustExplorationManager {
     /// `STASH_ACTIVE` instead of dropping (wave-mode Bug M1's fix), folded
     /// from `SchedulerStats::residual_drains`.
     pub(crate) parallel_residual_drains: u64,
+    /// Post-find speculative steps: work committed on a worker after another
+    /// origin already requested cancel (angr-1ilq.8 measure-first), folded from
+    /// `SchedulerStats::post_cancel_steps`. Quantifies the num_find=1
+    /// speculative waste the find-aware dispatch bead (angr-1ilq.9) targets.
+    pub(crate) parallel_post_cancel_steps: u64,
 }
 
 #[pymethods]
@@ -517,6 +522,7 @@ impl RustExplorationManager {
                 .map(|v| v == "1")
                 .unwrap_or(false),
             parallel_residual_drains: 0,
+            parallel_post_cancel_steps: 0,
         })
     }
 
