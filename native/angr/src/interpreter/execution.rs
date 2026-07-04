@@ -383,6 +383,27 @@ impl<'a> VEXInterpreter<'a> {
 
         self.stats.cache_miss_count += 1;
 
+        // Native (in-process) libVEX lift — feature-gated, off by default
+        // (angr-z087y Stage-2). When enabled and the block's bytes are fully
+        // concrete in rust_memory, lift via FFI: no GIL, no JSON round-trip,
+        // byte-for-byte-identical IRSB to the pyvex callback path. Any miss
+        // (disabled, unsupported arch, missing/symbolic bytes, or a libVEX
+        // error) falls through to the Python callback below — same result,
+        // just slower — so behavior is unchanged when the native path can't
+        // serve a block.
+        #[cfg(feature = "libvex-ffi")]
+        if self.native_lift_enabled {
+            if let Some(irsb) = self.try_native_lift(addr) {
+                self.stats.native_lift_count += 1;
+                let arc_irsb = Arc::new(irsb);
+                if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
+                    self.stats.cache_eviction_count += 1;
+                }
+                return Ok(arc_irsb);
+            }
+            self.stats.native_lift_fallback_count += 1;
+        }
+
         let lift_start = profile_start!(self);
 
         // Lifting via Python callback
@@ -450,6 +471,37 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         Ok(arc_irsb)
+    }
+
+    /// Attempt an in-process native libVEX lift of the block at `addr`.
+    ///
+    /// Returns `Some(irsb)` only when every prerequisite holds: rust_memory is
+    /// present, the block's leading bytes are fully concrete, the arch is
+    /// supported by `NativeLibVEXLifter`, and libVEX lifts successfully.
+    /// Returns `None` on any miss so the caller falls back to the Python
+    /// `lift_block` callback. The per-address VEX opt_level override is honored
+    /// by the pyvex path only; the native shim uses pyvex's compiled defaults
+    /// (same as `vex_opt_level == None`), so a block carrying an explicit
+    /// opt_level override is left to the callback to preserve exact parity.
+    #[cfg(feature = "libvex-ffi")]
+    fn try_native_lift(&self, addr: u64) -> Option<crate::vex::ir::IRSB> {
+        use crate::vex::VEXLifter;
+
+        // Opt-level overrides change libVEX optimization and thus IRSB shape;
+        // defer those blocks to the callback that can pass the override through.
+        if self.vex_opt_level_overrides.contains_key(&addr) || self.vex_opt_level.is_some() {
+            return None;
+        }
+
+        let rust_mem = self.rust_memory.as_ref()?;
+        // 5000 == pyvex's VEX_MAX_BYTES; libVEX stops at the block boundary so
+        // trailing bytes beyond the block are simply unused.
+        let bytes = rust_mem.read_concrete_bytes_for_lift(addr, 5000)?;
+        if bytes.is_empty() {
+            return None;
+        }
+
+        self.native_lifter.lift(&bytes, addr, self.arch).ok()
     }
 
     /// Execute a single block using the given callbacks.

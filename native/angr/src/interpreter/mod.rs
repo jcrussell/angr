@@ -274,6 +274,16 @@ define_execution_stats! {
     /// angr-s6miz) are routed to Python fallback *before* this point, so they do
     /// NOT increment this counter. See bd `vex-dispatch-bypass-inventory`.
     vex_bypass_fabricate_count: sum,
+    /// Number of cold-block lifts served natively via the `libvex-ffi`
+    /// `NativeLibVEXLifter` (feature-gated, off by default). Each hit is a
+    /// Python `lift_block` callback + JSON round-trip that did NOT happen.
+    native_lift_count: sum,
+    /// Number of native-lift *attempts* that fell back to the Python callback
+    /// (feature off / disabled paths do not count — only a live attempt that
+    /// could not complete: missing-or-symbolic block bytes, unsupported arch,
+    /// or a libVEX lift error). A high fallback:hit ratio means the native
+    /// path is not paying off for that workload.
+    native_lift_fallback_count: sum,
 }
 
 /// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
@@ -533,6 +543,15 @@ pub struct VEXInterpreter<'a> {
     hook_addrs: Arc<FxHashSet<u64>>,
     /// VEX architecture.
     arch: VexArch,
+    /// Native libVEX lifter (feature `libvex-ffi`). Stateless (holds only a
+    /// process-wide lift lock); a fresh `Default` is fine per fork.
+    #[cfg(feature = "libvex-ffi")]
+    native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
+    /// When true (and the arch/bytes qualify), cold-block lifts are attempted
+    /// in-process via `native_lifter` before the Python `lift_block` callback.
+    /// Off by default — Stage-2 flag-gated engine use (angr-z087y).
+    #[cfg(feature = "libvex-ffi")]
+    native_lift_enabled: bool,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
     /// Whether to use callbacks for memory (vs local registers).
@@ -720,6 +739,10 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_len: 0,
             hook_addrs: Arc::new(FxHashSet::default()),
             arch,
+            #[cfg(feature = "libvex-ffi")]
+            native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
+            #[cfg(feature = "libvex-ffi")]
+            native_lift_enabled: false,
             block_cache: LruCache::new(
                 NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
             ),
@@ -1169,6 +1192,10 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_len: self.current_insn_len,
             hook_addrs: Arc::clone(&self.hook_addrs),
             arch: self.arch,
+            #[cfg(feature = "libvex-ffi")]
+            native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
+            #[cfg(feature = "libvex-ffi")]
+            native_lift_enabled: self.native_lift_enabled,
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             use_memory_callbacks: self.use_memory_callbacks,
             deferred_forks: Vec::new(), // Fresh deferred forks for fork
@@ -1233,6 +1260,22 @@ impl<'a> VEXInterpreter<'a> {
         self.rust_memory = Some(SymbolicMemory::new(endness));
         self.use_rust_memory = true;
     }
+
+    /// Enable or disable native (in-process) libVEX cold-block lifting.
+    ///
+    /// When enabled, [`Self::get_or_lift_block`] attempts an FFI lift via
+    /// `NativeLibVEXLifter` before the Python `lift_block` callback, falling
+    /// back cleanly on any miss (unsupported arch, missing/symbolic bytes, or
+    /// a libVEX error). Requires the `libvex-ffi` build feature; a no-op stub
+    /// exists for the default build so Python wiring compiles unconditionally.
+    #[cfg(feature = "libvex-ffi")]
+    pub fn set_native_lift_enabled(&mut self, enabled: bool) {
+        self.native_lift_enabled = enabled;
+    }
+
+    /// No-op stub when the `libvex-ffi` feature is not compiled in.
+    #[cfg(not(feature = "libvex-ffi"))]
+    pub fn set_native_lift_enabled(&mut self, _enabled: bool) {}
 
     /// Disable Rust-native memory mode.
     pub fn disable_rust_memory(&mut self) {
