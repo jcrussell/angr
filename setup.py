@@ -77,6 +77,30 @@ def _resolve_z3_header() -> None:
 
 _resolve_z3_header()
 
+
+def _resolve_pyvex_libdir() -> None:
+    # The non-default `libvex-ffi` Rust feature links the venv's
+    # pyvex/lib/libpyvex.so (see docs/advanced-topics/rust_libvex_ffi.rst).
+    # build.rs resolves this itself via `python3 -c 'import pyvex'`, but export
+    # PYVEX_FFI_LIB_DIR here as the authoritative override so a setuptools-rust
+    # build (which may run cargo in a different cwd/interpreter) links the same
+    # pyvex the Python side loads. Harmless when the feature is off — build.rs
+    # only reads it under CARGO_FEATURE_LIBVEX_FFI.
+    if os.environ.get("PYVEX_FFI_LIB_DIR"):
+        return
+    try:
+        import pyvex
+    except ImportError:
+        return
+    lib_dir = os.path.join(os.path.dirname(pyvex.__file__), "lib")
+    for so in ("libpyvex.so", "libpyvex.dylib"):
+        if os.path.isfile(os.path.join(lib_dir, so)):
+            os.environ["PYVEX_FFI_LIB_DIR"] = lib_dir
+            return
+
+
+_resolve_pyvex_libdir()
+
 if sys.platform == "darwin":
     library_file = "unicornlib.dylib"
 elif sys.platform in ("win32", "cygwin"):

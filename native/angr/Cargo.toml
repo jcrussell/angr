@@ -14,6 +14,11 @@ vex-engine = ["im", "lru", "thiserror"]
 vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
 automaton = ["indexmap", "fixedbitset"]
+# Non-default: native cold-block lifting via direct libVEX FFI against the
+# venv's pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Kept off
+# the default set so the bench-regression gate takes on no libpyvex.so rpath
+# dependency. See docs/advanced-topics/rust_libvex_ffi.rst.
+libvex-ffi = []
 
 [dependencies]
 backtrace = "0.3.76"
