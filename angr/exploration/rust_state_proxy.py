@@ -1321,8 +1321,13 @@ class RustMemoryProxy:
             return
 
         if isinstance(data, int):
+            # angr's SimMemory.store infers a bare ``int``'s width from the
+            # arch word size (e.g. asprintf writes a malloc'd pointer back via
+            # ``memory.store(strp, dst, endness=memory_endness)`` with no
+            # explicit size). Mirror that default so the proxy path matches the
+            # tracked-writes path under the callback-memory-proxy gate.
             if size is None:
-                raise TypeError("memory store with an int value requires size=N (bytes)")
+                size = self._arch.bytes
             byteorder = "little" if endness == "Iend_LE" else "big"
             payload = data.to_bytes(size, byteorder)
             if self._python_mgr is not None:
@@ -1358,8 +1363,10 @@ class RustMemoryProxy:
             value = int.from_bytes(payload, "little")
             return claripy.BVV(value, len(payload) * 8)
         if isinstance(data, int):
+            # Bare ``int`` width defaults to the arch word size, matching
+            # angr's SimMemory.store (see the concrete-store branch above).
             if size is None:
-                raise TypeError("memory store with an int value requires size=N (bytes)")
+                size = self._arch.bytes
             byteorder = "little" if endness == "Iend_LE" else "big"
             payload = data.to_bytes(size, byteorder)
             value = int.from_bytes(payload, "little")

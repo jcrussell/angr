@@ -1523,17 +1523,23 @@ class TestProxyWriteThrough:
         loaded = proxy.memory.load(addr, 4)
         assert loaded.concrete_value == 0xABCDEF12
 
-    def test_memory_write_int_value_requires_size(self, fauxware_project):
-        """proxy.memory.store(addr, 0xCAFE) without size= is a programmer
-        error — store mirrors angr's API where ``state.memory.store(a, int)``
-        always carries an explicit size."""
+    def test_memory_write_int_value_defaults_to_arch_word(self, fauxware_project):
+        """proxy.memory.store(addr, int) without size= defaults the width to
+        the arch word size, mirroring angr's SimMemory.store (e.g. asprintf
+        writes a malloc'd pointer back via
+        ``memory.store(strp, dst, endness=memory_endness)`` with no size). The
+        callback-memory-proxy gate routes such stores through this path, so a
+        missing size must be inferred rather than rejected (angr-92e17)."""
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         proxy = mgr.proxy.active[0]
 
-        with pytest.raises(TypeError):
-            proxy.memory.store(fauxware_project.entry, 0xCAFE)
+        addr = fauxware_project.entry
+        word = fauxware_project.arch.bytes  # 8 on AMD64
+        proxy.memory.store(addr, 0xCAFEBABE)
+        # BE default: value zero-extended to the full arch word, high bytes 0.
+        assert proxy.memory.load(addr, word).concrete_value == 0xCAFEBABE
 
     def test_memory_write_int_value_with_size(self, fauxware_project):
         """proxy.memory.store(addr, int, size=N) writes N bytes big-endian
