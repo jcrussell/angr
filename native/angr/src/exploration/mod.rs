@@ -22,6 +22,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
+use self::selection_policy::SelectionPolicy;
 use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
@@ -60,6 +61,7 @@ mod run_loop;
 #[cfg(feature = "vex-engine-z3")]
 #[allow(dead_code)]
 mod scheduler;
+pub(crate) mod selection_policy;
 /// SI-B (angr-1ilq.3 increment 2b'): opt-in shadow probe measuring the real
 /// state-migration serde tax. Z3-gated: the scratch thread builds states into
 /// its own `z3::Context`, so it only exists with the Z3-backed engine.
@@ -246,9 +248,11 @@ pub struct RustExplorationManager {
     /// returns to the same address. Stack-based to handle nested hooks.
     pub(crate) skip_hook_stack: Vec<(u64, u64)>,
     // state_roots is now in self.sm (StashManager)
-    /// P9 fix: Use LIFO (stack) state selection instead of FIFO (queue).
-    /// When true, states are popped from the back (DFS). Default is false (BFS).
-    pub(crate) use_lifo: bool,
+    /// Active-state selection / fork-insertion policy (angr-a32jl.1).
+    /// Governs which active state is stepped next and where new forks land.
+    /// Defaults to [`Fifo`] (BFS); `set_state_selection_lifo` swaps in [`Lifo`]
+    /// (DFS). Replaces the former `use_lifo: bool`.
+    pub(crate) policy: Box<dyn SelectionPolicy>,
     /// Solver configuration: lazy_solves flag and Z3 timeout.
     pub(crate) constraint_solver: ConstraintSolver,
     /// Memory and VEX configuration: zero-fill, concretizer, vex opt levels.
@@ -464,7 +468,7 @@ impl RustExplorationManager {
             syscall_native_by_num: HashMap::new(),
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
-            use_lifo: false, // P9: Default to BFS (FIFO)
+            policy: Box::new(selection_policy::Fifo), // Default to BFS (FIFO)
             constraint_solver: ConstraintSolver::new(),
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,
@@ -642,14 +646,14 @@ impl RustExplorationManager {
     /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
     pub fn set_state_selection_lifo(&mut self) {
         self.steady_config_guard();
-        self.use_lifo = true;
+        self.policy = Box::new(selection_policy::Lifo);
         log::debug!("State selection set to LIFO (DFS)");
     }
 
     /// P9 fix: Set state selection to FIFO (BFS - breadth-first search).
     pub fn set_state_selection_fifo(&mut self) {
         self.steady_config_guard();
-        self.use_lifo = false;
+        self.policy = Box::new(selection_policy::Fifo);
         log::debug!("State selection set to FIFO (BFS)");
     }
 
@@ -2649,10 +2653,8 @@ impl Drop for RustExplorationManager {
                 // `sess` (and its up_rx) drops here; late worker sends fail
                 // silently by design.
             }
-            if had_session {
-                if let Some(pool) = self.parallel_pool.take() {
-                    Python::attach(|py| py.detach(move || drop(pool)));
-                }
+            if had_session && let Some(pool) = self.parallel_pool.take() {
+                Python::attach(|py| py.detach(move || drop(pool)));
             }
         }
     }

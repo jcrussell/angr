@@ -1564,15 +1564,12 @@ impl RustExplorationManager {
                 ));
             }
 
-            // Get next state from active stash
-            // P9 fix: Use LIFO (pop_back) for DFS or FIFO (pop_front) for BFS
-            let state = match self.sm.get_mut(STASH_ACTIVE).and_then(|s| {
-                if self.use_lifo {
-                    s.pop_back() // DFS: LIFO (most recent state first)
-                } else {
-                    s.pop_front() // BFS: FIFO (oldest state first)
-                }
-            }) {
+            // Get next state from active stash via the selection policy
+            // (angr-a32jl.1): Fifo=pop_front (BFS), Lifo=pop_back (DFS).
+            // `policy` is bound first so the closure captures only that field,
+            // leaving `self.sm` free to borrow mutably.
+            let policy = &*self.policy;
+            let state = match self.sm.get_mut(STASH_ACTIVE).and_then(|s| policy.select(s)) {
                 Some(s) => {
                     let sid = s.state_id();
                     self.current_stepping_state_id = Some(sid.into());

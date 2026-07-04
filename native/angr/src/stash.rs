@@ -24,6 +24,7 @@
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};
 
+use crate::exploration::selection_policy::SelectionPolicy;
 use crate::state::RustSimState;
 
 /// Well-known stash names.
@@ -229,18 +230,24 @@ impl StashManager {
         self.entry(stash).push_back(state);
     }
 
-    /// Pop the front state from active (BFS) or back (DFS).
-    pub fn pop_active(&mut self, use_lifo: bool) -> Option<RustSimState> {
+    /// Pop the next active state chosen by `policy` (BFS front / DFS back /
+    /// future coverage-guided / …), keeping the state index in sync.
+    pub fn pop_active(&mut self, policy: &dyn SelectionPolicy) -> Option<RustSimState> {
         let stash = self.stashes.get_mut(STASH_ACTIVE)?;
-        let state = if use_lifo {
-            stash.pop_back()
-        } else {
-            stash.pop_front()
-        };
+        let state = policy.select(stash);
         if let Some(ref s) = state {
             self.unindex(s.state_id());
         }
         state
+    }
+
+    /// Push a freshly-forked successor onto the active stash at the position
+    /// chosen by `policy` (tail for the FIFO/LIFO built-ins), keeping the
+    /// state index in sync. The fork-insertion chokepoint (angr-a32jl.1).
+    pub fn push_active(&mut self, policy: &dyn SelectionPolicy, state: RustSimState) {
+        let state_id = state.state_id();
+        self.index(state_id, STASH_ACTIVE);
+        policy.on_fork(self.entry(STASH_ACTIVE), state);
     }
 
     /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it

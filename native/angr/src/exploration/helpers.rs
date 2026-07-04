@@ -219,7 +219,7 @@ impl RustExplorationManager {
             self.push_or_drop_terminal(STASH_PRUNED, state);
             return false;
         }
-        self.sm.push(STASH_ACTIVE, state);
+        self.sm.push_active(&*self.policy, state);
         true
     }
 
