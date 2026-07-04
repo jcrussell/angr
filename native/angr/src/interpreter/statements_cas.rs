@@ -233,7 +233,6 @@ impl<'a> VEXInterpreter<'a> {
     /// Dispatch a CAS store: if the precomputed RustBV is concrete, synthesize
     /// an IRStmt::Store that reuses the full Store path (which re-evaluates the
     /// data IRExpr); if symbolic, route through `cas_store_symbolic_data`.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_dispatch_store(
         &mut self,
         callbacks: &PythonCallbacks,

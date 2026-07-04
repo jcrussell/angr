@@ -524,7 +524,6 @@ impl<'a> VEXInterpreter<'a> {
         Ok(self.registers.get(offset, elem_size, self.ctx))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn eval_triop(
         &mut self,
         callbacks: &PythonCallbacks,

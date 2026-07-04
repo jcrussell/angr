@@ -670,7 +670,6 @@ impl PythonCallbacks {
     /// sites are wired (uq4n.3). Returns whatever Python returned.
     #[pyo3(name = "call_inspect_mem_read")]
     #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
-    #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_read(
         &self,
         state_id: i64,
@@ -686,7 +685,6 @@ impl PythonCallbacks {
     /// Test entry point: invoke the registered mem_write callback directly.
     #[pyo3(name = "call_inspect_mem_write")]
     #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
-    #[allow(clippy::too_many_arguments)]
     pub fn py_call_inspect_mem_write(
         &self,
         state_id: i64,

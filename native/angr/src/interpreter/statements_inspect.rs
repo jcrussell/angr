@@ -20,7 +20,6 @@ impl<'a> VEXInterpreter<'a> {
     /// caller substitutes it for the stored value. Returns `None` when
     /// unchanged (and always for `when='after'`, post-commit), so the
     /// original store value stands.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_mem_write_inspect(
         &self,
         callbacks: &PythonCallbacks,

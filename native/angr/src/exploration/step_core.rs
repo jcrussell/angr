@@ -170,7 +170,6 @@ impl RustExplorationManager {
 // The two extra params over the original method (`ctx` and `block_cache`)
 // stand in for the `&mut self` the method used to carry — that is exactly the
 // decoupling this extraction exists to demonstrate, so the count is inherent.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_interpreter_step_core(
     ctx: &StepContext,
     callbacks: &PythonCallbacks,

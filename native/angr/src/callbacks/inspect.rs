@@ -36,7 +36,6 @@ impl PythonCallbacks {
     /// injection — angr-uy32); `None` when unchanged, no breakpoint fired,
     /// or no callback is registered. The caller converts a returned AST
     /// back to a `RustBV` and substitutes it for the loaded value.
-    #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_read(
         &self,
         state_id: i64,
@@ -70,7 +69,6 @@ impl PythonCallbacks {
     /// user's `mem_write_expr` override to substitute for the stored value
     /// (angr-inh0) — and `when='after'` (post-store), where the return is
     /// informational only. See `dispatch_mem_write_inspect`.
-    #[allow(clippy::too_many_arguments)]
     pub fn call_inspect_mem_write(
         &self,
         state_id: i64,

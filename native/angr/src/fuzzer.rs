@@ -67,7 +67,6 @@ struct Fuzzer {
 impl Fuzzer {
     #[new]
     #[pyo3(signature = (base_state, corpus, solutions, apply_fn, timeout=None, seed=0, max_mutations=None, mutator=None))]
-    #[allow(clippy::too_many_arguments)]
     fn py_new(
         base_state: Bound<PyAny>,
         corpus: Bound<PyAny>,
