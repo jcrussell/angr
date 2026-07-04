@@ -53,13 +53,7 @@ mod run_loop;
 /// Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3).
 /// Z3-gated: it transports [`crate::state::StateMigrationPayload`], which only
 /// exists with the Z3-backed engine.
-///
-/// `dead_code`-allowed for now: this increment lands and tests the pool in
-/// isolation (the module's own `#[cfg(test)]` suite exercises every item). The
-/// run-loop integration that calls it from `run_loop` is the deferred follow-up
-/// increment (blocked on GIL-released stepping); remove the allow when it lands.
 #[cfg(feature = "vex-engine-z3")]
-#[allow(dead_code)]
 mod scheduler;
 pub(crate) mod selection_policy;
 /// SI-B (angr-1ilq.3 increment 2b'): opt-in shadow probe measuring the real

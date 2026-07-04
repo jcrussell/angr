@@ -59,7 +59,12 @@
 //! fraction* the overhead gate's break-even `f*` bounds. See
 //! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
 
-use crate::exploration::selection_policy::{Lifo, SelectionPolicy};
+use crate::exploration::selection_policy::SelectionPolicy;
+// `Lifo` is the pre-seam default policy, now only used by the `#[cfg(test)]`
+// `Lifo`-default convenience constructors (production threads an explicit policy
+// via `*_with_policy`).
+#[cfg(test)]
+use crate::exploration::selection_policy::Lifo;
 use crate::interpreter::BLOCK_CACHE_CAPACITY;
 use crate::state::{RustSimState, StateMigrationPayload};
 use crate::vex::IRSB;
@@ -173,6 +178,10 @@ pub struct TaskOutcome {
 
 impl TaskOutcome {
     /// All successors are live; keep exploring, nothing terminal.
+    /// Test-only constructor: the synthetic `process` fns in the byte-stable
+    /// scheduler unit tests build outcomes with this; production task closures
+    /// assemble `TaskOutcome` fields directly.
+    #[cfg(test)]
     pub fn continuing(continue_states: Vec<RustSimState>) -> Self {
         Self {
             continue_states,
@@ -184,6 +193,8 @@ impl TaskOutcome {
 
     /// All successors are terminal and must be materialized; generate no further
     /// work.
+    /// Test-only constructor (see [`TaskOutcome::continuing`]).
+    #[cfg(test)]
     pub fn terminal(terminal_states: Vec<RustSimState>) -> Self {
         Self {
             continue_states: Vec::new(),
@@ -303,6 +314,10 @@ impl SchedulerStats {
     /// `(surplus_offloaded + materialized_terminals) / dispatches`. This is the
     /// number the overhead gate's break-even `f*` must bound for a GO. Returns
     /// 0.0 when nothing was dispatched.
+    ///
+    /// Test-only: the overhead-gate assertions in the unit suite check this
+    /// ratio; the run loop reads the raw counters directly.
+    #[cfg(test)]
     pub fn honest_steal_fraction(&self) -> f64 {
         let d = self.dispatches();
         if d == 0 {
@@ -384,13 +399,9 @@ pub(crate) struct WorkTransport {
 }
 
 impl WorkTransport {
-    fn new() -> Self {
-        Self::with_policy(Arc::new(Lifo))
-    }
-
-    /// Build a transport with an explicit selection policy. The `new()` default
-    /// is `Lifo` (verbatim pre-seam dispatch); callers that want a different
-    /// per-worker ordering (find-aware dispatch — angr-1ilq.9) supply it here.
+    /// Build a transport with an explicit selection policy. Callers that want a
+    /// `Lifo` default (verbatim pre-seam dispatch) pass `Arc::new(Lifo)`;
+    /// find-aware dispatch (angr-1ilq.9) supplies its own policy here.
     fn with_policy(policy: Arc<dyn SelectionPolicy>) -> Self {
         Self {
             injector: Injector::new(),
@@ -435,6 +446,11 @@ impl WaveJob {
     /// fresh and private to this wave. Defaults the worker-local selection
     /// policy to [`Lifo`] — use [`WaveJob::new_with_policy`] to honor the
     /// run loop's configured policy (angr-x1fya).
+    ///
+    /// Test-only `Lifo`-default convenience: the only non-test caller is the
+    /// `#[cfg(test)]` [`ParallelScheduler`] compat wrapper; the run loop calls
+    /// [`WaveJob::new_with_policy`] to thread its configured policy.
+    #[cfg(test)]
     pub(crate) fn new(initial: Vec<StateMigrationPayload>, process: Box<ProcessFn>) -> Self {
         Self::new_with_policy(initial, process, Arc::new(Lifo))
     }
@@ -471,6 +487,11 @@ impl WaveJob {
 
     /// Consume the recovered wave into `(materialized payloads, terminal
     /// summaries, stats)` — the shape the old `run_instrumented` returned.
+    ///
+    /// Test-only: consumed by the `#[cfg(test)]` [`ParallelScheduler`] wrapper;
+    /// the persistent pool recovers results incrementally, not by consuming the
+    /// whole `WaveJob`.
+    #[cfg(test)]
     pub(crate) fn into_results(
         self,
     ) -> (
@@ -566,6 +587,10 @@ impl RunSession {
     /// the receiving half of its upstream channel (the coordinator keeps it;
     /// dropping it makes late worker sends fail silently — workers ignore send
     /// errors for exactly that shutdown race).
+    ///
+    /// Test-only `Lifo`-default convenience; the run loop constructs sessions
+    /// via [`RunSession::new_with_policy`] to honor its configured policy.
+    #[cfg(test)]
     pub(crate) fn new(process: Box<ProcessFn>) -> (Arc<Self>, Receiver<WorkerUp>) {
         Self::new_with_policy(process, Arc::new(Lifo))
     }
@@ -625,6 +650,9 @@ impl RunSession {
         self.transport.cancel.cancel();
     }
 
+    /// Test-only cancel-state probe; the coordinator drives cancel via
+    /// [`RunSession::cancel`] and observes quiescence through `pending`.
+    #[cfg(test)]
     pub(crate) fn is_cancelled(&self) -> bool {
         self.transport.cancel.is_cancelled()
     }
@@ -694,11 +722,9 @@ const _: fn() = || {
 };
 
 /// A worker's per-wave completion signal — the wave-barrier token the
-/// coordinator counts `num_workers` of.
-struct WaveDone {
-    #[allow(dead_code)] // carried for debuggability / future targeted diagnostics
-    worker_id: usize,
-}
+/// coordinator counts `num_workers` of. The coordinator only counts these
+/// (it never inspects which worker sent one), so the token carries no payload.
+struct WaveDone;
 
 /// `num_workers` long-lived OS threads, each owning a private Z3 context for the
 /// pool's whole life, fed one [`WaveJob`] at a time over per-worker channels.
@@ -862,7 +888,7 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
                 // Release this worker's Arc clone BEFORE signaling done — the
                 // invariant that makes the coordinator's `Arc::into_inner` safe.
                 drop(job);
-                if done_tx.send(WaveDone { worker_id }).is_err() {
+                if done_tx.send(WaveDone).is_err() {
                     // Coordinator is gone; nothing to synchronize with. Bail so
                     // the context drops on this thread.
                     break;
@@ -887,20 +913,21 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
 /// (`#[cfg(test)]` below). The run loop drives a long-lived `PersistentPool`
 /// directly; this spins one up per call, runs a single [`WaveJob`] built from
 /// the caller's synthetic `process`, and tears the pool down on return.
+///
+/// Test-only: this whole surface exists solely for the `#[cfg(test)]` scheduler
+/// unit suite below; no production path constructs it.
+#[cfg(test)]
 pub struct ParallelScheduler {
     num_workers: usize,
 }
 
+#[cfg(test)]
 impl ParallelScheduler {
     /// Build a scheduler with `num_workers` worker threads (clamped to >= 1).
     pub fn new(num_workers: usize) -> Self {
         Self {
             num_workers: num_workers.max(1),
         }
-    }
-
-    pub fn num_workers(&self) -> usize {
-        self.num_workers
     }
 
     /// Run the pool to quiescence (or cancellation) and return the collected
