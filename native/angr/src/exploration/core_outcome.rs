@@ -43,6 +43,7 @@
 //! legacy `materialize_deferred_forks` computed.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -257,20 +258,37 @@ pub(crate) struct ParallelProfiling {
     pub(crate) solver_sat_count: AtomicU64,
     pub(crate) deferred_fork_time_ns: AtomicU64,
     pub(crate) deferred_fork_count: AtomicU64,
-    /// IRSB block-cache hits/misses accumulated across the wave's dispatches
-    /// (angr-vh834 Work Item 3). The parallel worker folds each step's
-    /// `ExecutionStats::cache_hit_count`/`cache_miss_count` in here so the warm
-    /// per-worker cache win surfaces via `stats.cache_hit_count` /
-    /// `cache_miss_count` (the `block_cache_hits` / `block_cache_misses` keys in
-    /// `mgr.stats()`), consistent with the single-threaded `merge` path.
-    pub(crate) cache_hit_count: AtomicU64,
-    pub(crate) cache_miss_count: AtomicU64,
+    /// Full per-step interpreter `ExecutionStats` accumulated across the wave's
+    /// dispatches (angr-qhkye). Each worker merges its step's whole `step_stats`
+    /// here so ALL sum-typed interpreter counters — `lift_time_ns`,
+    /// `cache_hit_count`/`cache_miss_count`, `blocks_executed`, the load/store/
+    /// expr timings, etc. — surface in `mgr.stats()`, mirroring the
+    /// single-threaded `accumulated_stats.merge(&step.step_stats)` path
+    /// (`stepping.rs`). Solver fork/sat/deferred counters are NOT set by the
+    /// interpreter (they come from the post-step arms into the atomics above),
+    /// so folding the full `step_stats` here does not double-count them.
+    /// A `Mutex` (not per-field atomics) keeps this exhaustive without hand-
+    /// listing every field; the per-step lock is negligible against a VEX step.
+    pub(crate) step_stats: Mutex<ExecutionStats>,
 }
 
 impl ParallelProfiling {
     #[inline]
     fn add(a: &AtomicU64, v: u64) {
         a.fetch_add(v, Ordering::Relaxed);
+    }
+
+    /// Merge one interpreter step's full `ExecutionStats` into the shared
+    /// accumulator (angr-qhkye). Called by each parallel worker after a
+    /// dispatch, mirroring the single-threaded
+    /// `accumulated_stats.merge(&step.step_stats)`. Unconditional (not gated on
+    /// `profiling_enabled`): timing fields are already zero when profiling is
+    /// off, and the always-on cache hit/miss counters must still accumulate.
+    pub(crate) fn accumulate_step(&self, step_stats: &ExecutionStats) {
+        self.step_stats
+            .lock()
+            .expect("ParallelProfiling step_stats poisoned")
+            .merge(step_stats);
     }
 
     /// Fold the accumulated atomics into an `ExecutionStats`. Adds zero for any
@@ -283,15 +301,19 @@ impl ParallelProfiling {
         stats.solver_sat_count += self.solver_sat_count.load(Ordering::Relaxed);
         stats.deferred_fork_time_ns += self.deferred_fork_time_ns.load(Ordering::Relaxed);
         stats.deferred_fork_count += self.deferred_fork_count.load(Ordering::Relaxed);
-        // ADD (never clobber) into the same accumulated_stats fields the
-        // single-threaded `merge` path populates, so both engines report the
-        // block-cache hit/miss counters consistently.
-        stats.cache_hit_count += self.cache_hit_count.load(Ordering::Relaxed);
-        stats.cache_miss_count += self.cache_miss_count.load(Ordering::Relaxed);
+        // Fold every sum-typed interpreter counter (lift_time_ns, cache
+        // hits/misses, blocks_executed, ...) exactly as the single-threaded
+        // `merge` path does — see the `step_stats` field doc.
+        stats.merge(
+            &self
+                .step_stats
+                .lock()
+                .expect("ParallelProfiling step_stats poisoned"),
+        );
     }
 
-    /// Like [`fold_into`](Self::fold_into) but SWAPS each atomic to zero, so it
-    /// is safe to call repeatedly against a long-lived accumulator — the
+    /// Like [`fold_into`](Self::fold_into) but SWAPS each accumulator to zero, so
+    /// it is safe to call repeatedly against a long-lived accumulator — the
     /// steady-state coordinator folds deltas at every event return while
     /// workers keep adding (angr-nkoct). A wave calling this once is
     /// byte-identical to `fold_into` (the wave's accumulator dies right after).
@@ -302,8 +324,13 @@ impl ParallelProfiling {
         stats.solver_sat_count += self.solver_sat_count.swap(0, Ordering::Relaxed);
         stats.deferred_fork_time_ns += self.deferred_fork_time_ns.swap(0, Ordering::Relaxed);
         stats.deferred_fork_count += self.deferred_fork_count.swap(0, Ordering::Relaxed);
-        stats.cache_hit_count += self.cache_hit_count.swap(0, Ordering::Relaxed);
-        stats.cache_miss_count += self.cache_miss_count.swap(0, Ordering::Relaxed);
+        let step_acc = std::mem::take(
+            &mut *self
+                .step_stats
+                .lock()
+                .expect("ParallelProfiling step_stats poisoned"),
+        );
+        stats.merge(&step_acc);
     }
 }
 

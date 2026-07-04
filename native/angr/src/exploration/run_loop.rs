@@ -274,20 +274,20 @@ fn parallel_process_state(
     // across dispatches AND waves. Cache hits avoid a GIL-serialized re-lift; the
     // warm cache returns identical (pure) `Arc<IRSB>` lifts, so the found set and
     // content fingerprints are unchanged.
-    let step =
+    let mut step =
         run_interpreter_step_core(cc.ctx, callbacks, &mut state, pc, None, None, block_cache);
 
-    // Fold this step's block-cache hit/miss into the shared profiling accumulator
-    // so the warm-cache win surfaces in `mgr.stats()` (block_cache_hits /
-    // block_cache_misses). Cache counters are always-on in the interpreter (not
-    // gated by profiling), so accumulate unconditionally; the coordinator adds
-    // these into `accumulated_stats` via `prof.fold_into` after the wave barrier.
-    cc.prof
-        .cache_hit_count
-        .fetch_add(step.step_stats.cache_hit_count, Ordering::Relaxed);
-    cc.prof
-        .cache_miss_count
-        .fetch_add(step.step_stats.cache_miss_count, Ordering::Relaxed);
+    // Fold this step's FULL interpreter stats into the shared profiling
+    // accumulator so every sum-typed counter — lift_time_ns, block-cache
+    // hit/miss, blocks_executed, load/store/expr timings, ... — surfaces in
+    // `mgr.stats()`, mirroring the single-threaded
+    // `accumulated_stats.merge(&step.step_stats)` (stepping.rs). Stamp
+    // `step_count = 1` first, exactly as the single-threaded path does. The
+    // coordinator merges this into `accumulated_stats` via `prof.fold_into`
+    // after the wave barrier. Unconditional: timing fields are zero when
+    // profiling is off, and cache counters are always-on (angr-qhkye).
+    step.step_stats.step_count = 1;
+    cc.prof.accumulate_step(&step.step_stats);
 
     // Restore the warm cache: `run_interpreter_step_core` swapped a fresh empty
     // placeholder into `*block_cache` and handed the now-populated cache back in
