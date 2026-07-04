@@ -1512,7 +1512,14 @@ class RustCallbackDispatchMixin:
                 pass
 
         # Create a new Rust state for this successor
-        self._add_rust_state("active", succ_state)
+        new_sid = self._add_rust_state("active", succ_state)
+
+        # Lineage-aware demotion (angr-qluof pt2): _add_rust_state's
+        # _export_fs_files_to_rust re-registers eligible SimFiles, re-arming
+        # any symbolic-file path the parent lineage's native write had demoted.
+        # Re-apply from the parent so the forked guest keeps seeing the
+        # content-identical Python fallback.
+        self._reapply_demoted_paths(self._rust_mgr, event.callback_state_id, new_sid)
 
         # If we have fork-specific constraints, sync them to the new Rust state
         if fork_constraints:

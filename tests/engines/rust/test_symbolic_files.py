@@ -266,3 +266,34 @@ class TestLineageDemotion:
         mgr = RustExplorationManager(fauxware_project, [state])
         # Present and zero before any merge re-add.
         assert mgr.stats["symfile_redemotions"] == 0
+
+    def test_reapply_demoted_paths_single_source(self, fauxware_project):
+        # angr-qluof pt2: the single-source helper used by the legacy-fork-push
+        # and cross-manager-transfer re-add sites. A source lineage's demoted
+        # path re-applies on a freshly re-added target and bumps the counter.
+        s0 = fauxware_project.factory.entry_state()
+        s1 = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [s0, s1])
+        src_sid, tgt_sid = mgr._rust_mgr.get_state_ids("active")[:2]
+        # Register content on both, demote only on the source.
+        mgr._rust_mgr.register_file_content(src_sid, "/tmp/lin", [claripy.BVV(0x41, 8)])
+        mgr._rust_mgr.register_file_content(tgt_sid, "/tmp/lin", [claripy.BVV(0x41, 8)])
+        assert mgr._rust_mgr.demote_file_path(src_sid, "/tmp/lin") is True
+        assert mgr._rust_mgr.get_demoted_paths(tgt_sid) == []
+        # The helper propagates the source's demoted set to the target and
+        # counts each re-applied demotion.
+        mgr._reapply_demoted_paths(mgr._rust_mgr, src_sid, tgt_sid)
+        assert "/tmp/lin" in mgr._rust_mgr.get_demoted_paths(tgt_sid)
+        assert mgr.stats["symfile_redemotions"] == 1
+
+    def test_reapply_demoted_paths_noop_on_none(self, fauxware_project):
+        # Missing source manager / sid / target sid is a no-op, never raising,
+        # and leaves the counter untouched (guards the None branches both
+        # pt2 call sites can hit).
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        mgr._reapply_demoted_paths(None, sid, sid)
+        mgr._reapply_demoted_paths(mgr._rust_mgr, None, sid)
+        mgr._reapply_demoted_paths(mgr._rust_mgr, sid, None)
+        assert mgr.stats["symfile_redemotions"] == 0

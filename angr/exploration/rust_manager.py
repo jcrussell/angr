@@ -3697,6 +3697,12 @@ class RustExplorationManager(
             # to the same Rust symbols.
             self._export_fs_files_to_rust(angr_state, actual_state_id)
 
+            # Lineage-aware demotion (angr-qluof pt2): on a cross-manager
+            # transfer the export above re-arms any symbolic-file path the
+            # source Rust manager's lineage had demoted. Re-apply from the old
+            # manager's state so the guest keeps seeing the Python fallback.
+            self._reapply_demoted_paths(old_rust_mgr, old_state_id, actual_state_id)
+
             self._state_cache[actual_state_id] = angr_state
             # Track this as a root state for plugin restoration
             self._state_roots[actual_state_id] = actual_state_id
@@ -3807,6 +3813,42 @@ class RustExplorationManager(
         self._cleanup_state_cache()
         l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
         return rust_state.state_id
+
+    def _reapply_demoted_paths(self, source_mgr, source_sid, target_sid) -> None:
+        """Re-apply a single source lineage's symbolic-file demotions on a
+        freshly re-added state (angr-qluof lineage-aware demotion, pt2).
+
+        ``_add_rust_state``'s ``_export_fs_files_to_rust`` re-registers
+        eligible SimFiles, re-arming any path an ancestor's native write had
+        demoted (content-harmless — the refused write never landed — but it
+        reverts the guest's write→-1). Querying the source state's demoted
+        paths and re-applying them via ``demote_file_path`` keeps the guest
+        seeing the content-identical Python fallback.
+
+        ``source_mgr`` is a *native* manager (``self._rust_mgr`` for the
+        legacy-fork-push site, or ``scratch.rust_mgr`` for the cross-manager
+        transfer site — a different RustExplorationManager's native handle).
+        Demoted paths are plain cwd-normalized strings, so they port across
+        managers. This is the single-source counterpart to ``merge()``'s
+        union-across-lineages re-demotion (which must query before its
+        _merge_drop, so it can't share this helper).
+        """
+        if source_mgr is None or source_sid is None or target_sid is None:
+            return
+        try:
+            demoted = source_mgr.get_demoted_paths(source_sid)
+        except Exception as e:
+            # Non-fatal: a failed query just means the re-added state may
+            # re-arm a native write-demotion (the documented, content-harmless
+            # v1 limitation).
+            l.debug("get_demoted_paths(%s) failed: %s: %s", source_sid, type(e).__name__, e)
+            return
+        for path in demoted:
+            try:
+                if self._rust_mgr.demote_file_path(target_sid, path):
+                    self._stats_symfile_redemotions += 1
+            except Exception as e:
+                l.debug("re-demote %r on state %s failed: %s: %s", path, target_sid, type(e).__name__, e)
 
     # Field descriptor types for table-driven serialization:
     #   'val'  — copy attribute value directly (int, str)
