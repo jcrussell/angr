@@ -1274,7 +1274,7 @@ class RustMemoryProxy:
 
         ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
         if ast is None:
-            fallback = self._load_from_fallback(orig_addr, size, endness)
+            fallback = self._load_from_fallback(addr, orig_addr, size, endness)
             if fallback is not None:
                 return fallback
             return claripy.BVV(0, size * 8)
@@ -1290,25 +1290,35 @@ class RustMemoryProxy:
             return ast.reversed
         return ast
 
-    def _load_from_fallback(self, orig_addr, size, endness):
-        """Read ``orig_addr`` from the pre-swap Python memory (angr-5rjbq).
+    def _load_from_fallback(self, conc_addr, orig_addr, size, endness):
+        """Read from the pre-swap Python memory (angr-5rjbq).
 
         Invoked only when ``get_state_memory_ast`` returns ``None`` — i.e. the
         Rust state has nothing mapped at the (concretized) address. Delegates
         to the Python ``SimMemory`` that ``state.memory`` held before the proxy
-        was installed, passing the *original* (possibly symbolic) address so
-        that memory concretizes it against its own solver — recovering
-        setup-time writes such as flareon2015_5's ebp-relative pw symbols that
-        were stored into Python memory during harness setup and never synced to
-        Rust at the concretized address. Returns the loaded AST, or ``None`` if
-        there is no fallback memory or the read raised (dead/unmapped path —
-        the caller then returns the zero default).
+        was installed, recovering setup-time writes such as flareon2015_5's
+        ebp-relative pw symbols that were stored into Python memory during
+        harness setup and never synced to Rust at the concretized address.
+
+        Reads at ``conc_addr`` — the address ALREADY concretized against the
+        proxy's solver, which mirrors the Rust state's constraints (including
+        the setup-time ebp pin). The harness setup write physically landed the
+        pw bytes at that same pinned witness, and Rust inherited the identical
+        pin constraint via ``add_constraints_to_state``, so the concrete
+        witness the proxy chose equals where the bytes live in Python memory.
+        Passing the *symbolic* ``orig_addr`` here (the prior behaviour) let the
+        fallback ``SimMemory`` re-concretize against its OWN solver — but after
+        the swap the pin constraint migrated to the Rust solver, so Python's
+        solver picks an arbitrary, data-free witness and the read misses the
+        setup bytes (bd flareon-5rjbq-ebp-cross-solver-root-cause). Returns the
+        loaded AST, or ``None`` if there is no fallback memory or the read
+        raised (dead/unmapped path — the caller returns the zero default).
         """
         fallback = self._fallback_memory
         if fallback is None:
             return None
         try:
-            result = fallback.load(orig_addr, size, endness=endness)
+            result = fallback.load(conc_addr, size, endness=endness)
         except Exception:
             # Fallback memory could not satisfy the read either (unmapped,
             # unsat address, or a plugin that doesn't accept these kwargs):
