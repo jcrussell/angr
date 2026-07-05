@@ -306,6 +306,33 @@ class TestProxyLiskovGaps:
         loaded = proxy.memory.load(target, 4, endness="Iend_LE")
         assert proxy.solver.eval(loaded) == 0xCAFEBABE
 
+    def test_memory_store_unbounded_symbolic_addr_does_not_raise(self, fauxware_project):
+        """angr-p1s02: a write through an unbounded/unconstrained symbolic
+        address (e.g. an unconstrained ``operator new`` return pointer) has
+        too many satisfying solutions for the lazy Multi-cell path. It used to
+        raise ``NotImplementedError``, killing the SimProcedure callback state
+        and dropping the corpus find under the callback-memory-proxy gate
+        (bd memory callback-memory-proxy-medium-differential). It must now fall
+        back to angr's Max write-concretization (single concrete address,
+        garbage high pages silently dropped) so the state survives.
+        """
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        # High fixed prefix + unconstrained low bits — mirrors an unconstrained
+        # ``operator new`` pointer (0x7fff.. garbage). Its Max concretization
+        # lands on an unmapped high page, exercising the silent-drop fallback.
+        unbounded = claripy.BVV(0x7FFF00000000, 64) + (claripy.BVS("unbounded_write_lo", 64) & 0xFFFF)
+        before = mgr._stats_proxy_mem_symbolic_addr_fallback
+
+        # Must not raise.
+        proxy.memory.store(unbounded, claripy.BVV(0, 32))
+
+        assert mgr._stats_proxy_mem_symbolic_addr_fallback == before + 1
+
 
 class TestProxyMemoryFind:
     """angr-4scu step 1: RustMemoryProxy.find() supports the concrete-needle

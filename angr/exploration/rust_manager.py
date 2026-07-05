@@ -1237,6 +1237,10 @@ class RustExplorationManager(
         # call in `rust_state_proxy.py`. Aggregates across the whole run.
         self._stats_proxy_mem_concrete_writes = 0
         self._stats_proxy_mem_ast_writes = 0
+        # angr-p1s02: symbolic-address stores the lazy Multi-cell path could
+        # not route (unbounded/unconstrained addr), fallen back to a
+        # single-address concretization (angr's Max write strategy).
+        self._stats_proxy_mem_symbolic_addr_fallback = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
         # angr-4ref8: symbolic-file export observability. Every v1 scope-gate
@@ -5138,6 +5142,7 @@ class RustExplorationManager(
         # angr-7jv5: proxy write-through FFI counters
         result["proxy_mem_concrete_writes"] = self._stats_proxy_mem_concrete_writes
         result["proxy_mem_ast_writes"] = self._stats_proxy_mem_ast_writes
+        result["proxy_mem_symbolic_addr_fallback"] = self._stats_proxy_mem_symbolic_addr_fallback
         result["proxy_reg_writes"] = self._stats_proxy_reg_writes
         result["proxy_solver_adds"] = self._stats_proxy_solver_adds
         # angr-4ref8: symbolic-file export observability. `symfile_exports` is
