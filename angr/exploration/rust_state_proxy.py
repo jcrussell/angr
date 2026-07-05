@@ -1085,11 +1085,23 @@ class RustMemoryProxy:
         python_mgr=None,
         shared_ctx_getter=None,
         fallback_memory=None,
+        addr_witness_cache=None,
     ):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # angr-5rjbq: per-address concretization-witness cache, keyed by the
+        # symbolic address's structural ``hash()``. The symbolic-addr STORE
+        # fallback (p1s02) concretizes ``ebp+off`` to a witness and records it
+        # here; a later symbolic-addr LOAD of the *structurally identical* addr
+        # reuses that witness instead of asking the Rust solver for a fresh
+        # (possibly different) model. Without this, an unconstrained ebp-relative
+        # store lands at witness A while the read concretizes to witness B, Rust
+        # has no data at B, and the copied bytes read back as zeros — the
+        # flareon2015_5 residual (bd flareon-5rjbq-witness-mismatch). Bounded by
+        # the number of distinct symbolic-addr stores a callback issues.
+        self._addr_witness_cache = addr_witness_cache if addr_witness_cache is not None else {}
         # angr-5rjbq: the Python SimMemory that ``state.memory`` held BEFORE
         # this proxy was swapped in (the callback state's copy of the entry
         # state's DefaultMemory). Loads Rust can't satisfy (unmapped/zero
@@ -1153,6 +1165,7 @@ class RustMemoryProxy:
             endness=self.endness,
             python_mgr=self._python_mgr,
             fallback_memory=self._fallback_memory,
+            addr_witness_cache=dict(self._addr_witness_cache),
         )
 
     # ---------------------------------------------------------------
@@ -1245,11 +1258,19 @@ class RustMemoryProxy:
             if addr.concrete:
                 addr = addr.concrete_value
             else:
-                self._ensure_solver()
-                resolved = self._solver_ctx.eval(addr)
-                if resolved is None:
-                    raise claripy.errors.UnsatError("symbolic memory load addr is unsat")
-                addr = resolved
+                # angr-5rjbq: if a prior symbolic-addr store concretized this
+                # exact address, reuse that witness so the read lands where the
+                # write did (see ``_addr_witness_cache``). Otherwise ask the
+                # solver for any satisfying model.
+                cached = self._addr_witness_cache.get(addr.hash())
+                if cached is not None:
+                    addr = cached
+                else:
+                    self._ensure_solver()
+                    resolved = self._solver_ctx.eval(addr)
+                    if resolved is None:
+                        raise claripy.errors.UnsatError("symbolic memory load addr is unsat")
+                    addr = resolved
 
         ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
         if ast is None:
@@ -1366,6 +1387,11 @@ class RustMemoryProxy:
                 # Genuinely unsatisfiable address (dead path): drop the store,
                 # as angr would on an unsat state.
                 return
+            # angr-5rjbq: remember which concrete witness this symbolic address
+            # resolved to so a later load of the same address reads back the
+            # bytes we're about to write, rather than concretizing to a
+            # different (data-free) witness. See ``_addr_witness_cache``.
+            self._addr_witness_cache[addr.hash()] = conc
             # Re-issue at the concretized address through ``set_state_memory_ast``,
             # which routes to ``memory_store`` -> ``store_concrete_automap_internal``
             # and AUTO-MAPS lazy pages (angr-wi50c). The prior p1s02 re-issue
