@@ -11,6 +11,7 @@ requires angr plugins like posix, filesystem, etc.).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 import claripy
@@ -1279,35 +1280,43 @@ class RustMemoryProxy:
                 return
             # angr-p1s02: the lazy Multi-cell path could not route this
             # symbolic-address write — the address is unbounded/unconstrained
-            # (e.g. an unconstrained ``operator new`` / malloc return pointer)
-            # so it has too many or zero satisfying solutions. Rather than
-            # raise NotImplementedError and let the SimProcedure callback die
+            # (e.g. an unconstrained ``operator new`` / malloc return pointer,
+            # or an ``ebp``-relative stack slot in a blank_state whose ``ebp``
+            # was concretized-and-pinned at setup) so the Multi path saw too
+            # many or zero satisfying solutions. Rather than raise
+            # NotImplementedError and let the SimProcedure callback die
             # (dropping a corpus find under the callback-memory-proxy gate —
-            # see bd memory callback-memory-proxy-medium-differential), mirror
-            # angr's ``DefaultMemory`` write concretization: concretize the
-            # address to a single satisfiable value (Max strategy) via the
-            # Rust solver and store there concretely. This matches the gate-off
-            # full-SimState path, which concretizes unbounded write addresses
-            # the same way.
+            # see bd memory callback-memory-proxy-medium-differential),
+            # concretize the address to a single satisfiable value and store
+            # there, mirroring angr's ``DefaultMemory`` write concretization.
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_symbolic_addr_fallback += 1
-            conc = self._mgr.fork_state_solver(self._state_id).eval(addr)
+            # Concretize through the proxy's shared solver context (not a fresh
+            # per-call fork), so the address resolves consistently with the
+            # load path's concretization and any constraints added via this
+            # proxy — e.g. an ``ebp`` already pinned at setup resolves to the
+            # same value here as on the read side.
+            self._ensure_solver()
+            conc = self._solver_ctx.eval(addr)
             if conc is None:
                 # Genuinely unsatisfiable address (dead path): drop the store,
                 # as angr would on an unsat state.
                 return
-            # Re-issue through the same Multi-cell entry point with a *concrete*
-            # BVV address. When the concretized target page is mapped, the
-            # store lands. When it is not (the unconstrained pointer
-            # concretizes to a garbage high page that was never mmap'd — e.g.
-            # 0x7fff00000000 from an unconstrained ``operator new``), the store
-            # is silently dropped rather than raised. Dropping matches both
-            # angr's ``AVOID_MULTIVALUED_WRITES`` semantics and the observable
-            # outcome of the gate-off path (nobody reads back a garbage
-            # pointer), and — crucially — keeps the SimProcedure state alive so
-            # exploration continues and the corpus find is not lost.
-            conc_addr_bv = claripy.BVV(conc, addr.length)
-            self._mgr.state_memory_store_symbolic_multi(self._state_id, conc_addr_bv, data_ast)
+            # Re-issue at the concretized address through ``set_state_memory_ast``,
+            # which routes to ``memory_store`` -> ``store_concrete_automap_internal``
+            # and AUTO-MAPS lazy pages (angr-wi50c). The prior p1s02 re-issue
+            # used the Multi-cell concrete fast path (``store_concrete_automap``,
+            # no auto-map), so an ``ebp``-relative slot on a freshly-forked
+            # blank_state stack — whose page was never mmap'd but lies inside
+            # the lazy stack region — errored and the store was silently
+            # dropped, losing a byte-wise buffer copy. Auto-mapping lets the
+            # store land. A genuinely garbage high page (e.g. 0x7fff.. from an
+            # unconstrained ``operator new``, outside any lazy region) still
+            # raises; we swallow that and drop the store rather than kill the
+            # SimProcedure state (p1s02 keep-alive semantics; matches
+            # AVOID_MULTIVALUED_WRITES — nobody reads back a garbage pointer).
+            with contextlib.suppress(Exception):
+                self._mgr.set_state_memory_ast(self._state_id, conc, data_ast)
             return
 
         if isinstance(addr, claripy.ast.Base):
