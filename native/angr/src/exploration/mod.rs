@@ -2389,6 +2389,20 @@ impl RustExplorationManager {
         self._set_state_memory_ast(py, state_id, addr, ast)
     }
 
+    /// Like `set_state_memory_ast`, but widens the state's lazy region to cover
+    /// the target page so a store to an address outside any existing lazy
+    /// region auto-maps instead of erroring `Unmapped` (angr-5rjbq). Used by
+    /// the callback-memory-proxy symbolic-address store fallback.
+    pub fn set_state_memory_ast_automap(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self._set_state_memory_ast_automap(py, state_id, addr, ast)
+    }
+
     /// Phase 1.4 (angr-5zw8): route a symbolic-address store through the
     /// Multi-cell lazy path on the given state. Used by
     /// `_cb_memory_store_symbolic_full` when the address AST carries a

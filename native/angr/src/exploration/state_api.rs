@@ -724,6 +724,40 @@ impl RustExplorationManager {
         })
     }
 
+    /// Like `_set_state_memory_ast`, but first registers the target page(s) as a
+    /// lazy region so `memory_store`'s auto-map accepts an address outside any
+    /// pre-existing lazy region (angr-5rjbq).
+    ///
+    /// The callback-memory-proxy concretizes a symbolic store address (e.g. an
+    /// unconstrained `ebp`-relative flareon2015_5 buffer) to a witness that can
+    /// land anywhere — 0x10000 once `ebp` pins low. `memory_store` deliberately
+    /// errors `Unmapped` for non-lazy pages so ordinary callers fall back to
+    /// Python, but here the proxy has *chosen* this address and must be able to
+    /// write there (native execution later reads it back), so we widen the lazy
+    /// region to cover it and let the zero-page auto-map fire.
+    pub(crate) fn _set_state_memory_ast_automap(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bv = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx_ref: &SymContext = &sym_ctx;
+                claripy_to_rustbv(py, ast, ctx_ref)
+                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
+            };
+            let size = (bv.width() / 8) as u64;
+            state.add_memory_lazy_region(addr, size.max(1));
+            state
+                .memory_store(addr, bv)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
+    }
+
     /// Phase 1.4 (angr-5zw8): perform a symbolic-address store on `state_id`
     /// via the lazy Multi-cell path. Mirrors the eager fallback in
     /// `_cb_memory_store_symbolic_full` but installs Multi alternatives at

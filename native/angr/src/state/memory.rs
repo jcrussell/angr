@@ -67,6 +67,15 @@ impl RustSimState {
         self.memory.store_concrete_automap_internal(addr, value)
     }
 
+    /// Register `[addr, addr+size)` as a lazy region so a subsequent
+    /// `memory_store` auto-maps the covering page(s) instead of erroring
+    /// `Unmapped` (angr-5rjbq). Used by the callback-memory-proxy when it
+    /// concretizes a symbolic store address to a witness outside any existing
+    /// lazy region and must be able to write there.
+    pub fn add_memory_lazy_region(&mut self, addr: u64, size: u64) {
+        self.memory.add_lazy_region(addr, size);
+    }
+
     /// Load from a symbolic address.
     pub fn memory_load_symbolic(&mut self, addr: RustBV, size: u32) -> Result<RustBV, MemoryError> {
         let ctx = self.solver.borrow();

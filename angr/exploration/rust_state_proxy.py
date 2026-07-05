@@ -1224,6 +1224,47 @@ class RustMemoryProxy:
             else:
                 self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
 
+    def _pin_addr_witness(self, addr, conc):
+        """Pin a symbolic address to its chosen concretization on the STATE solver.
+
+        angr-5rjbq: distinct unconstrained ebp-relative buffers
+        (``ebp-0x80004``, ``ebp-0x70004``, ``ebp-0x40000`` in flareon2015_5)
+        are separate claripy ASTs, so each concretizes INDEPENDENTLY via
+        ``_solver_ctx.eval`` and Z3 hands back witness ``0`` for every
+        unconstrained expression — every buffer ALIASES at address 0 and the
+        copies clobber each other (bd flareon-5rjbq-address-witness-collision-root-cause).
+
+        Adding ``addr == conc`` to the state solver the *native* interpreter
+        also uses pins the shared base symbol (``ebp``) on the FIRST
+        concretization, so subsequent proxy AND native concretizations of the
+        other ebp-relative addresses resolve to distinct, non-aliasing
+        witnesses — mirroring angr ``DefaultMemory`` write-address
+        concretization. This is NOT export-time pre-pinning of a recovered
+        model (bd constraint-export-no-pre-pin): we are committing to a write
+        address we ourselves chose, on a scratch stack pointer that is not part
+        of any goal constraint. Confined to the callback-memory-proxy gate, so
+        gate-off runs are unaffected.
+        """
+        pin = addr == conc
+        try:
+            self._mgr.add_constraints_to_state(self._state_id, [pin])
+        except Exception as e:
+            l.debug(
+                "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
+                self._state_id,
+                e,
+            )
+        # Also pin the concretization solver the proxy itself evals against —
+        # add_constraints_to_state lands on the STATE solver (what native
+        # execution uses), but the proxy concretizes symbolic addresses via
+        # ``self._solver_ctx`` (a fork or the shared context). Without pinning
+        # that too, the NEXT proxy concretization of another ebp-relative
+        # address re-picks witness 0 and re-aliases. Guarded by
+        # ``_solver_ctx is not None`` — the caller has already ensured it.
+        if self._solver_ctx is not None:
+            with contextlib.suppress(Exception):
+                self._solver_ctx.add_constraint_ast(pin)
+
     def load(self, addr, size=None, endness=None, **kwargs):
         """Load memory from the Rust state.
 
@@ -1270,6 +1311,13 @@ class RustMemoryProxy:
                     resolved = self._solver_ctx.eval(addr)
                     if resolved is None:
                         raise claripy.errors.UnsatError("symbolic memory load addr is unsat")
+                    # angr-5rjbq: pin the chosen witness on the state solver so
+                    # the shared base symbol (e.g. ebp) stays consistent across
+                    # this and every later ebp-relative concretization — both in
+                    # the proxy and in native execution. Also cache it so a
+                    # repeat load of the identical AST is stable.
+                    self._pin_addr_witness(orig_addr, resolved)
+                    self._addr_witness_cache[orig_addr.hash()] = resolved
                     addr = resolved
 
         ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
@@ -1402,21 +1450,25 @@ class RustMemoryProxy:
             # bytes we're about to write, rather than concretizing to a
             # different (data-free) witness. See ``_addr_witness_cache``.
             self._addr_witness_cache[addr.hash()] = conc
-            # Re-issue at the concretized address through ``set_state_memory_ast``,
-            # which routes to ``memory_store`` -> ``store_concrete_automap_internal``
-            # and AUTO-MAPS lazy pages (angr-wi50c). The prior p1s02 re-issue
-            # used the Multi-cell concrete fast path (``store_concrete_automap``,
-            # no auto-map), so an ``ebp``-relative slot on a freshly-forked
-            # blank_state stack — whose page was never mmap'd but lies inside
-            # the lazy stack region — errored and the store was silently
-            # dropped, losing a byte-wise buffer copy. Auto-mapping lets the
-            # store land. A genuinely garbage high page (e.g. 0x7fff.. from an
-            # unconstrained ``operator new``, outside any lazy region) still
-            # raises; we swallow that and drop the store rather than kill the
-            # SimProcedure state (p1s02 keep-alive semantics; matches
-            # AVOID_MULTIVALUED_WRITES — nobody reads back a garbage pointer).
+            # angr-5rjbq: pin ebp (or whatever base the address shares) on the
+            # state solver so a later native/proxy concretization of another
+            # ebp-relative buffer cannot alias this store's witness.
+            self._pin_addr_witness(addr, conc)
+            # Re-issue at the concretized address through
+            # ``set_state_memory_ast_automap`` (angr-5rjbq), which widens the
+            # state's lazy region to cover the target page and AUTO-MAPS it
+            # before storing. The plain ``set_state_memory_ast`` only auto-maps
+            # pages already inside a lazy region; once ``ebp`` pins to a low
+            # value the concretized buffer (e.g. flareon2015_5's ENC at 0x10000)
+            # lands OUTSIDE every lazy region and the store was silently dropped,
+            # so native execution hashed zeros and the found state went unsat.
+            # We chose this address deliberately (concretized a symbolic store)
+            # and native reads it back, so mapping it is correct — unlike a
+            # garbage unconstrained pointer that nobody reads. We still swallow a
+            # residual failure and drop the store rather than kill the
+            # SimProcedure state (p1s02 keep-alive semantics).
             with contextlib.suppress(Exception):
-                self._mgr.set_state_memory_ast(self._state_id, conc, data_ast)
+                self._mgr.set_state_memory_ast_automap(self._state_id, conc, data_ast)
             return
 
         if isinstance(addr, claripy.ast.Base):
