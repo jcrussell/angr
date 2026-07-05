@@ -1075,11 +1075,29 @@ class RustMemoryProxy:
 
     SUPPORTS_CONCRETE_LOAD: bool = False
 
-    def __init__(self, rust_mgr, state_id, arch, *, endness=None, python_mgr=None, shared_ctx_getter=None):
+    def __init__(
+        self,
+        rust_mgr,
+        state_id,
+        arch,
+        *,
+        endness=None,
+        python_mgr=None,
+        shared_ctx_getter=None,
+        fallback_memory=None,
+    ):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # angr-5rjbq: the Python SimMemory that ``state.memory`` held BEFORE
+        # this proxy was swapped in (the callback state's copy of the entry
+        # state's DefaultMemory). Loads Rust can't satisfy (unmapped/zero
+        # lazy page) fall back to this so setup-time writes — e.g. flareon's
+        # ebp-relative pw symbols, stored into Python memory during harness
+        # setup and never synced to Rust at the concretized address — survive
+        # under the gate, matching gate-off DefaultMemory semantics.
+        self._fallback_memory = fallback_memory
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # symbolic-addr concretization honors constraints added via the same
         # proxy's add_constraints. None for standalone construction.
@@ -1128,7 +1146,14 @@ class RustMemoryProxy:
         only meaningful here as part of ``SimState.copy()`` plugin walk.
         True per-state CoW lives in angr-d1dr (RustStateProxy.copy()).
         """
-        return RustMemoryProxy(self._mgr, self._state_id, self._arch, endness=self.endness, python_mgr=self._python_mgr)
+        return RustMemoryProxy(
+            self._mgr,
+            self._state_id,
+            self._arch,
+            endness=self.endness,
+            python_mgr=self._python_mgr,
+            fallback_memory=self._fallback_memory,
+        )
 
     # ---------------------------------------------------------------
     # SimMemoryMixin gap stubs (angr-8dop.2)
@@ -1211,6 +1236,11 @@ class RustMemoryProxy:
         # paths where ``strlen.max_null_index == 0`` (null at offset 0).
         if size == 0:
             return claripy.BVV(0, 0)
+        # angr-5rjbq: keep the ORIGINAL address (possibly symbolic) so a
+        # fallback to the pre-swap Python memory concretizes it consistently
+        # with its own state's constraints — the setup-time ebp pin — rather
+        # than the Rust solver's independently-chosen witness.
+        orig_addr = addr
         if isinstance(addr, claripy.ast.Base):
             if addr.concrete:
                 addr = addr.concrete_value
@@ -1223,6 +1253,9 @@ class RustMemoryProxy:
 
         ast = self._mgr.get_state_memory_ast(self._state_id, addr, size)
         if ast is None:
+            fallback = self._load_from_fallback(orig_addr, size, endness)
+            if fallback is not None:
+                return fallback
             return claripy.BVV(0, size * 8)
 
         # The Rust AST is laid out LSB-first (byte i of memory at bits
@@ -1235,6 +1268,37 @@ class RustMemoryProxy:
         if endness == "Iend_BE":
             return ast.reversed
         return ast
+
+    def _load_from_fallback(self, orig_addr, size, endness):
+        """Read ``orig_addr`` from the pre-swap Python memory (angr-5rjbq).
+
+        Invoked only when ``get_state_memory_ast`` returns ``None`` — i.e. the
+        Rust state has nothing mapped at the (concretized) address. Delegates
+        to the Python ``SimMemory`` that ``state.memory`` held before the proxy
+        was installed, passing the *original* (possibly symbolic) address so
+        that memory concretizes it against its own solver — recovering
+        setup-time writes such as flareon2015_5's ebp-relative pw symbols that
+        were stored into Python memory during harness setup and never synced to
+        Rust at the concretized address. Returns the loaded AST, or ``None`` if
+        there is no fallback memory or the read raised (dead/unmapped path —
+        the caller then returns the zero default).
+        """
+        fallback = self._fallback_memory
+        if fallback is None:
+            return None
+        try:
+            result = fallback.load(orig_addr, size, endness=endness)
+        except Exception:
+            # Fallback memory could not satisfy the read either (unmapped,
+            # unsat address, or a plugin that doesn't accept these kwargs):
+            # let the caller return the zero default, matching the prior
+            # behaviour for addresses neither side has mapped.
+            return None
+        if result is None:
+            return None
+        if self._python_mgr is not None:
+            self._python_mgr._stats_proxy_mem_fallback_python_load += 1
+        return result
 
     def store(self, addr, data, endness=None, **kwargs):
         """Write-through memory store to the Rust state (angr-j28e, angr-4scu).

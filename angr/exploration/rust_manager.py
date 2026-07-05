@@ -1241,6 +1241,11 @@ class RustExplorationManager(
         # not route (unbounded/unconstrained addr), fallen back to a
         # single-address concretization (angr's Max write strategy).
         self._stats_proxy_mem_symbolic_addr_fallback = 0
+        # angr-5rjbq: proxy loads that Rust could not satisfy (unmapped/zero
+        # lazy page) and that fell back to the pre-swap Python SimMemory —
+        # recovers setup-time writes (e.g. flareon2015_5 ebp-relative pw
+        # symbols) the callback-memory-proxy gate would otherwise miss.
+        self._stats_proxy_mem_fallback_python_load = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
         # angr-4ref8: symbolic-file export observability. Every v1 scope-gate
@@ -5143,6 +5148,7 @@ class RustExplorationManager(
         result["proxy_mem_concrete_writes"] = self._stats_proxy_mem_concrete_writes
         result["proxy_mem_ast_writes"] = self._stats_proxy_mem_ast_writes
         result["proxy_mem_symbolic_addr_fallback"] = self._stats_proxy_mem_symbolic_addr_fallback
+        result["proxy_mem_fallback_python_load"] = self._stats_proxy_mem_fallback_python_load
         result["proxy_reg_writes"] = self._stats_proxy_reg_writes
         result["proxy_solver_adds"] = self._stats_proxy_solver_adds
         # angr-4ref8: symbolic-file export observability. `symfile_exports` is

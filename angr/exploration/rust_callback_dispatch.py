@@ -2369,7 +2369,15 @@ class RustCallbackDispatchMixin:
         """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
-        proxy = RustMemoryProxy(self._rust_mgr, state_id, self._project.arch, python_mgr=self)
+        # angr-5rjbq: capture the Python SimMemory the callback state holds
+        # BEFORE the swap. Setup-time writes (e.g. flareon2015_5's ebp-relative
+        # pw symbols) live in this memory but were never synced to Rust at the
+        # concretized address, so a proxy load that Rust can't satisfy falls
+        # back here — matching gate-off DefaultMemory semantics.
+        prev_memory = getattr(state, "memory", None)
+        proxy = RustMemoryProxy(
+            self._rust_mgr, state_id, self._project.arch, python_mgr=self, fallback_memory=prev_memory
+        )
         proxy.set_state(state)
         # ``SimState.register_plugin`` would re-run ``set_state`` and update
         # ``state.plugins`` bookkeeping; use it so removal / merge code that
