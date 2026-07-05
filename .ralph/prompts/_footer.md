@@ -1,6 +1,10 @@
 ## Workflow
 
-For each task, follow this loop:
+On a **maintenance or idle iteration** (see the maintenance fallback in
+`clean.md`) there is no task to claim and no code change: steps 1–2 and 4–11
+are replaced by the single grooming action (or nothing at all). Step 3
+(`bd memories`) still applies, and you still update `session.md` per step 12.
+Otherwise, for each task follow this loop:
 
  1. `bd update <id> --claim`
  2. `bd show <id>` — read the description carefully
