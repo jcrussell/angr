@@ -221,6 +221,11 @@ class RustCallbackDispatchMixin:
             return
 
         # First time: save real originals and create closures once.
+        # _with_extra_constraints lives in rust_state_proxy (extracted there by
+        # the 24pv4.4 dedup refactor); import here to keep the closures below
+        # from raising NameError on every eval/satisfiable/eval_upto call.
+        from angr.exploration.rust_state_proxy import _with_extra_constraints
+
         original_eval = state.solver.eval
         original_satisfiable = state.solver.satisfiable
         original_min = state.solver.min
