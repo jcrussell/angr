@@ -67,6 +67,9 @@ struct Fuzzer {
 impl Fuzzer {
     #[new]
     #[pyo3(signature = (base_state, corpus, solutions, apply_fn, timeout=None, seed=0, max_mutations=None, mutator=None))]
+    // PyO3 constructor: each arg is a distinct Python kwarg, so they cannot be
+    // bundled into a params struct without breaking the Python API.
+    #[allow(clippy::too_many_arguments)]
     fn py_new(
         base_state: Bound<PyAny>,
         corpus: Bound<PyAny>,

@@ -1380,6 +1380,16 @@ fn steal_from_injector(
     idle_workers: &AtomicUsize,
 ) -> Option<StateMigrationPayload> {
     idle_workers.fetch_add(1, Ordering::SeqCst);
+    // Bounded backoff: spin (yield) for the first `SPIN_LIMIT` empty polls, then
+    // fall back to a short capped sleep so an idle worker does not burn a full
+    // core while the productive worker holds a heavy Z3 solve (faorh/8shhe:
+    // steal_from_injector previously busy-spun yield_now, starving a
+    // core-constrained box). `spins` counts only consecutive empty-with-pending
+    // polls; a `Retry` (injector contention) means work is imminent, so we do
+    // not back off there.
+    const SPIN_LIMIT: u32 = 128;
+    const MAX_SLEEP_US: u64 = 200;
+    let mut spins: u32 = 0;
     let result = loop {
         if cancel.is_cancelled() {
             break None;
@@ -1390,11 +1400,20 @@ fn steal_from_injector(
             Steal::Empty => {
                 // Empty right now. If nothing is outstanding anywhere we are
                 // done; otherwise another worker is mid-task and may yet offload
-                // surplus — yield and retry.
+                // surplus — back off and retry.
                 if pending.load(Ordering::SeqCst) == 0 {
                     break None;
                 }
-                std::thread::yield_now();
+                if spins < SPIN_LIMIT {
+                    spins += 1;
+                    std::thread::yield_now();
+                } else {
+                    // Linearly ramp the sleep past the spin phase, capped so we
+                    // stay responsive when the producer finally offloads.
+                    let us = ((spins - SPIN_LIMIT + 1) as u64).min(MAX_SLEEP_US);
+                    spins = spins.saturating_add(1);
+                    std::thread::sleep(std::time::Duration::from_micros(us));
+                }
             }
         }
     };
