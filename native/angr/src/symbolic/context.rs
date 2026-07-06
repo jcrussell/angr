@@ -624,6 +624,33 @@ impl SymContext {
         self.local_constraints.lock().assumed.push((bv, is_true));
     }
 
+    /// Current length of the *local* assumed-constraints export log.
+    ///
+    /// Paired with [`Self::truncate_assumed_local`] to bracket transient
+    /// `assume_true`/`assume_false` calls whose Z3 assertions live inside a
+    /// bare `push()`/`pop()` scope but whose export-log entries must NOT
+    /// persist. The plain `pop()` restores the Z3 solver frame but does not
+    /// truncate `local.assumed` (only `transaction_rollback` does), so
+    /// feasibility-check assumes would otherwise leak into the log that
+    /// `to_snapshot`/`restore_from_snapshot` faithfully re-assert on a wave
+    /// migration — the ype54 concrete-guard poison (angr-ype54).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn assumed_local_len(&self) -> usize {
+        self.local_constraints.lock().assumed.len()
+    }
+
+    /// Truncate the *local* assumed-constraints export log back to `len`,
+    /// discarding transient entries appended since an
+    /// [`Self::assumed_local_len`] savepoint. Does not touch the Z3 solver
+    /// (the enclosing `pop()` owns that) — only the export/re-assert log.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn truncate_assumed_local(&self, len: usize) {
+        let mut local = self.local_constraints.lock();
+        if len < local.assumed.len() {
+            local.assumed.truncate(len);
+        }
+    }
+
     /// Export all Z3 assertion pointers from the assertion cache.
     /// Uses z3_assertions_shared + the local z3_assertions vector which track
     /// every assertion made via assume_true/assume_false/add_constraint_raw.

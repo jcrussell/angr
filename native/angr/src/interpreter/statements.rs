@@ -147,6 +147,17 @@ impl<'a> VEXInterpreter<'a> {
                     // conditions incrementally. This avoids re-asserting all N prior
                     // conditions for the N-th Exit (O(N) → O(1) per check).
                     if !self.deferred_forks.is_empty() {
+                        // These prev-fork assumes exist ONLY to make
+                        // `check_branch_feasibility` accurate inside the bare
+                        // block-solver `push()` scope. Their Z3 assertions are
+                        // discarded by the matching `pop()` at block end, but
+                        // `pop()` does not truncate the `assumed` export log, so
+                        // without an explicit truncate they would leak into the
+                        // log that a wave migration re-asserts verbatim — the
+                        // ype54 poison (angr-ype54). Bracket every assume with a
+                        // savepoint + truncate so the log stays clean while the
+                        // Z3 solver still sees the constraints for feasibility.
+                        let assumed_savepoint = self.ctx.assumed_local_len();
                         if !self.block_solver_pushed {
                             // First time in this block with prior forks: push and assert all
                             self.ctx.push();
@@ -179,6 +190,7 @@ impl<'a> VEXInterpreter<'a> {
                                 self.block_forks_asserted += 1;
                             }
                         }
+                        self.ctx.truncate_assumed_local(assumed_savepoint);
                     }
                     self.ctx.check_branch_feasibility(&guard_val)
                 };
