@@ -70,6 +70,47 @@ fn bench_rustbv_build_z3_ast(c: &mut Criterion) {
     });
 }
 
+/// Isolate the `self.clone()`/`other.clone()` overhead paid by the by-ref
+/// binop wrappers (`add`, `sub`, ...) vs. the consuming `_into` variants
+/// (angr-dva9j.4, measure-first spike).
+///
+/// The by-ref wrappers clone both operands and forward to `_into`. For the
+/// symbolic Expression branch those operands are moved into the result
+/// node's `Arc<[RustBV]>`, so the clone is unavoidable *unless the caller
+/// already owns the operands* — which is exactly when `_into` wins. These
+/// benches quantify the raw clone cost against the full op so we can judge
+/// whether adding more `&self` ref-taking variants would move the needle.
+fn bench_rustbv_clone_overhead(c: &mut Criterion) {
+    let ctx = SymContext::new();
+    let concrete = RustBV::concrete(0xDEADBEEF, 64);
+    let leaf = RustBV::symbolic(&ctx, "x", 64);
+    let leaf2 = RustBV::symbolic(&ctx, "y", 64);
+    // Expression-variant operands (2-operand Add nodes with an empty memo).
+    let expr = leaf.add(&leaf2, &ctx);
+    let expr2 = leaf2.add(&leaf, &ctx);
+
+    let mut group = c.benchmark_group("rustbv_clone");
+    // Raw clone cost per variant.
+    group.bench_function("clone_concrete", |b| b.iter(|| black_box(concrete.clone())));
+    group.bench_function("clone_leaf", |b| b.iter(|| black_box(leaf.clone())));
+    group.bench_function("clone_expr", |b| b.iter(|| black_box(expr.clone())));
+    // Full by-ref op (2 clones + node build) vs. consuming `_into` (same
+    // clones, but the delta vs. a hypothetical owned-operand caller is the
+    // 2 clones we pay here).
+    group.bench_function("add_byref_leaf", |b| {
+        b.iter(|| black_box(leaf.add(&leaf2, &ctx)))
+    });
+    group.bench_function("add_into_owned_leaf", |b| {
+        b.iter(|| black_box(leaf.clone().add_into(leaf2.clone(), &ctx)))
+    });
+    // Operands are Expression nodes: clones bump the operand `Arc` + copy the
+    // enum + clone the (empty) memo `RefCell`.
+    group.bench_function("add_byref_expr", |b| {
+        b.iter(|| black_box(expr.add(&expr2, &ctx)))
+    });
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // SymContext solver operations
 // ---------------------------------------------------------------------------
@@ -1069,6 +1110,7 @@ criterion_group!(
     bench_rustbv_concrete_arithmetic,
     bench_rustbv_symbolic_arithmetic,
     bench_rustbv_build_z3_ast,
+    bench_rustbv_clone_overhead,
     bench_symcontext_fork,
     bench_symcontext_fork_scaling,
     bench_symcontext_check_branch,
