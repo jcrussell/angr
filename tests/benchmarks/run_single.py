@@ -665,6 +665,40 @@ def _dump_counters_json(stats):
     print(json.dumps(stats, indent=2, default=str, sort_keys=True))
 
 
+# Sentinel emitted when a ``--engine rust`` bench produced NO RustExplorationManager
+# (``stats is None``). A real Rust run always populates timing counters
+# (``time_in_*``), so ``stats is None`` unambiguously means the manager was never
+# built — the workload ran entirely on the Python engine. Today that happens for
+# Callable-only benches (mma_howtouse, flareon2015_10): solve.py only calls
+# ``p.factory.callable(...)``, whose internal simulation_manager is routed to the
+# Python engine by the ``/angr/callable.py`` frame check in the run_single
+# monkeypatch (added for busybox load-time IFUNC resolution, commit b9b56bcef).
+# Emitting a parseable sentinel instead of silent empty output makes the
+# attribution gap visible to bench_diff / run_regression (angr-dva9j.7).
+_NO_RUST_MANAGER_SENTINEL = {
+    "_no_rust_manager": True,
+    "_note": (
+        "No RustExplorationManager was created: the workload ran entirely on the "
+        "Python engine. This is expected for Callable-only benches whose "
+        "factory.callable() states are routed to the Python engine. No Rust "
+        "counters are available for attribution."
+    ),
+}
+
+
+def _dump_no_rust_manager(as_json):
+    """Surface the no-Rust-manager case (empty stats) explicitly.
+
+    ``as_json`` picks between the machine-readable sentinel (for
+    ``--counters-json`` consumers like bench_diff) and a human line (for
+    ``--dump-counters``).
+    """
+    if as_json:
+        _dump_counters_json(_NO_RUST_MANAGER_SENTINEL)
+    else:
+        print("  (no Rust manager created — workload ran on the Python engine; no counters)")
+
+
 def run_example(
     example_name,
     engine,
@@ -742,6 +776,13 @@ def run_example(
 
     mem_str = f" peak_mem={peak_memory_mb:.0f}MB" if peak_memory_mb else ""
     print(f"OK {engine} {example_name} {elapsed:.2f}s{mem_str}")
+    if engine == "rust" and stats is None:
+        # angr-dva9j.7: distinguish "Rust ran with no counters" (impossible —
+        # a real run always populates time_in_*) from "no Rust manager was ever
+        # built". The latter means the workload ran on the Python engine (e.g.
+        # Callable-only benches routed via the /angr/callable.py monkeypatch
+        # exception). Flag it so the attribution gap is visible, not silent.
+        print("  [no Rust manager: workload ran on the Python engine (Callable-routed); attribution-blind]")
     if output.strip():
         lines = output.strip().split("\n")
         for line in lines[:3]:
@@ -868,11 +909,17 @@ def run_example(
     if engine == "rust" and perf_report and not counters_json:
         print(f"  {perf_report}")
 
-    if engine == "rust" and stats:
-        if counters_json:
-            _dump_counters_json(stats)
-        elif dump_counters:
-            _dump_counters_table(stats)
+    if engine == "rust":
+        if stats:
+            if counters_json:
+                _dump_counters_json(stats)
+            elif dump_counters:
+                _dump_counters_table(stats)
+        elif counters_json or dump_counters:
+            # No Rust manager was created (Callable-only bench, Python-routed).
+            # Emit the sentinel so --counters-json is never silently empty and
+            # downstream attribution tooling gets a parseable signal (dva9j.7).
+            _dump_no_rust_manager(counters_json)
 
     return result
 
