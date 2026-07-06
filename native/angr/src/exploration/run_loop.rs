@@ -553,7 +553,7 @@ impl RustExplorationManager {
     /// A clean fix would have the scheduler drain + materialize the remaining
     /// frontier on cancel, paying serde for states it is about to discard; that
     /// is deferred (the byte-stable scheduler tests pin the current drop-on-cancel
-    /// behaviour). See the `CancelToken` doc and `scheduler.rs::worker_loop`.
+    /// behaviour). See the `CancelToken` doc and `scheduler_worker.rs::worker_loop`.
     pub(crate) fn run_loop_parallel(
         &mut self,
         py: Python<'_>,
