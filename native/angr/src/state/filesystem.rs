@@ -1125,3 +1125,7 @@ impl FileSystem {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "filesystem_tests.rs"]
+mod filesystem_tests;
