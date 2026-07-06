@@ -188,6 +188,11 @@ fn c_type_parse(ty: ffi::IRType) -> IRType {
 }
 
 /// Convert a C `IROp` discriminant to a Rust `IROp` via its pyvex name.
+///
+/// # Safety
+/// Dereferences no pointers — `op` is a by-value discriminant newtype, so the
+/// caller has no aliasing/lifetime obligation. Marked `unsafe` only to keep the
+/// marshalling helpers in a single unsafe domain (see the module note).
 unsafe fn c_op(op: ffi::IROp) -> super::ir::IROp {
     match enum_names::irop_name(op.0) {
         Some(name) => parse_opcode(name),
@@ -196,6 +201,12 @@ unsafe fn c_op(op: ffi::IROp) -> super::ir::IROp {
     }
 }
 
+/// Marshal a C `IRConst`.
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `c` must be a non-null `IRConst*` into the live
+/// libVEX arena (see the module-level arena contract). The pointee is only read
+/// and the `Ico` union is projected by `tag`, never retained past return.
 unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
     let tag = (*c).tag.0;
     let ico = &(*c).Ico;
@@ -230,6 +241,10 @@ unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
 }
 
 /// Read `dst` (an `IRConst*`) as a u64 (for `Exit`).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `c` must be a non-null `IRConst*` into the live
+/// libVEX arena. Delegates the deref to [`marshal_const`]; retains nothing.
 unsafe fn const_to_u64(c: *const ffi::IRConst) -> u64 {
     match marshal_const(c) {
         IRConst::U1(v) => v as u64,
@@ -245,6 +260,12 @@ unsafe fn const_to_u64(c: *const ffi::IRConst) -> u64 {
     }
 }
 
+/// Marshal a C `IRCallee` (CCall/Dirty helper reference).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `cee` must be a non-null `IRCallee*` into the
+/// live libVEX arena. Its `name` field, if non-null, must be a NUL-terminated C
+/// string valid for the read; it is copied into an owned `String` before return.
 unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
     let name = if (*cee).name.is_null() {
         String::new()
@@ -264,6 +285,11 @@ unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
     }
 }
 
+/// Marshal a C `IRRegArray` (rotating-register-window descriptor).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `r` must be a non-null `IRRegArray*` into the
+/// live libVEX arena. All fields are read by value; nothing is retained.
 unsafe fn marshal_reg_array(r: *const ffi::IRRegArray) -> IRRegArray {
     IRRegArray {
         base: (*r).base as u32,
@@ -273,6 +299,11 @@ unsafe fn marshal_reg_array(r: *const ffi::IRRegArray) -> IRRegArray {
 }
 
 /// Collect a NULL-terminated `IRExpr**` vector into owned `IRExpr`s.
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`. `args` may be null (returns empty). If non-null
+/// it must point at a NULL-terminated `IRExpr*` array in the live libVEX arena;
+/// each element is walked with [`marshal_expr`]. Nothing is retained.
 unsafe fn marshal_expr_vec(mut args: *mut *mut ffi::IRExpr) -> Vec<IRExpr> {
     let mut out = Vec::new();
     if args.is_null() {
@@ -285,6 +316,13 @@ unsafe fn marshal_expr_vec(mut args: *mut *mut ffi::IRExpr) -> Vec<IRExpr> {
     out
 }
 
+/// Marshal a C `IRExpr` (recursively via its tagged `Iex` union).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `e` must be a non-null `IRExpr*` into the live
+/// libVEX arena, with every child pointer reachable from its `Iex` union
+/// likewise valid. Recurses over the whole expr tree into owned types; retains
+/// no arena pointer past return.
 unsafe fn marshal_expr(e: *const ffi::IRExpr) -> IRExpr {
     let tag = (*e).tag.0;
     let iex = &(*e).Iex;
@@ -365,6 +403,11 @@ fn opt_temp(t: u32) -> Option<u32> {
 }
 
 /// Null pointer -> None, else Some(boxed marshalled expr).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`. `e` may be null (returns `None`). If non-null it
+/// must be a valid `IRExpr*` into the live libVEX arena, delegated to
+/// [`marshal_expr`]; nothing is retained.
 unsafe fn opt_expr(e: *mut ffi::IRExpr) -> Option<Box<IRExpr>> {
     if e.is_null() {
         None
@@ -413,6 +456,14 @@ fn mbe_event(ev: ffi::IRMBusEvent) -> MBusEvent {
     MBusEvent::Fence
 }
 
+/// Marshal a C `IRStmt` (via its tagged `Ist` union), including the boxed
+/// `details` sub-structs of PutI/StoreG/LoadG/CAS/Dirty.
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `s` must be a non-null `IRStmt*` into the live
+/// libVEX arena, with every child pointer reachable from its `Ist` union (and
+/// the `details` sub-structs) likewise valid. Marshals into owned types; retains
+/// no arena pointer past return.
 unsafe fn marshal_stmt(s: *const ffi::IRStmt) -> IRStmt {
     let tag = (*s).tag.0;
     let ist = &(*s).Ist;
@@ -517,6 +568,12 @@ unsafe fn marshal_stmt(s: *const ffi::IRStmt) -> IRStmt {
     }
 }
 
+/// Marshal a C `IRTypeEnv` (the block's temp type table).
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`. `tyenv` may be null (returns empty). If non-null
+/// it must be a valid `IRTypeEnv*` into the live libVEX arena whose `types`
+/// array holds at least `types_used` entries; each is read by value.
 unsafe fn marshal_tyenv(tyenv: *const ffi::IRTypeEnv) -> TypeEnv {
     let mut types = Vec::new();
     if !tyenv.is_null() {
@@ -529,6 +586,14 @@ unsafe fn marshal_tyenv(tyenv: *const ffi::IRTypeEnv) -> TypeEnv {
     TypeEnv { types }
 }
 
+/// Marshal the whole C `IRSB` into an owned Rust [`IRSB`] — the top-level entry
+/// called by `lift` while `LIFT_LOCK` is held.
+///
+/// # Safety
+/// Caller must hold `LIFT_LOCK`; `irsb` must be a non-null `IRSB*` into the live
+/// libVEX arena whose `stmts` array holds at least `stmts_used` entries and
+/// whose `next`/`tyenv` pointers are valid. Walks the entire block into owned
+/// types before returning, so nothing survives the arena's next clobber.
 unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64) -> IRSB {
     let mut statements = Vec::new();
     let used = (*irsb).stmts_used.max(0) as usize;
