@@ -183,6 +183,40 @@ fn eval_binop_concrete_unsupported_propagates_error_not_zero() {
 }
 
 #[test]
+fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
+    // angr-oyzvj: an unsupported op with a SYMBOLIC operand must route the
+    // block to Python (NeedPythonFallback) rather than fabricate a fresh
+    // unconstrained symbolic (which silently diverges — both branches of any
+    // downstream condition explored unconstrained). Default behavior with
+    // ANGR_RUST_FABRICATE_UNSUPPORTED_IROP unset.
+    use crate::callbacks::PythonCallbacks;
+    Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    Python::attach(|_py| {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        // Stash a symbolic value in a temp so the operand is symbolic.
+        interp.temps.resize(2, None);
+        interp.temps[0] = Some(RustBV::symbolic(&ctx, "sym_in", 64));
+        let env = TypeEnv::new();
+        // Dispatch a unary op through the binary path: VEXOps::binop returns
+        // OpError::NotBinary, and the (symbolic) operand takes the fallback arm.
+        let left = IRExpr::RdTmp(0);
+        let right = IRExpr::RdTmp(0);
+        let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "symbolic unsupported binop must route to Python, got {res:?}"
+        );
+        // The fabricate BYPASS must NOT have fired on the default path.
+        assert_eq!(
+            interp.stats.vex_bypass_fabricate_count, 0,
+            "symbolic unsupported op fabricated instead of routing to Python"
+        );
+    });
+}
+
+#[test]
 fn apply_loadg_conversion_widens_zero() {
     let ctx = SymContext::new_mock();
     let interp = new_interp(&ctx);

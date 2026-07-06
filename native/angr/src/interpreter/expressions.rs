@@ -22,6 +22,27 @@ fn is_dispatch_fabricate_family(op: &IROp) -> bool {
     )
 }
 
+/// Opt-in escape hatch (`ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`) for the
+/// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`]. When set (to any
+/// non-empty, non-`"0"` value) an unsupported op with a symbolic operand
+/// fabricates a fresh unconstrained symbolic (the pre-angr-oyzvj behavior)
+/// instead of routing the block to Python. Default (unset): route to Python —
+/// the correct behavior, since fabricating an unconstrained value silently
+/// explores both branches of any downstream condition. Read once per process
+/// (cached), matching the `OnceLock` env pattern in `engine.rs`.
+///
+/// Named `FABRICATE_*`, deliberately NOT `BYPASS_*`: the existing
+/// `BYPASS_UNSUPPORTED_IROP` SimOption means the opposite (route to Python's
+/// resilience mixin), so reusing that name would invert its sense.
+fn fabricate_unsupported_irop() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("ANGR_RUST_FABRICATE_UNSUPPORTED_IROP")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    })
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
     pub(super) fn eval_expr_with_callbacks(
@@ -344,13 +365,19 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Shared tail for the unsupported-op fallback in
-    /// `eval_unop`/`eval_binop`/`eval_triop`/`eval_qop`. Symbolic operands keep
-    /// the fresh-symbolic BYPASS path (visibility via `vex_bypass_fabricate_count`,
-    /// angr-s6miz); concrete operands propagate the typed `OpError` so the
-    /// failure surfaces a typed `RustUnsupportedVexOpError` on the test path
-    /// (and routes the state to the errored stash, op + arch in the message,
-    /// in live exploration — see the taxonomy note in `errors.rs`) rather than
-    /// fabricating a silently-wrong value (angr-sa3j). The per-op
+    /// `eval_unop`/`eval_binop`/`eval_triop`/`eval_qop`. Symbolic operands route
+    /// the block to Python's VEX engine (the reference implementation for the
+    /// float / vector-float conversions that land here), mirroring the
+    /// dispatch-fabricate family (angr-s6miz). Fabricating a fresh unconstrained
+    /// symbolic instead — the pre-angr-oyzvj default — silently diverges: any
+    /// downstream condition over the fabricated value explores both branches
+    /// unconstrained. That behavior is retained only as an explicit opt-in via
+    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (visibility via
+    /// `vex_bypass_fabricate_count`). Concrete operands propagate the typed
+    /// `OpError` so the failure surfaces a typed `RustUnsupportedVexOpError` on
+    /// the test path (and routes the state to the errored stash, op + arch in
+    /// the message, in live exploration — see the taxonomy note in `errors.rs`)
+    /// rather than fabricating a silently-wrong value (angr-sa3j). The per-op
     /// `python_vex_{unop,binop,triop,qop}_fallback_count` is bumped at the call
     /// site; this bumps the aggregate `python_vex_op_fallback_count`.
     fn vex_op_fallback(
@@ -362,8 +389,14 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<RustBV, CbExecutionError> {
         self.stats.python_vex_op_fallback_count += 1;
         if any_sym {
-            self.stats.vex_bypass_fabricate_count += 1;
-            Ok(RustBV::symbolic(self.ctx, name, width))
+            if fabricate_unsupported_irop() {
+                self.stats.vex_bypass_fabricate_count += 1;
+                Ok(RustBV::symbolic(self.ctx, name, width))
+            } else {
+                Err(CbExecutionError::NeedPythonFallback(format!(
+                    "unsupported symbolic IROp routed to Python ({name}): {e}"
+                )))
+            }
         } else {
             Err(CbExecutionError::Op(e))
         }

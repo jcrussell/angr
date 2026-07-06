@@ -263,16 +263,18 @@ define_execution_stats! {
     python_vex_triop_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Qop`.
     python_vex_qop_fallback_count: sum,
-    /// Number of Unop/Binop evaluations that took the *silent fabricate-fresh-
-    /// symbolic* BYPASS (the `any_sym` arm of `eval_unop`/`eval_binop`): the
-    /// op returned an `OpError`, an input was symbolic, so a fresh unconstrained
-    /// symbolic stood in for the real value. A strict subset of
-    /// `python_vex_op_fallback_count` (excludes the concrete-arg arm, which
-    /// propagates a typed error). Surfaces the otherwise-invisible BYPASS so a
-    /// bench that drives a symbolic path through an undispatched op is
-    /// measurable. The three dispatch-fabricate families (VPerm/Pclmul*/Crc32C,
-    /// angr-s6miz) are routed to Python fallback *before* this point, so they do
-    /// NOT increment this counter. See bd `vex-dispatch-bypass-inventory`.
+    /// Number of Unop/Binop evaluations that took the *fabricate-fresh-symbolic*
+    /// BYPASS (the `any_sym` arm of `eval_unop`/`eval_binop`): the op returned an
+    /// `OpError`, an input was symbolic, so a fresh unconstrained symbolic stood
+    /// in for the real value. A strict subset of `python_vex_op_fallback_count`
+    /// (excludes the concrete-arg arm, which propagates a typed error). Since
+    /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
+    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
+    /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
+    /// the escape hatch is enabled. The three dispatch-fabricate families
+    /// (VPerm/Pclmul*/Crc32C, angr-s6miz) are routed to Python fallback *before*
+    /// this point, so they do NOT increment this counter. See bd
+    /// `vex-dispatch-bypass-inventory`.
     vex_bypass_fabricate_count: sum,
     /// Number of cold-block lifts served natively via the `libvex-ffi`
     /// `NativeLibVEXLifter` (feature-gated, off by default). Each hit is a
