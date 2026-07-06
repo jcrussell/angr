@@ -46,6 +46,24 @@ pub mod vex;
 
 use pyo3::prelude::*;
 
+/// Wrap a value in an `Arc` whose inner type is deliberately not `Send`/`Sync`.
+///
+/// The Rust symex engine runs single-threaded under Python's GIL, and its core
+/// shared types (`RustBV`, Z3 AST handles, `FileDescriptor`) are `!Send` by
+/// design. The `Arc`s over them are load-bearing: they give O(1) copy-on-write
+/// sharing across `fork()`/snapshot siblings, which `Rc` could not without
+/// leaking `!Send` through the public fork/snapshot API surface. Clippy's
+/// `arc_with_non_send_sync` flags every such `Arc::new` as a design smell;
+/// routing them through this generic helper documents the decision in ONE place
+/// and collapses the 7 scattered per-fn `#[allow]`s into this single site.
+/// The lone `#[allow]` below is the single, deliberate suppression that
+/// replaces the former per-call-site cluster. See bd bead angr-inieg.1.
+#[allow(clippy::arc_with_non_send_sync)]
+#[inline]
+pub(crate) fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
+    std::sync::Arc::new(value)
+}
+
 /// Build and register a submodule under the `angr.rustylib` package.
 fn import_submodule(
     m: &Bound<'_, PyModule>,

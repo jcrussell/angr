@@ -499,7 +499,6 @@ impl SymContext {
     // the same Arc so cross-state lineage queries hit the same Z3 solver (see field doc on
     // `lineage`). Engine runs single-threaded under Python's GIL; Rc would force the fork
     // signature to surface non-Send, breaking the Arc<Mutex<...>> sharing contract.
-    #[allow(clippy::arc_with_non_send_sync)]
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;
@@ -600,7 +599,7 @@ impl SymContext {
             for constraint in frozen_shared.iter() {
                 lineage_solver.assert_base(constraint);
             }
-            Some(Arc::new(Mutex::new(lineage_solver)))
+            Some(crate::arc_shared(Mutex::new(lineage_solver)))
         } else if dismantled {
             None
         } else {

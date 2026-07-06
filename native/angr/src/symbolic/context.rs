@@ -539,7 +539,6 @@ impl SymContext {
     // Arc::clone for O(1) copy. The engine runs single-threaded under Python's GIL, so the
     // missing Send/Sync is not a real constraint; switching to Rc would propagate non-Send
     // through the SymContext API surface.
-    #[allow(clippy::arc_with_non_send_sync)]
     #[cfg(feature = "vex-engine-z3")]
     pub fn with_timeout(timeout_ms: u32) -> Self {
         // unsat_core disabled for performance — tracking booleans add
@@ -554,9 +553,9 @@ impl SymContext {
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
-            assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
-            z3_assertions_shared: Mutex::new(Arc::new(Vec::new())),
-            non_bv_assertions_shared: Mutex::new(Arc::new(Vec::new())),
+            assumed_constraints_shared: Mutex::new(crate::arc_shared(Vec::new())),
+            z3_assertions_shared: Mutex::new(crate::arc_shared(Vec::new())),
+            non_bv_assertions_shared: Mutex::new(crate::arc_shared(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(Some(solver)),

@@ -288,9 +288,8 @@ impl From<FileSystem> for FileSystemData {
 impl From<FileSystemData> for FileSystem {
     // RustBV's Z3 AST makes FileDescriptor !Send; the Arcs here are
     // per-state CoW handles that never cross threads (states migrate
-    // between workers via the serde snapshot, not by moving Arcs) —
-    // same rationale as the allows in symbolic/snapshot_fork_ops.rs.
-    #[allow(clippy::arc_with_non_send_sync)]
+    // between workers via the serde snapshot, not by moving Arcs) — hence
+    // the !Send Arcs go through `crate::arc_shared` (see its doc comment).
     fn from(d: FileSystemData) -> Self {
         let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
         let symlinks: HashMap<String, Vec<u8>> = d.symlinks.into_iter().collect();
@@ -300,12 +299,12 @@ impl From<FileSystemData> for FileSystem {
         // re-normalization pass is needed (unlike known_paths below).
         let demoted_paths: HashSet<String> = d.demoted_paths.into_iter().collect();
         let mut fs = FileSystem {
-            fds: Arc::new(fds),
+            fds: crate::arc_shared(fds),
             next_fd: d.next_fd,
             cwd: d.cwd,
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(symlinks),
-            file_contents: Arc::new(file_contents),
+            file_contents: crate::arc_shared(file_contents),
             demoted_paths: Arc::new(demoted_paths),
         };
         // Re-normalize known_paths on load: the key space is normalized at
@@ -320,8 +319,7 @@ impl From<FileSystemData> for FileSystem {
 }
 
 impl Default for FileSystem {
-    // See the allow rationale on `From<FileSystemData>` above.
-    #[allow(clippy::arc_with_non_send_sync)]
+    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     fn default() -> Self {
         let mut fds = HashMap::new();
         // Pre-register standard file descriptors
@@ -338,12 +336,12 @@ impl Default for FileSystem {
             FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly),
         );
         FileSystem {
-            fds: Arc::new(fds),
+            fds: crate::arc_shared(fds),
             next_fd: 3,
             cwd: b"/".to_vec(),
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(HashMap::new()),
-            file_contents: Arc::new(HashMap::new()),
+            file_contents: crate::arc_shared(HashMap::new()),
             demoted_paths: Arc::new(HashSet::new()),
         }
     }
@@ -486,8 +484,7 @@ impl FileSystem {
     /// their pre-registration semantics), so a later native write through
     /// such an fd still demotes the registry entry rather than leaving a
     /// fresh `open` to serve stale content.
-    // See the allow rationale on `From<FileSystemData>` above.
-    #[allow(clippy::arc_with_non_send_sync)]
+    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn register_file_content(&mut self, path: &str, bytes: Vec<RustBV>) {
         let norm = self.normalize_path(path);
         Arc::make_mut(&mut self.known_paths).insert(norm.clone());
@@ -503,7 +500,7 @@ impl FileSystem {
                 fds.get_mut(&k).expect("fd existed above").registry_key = Some(norm.clone());
             }
         }
-        Arc::make_mut(&mut self.file_contents).insert(norm, Arc::new(bytes));
+        Arc::make_mut(&mut self.file_contents).insert(norm, crate::arc_shared(bytes));
     }
 
     /// Look up registered symbolic content for a (possibly relative)
@@ -765,8 +762,7 @@ impl FileSystem {
     /// Returns `true` when anything was dropped. O(1) empty-registry check
     /// plus a flag scan over the handful of open fds when nothing is
     /// attached (all production states today), no allocation.
-    // See the allow rationale on `From<FileSystemData>` above.
-    #[allow(clippy::arc_with_non_send_sync)]
+    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn demote_all_symbolic_content(&mut self) -> bool {
         let any_fd = self
             .fds
@@ -781,7 +777,7 @@ impl FileSystem {
             let keys: Vec<String> = self.file_contents.keys().cloned().collect();
             let demoted = Arc::make_mut(&mut self.demoted_paths);
             demoted.extend(keys);
-            self.file_contents = Arc::new(HashMap::new());
+            self.file_contents = crate::arc_shared(HashMap::new());
         }
         if any_fd {
             let fds = Arc::make_mut(&mut self.fds);
@@ -1087,8 +1083,7 @@ impl FileSystem {
     /// serde path, Arc *sharing* between an fd and the registry is not
     /// preserved through translation (each gets a fresh translated Arc) —
     /// acceptable, sharing is only a fork-time perf optimization.
-    // See the allow rationale on `From<FileSystemData>` above.
-    #[allow(clippy::arc_with_non_send_sync)]
+    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     #[cfg(feature = "vex-engine-z3")]
     pub fn translate_into(&self, target_ctx: &z3::Context) -> Self {
         // Fast path: no symbolic file content anywhere → nothing is
@@ -1098,7 +1093,7 @@ impl FileSystem {
             return self.clone();
         }
         let translate_vec = |v: &Arc<Vec<RustBV>>| -> Arc<Vec<RustBV>> {
-            Arc::new(v.iter().map(|bv| bv.translate_into(target_ctx)).collect())
+            crate::arc_shared(v.iter().map(|bv| bv.translate_into(target_ctx)).collect())
         };
         let fds: HashMap<u32, FileDescriptor> = self
             .fds
@@ -1115,12 +1110,12 @@ impl FileSystem {
             .map(|(k, v)| (k.clone(), translate_vec(v)))
             .collect();
         FileSystem {
-            fds: Arc::new(fds),
+            fds: crate::arc_shared(fds),
             next_fd: self.next_fd,
             cwd: self.cwd.clone(),
             known_paths: Arc::clone(&self.known_paths),
             symlinks: Arc::clone(&self.symlinks),
-            file_contents: Arc::new(file_contents),
+            file_contents: crate::arc_shared(file_contents),
             demoted_paths: Arc::clone(&self.demoted_paths),
         }
     }
