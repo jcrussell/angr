@@ -323,56 +323,5 @@ pub fn cache_stats() -> (usize, usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // angr-1ilq.2: the worker-local clear must leave the cross-thread global
-    // SymbolicIdentityRegistry intact. Under the Option-A parallel model a
-    // worker clears only its own thread-local caches at a task boundary; if
-    // that path also wiped the global registry it would invalidate symbol
-    // identity every sibling worker still holds. This pins the split:
-    // register a symbol (populating both the thread-local CLARIPY_AST_CACHE and
-    // the global registry via the C2 mirror), run the worker-local clear, then
-    // assert the global identity still resolves while the thread-local was
-    // dropped.
-    #[test]
-    fn test_worker_local_clear_preserves_global_registry() {
-        // Distinctive id unlikely to collide with allocate_id()-minted ids in
-        // sibling tests sharing the process-global registry.
-        const SYMBOL_ID: u64 = 0x1A2B_3C4D_5E6F;
-
-        Python::initialize();
-        Python::attach(|py| {
-            store_claripy_ast_with_info(0x7777, SYMBOL_ID, "ilq2_sym", 64, py.None());
-
-            // Precondition: identity is live in the global registry.
-            assert!(
-                global_registry().has_original(SYMBOL_ID),
-                "setup: registry must hold the symbol after store",
-            );
-
-            // Worker-local clear: drops this thread's caches only.
-            clear_worker_local_caches();
-
-            // The global registry — and thus cross-thread symbol identity —
-            // survives the worker-local clear.
-            assert!(
-                global_registry().has_original(SYMBOL_ID),
-                "worker-local clear must NOT wipe the global registry",
-            );
-            assert!(
-                get_claripy_ast(SYMBOL_ID).is_some(),
-                "symbol identity must still resolve via the global registry \
-                 after a worker-local clear",
-            );
-
-            // Contrast: the exploration-start reset DOES drop the global
-            // identity (and is main-thread / start-of-run only).
-            reset_for_new_exploration();
-            assert!(
-                !global_registry().has_original(SYMBOL_ID),
-                "reset_for_new_exploration must clear the global registry",
-            );
-        });
-    }
-}
+#[path = "cache_tests.rs"]
+mod cache_tests;

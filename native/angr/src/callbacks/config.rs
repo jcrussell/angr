@@ -203,3 +203,7 @@ impl Default for ExecutionConfig {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod config_tests;

@@ -560,3 +560,7 @@ impl LoopExecutionEvent {
         Self::from_run_result_with_forks(result, blocks_executed, Vec::new(), 0)
     }
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod events_tests;
