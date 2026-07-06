@@ -325,24 +325,28 @@ class TestRustInspectMarshalling:
         proxy_inspect._mgr._update_inspect_bitmask()
         assert mgr._callbacks.get_inspect_enabled() == 0
 
-    def test_inspect_proxy_rejects_unsupported_events(self, fauxware_project):
-        """Events outside the MVP still raise loudly.
+    def test_inspect_proxy_accepts_constraints_and_vex_lift(self, fauxware_project):
+        """constraints + vex_lift moved into the supported set in angr-4aach.
 
         reg_read, reg_write, instruction, irsb, exit moved into the
         supported set in angr-d46u; call/return moved in angr-4ai9;
         simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
         moved in angr-64pi; statement moved in angr-t8vf; expr moved in
         angr-lge2; address_concretization/symbolic_variable moved in
-        angr-vfst; fork moved in angr-ysml. Events whose dispatchers are
-        not yet wired (constraints, vex_lift, ...) must still raise.
+        angr-vfst; fork moved in angr-ysml; constraints/vex_lift moved in
+        angr-4aach. Registering a BP for the last two must no longer raise
+        and must flip their bitmask bits.
         """
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("constraints", "vex_lift"):
-            with pytest.raises(NotImplementedError, match="reg_read"):
-                ins.b(evt, when="before", action=lambda s: None)
+        ins.b("constraints", when="before", action=lambda s: None)
+        ins.b("vex_lift", when="after", action=lambda s: None)
+        # Both are python-dispatched: the bit is still flipped for
+        # consistency even though the Rust VEX sites don't read it.
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 19) != 0
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 20) != 0
 
     def _make_mgr_with_state_id(self, project):
         """Helper: build a manager and return (mgr, valid_state_id) for dispatch tests."""
@@ -472,6 +476,78 @@ class TestRustInspectMarshalling:
         mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
         ret = mgr._cb_inspect_mem_read(sid, "after", 0x401234, 4, original, "Iend_LE")
         assert ret is injected
+
+    def test_dispatch_constraints_fires_bp(self, fauxware_project):
+        """Adding a constraint through the proxy solver fires the constraints BP.
+
+        angr-4aach: RustSolverProxyPlugin.add dispatches the constraints
+        event BP_BEFORE (with added_constraints) then BP_AFTER, mirroring
+        Python's SimSolver.add.
+        """
+        import claripy
+
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_constraints(s):
+            seen.append(s.inspect.added_constraints)
+
+        mgr._get_inspect_proxy().b("constraints", when="before", action=on_constraints)
+        plugin = RustSolverProxyPlugin(mgr._rust_mgr, sid, python_mgr=mgr)
+        x = claripy.BVS("x", 32)
+        plugin.add(x == 42)
+
+        assert len(seen) == 1
+        assert len(seen[0]) == 1
+        assert seen[0][0] is (x == 42) or str(seen[0][0]) == str(x == 42)
+
+    def test_dispatch_constraints_before_override(self, fauxware_project):
+        """A BP_BEFORE action may replace added_constraints (value injection)."""
+        import claripy
+
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        x = claripy.BVS("x", 32)
+        replacement = [x == 7]
+
+        def on_constraints(s):
+            s.inspect.added_constraints = replacement
+
+        mgr._get_inspect_proxy().b("constraints", when="before", action=on_constraints)
+        plugin = RustSolverProxyPlugin(mgr._rust_mgr, sid, python_mgr=mgr)
+        # The write-through should install the replacement, not the original.
+        plugin.add(x == 99)
+        cons = mgr._rust_mgr.export_state_constraints(sid)
+        assert any(str(c) == str(x == 7) for c in cons)
+        assert not any(str(c) == str(x == 99) for c in cons)
+
+    def test_dispatch_vex_lift_fires_before_and_after(self, fauxware_project):
+        """_cb_lift_block dispatches vex_lift BP_BEFORE then BP_AFTER (angr-4aach)."""
+        import claripy
+
+        mgr, _sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        events = []
+
+        def on_lift(s):
+            events.append((s.inspect.vex_lift_addr, s.inspect.vex_lift_size))
+
+        mgr._get_inspect_proxy().b("vex_lift", when="before", action=on_lift)
+        mgr._get_inspect_proxy().b("vex_lift", when="after", action=on_lift)
+
+        entry = fauxware_project.entry
+        mgr._cb_lift_block(entry)
+
+        # Two fires: before (size None) then after (concrete IRSB byte size).
+        assert len(events) == 2
+        before_addr, before_size = events[0]
+        after_addr, after_size = events[1]
+        assert before_size is None
+        assert isinstance(after_size, int) and after_size > 0
+        assert isinstance(before_addr, claripy.ast.bv.BV)
+        assert isinstance(after_addr, claripy.ast.bv.BV)
 
     def test_mem_read_expr_unchanged_returns_none(self, fauxware_project):
         """A read BP that does not touch mem_read_expr leaves the value
@@ -1665,6 +1741,10 @@ class TestRustInspectExtendedEvents:
                     "simprocedure",
                     "syscall",
                     "dirty",
+                    # angr-4aach: constraints fires from RustSolverProxyPlugin.add,
+                    # vex_lift from _cb_lift_block — both Python-side, no Rust slot.
+                    "constraints",
+                    "vex_lift",
                 }
             )
             == _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS

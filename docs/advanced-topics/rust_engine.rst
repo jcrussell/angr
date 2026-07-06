@@ -13,8 +13,8 @@ users need to know before reaching for the Rust engine. It is the
 single source of truth for:
 
 * which ``angr.sim_options`` flags it actually honors,
-* which ``state.inspect`` events it dispatches (and which still raise),
-  and
+* which ``state.inspect`` events it dispatches (all of them, as of
+  angr-4aach), and
 * which benchmarks run slower than pure Python and why.
 
 Overview
@@ -27,15 +27,19 @@ Overview
   ``KEEP_IP_SYMBOLIC``.
   Everything else is either inherited from Python or silently ignored —
   see the matrix below.
-* **Partial** ``state.inspect`` **dispatch.** The Rust engine dispatches
-  ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
-  ``instruction``, ``irsb``, ``exit``, ``call``, ``return``,
-  ``simprocedure``, ``syscall``, ``dirty``, ``tmp_read``,
-  ``tmp_write``, ``statement``, ``expr``,
-  ``address_concretization``, ``symbolic_variable``, and ``fork``
-  events to Python BPs. Unsupported events (``constraints``,
-  ``vex_lift``, …) still raise ``NotImplementedError`` at
-  registration time.
+* **Full** ``state.inspect`` **dispatch.** The Rust engine dispatches all
+  ``state.inspect`` events to Python BPs: ``mem_read``, ``mem_write``,
+  ``reg_read``, ``reg_write``, ``instruction``, ``irsb``, ``exit``,
+  ``call``, ``return``, ``simprocedure``, ``syscall``, ``dirty``,
+  ``tmp_read``, ``tmp_write``, ``statement``, ``expr``,
+  ``address_concretization``, ``symbolic_variable``, ``fork``,
+  ``constraints``, and ``vex_lift``. Two MVP gaps remain in the last
+  pair: ``constraints`` fires only for constraints added through the
+  Python proxy solver (``state.solver.add`` in a SimProcedure), not for
+  fork-guard constraints the Rust engine adds natively; and ``vex_lift``
+  fires only on the Python lift path (Rust block-cache miss →
+  ``_cb_lift_block``), not on the feature-gated native in-process libVEX
+  lift. Both are attributed to a representative active state.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
   bimodal Z3 solver nondeterminism.

@@ -1890,6 +1890,13 @@ class RustExplorationManager(
         _lb_start = time.perf_counter_ns()
         try:
             try:
+                # angr-4aach: fire the vex_lift inspect event around this lift.
+                # _cb_lift_block is the Rust block-cache miss path, mirroring
+                # Python's lifter which only fires vex_lift when its cache is
+                # not used. Attributed to the callback/default state (lifts are
+                # state-independent in the Rust engine's shared block cache).
+                if self._inspect_breakpoints.get("vex_lift"):
+                    self._cb_inspect_vex_lift(-1, "before", addr, None, buff=dirty_bytes)
                 kwargs = {}
                 if opt_level is not None:
                     kwargs["opt_level"] = opt_level
@@ -1901,6 +1908,8 @@ class RustExplorationManager(
                     kwargs["byte_string"] = dirty_bytes
                 block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
+                if self._inspect_breakpoints.get("vex_lift"):
+                    self._cb_inspect_vex_lift(-1, "after", addr, irsb.size)
                 return self._serialize_irsb(irsb)
             except (SimEngineError, ClaripyError, PyVEXError) as e:
                 # cat-(c) WRONG-ANSWER RISK: lift returned empty IRSB; Rust will
@@ -2954,6 +2963,72 @@ class RustExplorationManager(
             # dirty event is dropped (no breakpoint fired).
             l.warning("inspect dirty dispatch failed: %s: %s", type(e).__name__, e)
         return None
+
+    def _cb_inspect_constraints(self, state_id: int, when: str, added_constraints=None):
+        """Python-side dispatch target for constraints inspect events (angr-4aach).
+
+        Invoked from ``RustSolverProxyPlugin.add`` around the write-through
+        into the Rust state's solver. Mirrors Python's
+        ``state_plugins/solver.py`` which fires ``constraints`` BP_BEFORE
+        (with ``added_constraints``) then BP_AFTER around the solver add.
+
+        On BP_BEFORE, returns the possibly-mutated ``added_constraints``
+        list when the user's action replaced it (value injection); the
+        proxy installs the returned list instead of the original. Returns
+        ``None`` when unchanged or no BP fired, so the caller keeps its
+        original list. BP_AFTER always returns ``None`` (post-install).
+        """
+        try:
+            proxy = self._dispatch_inspect_event(
+                "constraints",
+                state_id,
+                when,
+                added_constraints=added_constraints,
+            )
+            if proxy is not None and when == "before":
+                mutated = proxy.added_constraints
+                if mutated is not added_constraints:
+                    return mutated
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # constraints event is dropped (no breakpoint fired).
+            l.warning("inspect constraints dispatch failed: %s: %s", type(e).__name__, e)
+        return None
+
+    def _cb_inspect_vex_lift(self, state_id: int, when: str, addr, size, buff=None):
+        """Python-side dispatch target for vex_lift inspect events (angr-4aach).
+
+        Invoked from ``_cb_lift_block`` — the Rust block-cache miss path —
+        mirroring Python's ``engines/vex/lifter.py`` which fires ``vex_lift``
+        only when its lifter cache is not used. Fires BP_BEFORE
+        (``vex_lift_addr``, ``vex_lift_size=None``, ``vex_lift_buff``) before
+        the lift and BP_AFTER (``vex_lift_addr``, ``vex_lift_size`` = the
+        lifted IRSB byte size) after. Attributed to the callback/default
+        state (``state_id`` is ``-1``): Rust block lifts are
+        state-independent (shared block cache). User mutation of the attrs
+        is not honored (MVP gap; the engine uses its own lift bytes).
+        """
+        try:
+            # Lifts are state-independent; when the caller has no owning
+            # state_id (-1) attribute the event to a representative active
+            # state so `state.inspect` routes through the RustInspectProxy
+            # (a real-SimState fallback would not see the staged attrs).
+            if state_id is None or state_id < 0:
+                active_ids = self._rust_mgr.get_state_ids("active")
+                if active_ids:
+                    state_id = active_ids[0]
+            self._dispatch_inspect_event(
+                "vex_lift",
+                state_id,
+                when,
+                vex_lift_addr=self._addr_attr_for(addr),
+                vex_lift_size=size,
+                vex_lift_buff=buff,
+            )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
+            # vex_lift event is dropped (no breakpoint fired).
+            l.warning("inspect vex_lift dispatch failed: %s: %s", type(e).__name__, e)
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""

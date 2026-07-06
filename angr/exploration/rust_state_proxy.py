@@ -544,6 +544,15 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
             filtered.append(c)
         if not filtered:
             return ast_list
+        # angr-4aach: fire the ``constraints`` inspect event around the
+        # write-through, matching Python's SimSolver.add. BP_BEFORE may
+        # replace ``added_constraints``; re-read it before installing.
+        if self._python_mgr is not None:
+            overridden = self._python_mgr._cb_inspect_constraints(self._state_id, "before", added_constraints=filtered)
+            if overridden is not None and overridden is not filtered:
+                filtered = list(overridden)
+                if not filtered:
+                    return ast_list
         try:
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_solver_adds += len(filtered)
@@ -560,6 +569,8 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
                 e,
             )
             raise
+        if self._python_mgr is not None:
+            self._python_mgr._cb_inspect_constraints(self._state_id, "after")
         # Invalidate the cached fork so the next eval picks up the new
         # constraint (the fork was cloned from the pre-add solver state).
         object.__setattr__(self, "_rust_ctx_cache", None)
@@ -2681,6 +2692,45 @@ _INSPECT_EVENT_SPECS: dict = {
             "symbolic_expr",
         ),
         "when_fired": "after",
+    },
+    # angr-4aach: constraints dispatch fires from the Python constraint
+    # write-through path — ``RustSolverProxyPlugin.add`` in this module —
+    # which is the proxy solver installed on SimProcedure callback states.
+    # Mirrors Python's ``state_plugins/solver.py`` where ``constraints``
+    # fires ``BP_BEFORE`` (with ``added_constraints``) then ``BP_AFTER``
+    # around ``self._solver.add(...)``. ``dispatch_origin: 'python'`` — the
+    # Rust engine adds fork-guard constraints natively and does NOT fire
+    # this event for them (MVP gap, matches the simprocedure/syscall/dirty
+    # Python-dispatch pattern). User mutation of ``added_constraints`` in a
+    # BP_BEFORE action IS honored: the write-through re-reads the attr and
+    # installs the (possibly-replaced) list.
+    "constraints": {
+        "bit": 19,
+        "attrs": ("added_constraints",),
+        "when_fired": "before",
+        "dispatch_origin": "python",
+    },
+    # angr-4aach: vex_lift dispatch fires from ``_cb_lift_block`` in
+    # rust_manager.py, the Python lift callback the Rust engine invokes on a
+    # block-cache miss. Mirrors Python's ``engines/vex/lifter.py`` which
+    # fires ``vex_lift`` only when the lifter cache is NOT used —
+    # ``_cb_lift_block`` is exactly that miss path. Fires ``BP_BEFORE``
+    # (``vex_lift_addr``, ``vex_lift_size=None``, ``vex_lift_buff``) before
+    # the lift and ``BP_AFTER`` (``vex_lift_addr``, ``vex_lift_size`` = the
+    # lifted IRSB's byte size) after. ``dispatch_origin: 'python'``. The
+    # native in-process libVEX lift path (feature-gated, off by default)
+    # bypasses ``_cb_lift_block`` and does NOT fire this event (MVP gap).
+    # User mutation of ``vex_lift_buff`` / ``vex_lift_addr`` / vex_lift_size
+    # in BP_BEFORE is NOT honored — the lift uses the engine's own bytes.
+    "vex_lift": {
+        "bit": 20,
+        "attrs": (
+            "vex_lift_addr",
+            "vex_lift_size",
+            "vex_lift_buff",
+        ),
+        "when_fired": "before",
+        "dispatch_origin": "python",
     },
 }
 
