@@ -49,9 +49,9 @@
   },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
-    "peak_memory_mb": 390.0,
-    "python_time": 1.42,
-    "rust_time": 1.51,
+    "peak_memory_mb": 384.0,
+    "python_time": 1.37,
+    "rust_time": 1.43,
     "state_creations": 0,
     "steps": 0
   },
@@ -145,9 +145,9 @@
   },
   "flareon2015_2": {
     "callback_count": 0,
-    "peak_memory_mb": 443.0,
-    "python_time": 4.21,
-    "rust_time": 4.57,
+    "peak_memory_mb": 453.0,
+    "python_time": 4.13,
+    "rust_time": 3.41,
     "state_creations": 0,
     "steps": 0
   },
@@ -249,9 +249,9 @@
   },
   "unmapped_analysis": {
     "callback_count": 2,
-    "peak_memory_mb": 274.0,
-    "python_time": 0.97,
-    "rust_time": 0.91,
+    "peak_memory_mb": 277.0,
+    "python_time": 0.95,
+    "rust_time": 0.86,
     "state_creations": 0,
     "steps": 20
   },
