@@ -2080,6 +2080,63 @@ class TestRustInspectAllowlistConsistency:
         assert set(mgr._inspect_breakpoints) == set(_RUST_INSPECT_SUPPORTED_EVENTS)
         assert set(mgr._INSPECT_EVENT_BITS) == set(_RUST_INSPECT_SUPPORTED_EVENTS)
 
+    @staticmethod
+    def _parse_doc_supported_events():
+        """Return the set of event names listed in the "Supported events"
+        grid table of ``docs/advanced-topics/rust_engine.rst``.
+
+        The table is an RST simple table; each event row begins in column 0
+        with a ``\\`\\`name\\`\\``` token, while BP-attribute continuation
+        lines are indented. Extract the first backtick token of every
+        non-indented, non-delimiter line inside the table body.
+        """
+        import pathlib
+
+        rst = pathlib.Path(__file__).resolve().parents[3] / "docs" / "advanced-topics" / "rust_engine.rst"
+        lines = rst.read_text().splitlines()
+
+        # Find the "Supported events" section, then the two `====` delimiter
+        # lines that bracket the table body.
+        try:
+            hdr = next(i for i, ln in enumerate(lines) if ln.strip() == "Supported events")
+        except StopIteration:  # pragma: no cover - doc structure changed
+            raise AssertionError("'Supported events' section missing from rust_engine.rst")
+
+        delims = [
+            i for i in range(hdr, len(lines)) if re.match(r"^=====+\s", lines[i]) or re.match(r"^=====+$", lines[i])
+        ]
+        assert len(delims) >= 3, "expected an RST simple table under 'Supported events' (3 '====' lines)"
+        body = lines[delims[1] + 1 : delims[2]]
+
+        events: set[str] = set()
+        for ln in body:
+            if not ln or ln[0].isspace():
+                continue  # indented continuation line
+            m = re.match(r"^``([a-z_]+)``", ln)
+            if m:
+                events.add(m.group(1))
+        return events
+
+    def test_doc_supported_events_table_matches_code(self):
+        """The "Supported events" table in rust_engine.rst is the declared
+        single source of truth for which inspect events the Rust engine
+        dispatches. Assert it matches ``_RUST_INSPECT_SUPPORTED_EVENTS``
+        exactly — a drift in either direction (a newly wired event missing
+        from the doc, or a stale doc row for a removed event) means a user
+        reading the doc would predict the wrong behavior. angr-c4xcs.2;
+        this mirrors ``TestRustSimOptionMatrixConsistency`` in test_misc.py
+        for the inspect-event half of rust_engine.rst."""
+        from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
+
+        doc = self._parse_doc_supported_events()
+        code = set(_RUST_INSPECT_SUPPORTED_EVENTS)
+        assert doc == code, (
+            "state.inspect 'Supported events' table disagrees with "
+            "_RUST_INSPECT_SUPPORTED_EVENTS.\n"
+            f"  doc-only:  {sorted(doc - code)}\n"
+            f"  code-only: {sorted(code - doc)}"
+        )
+
 
 class TestStatePluginsProxy:
     """Tests for state.options, state.globals, and state.heap on RustStateProxy.

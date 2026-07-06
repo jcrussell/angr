@@ -2093,6 +2093,9 @@ Event          Fires when        BP attributes
                                   ``symbolic_expr``
 ``fork``         ``after``         (none — fork event takes no attrs in angr's
                                   ``inspect_attributes`` table)
+``constraints`` ``before``/``after`` ``added_constraints``
+``vex_lift``    ``before``/``after`` ``vex_lift_addr``, ``vex_lift_size``,
+                                  ``vex_lift_buff``
 ============   ===============   ==================================================
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
