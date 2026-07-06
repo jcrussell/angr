@@ -628,9 +628,14 @@ impl RustExplorationManager {
                     self.profiling.accumulated_stats.active_states_count =
                         self.active_count() as u64;
                 }
-                if self.found_count() > 0 {
-                    return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
-                }
+                // `found_count()` is always < `num_find` here — path (a) at the
+                // loop top returns `found` for `>= num_find` BEFORE draining — so
+                // signal `active_empty`, not `found`. The found stash already
+                // holds any partial solutions; the event only drives loop
+                // control. Returning `found` with a partial count spins the
+                // Python explore loop forever (angr-q1mwl): its found-break is
+                // gated on `found_count >= num_find`, which a partial can never
+                // satisfy, and the active stash never refills.
                 return Ok(ExplorationEvent::active_empty(
                     self.found_count(),
                     self.steps,
@@ -1055,9 +1060,11 @@ impl RustExplorationManager {
                     // (a no-op drain — workers are already parked empty) and
                     // report.
                     self.finalize_steady_session(py)?;
-                    if self.found_count() > 0 {
-                        return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
-                    }
+                    // `found_count()` is always < `num_find` here (path (a)
+                    // returns `found` for `>= num_find` before we reach a
+                    // Quiesced outcome), so signal `active_empty`, not `found` —
+                    // a partial `found` count spins the Python explore loop
+                    // forever (angr-q1mwl).
                     return Ok(ExplorationEvent::active_empty(
                         self.found_count(),
                         self.steps,
@@ -1595,18 +1602,19 @@ impl RustExplorationManager {
                 }
                 None => {
                     // No active states.
-                    // I8 termination path (b): active stash exhausted —
-                    // emit `found` if we picked up any solutions, else
-                    // `active_empty`. Either way the loop exits here
-                    // rather than spinning. See module header.
-                    if self.found_count() > 0 {
-                        return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
-                    } else {
-                        return Ok(ExplorationEvent::active_empty(
-                            self.found_count(),
-                            self.steps,
-                        ));
-                    }
+                    // I8 termination path (b): active stash exhausted. Always
+                    // signal `active_empty` — `found_count()` is provably <
+                    // `num_find` here (path (a) at the loop top returns `found`
+                    // for `>= num_find` BEFORE this drain), so emitting `found`
+                    // with a partial count spins the Python explore loop forever
+                    // (angr-q1mwl): its found-break needs `found_count >=
+                    // num_find`, unreachable for a partial, and active never
+                    // refills. The found stash still carries any partial
+                    // solutions. See module header.
+                    return Ok(ExplorationEvent::active_empty(
+                        self.found_count(),
+                        self.steps,
+                    ));
                 }
             };
 
