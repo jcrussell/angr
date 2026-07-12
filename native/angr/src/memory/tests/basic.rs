@@ -366,3 +366,31 @@ fn test_check_executable_noop_when_disabled() {
     // enforce_permissions defaults to false: even RW page must pass.
     mem.check_executable(0x1000).unwrap();
 }
+
+#[test]
+fn test_snapshot_preserves_dirty_pages() {
+    // angr-ype54: `dirty_pages` is NOT a rebuildable cache. The Python
+    // callback state is refreshed by replaying these pages
+    // (rust_state_sync::_replay_rust_dirty_pages), so a migration
+    // round-trip that dropped them stranded every write made since the
+    // last callback — the callback state then read stale zeros.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.store_concrete(0x1000, RustBV::concrete(0x12345678, 32))
+        .unwrap();
+
+    let dirty_before = {
+        let mut d = mem.get_dirty_pages();
+        d.sort_unstable();
+        d
+    };
+    assert!(!dirty_before.is_empty(), "store must dirty a page");
+
+    let restored = SymbolicMemory::from_snapshot(mem.to_snapshot());
+    let dirty_after = {
+        let mut d = restored.get_dirty_pages();
+        d.sort_unstable();
+        d
+    };
+    assert_eq!(dirty_before, dirty_after);
+}
