@@ -1128,6 +1128,19 @@ pub struct SymbolicMemorySnapshot {
     pub zero_fill_unconstrained: bool,
     pub enforce_permissions: bool,
     pub enforce_nx: bool,
+    /// Pages written since the last `clear_dirty_pages()` (angr-ype54).
+    ///
+    /// This one runtime cache MUST survive the round-trip: the Python
+    /// callback state is refreshed by replaying Rust's dirty pages
+    /// (`rust_state_sync::_replay_rust_dirty_pages`). Dropping the set on
+    /// migration strands every write made between the last callback and the
+    /// migration, so the cached Python `SimState` keeps stale (zero) bytes
+    /// and any SimProcedure reading them computes a concrete guard.
+    ///
+    /// `#[serde(default)]` keeps older snapshots loadable (empty set == the
+    /// pre-fix behaviour).
+    #[serde(default)]
+    pub dirty_pages: Vec<u64>,
 }
 
 impl SymbolicMemory {
@@ -1153,6 +1166,11 @@ impl SymbolicMemory {
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             enforce_permissions: self.enforce_permissions,
             enforce_nx: self.enforce_nx,
+            dirty_pages: {
+                let mut d: Vec<u64> = self.dirty_pages.iter().copied().collect();
+                d.sort_unstable();
+                d
+            },
         }
     }
 
@@ -1187,7 +1205,7 @@ impl SymbolicMemory {
             next_sym_id: snap.next_sym_id,
             default_permissions: snap.default_permissions,
             endness: snap.endness,
-            dirty_pages: FxHashSet::default(),
+            dirty_pages: snap.dirty_pages.into_iter().collect(),
             lazy_regions: snap.lazy_regions,
             symbolic_spans,
             multi_objects: FxHashMap::default(),
