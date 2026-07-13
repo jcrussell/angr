@@ -68,6 +68,28 @@ TRACKED_METRICS = [
     ("steps", "steps", 0.15),  # 15% more steps
 ]
 
+# Solver fast paths that answer a query without reaching Z3's check(), plus the
+# derived headline aggregate over them (angr-op0dn.9.5). Unlike TRACKED_METRICS
+# — which gate on a counter going UP — these gate on a counter falling to
+# exactly 0 on a bench whose baseline_counters.json snapshot recorded it
+# nonzero. That is the failure mode a fast path actually has: a refactor stops
+# reaching the fast-path branch, every query silently falls through to Z3, and
+# nothing but wall-clock notices. Timing alone will not catch it on a bench
+# where the fast path saves only a few hundred checks.
+#
+# Only the collapse-to-zero case gates. A partial drop is expected drift (path
+# choice shifts which fast paths a bench hits) and would be a false-alarm
+# machine; the timing gate covers the case where such a drop actually costs.
+FASTPATH_COUNTERS = [
+    "z3_saved_check_total",
+    "z3_branch_concrete",
+    "z3_assume_concrete",
+    "zext_cmp_trivial_decide_count",
+    "z3_branch_model_hit",
+    "z3_extrema_model_hit",
+    "z3_eval_upto_model_hit",
+]
+
 # Benches exempt from the --check-counts gate. These are the four original
 # BIMODAL_BENCHMARKS: they exercise multi-solution constraints where Z3
 # model nondeterminism can shift the explored path (and therefore
@@ -765,6 +787,16 @@ def main():
                         pct = ((current_val / baseline_val) - 1) * 100
                         print(f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)")
                         failures.append(f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)")
+
+                # Solver fast paths: gate only on a collapse to zero.
+                base_counters = baseline_counters.get(baseline_key)
+                if base_counters and rust_stats:
+                    for ctr in FASTPATH_COUNTERS:
+                        baseline_val = base_counters.get(ctr)
+                        current_val = rust_stats.get(ctr)
+                        if baseline_val and current_val == 0:
+                            print(f"  FAST-PATH REGRESSION: {ctr} 0 vs baseline {baseline_val}")
+                            failures.append(f"{name}: {ctr} collapsed to 0 (baseline {baseline_val})")
 
             # Check peak-RSS regression. Distinct from the nightly leak
             # check (run_leak_check.py), which gates iterative growth on a

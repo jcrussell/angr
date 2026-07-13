@@ -619,6 +619,21 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
             crate::symbolic::query_class::Z3_CHECK_CLASS_COUNT[i].load(Ordering::Relaxed),
         );
     }
+    // angr-op0dn.9.5: one headline key aggregating every family that answers a
+    // query WITHOUT reaching Z3's `check()`. Each summand is a check we did not
+    // pay for, so they are commensurable and the sum is meaningful. Deliberately
+    // excludes `z3_ast_memo_hit`: that saves Z3 *node construction*, not a check,
+    // and it is an order of magnitude larger — folding it in would drown the
+    // check-avoidance signal this key exists to protect.
+    stats.insert(
+        "z3_saved_check_total".into(),
+        Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed)
+            + Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed)
+            + ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed)
+            + Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed)
+            + Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed)
+            + Z3_EVAL_UPTO_MODEL_HIT_COUNT.load(Ordering::Relaxed),
+    );
     stats
 }
 
