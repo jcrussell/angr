@@ -1301,8 +1301,9 @@ class RustStateSyncMixin:
                     if entry is None:
                         continue
                     old_is_symbolic, old_concrete, _, _ = entry
+                    old_ast = None
                 else:
-                    old_val = getattr(old_state.regs, reg_name)
+                    old_ast = old_val = getattr(old_state.regs, reg_name)
                     old_is_symbolic = old_val.symbolic
                     old_concrete = (
                         None
@@ -1311,33 +1312,40 @@ class RustStateSyncMixin:
                     )
 
                 if new_val.symbolic:
-                    # Symbolic register value - sync to Rust
-                    if reg_name in return_regs:
+                    # Symbolic register value — sync the AST to Rust. This is not
+                    # limited to return registers: a hook may assign a symbolic
+                    # address expression to any register (flareon2015_5 does
+                    # ``state.regs.ecx = ebp - 0x70004``, angr-5rjbq), and dropping
+                    # it leaves Rust executing with the stale pre-callback value.
+                    if reg_name not in return_regs and not self._symbolic_reg_changed(
+                        old_ast, old_is_symbolic, new_val
+                    ):
+                        continue
+                    try:
+                        self._sync_symbolic_register_to_rust(reg_name, new_val)
+                        if _DBG:
+                            l.debug(f"Synced symbolic register {reg_name} to Rust")
+                    except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: symbolic-AST
+                        # sync failed; we try to concretize as a
+                        # last resort, losing symbolic identity for
+                        # the register.
+                        if _DBG:
+                            l.debug(f"Could not sync symbolic {reg_name}: {e}")
                         try:
-                            self._sync_symbolic_register_to_rust(reg_name, new_val)
-                            if _DBG:
-                                l.debug(f"Synced symbolic return register {reg_name} to Rust")
-                        except Exception as e:
-                            # cat-(b) FALLBACK WITH LOSS: symbolic-AST
-                            # sync failed; we try to concretize as a
-                            # last resort, losing symbolic identity for
-                            # the return register.
-                            if _DBG:
-                                l.debug(f"Could not sync symbolic {reg_name}: {e}")
-                            try:
-                                new_concrete = new_state.solver.eval(new_val)
-                                data = new_concrete.to_bytes(size, "little")
-                                changes.append((offset, size, bytes(data)))
-                            except Exception:
-                                # cat-(c) WRONG-ANSWER RISK: both AST
-                                # sync and concretization failed; the
-                                # return register change is dropped
-                                # entirely. Rust will continue with the
-                                # pre-callback value, possibly diverging
-                                # from Python's intent. Debug-only log
-                                # because higher-level callback dispatch
-                                # surfaces hook errors.
-                                pass
+                            new_concrete = new_state.solver.eval(new_val)
+                            data = new_concrete.to_bytes(size, "little")
+                            changes.append((offset, size, bytes(data)))
+                        except Exception:
+                            # cat-(c) WRONG-ANSWER RISK: both AST
+                            # sync and concretization failed; the
+                            # register change is dropped
+                            # entirely. Rust will continue with the
+                            # pre-callback value, possibly diverging
+                            # from Python's intent. Debug-only log
+                            # because higher-level callback dispatch
+                            # surfaces hook errors.
+                            pass
                 else:
                     # Fast path: extract concrete value without solver.eval()
                     # BVV values have the concrete int in args[0]
@@ -1354,6 +1362,24 @@ class RustStateSyncMixin:
                 pass
 
         return changes
+
+    @staticmethod
+    def _symbolic_reg_changed(old_ast, old_is_symbolic: bool, new_val) -> bool:
+        """Whether a now-symbolic register actually changed during the callback.
+
+        Used to gate the symbolic-AST sync for non-return registers, so an
+        already-symbolic register that the callback never touched isn't
+        re-exported to Rust on every callback.
+        """
+        if not old_is_symbolic:
+            return True
+        if old_ast is None:
+            # Register-snapshot path (``_snapshot_registers*``): the old AST was
+            # never captured, so an unchanged symbol is indistinguishable from a
+            # re-assignment. Skip rather than re-sync every callback; return
+            # registers bypass this check and are always synced.
+            return False
+        return old_ast.hash() != new_val.hash()
 
     def _sync_symbolic_register_to_rust(self, reg_name: str, value):
         """Sync a symbolic register value to Rust pending state.

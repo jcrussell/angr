@@ -1155,3 +1155,58 @@ class TestWideConcreteMemoryRoundTrip:
         assert got[:8] == expected[:8], (
             f"leading bytes OR-folded with high chunk: got {got[:8]!r}, OR-fold would be {folded!r}"
         )
+
+
+class TestSymbolicRegisterSync:
+    """angr-5rjbq: a callback that assigns a *symbolic* value to a non-return
+    register (e.g. ``state.regs.ecx = ebp - 0x70004``, as flareon2015_5's hooks
+    do) must have that AST synced to Rust. It used to be dropped: only return
+    registers (eax/rax) took the symbolic-sync path, so Rust kept executing with
+    the stale pre-callback register value."""
+
+    @staticmethod
+    def _mgr(fauxware_project):
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        return RustExplorationManager(proj, [state]), proj
+
+    def _capture(self, monkeypatch, fauxware_project, reg, make_new_val):
+        mgr, proj = self._mgr(fauxware_project)
+        old_state = proj.factory.blank_state(addr=proj.entry)
+        new_state = old_state.copy()
+        setattr(new_state.regs, reg, make_new_val(old_state))
+
+        synced = {}
+        monkeypatch.setattr(
+            mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value)
+        )
+        concrete = mgr._extract_register_changes(old_state, new_state)
+        return synced, concrete
+
+    def test_symbolic_nonreturn_register_is_synced(self, monkeypatch, fauxware_project):
+        """rdi := (rbp - 0x70004) — a symbolic address expression — reaches Rust."""
+        synced, _ = self._capture(monkeypatch, fauxware_project, "rdi", lambda s: s.regs.rbp - 0x70004)
+        assert "rdi" in synced, f"symbolic write to non-return register rdi was dropped; synced={list(synced)}"
+        assert synced["rdi"].symbolic
+
+    def test_unchanged_symbolic_register_is_not_resynced(self, monkeypatch, fauxware_project):
+        """An already-symbolic register the callback never touched must not be
+        re-exported on every callback (that would thrash the AST bridge)."""
+        mgr, proj = self._mgr(fauxware_project)
+        state = proj.factory.blank_state(addr=proj.entry)
+        assert state.regs.rdi.symbolic, "precondition: blank_state rdi is unconstrained"
+
+        synced = {}
+        monkeypatch.setattr(
+            mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value)
+        )
+        mgr._extract_register_changes(state, state.copy())
+        assert "rdi" not in synced, "untouched symbolic register was needlessly re-synced"
+
+    def test_concrete_register_change_still_concrete(self, monkeypatch, fauxware_project):
+        """The concrete diff path is unaffected: rdi := 0x1234 stays a concrete change."""
+        synced, concrete = self._capture(monkeypatch, fauxware_project, "rdi", lambda s: 0x1234)
+        assert "rdi" not in synced, "concrete value took the symbolic-AST path"
+        assert any(int.from_bytes(data, "little") == 0x1234 for (_off, _sz, data) in concrete), (
+            f"concrete rdi change missing from diff: {concrete}"
+        )
