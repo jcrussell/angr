@@ -532,6 +532,13 @@ impl PythonCallbacks {
         self.memory_store_symbolic_value.is_some()
     }
 
+    /// True when the callback-memory-proxy gate is on, i.e. the memory-store
+    /// callbacks are no-ops and Rust must keep the store itself (angr-5rjbq).
+    pub fn memory_is_rust_proxy(&self) -> bool {
+        self.memory_is_rust_proxy
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Call the full symbolic store callback (symbolic address + symbolic value).
     /// Used when the address cannot be concretized to a single value or small set.
     pub fn call_memory_store_symbolic_full(

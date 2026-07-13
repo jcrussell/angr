@@ -295,6 +295,22 @@ pub struct PythonCallbacks {
     /// for call/return), then from `AtomicU16` in angr-lge2 so `expr`
     /// (bit 16) fits after `statement` filled bit 15.
     pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// True when the callback-memory-proxy gate is on, i.e. the Python
+    /// callback state's `state.memory` *is* Rust memory (`RustMemoryProxy`).
+    ///
+    /// Under that gate the `memory_store` / `memory_store_symbolic_value`
+    /// callbacks are deliberate no-ops — re-entering `run()` through the proxy
+    /// would double-borrow the manager — so any store the interpreter
+    /// dispatches *only* to a callback is dropped outright (angr-5rjbq:
+    /// flareon2015_5's base64 output vanished and the solve went UNSAT). The
+    /// store paths consult this flag and buffer such stores for `rust_memory`
+    /// instead. Ungated, the Python shadow really does absorb the store, so
+    /// the extra write is pure cost — hence the flag rather than always
+    /// buffering.
+    ///
+    /// `Arc<AtomicBool>` for the same reason as `inspect_enabled`: Python sets
+    /// it after the manager has already cloned this struct.
+    pub memory_is_rust_proxy: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[pymethods]
@@ -338,6 +354,7 @@ impl PythonCallbacks {
             inspect_symbolic_variable: None,
             inspect_fork: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -656,6 +673,15 @@ impl PythonCallbacks {
     pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
             .store(mask, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Tell Rust that the callback state's `state.memory` is a
+    /// `RustMemoryProxy`, so the memory-store callbacks are no-ops and the
+    /// interpreter must keep such stores in `rust_memory` itself (angr-5rjbq).
+    #[pyo3(name = "set_memory_is_rust_proxy")]
+    pub fn py_set_memory_is_rust_proxy(&self, on: bool) {
+        self.memory_is_rust_proxy
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).

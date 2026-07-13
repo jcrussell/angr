@@ -248,6 +248,7 @@ impl<'a> VEXInterpreter<'a> {
 
         if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
             // Try symbolic store callback (preserves expression tree)
+            self.buffer_store_for_rust_memory(callbacks, addr_concrete, &data_val);
             let sym_ok = (|| -> Result<(), CbExecutionError> {
                 self.flush_stores(callbacks)?;
                 callbacks
@@ -294,6 +295,39 @@ impl<'a> VEXInterpreter<'a> {
                 self.flush_stores(callbacks)?;
             }
             Ok(())
+        }
+    }
+
+    /// Buffer a store that is *also* being dispatched to a Python memory
+    /// callback, for the case where that callback cannot absorb it.
+    ///
+    /// Under the callback-memory-proxy gate the `memory_store` /
+    /// `memory_store_symbolic_value` callbacks are deliberate no-ops
+    /// (`state.memory` *is* Rust memory there, and re-entering `run()` would
+    /// double-borrow), so a callback-only store is dropped outright:
+    /// flareon2015_5's base64 encoder wrote its output through the
+    /// symbolic-address path and the found state read back concrete zeros
+    /// (angr-5rjbq). Buffering it here gives the value a home in
+    /// `rust_memory`.
+    ///
+    /// Ungated, the Python shadow really does absorb the store, so this extra
+    /// write would be pure cost — four fast-tier benches regressed 15-25% when
+    /// it ran unconditionally. Hence the `memory_is_rust_proxy` guard.
+    pub(super) fn buffer_store_for_rust_memory(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr: u64,
+        data_val: &RustBV,
+    ) {
+        if !self.use_rust_memory || !callbacks.memory_is_rust_proxy() {
+            return;
+        }
+        if data_val.is_symbolic() {
+            self.pending_symbolic_stores.insert(addr, data_val.clone());
+        } else {
+            let size_bytes = (data_val.width() / 8) as usize;
+            self.evict_overlapping_symbolic_stores(addr, size_bytes);
+            self.pending_stores.push(addr, bv_to_bytes(data_val));
         }
     }
 
@@ -346,6 +380,7 @@ impl<'a> VEXInterpreter<'a> {
         match &*concret_result {
             ConcretizationResult::Single(addr_concrete) => {
                 let addr_concrete = *addr_concrete;
+                self.buffer_store_for_rust_memory(callbacks, addr_concrete, data_val);
                 if self.is_in_binary(addr_concrete) {
                     self.invalidate_code_at(addr_concrete, data_size);
                 }

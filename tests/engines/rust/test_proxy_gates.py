@@ -1584,3 +1584,46 @@ class TestProxyWriteThrough:
         proxy.memory.store(addr, 0x12345678, size=4, endness="Iend_LE")
         # memory.load default is BE so we should read the byte-swapped value
         assert proxy.memory.load(addr, 4).concrete_value == 0x78563412
+
+
+class TestCallbackMemoryProxySymbolicStore:
+    """Coverage for the interpreter's symbolic-address store path under both
+    gate states (angr-5rjbq).
+
+    Not a red-without-the-fix guard: this single-block shape survives even
+    when the store reaches Rust memory only via the registered-handle /
+    symbolic-page side channel, which is exactly what made the flareon2015_5
+    drop so hard to catch. The real regression signal for angr-5rjbq is
+    flareon2015_5 with the gate on (a bench, not a unit test) — see the
+    MEDIUM-suite proxy differential (angr-ijwp0).
+    """
+
+    @staticmethod
+    def _run_sym_addr_store(use_proxy: bool):
+        """Execute ``mov [ecx], al`` with a symbolic (single-solution) address
+        and a symbolic value, then read the byte back from the stepped state.
+        """
+        import claripy
+
+        # mov [ecx], al ; jmp $
+        proj = angr.load_shellcode(b"\x88\x01\xeb\xfe", arch="X86", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+
+        addr_sym = claripy.BVS("dst", 32)
+        state.add_constraints(addr_sym == 0x2000)
+        state.regs.ecx = addr_sym
+        state.regs.eax = claripy.BVS("val", 32)
+
+        mgr = RustExplorationManager(proj, [state], use_callback_memory_proxy=use_proxy)
+        mgr.step(n=1)
+        stepped = mgr.active[0]
+        return stepped, stepped.memory.load(0x2000, 1)
+
+    @pytest.mark.parametrize("use_proxy", [False, True])
+    def test_symbolic_addr_store_survives_readback(self, use_proxy):
+        """The stored byte reads back as the symbolic value, not concrete 0."""
+        stepped, loaded = self._run_sym_addr_store(use_proxy)
+        assert loaded.symbolic, f"store dropped — read back {loaded!r}"
+        assert any(v.startswith("val") for v in loaded.variables)
+        # Genuinely unconstrained (the low byte of eax), not a pinned witness.
+        assert len(stepped.solver.eval_upto(loaded, 2)) == 2

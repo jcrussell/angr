@@ -1728,6 +1728,11 @@ class RustExplorationManager(
             callbacks.set_memory_store_symbolic_value(self._cb_memory_store_symbolic_value)
         if hasattr(callbacks, "set_memory_store_symbolic_full"):
             callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
+        # angr-5rjbq: under the memory-proxy gate the store callbacks above are
+        # no-ops (state.memory *is* Rust memory), so tell Rust to keep such
+        # stores in rust_memory itself instead of dropping them on the floor.
+        if hasattr(callbacks, "set_memory_is_rust_proxy"):
+            callbacks.set_memory_is_rust_proxy(bool(getattr(self, "_use_callback_memory_proxy", False)))
         if hasattr(callbacks, "set_memory_load_symbolic_full"):
             callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
         # state.inspect MVP (angr-uq4n.2, angr-d46u) — register dispatchers
