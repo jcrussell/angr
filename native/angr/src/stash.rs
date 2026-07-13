@@ -469,7 +469,13 @@ impl StashManager {
     // =========================================================================
 
     /// Serialize this stash manager to a versioned envelope:
-    /// `[STASH_SNAPSHOT_VERSION: u8] ++ serde_json(StashManagerSnapshot)`.
+    /// `[STASH_SNAPSHOT_VERSION: u8] ++ [process_token: u64 LE] ++
+    /// serde_json(StashManagerSnapshot)`.
+    ///
+    /// The token rides in the header — not the JSON body — because
+    /// [`Self::load_snapshot`] must know whether the id space is foreign
+    /// *before* it deserializes the first [`crate::symbolic::RustBV`]
+    /// (angr-euw28).
     ///
     /// Each state inside is round-tripped via [`RustSimState::to_snapshot`]
     /// (bucket A/B/C, see `RustSimStateSnapshot`); the manager-level fields
@@ -479,8 +485,9 @@ impl StashManager {
     pub fn dump_snapshot(&self) -> Vec<u8> {
         let snap = self.to_snapshot();
         let body = serde_json::to_vec(&snap).expect("stash snapshot encode");
-        let mut out = Vec::with_capacity(1 + body.len());
+        let mut out = Vec::with_capacity(1 + 8 + body.len());
         out.push(STASH_SNAPSHOT_VERSION);
+        out.extend_from_slice(&process_token().to_le_bytes());
         out.extend_from_slice(&body);
         out
     }
@@ -498,12 +505,28 @@ impl StashManager {
                 expected: STASH_SNAPSHOT_VERSION,
             });
         }
+        if bytes.len() < 9 {
+            return Err(crate::state::SnapshotError::Decode(
+                "truncated stash snapshot header".to_string(),
+            ));
+        }
+        let origin = u64::from_le_bytes(bytes[1..9].try_into().expect("8 header bytes"));
+
+        // angr-euw28: a foreign process minted these ids from an allocator that
+        // also started at 0, so they collide with ids we already handed out (the
+        // seed state's own symbols). Shift the whole envelope's id space above
+        // our watermark for the duration of the load — deserialization AND the
+        // `restore_from_snapshot` replay, which reserves past the rebased top.
+        let _rebase = (origin != process_token()).then(|| {
+            crate::symbolic::SymbolIdRebase::activate(crate::symbolic::symbol_id_watermark())
+        });
+
         // Mirror `RustSimState::from_serialized`: deep RustBV op-trees in
         // accumulated per-state constraints can blow past serde_json's
         // default recursion limit (128). The on-disk envelope is trusted
         // (written by our own `dump_snapshot`) so DoS hardening is not
         // load-bearing.
-        let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+        let mut de = serde_json::Deserializer::from_slice(&bytes[9..]);
         de.disable_recursion_limit();
         let snap: StashManagerSnapshot = serde::Deserialize::deserialize(&mut de)
             .map_err(|e| crate::state::SnapshotError::Decode(e.to_string()))?;
@@ -576,7 +599,31 @@ impl StashManager {
 /// [`StashManager::dump_snapshot`] envelope. Independent of
 /// [`crate::state::SNAPSHOT_VERSION`] (the per-state codec) so the two
 /// can evolve without churn at the wrong layer.
-pub const STASH_SNAPSHOT_VERSION: u8 = 1;
+///
+/// v2 (angr-euw28) inserted the 8-byte little-endian [`process_token`] between
+/// the version byte and the JSON body.
+pub const STASH_SNAPSHOT_VERSION: u8 = 2;
+
+/// Token identifying the process that wrote a snapshot envelope (angr-euw28).
+///
+/// Symbol ids are unique per *process* ([`crate::symbolic::reserve_symbol_id`]),
+/// so ids in an envelope written by this process are still ours on load and
+/// must be kept verbatim — while ids in a *foreign* envelope come from an
+/// allocator that also started at 0 and therefore alias our own. `load_snapshot`
+/// compares this token against the envelope's to decide whether to rebase the
+/// restored id space (see [`crate::symbolic::SymbolIdRebase`]).
+///
+/// Derived from the pid plus the process start-up wall clock, which is enough
+/// to distinguish two live processes (and a recycled pid on a later run).
+pub fn process_token() -> u64 {
+    static TOKEN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TOKEN.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        nanos.rotate_left(17) ^ u64::from(std::process::id())
+    })
+}
 
 /// Manager-level snapshot of all stash contents + lineage maps + terminal
 /// counters. Each entry inside `stashes` is a per-state

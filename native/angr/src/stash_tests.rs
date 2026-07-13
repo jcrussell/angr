@@ -94,3 +94,75 @@ fn test_stash_manager_load_snapshot_errors() {
         Ok(_) => panic!("bad version must fail"),
     }
 }
+
+/// angr-euw28: an envelope written by a FOREIGN process carries symbol ids
+/// minted by an allocator that also started at 0, so they alias ids this
+/// process already handed out. `load_snapshot` must rebase the whole envelope's
+/// id space above the local watermark — keeping names (and therefore Z3
+/// identity) intact — while an envelope written by THIS process keeps its ids
+/// verbatim, since those ids are still ours.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_foreign_envelope_rebases_symbol_ids() {
+    use crate::symbolic::{RustBV, symbol_id_watermark};
+
+    /// First `Symbolic` leaf under `bv`, as (id, name).
+    fn first_leaf(bv: &RustBV) -> Option<(u64, String)> {
+        match bv {
+            RustBV::Symbolic { id, name, .. } => Some((*id, name.to_string())),
+            RustBV::Expression { operands, .. } => operands.iter().find_map(first_leaf),
+            _ => None,
+        }
+    }
+
+    fn restored_leaf(bytes: &[u8]) -> (u64, String) {
+        let restored = StashManager::load_snapshot(bytes).expect("load_snapshot");
+        let state = restored
+            .get(STASH_ACTIVE)
+            .and_then(std::collections::VecDeque::front)
+            .expect("restored active state");
+        let solver = state.solver();
+        let ctx = solver.borrow();
+        let assumed = ctx.get_assumed_constraints();
+        let (bv, _) = assumed.first().expect("restored assumed constraint");
+        first_leaf(bv).expect("restored symbolic leaf")
+    }
+
+    let mut mgr = StashManager::new();
+    let state = RustSimState::new("amd64").unwrap();
+    let source_id = {
+        let solver = state.solver();
+        let ctx = solver.borrow();
+        let leaf = RustBV::symbolic(&ctx, "euw28_leaf", 64);
+        let eq = leaf.eq(&RustBV::concrete(7, 64), &ctx);
+        ctx.assume_true(&eq);
+        first_leaf(&leaf).expect("minted leaf").0
+    };
+    mgr.push(STASH_ACTIVE, state);
+    let bytes = mgr.dump_snapshot();
+
+    // (a) Same process: the ids in the envelope are still ours — keep them.
+    let (same_id, same_name) = restored_leaf(&bytes);
+    assert_eq!(same_id, source_id, "in-process load must not rebase ids");
+    assert_eq!(same_name, "euw28_leaf");
+
+    // (b) Foreign process: flip the origin token in the header. The leaf must
+    // land above the watermark (so it cannot alias a locally-minted symbol),
+    // under its original name.
+    let mut foreign = bytes.clone();
+    foreign[1] ^= 0xFF;
+    let watermark = symbol_id_watermark();
+    let (foreign_id, foreign_name) = restored_leaf(&foreign);
+    assert_eq!(
+        foreign_name, "euw28_leaf",
+        "rebasing must not touch the symbol NAME — Z3 identity is by name"
+    );
+    assert!(
+        foreign_id >= watermark,
+        "foreign leaf id {foreign_id} aliases a locally-minted id (watermark {watermark})"
+    );
+    assert!(
+        symbol_id_watermark() > foreign_id,
+        "the allocator must be reserved past every rebased leaf"
+    );
+}

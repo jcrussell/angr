@@ -52,6 +52,55 @@ pub fn symbol_id_watermark() -> u64 {
     NEXT_SYMBOL_ID.load(Ordering::SeqCst)
 }
 
+thread_local! {
+    /// Offset added to every symbol id deserialized on this thread while a
+    /// [`SymbolIdRebase`] guard is live. `0` (the default) is the identity.
+    static SYMBOL_ID_REBASE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The active deserialization id offset — see [`SymbolIdRebase`].
+pub fn symbol_id_rebase_offset() -> u64 {
+    SYMBOL_ID_REBASE.with(std::cell::Cell::get)
+}
+
+/// RAII guard that shifts every symbol id deserialized on this thread into a
+/// fresh, process-local range (angr-euw28).
+///
+/// [`reserve_symbol_id`] keeps ids minted *after* a restore clear of the
+/// restored leaves, but a snapshot written by a **different process** carries
+/// ids from a foreign allocator that started at 0 — those alias ids this
+/// process already minted (e.g. the seed state's own symbols), and every
+/// id-keyed lookup (the claripy export registry, `stored_conditions`, the
+/// symbol table) then resolves a restored leaf to a *stranger's* symbol. The
+/// reported symptom was a restored `stdin_0_256` exporting under the seed's
+/// `stdin_81_256` name.
+///
+/// Restoring a foreign envelope therefore rebases the whole snapshot's id space
+/// by the current watermark: all leaves shift by the same offset, so ids stay
+/// internally consistent, while Z3 identity — which is by NAME, not by id (see
+/// `invariant-symbol-identity-is-by-name`) — is untouched, so the replayed
+/// constraints still bind to the same variables.
+///
+/// The offset is thread-local and defaults to 0, so worker-migration payloads
+/// (same process, ids already unique) deserialize unchanged.
+pub struct SymbolIdRebase {
+    prev: u64,
+}
+
+impl SymbolIdRebase {
+    /// Activate a rebase by `offset` on this thread until the guard drops.
+    pub fn activate(offset: u64) -> Self {
+        let prev = SYMBOL_ID_REBASE.with(|c| c.replace(offset));
+        Self { prev }
+    }
+}
+
+impl Drop for SymbolIdRebase {
+    fn drop(&mut self) {
+        SYMBOL_ID_REBASE.with(|c| c.set(self.prev));
+    }
+}
+
 impl SymContext {
     /// Get the next unique ID for a symbolic variable.
     ///

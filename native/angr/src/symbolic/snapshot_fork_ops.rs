@@ -259,7 +259,14 @@ impl SymContext {
         // compare-and-branch to a CONCRETE guard, so `IRStmt::Exit` stops
         // forking and whole search subtrees vanish with no visible error.
         // `fetch_max`, so a legacy snapshot's 0 is a no-op.
-        crate::symbolic::reserve_symbol_id(snap.next_id);
+        //
+        // angr-euw28: when the envelope came from a FOREIGN process the whole
+        // id space is rebased by an offset (see `SymbolIdRebase`), so the
+        // restored leaves top out at `next_id - 1 + offset`, not `next_id - 1`.
+        crate::symbolic::reserve_symbol_id(
+            snap.next_id
+                .saturating_add(crate::symbolic::symbol_id_rebase_offset()),
+        );
         #[cfg(feature = "vex-engine-z3")]
         {
             if snap.reassert_assumed {

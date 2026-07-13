@@ -537,6 +537,20 @@ impl From<RustBV> for RustBVData {
     }
 }
 
+/// Shift a deserialized symbol id into the active rebase range (angr-euw28).
+///
+/// A no-op (offset 0) unless a [`SymbolIdRebase`](crate::symbolic::SymbolIdRebase)
+/// guard is live on this thread — i.e. unless we are restoring a snapshot minted
+/// by a foreign process. The [`RustBV::EXPRESSION_ID`] sentinel is not an
+/// allocated id and must stay `u64::MAX`.
+#[inline]
+fn rebase_id(id: u64) -> u64 {
+    if id == RustBV::EXPRESSION_ID {
+        return id;
+    }
+    id.saturating_add(crate::symbolic::symbol_id_rebase_offset())
+}
+
 impl From<RustBVData> for RustBV {
     fn from(data: RustBVData) -> Self {
         match data {
@@ -544,18 +558,20 @@ impl From<RustBVData> for RustBV {
             RustBVData::Symbolic { id, width, name } => {
                 // Rebuilds the Z3 AST in the active thread-local context (z3
                 // feature); callers must be inside with_z3_context when this runs.
-                RustBV::from_parts(id, Arc::<str>::from(name), width)
+                RustBV::from_parts(rebase_id(id), Arc::<str>::from(name), width)
             }
-            RustBVData::Constrained { id, value, width } => {
-                RustBV::Constrained { id, value, width }
-            }
+            RustBVData::Constrained { id, value, width } => RustBV::Constrained {
+                id: rebase_id(id),
+                value,
+                width,
+            },
             RustBVData::Expression {
                 id,
                 width,
                 op,
                 operands,
             } => RustBV::Expression {
-                id,
+                id: rebase_id(id),
                 width,
                 op,
                 operands: Arc::<[RustBV]>::from(
