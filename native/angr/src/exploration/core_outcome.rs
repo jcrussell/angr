@@ -241,7 +241,7 @@ impl RoutingTag {
 /// handler builds the exact `PendingCallback`. Carrying the live state + step
 /// data (not a serialized `PendingCallback`) keeps the single-threaded path from
 /// re-running the interpreter, which would double-count profiling.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum BounceKind {
     /// Bare hook (zero-arg "unknown" SimProcedure callback).
     Hook { addr: u64 },

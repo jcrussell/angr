@@ -415,12 +415,18 @@ class TestParallelCheckpointFrontier:
         mgr, target_addr = _explore_pbounce_find_k(pbounce_project, workers, monkeypatch, num_find=1)
         assert not mgr._rust_mgr.parallel_session_active(), "dump-point must have no live session"
 
-        pre = _fingerprint(mgr)
-        assert pre["stash_counts"].get("active", 0) > 0, f"workers={workers}: nothing to checkpoint"
         assert len(list(mgr.found)) < _SYNTH_LEAVES, "the explore must have exited early to test resumability"
 
         snap = tmp_path / "pbounce.snap"
         mgr.dump_snapshot(str(snap))
+
+        # Fingerprint AFTER the dump: dumping is a finalize (angr-op0dn.13.6
+        # drains a live steady session; .13.10 flushes the parked parallel
+        # bounce queue into `active`), so the pre-dump stashes are not yet the
+        # ones the snapshot captures. The contract under test is
+        # dump-point == restore-point.
+        pre = _fingerprint(mgr)
+        assert pre["stash_counts"].get("active", 0) > 0, f"workers={workers}: nothing to checkpoint"
 
         resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
         resumed.load_snapshot(str(snap))
@@ -439,15 +445,18 @@ class TestParallelCheckpointFrontier:
                 f"resume-from-snapshot drained {len(found)} leaves, expected {_SYNTH_LEAVES}"
             )
         else:
-            # angr-op0dn.13.10 (open bug): a snapshot taken after a PARALLEL
-            # explore round-trips structurally (the fingerprint above) but the
-            # restored states lose reachability — 5-6 of the 8 leaves, stably.
-            # Resuming the same in-memory manager reaches all 8
-            # (test_cancelled_frontier_is_resumable), so the loss is in what a
-            # migrated state carries versus what the snapshot codec captures.
-            # Gate the continuity contract this bead owns (fingerprint) and
-            # assert only forward progress here until .13.10 lands.
-            assert len(found) > 1, f"workers={workers}: resume-from-snapshot made no progress past the restored find"
+            # angr-op0dn.13.10: a parallel dump point can have bounce states
+            # parked OUTSIDE every stash (the wave surfaces one need_callback
+            # per run and parks the rest of its bounce queue). `dump_snapshot`
+            # now flushes those back to `active` at their re-enterable hook pc,
+            # which lifted this resume from 3/8 to 7/8 leaves. The last leaf
+            # sits behind the pc=0 zombie states the worker leaves in `active`
+            # on the NeedsPython path (angr-op0dn.13.11) — they die at their
+            # next lift, taking their subtree with them.
+            assert len(found) >= _SYNTH_LEAVES - 1, (
+                f"workers={workers}: resume-from-snapshot drained {len(found)} leaves, "
+                f"expected at least {_SYNTH_LEAVES - 1}"
+            )
 
 
 def _explore_steady(project, monkeypatch, num_find=2):

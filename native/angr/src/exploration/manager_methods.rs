@@ -2419,6 +2419,7 @@ impl RustExplorationManager {
     /// resume with a smaller frontier. Finalize-then-capture is the contract.
     pub fn dump_snapshot_bytes<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
         self.steady_config_guard();
+        self.flush_parked_bounces_to_active();
         let bytes = self.sm.dump_snapshot();
         PyBytes::new(py, &bytes)
     }

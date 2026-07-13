@@ -1532,6 +1532,60 @@ impl RustExplorationManager {
     #[cfg(not(feature = "vex-engine-z3"))]
     pub(crate) fn steady_config_guard(&mut self) {}
 
+    /// Materialize `pending_parallel_bounces` back into `STASH_ACTIVE` so a
+    /// snapshot can see them (angr-op0dn.13.10).
+    ///
+    /// A wave that surfaces one `need_callback` event parks the REST of its
+    /// bounce queue in `pending_parallel_bounces` — states that live in NO
+    /// stash, dispatched by the next `run()` (see `process_parallel_bounce_queue`).
+    /// `dump_snapshot` only serializes stashes, so a snapshot taken while
+    /// bounces are parked silently drops those states and every path behind
+    /// them: the same frontier resumed in-memory reaches every leaf, while the
+    /// snapshot resumes with a truncated one.
+    ///
+    /// A parked bounce is parked AT its call site with the callback not yet
+    /// run, so re-entering it is a faithful replay: restore the pc to the
+    /// bounce target and push the state back to active, where the next step
+    /// re-lifts the hook and bounces again. Only kinds with a re-enterable
+    /// entry address ([`bounce_target_addr`] — `Hook` / `SimProcedurePython`)
+    /// can be replayed that way; the worker zeroed the pc of the others
+    /// (`state.set_pc(step.new_pc)` in `parallel_process_state`), so they have
+    /// no recoverable resume point and stay parked — logged, not silently
+    /// dropped. Ids already resident in a stash are skipped so the flush can
+    /// never double-insert a state.
+    pub(crate) fn flush_parked_bounces_to_active(&mut self) {
+        if self.pending_parallel_bounces.is_empty() {
+            return;
+        }
+        let resident: std::collections::HashSet<u64> = self
+            .sm
+            .stashes()
+            .values()
+            .flat_map(|states| states.iter().map(|s| s.state_id()))
+            .collect();
+        let parked = std::mem::take(&mut self.pending_parallel_bounces);
+        let mut kept = Vec::new();
+        for (mut state, kind, root) in parked {
+            let id = state.state_id();
+            match bounce_target_addr(&kind) {
+                Some(addr) if !resident.contains(&id) => {
+                    state.set_pc(addr);
+                    self.sm.set_root(id, root);
+                    self.route_successor(state, true);
+                }
+                _ => {
+                    log::warn!(
+                        "snapshot: parked bounce for state {id} has no re-enterable \
+                         entry address (kind={kind:?}); it stays live in this manager \
+                         but will NOT appear in the snapshot"
+                    );
+                    kept.push((state, kind, root));
+                }
+            }
+        }
+        self.pending_parallel_bounces = kept;
+    }
+
     /// Inner body of the pymethods-exposed `run`. See `run` in `mod.rs`.
     ///
     /// Thin driver over `step_one`: owns the loop frame (I8 termination,
