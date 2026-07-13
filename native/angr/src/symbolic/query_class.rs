@@ -73,13 +73,20 @@ pub enum QueryClass {
     /// Multi-symbol, non-interval-shaped, or over budget. Not addressable by
     /// a cheap tier.
     Hard = 5,
+    /// Boolean query that still has free symbols but whose *verdict* is fixed
+    /// by syntax alone: `Eq(a, a)`, `Ult(x, 0)`, `Ule(x, UMAX)`, a mask-bit
+    /// contradiction, … (feeds angr-op0dn.9.1). Distinct from
+    /// [`TrivialDecide`](QueryClass::TrivialDecide), which means "no free
+    /// symbols left at all".
+    SyntacticDecide = 6,
 }
 
 /// Number of variants in [`QueryClass`].
-pub const NUM_QUERY_CLASSES: usize = 6;
+pub const NUM_QUERY_CLASSES: usize = 7;
 
 /// Per-class count of `solver.check()` calls. Sums to `z3_check_count`.
 pub(crate) static Z3_CHECK_CLASS_COUNT: [AtomicU64; NUM_QUERY_CLASSES] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -96,6 +103,7 @@ pub(crate) const CLASS_NAMES: [&str; NUM_QUERY_CLASSES] = [
     "forced_value",
     "free_witness",
     "hard",
+    "syntactic_decide",
 ];
 
 thread_local! {
@@ -285,6 +293,113 @@ fn constraints_interval_shaped(constraints: &[(RustBV, bool)], var: u64) -> bool
     })
 }
 
+/// Bounded structural equality — the reflexivity test behind `Eq(a, a)`.
+/// `RustBV`'s `PartialEq` only compares *concrete* values (it is `false` for
+/// any symbolic operand), so it cannot answer this.
+fn struct_eq(a: &RustBV, b: &RustBV, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    match (a, b) {
+        (
+            RustBV::Concrete {
+                value: v1,
+                width: w1,
+            },
+            RustBV::Concrete {
+                value: v2,
+                width: w2,
+            },
+        ) => v1 == v2 && w1 == w2,
+        (RustBV::Symbolic { id: i1, .. }, RustBV::Symbolic { id: i2, .. }) => i1 == i2,
+        (RustBV::Constrained { id: i1, .. }, RustBV::Constrained { id: i2, .. }) => i1 == i2,
+        (
+            RustBV::Expression {
+                op: o1,
+                operands: p1,
+                ..
+            },
+            RustBV::Expression {
+                op: o2,
+                operands: p2,
+                ..
+            },
+        ) => {
+            o1 == o2
+                && a.width() == b.width()
+                && p1.len() == p2.len()
+                && p1
+                    .iter()
+                    .zip(p2.iter())
+                    .all(|(x, y)| struct_eq(x, y, budget))
+        }
+        _ => false,
+    }
+}
+
+/// Largest unsigned value representable at `width` bits.
+fn umax(width: u32) -> u128 {
+    if width >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    }
+}
+
+/// The syntactic-verdict tier's pattern set (angr-op0dn.9.1): does the
+/// *condition's own syntax* fix its truth value, even though free symbols
+/// remain? Returns the forced verdict, or `None` when Z3 is genuinely needed.
+///
+/// Only patterns the constructors in `value_ops.rs` do **not** already fold
+/// are listed — `eq_into`/`ne_into` fold concrete-vs-concrete and the
+/// `zext`-vs-const cases, so those never reach here.
+pub(crate) fn syntactic_decide(cond: &RustBV) -> Option<bool> {
+    let RustBV::Expression { op, operands, .. } = cond else {
+        return None;
+    };
+    if operands.len() != 2 {
+        return None;
+    }
+    let (lhs, rhs) = (&operands[0], &operands[1]);
+    let mut budget = NODE_BUDGET;
+    let reflexive = struct_eq(lhs, rhs, &mut budget);
+    let (lc, rc) = (lhs.as_u128(), rhs.as_u128());
+    let (lw, rw) = (lhs.width(), rhs.width());
+    match op {
+        // Reflexivity.
+        BVOp::Eq if reflexive => Some(true),
+        BVOp::Ne if reflexive => Some(false),
+        BVOp::Ult | BVOp::Ugt | BVOp::Slt | BVOp::Sgt if reflexive => Some(false),
+        BVOp::Ule | BVOp::Uge | BVOp::Sle | BVOp::Sge if reflexive => Some(true),
+        // Unsigned bounds: nothing is below 0, nothing is above UMAX.
+        BVOp::Ult if rc == Some(0) || lc == Some(umax(lw)) => Some(false),
+        BVOp::Ugt if lc == Some(0) || rc == Some(umax(rw)) => Some(false),
+        BVOp::Ule if lc == Some(0) || rc == Some(umax(rw)) => Some(true),
+        BVOp::Uge if rc == Some(0) || lc == Some(umax(lw)) => Some(true),
+        // Mask-bit contradiction: `And(x, m) == c` (either operand order) is
+        // unsatisfiable when `c` sets a bit that `m` clears.
+        BVOp::Eq | BVOp::Ne => {
+            let (masked, c) = match (lc, rc) {
+                (None, Some(c)) => (lhs, c),
+                (Some(c), None) => (rhs, c),
+                _ => return None,
+            };
+            let RustBV::Expression {
+                op: BVOp::And,
+                operands: mask_ops,
+                ..
+            } = masked
+            else {
+                return None;
+            };
+            let m = mask_ops.iter().find_map(RustBV::as_u128)?;
+            (c & !m != 0).then_some(matches!(op, BVOp::Ne))
+        }
+        _ => None,
+    }
+}
+
 /// Classify a bare satisfiability query (`is_sat`): no query expression, so
 /// cheapness is a property of the constraint set alone.
 pub(crate) fn classify_sat(constraints: &[(RustBV, bool)]) -> QueryClass {
@@ -316,11 +431,14 @@ pub(crate) fn classify_sat(constraints: &[(RustBV, bool)]) -> QueryClass {
 /// feasibility, `solution`).
 pub(crate) fn classify_bool(cond: &RustBV, constraints: &[(RustBV, bool)]) -> QueryClass {
     let shape = shape_of(cond);
+    if shape.within_budget && shape.vars.is_empty() {
+        return QueryClass::TrivialDecide;
+    }
+    if syntactic_decide(cond).is_some() {
+        return QueryClass::SyntacticDecide;
+    }
     if !shape.within_budget {
         return QueryClass::Hard;
-    }
-    if shape.vars.is_empty() {
-        return QueryClass::TrivialDecide;
     }
     if shape.vars.len() == 1 && shape.interval_shaped {
         let var = *shape.vars.iter().next().expect("len == 1");
@@ -357,7 +475,7 @@ pub(crate) fn classify_eval_many(targets: &[RustBV], constraints: &[(RustBV, boo
     /// Higher = less addressable; the batch takes the max.
     fn rank(c: QueryClass) -> u8 {
         match c {
-            QueryClass::TrivialDecide => 0,
+            QueryClass::TrivialDecide | QueryClass::SyntacticDecide => 0,
             QueryClass::SingleVarRange => 1,
             QueryClass::ForcedValue => 2,
             QueryClass::FreeWitness => 3,
@@ -403,6 +521,67 @@ mod tests {
     fn concrete_condition_is_trivial() {
         let cond = RustBV::concrete(1, 1);
         assert_eq!(classify_bool(&cond, &[]), QueryClass::TrivialDecide);
+    }
+
+    #[test]
+    fn reflexive_comparisons_are_syntactically_decided() {
+        let ctx = SymContext::new_mock();
+        // `x + 1` on both sides: structurally equal, but not concrete, so
+        // RustBV's own PartialEq says "not equal" and only `struct_eq` sees it.
+        let lhs = sym(1, 32).add(&RustBV::concrete(1, 32), &ctx);
+        let rhs = sym(1, 32).add(&RustBV::concrete(1, 32), &ctx);
+        assert_eq!(syntactic_decide(&lhs.eq(&rhs, &ctx)), Some(true));
+        assert_eq!(syntactic_decide(&lhs.ne(&rhs, &ctx)), Some(false));
+        assert_eq!(syntactic_decide(&lhs.ult(&rhs, &ctx)), Some(false));
+        assert_eq!(syntactic_decide(&lhs.ule(&rhs, &ctx)), Some(true));
+        assert_eq!(
+            classify_bool(&lhs.eq(&rhs, &ctx), &[]),
+            QueryClass::SyntacticDecide
+        );
+    }
+
+    #[test]
+    fn unsigned_bounds_are_syntactically_decided() {
+        let ctx = SymContext::new_mock();
+        let x = sym(1, 32);
+        // Nothing is below 0, everything is at or below UMAX.
+        assert_eq!(
+            syntactic_decide(&x.ult(&RustBV::concrete(0, 32), &ctx)),
+            Some(false)
+        );
+        assert_eq!(
+            syntactic_decide(&x.ule(&RustBV::concrete(0xffff_ffff, 32), &ctx)),
+            Some(true)
+        );
+        assert_eq!(
+            syntactic_decide(&x.uge(&RustBV::concrete(0, 32), &ctx)),
+            Some(true)
+        );
+        // A real bound still needs the solver.
+        assert_eq!(
+            syntactic_decide(&x.ult(&RustBV::concrete(10, 32), &ctx)),
+            None
+        );
+    }
+
+    #[test]
+    fn mask_bit_contradiction_is_syntactically_decided() {
+        let ctx = SymContext::new_mock();
+        let masked = sym(1, 32).and(&RustBV::concrete(0xff, 32), &ctx);
+        // `(x & 0xff) == 0x100` sets a bit the mask clears → unsat.
+        assert_eq!(
+            syntactic_decide(&masked.eq(&RustBV::concrete(0x100, 32), &ctx)),
+            Some(false)
+        );
+        assert_eq!(
+            syntactic_decide(&masked.ne(&RustBV::concrete(0x100, 32), &ctx)),
+            Some(true)
+        );
+        // In-mask constant is a genuine query.
+        assert_eq!(
+            syntactic_decide(&masked.eq(&RustBV::concrete(0x42, 32), &ctx)),
+            None
+        );
     }
 
     #[test]
