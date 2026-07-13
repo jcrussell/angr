@@ -459,6 +459,39 @@ class TestParallelCheckpointFrontier:
             f"expected {_SYNTH_LEAVES // 2}-{_SYNTH_LEAVES}"
         )
 
+    def test_snapshot_round_trips_bucket_d_overlays(self, pbounce_project, monkeypatch, tmp_path):
+        """angr-op0dn.13.14: the per-state Python-AST overlays must survive a dump.
+
+        The Rust ``StashManager`` codec cannot serialize the ``Py<PyAny>``
+        overlays (``symbolic_pages`` / ``hook_symbolic_memory`` /
+        ``addr_to_ast``) and restores them empty. Every pbounce state carries
+        them — the values a *Python* SimProcedure handed back live nowhere else
+        — so a bare-Rust envelope silently resumed with those addresses
+        unconstrained. ``dump_snapshot`` now pickles them alongside the Rust
+        bytes; this pins the round-trip.
+        """
+        mgr, _ = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=1)
+
+        def overlays(m):
+            core = m._rust_mgr
+            return {
+                sid: (
+                    sorted(core.get_state_symbolic_pages(sid)),
+                    sorted(core.get_state_hook_symbolic_memory(sid)),
+                    sorted(core.get_state_addr_to_ast(sid)),
+                )
+                for sid in core.get_state_ids("active")
+            }
+
+        snap = tmp_path / "bucket_d.snap"
+        mgr.dump_snapshot(str(snap))
+        pre = overlays(mgr)
+        assert any(any(m) for m in pre.values()), "pre-condition: pbounce states carry Python-AST overlays"
+
+        resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
+        resumed.load_snapshot(str(snap))
+        assert overlays(resumed) == pre, "bucket-D overlays lost across the snapshot round-trip"
+
 
 def _explore_steady(project, monkeypatch, num_find=2):
     """Explore fauxware under the steady-state loop (angr-nkoct).

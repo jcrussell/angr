@@ -131,6 +131,8 @@ from __future__ import annotations
 
 import logging
 import os
+import pickle
+import struct
 import time
 import warnings
 import weakref
@@ -144,6 +146,10 @@ from pyvex.errors import PyVEXError
 from angr.errors import SimEngineError, SimError, SimSolverError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker
+
+# Envelope head written by RustExplorationManager.dump_snapshot. A file without
+# it is a pre-bucket-D snapshot (bare Rust bytes) and still loads.
+_SNAPSHOT_MAGIC = b"ANGRSNAP\x01"
 
 if TYPE_CHECKING:
     import angr
@@ -6041,9 +6047,51 @@ class RustExplorationManager(
             and again Rust-side inside ``dump_snapshot_bytes``.
         """
         self._finalize_parallel_session()
-        bytes_blob = self._rust_mgr.dump_snapshot_bytes()
+        bytes_blob = bytes(self._rust_mgr.dump_snapshot_bytes())
+        overlays = pickle.dumps(self._capture_bucket_d(), protocol=pickle.HIGHEST_PROTOCOL)
         with open(path, "wb") as f:
-            f.write(bytes(bytes_blob))
+            f.write(_SNAPSHOT_MAGIC)
+            f.write(struct.pack("<Q", len(bytes_blob)))
+            f.write(bytes_blob)
+            f.write(overlays)
+
+    def _capture_bucket_d(self) -> dict[int, dict[str, dict]]:
+        """Collect the per-state Python-AST overlays for every stashed state.
+
+        The Rust ``StashManager`` codec cannot serialize the ``Py<PyAny>``
+        overlays (``symbolic_pages`` / ``hook_symbolic_memory`` /
+        ``addr_to_ast``), so it restores them empty. A state that bounced
+        through a *Python* SimProcedure keeps its post-bounce symbolic values
+        only in those overlays: drop them and the resumed state reads those
+        addresses as unconstrained, never forks on them, and the whole
+        deferred-fork subtree below it is lost (angr-op0dn.13.14 — a serial
+        resume drained 4-6 of 8 leaves where a live run drains 8).
+        """
+        out: dict[int, dict[str, dict]] = {}
+        for stash in self.stash_counts():
+            for sid in self._rust_mgr.get_state_ids(stash):
+                pages = dict(self._rust_mgr.get_state_symbolic_pages(sid))
+                hook_mem = dict(self._rust_mgr.get_state_hook_symbolic_memory(sid))
+                addr_map = dict(self._rust_mgr.get_state_addr_to_ast(sid))
+                if pages or hook_mem or addr_map:
+                    out[sid] = {
+                        "symbolic_pages": pages,
+                        "hook_symbolic_memory": hook_mem,
+                        "addr_to_ast": addr_map,
+                    }
+        return out
+
+    def _restore_bucket_d(self, overlays: dict[int, dict[str, dict]]) -> None:
+        """Inverse of :meth:`_capture_bucket_d`. Unknown state ids are skipped
+        by the Rust setters, so a partial stash restore stays safe."""
+        for sid, buckets in overlays.items():
+            pages = buckets.get("symbolic_pages")
+            if pages:
+                self._rust_mgr.set_state_symbolic_pages(sid, pages)
+            for addr, (ast, size) in buckets.get("hook_symbolic_memory", {}).items():
+                self._rust_mgr.set_state_hook_symbolic_memory(sid, addr, ast, size)
+            for addr, (ast, size) in buckets.get("addr_to_ast", {}).items():
+                self._rust_mgr.set_state_addr_to_ast(sid, addr, ast, size)
 
     def load_snapshot(self, path: str) -> None:
         """Restore a stash-manager snapshot from ``path`` (opt-in,
@@ -6061,8 +6109,19 @@ class RustExplorationManager(
                 format-version byte.
         """
         with open(path, "rb") as f:
-            bytes_blob = f.read()
+            blob = f.read()
+        overlays: dict[int, dict[str, dict]] = {}
+        if blob.startswith(_SNAPSHOT_MAGIC):
+            head = len(_SNAPSHOT_MAGIC)
+            (rust_len,) = struct.unpack_from("<Q", blob, head)
+            head += struct.calcsize("<Q")
+            bytes_blob = blob[head : head + rust_len]
+            overlays = pickle.loads(blob[head + rust_len :])
+        else:
+            # Pre-bucket-D envelope (angr-x04s.1.4): bare Rust bytes.
+            bytes_blob = blob
         self._rust_mgr.load_snapshot_bytes(bytes_blob)
+        self._restore_bucket_d(overlays)
         # The post-restore Rust state_ids are the original ones (snapshot
         # preserves them), so external state-export caches indexed by id
         # must be flushed.
