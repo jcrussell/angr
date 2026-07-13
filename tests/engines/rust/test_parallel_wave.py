@@ -463,9 +463,22 @@ class TestParallelCheckpointFrontier:
         # The upper bound is still load-bearing — it is the .13.12 fix's own
         # observable, i.e. that a resume can no longer overshoot by replaying the
         # constructor's placeholder seed (the old 9-of-8).
-        assert _SYNTH_LEAVES // 2 <= len(found) <= _SYNTH_LEAVES, (
+        #
+        # angr-vplge: the lower bound applies only to the SERIAL arm. On the
+        # parallel arm the residual width at the dump point is set by which worker
+        # wins the race to the target and where its peers happened to be — under
+        # full-suite load that residual can be narrower than the one this bound was
+        # calibrated on, which drops the resumed yield below 4 and fails a test
+        # that passes in isolation. Half-the-leaves is a claim about the *dump*, so
+        # it can only be asserted where the dump point is deterministic. What the
+        # resume side itself owes (a restored frontier that is live, and identical
+        # leaves at any worker count) is pinned by the >= 1 floor here plus
+        # ``test_resume_from_fixed_snapshot_is_worker_count_invariant``, which holds
+        # the snapshot bytes fixed and so has no dump-width variance at all.
+        lower = _SYNTH_LEAVES // 2 if workers == 1 else 1
+        assert lower <= len(found) <= _SYNTH_LEAVES, (
             f"workers={workers}: resume-from-snapshot drained {len(found)} leaves, "
-            f"expected {_SYNTH_LEAVES // 2}-{_SYNTH_LEAVES}"
+            f"expected {lower}-{_SYNTH_LEAVES} from dump-point frontier {pre}"
         )
 
     def test_resume_from_fixed_snapshot_is_worker_count_invariant(self, pbounce_project, monkeypatch, tmp_path):

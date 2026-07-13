@@ -35,6 +35,20 @@ fn pinned_state(name: &str, witness: u64) -> RustSimState {
     state
 }
 
+/// Block until `cond` holds, or give up after ~10s (angr-vplge).
+///
+/// The parallel post-cancel tests need one task to observe another's progress.
+/// A fixed sleep is a race under full-suite load — the sleeper can wake before
+/// the event it was waiting for — so wait on the condition itself. The deadline
+/// only exists so a genuine scheduler regression fails the assertion instead of
+/// hanging the test binary.
+fn spin_until(cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !cond() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 // angr-1ilq.9: the worker-local frontier pop honors the injected
 // `SelectionPolicy`. Push three states front-to-back onto one worker's
 // `local` queue and drain it via `dispatch_next` (empty injector, so no
@@ -247,7 +261,6 @@ fn test_scheduler_cancellation_stops_workers() {
 // cross-worker speculative steps and never on the finder's own step.
 #[test]
 fn test_post_cancel_steps_counts_peer_speculation() {
-    use std::time::Duration;
     const N: u64 = 8;
     let run_order = Arc::new(AtomicUsize::new(0));
 
@@ -259,14 +272,19 @@ fn test_post_cancel_steps_counts_peer_speculation() {
     let sched = ParallelScheduler::new(4);
     let (_collected, _summaries, stats) = sched.run_instrumented(payloads, {
         let run_order = Arc::clone(&run_order);
-        move |state, _cancel, _cache| {
+        move |state, cancel, _cache| {
             let request_cancel = if run_order.fetch_add(1, Ordering::SeqCst) == 0 {
-                // First to start: cancel immediately, before peers wake.
+                // Finder. Hold until a peer is past the worker's task-boundary
+                // cancel check (i.e. actually in-flight) — a worker never
+                // dispatches a new task once the token is tripped, so a cancel
+                // raised before any peer starts leaves nothing to speculate.
+                spin_until(|| run_order.load(Ordering::SeqCst) >= 2);
                 true
             } else {
-                // Peer: stay in-flight long enough for the finder's cancel to
-                // land, then return a normal terminal (does NOT self-cancel).
-                std::thread::sleep(Duration::from_millis(50));
+                // Peer: hold until the finder's cancel is visible, then return a
+                // normal terminal (does NOT self-cancel) — that step is
+                // speculative by construction.
+                spin_until(|| cancel.is_cancelled());
                 false
             };
             TaskOutcome {
