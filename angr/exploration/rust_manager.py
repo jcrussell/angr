@@ -6032,7 +6032,15 @@ class RustExplorationManager(
             fewer constraints than the original and consequently solve to
             a different model. End-to-end equality of ``posix.dumps(0)``
             across a snapshot round-trip is therefore not guaranteed.
+
+        Live parallel sessions (angr-op0dn.13.6):
+            Under the steady-state parallel loop the frontier is resident in
+            the worker Z3 contexts and belongs to no stash, so a mid-session
+            dump would silently omit it. The session is finalized (frontier
+            drained back into the active stash) before the capture, both here
+            and again Rust-side inside ``dump_snapshot_bytes``.
         """
+        self._finalize_parallel_session()
         bytes_blob = self._rust_mgr.dump_snapshot_bytes()
         with open(path, "wb") as f:
             f.write(bytes(bytes_blob))

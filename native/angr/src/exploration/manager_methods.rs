@@ -2411,7 +2411,14 @@ impl RustExplorationManager {
     /// overlays (symbolic_pages / hook_symbolic_memory / addr_to_ast) are
     /// NOT captured — the Python wrapper handles those via
     /// `claripy.dumps`/`loads`.
-    pub fn dump_snapshot_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+    ///
+    /// angr-op0dn.13.6: takes `&mut self` and finalizes a live steady session
+    /// first. Under steady mode (angr-nkoct) the frontier lives inside the
+    /// worker Z3 contexts and is in NO stash, so dumping `self.sm` mid-session
+    /// would silently truncate the search — the snapshot would look valid and
+    /// resume with a smaller frontier. Finalize-then-capture is the contract.
+    pub fn dump_snapshot_bytes<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        self.steady_config_guard();
         let bytes = self.sm.dump_snapshot();
         PyBytes::new(py, &bytes)
     }

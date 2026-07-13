@@ -301,6 +301,34 @@ class TestParallelExhaustiveSynthetic:
         assert {s.addr for s in found} == {target_addr}
 
 
+def _pbounce_state(project):
+    """Blank state at ``main`` with 32 symbolic stdin bytes (the 8-leaf synthetic)."""
+    main_sym = project.loader.find_symbol("main")
+    state = project.factory.blank_state(addr=main_sym.rebased_addr)
+    state.posix.stdin.content.append((claripy.BVS("stdin", 32 * 8), claripy.BVV(32, state.arch.bits)))
+    return state
+
+
+def _fingerprint(mgr):
+    """Structural search-frontier fingerprint (mirrors ``show_checkpoint_resume.py``).
+
+    Per-stash population plus the sorted PCs of the active stash — neither
+    depends on Z3 model latitude, so an exact match across a snapshot round-trip
+    proves the search frontier was *restored*, not re-derived.
+
+    PCs are read from Rust (``get_state_pc_by_id``), not from the ``mgr.active``
+    proxies: a proxy's ``.addr`` can be served from a stale ``_state_cache``
+    entry and lag the real pc by a block (angr-ibx8j), which would make this
+    fingerprint report a divergence that does not exist in the snapshot.
+    """
+    counts = {k: v for k, v in mgr.stash_counts().items() if v}
+    active_ids = mgr._rust_mgr.get_state_ids("active")
+    return {
+        "stash_counts": counts,
+        "active_addrs": sorted(hex(mgr._rust_mgr.get_state_pc_by_id(sid)) for sid in active_ids),
+    }
+
+
 def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
     """``_explore_pbounce`` with a caller-chosen ``num_find`` (< 8 => early cancel)."""
     if workers > 1:
@@ -308,12 +336,8 @@ def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
     else:
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
 
-    main_sym = project.loader.find_symbol("main")
     target = project.loader.find_symbol("reach_target")
-    state = project.factory.blank_state(addr=main_sym.rebased_addr)
-    state.posix.stdin.content.append((claripy.BVS("stdin", 32 * 8), claripy.BVV(32, state.arch.bits)))
-
-    mgr = RustExplorationManager(project, [state])
+    mgr = RustExplorationManager(project, [_pbounce_state(project)])
     assert mgr.stats["parallel_real_workers"] == workers
     mgr.explore(find=target.rebased_addr, num_find=num_find, n=4096)
     return mgr, target.rebased_addr
@@ -373,6 +397,57 @@ class TestParallelCancelFrontier:
             f"(first pass found {found_first})"
         )
         assert {s.addr for s in found} == {target_addr}
+
+
+class TestParallelCheckpointFrontier:
+    """angr-op0dn.13.6 — the drained frontier is CHECKPOINTABLE.
+
+    ``dump_snapshot`` finalizes any live steady session before capturing (Python
+    ``_finalize_parallel_session`` + the Rust ``steady_config_guard`` inside
+    ``dump_snapshot_bytes``), so a snapshot can never silently omit states that
+    are resident in worker Z3 contexts rather than in a stash. Here the dump is
+    taken right after a parallel find-1 early cancel — the point where the
+    residual frontier is largest and a truncation would be invisible.
+    """
+
+    @pytest.mark.parametrize("workers", [1, 4])
+    def test_snapshot_after_cancel_round_trips_and_resumes(self, pbounce_project, workers, monkeypatch, tmp_path):
+        mgr, target_addr = _explore_pbounce_find_k(pbounce_project, workers, monkeypatch, num_find=1)
+        assert not mgr._rust_mgr.parallel_session_active(), "dump-point must have no live session"
+
+        pre = _fingerprint(mgr)
+        assert pre["stash_counts"].get("active", 0) > 0, f"workers={workers}: nothing to checkpoint"
+        assert len(list(mgr.found)) < _SYNTH_LEAVES, "the explore must have exited early to test resumability"
+
+        snap = tmp_path / "pbounce.snap"
+        mgr.dump_snapshot(str(snap))
+
+        resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
+        resumed.load_snapshot(str(snap))
+
+        assert _fingerprint(resumed) == pre, f"workers={workers}: frontier truncated across the snapshot"
+
+        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+        found = list(resumed.found)
+        assert len(list(resumed.errored)) == 0, f"workers={workers} errored: {list(resumed.errored)}"
+        assert {s.addr for s in found} == {target_addr}
+
+        if workers == 1:
+            # Serial dump point: the restored frontier is fully live — the
+            # resumed manager still reaches every leaf.
+            assert len(found) == _SYNTH_LEAVES, (
+                f"resume-from-snapshot drained {len(found)} leaves, expected {_SYNTH_LEAVES}"
+            )
+        else:
+            # angr-op0dn.13.10 (open bug): a snapshot taken after a PARALLEL
+            # explore round-trips structurally (the fingerprint above) but the
+            # restored states lose reachability — 5-6 of the 8 leaves, stably.
+            # Resuming the same in-memory manager reaches all 8
+            # (test_cancelled_frontier_is_resumable), so the loss is in what a
+            # migrated state carries versus what the snapshot codec captures.
+            # Gate the continuity contract this bead owns (fingerprint) and
+            # assert only forward progress here until .13.10 lands.
+            assert len(found) > 1, f"workers={workers}: resume-from-snapshot made no progress past the restored find"
 
 
 def _explore_steady(project, monkeypatch, num_find=2):

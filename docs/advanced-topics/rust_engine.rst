@@ -4195,6 +4195,25 @@ What is NOT captured:
   caller's responsibility (a binary-hash field is a planned
   ``angr-x04s.2`` follow-up).
 
+Parallel exploration (``RUST_PARALLEL_WORKERS``) interacts with the
+capture in two ways:
+
+* **Live steady sessions are finalized, never truncated.** Under the
+  steady-state loop the search frontier is resident inside the worker
+  Z3 contexts and belongs to no stash, so a naive dump would silently
+  omit it. ``dump_snapshot`` drains the frontier back into ``active``
+  before capturing (Python ``_finalize_parallel_session``, plus the
+  Rust-side ``steady_config_guard`` inside ``dump_snapshot_bytes``),
+  so the snapshot always reflects the whole frontier.
+* **Known gap (angr-op0dn.13.10)** — a snapshot taken *after* a
+  parallel explore round-trips structurally (per-stash counts and the
+  active-stash PCs match exactly) but the restored states can lose
+  reachability: on the 8-leaf synthetic, resuming from such a snapshot
+  reaches 5-6 leaves where resuming the same in-memory manager reaches
+  all 8. Serial (``workers=1``) snapshots resume fully. Treat
+  post-parallel snapshots as a checkpoint of the frontier's shape, not
+  yet of its full search power.
+
 Known limitation — **model equality is NOT guaranteed across a
 restore**. The snapshot preserves the constraint set, but Z3's
 solving heuristics are nondeterministic (see ``BIMODAL_BENCHMARKS``
