@@ -27,7 +27,9 @@
 //!   models the `CGC_NON_BLOCKING_FDS` mode: every fd is "ready", and
 //!   the readfds/writefds bitmasks are filled with concrete 1-bits up
 //!   to `min(nfds, 32)`. Returns 0. Matches the Python proc with
-//!   `angr.options.CGC_NON_BLOCKING_FDS` set.
+//!   `angr.options.CGC_NON_BLOCKING_FDS` set; falls back to Python when
+//!   the option is unset (the Python proc then makes each ready bit
+//!   unconstrained, which the stub cannot express).
 //! * `7 random(buf, count, rnd_bytes)` — writes `count` fresh symbolic
 //!   bytes into `[buf, ...)` (no fd) and stores `count` at `*rnd_bytes`.
 //!   Returns 0. Mirrors `random` SimProcedure for non-fastpath mode.
@@ -285,7 +287,7 @@ impl NativeSyscall for NativeReceiveSyscall {
 // total-ready count written at `*readyfds` is `min(nfds, 32) * 2`
 // when both mask pointers are non-zero, else half that — matching the
 // Python proc's "1 bit per fd per mask" counting under
-// `CGC_NON_BLOCKING_FDS`.
+// `CGC_NON_BLOCKING_FDS`. States without that option defer to Python.
 pub struct NativeFdwaitSyscall;
 
 impl NativeSyscall for NativeFdwaitSyscall {
@@ -307,6 +309,19 @@ impl NativeSyscall for NativeFdwaitSyscall {
                 "fdwait expected 5 args, got {}",
                 args.len()
             )));
+        }
+        // The concrete-ready stub below IS the `CGC_NON_BLOCKING_FDS`
+        // behavior. Without the option the Python proc fills the masks
+        // with *unconstrained* per-fd ready bits, so a binary that
+        // branches on FD readiness explores both arms; running the stub
+        // anyway would silently prune those paths. Defer to Python
+        // instead — that keeps the option honored in both directions
+        // rather than only when it is set (angr-op0dn.14.8).
+        if !state.has_option("CGC_NON_BLOCKING_FDS") {
+            return Err(SyscallError::Other(
+                "fdwait without CGC_NON_BLOCKING_FDS needs symbolic ready bits; falls back to Python"
+                    .to_string(),
+            ));
         }
         let nfds = extract_concrete_arg(&args[0], "fdwait nfds")?;
         let readfds = extract_concrete_arg(&args[1], "fdwait readfds")?;

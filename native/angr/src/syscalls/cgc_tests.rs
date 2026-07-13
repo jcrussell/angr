@@ -227,10 +227,37 @@ fn receive_non_stdin_fd_falls_back() {
     assert!(matches!(err, SyscallError::Other(_)));
 }
 
+/// fdwait's native stub only models the `CGC_NON_BLOCKING_FDS` mode, so
+/// every fdwait happy-path test must opt into it (angr-op0dn.14.8).
+fn nonblocking_state() -> RustSimState {
+    let mut state = x86_state_with_buf();
+    state.set_option("CGC_NON_BLOCKING_FDS", true);
+    state
+}
+
+#[test]
+fn fdwait_falls_back_without_non_blocking_fds() {
+    let h = NativeFdwaitSyscall;
+    let mut state = x86_state_with_buf();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(4, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(0x2100, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2200, 32),
+            ],
+        )
+        .expect_err("fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+}
+
 #[test]
 fn fdwait_sets_masks_and_total() {
     let h = NativeFdwaitSyscall;
-    let mut state = x86_state_with_buf();
+    let mut state = nonblocking_state();
     let outcome = h
         .call(
             &mut state,
@@ -255,7 +282,7 @@ fn fdwait_sets_masks_and_total() {
 #[test]
 fn fdwait_nfds_zero_yields_zero_mask() {
     let h = NativeFdwaitSyscall;
-    let mut state = x86_state_with_buf();
+    let mut state = nonblocking_state();
     let outcome = h
         .call(
             &mut state,
@@ -278,7 +305,7 @@ fn fdwait_nfds_zero_yields_zero_mask() {
 #[test]
 fn fdwait_clamps_to_32_fds() {
     let h = NativeFdwaitSyscall;
-    let mut state = x86_state_with_buf();
+    let mut state = nonblocking_state();
     let outcome = h
         .call(
             &mut state,

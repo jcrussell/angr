@@ -118,6 +118,14 @@ _EXONERATED = {
     "(native/angr/src/memory/load.rs) already falls back to a fresh symbolic BVS when "
     "zero_fill_unconstrained is unset, so symbol-fill IS Rust's default for memory. "
     "(The REGISTERS sibling is NOT exonerated — Rust zero-fills registers.)",
+    "CONCRETIZE_SYMBOLIC_WRITE_SIZES": "Honored transparently: its only in-tree consumer is "
+    "SimFileBase._prep_generic (storage/file.py), and every native write path "
+    "(syscalls/write.rs, CGC transmit in syscalls/cgc.rs) falls back to Python on a symbolic "
+    "count, so the option fires in Python wherever it can fire at all. (angr-op0dn.14.8)",
+    "CGC_NON_BLOCKING_FDS": "Honored in both directions since angr-op0dn.14.8: the native fdwait "
+    "(syscalls/cgc.rs NativeFdwaitSyscall) implements exactly the option-is-set behavior and now "
+    "falls back to Python when the option is unset, where the Python proc's unconstrained ready "
+    "bits are produced.",
     "TRACK_ACTION_HISTORY": "Demoted from raise in angr-fkvt: unlike its TRACK_*_ACTIONS siblings it "
     "does not gate action recording. Its only in-tree consumer (state_plugins/preconstrainer.py) "
     "uses it as a metadata flag whose clear/restore is a vacuous no-op under Rust.",

@@ -357,6 +357,32 @@ _REJECTED_OPTION_NAMES = frozenset(
 # UNSUPPORTED_BYPASS_ZERO_DEFAULT and UNSUPPORTED_FORCE_CONCRETIZE only
 # affect what value Python substitutes when its bypass fires, so they
 # are also honored transparently through the same path.
+# CONSTRAINT_TRACKING_IN_SOLVER tells SimSolver to build a tracking
+# claripy Solver (state_plugins/solver.py _init_add_constraints) so that
+# unsat_core() can name the constraints that made a state infeasible;
+# without it, unsat_core() refuses to run at all (raises
+# SimSolverOptionError). The Rust engine adds its constraints straight to
+# the shared Z3 solver with no assumption literals, so an opting-in user
+# gets a *silently empty* unsat core instead of the diagnostic they asked
+# for — the one failure mode the option exists to prevent. Promoted to
+# raise (angr-op0dn.14.8, 2026-07-13); wiring tracked adds through
+# RustSolverProxy is the independent feature call tracked by
+# angr-op0dn.14.2.
+#
+# CONCRETIZE_SYMBOLIC_WRITE_SIZES is NOT promoted. Its only in-tree
+# consumer is SimFileBase._prep_generic (storage/file.py), and every
+# native write path (syscalls/write.rs, the CGC `transmit` in
+# syscalls/cgc.rs) falls back to Python on a symbolic count — so the
+# option is honored transparently wherever it can fire. (The memory-side
+# knob of the same name is a SimMemory *constructor kwarg*, not this
+# option.)
+#
+# CGC_NON_BLOCKING_FDS is NOT promoted either: the native `fdwait`
+# (syscalls/cgc.rs NativeFdwaitSyscall) implements exactly the
+# option-is-set behavior, and since angr-op0dn.14.8 it falls back to
+# Python when the option is unset — where the Python proc's
+# unconstrained ready bits are produced. Honored in both directions.
+#
 # TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (demoted angr-fkvt,
 # 2026-06-06). Unlike its TRACK_*_ACTIONS siblings, it does not gate
 # action recording — angr's heavy/actions.py only consults
@@ -386,6 +412,7 @@ _RAISE_OPTION_NAMES = frozenset(
         "BYPASS_ERRORED_IROP",
         "BYPASS_ERRORED_IRCCALL",
         "BYPASS_ERRORED_IRSTMT",
+        "CONSTRAINT_TRACKING_IN_SOLVER",
     }
 )
 

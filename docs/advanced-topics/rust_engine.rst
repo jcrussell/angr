@@ -1792,8 +1792,14 @@ vs. Python.
        rather than enumerate when the option is set.
    * - ``CONCRETIZE_SYMBOLIC_WRITE_SIZES``
      - Concretizes the *size* of a symbolic-sized write.
-     - (a) implement — Rust concretizes addresses but not sizes the same
-       way.
+     - **Honored** transparently (``angr-op0dn.14.8``). The option's only
+       in-tree consumer is ``SimFileBase._prep_generic``
+       (``storage/file.py``), and every native write path
+       (``syscalls/write.rs``, the CGC ``transmit`` in
+       ``syscalls/cgc.rs``) falls back to Python on a symbolic count — so
+       the option fires in Python wherever it can fire at all. The
+       identically-named *memory* knob is a ``SimMemory`` constructor
+       kwarg (``size_resolution_mixin.py``), not this SimOption.
    * - ``CONSERVATIVE_WRITE_STRATEGY``
      - Refuses to concretize symbolic-write addresses on range-check
        failure.
@@ -1864,8 +1870,13 @@ vs. Python.
      - (b) explicitly reject.
    * - ``CONSTRAINT_TRACKING_IN_SOLVER``
      - Required for ``solver.unsat_core()``.
-     - (a) implement — Rust solver tracks constraints internally but
-       ``unsat_core`` is not surfaced.
+     - **(c) raise NotImplementedError** at manager construction
+       (``angr-op0dn.14.8``). The Rust engine adds constraints straight to
+       the shared Z3 solver with no assumption literals, so ``unsat_core()``
+       would return an empty tuple — the option's entire purpose is the
+       diagnostic, and a silently empty one is worse than no engine.
+       Surfacing tracked adds through ``RustSolverProxy`` is separate
+       feature work (``angr-op0dn.14.2``).
    * - ``BYPASS_UNSUPPORTED_IROP``, ``BYPASS_UNSUPPORTED_IRDIRTY``,
        ``BYPASS_UNSUPPORTED_IRCCALL``, ``BYPASS_UNSUPPORTED_SYSCALL``
      - Tell Python's ``HeavyResilienceMixin``
@@ -1963,15 +1974,15 @@ vs. Python.
    * - ``CGC_NON_BLOCKING_FDS``
      - When *not* set, Python's ``fdwait`` SimProcedure returns symbolic
        1-bit ready flags for each fd; when set, it returns concrete 1.
-     - (a) honor option. Rust's ``NativeFdwaitSyscall``
-       (``native/angr/src/syscalls/cgc.rs:269``) always writes concrete
-       1-bits — i.e., it behaves as if the option were set. Matches
-       Python when the user opts in (the typical case for CGC analyses,
-       which import the option as part of the platform contract), but
-       diverges when unset: a CGC binary that branches on the symbolic
-       readiness flag would explore both branches under Python and only
-       the all-ready branch under Rust. None of the current benches
-       exercise this path.
+     - **Honored** in both directions (``angr-op0dn.14.8``). Rust's
+       ``NativeFdwaitSyscall`` (``native/angr/src/syscalls/cgc.rs``)
+       writes concrete 1-bits — i.e., it implements exactly the
+       option-is-set behavior — and returns a ``SyscallError`` when the
+       option is unset, deferring to the Python ``fdwait`` proc that
+       produces the unconstrained ready bits. Before that gate the stub
+       ran unconditionally, so a CGC binary branching on fd readiness
+       explored both arms under Python and only the all-ready arm under
+       Rust.
 
 Ignored — no-op
 ~~~~~~~~~~~~~~~
@@ -2091,25 +2102,30 @@ Consequently the flip gate is:
 3. M2 result-determinism holds on non-bimodal cases, accepting the permanent
    bimodal timing carve-out.
 
-The cheap move for the seven *opt-in* silent options is worth naming, because it
-is not "implement them". An opt-in option that raises or warns is one the
+The cheap move for the *opt-in* silent options was worth naming, because it was
+not "implement them". An opt-in option that raises or warns is one the
 dispatcher can route on; so promoting a silent opt-in option into
 ``_RAISE_OPTION_NAMES`` costs one line and retires it from the gate, whereas
-implementing it costs a feature. Only the three default-bundle options resist
-that trick, because routing on them would route everyone. **Minimal parity set =
-dispatcher + those 3 options + the 63 bridge sites + the ``constraints`` inspect
-gap.** Everything else on the loud surface is a one-line promotion.
+implementing it costs a feature. ``angr-op0dn.14.8`` drained that half:
+``CONSTRAINT_TRACKING_IN_SOLVER`` was promoted to raise, and
+``CONCRETIZE_SYMBOLIC_WRITE_SIZES`` / ``CGC_NON_BLOCKING_FDS`` turned out to be
+honored (the latter after gating the native ``fdwait`` stub on the option), so
+the opt-in silent count is now **zero**. Only the three default-bundle options
+resist the trick, because routing on them would route everyone. **Minimal parity
+set = dispatcher + those 3 options + the 63 bridge sites + the ``constraints``
+inspect gap.**
 
 This re-scopes two M6 children. ``angr-op0dn.14.3``
 (``state.history.actions``) comes *out* of the gate: the ``TRACK_*_ACTIONS``
 family is already in ``_RAISE_OPTION_NAMES``, so the dispatcher handles it for
 free and native SimAction recording is beyond-parity feature work, not a flip
-gate. ``angr-op0dn.14.2`` (unsat_core) stays *in*, but not for the reason its
-title implies: its gating option ``CONSTRAINT_TRACKING_IN_SOLVER`` is **silent**
-today, so a user who opts into constraint tracking gets an empty unsat core and
-no diagnostic. Promoting that option to raise closes the flip gate immediately;
-wiring the core through ``RustSolverProxy`` is then an independent feature
-decision that can be made on its own merits.
+gate. ``angr-op0dn.14.2`` (unsat_core) comes *out* of the gate as of
+``angr-op0dn.14.8``, though not for the reason its title implies: its gating
+option ``CONSTRAINT_TRACKING_IN_SOLVER`` was **silent**, so a user who opted
+into constraint tracking got an empty unsat core and no diagnostic. That option
+now raises, which closes the flip gate; wiring the core through
+``RustSolverProxy`` is an independent feature decision that can be made on its
+own merits.
 
 Provenance
 ~~~~~~~~~~
