@@ -696,3 +696,48 @@ fn test_merge_panics_on_condition_count_mismatch() {
     let f0 = RustBV::symbolic(&s1, "merge_flag_bad", 1);
     let _ = s1.merge(&[&s2], &[f0]);
 }
+
+/// angr-ue4ro: `eval_many` must read every part off ONE model. Solving each
+/// part with a separate `eval` can mix models, so parts tied by a cross-part
+/// constraint come back mutually inconsistent.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_is_single_model() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "x", 8);
+    let y = RustBV::symbolic(&ctx, "y", 8);
+
+    // Cross-part constraint: x + y == 10 (both parts individually free).
+    let sum = x.add(&y, &ctx);
+    let ten = RustBV::concrete(10, 8);
+    let is_ten = sum.eq(&ten, &ctx);
+    ctx.assume_true(&is_ten);
+
+    let vals = ctx
+        .eval_many(&[x, y])
+        .expect("sat constraint set should yield a model");
+    assert_eq!(vals.len(), 2);
+    assert_eq!(
+        (vals[0] + vals[1]) & 0xff,
+        10,
+        "parts must satisfy the cross-part constraint (x={}, y={})",
+        vals[0],
+        vals[1]
+    );
+}
+
+/// An unsat context yields no model at all — never a partially-filled vector.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_unsat_returns_none() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "x", 8);
+    let one = RustBV::concrete(1, 8);
+    let two = RustBV::concrete(2, 8);
+    let is_one = x.eq(&one, &ctx);
+    let is_two = x.eq(&two, &ctx);
+    ctx.assume_true(&is_one);
+    ctx.assume_true(&is_two);
+
+    assert!(ctx.eval_many(&[x]).is_none());
+}

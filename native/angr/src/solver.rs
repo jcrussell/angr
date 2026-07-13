@@ -401,6 +401,36 @@ impl RustSolverContext {
         Ok(None)
     }
 
+    /// Evaluate several claripy ASTs against ONE model (angr-ue4ro).
+    ///
+    /// `eval` on each AST in turn is NOT equivalent: every call may land on a
+    /// different satisfying assignment, so the results need not be jointly
+    /// consistent. Callers that reassemble the parts into one value — the
+    /// byte-`Extract` decomposition in `RustSolverFallback._rust_eval`, used
+    /// when a >64-bit expression cannot be converted whole — must use this.
+    ///
+    /// Returns `None` if the constraints are unsat or any AST cannot be
+    /// evaluated; the caller then falls back to the Python solver.
+    pub fn eval_batch(
+        &self,
+        py: Python<'_>,
+        asts: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<Option<Vec<u128>>> {
+        let ctx = self.inner.ctx();
+        let mut bvs = Vec::with_capacity(asts.len());
+        for ast in &asts {
+            if let Some((value, width)) = try_extract_bvv(ast) {
+                bvs.push(RustBV::concrete(value, width));
+                continue;
+            }
+            match self.ast_to_bv_for_eval(py, ast, &ctx) {
+                Some(bv) => bvs.push(bv),
+                None => return Ok(None),
+            }
+        }
+        Ok(ctx.eval_many(&bvs))
+    }
+
     /// Evaluate a claripy AST and return up to n solutions.
     pub fn eval_upto(
         &self,
@@ -1173,6 +1203,48 @@ impl Default for RustSolverContext {
 }
 
 impl RustSolverContext {
+    /// Lower a claripy AST to a `RustBV` usable for evaluation, mirroring the
+    /// conversion order in [`RustSolverContext::eval`]: the standard
+    /// claripy → RustBV import first, then the raw Z3 AST pointer (which
+    /// preserves identity with constraints already asserted in the solver).
+    /// Returns `None` when neither path applies. Used by `eval_batch`.
+    fn ast_to_bv_for_eval(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+        ctx: &SymContext,
+    ) -> Option<RustBV> {
+        if let Ok(bv) = claripy_to_rustbv(py, ast, ctx) {
+            return Some(bv);
+        }
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            use z3::ast::Ast;
+            let z3_ast = extract_z3_ast_ptr(py, ast).ok()?;
+            if !z3_ast.is_bv() {
+                return None;
+            }
+            let width: u32 = ast.getattr("length").ok()?.extract().ok()?;
+            // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (checked via
+            // `is_bv()`; Z3AstPtr holds an active ref) and `width` is claripy's
+            // matching length. `BV::wrap` takes its own ref.
+            let z3_bv = unsafe {
+                let z3_ctx = z3::Context::thread_local();
+                z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
+            };
+            Some(RustBV::Symbolic {
+                id: 0,
+                ast: z3_bv,
+                width,
+                name: Arc::from(""),
+            })
+        }
+        #[cfg(not(feature = "vex-engine-z3"))]
+        {
+            None
+        }
+    }
+
     /// Evaluate a typed Z3 AST handle directly in the solver context.
     ///
     /// Lives outside `#[pymethods]` because [`Z3AstPtr`] is not a PyO3-

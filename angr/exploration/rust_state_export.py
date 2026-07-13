@@ -183,35 +183,50 @@ class RustSolverFallback:
             return result
         # Wide BVS (e.g. 160-bit flag): Rust eval returns None because the
         # full symbol isn't in Rust's table. Decompose into byte-sized evals.
+        #
+        # angr-ue4ro: the bytes MUST be read off a single model. One
+        # rust_ctx.eval() per byte lets each byte land on a different
+        # satisfying assignment, so the concatenation satisfies every
+        # byte-local constraint but can violate a cross-byte one (a checksum,
+        # or a find gate over a mixed accumulator) — silently handing the user
+        # an "input" that does not reach the target. eval_batch does one
+        # check-sat and reads every part out of that one model.
         if hasattr(expr, "length") and expr.length > 64:
             nbytes = expr.length // 8
-            byte_vals = []
-            for i in range(nbytes):
-                hi = expr.length - 1 - i * 8
-                lo = hi - 7
-                byte_expr = claripy.Extract(hi, lo, expr)
-                byte_result = rust_ctx.eval(byte_expr)
-                if byte_result is None:
-                    return None
-                byte_vals.append(byte_result & 0xFF)
+            byte_exprs = [
+                claripy.Extract(expr.length - 1 - i * 8, expr.length - 8 - i * 8, expr) for i in range(nbytes)
+            ]
+            byte_vals = rust_ctx.eval_batch(byte_exprs)
+            if byte_vals is None:
+                return None
             value = 0
             for bv in byte_vals:
-                value = (value << 8) | bv
+                value = (value << 8) | (bv & 0xFF)
             if cast_to == bytes:
                 return value.to_bytes(nbytes, "big")
             return value
         return None
 
     def eval(self, expr, cast_to=None, **kwargs):
+        unsat = False
         try:
             result = self._rust_eval(expr, cast_to)
             if result is not None:
                 return result
+            # angr-ue4ro: Rust gave no value. On an UNSAT context that is not
+            # "Rust can't handle this expr" — it means there is no model at
+            # all, and falling through to the Python solver silently returns
+            # zeros (the constraints live in Rust, so the Python solver's set
+            # is empty and every expr looks unconstrained). Raise instead, the
+            # way min()/max() already do.
+            unsat = not self._get_rust_ctx().satisfiable()
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust eval failed; Python solver
             # is the fallback and has the same constraints (constraint sync
             # ran during exploration), so no wrong-answer risk.
             l.debug("Rust eval failed, falling back to Python: %s", e)
+        if unsat:
+            raise SimUnsatError("Rust solver context is unsat (eval)")
         return self._original_eval(expr, cast_to=cast_to, **kwargs)
 
     def eval_upto(self, expr, n, cast_to=None, **kwargs):

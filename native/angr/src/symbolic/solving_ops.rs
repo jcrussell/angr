@@ -48,6 +48,23 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
     }
 }
 
+/// Read every bv in `bvs` off a single Z3 model. All-or-nothing: `None` when
+/// any part fails to evaluate, so a caller never sees a half-model. Shared by
+/// `eval_many`'s cached-model and fresh-model paths (angr-ue4ro).
+#[cfg(feature = "vex-engine-z3")]
+fn eval_all_in_model(model: &z3::Model, bvs: &[RustBV]) -> Option<Vec<u128>> {
+    let mut values = Vec::with_capacity(bvs.len());
+    for bv in bvs {
+        if let Some(v) = bv.as_u128() {
+            values.push(v);
+            continue;
+        }
+        let result = model.eval(&bv.to_z3_ast(), true)?;
+        values.push(extract_bv_value(&result)?);
+    }
+    Some(values)
+}
+
 /// Binary search for the minimum feasible value of `ast` in `[lo, hi]`.
 ///
 /// Floor-mid bisection: assert `cmp(ast, mid)` (i.e. `ast <= mid`) and keep the
@@ -330,6 +347,13 @@ impl SymContext {
     }
 
     /// Evaluate a bitvector to bytes (for values > 128 bits).
+    ///
+    /// Reads and populates `model_cache` exactly like `eval` (angr-ue4ro): a
+    /// wide value must come out of ONE model, and a caller that evals the same
+    /// 256-bit stdin BVS twice — or evals it once and then `posix.dumps(0)`s
+    /// the same bytes — must get the same answer both times. The old
+    /// fresh-check-every-call version handed back a different (still
+    /// satisfying) model each time, which reads as nondeterminism to a user.
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
         let width = bv.width();
@@ -339,12 +363,20 @@ impl SymContext {
             return Some(u128_to_be_bytes_width(v, width));
         }
 
+        {
+            let cache = self.model_cache.borrow();
+            if let Some(ref model) = *cache {
+                let ast = bv.to_z3_ast();
+                if let Some(result) = model.eval(&ast, true) {
+                    return extract_bv_value_wide(&result, width);
+                }
+            }
+        }
+
         // Need a fresh model — check(), get_model(), and the AST evaluation
         // all share one solver lock acquisition via with_z3_solver. Mirrors
-        // the slice 3h pattern from `eval`, minus the model_cache write
-        // (eval_wide neither reads nor populates model_cache today) and
-        // minus the sat_cache update (the original eval_wide didn't set it
-        // either — preserve behavior).
+        // the slice 3h pattern from `eval`, minus the sat_cache update (the
+        // original eval_wide didn't set it — preserve behavior).
         self.with_z3_solver(|solver| {
             match timed_check(solver, CheckSite::Eval) {
                 z3::SatResult::Sat => {}
@@ -354,7 +386,52 @@ impl SymContext {
             let model = solver.get_model()?;
             let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
-            extract_bv_value_wide(&result, width)
+            let value = extract_bv_value_wide(&result, width);
+            *self.model_cache.borrow_mut() = Some(model);
+            value
+        })
+    }
+
+    /// Evaluate several bitvectors against ONE model (angr-ue4ro).
+    ///
+    /// The wide-eval fallback in `RustSolverFallback._rust_eval` decomposes an
+    /// expression Rust cannot convert whole into byte-sized `Extract`s. Solving
+    /// each byte independently mixes models: every byte satisfies its own
+    /// byte-local constraints, but a cross-byte constraint (a checksum, or the
+    /// `(acc & 0xff) == 0xee` find gate on the pbounce synthetic) can be
+    /// violated by the concatenation. Route that decomposition through here so
+    /// all parts are read off a single satisfying assignment.
+    ///
+    /// Returns `None` when the constraints are unsat or any part fails to
+    /// evaluate — never a partially-filled vector.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn eval_many(&self, bvs: &[RustBV]) -> Option<Vec<u128>> {
+        if bvs.is_empty() {
+            return Some(Vec::new());
+        }
+
+        {
+            let cache = self.model_cache.borrow();
+            if let Some(ref model) = *cache
+                && let Some(values) = eval_all_in_model(model, bvs)
+            {
+                return Some(values);
+            }
+        }
+
+        self.with_z3_solver(|solver| {
+            match timed_check(solver, CheckSite::Eval) {
+                z3::SatResult::Sat => self.sat_cache.set(Some(true)),
+                _ => {
+                    self.sat_cache.set(Some(false));
+                    return None;
+                }
+            }
+
+            let model = solver.get_model()?;
+            let values = eval_all_in_model(&model, bvs);
+            *self.model_cache.borrow_mut() = Some(model);
+            values
         })
     }
 
@@ -876,6 +953,12 @@ impl SymContext {
         // Without Z3, can only evaluate concrete values
         let width = bv.width();
         bv.as_u128().map(|v| u128_to_be_bytes_width(v, width))
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn eval_many(&self, bvs: &[RustBV]) -> Option<Vec<u128>> {
+        // Without Z3, can only evaluate concrete values
+        bvs.iter().map(|bv| bv.as_u128()).collect()
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
