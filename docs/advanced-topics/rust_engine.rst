@@ -1882,13 +1882,18 @@ vs. Python.
        divergence-risk.
    * - ``CONSTRAINT_TRACKING_IN_SOLVER``
      - Required for ``solver.unsat_core()``.
-     - **(c) raise NotImplementedError** at manager construction
-       (``angr-op0dn.14.8``). The Rust engine adds constraints straight to
-       the shared Z3 solver with no assumption literals, so ``unsat_core()``
-       would return an empty tuple — the option's entire purpose is the
-       diagnostic, and a silently empty one is worse than no engine.
-       Surfacing tracked adds through ``RustSolverProxy`` is separate
-       feature work (``angr-op0dn.14.2``).
+     - **(a) honored** (``angr-op0dn.14.2``). The engine still adds
+       constraints to the shared Z3 solver with no assumption literals — that
+       cost belongs nowhere near the fork path — so
+       ``RustSolverProxyPlugin.unsat_core()`` computes the core *on demand*
+       instead: ``SymContext::unsat_core_assumed`` rebuilds a throwaway
+       solver from the assumed-constraint IR with one assumption literal per
+       constraint and runs ``check_assumptions``. The blamed indices line up
+       1:1 with ``state.solver.constraints``, and because the IR also holds
+       the constraints the *engine* added (fork guards, SimProc adds), the
+       core is complete rather than silently partial. Without the option on
+       the bound state, ``unsat_core()`` raises ``SimSolverOptionError``,
+       matching Python.
    * - ``BYPASS_UNSUPPORTED_IROP``, ``BYPASS_UNSUPPORTED_IRDIRTY``,
        ``BYPASS_UNSUPPORTED_IRCCALL``, ``BYPASS_UNSUPPORTED_SYSCALL``
      - Tell Python's ``HeavyResilienceMixin``
@@ -2222,10 +2227,10 @@ free and native SimAction recording is beyond-parity feature work, not a flip
 gate. ``angr-op0dn.14.2`` (unsat_core) comes *out* of the gate as of
 ``angr-op0dn.14.8``, though not for the reason its title implies: its gating
 option ``CONSTRAINT_TRACKING_IN_SOLVER`` was **silent**, so a user who opted
-into constraint tracking got an empty unsat core and no diagnostic. That option
-now raises, which closes the flip gate; wiring the core through
-``RustSolverProxy`` is an independent feature decision that can be made on its
-own merits.
+into constraint tracking got an empty unsat core and no diagnostic. Promoting
+that option to raise closed the flip gate; the core itself was then wired
+through ``RustSolverProxy`` on its own merits (``angr-op0dn.14.2``), which
+demoted the option back out of ``_RAISE_OPTION_NAMES`` — it is now honored.
 
 Provenance
 ~~~~~~~~~~

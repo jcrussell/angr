@@ -725,3 +725,47 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
     );
     assert!(!core.contains(&2), "innocent constraint blamed: {core:?}");
 }
+
+/// angr-op0dn.14.2: a constraint imported from Python lands in BOTH constraint
+/// lists — `_add_constraints_to_state`'s Z3-ptr fast path calls
+/// `add_constraint_raw` (which logs it as a residual `non_bv_assertion`) and
+/// then pushes an `assumed` pair for the same constraint. `unsat_core_assumed`
+/// must guard such a constraint by its assumption literal ONLY: asserting the
+/// residual copy unguarded as well pins it outside the literals, so an
+/// all-Python contradiction comes back Unsat with an EMPTY core.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
+    use z3::ast::Ast;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_uca_dup_x", 32);
+    let z3_ctx = z3::Context::thread_local();
+
+    // Mirror the Python import path for `x > 10` and `x < 5`: raw Z3 assert
+    // plus an assumed pair for the very same constraint.
+    for bound in [(10u128, true), (5, false)] {
+        let (val, greater) = bound;
+        let rhs = RustBV::concrete(val, 32);
+        let guard = if greater {
+            x.ugt(&rhs, &ctx)
+        } else {
+            x.ult(&rhs, &ctx)
+        };
+        let raw = guard.to_z3_bool();
+        let ptr =
+            unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw.get_z3_ast().as_ptr() as usize) }
+                .expect("Bool must yield a Z3AstPtr");
+        ctx.add_constraint_raw(ptr);
+        ctx.assumed_constraints_push(guard, true);
+    }
+
+    assert_eq!(ctx.get_assumed_constraints().len(), 2);
+    assert!(!ctx.is_sat());
+    let core = ctx.unsat_core_assumed(&[]);
+    assert_eq!(
+        core,
+        vec![0, 1],
+        "both Python-imported constraints must be nameable, got {core:?}"
+    );
+}

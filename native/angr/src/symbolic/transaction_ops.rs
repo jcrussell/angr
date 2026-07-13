@@ -296,54 +296,63 @@ impl SymContext {
     /// is SAT (Z3 produces no core), matching `SimSolver.unsat_core`.
     #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core_assumed(&self, extra: &[z3::ast::Bool]) -> Vec<usize> {
+        use std::collections::HashSet;
         use z3::SatResult;
 
         let assumed = self.get_assumed_constraints();
         // Assumption literals + `check_assumptions`, NOT `assert_and_track` +
-        // `check`. The latter needs the solver's `unsat_core` param armed
-        // before the first assert, and under the shared claripy Z3 context
-        // (which angr runs in) it is not: the tracker is recorded but
-        // `get_unsat_core()` comes back EMPTY on an Unsat verdict — a silent
-        // wrong answer. `check_assumptions` always produces a core over the
-        // literals it is handed, so it needs no solver configuration.
-        // The solver is also a plain `z3::Solver`, not `build_solver`: the
-        // tactic-backed variant `build_solver` can return (ANGR_Z3_TACTIC)
-        // cannot produce cores at all.
+        // `check`: the latter only produces a core when the solver's
+        // `unsat_core` param is armed before the first assert, while
+        // `check_assumptions` always produces one over the literals it is
+        // handed, so it needs no solver configuration. The solver is also a
+        // plain `z3::Solver`, not `build_solver`: the tactic-backed variant
+        // `build_solver` can return (ANGR_Z3_TACTIC) cannot produce cores.
         let solver = z3::Solver::new();
         let mut params = z3::Params::new();
         params.set_u32("timeout", self.timeout_ms.load(Ordering::SeqCst));
         solver.set_params(&params);
 
         let mut trackers = Vec::with_capacity(assumed.len());
+        let mut guarded: HashSet<z3::ast::Bool> = HashSet::with_capacity(assumed.len());
         for (idx, (bv, is_true)) in assumed.iter().enumerate() {
             let cond = self.assumed_pair_to_z3_bool(bv, *is_true);
             let tracker = z3::ast::Bool::new_const(format!("__core_{idx}").as_str());
             solver.assert(tracker.implies(&cond));
+            guarded.insert(cond);
             trackers.push(tracker);
         }
         // Residual (no-RustBV) assertions: needed for a faithful SAT/UNSAT
         // verdict, but they have no claripy AST to report, so assert
         // unconditionally — with no literal guarding them they can never
         // appear in the core.
+        //
+        // EXCEPT the ones that also have an `assumed` entry. A constraint
+        // imported from Python (`_add_constraints_to_state`'s Z3-ptr fast path)
+        // lands in BOTH lists: `add_constraint_raw` logs it as residual and the
+        // same call site pushes an `assumed` pair for it. Asserting the residual
+        // copy unguarded would pin the constraint outside the assumption
+        // literals, so an all-Python contradiction comes back Unsat with an
+        // EMPTY core — the constraints that caused it are all unguarded. Z3
+        // hash-conses ASTs, so an `Eq`/`Hash` hit against the guarded set is
+        // exact structural identity, not a heuristic.
         let shared_non_bv = self.non_bv_assertions_shared.lock().clone();
         for c in shared_non_bv.iter() {
-            solver.assert(c);
+            if !guarded.contains(c) {
+                solver.assert(c);
+            }
         }
         {
             let local = self.local_constraints.lock();
             for c in local.non_bv_assertions.iter() {
-                solver.assert(c);
+                if !guarded.contains(c) {
+                    solver.assert(c);
+                }
             }
         }
         for c in extra {
             solver.assert(c);
         }
 
-        // KNOWN GAP (angr-op0dn.14.2, WIP): under the *shared claripy* Z3
-        // context this returns Unsat but `get_unsat_core()` comes back EMPTY,
-        // so the Python-facing path is still dark. Standalone (Rust-owned
-        // context) it works — see
-        // `test_unsat_core_assumed_names_untracked_engine_constraints`.
         if solver.check_assumptions(&trackers) != SatResult::Unsat {
             return Vec::new();
         }

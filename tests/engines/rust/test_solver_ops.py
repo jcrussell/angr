@@ -1258,15 +1258,6 @@ class TestExplorationIntegration:
         )
 
 
-@pytest.mark.xfail(
-    reason="angr-op0dn.14.2 WIP: under the SHARED claripy Z3 context, Z3 reports Unsat "
-    "and then returns an EMPTY unsat core (both via assert_and_track+check and via "
-    "check_assumptions), so SymContext::unsat_core_assumed surfaces nothing. The same "
-    "code is green on a Rust-owned context — see the Rust unit test "
-    "test_unsat_core_assumed_names_untracked_engine_constraints. These tests are the "
-    "reproducer; flip to strict once the context-level core production is fixed.",
-    strict=False,
-)
 class TestProxyUnsatCore:
     """``RustSolverProxyPlugin.unsat_core`` parity with ``SimSolver.unsat_core``
     (angr-op0dn.14.2).
@@ -1315,8 +1306,19 @@ class TestProxyUnsatCore:
         assert core_strs == self._python_core(cons)
         assert str(y == 3) not in core_strs, f"innocent constraint blamed: {core_strs}"
 
-    def test_single_constraint_core_matches_python(self):
-        """A self-contradicting constraint is blamed on its own."""
+    def test_single_self_contradicting_constraint_is_blamed(self):
+        """A lone self-contradicting constraint is blamed on its own.
+
+        No Python cross-check here, because neither shape of a one-constraint
+        contradiction survives ``SimSolver.add`` intact: ``And(x == 1, x == 2)``
+        constant-folds to a literal ``False`` that never reaches Z3 (empty
+        Python core), and ``And(x > 10, x < 5)`` gets split into its two
+        conjuncts, so Python blames two constraints where the Rust core — which
+        reports entries of ``state.solver.constraints``, and the proxy stores
+        the ``And`` whole — blames one. Cross-engine parity is pinned by
+        :meth:`test_multi_constraint_core_matches_python`, whose constraints are
+        already atomic.
+        """
         import claripy
 
         mgr = _RustExplorationManager("amd64")
@@ -1324,12 +1326,11 @@ class TestProxyUnsatCore:
         plugin = self._plugin(mgr, sid)
 
         x = claripy.BVS("ucore_solo", 32)
-        cons = [claripy.And(x == 1, x == 2)]
+        cons = [claripy.And(x > 10, x < 5)]
         plugin.add(*cons)
 
-        core_strs = {str(c) for c in plugin.unsat_core()}
-        assert core_strs == self._python_core(cons)
-        assert len(core_strs) == 1
+        core = plugin.unsat_core()
+        assert [str(c) for c in core] == [str(cons[0])]
 
     def test_core_entries_are_state_constraints(self):
         """Every core entry is one of ``solver.constraints`` — the core is a
@@ -1397,4 +1398,3 @@ class TestProxyUnsatCore:
 
         plugin.set_state(types.SimpleNamespace(options={"CONSTRAINT_TRACKING_IN_SOLVER"}))
         assert len(plugin.unsat_core()) >= 1
-

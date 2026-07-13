@@ -37,6 +37,14 @@ fn simplify_sample_stride() -> u64 {
 /// Nth call (N = `simplify_sample_stride()`) runs `simplify()` and records
 /// whether the resulting Z3 AST ptr differs from the input. The ticker is
 /// shared across `assume_true`, `assume_false`, and `add_constraint_raw`.
+///
+/// Calls `Z3_simplify` directly rather than the z3 crate's `Ast::simplify`,
+/// which `unwrap()`s the result: `Z3_simplify` returns NULL when the context
+/// has an error latched, and a Bool imported from claripy through
+/// `add_constraint_raw` can hit that (repro: the `TestProxyUnsatCore` tests in
+/// `tests/engines/rust/test_solver_ops.py`, which aborted the whole
+/// interpreter on the unwrap). This is a diagnostic counter — a NULL just
+/// means "no sample", never a crash.
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
@@ -46,9 +54,16 @@ pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
         return;
     }
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.fetch_add(1, Ordering::Relaxed);
-    let simplified = constraint.simplify();
-    if simplified.get_z3_ast().as_ptr() != constraint.get_z3_ast().as_ptr() {
-        BRANCH_COND_SIMPLIFY_REDUCED_COUNT.fetch_add(1, Ordering::Relaxed);
+    let raw_ast = constraint.get_z3_ast();
+    // SAFETY: `constraint` owns a live ref on `raw_ast`, and the raw context
+    // handle is the one that AST was created in.
+    let simplified = unsafe { z3_sys::Z3_simplify(constraint.get_ctx().get_z3_context(), raw_ast) };
+    match simplified {
+        Some(simplified) if simplified != raw_ast => {
+            BRANCH_COND_SIMPLIFY_REDUCED_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(_) => {}
+        None => log::debug!("sample_simplify_skip: Z3_simplify returned NULL, sample dropped"),
     }
 }
 

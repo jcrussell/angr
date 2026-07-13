@@ -55,9 +55,16 @@ impl RustExplorationManager {
                         // this pointer for a live AST it caches;
                         // matches our thread-local Z3 context.
                         if let Some(z3_ast) = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) } {
-                            ctx_ref.add_constraint_raw(z3_ast);
-                            if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
-                                ctx_ref.assumed_constraints_push(bv, true);
+                            // Convert first: a constraint that has a RustBV form
+                            // is recorded in the assumed IR, and must therefore
+                            // NOT also be logged as a residual — see
+                            // `add_constraint_raw_assumed` (angr-op0dn.14.2).
+                            match claripy_to_rustbv(py, &item, ctx_ref) {
+                                Ok(bv) => {
+                                    ctx_ref.add_constraint_raw_assumed(z3_ast);
+                                    ctx_ref.assumed_constraints_push(bv, true);
+                                }
+                                Err(_) => ctx_ref.add_constraint_raw(z3_ast),
                             }
                             added += 1;
                             continue;

@@ -245,6 +245,26 @@ impl SymContext {
 
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_raw(&self, ast: super::Z3AstPtr) {
+        self.add_constraint_raw_inner(ast, true);
+    }
+
+    /// `add_constraint_raw` for a caller that records an `assumed` pair for the
+    /// same constraint (`_add_constraints_to_state`'s Z3-ptr fast path).
+    ///
+    /// Skips the residual log: the residual sink exists so constraints with no
+    /// RustBV form can still be round-tripped, and this one HAS a RustBV form.
+    /// Logging it in both places is not just redundant, it is wrong for
+    /// `unsat_core_assumed`, which asserts residuals *unguarded* (they have no
+    /// claripy AST to blame) — a constraint sitting in both lists would be
+    /// pinned outside its assumption literal, and an all-Python contradiction
+    /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn add_constraint_raw_assumed(&self, ast: super::Z3AstPtr) {
+        self.add_constraint_raw_inner(ast, false);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    fn add_constraint_raw_inner(&self, ast: super::Z3AstPtr, log_residual: bool) {
         let ctx = z3::Context::thread_local();
         // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an active
         // ref via `Z3_inc_ref`). The pointer denotes a Bool by the
@@ -265,7 +285,7 @@ impl SymContext {
         let was_dup = {
             let mut local = self.local_constraints.lock();
             let dup = self.seed_and_check_z3_dedup(&mut local, &constraint);
-            if !dup {
+            if !dup && log_residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
                 // constraint (Python claripy-sync fallback / cross-process
                 // ptr import) has no `assumed` entry to reconstruct it from,

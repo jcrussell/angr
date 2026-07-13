@@ -370,12 +370,13 @@ _REJECTED_OPTION_NAMES = frozenset(
 # Rust engine had no core to give: constraints go onto the shared Z3
 # solver with no assumption literals, so an opting-in user got a
 # *silently empty* core — the one failure mode the option exists to
-# prevent. STAYS raise-listed pending angr-op0dn.14.2: the native
-# on-demand core (SymContext::unsat_core_assumed, reached from
-# RustSolverProxyPlugin.unsat_core) is in tree and green on a Rust-owned
-# Z3 context, but under the *shared claripy* context Z3 reports Unsat and
-# then hands back an EMPTY core — so the proxy would still surface a
-# silently-empty diagnostic. Demote only once that is fixed.
+# prevent. DEMOTED (angr-op0dn.14.2): RustSolverProxyPlugin.unsat_core now
+# computes the core on demand (SymContext::unsat_core_assumed) by rebuilding
+# a throwaway assumption-guarded solver from the assumed-constraint IR, so
+# the core is complete — it names the engine's own fork guards too, which a
+# core read off the live solver could not — and nothing is paid on the hot
+# add path. The proxy still honors the option: without it on the bound
+# state, unsat_core() raises SimSolverOptionError like Python's.
 #
 # CONCRETIZE_SYMBOLIC_WRITE_SIZES is NOT promoted. Its only in-tree
 # consumer is SimFileBase._prep_generic (storage/file.py), and every
@@ -420,7 +421,6 @@ _RAISE_OPTION_NAMES = frozenset(
         "BYPASS_ERRORED_IROP",
         "BYPASS_ERRORED_IRCCALL",
         "BYPASS_ERRORED_IRSTMT",
-        "CONSTRAINT_TRACKING_IN_SOLVER",
         # PRODUCE_ZERODIV_SUCCESSORS (promoted angr-op0dn.14.9). Python's
         # zero-division path is a *lifting* one: irop.py raises
         # SimZeroDivisionException on a concrete zero divisor, the resilience
