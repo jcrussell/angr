@@ -462,6 +462,109 @@ def unsupported_rust_manager_kwargs(kwargs) -> list[str]:
     return sorted(name for name in kwargs if name not in accepted)
 
 
+# --- Auto engine dispatch (angr-op0dn.14.5.2) ---------------------------------
+#
+# `factory.simulation_manager(use_rust_engine=None)` asks "run this on Rust if
+# Rust can run it, else Python". The routing decision is computed here so it is
+# testable without a factory, and so the raise-option list stays a single source
+# of truth (`rust_unsupported_options`).
+#
+# Auto mode is OFF by default: with the flag off, `use_rust_engine=None` behaves
+# exactly like `use_rust_engine=False` (plain SimulationManager), so the default
+# flip (angr-op0dn.14.6) is a one-line policy change, not a behavior rewrite.
+_AUTO_DISPATCH_ENABLED = os.environ.get("ANGR_RUST_AUTO", "").lower() not in ("", "0", "false", "no")
+
+
+def set_rust_auto_dispatch(enabled: bool) -> None:
+    """Enable/disable auto engine selection for ``simulation_manager()``.
+
+    Only consulted when the caller leaves ``use_rust_engine`` unset (``None``).
+    Explicit ``True``/``False`` always wins. Also settable process-wide via the
+    ``ANGR_RUST_AUTO`` environment variable (read once at import).
+    """
+    global _AUTO_DISPATCH_ENABLED
+    _AUTO_DISPATCH_ENABLED = bool(enabled)
+
+
+def rust_auto_dispatch_enabled() -> bool:
+    """True when ``use_rust_engine=None`` may select the Rust engine."""
+    return _AUTO_DISPATCH_ENABLED
+
+
+def rust_supports_arch(arch_name) -> bool:
+    """True when the Rust engine implements *arch_name*.
+
+    Delegates to the native ``arch_supported`` (backed by ``arch_from_name``,
+    ``native/angr/src/arch/mod.rs``) so the Python answer cannot drift from the
+    arches the interpreter actually has. Six today: X86 / AMD64 / ARM / ARM64 /
+    MIPS32 / MIPS64. False (→ Python engine) for PPC32/PPC64/S390X and when the
+    extension is not built.
+    """
+    if not RUST_EXPLORATION_AVAILABLE or not arch_name:
+        return False
+    from angr.rustylib.vex_engine import arch_supported
+
+    return arch_supported(str(arch_name))
+
+
+def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
+    """Decide whether *project* / *states* / *kwargs* can run on the Rust engine.
+
+    The eligibility predicate behind ``simulation_manager(use_rust_engine=None)``.
+    Every ineligible answer names a signal the Rust engine would otherwise turn
+    into a raise, a warning, or a silent divergence — routing to Python instead
+    makes the whole loud surface transparent.
+
+    Args:
+        project: The :class:`angr.Project` the manager would drive.
+        states: The seeding states (list of :class:`SimState`).
+        kwargs: The SimulationManager constructor kwargs the caller passed.
+
+    Returns:
+        ``(eligible, reason)``. *reason* is a short human-readable string
+        recorded on the returned manager as ``dispatch_reason`` and logged at
+        debug level, so the route is always observable.
+    """
+    if not RUST_EXPLORATION_AVAILABLE:
+        return False, "rust extension not built"
+
+    arch_name = getattr(getattr(project, "arch", None), "name", None)
+    if not rust_supports_arch(arch_name):
+        return False, f"arch {arch_name} not implemented by the rust engine"
+
+    unsupported_kwargs = unsupported_rust_manager_kwargs(kwargs)
+    if unsupported_kwargs:
+        return False, "simulation_manager kwargs not honored by the rust engine: " + ", ".join(unsupported_kwargs)
+
+    for state in states or ():
+        offending = rust_unsupported_options(getattr(state, "options", None))
+        if offending:
+            return False, "state options not honored by the rust engine: " + ", ".join(offending)
+
+        events = _unsupported_inspect_events(state)
+        if events:
+            return False, "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
+
+    return True, "rust engine supports this project, state options, kwargs, and inspect breakpoints"
+
+
+def _unsupported_inspect_events(state) -> list[str]:
+    """Inspect events *state* already has breakpoints for that Rust cannot dispatch.
+
+    Registering one of these on a Rust-owned state raises (see
+    ``_format_unsupported_event_msg``, ``rust_state_proxy.py``), so a seeding
+    state that carries one is a Python workload — the raise would otherwise be
+    the regression the moment the default engine flips.
+    """
+    inspector = getattr(state, "inspect", None)
+    breakpoints = getattr(inspector, "_breakpoints", None)
+    if not breakpoints:
+        return []
+    from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
+
+    return sorted(event for event, bps in breakpoints.items() if bps and event not in _RUST_INSPECT_SUPPORTED_EVENTS)
+
+
 # Z3 context sharing: make Rust and Python use the same Z3 context
 # to avoid AST translation overhead between solvers.
 _z3_context_shared = False

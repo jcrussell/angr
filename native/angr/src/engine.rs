@@ -320,6 +320,18 @@ fn register_names_for_arch(arch_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Report whether the Rust engine implements the named architecture.
+///
+/// Delegates to [`arch_from_name`] so the answer cannot drift from the
+/// arches the interpreter actually has. The engine dispatcher in
+/// `AngrObjectFactory.simulation_manager` calls this to route a project
+/// on an unimplemented arch (PPC32/PPC64/S390X) to the Python engine
+/// instead of letting `RustExplorationManager` construction raise.
+#[pyfunction]
+fn arch_supported(arch_name: &str) -> bool {
+    arch_from_name(arch_name).is_some()
+}
+
 /// Clear the Rust-side thread-local claripy AST translation caches.
 ///
 /// Drops the three LRU/HashMaps in `claripy_bridge` (AST_CACHE,
@@ -421,6 +433,7 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(clear_ast_cache, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(libvex_ffi_enabled, m)?)?;
     // Memory layout constants (single source of truth; Python imports these

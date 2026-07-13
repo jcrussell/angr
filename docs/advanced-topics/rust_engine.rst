@@ -2046,6 +2046,46 @@ in Rust mode.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 
+.. _Automatic engine selection:
+
+Automatic engine selection
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``simulation_manager()`` takes a *tri-state* ``use_rust_engine``:
+
+* ``True`` — always the Rust engine, raising if this project / state / kwargs
+  combination is one it cannot honor faithfully. This is the opt-in contract
+  and it does not change.
+* ``False`` (today's default) — always the plain ``SimulationManager``.
+* ``None`` — *auto*: the Rust engine when it can run the workload faithfully,
+  the Python engine otherwise. Never raises, never diverges.
+
+Auto mode routes to Python whenever any of these hold: the Rust extension is not
+built; ``project.arch`` is one the Rust interpreter does not implement (PPC32 /
+PPC64 / S390X — see the architecture matrix above); a seeding state carries a
+SimOption in ``_RAISE_OPTION_NAMES``; a seeding state already has a
+``state.inspect`` breakpoint on an event the Rust engine does not dispatch; or
+the caller passed a ``SimulationManager``-only kwarg (``hierarchy``,
+``resilience``, ``techniques``, …) — which is also how an exploration-technique
+workload lands on Python for now. The predicate lives in
+:func:`angr.exploration.rust_manager.rust_engine_eligible` and shares its
+option list with the manager's own construction guard, so the two cannot drift.
+
+The decision is always observable: it is logged at debug level and recorded on
+the returned manager as ``mgr.dispatch_reason``.
+
+Auto mode does **not** select Rust until it is switched on, so ``None`` is
+identical to ``False`` today::
+
+    from angr.exploration import set_rust_auto_dispatch
+
+    set_rust_auto_dispatch(True)                 # or ANGR_RUST_AUTO=1 in the env
+    simgr = proj.factory.simulation_manager(state, use_rust_engine=None)
+    print(simgr.dispatch_reason)
+
+Flipping that switch on by default is ``angr-op0dn.14.6``, gated on the census
+below.
+
 The default-engine flip gate
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -2090,9 +2130,10 @@ accepted with an explicit documented carve-out. There is no fourth option.
 
 Consequently the flip gate is:
 
-1. The tri-state dispatcher exists, and every loud item (raise-options, raising
-   inspect events, rejected techniques, unsupported arch) routes to Python
-   instead of throwing.
+1. **(landed, angr-op0dn.14.5.2)** The tri-state dispatcher exists, and every
+   loud item (raise-options, unsupported arch, pre-registered unsupported
+   inspect events, technique/SimulationManager-only kwargs) routes to Python
+   instead of throwing — see `Automatic engine selection`_ above.
 2. The silent surface is empty — either fixed, or on an explicit
    accepted-divergence list. Today it is 13 items: the 10 live silent options
    above, the 63 flip-blocking bridge sites from the M6.5a fallback census, and

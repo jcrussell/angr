@@ -205,7 +205,7 @@ class AngrObjectFactory:
     def simulation_manager(
         self,
         thing: list[SimState] | SimState | None = None,
-        use_rust_engine: bool = False,
+        use_rust_engine: bool | None = False,
         **kwargs,
     ) -> SimulationManager:
         """
@@ -213,9 +213,14 @@ class AngrObjectFactory:
 
         :param thing:           What to put in the new SimulationManager's active stash (either a SimState or a list of
                                 SimStates).
-        :param use_rust_engine: If True, return a RustExplorationManager instead of SimulationManager.
-                                The Rust engine keeps the exploration loop in Rust for ~2-10x speedup
-                                on symbolic execution workloads. Requires the Rust extension to be built.
+        :param use_rust_engine: Engine selection. True returns a RustExplorationManager (raising if this
+                                project/state/kwargs combination is one the Rust engine cannot honor); False returns a
+                                plain SimulationManager. None means *auto*: use the Rust engine when it can run this
+                                workload faithfully and the Python engine otherwise, never raising and never diverging.
+                                Auto only ever selects Rust once auto-dispatch is switched on
+                                (``angr.exploration.set_rust_auto_dispatch(True)`` or ``ANGR_RUST_AUTO=1``); until then
+                                it is identical to False. The routing decision is recorded on the returned manager as
+                                ``dispatch_reason``.
         :param kwargs:          Any additional keyword arguments will be passed to the SimulationManager constructor
         :returns:               The new SimulationManager
         :rtype:                 angr.sim_manager.SimulationManager
@@ -238,6 +243,11 @@ class AngrObjectFactory:
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
+        if use_rust_engine is None:
+            use_rust_engine, reason = self._auto_engine_choice(thing, kwargs)
+        else:
+            reason = f"explicit use_rust_engine={use_rust_engine}"
+
         if use_rust_engine:
             from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
 
@@ -250,9 +260,33 @@ class AngrObjectFactory:
                     "engine would silently drop them. Drop use_rust_engine=True to run "
                     "them on the Python engine. See docs/advanced-topics/rust_engine.rst."
                 )
-            return RustExplorationManager(self.project, active_states=thing, **kwargs)
+            mgr = RustExplorationManager(self.project, active_states=thing, **kwargs)
+        else:
+            mgr = SimulationManager(self.project, active_states=thing, **kwargs)
 
-        return SimulationManager(self.project, active_states=thing, **kwargs)
+        mgr.dispatch_reason = reason
+        return mgr
+
+    def _auto_engine_choice(self, states: list[SimState], kwargs: dict) -> tuple[bool, str]:
+        """Pick the engine for ``simulation_manager(use_rust_engine=None)``.
+
+        Returns ``(use_rust, reason)``. Never raises and never selects the Rust
+        engine for a workload it would refuse, warn about, or silently execute
+        differently — an ineligible workload is simply a Python one. Auto mode
+        constructs the manager single-threaded: the Rust parallel pool has a
+        known lost-fork bug (angr-ype54) and stays opt-in.
+        """
+        try:
+            from angr.exploration import rust_auto_dispatch_enabled, rust_engine_eligible
+        except ImportError:
+            return False, "rust extension not built"
+
+        if not rust_auto_dispatch_enabled():
+            return False, "auto engine dispatch is off (set_rust_auto_dispatch / ANGR_RUST_AUTO)"
+
+        eligible, reason = rust_engine_eligible(self.project, states, kwargs)
+        l.debug("simulation_manager auto-dispatch: %s (%s)", "rust" if eligible else "python", reason)
+        return eligible, reason
 
     def simgr(self, *args, **kwargs):
         """

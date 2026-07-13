@@ -44,7 +44,11 @@ from angr.rustylib.vex_engine import (
 from .rust_manager import (
     RustErrorRecord,
     RustExplorationManager,
+    rust_auto_dispatch_enabled,
+    rust_engine_eligible,
+    rust_supports_arch,
     rust_unsupported_options,
+    set_rust_auto_dispatch,
     state_requires_python_engine,
     unsupported_rust_manager_kwargs,
 )
@@ -58,7 +62,11 @@ __all__ = [
     "RustUnsupportedSyscallError",
     "RustUnsupportedVexOpError",
     "RustZ3Error",
+    "rust_auto_dispatch_enabled",
+    "rust_engine_eligible",
+    "rust_supports_arch",
     "rust_unsupported_options",
+    "set_rust_auto_dispatch",
     "state_requires_python_engine",
     "unsupported_rust_manager_kwargs",
 ]
