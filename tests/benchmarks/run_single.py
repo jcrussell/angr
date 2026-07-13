@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import multiprocessing
 import os
 import sys
@@ -387,6 +388,16 @@ def _run_in_child(
                         sharing = rust_mgr_instance._rust_mgr.analyze_constraint_sharing()
                         for k, v in sharing.items():
                             stats_local[f"constraint_sharing_{k}"] = v
+                    except Exception:
+                        pass
+                # angr-op0dn.13.2: opt-in found-set projection for the find-all
+                # gate (run_findall_gate.py). A multiset of found pcs — NOT the
+                # vh834 AST content fingerprint, which is vacuous on Rust found
+                # states (bd memory avoid-content-fingerprint-on-found-states).
+                if stats_local is not None and os.environ.get("ANGR_BENCH_FOUND_FINGERPRINT"):
+                    try:
+                        pcs = collections.Counter(st.addr for st in rust_mgr_instance.found)
+                        stats_local["found_pcs"] = ";".join(f"{addr:#x}*{n}" for addr, n in sorted(pcs.items()))
                     except Exception:
                         pass
             return stats_local, perf_local, peak_mb
