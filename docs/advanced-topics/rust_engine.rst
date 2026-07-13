@@ -2035,6 +2035,82 @@ in Rust mode.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 
+The default-engine flip gate
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+*S10 parity census (angr-op0dn.8, 2026-07-13). Regenerate with*
+``python tests/benchmarks/parity_census.py --json``; *the scored ledger lands
+in* ``tests/benchmarks/parity_census.json``.
+
+The engine is opt-in today (``use_rust_engine=True``). The question M6 asks is
+what it would take to make it the *default* without regressing a Python-engine
+user. The census answer: **the blocker is not missing features, it is silence.**
+
+Sort every divergence-risk SimOption by how loud Rust is about it, and 32 of
+the 44 are already loud — 14 raise at manager construction, 10 warn-once, and 8
+turn out not to diverge at all (the matrix above is stale in the conservative
+direction; see ``_EXONERATED`` in ``parity_census.py`` for the citation that
+clears each). Only 12 are silent, 10 of them live. Add the 5 inspect events that
+raise on registration and the 8 rejected exploration techniques, and the
+*detectable* surface dwarfs the silent one.
+
+That flips the usual intuition about which M6 children matter, in two ways.
+
+**The raise is the regression.** A raise is exactly right for an opt-in engine
+and is exactly wrong for a default one: a state the user could run on the Python
+engine yesterday must not start throwing ``NotImplementedError`` because the
+default moved. So the tri-state dispatcher (``angr-op0dn.14.5.2``) is not one
+parity item among many — it is the item that converts the entire 27-strong loud
+surface from "regression on flip" to "transparently routed to Python", and
+nothing else in M6 is worth doing until it exists.
+
+**A default-bundle option cannot be dispatched around.** Routing on a silent
+option only works if the option is opt-in; if it ships in a *mode bundle*, then
+dispatching on it sends every user to Python and there is no flip left. Three
+divergence-risk options ride the ``symbolic`` bundle that plain
+``entry_state()`` hands out — ``EXTENDED_IROP_SUPPORT``,
+``TRACK_CONSTRAINT_ACTIONS``, ``TRACK_MEMORY_MAPPING`` — and the last two are
+the pair the matrix note above deliberately *excludes* from the warn-once set
+precisely because warning on every default state would be noise. That carve-out
+is sound while the engine is opt-in and becomes a 100%-of-users silent
+divergence the moment it is not. Each of the three has to be individually
+resolved — implemented, proved vacuous the way the 8 exonerations were, or
+accepted with an explicit documented carve-out. There is no fourth option.
+
+Consequently the flip gate is:
+
+1. The tri-state dispatcher exists, and every loud item (raise-options, raising
+   inspect events, rejected techniques, unsupported arch) routes to Python
+   instead of throwing.
+2. The silent surface is empty — either fixed, or on an explicit
+   accepted-divergence list. Today it is 13 items: the 10 live silent options
+   above, the 63 flip-blocking bridge sites from the M6.5a fallback census, and
+   the ``constraints`` inspect event that the native fork-guard add path does
+   not fire. (``vex_lift`` on the native libVEX lift is a 14th, dormant until E2
+   ships enabled.)
+3. M2 result-determinism holds on non-bimodal cases, accepting the permanent
+   bimodal timing carve-out.
+
+The cheap move for the seven *opt-in* silent options is worth naming, because it
+is not "implement them". An opt-in option that raises or warns is one the
+dispatcher can route on; so promoting a silent opt-in option into
+``_RAISE_OPTION_NAMES`` costs one line and retires it from the gate, whereas
+implementing it costs a feature. Only the three default-bundle options resist
+that trick, because routing on them would route everyone. **Minimal parity set =
+dispatcher + those 3 options + the 63 bridge sites + the ``constraints`` inspect
+gap.** Everything else on the loud surface is a one-line promotion.
+
+This re-scopes two M6 children. ``angr-op0dn.14.3``
+(``state.history.actions``) comes *out* of the gate: the ``TRACK_*_ACTIONS``
+family is already in ``_RAISE_OPTION_NAMES``, so the dispatcher handles it for
+free and native SimAction recording is beyond-parity feature work, not a flip
+gate. ``angr-op0dn.14.2`` (unsat_core) stays *in*, but not for the reason its
+title implies: its gating option ``CONSTRAINT_TRACKING_IN_SOLVER`` is **silent**
+today, so a user who opts into constraint tracking gets an empty unsat core and
+no diagnostic. Promoting that option to raise closes the flip gate immediately;
+wiring the core through ``RustSolverProxy`` is then an independent feature
+decision that can be made on its own merits.
+
 Provenance
 ~~~~~~~~~~
 

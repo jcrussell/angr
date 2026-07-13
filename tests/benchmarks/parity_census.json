@@ -1,0 +1,525 @@
+{
+  "bead": "angr-op0dn.8",
+  "exonerated_options": {
+    "BYPASS_UNSUPPORTED_IRCCALL": "Same UnsupportedFeature -> Python fallback path.",
+    "BYPASS_UNSUPPORTED_IRDIRTY": "Same UnsupportedFeature -> Python fallback path.",
+    "BYPASS_UNSUPPORTED_IROP": "Honored transparently: the Rust interpreter's UnsupportedFeature FallbackStrategy defers the op to Python, where the bypass fires normally (see the _RAISE_OPTION_NAMES comment block, rust_manager.py).",
+    "BYPASS_UNSUPPORTED_SYSCALL": "Same UnsupportedFeature -> Python fallback path.",
+    "SYMBOL_FILL_UNCONSTRAINED_MEMORY": "Vacuously honored: Rust's load_concrete_lazy (native/angr/src/memory/load.rs) already falls back to a fresh symbolic BVS when zero_fill_unconstrained is unset, so symbol-fill IS Rust's default for memory. (The REGISTERS sibling is NOT exonerated \u2014 Rust zero-fills registers.)",
+    "TRACK_ACTION_HISTORY": "Demoted from raise in angr-fkvt: unlike its TRACK_*_ACTIONS siblings it does not gate action recording. Its only in-tree consumer (state_plugins/preconstrainer.py) uses it as a metadata flag whose clear/restore is a vacuous no-op under Rust.",
+    "UNSUPPORTED_BYPASS_ZERO_DEFAULT": "Modifier only \u2014 selects which value Python substitutes when its bypass fires, and that bypass runs in Python. Honored transparently.",
+    "UNSUPPORTED_FORCE_CONCRETIZE": "Modifier only \u2014 same as UNSUPPORTED_BYPASS_ZERO_DEFAULT."
+  },
+  "fallbacks": {
+    "flip_blocking_names": [],
+    "name_classes": {
+      "silent-equivalent": 30
+    },
+    "site_classes": {
+      "flip-blocking": 63,
+      "logged-degraded": 211,
+      "silent-equivalent": 80
+    },
+    "unlogged_degraded_sites": 71
+  },
+  "flip_gate_ranked": [
+    {
+      "fires_for": "every user of the `fastpath` mode bundle \u2014 no opt-in required",
+      "item": "SimOption AVOID_MULTIVALUED_READS",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `fastpath` mode bundle \u2014 no opt-in required",
+      "item": "SimOption AVOID_MULTIVALUED_WRITES",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `fastpath, static, symbolic, symbolic_approximating, tracing` mode bundle \u2014 no opt-in required",
+      "item": "SimOption EXTENDED_IROP_SUPPORT",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `tracing` mode bundle \u2014 no opt-in required",
+      "item": "SimOption PRODUCE_ZERODIV_SUCCESSORS",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `symbolic, symbolic_approximating` mode bundle \u2014 no opt-in required",
+      "item": "SimOption TRACK_CONSTRAINT_ACTIONS",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `fastpath, static, symbolic, symbolic_approximating, tracing` mode bundle \u2014 no opt-in required",
+      "item": "SimOption TRACK_MEMORY_MAPPING",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "every user of the `tracing` mode bundle \u2014 no opt-in required",
+      "item": "SimOption ZERO_FILL_UNCONSTRAINED_REGISTERS",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "users who explicitly set it (opt-in; a warn-once would make it attributable)",
+      "item": "SimOption CGC_NON_BLOCKING_FDS",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "users who explicitly set it (opt-in; a warn-once would make it attributable)",
+      "item": "SimOption CONCRETIZE_SYMBOLIC_WRITE_SIZES",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "users who explicitly set it (opt-in; a warn-once would make it attributable)",
+      "item": "SimOption CONSTRAINT_TRACKING_IN_SOLVER",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "whichever bench trips them \u2014 unattributable without a log record",
+      "item": "63 flip-blocking bridge sites (M6.5a site census)",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "angr-op0dn.14.4.1",
+      "item": "inspect 'constraints' event on native fork-guard adds",
+      "tier": "silent"
+    },
+    {
+      "fires_for": "angr-op0dn.14.4.2",
+      "item": "inspect 'vex_lift' event on the native libVEX lift path",
+      "tier": "silent"
+    }
+  ],
+  "inspect": {
+    "supported": [
+      "address_concretization",
+      "call",
+      "constraints",
+      "dirty",
+      "exit",
+      "expr",
+      "fork",
+      "instruction",
+      "irsb",
+      "mem_read",
+      "mem_write",
+      "reg_read",
+      "reg_write",
+      "return",
+      "simprocedure",
+      "statement",
+      "symbolic_variable",
+      "syscall",
+      "tmp_read",
+      "tmp_write",
+      "vex_lift"
+    ],
+    "unsupported_raises": [
+      "cfg_handle_job",
+      "engine_process",
+      "memory_page_map",
+      "vfg_handle_successor",
+      "vfg_widen_state"
+    ]
+  },
+  "matrix_counts": {
+    "divergence": 44,
+    "honored": 10,
+    "inherited": 16,
+    "noop": 35
+  },
+  "option_tier_counts": {
+    "exonerated": 8,
+    "raise": 14,
+    "silent": 12,
+    "warn": 10
+  },
+  "options": [
+    {
+      "in_default_modes": [
+        "fastpath"
+      ],
+      "option": "AVOID_MULTIVALUED_READS",
+      "py_consumer_modules": 5,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath"
+      ],
+      "option": "AVOID_MULTIVALUED_WRITES",
+      "py_consumer_modules": 3,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "static"
+      ],
+      "option": "BEST_EFFORT_MEMORY_STORING",
+      "py_consumer_modules": 0,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_ERRORED_IRCCALL",
+      "py_consumer_modules": 1,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_ERRORED_IROP",
+      "py_consumer_modules": 1,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_ERRORED_IRSTMT",
+      "py_consumer_modules": 1,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_IRCCALL",
+      "py_consumer_modules": 1,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_IRDIRTY",
+      "py_consumer_modules": 1,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_IREXPR",
+      "py_consumer_modules": 0,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_IROP",
+      "py_consumer_modules": 1,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_IRSTMT",
+      "py_consumer_modules": 0,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_UNSUPPORTED_SYSCALL",
+      "py_consumer_modules": 1,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "tracing"
+      ],
+      "option": "BYPASS_VERITESTING_EXCEPTIONS",
+      "py_consumer_modules": 1,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CALLLESS",
+      "py_consumer_modules": 4,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CGC_NON_BLOCKING_FDS",
+      "py_consumer_modules": 1,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CONCRETIZE",
+      "py_consumer_modules": 1,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CONCRETIZE_SYMBOLIC_WRITE_SIZES",
+      "py_consumer_modules": 2,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CONSERVATIVE_READ_STRATEGY",
+      "py_consumer_modules": 3,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CONSERVATIVE_WRITE_STRATEGY",
+      "py_consumer_modules": 2,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "CONSTRAINT_TRACKING_IN_SOLVER",
+      "py_consumer_modules": 1,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "static"
+      ],
+      "option": "DO_RET_EMULATION",
+      "py_consumer_modules": 5,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "EFFICIENT_STATE_MERGING",
+      "py_consumer_modules": 3,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "static",
+        "symbolic",
+        "symbolic_approximating",
+        "tracing"
+      ],
+      "option": "EXTENDED_IROP_SUPPORT",
+      "py_consumer_modules": 1,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [],
+      "option": "FAST_MEMORY",
+      "py_consumer_modules": 1,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [
+        "fastpath"
+      ],
+      "option": "FAST_REGISTERS",
+      "py_consumer_modules": 1,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [
+        "tracing"
+      ],
+      "option": "PRODUCE_ZERODIV_SUCCESSORS",
+      "py_consumer_modules": 1,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [],
+      "option": "SUPER_FASTPATH",
+      "py_consumer_modules": 2,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "SYMBOL_FILL_UNCONSTRAINED_MEMORY",
+      "py_consumer_modules": 10,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [],
+      "option": "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
+      "py_consumer_modules": 10,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "TRACK_ACTION_HISTORY",
+      "py_consumer_modules": 3,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [
+        "symbolic",
+        "symbolic_approximating"
+      ],
+      "option": "TRACK_CONSTRAINT_ACTIONS",
+      "py_consumer_modules": 2,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [],
+      "option": "TRACK_JMP_ACTIONS",
+      "py_consumer_modules": 3,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "TRACK_MEMORY_ACTIONS",
+      "py_consumer_modules": 4,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "fastpath",
+        "static",
+        "symbolic",
+        "symbolic_approximating",
+        "tracing"
+      ],
+      "option": "TRACK_MEMORY_MAPPING",
+      "py_consumer_modules": 1,
+      "tier": "silent"
+    },
+    {
+      "in_default_modes": [
+        "fastpath"
+      ],
+      "option": "TRACK_OP_ACTIONS",
+      "py_consumer_modules": 1,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "TRACK_REGISTER_ACTIONS",
+      "py_consumer_modules": 2,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [],
+      "option": "TRACK_TMP_ACTIONS",
+      "py_consumer_modules": 2,
+      "tier": "raise"
+    },
+    {
+      "in_default_modes": [
+        "static"
+      ],
+      "option": "TRUE_RET_EMULATION_GUARD",
+      "py_consumer_modules": 4,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "UNDER_CONSTRAINED_SYMEXEC",
+      "py_consumer_modules": 2,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "UNINITIALIZED_ACCESS_AWARENESS",
+      "py_consumer_modules": 2,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [],
+      "option": "UNSUPPORTED_BYPASS_ZERO_DEFAULT",
+      "py_consumer_modules": 1,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [],
+      "option": "UNSUPPORTED_FORCE_CONCRETIZE",
+      "py_consumer_modules": 2,
+      "tier": "exonerated"
+    },
+    {
+      "in_default_modes": [],
+      "option": "USE_SYSTEM_TIMES",
+      "py_consumer_modules": 4,
+      "tier": "warn"
+    },
+    {
+      "in_default_modes": [
+        "tracing"
+      ],
+      "option": "ZERO_FILL_UNCONSTRAINED_REGISTERS",
+      "py_consumer_modules": 5,
+      "tier": "silent"
+    }
+  ],
+  "silent_default_mode_options": [
+    "AVOID_MULTIVALUED_READS",
+    "AVOID_MULTIVALUED_WRITES",
+    "EXTENDED_IROP_SUPPORT",
+    "PRODUCE_ZERODIV_SUCCESSORS",
+    "TRACK_CONSTRAINT_ACTIONS",
+    "TRACK_MEMORY_MAPPING",
+    "ZERO_FILL_UNCONSTRAINED_REGISTERS"
+  ],
+  "silent_live_options": [
+    "AVOID_MULTIVALUED_READS",
+    "AVOID_MULTIVALUED_WRITES",
+    "CGC_NON_BLOCKING_FDS",
+    "CONCRETIZE_SYMBOLIC_WRITE_SIZES",
+    "CONSTRAINT_TRACKING_IN_SOLVER",
+    "EXTENDED_IROP_SUPPORT",
+    "PRODUCE_ZERODIV_SUCCESSORS",
+    "TRACK_CONSTRAINT_ACTIONS",
+    "TRACK_MEMORY_MAPPING",
+    "ZERO_FILL_UNCONSTRAINED_REGISTERS"
+  ],
+  "silent_opt_in_options": [
+    "CGC_NON_BLOCKING_FDS",
+    "CONCRETIZE_SYMBOLIC_WRITE_SIZES",
+    "CONSTRAINT_TRACKING_IN_SOLVER"
+  ],
+  "structural_gaps": [
+    {
+      "bead": "angr-op0dn.14.3",
+      "item": "state.history.actions (SimAction recording)",
+      "tier": "raise",
+      "why": "TRACK_*_ACTIONS raise at construction (angr-xghv); Rust never emits SimActions."
+    },
+    {
+      "bead": "angr-op0dn.14.2",
+      "item": "solver unsat_core surfacing",
+      "tier": "silent-via-option",
+      "why": "CONSTRAINT_TRACKING_IN_SOLVER is silent (neither raise nor warn), so a user who opts into constraint tracking gets an empty unsat core with no diagnostic. Promoting the option to raise closes the flip gate; wiring the core through RustSolverProxy is then an independent feature decision."
+    },
+    {
+      "bead": "angr-op0dn.14.4.1",
+      "item": "inspect 'constraints' event on native fork-guard adds",
+      "tier": "silent",
+      "why": "Event IS registerable and IS honored for Python-dispatched adds, but the Rust engine adds fork-guard constraints natively and does not fire it. A user who registered the breakpoint sees a subset of the constraints, with no error."
+    },
+    {
+      "bead": "angr-op0dn.14.4.2",
+      "item": "inspect 'vex_lift' event on the native libVEX lift path",
+      "tier": "silent",
+      "why": "Fires from _cb_lift_block (the Python lift callback). The feature-gated native in-process lift bypasses that callback and fires nothing. Off by default today, so this only becomes a live silent gap if/when E2 (angr-z087y) ships enabled."
+    },
+    {
+      "bead": "angr-op0dn.14.5.2",
+      "item": "engine dispatch (tri-state use_rust_engine)",
+      "tier": "raise",
+      "why": "factory.simulation_manager raises on Rust-ineligible kwargs/options rather than falling back. Correct today (opt-in), fatal after a flip: the raise IS the regression."
+    }
+  ]
+}
