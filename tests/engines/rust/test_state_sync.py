@@ -648,6 +648,87 @@ class TestCallbackPosixSync:
             assert s.count(b"AB") == 1, f"native stdout duplicated across bounces: {s!r}"
 
 
+class TestCallbackFdTableSync:
+    """The SimProcedure-callback bounce must round-trip the fd *table*, not
+    just the fd output bytes.
+
+    Regression for angr-op0dn.14.1.5: a bounced open/fopen/dup allocates an fd
+    in ``state.posix`` and a ``SimFile`` in ``state.fs``, and Rust's FileSystem
+    never learned about it — so ``get_state_open_fds`` omitted the fd and a
+    later *native* read/write on it hit a closed fd.
+    """
+
+    O_WRONLY = 1
+
+    @pytest.fixture
+    def hookable_project(self):
+        import os
+
+        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
+
+    @staticmethod
+    def _open_proc(path, opened):
+        class OpenProc(angr.SimProcedure):
+            def run(self):
+                opened.append(self.state.posix.open(path, claripy.BVV(TestCallbackFdTableSync.O_WRONLY, 32)))
+                return 0
+
+        return OpenProc
+
+    def _run_with_open_hook(self, proj, path):
+        opened = []
+        proj.hook_symbol("puts", self._open_proc(path, opened)())
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.run(max_steps=60)
+        assert opened, "puts hook never bounced — test would vacuously pass"
+        return mgr, opened[0]
+
+    def _rust_fds(self, mgr, fd):
+        """Every (state_id, fd_info) pair where a Rust state knows ``fd``."""
+        return [
+            (sid, info)
+            for stash in ("active", "deadended", "found", "avoid")
+            for sid in mgr._rust_mgr.get_state_ids(stash)
+            for info in mgr._rust_mgr.get_state_open_fds(sid)
+            if info[0] == fd
+        ]
+
+    def test_bounced_open_reaches_rust_fd_table(self, hookable_project):
+        """The fd a bounced proc opened must show up in ``get_state_open_fds``."""
+        path = b"/tmp/bounced-open.txt"
+        mgr, fd = self._run_with_open_hook(hookable_project, path)
+
+        hits = self._rust_fds(mgr, fd)
+        assert hits, f"fd {fd} opened by the bounced proc never reached Rust's fd table"
+        _, info = hits[0]
+        assert info[1] == path.decode(), f"wrong name on the adopted fd: {info!r}"
+        assert info[5], "adopted fd is not marked open"
+
+    def test_native_write_on_bounced_fd_works(self, hookable_project):
+        """A native write on the bounced-open fd must succeed, not hit a closed
+        fd. ``append_state_fd_output`` is the same ``RustSimState::write_fd``
+        choke point every native proc writes through, so its False return is
+        exactly the pre-fix failure."""
+        mgr, fd = self._run_with_open_hook(hookable_project, b"/tmp/bounced-write.txt")
+
+        sid = self._rust_fds(mgr, fd)[0][0]
+        assert mgr._rust_mgr.append_state_fd_output(sid, fd, b"NATIVE"), "native write on the bounced fd was refused"
+        assert bytes(mgr._rust_mgr.get_state_fd_content(sid, fd)) == b"NATIVE"
+
+    def test_no_extra_fds_skips_the_ffi(self, hookable_project):
+        """A proc that opened nothing must not cross the FFI boundary at all."""
+        proj = hookable_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        state = proj.factory.entry_state()
+
+        class Tripwire:
+            def get_state_open_fds(self, _state_id):
+                raise AssertionError("fd-table diff crossed the FFI with no fds above stderr")
+
+        mgr._rust_mgr = Tripwire()
+        mgr._sync_state_posix_fds_to_rust(state, 1)
+
+
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict
     into Rust ``RustSimState`` (angr-p8o3).

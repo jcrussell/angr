@@ -2148,6 +2148,25 @@ impl RustExplorationManager {
         self._get_state_fd_content(state_id, fd)
     }
 
+    /// Adopt an fd that a bounced Python SimProcedure opened, at the fd number
+    /// Python chose. `flags` is a POSIX open(2) bitfield; `content` the
+    /// concrete bytes of the backing SimFile; `position` its seek offset.
+    ///
+    /// Returns False when the fd is already known natively (nothing changes),
+    /// which makes the caller's fd-table diff idempotent across the repeated
+    /// callbacks that share one cached state.
+    pub fn register_state_fd(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        name: String,
+        flags: u32,
+        content: Vec<u8>,
+        position: u64,
+    ) -> PyResult<bool> {
+        self._register_state_fd(state_id, fd, name, flags, content, position)
+    }
+
     /// Enable inspection for an event type on a state.
     ///
     /// event_type: 0=MemRead, 1=MemWrite, 2=RegRead, 3=RegWrite, 4=Fork, 5=Exit

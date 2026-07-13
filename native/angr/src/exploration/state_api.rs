@@ -915,6 +915,26 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _register_state_fd(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        name: String,
+        flags: u32,
+        content: Vec<u8>,
+        position: u64,
+    ) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| {
+            Ok(state.file_system().register_fd_at(
+                fd,
+                name,
+                crate::state::FdFlags::from_posix(flags),
+                content,
+                position,
+            ))
+        })
+    }
+
     // -------------------------------------------------------------------------
     // Inspection events
     // -------------------------------------------------------------------------

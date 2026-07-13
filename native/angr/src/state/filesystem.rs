@@ -395,6 +395,43 @@ impl FileSystem {
         fd
     }
 
+    /// Adopt a file descriptor that was opened *outside* the native engine,
+    /// at a caller-chosen number: a bounced Python SimProcedure's
+    /// `open`/`fopen`/`dup` allocates the fd in `state.posix`, and without
+    /// this the native side never learns of it (a later native read/write on
+    /// that fd hits a closed fd — angr-op0dn.14.1.5). Unlike
+    /// [`open`](Self::open) the number is dictated by Python rather than
+    /// drawn from `next_fd`, so `next_fd` is bumped past it to keep later
+    /// native opens from colliding.
+    ///
+    /// Returns false — changing nothing — when `fd` is already known, which
+    /// is what keeps the caller's diff-against-[`all_fds`](Self::all_fds)
+    /// idempotent across the repeated callbacks that share one cached state.
+    ///
+    /// Content is the explicit concrete buffer the caller extracted from the
+    /// Python `SimFile`; like [`open_with_content`](Self::open_with_content)
+    /// this intentionally bypasses the `file_contents` symbolic registry.
+    pub fn register_fd_at(
+        &mut self,
+        fd: u32,
+        name: String,
+        flags: FdFlags,
+        content: Vec<u8>,
+        position: u64,
+    ) -> bool {
+        if self.fds.contains_key(&fd) {
+            return false;
+        }
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        let mut desc = FileDescriptor::with_content(name, flags, content);
+        desc.position = position;
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        self.next_fd = self.next_fd.max(fd.saturating_add(1));
+        true
+    }
+
     /// Open a symbolic-stream file descriptor: empty content, flagged so
     /// that reads mint fresh symbolic bytes natively (the stdin model)
     /// rather than falling back to Python. Returns the allocated fd number.

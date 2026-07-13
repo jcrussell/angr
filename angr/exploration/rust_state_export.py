@@ -886,6 +886,64 @@ class RustStateExportMixin:
                 # it. The state may simply have been dropped from Rust by now.
                 l.debug("fd %d write-back to Rust state %d failed: %s", fd, state_id, e)
 
+    def _sync_state_posix_fds_to_rust(self, state: angr.SimState, state_id: int):
+        """Push fds a bounced proc opened (open/fopen/dup) into Rust's FileSystem.
+
+        Companion to ``_sync_state_posix_to_rust``, which only carries the
+        *bytes* written to fd 1/2. A bounced open allocates an fd in
+        ``state.posix`` and a ``SimFile`` in ``state.fs``; without this the
+        native engine never learns the fd exists and a later native
+        read/write/close on it operates on a closed fd (angr-op0dn.14.1.5).
+
+        Only fds above stderr are considered — 0/1/2 always exist natively —
+        so a proc that opened nothing pays one dict comprehension over the
+        three standard fds and never crosses the FFI boundary.
+
+        A fd whose backing SimFile has symbolic content or a symbolic seek
+        position is *not* registered: Rust's descriptors hold concrete bytes,
+        and adopting the fd with an empty buffer would make a native read
+        return the wrong answer, which is worse than the fallback we already
+        have. Leaving it unregistered keeps the pre-fix behavior for that fd.
+        """
+        posix = state.plugins.get("posix")
+        if posix is None:
+            return
+        py_fds = [fd for fd in getattr(posix, "fd", {}) if fd > 2]
+        if not py_fds:
+            return
+        try:
+            rust_fds = {info[0] for info in self._rust_mgr.get_state_open_fds(state_id)}
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: cannot tell which fds Rust already
+            # has, so skip rather than risk clobbering one. The state may
+            # simply have been dropped from Rust by now.
+            l.debug("get_state_open_fds(%d) failed: %s", state_id, e)
+            return
+        for fd in py_fds:
+            if fd in rust_fds:
+                continue
+            desc = posix.get_fd(fd)
+            simfile = getattr(desc, "file", None)
+            if simfile is None:
+                continue
+            pos = _bvv_int(getattr(desc, "_pos", 0))
+            content = _concrete_stream_bytes(state, simfile)
+            if pos is None or content is None:
+                # cat-(b) FALLBACK WITH LOSS: see docstring — an fd we cannot
+                # faithfully model natively stays unknown to Rust.
+                l.debug("fd %d of callback state %d is not concretely modelable in Rust", fd, state_id)
+                continue
+            name = getattr(simfile, "name", "") or ""
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", "replace")
+            flags = _bvv_int(getattr(desc, "flags", 0)) or 0
+            try:
+                self._rust_mgr.register_state_fd(state_id, fd, name, flags, content, pos)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the fd the bounced proc opened
+                # does not reach Rust; a later native op on it falls back.
+                l.debug("fd %d registration into Rust state %d failed: %s", fd, state_id, e)
+
     def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
         """Sync Rust-tracked call frames into state.callstack.
 

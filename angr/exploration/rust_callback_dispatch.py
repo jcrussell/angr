@@ -1054,6 +1054,7 @@ class RustCallbackDispatchMixin:
                 pass
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
+        self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, tracked_writes or None)
 
     @staticmethod
@@ -1247,6 +1248,7 @@ class RustCallbackDispatchMixin:
         # so a later native malloc does not overlap what it handed out.
         self._sync_state_heap_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
+        self._sync_state_posix_fds_to_rust(succ_state, event.callback_state_id)
 
         # Resume Rust with the changes and any new constraints.
         # IMPORTANT: This must happen BEFORE symbolic imports, because
@@ -1387,6 +1389,7 @@ class RustCallbackDispatchMixin:
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
+        self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
 
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
