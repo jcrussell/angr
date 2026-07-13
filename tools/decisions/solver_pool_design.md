@@ -5,7 +5,7 @@
   (qfbv_smart push/pop, DEFERRED/NOGO)
 - **Status:** COMPLETE — **NO-GO on a new pool; the recommended redesign already
   exists** as `SharedLineageSolver`. See "Decision" below.
-- **Date:** 2026-06-25 (iter48)
+- **Date:** 2026-06-25 (iter48); gating policy resolved 2026-07-13 — see §7.
 
 ## 1. Why this spike exists
 
@@ -134,7 +134,67 @@ drainable now.
 4. (Optional, human) file a gating-policy bead: "evaluate use_shared_lineage_solver
    auto-enable on rev250/unbreakable_1" — deferred behind the T3 profiling gate.
 
-## 7. Cross-references
+## 7. Gating-policy decision (angr-op0dn.9.3, 2026-07-13)
+
+Section 6 filed the gating question as the one real gap. It is now **answered
+with measurement**: the default stays **OFF**, and auto-enable-by-shape is
+**not buildable** on the signal we have.
+
+### Measurement
+
+Each bench run through `tests/benchmarks/run_single.py <bench> --engine rust`
+with and without `--use-shared-lineage-solver`. Wall time is the median of 5
+reps; counters are one `--counters-json` capture per arm.
+
+| bench | wall off → on | z3_materialize_count | z3_check_count | z3_check_time | hot ratio (fast_path/switch) |
+|---|---|---|---|---|---|
+| `ekopartyctf2016_rev250` | 2.74s → **2.47s** (−10 %) | 88 → 45 | 243 → 243 | 1262 ms → 879 ms | 95/241 = **39 %** |
+| `google2016_unbreakable_0` (anti-case) | 0.99s → **1.09s** (**+10 %**) | 52 → 44 | 4 → 4 | 60 ms → 117 ms | 1/22 = 4.5 % |
+| `google2016_unbreakable_1` (bimodal) | indeterminate | 52 → 33 | 1 → 1 | 231 ms → 655 ms | 0/39 = 0 % |
+
+The bead's VOID gate (*"materialize no longer material"*) is **not** met:
+`z3_materialize_time_ns` is 406 ms of a ~2.5 s rev250 run (16 %). The feature
+does what it claims — it halves materialize count on every bench measured.
+
+### Why the saved materialize does not survive to wall time
+
+It converts **only when the hot ratio is high**. Below the threshold, the
+`switch_to` push/pop plus the sat/model-cache invalidation it forces costs more
+than the materialize it avoids: on `unbreakable_0`, materialize drops 46 ms but
+check time rises 57 ms, for a net +100 ms wall. rev250 is the one bench where
+reconvergence is dense enough (39 % hot) for the trade to pay.
+
+### Why the v5ht dismantle valve cannot backstop a default flip
+
+`lineage_dismantled == 1` on **all three** benches — the sampler fires its
+kill switch every time. Two independent failures follow:
+
+1. **Too slow to protect.** On `unbreakable_0` the valve fires *and the bench
+   still regresses 10 %*. Detection needs ≥ 20 switch events; on a ~1 s bench
+   that window is most of the run, so the damage is already paid by the time
+   the valve trips. A safety valve that fires after the cost is sunk is not a
+   safety valve.
+2. **Wrong on the bench that pays.** On rev250 it dismantles despite an
+   eventual 39 % hot ratio and a 10 % win — the early window mispredicts the
+   steady-state ratio. (rev250 still wins because dismantle only nulls the
+   lineage of *future* forks, per `invariant-v5ht-dismantle-child-none`; the
+   already-minted lineages keep switching.)
+
+Failure 2 also kills the *auto-enable-on-workload-shape* alternative: the only
+shape signal available at runtime is the sampler's early hot ratio, and it is
+demonstrably wrong on the single workload the feature helps.
+
+### Decision
+
+**Keep `use_shared_lineage_solver` default-OFF, opt-in, unchanged.** No flag
+flip, no auto-enable heuristic, no threshold re-tune. Opt in by hand when a
+workload is fork-dense with a deep shared constraint prefix (rev250-shaped);
+expect ≈10 % either way, in the direction the hot ratio predicts. Revisit only
+if someone proposes a *pre-execution* predictor (e.g. CFG fork density) with
+evidence, or fixes the sampler to decide per-lineage-tree instead of once,
+globally, early (filed as a follow-up bead).
+
+## 8. Cross-references
 
 - Source: `native/angr/src/symbolic/context.rs` (`fn solver`),
   `native/angr/src/symbolic/lineage.rs` (`SharedLineageSolver::switch_to`,

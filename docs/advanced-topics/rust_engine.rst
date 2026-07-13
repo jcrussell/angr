@@ -1489,6 +1489,40 @@ exists, falls back to baseline elsewhere, and adds no overhead on
 the default code path — the detector hooks only when the flag is
 on.
 
+Gating policy: the kwarg stays opt-in
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A 2026-07-13 measurement (``angr-op0dn.9.3``) settled whether the
+kwarg should flip default-on. It should not. With the flag on,
+``z3_materialize_count`` halves on every bench measured
+(``ekopartyctf2016_rev250`` 88 → 45, ``google2016_unbreakable_0``
+52 → 44, ``google2016_unbreakable_1`` 52 → 33) — but that saving
+reaches wall time only where sibling reconvergence is dense enough
+to keep the switch cache hot. Median-of-5 wall time: rev250 2.74 s →
+2.47 s (**−10 %**, hot ratio 39 %), unbreakable_0 0.99 s → 1.09 s
+(**+10 %**, hot ratio 4.5 %). Below the threshold, the ``switch_to``
+push/pop and the sat/model-cache invalidation it forces cost more
+than the materialize they avoid — on unbreakable_0, materialize
+drops 46 ms while ``check`` time rises 57 ms.
+
+The v5ht dismantle sampler cannot backstop a default flip, on two
+counts. It fires on *all three* benches, yet unbreakable_0 still
+regresses 10 %: detection needs ≥ 20 switch events, which on a ~1 s
+bench is most of the run, so the cost is sunk before the valve
+trips. And on rev250 it dismantles despite the eventual 39 % hot
+ratio and the 10 % win — the early sampling window mispredicts the
+steady-state ratio. (rev250 wins anyway because dismantle only nulls
+the lineage of *future* forks; already-minted lineages keep
+switching.) The second failure also rules out auto-enable-on-
+workload-shape: the sampler's early hot ratio is the only runtime
+shape signal available, and it is wrong on the one workload the
+feature helps.
+
+So: opt in by hand when a workload is fork-dense with a deep shared
+constraint prefix, and expect roughly ±10 % in whichever direction
+``lineage_switch_fast_path_count / lineage_switch_count`` predicts.
+Full data in ``tools/decisions/solver_pool_design.md`` §7.
+
 Bead trail: ``angr-v5a5`` (spike rejected), ``angr-3ms1``
 (alternatives enumerated), ``angr-v5ht`` (simple-variant landed),
 ``angr-0dgq`` (full-variant reverted).
