@@ -819,6 +819,16 @@ impl RustExplorationManager {
             .unwrap_or_default()
     }
 
+    /// State ids of the callbacks currently parked in `pending_callbacks`
+    /// (angr-op0dn.13.14). A parked callback's state lives in NO stash, so it
+    /// is invisible to `get_state_ids` / `stash_counts` — this is the only way
+    /// for Python (and the snapshot tests) to observe it.
+    pub fn pending_callback_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.pending_callbacks.keys().map(|k| k.raw()).collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// Get (state_id, addr, stdout_len) tuples for states in a stash.
     /// Used by Python predicate caching to skip re-evaluation when
     /// a state's address and stdout haven't changed.
