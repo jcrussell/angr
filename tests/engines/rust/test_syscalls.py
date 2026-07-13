@@ -849,3 +849,80 @@ class TestNativeFileDescriptorSyscalls:
             f"native {label}({syscall_num}) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
+
+
+class TestPythonSyscallFallbackSyncsChanges:
+    """angr-89w70: a syscall that falls back to Python must carry its
+    register/memory writes back into the Rust state.
+
+    ``_handle_syscall_callback_inner`` used to hand the
+    ``(concrete, symbolic)`` 2-tuple from ``_extract_memory_changes``
+    straight to ``resume_after_syscall`` (whose PyO3 signature takes only
+    the concrete half). PyO3 raised, the enclosing ``except Exception``
+    swallowed it, and the state resumed at ``addr + 1`` with *every*
+    register and memory change discarded.
+    """
+
+    SYSCALL_NUM = 314  # unregistered in the Rust AMD64 table -> Python path
+    BUF_ADDR = 0x8000
+    PAYLOAD = b"\xde\xad\xbe\xef\xca\xfe\xba\xbe"
+    RETVAL = 0x1234
+
+    def _project(self):
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000, simos="linux")
+
+        buf_addr, payload, retval = self.BUF_ADDR, self.PAYLOAD, self.RETVAL
+
+        class _MemWritingSyscall(angr.SimProcedure):
+            IS_SYSCALL = True
+
+            def run(self):  # pylint:disable=arguments-differ
+                self.state.memory.store(buf_addr, payload)
+                return retval
+
+        # Copy the syscall library so the number mapping does not leak into
+        # the process-global SIM_LIBRARIES entry shared by other tests.
+        lib = proj.simos.syscall_library.copy()
+        lib.add("angr_89w70_test_syscall", _MemWritingSyscall)
+        lib.add_number_mapping("amd64", self.SYSCALL_NUM, "angr_89w70_test_syscall")
+        proj.simos.syscall_library = lib
+        return proj
+
+    @staticmethod
+    def _first_state_id(mgr):
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return ids[0]
+        return None
+
+    def test_fallback_syscall_writes_reach_rust(self):
+        proj = self._project()
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = self.SYSCALL_NUM
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 1, (
+            f"syscall {self.SYSCALL_NUM} must take the Python fallback path (stats={stats})"
+        )
+        # The fallback must not have raised into the except-swallow.
+        assert mgr._perf_stats["callback_syscall_error_count"] == 0, (
+            "syscall callback raised and was swallowed; changes were discarded"
+        )
+
+        sid = self._first_state_id(mgr)
+        assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+        stored = bytes(mgr._rust_mgr.get_state_memory(sid, self.BUF_ADDR, len(self.PAYLOAD)))
+        assert stored == self.PAYLOAD, f"syscall memory write lost: got {stored!r}"
+
+        rax = mgr._rust_mgr.get_state_register(sid, "rax")
+        assert rax == self.RETVAL, f"syscall return register lost: rax={rax:#x}"
+
+        # PC must be the instruction after the 2-byte `syscall`, not addr+1.
+        rip = mgr._rust_mgr.get_state_register(sid, "rip")
+        assert rip == 0x1002, f"resumed at wrong PC: {rip:#x}"

@@ -57,6 +57,10 @@ class PerformanceTracker:
         "callback_lift_block_total_ns",
         "callback_syscall_count",
         "callback_syscall_total_ns",
+        # angr-89w70: syscall callbacks whose Python execution raised and were
+        # resumed at PC+1 with no changes applied. Non-zero means results from
+        # this run are suspect — the swallowed exception is a wrong-answer risk.
+        "callback_syscall_error_count",
         "callback_find_predicate_count",
         "callback_find_predicate_total_ns",
         "callback_avoid_predicate_count",
@@ -120,6 +124,9 @@ class PerformanceTracker:
     def record_syscall_call(self, total_ns: int) -> None:
         self._stats["callback_syscall_count"] += 1
         self._stats["callback_syscall_total_ns"] += total_ns
+
+    def record_syscall_error(self) -> None:
+        self._stats["callback_syscall_error_count"] += 1
 
     def record_find_predicate_call(self, total_ns: int) -> None:
         self._stats["callback_find_predicate_count"] += 1

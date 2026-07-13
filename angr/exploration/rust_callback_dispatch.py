@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import claripy
 
-from angr.errors import SimUnsatError
+from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
 
 if TYPE_CHECKING:
@@ -1637,9 +1637,6 @@ class RustCallbackDispatchMixin:
 
         # Run the syscall
         try:
-            # Get syscall handler from project
-            engine = self._project.factory.default_engine
-
             # Resolve the syscall handler so the BP attrs match Python's
             # engine (procedure.py:34 passes `procedure.display_name`).
             # If resolution fails, fall back to the numeric ID so the BP
@@ -1653,11 +1650,29 @@ class RustCallbackDispatchMixin:
                 sc_proc = None
                 sc_name = str(syscall_num)
 
+            if sc_proc is None:
+                raise AngrUnsupportedSyscallError(f"no syscall handler for {syscall_num}")
+
+            # Linux's syscall CC returns to the ``ip_at_syscall`` register,
+            # which VEX sets on the syscall exit. Rust builds the callback
+            # state directly (pc already points past the syscall) and never
+            # populates it, so ``cc.teardown_callsite`` would hand back a
+            # return address of 0 (angr-89w70).
+            if "ip_at_syscall" in state.arch.registers:
+                state.regs.ip_at_syscall = state.addr
+
             # state.inspect syscall BEFORE (angr-xmfj).
             self._cb_inspect_syscall(state_id, "before", sc_name, None)
 
-            # Execute syscall
-            successors = engine.process(state, procedure=None)
+            # Execute the resolved handler on the procedure engine. Driving
+            # ``default_engine.process(state, procedure=None)`` instead raised
+            # unconditionally: ``SimEngineSyscall.process_successors`` forwards
+            # **kwargs into ``process_procedure``, which already receives the
+            # procedure positionally, so ``procedure=None`` was a duplicate
+            # argument. The TypeError was then swallowed below (angr-89w70).
+            # The syscall mixin cannot resolve the handler for us anyway — the
+            # callback state has no ``Ijk_Sys*`` parent jumpkind.
+            successors = self._project.factory.procedure_engine.process(state, procedure=sc_proc)
 
             # state.inspect syscall AFTER (angr-xmfj). `simprocedure` is
             # the resolved syscall handler (None if resolution failed),
@@ -1679,10 +1694,31 @@ class RustCallbackDispatchMixin:
                     reg_changes = []
                 else:
                     reg_changes = self._extract_register_changes(state, succ_state)
-                mem_changes = self._extract_memory_changes(state, succ_state)
+                # ``_extract_memory_changes`` returns (concrete, symbolic);
+                # passing the 2-tuple straight to ``resume_after_syscall``
+                # raised inside PyO3 and the except-swallow below then resumed
+                # at PC+1 with every change discarded (angr-89w70).
+                mem_changes, symbolic_imports = self._extract_memory_changes(state, succ_state)
+                mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, None)
                 new_constraints = self._extract_new_constraints(state, succ_state)
 
-                self._rust_mgr.resume_after_syscall(state_id, new_pc, reg_changes, mem_changes, new_constraints or None)
+                # Resume BEFORE the symbolic imports: apply_changes writes
+                # concrete witnesses that clear symbolic page markers, so the
+                # imports must re-set them afterwards (mirrors
+                # ``_resume_with_state``).
+                self._rust_mgr.resume_after_syscall(
+                    state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
+                )
+
+                for sym_addr, ast in symbolic_imports:
+                    try:
+                        self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
+                    except Exception as e:
+                        # cat-(c) WRONG-ANSWER RISK: Rust loses the symbolic
+                        # relationship at this address — downstream loads see
+                        # the concrete witness only.
+                        if _DBG:
+                            l.debug(f"Could not import symbolic syscall memory at 0x{sym_addr:x}: {e}")
 
                 # Update cache
                 state_id = event.callback_state_id
@@ -1698,7 +1734,10 @@ class RustCallbackDispatchMixin:
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume
-            # at PC+1 rather than re-running the syscall. Already warns.
+            # at PC+1 rather than re-running the syscall, discarding every
+            # register/memory change the syscall made. Counted so a run that
+            # hit this path is identifiable from stats() (angr-89w70).
+            self._perf_stats.record_syscall_error()
             l.warning(f"Syscall execution error: {e}")
             pc = state.addr + 1
             self._rust_mgr.resume_after_syscall(state_id, pc, None, None)
