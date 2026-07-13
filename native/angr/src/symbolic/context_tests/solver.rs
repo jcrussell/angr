@@ -741,3 +741,57 @@ fn test_eval_many_unsat_returns_none() {
 
     assert!(ctx.eval_many(&[x]).is_none());
 }
+
+/// angr-op0dn.10.1 (M2.1): `eval_upto` must present the enumerated witnesses in
+/// canonical ascending order, so an exhaustive enumeration (n >= #feasible, the
+/// `solutions()` pattern) is bit-for-bit reproducible across runs. Without the
+/// sort the order is whatever Z3's model-generation happened to produce, which
+/// is stable within a process but not something we may rely on.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_canonical_order() {
+    // 5 <= x < 10 over 8 bits => exactly {5, 6, 7, 8, 9}.
+    let expected: Vec<u128> = vec![5, 6, 7, 8, 9];
+
+    for _ in 0..10 {
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let lo = RustBV::concrete(5, 8);
+        let hi = RustBV::concrete(10, 8);
+        let ge_lo = x.uge(&lo, &ctx);
+        let lt_hi = x.ult(&hi, &ctx);
+        ctx.assume_true(&ge_lo);
+        ctx.assume_true(&lt_hi);
+
+        // n == #feasible and n > #feasible must both give the identical Vec.
+        assert_eq!(ctx.eval_upto(&x, 5), expected);
+        assert_eq!(ctx.eval_upto(&x, 16), expected);
+    }
+}
+
+/// The wide (byte-vector) boundary carries the same guarantee. Every witness is
+/// `width` bits wide, so big-endian lexicographic order == numeric order.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_wide_canonical_order() {
+    const WIDTH: u32 = 192; // > 128 bits: exercises the genuinely-wide path.
+    let byte_len = (WIDTH / 8) as usize;
+    let expected: Vec<Vec<u8>> = (0u8..4)
+        .map(|v| {
+            let mut bytes = vec![0u8; byte_len];
+            bytes[byte_len - 1] = v;
+            bytes
+        })
+        .collect();
+
+    for _ in 0..10 {
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x", WIDTH);
+        let four = RustBV::concrete(4, WIDTH);
+        let lt_four = x.ult(&four, &ctx);
+        ctx.assume_true(&lt_four);
+
+        assert_eq!(ctx.eval_upto_wide(&x, 4), expected);
+        assert_eq!(ctx.eval_upto_wide(&x, 8), expected);
+    }
+}

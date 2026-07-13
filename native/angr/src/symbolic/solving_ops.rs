@@ -520,6 +520,13 @@ impl SymContext {
 
             solver.pop(1);
         });
+        // Canonical presentation order (angr-op0dn.10.1). Pure post-processing
+        // on the enumerated set: the exclude-loop above decides WHICH values are
+        // returned, this only decides in what order. Makes the exhaustive case
+        // (n >= #feasible, e.g. `solutions()`) bit-for-bit reproducible across
+        // runs regardless of which witness Z3 or the warm-model seed found
+        // first. Any future short-circuit must land ABOVE this sort.
+        results.sort_unstable();
         results
     }
 
@@ -600,6 +607,10 @@ impl SymContext {
 
             solver.pop(1);
         });
+        // Canonical ascending numeric order (angr-op0dn.10.1). Every witness is
+        // `width` bits wide, so all byte vectors have the same length and
+        // big-endian lexicographic order coincides with numeric order.
+        results.sort_unstable();
         results
     }
 
