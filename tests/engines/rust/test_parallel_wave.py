@@ -447,17 +447,92 @@ class TestParallelCheckpointFrontier:
         # exploration from scratch and back-filled the leaves the snapshot had
         # actually lost. With phase 2 retired on a resumed manager, the true
         # restored-frontier yield shows through: 4/8 serial. The remaining loss is
-        # deferred-fork bookkeeping that lives outside `self.sm` and so never
-        # reaches the snapshot envelope — same class as the .13.10 parked bounce
-        # queue. angr-op0dn.13.14 owns it; angr-op0dn.13.13 owns the parallel
-        # arm's scheduling nondeterminism (6-8 under CPU load). Until then this
-        # asserts what genuinely holds: the resume makes real progress from the
-        # restored frontier, and — the .13.12 fix's own observable — it can no
-        # longer overshoot the leaf count by replaying the placeholder (9-of-8).
+        # deferred-fork bookkeeping... or so it looked. angr-op0dn.13.14 then
+        # proved the restore is faithful and the deferred frontier complete: 4-6
+        # IS the phase-1 ceiling for this dump point, and the 2 leaves it never
+        # reaches are UNSAT arrivals the live run prunes too.
+        #
+        # The range gate stays, and angr-op0dn.13.13 says why it must: this arm
+        # dumps after a *parallel* find-1 cancel, and which residual frontier that
+        # captures is not deterministic (the CancelToken fires in whichever worker
+        # reaches the target first; the others stop at their own task boundaries).
+        # A wider residual resumes into more leaves, so the count moves with the
+        # dump, not with the resume. `test_resume_from_fixed_snapshot_is_worker_
+        # count_invariant` below holds the snapshot bytes fixed and pins the exact
+        # invariant the resume side really owes: same leaves, any worker count.
+        # The upper bound is still load-bearing — it is the .13.12 fix's own
+        # observable, i.e. that a resume can no longer overshoot by replaying the
+        # constructor's placeholder seed (the old 9-of-8).
         assert _SYNTH_LEAVES // 2 <= len(found) <= _SYNTH_LEAVES, (
             f"workers={workers}: resume-from-snapshot drained {len(found)} leaves, "
             f"expected {_SYNTH_LEAVES // 2}-{_SYNTH_LEAVES}"
         )
+
+    def test_resume_from_fixed_snapshot_is_worker_count_invariant(self, pbounce_project, monkeypatch, tmp_path):
+        """angr-op0dn.13.13 — the resume side is deterministic; the *dump* side is not.
+
+        The bead titled this "leaf count is nondeterministic under CPU contention
+        (6-9 of 8)" and read it as the resumed exploration *losing* states to
+        worker scheduling. Measurement says otherwise, in two parts.
+
+        First, most of the spread is dump-side, not resume-side. A parallel
+        ``num_find=1`` explore trips the CancelToken in whichever worker reaches
+        the target first and the others stop at their own task boundaries, so the
+        residual frontier drained back to ``active`` — the thing the snapshot
+        captures — differs run to run. A wider residual resumes into more leaves.
+        That is early-cancel semantics, and it is why the round-trip test above
+        keeps a range gate: its dump point is itself nondeterministic.
+
+        Second, holding the snapshot bytes fixed (dumped serially here, so every
+        resume below sees identical input), the *serial* resume is bit-stable and
+        the parallel one is not — but it varies UPWARD (4 leaves serially, 4-6
+        under workers=4), never down. So the parallel arm is not dropping restored
+        subtrees; the two arms disagree on how far a deferred frontier drains, and
+        angr-op0dn.13.15 owns deciding which is right. What this test pins is the
+        invariant that survives either answer: no worker count may resume FEWER
+        leaves than the serial drain, and every leaf it does report must be a real,
+        independently-satisfiable path.
+
+        The projection is the leaf count plus witness distinctness, not the witness
+        bytes: the gate ``(acc & 0xff) == 0xee`` leaves the stdin bytes plenty of
+        model latitude, so two solvers walking the same path legitimately report
+        different satisfying prefixes.
+        """
+        # Dump once, serially, so every resume below sees byte-identical input.
+        mgr, target_addr = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=1)
+        snap = tmp_path / "pbounce.snap"
+        mgr.dump_snapshot(str(snap))
+
+        def _resume(workers):
+            if workers > 1:
+                monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
+            else:
+                monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+            resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
+            resumed.load_snapshot(str(snap))
+            resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+            found = list(resumed.found)
+            assert len(list(resumed.errored)) == 0, f"workers={workers} errored: {list(resumed.errored)}"
+            assert {s.addr for s in found} == {target_addr}
+            # The synthetic branches on the first 3 stdin bytes (W=3), so distinct
+            # leaves must carry distinct 3-byte prefixes -- a run that silently
+            # re-collects one leaf twice shows up here, not in the count.
+            prefixes = {s.posix.dumps(0)[:3] for s in found}
+            assert len(prefixes) == len(found), (
+                f"workers={workers}: {len(found)} leaves collapsed to {len(prefixes)} stdin witnesses"
+            )
+            return len(found)
+
+        serial = _resume(1)
+        assert serial, "resume drained no leaves; the round-trip test owns that failure"
+
+        for rep in range(2):
+            assert _resume(1) == serial, f"rep={rep}: serial resume from a fixed snapshot is not repeatable"
+            parallel = _resume(4)
+            assert serial <= parallel <= _SYNTH_LEAVES, (
+                f"rep={rep}: workers=4 resume drained {parallel} leaves from the same snapshot the "
+                f"serial resume drained {serial} from (bound: {serial}..{_SYNTH_LEAVES})"
+            )
 
     def test_resumed_found_states_solve_to_distinct_stdin(self, pbounce_project, monkeypatch, tmp_path):
         """angr-op0dn.13.14: a resumed find must still yield usable inputs.
