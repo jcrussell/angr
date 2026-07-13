@@ -246,9 +246,15 @@ class TestPythonBouncePreservesIdentity:
         result = json.loads(line[len("RESULT ") :])
 
         # Six of the eight leaves are feasible (s=0 and s=4 force a constant
-        # accumulator). Before the fix only the two leaves that never bounce
-        # (s=3, s=7) produced a model that reached the target.
-        assert len(result["reaching"]) >= 6, (
+        # accumulator). Before the identity fix only the two leaves that never
+        # bounce (s=3, s=7) produced a model that reached the target; the
+        # angr-027h phase-2 retry then re-seeded a mutated seed state and
+        # parked a constraint-less state in `found` (angr-je2xt).
+        assert result["found"] >= 6, f"only {result['found']} found states, expected every feasible leaf"
+        # EVERY found state must carry a model that drives the program to the
+        # target — a found state whose constraints went missing is trivially
+        # satisfiable and dumps all-zero stdin.
+        assert len(result["reaching"]) == result["found"], (
             f"only {len(result['reaching'])}/{result['found']} bounced found-states "
             "produce a model that reaches reach_target — the bounce dropped path constraints"
         )

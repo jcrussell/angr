@@ -1527,14 +1527,20 @@ class RustExplorationManager(
             # Handle single state or list of states
             if hasattr(active_states, "solver"):  # Single SimState
                 active_states = [active_states]
-            # angr-027h two-phase explore: keep references to the pristine seed
-            # states. If a find-based explore exhausts to active_empty without
-            # finding, `_explore_with_addresses` re-seeds (from copies) in eager
-            # mode. Cheap here (references only); the copy happens on the rare
-            # retry path. Skip when re-seeding (the retry passes copies and we do
-            # not want to overwrite the originals with already-consumed copies).
+            # angr-027h two-phase explore: keep the pristine seed states. If a
+            # find-based explore exhausts to active_empty without finding,
+            # `_explore_with_addresses` re-seeds them in eager mode. These MUST
+            # be copies, not references: the callback-dispatch path re-uses the
+            # seed SimState object as the Python-side mirror of its root Rust
+            # state, so a Python bounce mutates it in place (pc lands on the
+            # bounced SimProcedure, constraints/memory move with the path). A
+            # reference here made the phase-2 retry replay a mid-path,
+            # constraint-less state that could reach the find address and land
+            # in `found` carrying only the find gate (angr-je2xt). Skip when
+            # re-seeding (the retry passes copies of these and must not
+            # overwrite the pristine originals).
             if not getattr(self, "_phase2_reseeding", False):
-                self._initial_seed_states = list(active_states)
+                self._initial_seed_states = [s.copy() for s in active_states]
             for state in active_states:
                 # Detect state options
                 if hasattr(state, "options"):
