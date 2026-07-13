@@ -1,0 +1,114 @@
+{
+ "_note": "S1 spike (angr-op0dn.3): per-check structural classes, ANGR_RUST_QUERY_CLASS=1. Classes sum to z3_check_count.",
+ "addressable_pct": 2.2,
+ "corpus_totals": {
+  "forced_value": 0,
+  "free_witness": 332,
+  "hard": 959,
+  "single_var_range": 27,
+  "trivial_decide": 2,
+  "unclassified": 0,
+  "z3_check_count": 1320
+ },
+ "per_bench": {
+  "ais3_crackme": {
+   "forced_value": 0,
+   "free_witness": 1,
+   "hard": 118,
+   "single_var_range": 3,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 122
+  },
+  "android_arm_license_validation": {
+   "forced_value": 0,
+   "free_witness": 1,
+   "hard": 0,
+   "single_var_range": 16,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 17
+  },
+  "cli_ctype_fprintf": {
+   "forced_value": 0,
+   "free_witness": 158,
+   "hard": 385,
+   "single_var_range": 8,
+   "trivial_decide": 1,
+   "unclassified": 0,
+   "z3_check_count": 552
+  },
+  "csgames2018": {
+   "forced_value": 0,
+   "free_witness": 99,
+   "hard": 183,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 282
+  },
+  "defcamp_r100": {
+   "forced_value": 0,
+   "free_witness": 1,
+   "hard": 25,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 26
+  },
+  "defcon2016quals_baby-re": {
+   "forced_value": 0,
+   "free_witness": 29,
+   "hard": 0,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 29
+  },
+  "fauxware": {
+   "forced_value": 0,
+   "free_witness": 17,
+   "hard": 5,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 22
+  },
+  "google2016_unbreakable_0": {
+   "forced_value": 0,
+   "free_witness": 4,
+   "hard": 0,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 4
+  },
+  "sharif7_rev50": {
+   "forced_value": 0,
+   "free_witness": 1,
+   "hard": 0,
+   "single_var_range": 0,
+   "trivial_decide": 1,
+   "unclassified": 0,
+   "z3_check_count": 2
+  },
+  "strcpy_find": {
+   "forced_value": 0,
+   "free_witness": 1,
+   "hard": 3,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 4
+  },
+  "whitehatvn2015_re400": {
+   "forced_value": 0,
+   "free_witness": 20,
+   "hard": 240,
+   "single_var_range": 0,
+   "trivial_decide": 0,
+   "unclassified": 0,
+   "z3_check_count": 260
+  }
+ }
+}

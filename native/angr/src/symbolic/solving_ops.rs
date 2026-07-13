@@ -26,6 +26,8 @@ use super::SymContext;
 #[cfg(feature = "vex-engine-z3")]
 use super::bv_codec::*;
 #[cfg(feature = "vex-engine-z3")]
+use super::query_class;
+#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
 #[cfg(feature = "vex-engine-z3")]
 use super::stats::*;
@@ -152,6 +154,8 @@ impl SymContext {
         if let Some(cached) = self.sat_cache.get() {
             return cached;
         }
+        let _class =
+            query_class::scope(|| query_class::classify_sat(&self.get_assumed_constraints()));
         // Perform actual SAT check. Both the check() and the post-check
         // get_model() must happen under the same solver lock, so both run
         // inside the with_z3_solver closure.
@@ -212,6 +216,9 @@ impl SymContext {
             return (v != 0, v == 0);
         }
         Z3_BRANCH_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
+        let _class = query_class::scope(|| {
+            query_class::classify_bool(cond, &self.get_assumed_constraints())
+        });
         // Use native Bool to avoid ITE wrapping overhead
         let bool_ast = cond.to_z3_bool();
 
@@ -309,6 +316,8 @@ impl SymContext {
         // model_cache write happens inside the closure (model_cache is a
         // RefCell, independent of the solver Mutex, so this does not nest
         // locks against the solver guard).
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
         self.with_z3_solver(|solver| {
             match timed_check(solver, CheckSite::Eval) {
                 z3::SatResult::Sat => {
@@ -377,6 +386,8 @@ impl SymContext {
         // all share one solver lock acquisition via with_z3_solver. Mirrors
         // the slice 3h pattern from `eval`, minus the sat_cache update (the
         // original eval_wide didn't set it — preserve behavior).
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
         self.with_z3_solver(|solver| {
             match timed_check(solver, CheckSite::Eval) {
                 z3::SatResult::Sat => {}
@@ -419,6 +430,9 @@ impl SymContext {
             }
         }
 
+        let _class = query_class::scope(|| {
+            query_class::classify_eval_many(bvs, &self.get_assumed_constraints())
+        });
         self.with_z3_solver(|solver| {
             match timed_check(solver, CheckSite::Eval) {
                 z3::SatResult::Sat => self.sat_cache.set(Some(true)),
@@ -449,6 +463,8 @@ impl SymContext {
 
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
         // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
         // Soundness: per `invalidate_model_if_inconsistent`, a surviving cached
@@ -524,6 +540,8 @@ impl SymContext {
 
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
         // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
         // Same soundness argument as eval_upto: the cached model satisfies all
@@ -622,6 +640,9 @@ impl SymContext {
         // Peek the cached model (populated by is_sat above when it does a
         // fresh check, or carried over from a prior eval/min/max on the
         // same constraint set).
+        let _class = query_class::scope(|| {
+            query_class::classify_extrema(bv, &self.get_assumed_constraints())
+        });
         let witness = self.cached_model_eval(&ast);
         if witness.is_some() {
             Z3_EXTREMA_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -733,6 +754,9 @@ impl SymContext {
             return None;
         }
 
+        let _class = query_class::scope(|| {
+            query_class::classify_extrema(bv, &self.get_assumed_constraints())
+        });
         let witness = self.cached_model_eval(&ast);
         if witness.is_some() {
             Z3_EXTREMA_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -847,6 +871,9 @@ impl SymContext {
 
         let ast = bv.to_z3_ast();
         let width = bv.width();
+        let _class = query_class::scope(|| {
+            query_class::classify_extrema(bv, &self.get_assumed_constraints())
+        });
         let max_val: u128 = if width >= 128 {
             u128::MAX
         } else {
@@ -899,6 +926,10 @@ impl SymContext {
         let val_ast = make_bv_const(value, width);
 
         let constraint = ast.eq(&val_ast);
+        // `solution` asks whether a specific value is feasible: the query set
+        // is the target's symbols, same shape as an eval.
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
         // All push/assert/check/pop work shares one solver lock acquisition via
         // with_z3_solver. The push/pop pair is balanced inside the closure, so

@@ -562,11 +562,26 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
             stats.insert(format!("z3_site_{}_time_ns", SITE_NAMES[i]), time_ns);
         }
     }
+    // Structural query classes (S1 spike, angr-op0dn.3). Always emitted so a
+    // counters-json capture shows the classifier was off (everything lands in
+    // `unclassified`) rather than silently omitting the keys.
+    #[cfg(feature = "vex-engine-z3")]
+    for i in 0..crate::symbolic::query_class::NUM_QUERY_CLASSES {
+        stats.insert(
+            format!(
+                "z3_check_class_{}",
+                crate::symbolic::query_class::CLASS_NAMES[i]
+            ),
+            crate::symbolic::query_class::Z3_CHECK_CLASS_COUNT[i].load(Ordering::Relaxed),
+        );
+    }
     stats
 }
 
 /// Reset all solver profiling stats to zero.
 pub fn reset_solver_stats() {
+    #[cfg(feature = "vex-engine-z3")]
+    crate::symbolic::query_class::reset();
     Z3_CHECK_COUNT.store(0, Ordering::Relaxed);
     Z3_CHECK_TIME_NS.store(0, Ordering::Relaxed);
     Z3_MATERIALIZE_COUNT.store(0, Ordering::Relaxed);

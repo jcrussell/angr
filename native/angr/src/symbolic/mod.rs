@@ -20,6 +20,8 @@ pub mod lineage;
 mod lineage_ops;
 #[cfg(feature = "vex-engine-z3")]
 mod parse;
+#[cfg(feature = "vex-engine-z3")]
+mod query_class;
 pub mod registry;
 mod sharing;
 mod snapshot_fork_ops;

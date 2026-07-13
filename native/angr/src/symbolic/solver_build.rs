@@ -64,6 +64,9 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
     let idx = site as usize;
     Z3_CHECK_SITE_COUNT[idx].fetch_add(1, Ordering::Relaxed);
     Z3_CHECK_SITE_TIME_NS[idx].fetch_add(elapsed_ns, Ordering::Relaxed);
+    // Attribute this check to whatever query class is in flight (S1 spike,
+    // angr-op0dn.3). Unclassified unless ANGR_RUST_QUERY_CLASS is set.
+    crate::symbolic::query_class::record_check();
     match result {
         z3::SatResult::Sat => Z3_SAT_COUNT.fetch_add(1, Ordering::Relaxed),
         z3::SatResult::Unsat => Z3_UNSAT_COUNT.fetch_add(1, Ordering::Relaxed),
