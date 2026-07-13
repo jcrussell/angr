@@ -697,13 +697,46 @@ class TestParallelTerminalAccounting:
             f"workers={workers}: parallel run counted {mgr.stats['deadended_count']} dead paths, "
             f"serial counted {serial} — summarized terminals are not reaching the manager"
         )
-        # `>=` not `==` on purpose: the parallel arm currently drains 2 paths MORE
-        # than serial on this binary (16 vs 14; the Python engine agrees with
-        # serial at 14), which is a separate over-collection bug tracked as
-        # angr-op0dn.13.16. Tighten to `==` when that lands.
+        # `>=` not `==` on purpose: a parallel drain that runs *after* another
+        # drain in the same process collects 2 paths MORE than the first drain in
+        # a process (16 vs 14). angr-op0dn.13.16 traced that to process-warm
+        # state, NOT to the worker pool — see
+        # `TestSecondExplorationInAProcessDiverges` below. Tighten to `==` when
+        # the warm-state divergence lands.
 
     @pytest.mark.parametrize("workers", [2, 4])
     def test_deadended_states_are_not_recoverable_under_parallel(self, pbounce_project, workers, monkeypatch):
         """The documented content caveat: counted, not stashed."""
         mgr = _drain_pbounce(pbounce_project, workers, monkeypatch)
         assert mgr.stash_counts().get("deadended", 0) == 0
+
+
+# Ground truth for the 8-leaf synthetic drained to quiescence with no ``find``:
+# the vanilla Python `SimulationManager` ends with 14 terminal states, and so
+# does the FIRST Rust drain in a fresh process (at every worker count). See
+# `parallel-drain-depth-ground-truth`.
+_SYNTH_TERMINALS = 14
+
+
+class TestSecondExplorationInAProcessDiverges:
+    """angr-op0dn.13.16: a Rust drain's leaf count depends on process history.
+
+    The first `RustExplorationManager` drain of the synthetic in a process ends
+    with 14 dead paths — matching the Python engine. Every *later* drain in the
+    same process ends with 16, and stays at 16 (run 3 does not grow to 18), so
+    some process-global warms up during the first exploration and makes the next
+    one fork twice more. It is **not** a parallel bug: it reproduces at
+    ``workers=1`` with a freshly-built `Project`, survives `clear_ast_cache()`
+    and dropping the first manager, and does *not* fire when the warm-up drain
+    is a different binary (fauxware). The over-collection the parallel tests see
+    is only this bug, observed through a serial baseline that ran first.
+    """
+
+    @pytest.mark.xfail(strict=True, reason="angr-op0dn.13.16: warm-process drain over-collects 2 paths")
+    def test_a_warm_process_drains_the_same_leaf_count_as_a_cold_one(self, pbounce_project, monkeypatch):
+        _drain_pbounce(pbounce_project, 1, monkeypatch)  # warm the process
+        warm = _drain_pbounce(pbounce_project, 1, monkeypatch).stats["deadended_count"]
+        assert warm == _SYNTH_TERMINALS, (
+            f"a warm-process serial drain collected {warm} dead paths, but the Python engine "
+            f"and a cold-process Rust drain both collect {_SYNTH_TERMINALS}"
+        )
