@@ -122,5 +122,204 @@
    "unclassified": 0,
    "z3_check_count": 260
   }
+ },
+ "m1b_kill_gate": {
+  "_note": "angr-op0dn.9.2 (M1.b) KILL-gate measurement, 2026-07-13. The bead's gate: KILL if the single_var_range bucket is <~10% of the MinInit/MinSearch/MaxInit/MaxSearch/Eval site counts \u2014 the sites 9.2 would intercept. (EvalUpto is out of scope by the ovqja.5 faithfulness partition: its witness SET is solver-chosen.) Same 11 benches, same run as the class census, ANGR_RUST_QUERY_CLASS=1. Class and site counters are independent tallies of the same checks, so per bench the checks that are BOTH single_var_range AND at a 9.2 site are at most min(single_var_range, min_max_eval_sites) \u2014 that is the addressable_upper_bound column, and it is what the gate is decided on.",
+  "single_var_range_total": 27,
+  "min_max_eval_site_total": 549,
+  "ratio_pct": 4.9,
+  "addressable_upper_bound_total": 10,
+  "addressable_upper_bound_pct": 1.8,
+  "gate_threshold_pct": 10,
+  "verdict": "KILL",
+  "site_totals": {
+   "branch_false": 112,
+   "branch_true": 206,
+   "eval": 37,
+   "eval_upto": 295,
+   "max_init": 0,
+   "max_search": 385,
+   "min_init": 0,
+   "min_search": 127,
+   "satisfiable": 160
+  },
+  "per_bench": {
+   "ais3_crackme": {
+    "single_var_range": 3,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 1,
+    "sites": {
+     "satisfiable": 48,
+     "branch_true": 25,
+     "branch_false": 48,
+     "eval": 1,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "android_arm_license_validation": {
+    "single_var_range": 16,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 1,
+    "sites": {
+     "satisfiable": 6,
+     "branch_true": 5,
+     "branch_false": 5,
+     "eval": 1,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "cli_ctype_fprintf": {
+    "single_var_range": 8,
+    "min_max_eval_sites": 385,
+    "addressable_upper_bound": 8,
+    "sites": {
+     "satisfiable": 5,
+     "branch_true": 3,
+     "branch_false": 1,
+     "eval": 0,
+     "eval_upto": 158,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 385
+    }
+   },
+   "csgames2018": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 127,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 23,
+     "branch_true": 15,
+     "branch_false": 20,
+     "eval": 0,
+     "eval_upto": 99,
+     "min_init": 0,
+     "min_search": 127,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "defcamp_r100": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 12,
+     "branch_true": 12,
+     "branch_false": 1,
+     "eval": 1,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "defcon2016quals_baby-re": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 29,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 0,
+     "branch_true": 0,
+     "branch_false": 0,
+     "eval": 29,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "fauxware": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 3,
+     "branch_true": 1,
+     "branch_false": 1,
+     "eval": 1,
+     "eval_upto": 16,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "google2016_unbreakable_0": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 2,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 0,
+     "branch_true": 0,
+     "branch_false": 0,
+     "eval": 2,
+     "eval_upto": 2,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "sharif7_rev50": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 1,
+     "branch_true": 0,
+     "branch_false": 0,
+     "eval": 1,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "strcpy_find": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 1,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 1,
+     "branch_true": 1,
+     "branch_false": 1,
+     "eval": 1,
+     "eval_upto": 0,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   },
+   "whitehatvn2015_re400": {
+    "single_var_range": 0,
+    "min_max_eval_sites": 0,
+    "addressable_upper_bound": 0,
+    "sites": {
+     "satisfiable": 61,
+     "branch_true": 144,
+     "branch_false": 35,
+     "eval": 0,
+     "eval_upto": 20,
+     "min_init": 0,
+     "min_search": 0,
+     "max_init": 0,
+     "max_search": 0
+    }
+   }
+  }
  }
 }
