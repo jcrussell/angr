@@ -41,7 +41,13 @@ from angr.rustylib.vex_engine import (
     __version__ as __rust_engine_version__,
 )
 
-from .rust_manager import RustErrorRecord, RustExplorationManager
+from .rust_manager import (
+    RustErrorRecord,
+    RustExplorationManager,
+    rust_unsupported_options,
+    state_requires_python_engine,
+    unsupported_rust_manager_kwargs,
+)
 
 __all__ = [
     "RustErrorRecord",
@@ -52,4 +58,7 @@ __all__ = [
     "RustUnsupportedSyscallError",
     "RustUnsupportedVexOpError",
     "RustZ3Error",
+    "rust_unsupported_options",
+    "state_requires_python_engine",
+    "unsupported_rust_manager_kwargs",
 ]

@@ -378,6 +378,51 @@ _RAISE_OPTION_NAMES = frozenset(
 )
 
 
+def rust_unsupported_options(options) -> list[str]:
+    """Return the sorted ``_RAISE_OPTION_NAMES`` present in *options*.
+
+    Single source of truth for "the Rust engine refuses this state". The
+    manager constructor (:meth:`RustExplorationManager._check_raise_options`)
+    and the engine dispatcher in :meth:`angr.factory.AngrObjectFactory.simulation_manager`
+    both consume this rather than re-deriving the option list.
+
+    Args:
+        options: A ``SimState.options`` set (or any container of option
+            names / SimOption objects), possibly ``None``.
+
+    Returns:
+        Sorted list of offending option names; empty when the state is
+        Rust-eligible.
+    """
+    if not options:
+        return []
+    return sorted(name for name in _RAISE_OPTION_NAMES if name in options)
+
+
+def state_requires_python_engine(state) -> bool:
+    """True when *state* sets a SimOption the Rust engine cannot honor."""
+    return bool(rust_unsupported_options(getattr(state, "options", None)))
+
+
+def unsupported_rust_manager_kwargs(kwargs) -> list[str]:
+    """Return sorted *kwargs* names that :class:`RustExplorationManager` cannot honor.
+
+    ``RustExplorationManager.__init__`` accepts ``**kwargs`` (for forward
+    compat with subclasses) and would otherwise swallow SimulationManager-only
+    constructor arguments — ``hierarchy``, ``resilience``, ``techniques``, …
+    — silently. Callers that forward user kwargs (notably the factory) use
+    this to fail loudly instead of dropping them.
+    """
+    import inspect
+
+    accepted = {
+        name
+        for name, param in inspect.signature(RustExplorationManager.__init__).parameters.items()
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return sorted(name for name in kwargs if name not in accepted)
+
+
 # Z3 context sharing: make Rust and Python use the same Z3 context
 # to avoid AST translation overhead between solvers.
 _z3_context_shared = False
@@ -3471,9 +3516,7 @@ class RustExplorationManager(
         in the past, so we hard-fail at the manager boundary to force a
         drop to the Python engine.
         """
-        if not options:
-            return
-        offending = sorted(name for name in _RAISE_OPTION_NAMES if name in options)
+        offending = rust_unsupported_options(options)
         if not offending:
             return
         names = ", ".join(offending)

@@ -239,10 +239,18 @@ class AngrObjectFactory:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
         if use_rust_engine:
-            from angr.exploration import RustExplorationManager
+            from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
 
-            save_unc = kwargs.pop("save_unconstrained", False)
-            return RustExplorationManager(self.project, active_states=thing, save_unconstrained=save_unc)
+            unsupported = unsupported_rust_manager_kwargs(kwargs)
+            if unsupported:
+                names = ", ".join(unsupported)
+                raise NotImplementedError(
+                    f"simulation_manager(use_rust_engine=True) cannot honor {{{names}}}. "
+                    "These are SimulationManager-only constructor arguments; the Rust "
+                    "engine would silently drop them. Drop use_rust_engine=True to run "
+                    "them on the Python engine. See docs/advanced-topics/rust_engine.rst."
+                )
+            return RustExplorationManager(self.project, active_states=thing, **kwargs)
 
         return SimulationManager(self.project, active_states=thing, **kwargs)
 
