@@ -12,6 +12,7 @@ from __future__ import annotations
 import claripy
 import pytest
 
+import angr
 from tests.engines.conftest import (  # noqa: F401
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
@@ -120,6 +121,72 @@ class TestStepState:
 
         with pytest.raises(NotImplementedError, match="callback"):
             rust_mgr.step_state(state_id, None)
+
+
+class TestProxyStepState:
+    """E1.b — the SimulationManager successor-dict contract on the proxy."""
+
+    def test_returns_successor_dict_with_flat_under_none(self, fauxware_project):
+        mgr, _rust_mgr, _state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        stashes = proxy.step_state(state)
+
+        # None + unsat are always present; the Rust engine has no unsat bucket.
+        assert stashes["unsat"] == []
+        assert [s.addr for s in stashes[None]] == [MAIN_NEXT]
+        assert all(isinstance(s, angr.SimState) for s in stashes[None])
+
+    def test_extra_stop_points_honored(self, fauxware_project):
+        mgr, _rust_mgr, _state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        stashes = proxy.step_state(state, extra_stop_points={PLT_PUTS})
+
+        assert [s.addr for s in stashes[None]] == [PLT_PUTS]
+
+    def test_symbolic_branch_returns_both_successors(self, fauxware_project):
+        mgr, _rust_mgr, _state_id = _rust_mgr_at(fauxware_project, AUTH_CHECK, symbolic_rax=True)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        stashes = proxy.step_state(state)
+
+        assert sorted(s.addr for s in stashes[None]) == sorted([AUTH_TAKEN, AUTH_FALLTHROUGH])
+
+    def test_successors_are_not_auto_stashed(self, fauxware_project):
+        mgr, rust_mgr, _state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        stashes = proxy.step_state(state)
+
+        # The stepped state is consumed and its successor parks in quarantine —
+        # placement is the caller's job.
+        counts = rust_mgr.stash_counts()
+        assert counts["active"] == 0
+        (successor,) = stashes[None]
+        sid = successor.scratch.rust_state_id
+        rust_mgr.move_state(sid, "_step_out", "active")
+        assert [s.addr for s in proxy.active] == [MAIN_NEXT]
+
+    def test_successor_func_is_rejected(self, fauxware_project):
+        mgr, _rust_mgr, _state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        with pytest.raises(NotImplementedError, match="successor_func"):
+            proxy.step_state(state, successor_func=lambda *a, **kw: None)
+
+    def test_successors_still_unsupported(self, fauxware_project):
+        mgr, _rust_mgr, _state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+        (state,) = proxy.active
+
+        with pytest.raises(NotImplementedError, match="successors"):
+            proxy.successors(state)
 
 
 if __name__ == "__main__":

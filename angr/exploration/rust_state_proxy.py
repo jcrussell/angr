@@ -3224,6 +3224,33 @@ class RustStateProxy:
             pass
 
 
+# Rust step_state() bucket names -> SimulationManager.step_state() stash keys.
+# The Rust engine's live successors arrive under "flat"; the successor-dict
+# contract keys them under None (sim_manager.py::SimulationManager.step_state).
+_STEP_BUCKET_TO_STASH = {"flat": None}
+
+_SUCCESSOR_FUNC_MSG = (
+    "successor_func is not supported by RustSimulationManagerProxy.step_state() "
+    "— the Rust engine steps states natively and never builds a SimSuccessors "
+    "object for a Python callable to consume. Use use_rust_engine=False for "
+    "techniques that pass successor_func."
+)
+
+
+def _rust_state_id(state) -> int:
+    """Resolve the Rust state ID behind a RustStateProxy or an exported SimState."""
+    state_id = getattr(state, "_state_id", None)
+    if state_id is None:
+        scratch = getattr(state, "scratch", None)
+        state_id = getattr(scratch, "rust_state_id", None)
+    if state_id is None:
+        raise ValueError(
+            f"{state!r} is not backed by a Rust state (no _state_id / "
+            "scratch.rust_state_id) — it cannot be stepped by the Rust manager."
+        )
+    return int(state_id)
+
+
 class RustSimulationManagerProxy:
     """
     Presents a SimulationManager-like interface backed by Rust stashes.
@@ -3333,29 +3360,69 @@ class RustSimulationManagerProxy:
         self._step_callback(stash=stash, **kwargs)
         return self
 
-    def step_state(self, state, **kwargs):
-        """Categorise successors into stashes.
+    def step_state(self, state, successor_func=None, error_list=None, **run_args):
+        """Step one state and return its successors bucketed by stash.
 
-        Not supported on the Rust manager: producing a SimSuccessors object
-        requires re-running the step from Python, which defeats the engine.
-        Techniques that override step_state() should fall back to the Python
-        engine (``use_rust_engine=False``).
+        Mirrors ``SimulationManager.step_state()``: the return value is a dict
+        keyed by stash name, with the live successors under ``None`` (see
+        ``sim_manager.py``). Keys always present: ``None`` and ``"unsat"``
+        (the Rust engine never produces unsat successors, so that list is
+        always empty). ``"unconstrained"``, ``"pruned"``, ``"deadended"`` and
+        ``"errored"`` appear only when non-empty.
+
+        Two Rust-path specifics:
+
+        * ``successor_func`` is UNSUPPORTED and raises ``NotImplementedError``
+          — the engine steps natively and never materializes a
+          ``SimSuccessors`` for a Python callable to post-process. Techniques
+          that need it must run on the Python engine
+          (``use_rust_engine=False``).
+        * Successors are RETURNED, never auto-pushed into a stash. They park
+          in the Rust ``_step_out`` quarantine stash (which also keeps them
+          alive for the returned SimStates' Rust-solver fallback); the caller
+          places them, e.g. ``mgr._rust_mgr.move_state(sid, "_step_out",
+          "active")``. The stepped state itself is consumed — Rust takes it
+          out of its stash for the step, matching the Python engine's
+          ``step()``, which drops the source state after bucketing.
+
+        ``error_list`` is accepted for signature compatibility but unused: a
+        step that errors is reported as an ``"errored"`` bucket rather than an
+        ``ErrorRecord``, because the Rust engine records the failure itself.
         """
-        raise NotImplementedError(
-            "step_state() is not supported by RustSimulationManagerProxy "
-            "(would require a Python-side re-run). Use use_rust_engine=False "
-            "if a registered ExplorationTechnique relies on step_state()."
-        )
+        if successor_func is not None:
+            raise NotImplementedError(_SUCCESSOR_FUNC_MSG)
+        if self._python_mgr is None:
+            raise NotImplementedError(
+                "step_state() needs the owning RustExplorationManager to export "
+                "successors; this proxy was constructed without one."
+            )
+
+        extra_stop_points = run_args.pop("extra_stop_points", None)
+        if run_args:
+            l.debug("step_state(): ignoring run_args unsupported on the Rust path: %s", sorted(run_args))
+        stop_points = sorted({int(addr) for addr in extra_stop_points}) if extra_stop_points else None
+
+        buckets = self._mgr.step_state(_rust_state_id(state), stop_points)
+
+        stashes = {None: [], "unsat": []}
+        for bucket, snapshots in buckets.items():
+            key = _STEP_BUCKET_TO_STASH.get(bucket, bucket)
+            stashes.setdefault(key, []).extend(self._python_mgr._snapshot_to_angr(snap) for snap in snapshots)
+        return stashes
 
     def successors(self, state, **kwargs):
         """Run one state forward, returning SimSuccessors.
 
-        Not supported on the Rust manager — see step_state() docstring.
+        Not supported on the Rust manager: a ``SimSuccessors`` object is a
+        Python-engine artifact, and rebuilding one would mean re-running the
+        step from Python. Use :meth:`step_state`, which returns the same
+        successor buckets the Rust engine already produced.
         """
         raise NotImplementedError(
             "successors() is not supported by RustSimulationManagerProxy "
-            "(would require a Python-side re-run). Use use_rust_engine=False "
-            "if a registered ExplorationTechnique relies on successors()."
+            "(would require a Python-side re-run). Use step_state() for the "
+            "successor-dict contract, or use_rust_engine=False if a registered "
+            "ExplorationTechnique needs a SimSuccessors object."
         )
 
     def move(self, from_stash="active", to_stash="stashed", filter_func=None):
