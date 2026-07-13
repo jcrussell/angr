@@ -5027,6 +5027,85 @@ for the engine's documented single-threaded use, with one latent
 hazard documented above (``angr-bjk8``) gated on a parallel-execution
 story that does not exist yet.
 
+.. _rust-engine-fallback-census:
+
+Rust→Python fallback census
+---------------------------
+
+Census pass ``angr-op0dn.14.1.1`` (2026-07-13). Sweeps the 40-bench
+corpus (``tests/benchmarks/collect_simproc_fallbacks.py``), then
+classifies every fallback that fired — plus every ``cat-(a)/(b)/(c)``
+degradation site tagged in ``angr/exploration/*.py`` — on an
+*observational* axis:
+
+silent-equivalent
+   Same observable result as the pure-Python engine; only wall-clock
+   differs.
+logged-degraded
+   Continues with reduced fidelity and says so (log record or counter).
+flip-blocking
+   Can change the answer with no signal. These gate the M6 default flip.
+
+Reproduce (JSON artifact lands in
+``tests/benchmarks/fallback_census.json``)::
+
+   python tests/benchmarks/collect_simproc_fallbacks.py --out /tmp/raw.json
+   python tests/benchmarks/fallback_census.py --raw /tmp/raw.json \
+       --out tests/benchmarks/fallback_census.json
+
+Result: **30 distinct fallback names** observed across 14 benches (26
+benches never leave Rust). 22 are silent-equivalent — angr's own
+SimProcedure runs against a synced ``SimState`` and everything it
+touches (registers, memory, constraints, new symbols) crosses the
+resume FFI. Eight are flip-blocking, and they cluster into three
+root causes, none of which is the procedure's own logic:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 12 66
+
+   * - Fallback
+     - Calls
+     - Why it can change the answer
+   * - ``fwrite`` / ``fputc`` / ``fprintf``
+     - 193
+     - The callback ``SimState`` gets no Rust-side posix buffer
+       (``_inject_rust_stdout`` runs only on the export path) and there
+       is **no outbound posix channel at all**, so a stream write made
+       during the bounce never reaches the Rust fd buffer that
+       ``posix.dumps(1)`` reads back.
+   * - ``malloc`` / ``calloc`` / ``operator new`` / ``operator delete``
+     - 15
+     - ``_ensure_critical_plugins`` copies only ``posix`` and ``libc``
+       into the callback state, and the heap/brk push
+       (``_sync_rust_heap_brk_to_state``) is export-path-only. A bounced
+       allocator reads a stale ``heap_location`` and its bump is never
+       written back, so a later *native* alloc can hand out an
+       overlapping address (the per-bounce twin of ``angr-um39j``).
+   * - ``open``
+     - 1
+     - The posix fd table is not synced back; the Rust state never
+       learns the fd. Benign only while every later op on that fd also
+       bounces.
+   * - syscall ``334`` (and every Python syscall fallback)
+     - 1
+     - ``_handle_syscall_callback_inner`` passes the 2-tuple returned by
+       ``_extract_memory_changes`` straight into ``resume_after_syscall``
+       (every other call site unpacks it), so the conversion raises, the
+       enclosing ``except`` swallows it, and the state resumes at
+       ``addr + 1`` with all register and memory changes discarded.
+
+The tagged-site scan finds 354 sites: 80 ``cat-(a)`` (silent-equivalent),
+211 ``cat-(b)`` (logged-degraded), 63 ``cat-(c)`` (flip-blocking, mostly
+in ``rust_manager.py`` and ``rust_callback_dispatch.py``). 71 of the
+``cat-(b)`` sites degrade **without emitting a log record** — some
+deliberately (solver hot paths), the rest are listed in the artifact's
+``summary.unlogged_degraded_sites`` as review candidates.
+
+Differential parity assertions for the classified fallbacks are
+``angr-op0dn.14.1.2``; the flip-blocking root causes are filed
+separately.
+
 .. note::
 
    *Last verified against commit* ``4215fe99b`` *on 2026-06-03*

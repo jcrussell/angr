@@ -1,0 +1,3854 @@
+{
+  "bead": "angr-op0dn.14.1.1",
+  "bench_fallback_totals": {
+    "CADET_00001": -1,
+    "CADET_00001_partial": 0,
+    "aarch64_le_branch": 0,
+    "ais3_crackme": 0,
+    "android_arm_license_validation": 0,
+    "arm_le_branch": 0,
+    "busybox_static": 0,
+    "cli_ctype_fprintf": 5,
+    "cmu_binary_bomb_partial": 2,
+    "codegate_2017-angrybird": 0,
+    "cow_fork_scaling": 0,
+    "csaw_wyvern": 30,
+    "csgames2018": 0,
+    "defcamp_r100": 0,
+    "defcamp_r100__dfs": -1,
+    "defcon2016quals_baby-re": 13,
+    "ekopartyctf2016_rev250": 1,
+    "ekopartyctf2016_sokohashv2": 9,
+    "fauxware": 1,
+    "file_read_kernel": 0,
+    "flareon2015_10": 0,
+    "flareon2015_2": 0,
+    "flareon2015_5": 3,
+    "fork_solve_W6_S8": 0,
+    "fp_simd_kernel": 0,
+    "google2016_unbreakable_0": 1,
+    "google2016_unbreakable_1": 0,
+    "hackcon2016_angry-reverser": 0,
+    "mips32_le_branch": 0,
+    "mips64_be_branch": 0,
+    "mips64_le_branch": 0,
+    "mma_howtouse": 0,
+    "securityfest_fairlight": 1,
+    "sharif7_rev50": 0,
+    "strcpy_find": 0,
+    "sym-write": 0,
+    "unmapped_analysis": 2,
+    "whitehatvn2015_re400": 2,
+    "write_stream_heavy": 192,
+    "xmllint_getenv": 27
+  },
+  "benches_swept": [
+    "CADET_00001",
+    "CADET_00001_partial",
+    "aarch64_le_branch",
+    "ais3_crackme",
+    "android_arm_license_validation",
+    "arm_le_branch",
+    "busybox_static",
+    "cli_ctype_fprintf",
+    "cmu_binary_bomb_partial",
+    "codegate_2017-angrybird",
+    "cow_fork_scaling",
+    "csaw_wyvern",
+    "csgames2018",
+    "defcamp_r100",
+    "defcamp_r100__dfs",
+    "defcon2016quals_baby-re",
+    "ekopartyctf2016_rev250",
+    "ekopartyctf2016_sokohashv2",
+    "fauxware",
+    "file_read_kernel",
+    "flareon2015_10",
+    "flareon2015_2",
+    "flareon2015_5",
+    "fork_solve_W6_S8",
+    "fp_simd_kernel",
+    "google2016_unbreakable_0",
+    "google2016_unbreakable_1",
+    "hackcon2016_angry-reverser",
+    "mips32_le_branch",
+    "mips64_be_branch",
+    "mips64_le_branch",
+    "mma_howtouse",
+    "securityfest_fairlight",
+    "sharif7_rev50",
+    "strcpy_find",
+    "sym-write",
+    "unmapped_analysis",
+    "whitehatvn2015_re400",
+    "write_stream_heavy",
+    "xmllint_getenv"
+  ],
+  "names": {
+    "UserHook": {
+      "benches": [
+        "ekopartyctf2016_sokohashv2",
+        "flareon2015_5",
+        "whitehatvn2015_re400"
+      ],
+      "closability": "intentional",
+      "count": 14,
+      "rationale": "user-supplied Python hook; gets a full state.copy() snapshot by design",
+      "semantics": "silent-equivalent"
+    },
+    "__ctype_b_loc": {
+      "benches": [
+        "cli_ctype_fprintf"
+      ],
+      "closability": "closable",
+      "count": 4,
+      "rationale": "writes its table through state.memory.store (tracked by CallbackMemoryTracker) and returns a pointer in a synced register",
+      "semantics": "silent-equivalent"
+    },
+    "calloc": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "same as malloc: bounced heap bump never reaches Rust (no set_state_heap_brk caller on the callback path)",
+      "semantics": "flip-blocking"
+    },
+    "fprintf": {
+      "benches": [
+        "cli_ctype_fprintf"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "same as fwrite: bounced stream write never reaches the Rust fd buffer",
+      "semantics": "flip-blocking"
+    },
+    "fputc": {
+      "benches": [
+        "write_stream_heavy"
+      ],
+      "closability": "closable",
+      "count": 48,
+      "rationale": "same as fwrite: bounced stream write never reaches the Rust fd buffer",
+      "semantics": "flip-blocking"
+    },
+    "fwrite": {
+      "benches": [
+        "write_stream_heavy"
+      ],
+      "closability": "closable",
+      "count": 144,
+      "rationale": "writes the callback SimState's posix buffer, which is never pushed back to Rust (_inject_rust_stdout is export-path-only, and there is no outbound posix sync). Output written by the bounce is invisible to a later posix.dumps(1). Also the known ~2.8ms/call bounce cost (csyy9)",
+      "semantics": "flip-blocking"
+    },
+    "get_flag": {
+      "benches": [
+        "ekopartyctf2016_rev250"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "solve.py UserHook (whitehatvn2015_re400)",
+      "semantics": "silent-equivalent"
+    },
+    "getenv": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "reads the posix environ, which is fixed at project init; no Rust-side environ to desync",
+      "semantics": "silent-equivalent"
+    },
+    "malloc": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 3,
+      "rationale": "heap plugin is not synced by _create_state_for_callback (only posix+libc are) and no outbound heap channel exists: the bounced bump is lost, so a later native alloc can return an overlapping address. Same failure mode as angr-um39j, but per-bounce rather than at init",
+      "semantics": "flip-blocking"
+    },
+    "memmove": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "closable",
+      "count": 5,
+      "rationale": "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff",
+      "semantics": "silent-equivalent"
+    },
+    "my_scanf": {
+      "benches": [
+        "defcon2016quals_baby-re"
+      ],
+      "closability": "closable",
+      "count": 13,
+      "rationale": "solve.py UserHook (defcon2016quals_baby-re) that injects symbolic stdin",
+      "semantics": "silent-equivalent"
+    },
+    "open": {
+      "benches": [
+        "fauxware"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "allocates a Python-side fd; the posix fd table is not synced back, so the Rust state does not learn the fd. Only benign while every subsequent op on that fd also bounces",
+      "semantics": "flip-blocking"
+    },
+    "operator delete(void*)": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 5,
+      "rationale": "routes to angr's free proc: heap plugin mutation never reaches Rust",
+      "semantics": "flip-blocking"
+    },
+    "operator new(unsigned long)": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 6,
+      "rationale": "routes to angr's malloc proc: bounced heap bump never reaches Rust",
+      "semantics": "flip-blocking"
+    },
+    "pthread_mutex_lock": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 4,
+      "rationale": "angr models it as a no-op returning 0; no Rust-side lock state",
+      "semantics": "silent-equivalent"
+    },
+    "pthread_mutex_unlock": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 3,
+      "rationale": "angr models it as a no-op returning 0; no Rust-side lock state",
+      "semantics": "silent-equivalent"
+    },
+    "pthread_once": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 4,
+      "rationale": "angr models it as a call-once stub; no Rust-side pthread state exists",
+      "semantics": "silent-equivalent"
+    },
+    "readline_hook": {
+      "benches": [
+        "cmu_binary_bomb_partial"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "solve.py UserHook (cmu_binary_bomb_partial) that injects a symbolic line",
+      "semantics": "silent-equivalent"
+    },
+    "std::allocator<char>::allocator()": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 1,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::allocator<char>::~allocator()": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 1,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::basic_ostream<char, std::char_traits<char>>& std::operator<<<std::char_traits<char>>(std::basic_ostream<char, std::char_traits<char>>&, char const*)": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 7,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::basic_string(char const*, std::allocator<char> const&)": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 1,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::basic_string(std::string const&)": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 1,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::~basic_string()": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 2,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "std::string::length() const": {
+      "benches": [
+        "csaw_wyvern"
+      ],
+      "closability": "intentional",
+      "count": 1,
+      "rationale": "C++ stdlib symbol: angr's Python proc (or ReturnUnconstrained) is the reference; no native equivalent exists to diverge from",
+      "semantics": "silent-equivalent"
+    },
+    "strcmp": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 10,
+      "rationale": "reads synced memory, returns a BV in a synced register; no plugin state touched",
+      "semantics": "silent-equivalent"
+    },
+    "strncmp": {
+      "benches": [
+        "unmapped_analysis"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "reads synced memory, returns a BV in a synced register; no plugin state touched",
+      "semantics": "silent-equivalent"
+    },
+    "strncpy": {
+      "benches": [
+        "google2016_unbreakable_0",
+        "securityfest_fairlight",
+        "unmapped_analysis"
+      ],
+      "closability": "closable",
+      "count": 3,
+      "rationale": "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff",
+      "semantics": "silent-equivalent"
+    },
+    "strtol_hook": {
+      "benches": [
+        "cmu_binary_bomb_partial"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "solve.py UserHook (cmu_binary_bomb_partial)",
+      "semantics": "silent-equivalent"
+    },
+    "time": {
+      "benches": [
+        "xmllint_getenv"
+      ],
+      "closability": "closable",
+      "count": 1,
+      "rationale": "returns a fresh BV in a synced register; angr's Python proc is the reference",
+      "semantics": "silent-equivalent"
+    }
+  },
+  "native_proc_deferrals": {
+    "CADET_00001_partial": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "aarch64_le_branch": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "ais3_crackme": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "android_arm_license_validation": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "arm_le_branch": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "busybox_static": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "cli_ctype_fprintf": {
+      "not_implemented": {},
+      "other": {
+        "__ctype_b_loc": 4,
+        "fprintf": 1
+      },
+      "symbolic": {}
+    },
+    "cmu_binary_bomb_partial": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "codegate_2017-angrybird": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "cow_fork_scaling": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "csaw_wyvern": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {
+        "memmove": 5
+      }
+    },
+    "csgames2018": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "defcamp_r100": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "defcon2016quals_baby-re": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "ekopartyctf2016_rev250": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "ekopartyctf2016_sokohashv2": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "fauxware": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {
+        "open": 1
+      }
+    },
+    "file_read_kernel": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "flareon2015_10": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "flareon2015_2": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "flareon2015_5": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "fork_solve_W6_S8": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "fp_simd_kernel": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "google2016_unbreakable_0": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {
+        "strncpy": 1
+      }
+    },
+    "google2016_unbreakable_1": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "hackcon2016_angry-reverser": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "mips32_le_branch": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "mips64_be_branch": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "mips64_le_branch": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "mma_howtouse": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "securityfest_fairlight": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {
+        "strncpy": 1
+      }
+    },
+    "sharif7_rev50": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "strcpy_find": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "sym-write": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "unmapped_analysis": {
+      "not_implemented": {},
+      "other": {
+        "strncmp": 1,
+        "strncpy": 1
+      },
+      "symbolic": {}
+    },
+    "whitehatvn2015_re400": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {}
+    },
+    "write_stream_heavy": {
+      "not_implemented": {},
+      "other": {
+        "fputc": 48,
+        "fwrite": 144
+      },
+      "symbolic": {}
+    },
+    "xmllint_getenv": {
+      "not_implemented": {},
+      "other": {},
+      "symbolic": {
+        "pthread_once": 1
+      }
+    }
+  },
+  "summary": {
+    "name_classes": {
+      "flip-blocking": 8,
+      "silent-equivalent": 22
+    },
+    "site_classes": {
+      "flip-blocking": 63,
+      "logged-degraded": 211,
+      "silent-equivalent": 80
+    },
+    "unclassified": [],
+    "unlogged_degraded_sites": [
+      "angr/exploration/rust_callback_dispatch.py:151",
+      "angr/exploration/rust_callback_dispatch.py:254",
+      "angr/exploration/rust_callback_dispatch.py:266",
+      "angr/exploration/rust_callback_dispatch.py:293",
+      "angr/exploration/rust_callback_dispatch.py:318",
+      "angr/exploration/rust_callback_dispatch.py:335",
+      "angr/exploration/rust_callback_dispatch.py:346",
+      "angr/exploration/rust_callback_dispatch.py:380",
+      "angr/exploration/rust_callback_dispatch.py:675",
+      "angr/exploration/rust_callback_dispatch.py:680",
+      "angr/exploration/rust_callback_dispatch.py:813",
+      "angr/exploration/rust_callback_dispatch.py:1008",
+      "angr/exploration/rust_callback_dispatch.py:1062",
+      "angr/exploration/rust_callback_dispatch.py:1515",
+      "angr/exploration/rust_callback_dispatch.py:1987",
+      "angr/exploration/rust_callback_dispatch.py:2004",
+      "angr/exploration/rust_callback_dispatch.py:2034",
+      "angr/exploration/rust_callback_dispatch.py:2045",
+      "angr/exploration/rust_callback_dispatch.py:2064",
+      "angr/exploration/rust_callback_dispatch.py:2192",
+      "angr/exploration/rust_callback_dispatch.py:2197",
+      "angr/exploration/rust_callback_dispatch.py:2223",
+      "angr/exploration/rust_callback_dispatch.py:2619",
+      "angr/exploration/rust_disk_cache.py:144",
+      "angr/exploration/rust_disk_cache.py:172",
+      "angr/exploration/rust_disk_cache.py:202",
+      "angr/exploration/rust_disk_cache.py:285",
+      "angr/exploration/rust_disk_cache.py:461",
+      "angr/exploration/rust_disk_cache.py:477",
+      "angr/exploration/rust_manager.py:197",
+      "angr/exploration/rust_manager.py:1317",
+      "angr/exploration/rust_manager.py:1680",
+      "angr/exploration/rust_manager.py:1730",
+      "angr/exploration/rust_manager.py:1772",
+      "angr/exploration/rust_manager.py:4385",
+      "angr/exploration/rust_manager.py:4558",
+      "angr/exploration/rust_manager.py:4687",
+      "angr/exploration/rust_manager.py:4712",
+      "angr/exploration/rust_manager.py:4855",
+      "angr/exploration/rust_manager.py:4869",
+      "angr/exploration/rust_manager.py:4945",
+      "angr/exploration/rust_manager.py:5126",
+      "angr/exploration/rust_manager.py:5341",
+      "angr/exploration/rust_manager.py:5360",
+      "angr/exploration/rust_manager.py:5371",
+      "angr/exploration/rust_manager.py:5399",
+      "angr/exploration/rust_manager.py:5410",
+      "angr/exploration/rust_manager.py:5671",
+      "angr/exploration/rust_state_proxy.py:246",
+      "angr/exploration/rust_state_sync.py:294",
+      "angr/exploration/rust_state_sync.py:360",
+      "angr/exploration/rust_state_sync.py:428",
+      "angr/exploration/rust_state_sync.py:488",
+      "angr/exploration/rust_state_sync.py:501",
+      "angr/exploration/rust_state_sync.py:559",
+      "angr/exploration/rust_state_sync.py:590",
+      "angr/exploration/rust_state_sync.py:683",
+      "angr/exploration/rust_state_sync.py:705",
+      "angr/exploration/rust_state_sync.py:752",
+      "angr/exploration/rust_state_sync.py:786",
+      "angr/exploration/rust_state_sync.py:847",
+      "angr/exploration/rust_state_sync.py:922",
+      "angr/exploration/rust_state_sync.py:1213",
+      "angr/exploration/rust_state_sync.py:1357",
+      "angr/exploration/rust_state_sync.py:1556",
+      "angr/exploration/rust_state_sync.py:1579",
+      "angr/exploration/rust_state_sync.py:1591",
+      "angr/exploration/rust_state_sync.py:1652",
+      "angr/exploration/rust_state_sync.py:1774",
+      "angr/exploration/rust_state_sync.py:1869",
+      "angr/exploration/rust_state_sync.py:1874"
+    ]
+  },
+  "syscalls": {
+    "334": {
+      "count": 1,
+      "rationale": "faccessat: native syscall registered (syscalls/mod.rs) but bailed to Python. The Python syscall resume path drops every register/memory change (unpacked-tuple bug in _handle_syscall_callback_inner) and resumes at addr+1",
+      "semantics": "flip-blocking"
+    }
+  },
+  "tag_sites": [
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: pending Rust history unavailable;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_init_callback_history",
+      "line": 63,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: jumpkind assignment failed (e.g.,",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_init_callback_history",
+      "line": 94,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: procedure_data restore failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_init_callback_callstack",
+      "line": 139,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: pending SP read failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_init_callback_callstack",
+      "line": 151,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: callstack procedure_data init",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_init_callback_callstack",
+      "line": 170,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: claripy UnsatError must propagate",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_eval",
+      "line": 250,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver eval failed; fall back",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_eval",
+      "line": 254,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver satisfiable() raised;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_satisfiable",
+      "line": 266,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: propagate a genuine unsat.",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_min",
+      "line": 290,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver min() raised; fall back",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_min",
+      "line": 293,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: propagate a genuine unsat.",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_max",
+      "line": 315,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver max() raised; fall back",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_max",
+      "line": 318,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver eval_upto() raised; fall",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_eval_upto",
+      "line": 335,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: forwarding constraint to Rust solver",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_rust_add",
+      "line": 346,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust stdout fetch failed; posix.dumps(1)",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_inject_rust_stdout_inner",
+      "line": 380,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust stdout write to posix failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_inject_rust_stdout_inner",
+      "line": 394,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust stdin injection raised; posix.",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_inject_rust_stdin_inner",
+      "line": 441,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: continuation procedure missing args",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_simprocedure_callback",
+      "line": 663,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: resume_after_simprocedure failed in",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_simprocedure_callback",
+      "line": 675,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: resume_after_error also failed; the",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_simprocedure_callback",
+      "line": 680,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: SimProcedure execution raised; we",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_simprocedure_callback",
+      "line": 691,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: resume_after_error itself raised;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_simprocedure_callback",
+      "line": 704,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-successor stdin probe failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_capture_stdin_from_successors",
+      "line": 813,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: continuation-data capture / hook",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_capture_continuation_data",
+      "line": 875,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed for terminal",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_callback_no_successors",
+      "line": 1008,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: tracked symbolic write not imported",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_callback_no_successors",
+      "line": 1042,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: eval_one raised (>1 solution or",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resolve_next_pc",
+      "line": 1062,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: capturing the continuation push",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_state",
+      "line": 1195,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; the next",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_state",
+      "line": 1230,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed; Rust",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_state",
+      "line": 1258,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; same as",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_skip_hook",
+      "line": 1301,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: constraint extraction raised; new",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_skip_hook",
+      "line": 1366,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed in the",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_resume_with_skip_hook",
+      "line": 1387,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: constraint set diff raised; treat as",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_extract_new_constraints",
+      "line": 1453,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: solver-context fork for additional",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state",
+      "line": 1500,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-fork constraint extraction failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state",
+      "line": 1515,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: add_constraints_to_pending failed",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state",
+      "line": 1537,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: no parent ID on the event \u2014 the",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state_via_rust",
+      "line": 1561,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust-owned fork failed; this",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state_via_rust",
+      "line": 1570,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: constraint sync onto the new fork",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_add_forked_state_via_rust",
+      "line": 1593,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: SIMOS may not expose",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_syscall_callback_inner",
+      "line": 1651,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_syscall_callback_inner",
+      "line": 1700,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: find predicate raised on this state;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_find_predicate_callback_inner",
+      "line": 1763,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: outer find-predicate handler raised;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_find_predicate_callback_inner",
+      "line": 1778,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: avoid predicate raised on this state;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_avoid_predicate_callback_inner",
+      "line": 1829,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: outer avoid-predicate handler raised;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_avoid_predicate_callback_inner",
+      "line": 1838,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic branch handler raised; we",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_symbolic_branch_callback_inner",
+      "line": 1938,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: fallback resume_after_symbolic_branch",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_symbolic_branch_callback_inner",
+      "line": 1958,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: even errored-stash recovery failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_symbolic_branch_callback_inner",
+      "line": 1968,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: parent_id lookup failed; the cache",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_get_pending_parent_id",
+      "line": 1987,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: root_id lookup failed; ancestry walk",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_get_pending_root_state_id",
+      "line": 2004,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: root_id lookup raised; fall through",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_get_effective_state_id",
+      "line": 2034,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: ancestry walk raised; fall back to",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_get_effective_state_id",
+      "line": 2045,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_pending_ancestry failed; fall",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_get_pending_ancestry",
+      "line": 2064,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: symbolic register AST fetch failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_state_for_callback",
+      "line": 2192,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-register apply failed; that",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_state_for_callback",
+      "line": 2197,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: callback bundle API failed; falls",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_state_for_callback",
+      "line": 2213,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: borrow_pending_solver failed; try",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_state_for_callback",
+      "line": 2223,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: even fork_pending_solver failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_state_for_callback",
+      "line": 2229,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: critical plugin restoration failed",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_ensure_critical_plugins",
+      "line": 2481,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: solver fork on blank state failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_blank_state_fallback",
+      "line": 2503,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: blank state creation raised; caller",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_create_blank_state_fallback",
+      "line": 2515,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: Python VEX engine failed; we try",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_python_vex_fallback_inner",
+      "line": 2554,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: resume_after_error itself failed;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_python_vex_fallback_inner",
+      "line": 2560,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_python_vex_fallback_inner",
+      "line": 2604,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: outer VEX fallback handler raised;",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_python_vex_fallback_inner",
+      "line": 2613,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: resume_after_error in the outer",
+      "file": "angr/exploration/rust_callback_dispatch.py",
+      "function": "_handle_python_vex_fallback_inner",
+      "line": 2619,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: arch lists a register the SimState",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_register_snapshot",
+      "line": 77,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: SP is symbolic or stack page can't",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_stack_page",
+      "line": 99,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-page loader read failed (e.g.",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_loader_pages",
+      "line": 136,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-object iteration failed (loader",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_loader_pages",
+      "line": 144,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: section overlay extraction failed;",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_section_patches",
+      "line": 172,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: extra (non-loader) page extraction",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_extra_pages",
+      "line": 202,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: continuation addr in procedure_data",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_extract_callstack_snapshot",
+      "line": 229,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: cannot read binary for hash; disk",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_disk_cache_key",
+      "line": 285,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: disk cache write failed (e.g., OOM,",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_save_init_to_disk_cache",
+      "line": 331,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state has no fs plugin or it",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_state_has_user_symbolic",
+      "line": 377,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: stack-page probe for user symbolic",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_state_has_user_symbolic",
+      "line": 390,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-page symbolic-data scan hit",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_state_has_user_symbolic",
+      "line": 408,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: registers storage lacks _pages",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_state_has_user_symbolic",
+      "line": 430,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: disk cache read failed / corrupt;",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_load_init_pickle",
+      "line": 446,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-register restore failed; that",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_deserialize_init_state",
+      "line": 461,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_deserialize_init_state",
+      "line": 477,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: callstack restoration failed; the",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_deserialize_init_state",
+      "line": 501,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: pickle deserialization succeeded but",
+      "file": "angr/exploration/rust_disk_cache.py",
+      "function": "_load_init_from_disk_cache",
+      "line": 544,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: tracking failure means this",
+      "file": "angr/exploration/rust_identity.py",
+      "function": "tracking_store",
+      "line": 107,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust extension not built; the manager",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_is_rust_memory_proxy",
+      "line": 197,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: shared Z3 context unavailable; AST",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_setup_shared_z3_context",
+      "line": 453,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: the Rust extension was built without",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_apply_deterministic_z3_globals",
+      "line": 482,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: env-driven level could not be applied;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_apply_rust_log_env",
+      "line": 581,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort error report; constraint",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_count_constraints",
+      "line": 707,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort error report; if arch",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_snapshot_registers",
+      "line": 718,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort error report; skip a",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_snapshot_registers",
+      "line": 727,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort error report; .concrete",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_snapshot_registers",
+      "line": 736,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort error report; missing",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_tail_history",
+      "line": 748,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "two cat-(b) fallback-with-loss paths.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_phase_config",
+      "line": 1317,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_phase_link_state",
+      "line": 1516,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: optional sim_options import.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_phase_activate",
+      "line": 1604,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: stats unavailable; the perf report",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "perf_report",
+      "line": 1680,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state-count snapshot failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "get_exploration_summary",
+      "line": 1730,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: older Rust build without",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_setup_callbacks",
+      "line": 1772,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: thunk in memory failed to resolve;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_load",
+      "line": 1903,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: memory load returned zero bytes after",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_load",
+      "line": 1930,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: memory store silently dropped on Sim/",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_store",
+      "line": 1955,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: lift returned empty IRSB; Rust will",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_lift_block",
+      "line": 1985,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: page fetch failed; return empty page",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_fetch_page",
+      "line": 2015,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: register read failed \u2014 Rust receives",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_get_register",
+      "line": 2036,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: register write failed \u2014 Python state",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_put_register",
+      "line": 2050,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: dirty call handler raised; Rust sees",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_dirty_call",
+      "line": 2105,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: PLT block lift / capstone parse",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_resolve_function",
+      "line": 2170,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: optional SIM_PROCEDURES import;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_resolve_function",
+      "line": 2187,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: optional SIM_PROCEDURES import",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_resolve_function",
+      "line": 2205,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: batch memory store partially failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_store_batch",
+      "line": 2238,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: batch memory load partial failure;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_load_batch",
+      "line": 2271,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: batch page fetch partial failure;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_batch_fetch_pages",
+      "line": 2299,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic store at concrete addr failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_store_symbolic_value",
+      "line": 2322,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic-address store failed; Python",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_store_symbolic_full",
+      "line": 2361,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: annotation introspection failed",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_try_multi_cell_store",
+      "line": 2383,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: older Rust build without the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_try_multi_cell_store",
+      "line": 2394,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust side raised; debug-log and",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_try_multi_cell_store",
+      "line": 2398,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic-address load failed; returns",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_memory_load_symbolic_full",
+      "line": 2438,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may have been",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_make_inspect_state_for",
+      "line": 2490,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: user BP action errored. Log and",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_mem_read",
+      "line": 2571,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_mem_write",
+      "line": 2612,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_reg_read",
+      "line": 2639,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_reg_write",
+      "line": 2664,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_instruction",
+      "line": 2678,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_irsb",
+      "line": 2692,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_exit",
+      "line": 2715,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_call",
+      "line": 2736,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_return",
+      "line": 2756,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_tmp_read",
+      "line": 2775,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_tmp_write",
+      "line": 2796,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_statement",
+      "line": 2817,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_expr",
+      "line": 2841,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_address_concretization",
+      "line": 2876,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_fork",
+      "line": 2897,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_symbolic_variable",
+      "line": 2928,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_simprocedure",
+      "line": 2961,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_syscall",
+      "line": 2989,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_dirty",
+      "line": 3032,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_constraints",
+      "line": 3063,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cb_inspect_vex_lift",
+      "line": 3099,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: executable region not loaded into Rust;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_load_binary_regions",
+      "line": 3146,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: continuation addr is symbolic /",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_extract_continuation_data",
+      "line": 3219,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: Python init step failed; original",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_run_python_init_if_needed",
+      "line": 3267,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or one",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_apply_state_metadata",
+      "line": 3321,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: main address extraction from _start",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_resolve_main_address",
+      "line": 3426,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_seed_stdin_to_rust",
+      "line": 3586,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: fs export preamble failed (non-UTF-8",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_export_fs_files_to_rust",
+      "line": 3644,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: this file stays Python-served",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_export_fs_files_to_rust",
+      "line": 3693,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: posix.brk push to Rust failed; Rust's",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3742,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: heap_location push to Rust failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3759,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: ctype table-ptr push failed; the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3784,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: getopt extern-addr push failed; the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3809,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: option detection failed; Rust",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3855,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: symlink push failed; native",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3875,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Z3 pointer transfer from old manager",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3922,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: constraint install to Rust failed; the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3940,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: seeding _py_state_options from source",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3979,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: seeding _py_state_globals from source",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 3987,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic page import to Rust failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 4013,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: pending symbolic import to Rust failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 4034,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_add_rust_state",
+      "line": 4066,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_check_limits",
+      "line": 4201,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "explore",
+      "line": 4374,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: solver-stats reset failed (e.g., the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "explore",
+      "line": 4385,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: until predicate raised; we keep",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_explore_with_predicates",
+      "line": 4452,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: clear_stash on the unconstrained",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_explore_with_addresses",
+      "line": 4558,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: until predicate raised; exploration",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_explore_with_addresses",
+      "line": 4618,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "get_state_options_py",
+      "line": 4687,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "get_state_globals_py",
+      "line": 4712,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already be gone (e.g.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop_copy",
+      "line": 4778,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: metadata clear is best-effort.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop_copy",
+      "line": 4793,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: cannot read live state IDs; skip this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cleanup_state_cache",
+      "line": 4855,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: missing avoid/deadended view means",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cleanup_state_cache",
+      "line": 4869,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: effective-state lookup failed; only",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_cleanup_state_cache",
+      "line": 4945,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_errors() failed; error records",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "errored",
+      "line": 5126,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "a cat-(b) fallback (error/preamble). Complements the Rust-side",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "stats",
+      "line": 5341,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust execution stats unavailable;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "stats",
+      "line": 5360,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Z3 solver stats unavailable (built",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "stats",
+      "line": 5371,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Z3 solver stats unavailable on the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "get_solver_stats",
+      "line": 5399,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: solver-stats reset failed on public",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "reset_solver_stats",
+      "line": 5410,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "move",
+      "line": 5546,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: move filter raised on a state; keep",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "move",
+      "line": 5558,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already have moved",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "move",
+      "line": 5569,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an attribute",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "filter",
+      "line": 5617,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: filter raised; keep the state in the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "filter",
+      "line": 5632,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already have moved.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "filter",
+      "line": 5643,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state_satisfiable() raised; keep the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "prune",
+      "line": 5671,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already have moved.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "prune",
+      "line": 5678,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for the optional",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop",
+      "line": 5702,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop",
+      "line": 5722,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already have moved.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop",
+      "line": 5735,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: drop filter raised; that state is",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "drop",
+      "line": 5738,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may already have moved.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "split",
+      "line": 5772,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "stashes",
+      "line": 5789,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user merge_func failed for this",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_group_demoted",
+      "line": 5888,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: built-in state.merge() failed;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_group_demoted",
+      "line": 5899,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_group_demoted",
+      "line": 5909,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_group_demoted",
+      "line": 5914,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: failed to re-add merged state; the",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "_group_demoted",
+      "line": 5942,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: outer merge raised; states are left",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "merge",
+      "line": 5948,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: vex_engine module may be",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "cleanup",
+      "line": 6072,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;",
+      "file": "angr/exploration/rust_manager.py",
+      "function": "__getattr__",
+      "line": 6106,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may have been dropped",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_register_handle",
+      "line": 66,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: missing predicate info means",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 118,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty stdout when retrieval",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 150,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user predicate raised; we",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 176,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user predicate raised; we",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 186,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: predicate eval setup (stdout/",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 190,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state classified as found but",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 207,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state classified as avoid but",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_evaluate_predicates_on_active",
+      "line": 226,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: missing Rust root means we fall",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_create_state_for_predicate",
+      "line": 244,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: PC sync failed; the predicate",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_create_state_for_predicate",
+      "line": 274,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: parent.copy() failed; this state",
+      "file": "angr/exploration/rust_state_cache.py",
+      "function": "_create_state_for_predicate",
+      "line": 282,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: set_timeout is a best-effort",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_get_rust_ctx",
+      "line": 152,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: a post-attach constraint",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_get_rust_ctx",
+      "line": 165,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust eval failed; Python solver",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "eval",
+      "line": 224,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust eval_upto failed; Python",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "eval_upto",
+      "line": 242,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust min failed; Python solver",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "min",
+      "line": 261,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust max failed; Python solver",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "max",
+      "line": 280,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: Rust solver failed; Python is",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "satisfiable",
+      "line": 293,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: returning False here would mean",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "satisfiable",
+      "line": 299,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for a Rust root id;",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_materialize_single_state",
+      "line": 452,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: export_state FFI failed; the caller",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_materialize_single_state",
+      "line": 477,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: caller expected a state and gets an",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_materialize_single_state",
+      "line": 496,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: stdin restore best-effort; state's",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_finalize_materialized_state",
+      "line": 538,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: states without posix plugin",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_fix_posix_weakrefs",
+      "line": 565,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: registers in Python state are now",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_registers_to_state",
+      "line": 619,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: VEX internal registers",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_registers_to_state",
+      "line": 630,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-state mmap_base unavailable",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_mmap_base_to_state",
+      "line": 656,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-state posix_brk unavailable.",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_posix_brk_to_state",
+      "line": 692,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-state heap_brk unavailable",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_heap_brk_to_state",
+      "line": 723,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: proxy install failed; state",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_callstack_to_state",
+      "line": 761,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state.callstack stays at the",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_callstack_to_state",
+      "line": 773,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: register_plugin failed; the",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_callstack_to_state",
+      "line": 798,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: proxy install failed; the",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_memory_to_state",
+      "line": 830,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: flushed failed but unflushed",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_memory_to_state",
+      "line": 852,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: both export paths failed.",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_memory_to_state",
+      "line": 863,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: a concrete",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_memory_to_state",
+      "line": 904,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: full-page sync failed.",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_memory_to_state",
+      "line": 924,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: Rust-computed symbolic objects",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_symbolic_objects_to_state",
+      "line": 945,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-AST sync failed (e.g.",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_sync_rust_symbolic_objects_to_state",
+      "line": 983,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: a found state is dropped",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "found_states",
+      "line": 1015,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: returning None hides the",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "get_state_by_id",
+      "line": 1034,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: Skip VEX internal",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_load_snapshot_registers",
+      "line": 1085,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: proxy install failed; the symbolic",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_recover_symbolic_registers_from_snapshot",
+      "line": 1125,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: page failed to load. State",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_load_snapshot_pages",
+      "line": 1156,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for Rust root id;",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_recover_symbolic_ast",
+      "line": 1209,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: Rust root probe failed",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_find_plugin_template_state",
+      "line": 1276,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-plugin restore failed",
+      "file": "angr/exploration/rust_state_export.py",
+      "function": "_restore_plugins_to_state",
+      "line": 1334,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state may have been GC'd or backend",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "timeout",
+      "line": 246,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: write-through failed; the Rust",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "add",
+      "line": 561,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "prefetch",
+      "line": 780,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: re-raise as AttributeError so callers",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "__getattr__",
+      "line": 800,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: AST recovery failed; we mint",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "_recover_symbolic_register_ast",
+      "line": 838,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: returning None on FFI error mirrors",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "mmap_base",
+      "line": 1752,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "allocations",
+      "line": 1768,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "freed",
+      "line": 1780,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: best-effort read; None mirrors",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "bbl_addr",
+      "line": 1822,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: history fetch failed; caller sees",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "jumpkind",
+      "line": 1848,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty bytes when the requested",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "dumps",
+      "line": 1950,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: returning empty bytes when stdin eval",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "_eval_stdin",
+      "line": 1975,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "_frames",
+      "line": 2055,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: empty stack when FFI fails;",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "_frames",
+      "line": 2224,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: returning 0 when PC lookup fails can",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "addr",
+      "line": 2958,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "__repr__",
+      "line": 3188,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "__repr__",
+      "line": 3194,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: __del__ is best-effort; swallow",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "__del__",
+      "line": 3222,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: stash clear failed; user expects",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "__setitem__",
+      "line": 3473,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: dict.get() contract \u2014 return the",
+      "file": "angr/exploration/rust_state_proxy.py",
+      "function": "get",
+      "line": 3546,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic register not",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_registers_to_rust",
+      "line": 195,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: arch defines register name",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_registers_to_rust",
+      "line": 207,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: unexpected failure (e.g.",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_registers_to_rust",
+      "line": 212,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: fast memory sync from disk cache",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_try_fast_memory_sync",
+      "line": 274,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_symbolic_addrs() failed;",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_find_user_symbolic_pages",
+      "line": 294,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-page load",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_build_loader_pages_cache_entry",
+      "line": 350,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-object iteration failed",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_build_loader_pages_cache_entry",
+      "line": 360,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for batch API on",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_map_loader_pages",
+      "line": 404,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: GOT/relocation",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_overlay_relocated_sections",
+      "line": 428,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: page lacks concrete_load or",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_overlay_python_state_pages",
+      "line": 470,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: lazy region registration",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_add_loader_lazy_regions",
+      "line": 488,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: state has symbolic SP and no",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_setup_stack_region",
+      "line": 501,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: concrete_load fast",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_stack_page",
+      "line": 543,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: stack page sync failed entirely",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_stack_page",
+      "line": 559,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-byte symbolic load",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_stack_symbolic_from_sd",
+      "line": 590,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: ast lacks .variables",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_has_user_symbolic_var",
+      "line": 607,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-page sync failed;",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_extra_python_pages",
+      "line": 683,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: classification path",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_extra_python_pages",
+      "line": 705,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for batch API on",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_extra_python_pages",
+      "line": 720,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: outer iteration failed (rare,",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_extra_python_pages",
+      "line": 725,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: get_symbolic_addrs() is",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_scan_user_symbolic_pages",
+      "line": 752,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: per-page scan failed; user",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_scan_user_symbolic_pages",
+      "line": 777,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: outer scan failed (rare).",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_scan_user_symbolic_pages",
+      "line": 786,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "imported into Rust \u2014 same risk class as the inner cat-(c)",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_scan_user_symbolic_pages",
+      "line": 788,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: wide load",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_wide_symbolic_regions",
+      "line": 835,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-byte",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_wide_symbolic_regions",
+      "line": 847,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: scan stopped at",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_wide_symbolic_regions",
+      "line": 882,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: wide consolidation",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_wide_symbolic_regions",
+      "line": 893,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-byte scan failed at",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_wide_symbolic_regions",
+      "line": 900,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-byte symbolic load",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_symbolic_regions",
+      "line": 922,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: SP stays symbolic; Rust will",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_concretize_stack_registers",
+      "line": 966,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: BP stays symbolic; Rust",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_concretize_stack_registers",
+      "line": 981,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic register",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_registers_from_rust_pending",
+      "line": 1032,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: register fetch failed; Python",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_registers_from_rust_pending",
+      "line": 1040,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing arch metadata",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_get_register_offset_map",
+      "line": 1081,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: register read failed for",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_snapshot_registers",
+      "line": 1213,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: symbolic-AST",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_register_changes",
+      "line": 1329,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: both AST",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_register_changes",
+      "line": 1340,
+      "logs": false,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: register diff failed;",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_register_changes",
+      "line": 1357,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: symbolic register sync to Rust",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_sync_symbolic_register_to_rust",
+      "line": 1413,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: preserving the",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_memory_changes",
+      "line": 1473,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: outer extract failed (e.g.",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_memory_changes",
+      "line": 1483,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: large-region eval",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_emit_memory_region",
+      "line": 1556,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: symbolic",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_emit_memory_region",
+      "line": 1579,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: concrete",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_emit_memory_region",
+      "line": 1591,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: per-byte load",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_emit_memory_region",
+      "line": 1597,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: region emit failed entirely",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_emit_memory_region",
+      "line": 1602,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: outer extract loop failed.",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_symbolic_pages",
+      "line": 1643,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS on load failure: returns None, so the",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_load_symbolic_byte",
+      "line": 1652,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: opt-in API; fall through.",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_via_get_symbolic_addrs",
+      "line": 1678,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: page-level walk failed.",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_extract_from_ultrapage",
+      "line": 1774,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: bulk-page FFI not",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_install_rust_memory_proxy",
+      "line": 1853,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: individual pointer",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_install_rust_memory_proxy",
+      "line": 1869,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: outer setup failed (SP eval).",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_install_rust_memory_proxy",
+      "line": 1874,
+      "logs": false,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: dirty-page API unavailable on",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_replay_rust_dirty_pages",
+      "line": 1913,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: concrete page replay failed;",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_replay_rust_dirty_pages",
+      "line": 1936,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: symbolic-page FFI absent on",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_replay_rust_dirty_pages",
+      "line": 1947,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: symbolic store at addr",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_replay_rust_dirty_pages",
+      "line": 1964,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_replay_rust_dirty_pages",
+      "line": 1973,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: per-byte symbolic restore",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_restore_symbolic_pages",
+      "line": 2042,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: multi-byte symbolic",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_restore_symbolic_pages",
+      "line": 2057,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-c",
+      "comment": "cat-(c) WRONG-ANSWER RISK: hook-tracked symbolic memory",
+      "file": "angr/exploration/rust_state_sync.py",
+      "function": "_restore_hook_symbolic_memory",
+      "line": 2104,
+      "logs": true,
+      "semantics": "flip-blocking"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: hook install failed; skip this",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "base_step",
+      "line": 100,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: a technique's step() raised. We still",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "base_step",
+      "line": 111,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: technique setup failed; we keep going",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 149,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 160,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 169,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 205,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "block",
+      "line": 253,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "block",
+      "line": 260,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: native registration failed; the",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 296,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: native registration failed; the",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 312,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: native registration failed; the",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "use_technique",
+      "line": 327,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: list.remove raises ValueError when the",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "remove_technique",
+      "line": 380,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: no signatures for this stash means",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 423,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user technique raised; we",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 490,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user technique raised; we",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 502,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: state may not have",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 521,
+      "logs": true,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: move_state failed; the state",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 525,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-a",
+      "comment": "cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "apply_technique_filters",
+      "line": 540,
+      "logs": false,
+      "semantics": "silent-equivalent"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: timeout-stash move failed;",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "check_technique_complete",
+      "line": 580,
+      "logs": true,
+      "semantics": "logged-degraded"
+    },
+    {
+      "category": "cat-b",
+      "comment": "cat-(b) FALLBACK WITH LOSS: user technique raised; we treat",
+      "file": "angr/exploration/rust_techniques.py",
+      "function": "check_technique_complete",
+      "line": 593,
+      "logs": true,
+      "semantics": "logged-degraded"
+    }
+  ]
+}
