@@ -137,6 +137,7 @@ import time
 import warnings
 import weakref
 from collections.abc import Callable
+from itertools import chain
 from typing import TYPE_CHECKING
 
 import claripy
@@ -150,6 +151,11 @@ from angr.exploration.rust_perf_tracker import PerformanceTracker
 # Envelope head written by RustExplorationManager.dump_snapshot. A file without
 # it is a pre-bucket-D snapshot (bare Rust bytes) and still loads.
 _SNAPSHOT_MAGIC = b"ANGRSNAP\x01"
+
+# Reserved key in the snapshot envelope's pickled overlay dict, whose real keys
+# are Rust state ids (u64, so never negative). Holds the seed state's
+# posix.stdin.content ASTs — see `_capture_seed_stdin_content`.
+_SEED_STDIN_KEY = -1
 
 if TYPE_CHECKING:
     import angr
@@ -6048,7 +6054,11 @@ class RustExplorationManager(
         """
         self._finalize_parallel_session()
         bytes_blob = bytes(self._rust_mgr.dump_snapshot_bytes())
-        overlays = pickle.dumps(self._capture_bucket_d(), protocol=pickle.HIGHEST_PROTOCOL)
+        payload = self._capture_bucket_d()
+        stdin_content = self._capture_seed_stdin_content()
+        if stdin_content:
+            payload[_SEED_STDIN_KEY] = stdin_content
+        overlays = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
         with open(path, "wb") as f:
             f.write(_SNAPSHOT_MAGIC)
             f.write(struct.pack("<Q", len(bytes_blob)))
@@ -6081,10 +6091,44 @@ class RustExplorationManager(
                     }
         return out
 
+    def _capture_seed_stdin_content(self) -> list | None:
+        """The harness-seeded ``posix.stdin.content`` ASTs, for the envelope.
+
+        A snapshot restores a state's constraints — which, for a harness that
+        seeded stdin itself (see :meth:`_seed_stdin_to_rust`), are phrased over
+        the *original* manager's stdin BVS. The resumed manager's own seed state
+        carries a freshly-minted claripy symbol with a different name, so
+        ``found[i].posix.dumps(0)`` solves an unconstrained variable and comes
+        back all-zero — identical across every found state (angr-op0dn.13.14).
+
+        Carrying the original byte ASTs in the envelope keeps the names aligned:
+        claripy pickling preserves them, so once :meth:`load_snapshot` installs
+        them as ``_stdin_content`` — the list the materialization tail
+        (``_finalize_materialized_state``) grafts onto any state whose stdin came
+        back empty — the restored content and the restored constraints talk about
+        the same symbol again.
+        """
+        roots = (self._state_cache.get(rid) for rid in self._state_roots.values())
+        # Roots first (the pristine seed), but any cached state will do: a
+        # harness-seeded stdin stream is never rewritten mid-exploration, so a
+        # descendant carries the very same byte ASTs. `_cleanup_state_cache` can
+        # evict the root outright, and a manager that never materialized a state
+        # has an empty cache — hence the `_initial_seed_states` backstop.
+        seeds = getattr(self, "_initial_seed_states", None) or ()
+        for state in chain(roots, self._state_cache.values(), seeds):
+            if state is None:
+                continue
+            content = getattr(getattr(getattr(state, "posix", None), "stdin", None), "content", None)
+            if content:
+                return list(content)
+        return None
+
     def _restore_bucket_d(self, overlays: dict[int, dict[str, dict]]) -> None:
         """Inverse of :meth:`_capture_bucket_d`. Unknown state ids are skipped
         by the Rust setters, so a partial stash restore stays safe."""
         for sid, buckets in overlays.items():
+            if sid == _SEED_STDIN_KEY:
+                continue
             pages = buckets.get("symbolic_pages")
             if pages:
                 self._rust_mgr.set_state_symbolic_pages(sid, pages)
@@ -6121,6 +6165,13 @@ class RustExplorationManager(
             # Pre-bucket-D envelope (angr-x04s.1.4): bare Rust bytes.
             bytes_blob = blob
         self._rust_mgr.load_snapshot_bytes(bytes_blob)
+        # Re-point the materialization-time stdin restore
+        # (`_finalize_materialized_state`) at the ASTs the snapshot was taken
+        # over, so the exported posix and the restored constraints name the same
+        # claripy symbols. See `_capture_seed_stdin_content`.
+        seed_stdin = overlays.get(_SEED_STDIN_KEY)
+        if seed_stdin:
+            self._stdin_content = list(seed_stdin)
         self._restore_bucket_d(overlays)
         # The post-restore Rust state_ids are the original ones (snapshot
         # preserves them), so external state-export caches indexed by id

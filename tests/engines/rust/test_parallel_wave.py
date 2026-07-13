@@ -459,6 +459,40 @@ class TestParallelCheckpointFrontier:
             f"expected {_SYNTH_LEAVES // 2}-{_SYNTH_LEAVES}"
         )
 
+    def test_resumed_found_states_solve_to_distinct_stdin(self, pbounce_project, monkeypatch, tmp_path):
+        """angr-op0dn.13.14: a resumed find must still yield usable inputs.
+
+        The snapshot restores each state's constraints, but those constraints are
+        phrased over the *original* manager's harness-seeded stdin BVS. A restored
+        state materializes from a bare Rust export, so its posix is angr's default
+        empty one and that symbol exists nowhere on the Python side: every found
+        state used to dump b"" (or, given some other seed's BVS, the same all-zero
+        bytes). The frontier resumed correctly and the answers were still useless.
+
+        The envelope now carries the seed's byte ASTs, so the restored content and
+        the restored constraints name the same claripy symbols again.
+        """
+        mgr, target_addr = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=1)
+        snap = tmp_path / "pbounce.snap"
+        mgr.dump_snapshot(str(snap))
+
+        resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
+        resumed.load_snapshot(str(snap))
+        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+
+        found = list(resumed.found)
+        assert found, "resume drained no leaves; the round-trip test owns that failure"
+
+        # The synthetic branches on the first 3 stdin bytes, one per level (W=3),
+        # so each distinct leaf must pin a distinct 3-byte prefix. Anything past
+        # byte 3 is unconstrained latitude the solver may fill however it likes.
+        prefixes = {s.posix.dumps(0)[:3] for s in found}
+        assert len(prefixes) == len(found), (
+            f"resumed found states collapsed to {len(prefixes)} distinct stdin prefixes "
+            f"across {len(found)} leaves: {sorted(prefixes)}"
+        )
+        assert prefixes != {b"\x00\x00\x00"}, "restored stdin solved unconstrained (the pre-fix symptom)"
+
     def test_snapshot_round_trips_bucket_d_overlays(self, pbounce_project, monkeypatch, tmp_path):
         """angr-op0dn.13.14: the per-state Python-AST overlays must survive a dump.
 
