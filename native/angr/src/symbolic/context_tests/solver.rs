@@ -795,3 +795,93 @@ fn test_eval_upto_wide_canonical_order() {
         assert_eq!(ctx.eval_upto_wide(&x, 8), expected);
     }
 }
+
+/// Strict-deterministic mode (angr-op0dn.10.2): `eval` picks the unsigned
+/// minimum of the feasible set, not an arbitrary Z3 model value. Ten fresh
+/// contexts must agree, and the value must equal `min`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_deterministic_is_min() {
+    for _ in 0..10 {
+        let ctx = SymContext::new();
+        ctx.set_deterministic(true);
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let lo = RustBV::concrete(5, 8);
+        let hi = RustBV::concrete(10, 8);
+        let ge_lo = x.uge(&lo, &ctx);
+        let lt_hi = x.ult(&hi, &ctx);
+        ctx.assume_true(&ge_lo);
+        ctx.assume_true(&lt_hi);
+
+        // A prior is_sat warms the model cache — under the flag that seed must
+        // NOT leak into the witness choice.
+        assert!(ctx.is_sat());
+        assert_eq!(ctx.eval(&x), Some(5));
+        assert_eq!(ctx.eval(&x), ctx.min(&x, false));
+    }
+}
+
+/// Truncated `eval_upto` under the flag returns the ascending prefix of the
+/// sorted feasible set (the hard half of M2.2 — 10.1's post-sort only made the
+/// exhaustive case canonical).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_deterministic_truncated_prefix() {
+    for _ in 0..10 {
+        let ctx = SymContext::new();
+        ctx.set_deterministic(true);
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let lo = RustBV::concrete(5, 8);
+        let hi = RustBV::concrete(10, 8);
+        let ge_lo = x.uge(&lo, &ctx);
+        let lt_hi = x.ult(&hi, &ctx);
+        ctx.assume_true(&ge_lo);
+        ctx.assume_true(&lt_hi);
+
+        // Feasible set is {5,6,7,8,9}: truncation takes the smallest k.
+        assert_eq!(ctx.eval_upto(&x, 1), vec![5]);
+        assert_eq!(ctx.eval_upto(&x, 2), vec![5, 6]);
+        assert_eq!(ctx.eval_upto(&x, 5), vec![5, 6, 7, 8, 9]);
+        // Exhaustive request stops at the feasible set (no over-enumeration).
+        assert_eq!(ctx.eval_upto(&x, 16), vec![5, 6, 7, 8, 9]);
+    }
+}
+
+/// The ascending walk must terminate cleanly when the feasible set includes the
+/// top of the range (the `value == max_val` guard, where `lo + 1` would wrap).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_deterministic_saturating_top() {
+    let ctx = SymContext::new();
+    ctx.set_deterministic(true);
+    let x = RustBV::symbolic(&ctx, "x", 8);
+    let bound = RustBV::concrete(0xfe, 8);
+    let ge = x.uge(&bound, &ctx);
+    ctx.assume_true(&ge);
+
+    assert_eq!(ctx.eval_upto(&x, 4), vec![0xfe, 0xff]);
+    assert_eq!(ctx.eval(&x), Some(0xfe));
+}
+
+/// Unsat contexts and the flag's default-off state.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_deterministic_flag_default_and_unsat() {
+    let ctx = SymContext::new();
+    assert!(!ctx.is_deterministic(), "flag must be opt-in");
+
+    ctx.set_deterministic(true);
+    let x = RustBV::symbolic(&ctx, "x", 8);
+    let three = RustBV::concrete(3, 8);
+    let lt = x.ult(&three, &ctx);
+    let gt = x.ugt(&three, &ctx);
+    ctx.assume_true(&lt);
+    ctx.assume_true(&gt);
+
+    assert_eq!(ctx.eval(&x), None);
+    assert!(ctx.eval_upto(&x, 4).is_empty());
+
+    // Children inherit the mode so a whole lineage stays canonical.
+    let child = ctx.fork();
+    assert!(child.is_deterministic());
+}

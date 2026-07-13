@@ -650,6 +650,9 @@ impl SymContext {
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
+            // angr-op0dn.10.2: a whole lineage stays in one witness-selection
+            // mode — a child forked from a deterministic parent is deterministic.
+            deterministic: AtomicBool::new(self.deterministic.load(Ordering::Relaxed)),
             lineage: Mutex::new(child_lineage),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),

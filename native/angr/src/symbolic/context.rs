@@ -408,6 +408,19 @@ pub struct SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub(super) timeout_ms: AtomicU32,
 
+    /// Strict-deterministic witness selection (angr-op0dn.10.2, M2.2).
+    ///
+    /// Off by default; opt-in via [`set_deterministic`](Self::set_deterministic)
+    /// because it trades Z3 checks for reproducibility (each witness costs an
+    /// `O(log width)` binary search instead of one `get_model`). When on,
+    /// `eval` / `eval_upto` return the unsigned-minimum witness and the
+    /// ascending prefix of the feasible set rather than whatever model Z3
+    /// happened to build — see `solving_ops.rs`. Inherited parent→child on
+    /// `fork` so a whole lineage stays in the same mode.
+    /// `pub(super)` for the query methods in `solving_ops.rs`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(super) deterministic: AtomicBool,
+
     /// Shared-lineage Z3 solver (angr-v5a5 spike, integration in progress).
     ///
     /// `None` for seed states and any state whose lineage has not yet been
@@ -575,6 +588,7 @@ impl SymContext {
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(timeout_ms),
+            deterministic: AtomicBool::new(false),
             lineage: Mutex::new(None),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),

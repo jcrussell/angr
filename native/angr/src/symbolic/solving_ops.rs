@@ -292,12 +292,53 @@ impl SymContext {
         })
     }
 
+    /// Whether strict-deterministic witness selection is on (angr-op0dn.10.2).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn is_deterministic(&self) -> bool {
+        self.deterministic.load(Ordering::Relaxed)
+    }
+
+    /// Turn strict-deterministic witness selection on or off (angr-op0dn.10.2).
+    ///
+    /// Default `false` — the flag is opt-in because it buys reproducibility
+    /// with Z3 checks: every witness costs an `O(log width)` binary search
+    /// (see [`min`](Self::min)) instead of one `get_model`, and the warm
+    /// model-cache seed (angr-ovqja.4) is bypassed. With it on,
+    /// [`eval`](Self::eval) returns the unsigned minimum of the feasible set
+    /// and [`eval_upto`](Self::eval_upto) returns its ascending prefix, so a
+    /// truncated result is a canonical prefix of the sorted full set rather
+    /// than an arbitrary Z3-chosen subset.
+    ///
+    /// Carve-out: [`eval_upto_wide`](Self::eval_upto_wide) is unaffected. Its
+    /// widths exceed the `u128` bounds the binary search tracks (`min` itself
+    /// returns `None` above 128 bits, angr-cxw7); it keeps the
+    /// enumerate-then-sort canonicalization from angr-op0dn.10.1, which is
+    /// canonical only when `n >= #feasible`.
+    ///
+    /// Inherited parent→child on [`fork`](Self::fork), so setting it on a seed
+    /// context covers the whole lineage.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn set_deterministic(&self, v: bool) {
+        self.deterministic.store(v, Ordering::Relaxed);
+    }
+
     /// Evaluate a bitvector to a concrete value if possible.
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval(&self, bv: &RustBV) -> Option<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return Some(v);
+        }
+
+        // Strict-deterministic mode (angr-op0dn.10.2): the witness is the
+        // unsigned minimum of the feasible set rather than whatever model Z3
+        // built. Reuses the `min` binary search wholesale — including its
+        // is_sat gate, so an unsat context still yields None. Deliberately
+        // skips the model-cache read below: a cached model is a history-
+        // dependent arbitrary witness, which is exactly the nondeterminism
+        // this mode exists to remove.
+        if self.is_deterministic() {
+            return self.min(bv, false);
         }
 
         // Try to use cached model first (avoids re-checking SAT)
@@ -461,6 +502,18 @@ impl SymContext {
             return vec![];
         }
 
+        // Strict-deterministic mode (angr-op0dn.10.2): ascending enumeration
+        // from the minimum, so a truncated result (n < #feasible) is the
+        // canonical prefix of the sorted feasible set instead of an arbitrary
+        // Z3-chosen subset. Subsumes the 10.1 sort for this mode.
+        // Widths above 128 fall through to the default path: the binary search
+        // tracks bounds in a u128 and `min` reports None above 128 bits
+        // (angr-cxw7), so there is nothing canonical to build there — those
+        // keep the 10.1 enumerate-then-sort guarantee.
+        if self.is_deterministic() && bv.width() <= 128 {
+            return self.eval_upto_ascending(bv, n);
+        }
+
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
         let _class =
@@ -527,6 +580,61 @@ impl SymContext {
         // runs regardless of which witness Z3 or the warm-model seed found
         // first. Any future short-circuit must land ABOVE this sort.
         results.sort_unstable();
+        results
+    }
+
+    /// Canonical ascending enumeration for [`eval_upto`] under strict-
+    /// deterministic mode (angr-op0dn.10.2). Caller guarantees `n > 0`,
+    /// `width <= 128`, and a symbolic `bv`.
+    ///
+    /// Each iteration binary-searches the minimum feasible value at or above
+    /// `lo` (reusing [`bsearch_min`], the same machinery [`min`](Self::min)
+    /// drives), records it, then raises the floor to `v + 1`. So witness `i` is
+    /// the `i`-th smallest feasible value and the returned Vec is the ascending
+    /// prefix of the sorted feasible set — identical across runs regardless of
+    /// which model Z3 would have produced.
+    ///
+    /// Cost is why this is opt-in: `n * (1 + log2(width))` checks against the
+    /// default path's `n` checks. No `get_model` call happens, so the warm
+    /// model-cache seed is bypassed and `model_cache` is left untouched (a
+    /// history-dependent seed is precisely the nondeterminism being removed).
+    #[cfg(feature = "vex-engine-z3")]
+    fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+        let width = bv.width();
+        let ast = bv.to_z3_ast();
+        let max_val = if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        let _class =
+            query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
+
+        let mut results = Vec::with_capacity(n);
+        self.with_z3_solver(|solver| {
+            solver.push();
+
+            let mut lo: u128 = 0;
+            for _ in 0..n {
+                // Is anything left at or above the current floor? The floor is
+                // an asserted `ast >= lo` (below), so this check also covers an
+                // unsat base constraint set on iteration 0.
+                if !matches!(timed_check(solver, CheckSite::EvalUpto), z3::SatResult::Sat) {
+                    break;
+                }
+                // Feasible min in [lo, max_val] — `ast >= lo` is already
+                // asserted, so bsearch_min never returns below the floor.
+                let value = bsearch_min(solver, &ast, width, lo, max_val, |a, m| a.bvule(m));
+                results.push(value);
+                if value == max_val {
+                    break; // No room above the top of the range.
+                }
+                lo = value + 1;
+                solver.assert(ast.bvuge(make_bv_const(lo, width)));
+            }
+
+            solver.pop(1);
+        });
         results
     }
 
