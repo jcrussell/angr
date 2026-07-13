@@ -67,6 +67,78 @@ class _RustOwnedSimStateHistory(SimStateHistory):
         return super().events
 
 
+# The posix streams kept in sync with Rust's per-fd output buffers, in both
+# directions (Rust -> callback state on entry, callback state -> Rust on
+# resume). Keep the two directions over the SAME fd set: the write-back only
+# pushes the suffix past Rust's buffer length, which is only correct while the
+# Python stream is a prefix of the Rust one — and that invariant is what the
+# inbound injection establishes.
+POSIX_SYNC_FDS = (1, 2)
+
+
+def _posix_stream(state, fd: int):
+    """The posix stream backing ``fd``, or None if the plugin is absent."""
+    posix = state.plugins.get("posix")
+    if posix is None:
+        return None
+    return getattr(posix, ("stdin", "stdout", "stderr")[fd], None) if 0 <= fd <= 2 else posix.get_fd(fd)
+
+
+def _bvv_int(val) -> int | None:
+    """``val`` as a Python int if it is concrete, else None."""
+    if isinstance(val, int):
+        return val
+    if val is None or val.op != "BVV":
+        return None
+    return val.args[0]
+
+
+def _concrete_stream_len(stream) -> int | None:
+    """Byte length of a posix stream's content, or None if not concretely known.
+
+    Cheap by design — it reads packet lengths / the size BV rather than
+    concretizing the content, so a callback whose proc never wrote anything
+    pays only an attribute read or two.
+
+    Handles both stream flavors: ``SimPackets`` (angr's default stdout, a list
+    of (data, length) packets) and ``SimFile``/``SimFileStream`` (flat memory
+    with a size BV).
+    """
+    packets = getattr(stream, "content", None)
+    if isinstance(packets, list):
+        total = 0
+        for _, length in packets:
+            n = _bvv_int(length)
+            if n is None:
+                return None
+            total += n
+        return total
+    return _bvv_int(getattr(stream, "size", None))
+
+
+def _concrete_stream_bytes(state, stream) -> bytes | None:
+    """The full concrete content of a posix stream, or None if any of it is
+    symbolic (Rust's fd buffers hold concrete bytes only)."""
+    packets = getattr(stream, "content", None)
+    if isinstance(packets, list):
+        out = bytearray()
+        for data, length in packets:
+            n = _bvv_int(length)
+            if n is None or data.symbolic:
+                return None
+            # Packets carry a data AST at least as wide as their length; the
+            # payload is the leading ``n`` bytes (mirrors SimPackets.concretize).
+            out += state.solver.eval(data, cast_to=bytes)[:n]
+        return bytes(out)
+    size = _concrete_stream_len(stream)
+    if not size:
+        return b"" if size == 0 else None
+    data = stream.load(0, size)
+    if data.symbolic:
+        return None
+    return state.solver.eval(data, cast_to=bytes)
+
+
 def _install_rust_history_warning(state) -> None:
     """Promote ``state.history`` to the warn-on-read variant in place.
 
@@ -766,6 +838,53 @@ class RustStateExportMixin:
                 # block the bounced proc just handed out. Debug only — the
                 # state may simply have been dropped from Rust by now.
                 l.debug("heap %s write-back to Rust state %d failed: %s", attr, state_id, e)
+
+    def _sync_state_posix_to_rust(self, state: angr.SimState, state_id: int):
+        """Push a bounced proc's stdout/stderr writes back into Rust.
+
+        Reverse of ``_inject_rust_fd_output``. A bounced fwrite/fputc/fprintf
+        runs the Python SimProcedure, which writes the callback state's posix
+        stream; without this write-back the output is invisible to
+        ``posix.dumps(fd)`` read back from the Rust state, and to any find
+        predicate that checks stdout (angr-op0dn.14.1.4).
+
+        Only the suffix past Rust's current buffer length is pushed, so the
+        call is idempotent across the repeated callbacks that share one cached
+        state. The inbound injection guarantees the Python stream starts as a
+        prefix of Rust's buffer, which is what makes a length-based delta
+        sound.
+        """
+        for fd in POSIX_SYNC_FDS:
+            stream = _posix_stream(state, fd)
+            if stream is None:
+                continue
+            py_len = _concrete_stream_len(stream)
+            if not py_len:
+                # Nothing written, or a symbolic-size stream we cannot slice.
+                continue
+            try:
+                rust_len = len(self._rust_mgr.get_state_fd_output(state_id, fd))
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: cannot tell what Rust already
+                # has, so skip rather than risk duplicating the output.
+                l.debug("get_state_fd_output(%d, %d) failed: %s", state_id, fd, e)
+                continue
+            if py_len <= rust_len:
+                continue
+            data = _concrete_stream_bytes(state, stream)
+            if data is None:
+                # cat-(b) FALLBACK WITH LOSS: Rust's fd buffers hold concrete
+                # bytes; a symbolic write from the bounced proc is dropped
+                # rather than concretized to an arbitrary model.
+                l.debug("symbolic fd %d output from callback state %d not synced to Rust", fd, state_id)
+                continue
+            try:
+                self._rust_mgr.append_state_fd_output(state_id, fd, data[rust_len:])
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the bounced proc's output does
+                # not reach Rust; posix.dumps(fd) on the exported state misses
+                # it. The state may simply have been dropped from Rust by now.
+                l.debug("fd %d write-back to Rust state %d failed: %s", fd, state_id, e)
 
     def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
         """Sync Rust-tracked call frames into state.callstack.

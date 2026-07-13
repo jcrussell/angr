@@ -825,6 +825,20 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.fd_buffer(fd).to_vec()))
     }
 
+    pub(crate) fn _has_state_fd_output(&self, state_id: u64, fd: u32) -> bool {
+        self.find_state(state_id)
+            .is_some_and(|state| !state.fd_buffer(fd).is_empty())
+    }
+
+    pub(crate) fn _append_state_fd_output(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        data: Vec<u8>,
+    ) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| Ok(state.write_fd(fd, &data)))
+    }
+
     pub(crate) fn _has_state_stdin_symbols(&self, state_id: u64) -> bool {
         self.find_state(state_id)
             .is_some_and(super::super::state::RustSimState::has_stdin_symbols)

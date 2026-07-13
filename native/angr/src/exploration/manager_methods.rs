@@ -2067,6 +2067,30 @@ impl RustExplorationManager {
         self._get_state_fd_output(state_id, fd)
     }
 
+    /// Check whether a file descriptor has any output (no allocation).
+    pub fn has_state_fd_output(&self, state_id: u64, fd: u32) -> bool {
+        self._has_state_fd_output(state_id, fd)
+    }
+
+    /// Append bytes to a file descriptor's output buffer.
+    ///
+    /// The write-back half of the SimProcedure-callback posix channel
+    /// (angr-op0dn.14.1.4): a bounced fwrite/fputc/fprintf writes the Python
+    /// callback state's posix stream, and this pushes the new suffix into the
+    /// Rust state so `posix.dumps(fd)` on a later export sees it.
+    ///
+    /// Returns `false` when the write was refused because the fd carried
+    /// bounded symbolic content (see `RustSimState::write_fd`); the caller
+    /// should treat that as a lossy fallback, not an error.
+    pub fn append_state_fd_output(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        data: Vec<u8>,
+    ) -> PyResult<bool> {
+        self._append_state_fd_output(state_id, fd, data)
+    }
+
     /// Check if a state has recorded stdin symbols from native fgets/fgetc/getchar.
     pub fn has_state_stdin_symbols(&self, state_id: u64) -> bool {
         self._has_state_stdin_symbols(state_id)

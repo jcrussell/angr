@@ -10,6 +10,7 @@ import claripy
 
 from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
+from angr.exploration.rust_state_export import POSIX_SYNC_FDS, _concrete_stream_len, _posix_stream
 
 if TYPE_CHECKING:
     import angr
@@ -358,42 +359,50 @@ class RustCallbackDispatchMixin:
         state.solver.add = _rust_add
 
     def _inject_rust_stdout(self, state, state_id):
-        """Inject Rust-side stdout buffer into the state's posix stdout plugin.
+        """Inject Rust-side fd output buffers into the state's posix plugin.
 
-        Native puts/printf write to a per-state stdout_buffer in Rust. This
-        method fetches that buffer and writes it into the Python state's posix
-        stdout so that predicates calling state.posix.dumps(1) see the output.
+        Native puts/printf/fwrite write to per-fd buffers in Rust. This method
+        fetches them and appends whatever the Python state is missing, so that
+        predicates calling ``state.posix.dumps(1)`` — and a bounced
+        SimProcedure that reads its own stdout — see the native output.
+
+        Idempotent: only the suffix past the Python stream's current length is
+        written, so calling it twice on the same state (the cached callback
+        state is reused across bounces) does not duplicate the output. The
+        write-back for the other direction is
+        ``_sync_state_posix_to_rust``.
         """
         _px_start = time.perf_counter_ns()
         try:
-            self._inject_rust_stdout_inner(state, state_id)
+            for fd in POSIX_SYNC_FDS:
+                self._inject_rust_fd_output(state, state_id, fd)
         finally:
             self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
 
-    def _inject_rust_stdout_inner(self, state, state_id):
-        # Fast check: skip FFI if this state never wrote to stdout
-        if not self._rust_mgr.has_state_stdout(state_id):
+    def _inject_rust_fd_output(self, state, state_id, fd):
+        # Fast check: skip FFI if this state never wrote to the fd.
+        if not self._rust_mgr.has_state_fd_output(state_id, fd):
             return
         try:
-            rust_stdout = self._rust_mgr.get_state_stdout(state_id)
+            rust_out = bytes(self._rust_mgr.get_state_fd_output(state_id, fd))
         except Exception:
-            # cat-(b) FALLBACK WITH LOSS: Rust stdout fetch failed; posix.dumps(1)
-            # will not include any native-side puts/printf output for this state.
+            # cat-(b) FALLBACK WITH LOSS: Rust fd fetch failed; posix.dumps(fd)
+            # will not include any native-side output for this state.
             return
-        if not rust_stdout:
+        stream = _posix_stream(state, fd)
+        if stream is None:
             return
-        posix = getattr(state, "posix", None)
-        if posix is None:
-            return
-        stdout = getattr(posix, "stdout", None)
-        if stdout is None:
+        py_len = _concrete_stream_len(stream)
+        if py_len is None or py_len >= len(rust_out):
+            # Symbolic-size stream (cannot tell what is missing), or the
+            # Python side is already caught up.
             return
         try:
-            stdout.write(None, claripy.BVV(bytes(rust_stdout)), events=False)
+            stream.write(None, claripy.BVV(rust_out[py_len:]), events=False)
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: Rust stdout write to posix failed;
-            # posix.dumps(1) misses the native output. Debug-logs.
-            l.debug("Failed to inject Rust stdout into posix: %s", e)
+            # cat-(b) FALLBACK WITH LOSS: Rust fd write to posix failed;
+            # posix.dumps(fd) misses the native output. Debug-logs.
+            l.debug("Failed to inject Rust fd %d output into posix: %s", fd, e)
 
     def _inject_rust_stdin(self, state, state_id):
         """Inject Rust-side stdin data into posix.dumps(0).
@@ -1044,6 +1053,7 @@ class RustCallbackDispatchMixin:
                 # instead of the symbolic value.
                 pass
         self._sync_state_heap_to_rust(state, event.callback_state_id)
+        self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, tracked_writes or None)
 
     @staticmethod
@@ -1236,6 +1246,7 @@ class RustCallbackDispatchMixin:
         # A bounced allocator bumped the Python break pointers; push them back
         # so a later native malloc does not overlap what it handed out.
         self._sync_state_heap_to_rust(succ_state, event.callback_state_id)
+        self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
 
         # Resume Rust with the changes and any new constraints.
         # IMPORTANT: This must happen BEFORE symbolic imports, because
@@ -1375,6 +1386,7 @@ class RustCallbackDispatchMixin:
 
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
+        self._sync_state_posix_to_rust(state, event.callback_state_id)
 
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
@@ -2410,6 +2422,10 @@ class RustCallbackDispatchMixin:
             # the first time the bounced proc touches it.
             if event.callback_state_id is not None:
                 self._install_lazy_heap_sync(state, event.callback_state_id)
+                # angr-op0dn.14.1.4: a bounced proc that reads its own stdout
+                # (or appends to it) must see the native output that preceded
+                # it. Idempotent, so the reused cached state is safe.
+                self._inject_rust_stdout(state, event.callback_state_id)
 
         return state
 

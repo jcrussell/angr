@@ -5,6 +5,7 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import claripy
 import pytest
 
 import angr
@@ -553,6 +554,98 @@ class TestCallbackHeapSync:
             f"allocator ran up to 0x{expected:x} — the bump never reached Rust, "
             f"so a native malloc would overlap it"
         )
+
+
+class TestCallbackPosixSync:
+    """The SimProcedure-callback bounce must round-trip fd output buffers.
+
+    Regression for angr-op0dn.14.1.4 (gap 2 of the M6.5a fallback census): the
+    bounce had no outbound posix channel at all, so a bounced
+    fwrite/fputc/fprintf wrote the callback state's posix stream and that
+    output was invisible to ``posix.dumps(1)`` read back from the Rust state —
+    and to any find predicate keyed on stdout. The inbound half was
+    export-path-only, so a bounced proc could not see the native output that
+    preceded it either.
+    """
+
+    @staticmethod
+    def _write_proc(payload, seen):
+        class WriteProc(angr.SimProcedure):
+            def run(self):
+                # What the bounced proc sees of the native output so far.
+                seen.append(self.state.posix.dumps(1))
+                self.state.posix.stdout.write(None, claripy.BVV(payload), events=False)
+                return 0
+
+        return WriteProc
+
+    @pytest.fixture
+    def hookable_project(self):
+        import os
+
+        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
+
+    def test_bounced_write_reaches_rust(self, hookable_project):
+        """Outbound: what the bounced proc wrote to stdout must land in Rust.
+
+        Checked against Rust's own fd buffer, not the exported SimState, so a
+        Python-side plugin that happens to carry the bytes cannot mask a
+        missing write-back.
+        """
+        proj = hookable_project
+        payload = b"BOUNCED-OUTPUT"
+        proj.hook_symbol("puts", self._write_proc(payload, [])())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=60)
+
+        outs = [
+            bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
+            for stash in ("active", "deadended", "found", "avoid")
+            for sid in mgr._rust_mgr.get_state_ids(stash)
+        ]
+        assert outs, "no surviving Rust states to check"
+        assert any(payload in o for o in outs), f"the bounced proc's stdout write never reached Rust: {outs!r}"
+
+    def test_bounced_proc_sees_native_stdout(self, hookable_project):
+        """Inbound: native output written before the bounce must be visible to
+        a bounced proc that reads ``state.posix.dumps(1)``."""
+        proj = hookable_project
+        seen = []
+        proj.hook_symbol("puts", self._write_proc(b"X", seen)())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        # Stand in for a native puts/printf that ran before the bounce.
+        native = b"NATIVE-STDOUT"
+        mgr._rust_mgr.append_state_fd_output(sid, 1, native)
+
+        mgr.run(max_steps=60)
+
+        assert seen, "puts hook never bounced — test would vacuously pass"
+        assert any(s.startswith(native) for s in seen), (
+            f"bounced proc did not see the native stdout that preceded it: {seen!r}"
+        )
+
+    def test_repeated_bounce_does_not_duplicate_stdout(self, hookable_project):
+        """The cached callback state is reused across bounces, so the inbound
+        injection must be idempotent — no duplicated native output."""
+        proj = hookable_project
+        seen = []
+        proj.hook_symbol("puts", self._write_proc(b"", seen)())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        mgr._rust_mgr.append_state_fd_output(sid, 1, b"AB")
+
+        mgr.run(max_steps=60)
+
+        assert seen
+        for s in seen:
+            assert s.count(b"AB") == 1, f"native stdout duplicated across bounces: {s!r}"
 
 
 class TestStateMetadataStorage:
