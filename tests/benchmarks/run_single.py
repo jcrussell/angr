@@ -80,9 +80,9 @@ EXAMPLE_CATALOG = {
     "google2016_unbreakable_1": {"tier": "fast", "rust_ok": True, "notes": "Multi-step constraints"},
     # === New benchmark candidates (untested with Rust engine) ===
     "sharif7_rev50": {
-        "tier": "medium",
+        "tier": "fast",
         "rust_ok": True,
-        "notes": "angr-8kmjo: NOT slow — the old 'both engines timeout >60s' was a catalog gap, not a real timeout. solve.py requires -f/--file (argparse required=True); without argv it raised SystemExit which escaped `except Exception` and hung the pool worker until the parent --timeout hard-killed it (mislabeled TIMEOUT). With argv: ['-f','getit'] both engines solve correctly (flag SharifCTF{b70c...}) — Py ~3.3s, Rust ~0.85s (~3.9x). Could be promoted to baseline_timings.json (vx8p) but kept medium-tier here.",
+        "notes": "angr-8kmjo: NOT slow — the old 'both engines timeout >60s' was a catalog gap, not a real timeout. solve.py requires -f/--file (argparse required=True); without argv it raised SystemExit which escaped `except Exception` and hung the pool worker until the parent --timeout hard-killed it (mislabeled TIMEOUT). With argv: ['-f','getit'] both engines solve correctly (flag SharifCTF{b70c...}) — Py ~3.3s, Rust ~0.85s (~3.9x). angr-ko17e: retiered medium -> fast — it has since been promoted to baseline_timings.json (rust_time 0.2s) and is already a member of run_regression.FAST_SUITE, so 'medium' was stale metadata.",
         "argv": ["-f", "getit"],
     },
     "defcon2016quals_baby-re": {
@@ -132,9 +132,9 @@ EXAMPLE_CATALOG = {
         "notes": "angr-4n26m.1 showcase: real-world x86-64 static software (system /usr/bin/busybox, GPLv2 distro artifact, not vendored). Bounded 60-step run from entry_state(args=['busybox','echo',<sym>]). Exercises the Rust VEX interpreter on a large stripped static-glibc binary rather than a CTF crackme. Static IFUNC/IRELATIVE relocs are resolved at load time via angr.callable.Callable -> simulation_manager; run_single's engine-swap monkeypatch excludes /angr/callable.py so those internal resolver states use the Python engine (else the Rust manager rejects their default SimOptions and the binary fails to load). Short run is init-tax-dominated: Rust ~1.4s vs Py ~0.4s (Rust loses on this length; breadth/realism demo, not a raw-speed win — that's angr-4n26m.5's longer workload).",
     },
     "fork_solve_W6_S8": {
-        "tier": "medium",
+        "tier": "slow",
         "rust_ok": True,
-        "notes": "angr parallel-symex GO gate (bd plan work-item 1): wide-AND-slow synthetic. W=6 -> 64 leaves that BFS materializes concurrently before any reaches the find address (peak width ~28, frac_ge3~0.80); S=8 nonlinear mixing rounds + a 20-bit partial-mask match ((acc & 0xfffff)==0xffee) make the first-find satisfiable() a real bounded Z3 solve (ms/task in the thousands with num_find=1). A full-word equality instead forces pathological UNSAT proofs (W4/S4 took 94s, W6 full-sweep timed out >200s), so the gate uses a partial mask + num_find=1. Built gcc -O0 -no-pie x86-64 by build.py; auto_load_libs=False, no libc callbacks -> clean parallel frontier. Measured rust ~62s, peak ~385MB (< 3GB cap), found=1. rust_only.",
+        "notes": "angr parallel-symex GO gate (bd plan work-item 1): wide-AND-slow synthetic. W=6 -> 64 leaves that BFS materializes concurrently before any reaches the find address (peak width ~28, frac_ge3~0.80); S=8 nonlinear mixing rounds + a 20-bit partial-mask match ((acc & 0xfffff)==0xffee) make the first-find satisfiable() a real bounded Z3 solve (ms/task in the thousands with num_find=1). A full-word equality instead forces pathological UNSAT proofs (W4/S4 took 94s, W6 full-sweep timed out >200s), so the gate uses a partial mask + num_find=1. Built gcc -O0 -no-pie x86-64 by build.py; auto_load_libs=False, no libc callbacks -> clean parallel frontier. Measured rust ~62s, peak ~385MB (< 3GB cap), found=1. rust_only. angr-ko17e: retiered medium -> slow — 61.85s has been its baseline since the introducing commit (3214347ac), so this is the label catching up to the design, not a regression. Consequences: `--suite medium` no longer selects it (it is not in any run_regression suite, so no CI gate changes) and property_fuzzer skips it, which is what a 62s bench wants.",
     },
     "fork_solve_pbounce_W6_S8_M12_B2": {
         "tier": "medium",
