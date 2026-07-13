@@ -41,10 +41,14 @@ impl SymContext {
     /// Captures `assumed_constraints` — the canonical record from which all
     /// per-context Z3 cache state (solver, sat_cache, model_cache, lineage
     /// scope_path, push stacks) re-derives. Other [`SymContext`] fields are
-    /// either runtime-only caches (rebuild on first query) or runtime
-    /// counters (`next_id`, `constraint_count`) that the loader can leave
-    /// at defaults — the IDs carried inside each `RustBV` are already
-    /// globally unique and survive the round-trip.
+    /// runtime-only caches that rebuild on first query.
+    ///
+    /// The two runtime counters — `next_id` and `constraint_count` — ARE
+    /// captured and must be: a restored context is a *fresh* `SymContext`, so
+    /// leaving `next_id` at 0 makes the resume re-mint ids that the restored
+    /// `RustBV` leaves already own (angr-op0dn.13.14 — the ids are unique
+    /// within the source's id space, not across a restore into a new one).
+    /// See [`SymContextSnapshot::next_id`].
     ///
     /// See `snapshot-serialization-design` for the broader plan and
     /// `rustsimstate-field-buckets` for which surrounding state buckets
@@ -148,6 +152,11 @@ impl SymContext {
             // the pre-Phase-1 full-solver dump gave for free. See bd memory
             // `snapshot-constraint-count-pin`.
             constraint_count: self.num_constraints(),
+            // angr-op0dn.13.14: capture the id watermark. Restore builds a
+            // fresh SymContext (next_id = 0) whose restored leaves already own
+            // ids 0..watermark, so without this every symbol minted during the
+            // resume aliases one of them.
+            next_id: self.next_id.load(Ordering::SeqCst),
         }
     }
 
@@ -237,6 +246,20 @@ impl SymContext {
     /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
     /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
+        // angr-op0dn.13.14: seed the id counter past every id the restored
+        // leaves already own. `self` is a fresh `SymContext` (next_id = 0),
+        // but the `RustBV::Symbolic` leaves deserialized into its registers /
+        // memory / constraints carry ids minted from the SOURCE counter. Left
+        // at 0, the first symbol minted during the resume re-uses id 0, 1, …
+        // — ids that restored leaves hold — and every id-keyed lookup (claripy
+        // export registry, `stored_conditions`, symbol table) aliases the two.
+        // A symbol aliased onto another collapses a downstream
+        // compare-and-branch to a CONCRETE guard, so `IRStmt::Exit` stops
+        // forking and whole search subtrees vanish with no visible error.
+        // Legacy snapshots carry 0 here → nothing to seed.
+        if snap.next_id > 0 {
+            self.next_id.store(snap.next_id, Ordering::SeqCst);
+        }
         #[cfg(feature = "vex-engine-z3")]
         {
             if snap.reassert_assumed {

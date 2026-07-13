@@ -153,6 +153,23 @@ pub struct SymContextSnapshot {
     /// as "not captured" and skips the pin (keeps the replayed count).
     #[serde(default)]
     pub constraint_count: usize,
+    /// The source context's `next_id` watermark at capture time
+    /// (angr-op0dn.13.14).
+    ///
+    /// Every `RustBV::Symbolic` / `Constrained` leaf carries an id minted from
+    /// this counter. A restored state builds a **fresh** `SymContext`, whose
+    /// counter would otherwise start at 0 — so the first symbol minted during
+    /// the resume re-uses an id a restored leaf already owns, and every
+    /// id-keyed lookup (the claripy export registry in
+    /// [`SymbolicIdentityRegistry`](super::SymbolicIdentityRegistry),
+    /// `stored_conditions`, the symbol table) silently aliases the two.
+    /// Restore seeds the counter back to this watermark.
+    ///
+    /// `#[serde(default)]` yields `0` for legacy snapshots — restore reads that
+    /// as "not captured" and falls back to the max leaf id seen in
+    /// `assumed_constraints`.
+    #[serde(default)]
+    pub next_id: u64,
 }
 
 /// serde default for [`SymContextSnapshot::reassert_assumed`] — the common
