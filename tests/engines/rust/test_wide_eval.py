@@ -125,3 +125,36 @@ class TestWideEvalSingleModel:
                 continue
             with pytest.raises(SimUnsatError):
                 state.solver.eval(bvs, cast_to=bytes)
+
+
+class TestFoundStatesAreSatisfiable:
+    """No unsat state may reach the found stash (angr-3ag1l).
+
+    ``resume_after_symbolic_branch`` used to prime both branch states'
+    sat cache with ``true``, on the strength of a ``can_be_true`` /
+    ``can_be_false`` check that the non-deferred symbolic-branch path in
+    ``statements.rs`` never runs. Every downstream ``satisfiable()`` gate then
+    hit that poisoned cache, so the two infeasible pbounce leaves (b[0]==0 and
+    b[1]==0 force a constant accumulator whose low byte can never be 0xee)
+    were reported as found.
+    """
+
+    def test_every_found_state_is_satisfiable(self, found_states):
+        found, _ = found_states
+        assert found
+        unsat = [i for i, s in enumerate(found) if not s.solver.satisfiable()]
+        assert not unsat, f"found stash carries unsat states at indices {unsat}"
+
+    def test_every_found_model_reaches_the_target(self, found_states):
+        """The acceptance check: feed each model back in as concrete stdin."""
+        found, _ = found_states
+        for state in found:
+            data = state.posix.dumps(0)
+            assert _reaches_target(data), f"found-state model {data[:4].hex()} misses reach_target"
+
+    def test_infeasible_leaves_are_never_found(self, found_states):
+        """Leaves s=0 / s=4 (b[0]==0 and b[1]==0) are unsat and must not appear."""
+        found, _ = found_states
+        for state in found:
+            data = state.posix.dumps(0)
+            assert data[0] or data[1], "an infeasible (b[0]==0, b[1]==0) leaf reached the found stash"

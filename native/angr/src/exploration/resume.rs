@@ -465,73 +465,30 @@ impl RustExplorationManager {
             }
         }
 
-        // Add states to stashes.
-        // When branch_condition is present, the interpreter already proved
-        // both paths feasible via can_be_true/can_be_false. Prime the sat
-        // cache so downstream satisfiable() checks are free (cache hits)
-        // instead of doing redundant Z3 check() calls.
-        let mut active_states = Vec::new();
+        // Add states to stashes. BOTH branch states need a real satisfiability
+        // check: the interpreter's non-deferred symbolic-branch path
+        // (`statements.rs`, `IRStmt::Exit` under `!use_deferred_forks`) returns
+        // `SymbolicBranch` WITHOUT calling `check_branch_feasibility`, so
+        // neither direction is known feasible when we get here — only the
+        // guard's *symbolic-ness* was established. This code used to prime the
+        // sat cache with `true` on the strength of a feasibility check that
+        // never ran, so an UNSAT branch state sailed through every downstream
+        // `satisfiable()` gate and landed in the found stash (angr-3ag1l).
         let mut pruned_states = Vec::new();
 
-        if branch_condition.is_some() {
-            true_state.set_sat_cache(true);
-            false_state.set_sat_cache(true);
-            // Check find/avoid on new states before adding to active
-            if self.find_addrs.contains(&true_pc) {
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_FOUND.to_string())
-                    .or_default()
-                    .push_back(true_state);
-            } else if self.avoid_addrs.contains(&true_pc) {
-                self.push_or_drop_terminal(STASH_AVOID, true_state);
+        for state in [true_state, false_state] {
+            if self.constraint_solver.lazy_solves || state.satisfiable() {
+                // Satisfiability established (and cached by `is_sat`), so the
+                // found gate does not need to re-check it.
+                self.route_successor(state, false);
             } else {
-                active_states.push(true_state);
-            }
-            if self.find_addrs.contains(&false_pc) {
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_FOUND.to_string())
-                    .or_default()
-                    .push_back(false_state);
-            } else if self.avoid_addrs.contains(&false_pc) {
-                self.push_or_drop_terminal(STASH_AVOID, false_state);
-            } else {
-                active_states.push(false_state);
-            }
-        } else {
-            // Fallback: no stored condition, need actual sat checks
-            if self.constraint_solver.lazy_solves || true_state.satisfiable() {
-                active_states.push(true_state);
-            } else {
-                pruned_states.push(true_state);
-            }
-            if self.constraint_solver.lazy_solves || false_state.satisfiable() {
-                active_states.push(false_state);
-            } else {
-                pruned_states.push(false_state);
+                pruned_states.push(state);
             }
         }
 
-        // Add deferred fork states, checking find/avoid
+        // Deferred fork states were sat-checked above, when they were built.
         for s in deferred_successors {
-            let spc = s.pc();
-            if self.find_addrs.contains(&spc) {
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_FOUND.to_string())
-                    .or_default()
-                    .push_back(s);
-            } else if self.avoid_addrs.contains(&spc) {
-                self.push_or_drop_terminal(STASH_AVOID, s);
-            } else {
-                active_states.push(s);
-            }
-        }
-
-        // Add to active stash, respecting max_active_states.
-        for s in active_states {
-            self.push_to_active_or_drop(s);
+            self.route_successor(s, false);
         }
 
         // Add to pruned stash
