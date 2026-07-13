@@ -131,6 +131,21 @@ _EXONERATED = {
     "Runner.__init__); no code path branches on its presence, so ignoring it cannot change an "
     "answer. Listed as divergence-risk in the matrix only by association with the TRACK_* family. "
     "(angr-op0dn.14.7)",
+    "AVOID_MULTIVALUED_READS": "Honored (angr-tfic): read from state.options and forwarded to "
+    "`configure_concretization_strategies` (rust_manager.py `_init_states`), which sets "
+    "`AddressConcretizer::avoid_multivalued_reads` (native/angr/src/concretize.rs). Every native "
+    "load site checks `should_avoid_multivalued_read` and returns an unconstrained value instead "
+    "of enumerating (memory/load.rs, interpreter/expressions.rs) — the same early return Python "
+    "takes in `address_concretization_mixin._load_one`. (angr-op0dn.14.9)",
+    "AVOID_MULTIVALUED_WRITES": "Honored (angr-tfic): same plumbing as the READS sibling. Native "
+    "store sites check `should_avoid_multivalued_write` and drop the store (memory/store.rs, "
+    "interpreter/statements_store.rs), mirroring Python's `not completed` early return in "
+    "`address_concretization_mixin._store_one`. (angr-op0dn.14.9)",
+    "ZERO_FILL_UNCONSTRAINED_REGISTERS": "Matches by default (angr-rhe2): Rust's `RegisterFile` "
+    "(native/angr/src/arch/mod.rs) backs registers with `vec![0; size]`, so an uninitialized "
+    "register already reads as concrete zero — exactly what the option asks Python for. Setting it "
+    "cannot change a Rust answer. (The SYMBOL_FILL_UNCONSTRAINED_REGISTERS sibling is the "
+    "divergent one and raises.) (angr-op0dn.14.9)",
     "TRACK_ACTION_HISTORY": "Demoted from raise in angr-fkvt: unlike its TRACK_*_ACTIONS siblings it "
     "does not gate action recording. Its only in-tree consumer (state_plugins/preconstrainer.py) "
     "uses it as a metadata flag whose clear/restore is a vacuous no-op under Rust.",

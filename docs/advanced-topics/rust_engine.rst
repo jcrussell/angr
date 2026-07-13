@@ -1977,8 +1977,17 @@ vs. Python.
        Warn-once so a user who opted into concrete host times learns the
        native path is ignoring it (angr-0y0v, 2026-06-15).
    * - ``PRODUCE_ZERODIV_SUCCESSORS``
-     - Spawns successor with ``divisor == 0``.
-     - (a) implement — Rust treats div-by-zero as a single state.
+     - Keeps the ``Ijk_SigFPE_IntDiv`` successor Python spawns on a
+       concrete zero divisor (dropped in ``add_successor`` when unset).
+     - **(c) raise NotImplementedError** at manager construction
+       (``angr-op0dn.14.9``). Python's zero-division successor is produced
+       during lifting — ``irop.py`` raises ``SimZeroDivisionException`` and
+       the resilience mixin turns it into a SigFPE exit — whereas Rust's
+       ``DivS`` / ``DivU`` lower to Z3's ``bvsdiv`` / ``bvudiv``, which are
+       *total*, so the successor never exists to keep. Implementing it is a
+       feature; the option ships only in the ``tracing`` bundle (reached by
+       passing ``mode=``, an opt-in), so raising is routable and the
+       auto-dispatcher sends those workloads to Python.
    * - ``EXTENDED_IROP_SUPPORT``
      - Widens Python's IR-op table: ``vexop_to_simop`` auto-generates a
        ``SimIROp`` from the op name instead of raising
@@ -2172,13 +2181,18 @@ Consequently the flip gate is:
    loud item (raise-options, unsupported arch, pre-registered unsupported
    inspect events, technique/SimulationManager-only kwargs) routes to Python
    instead of throwing — see `Automatic engine selection`_ above.
-2. **(landed for the default bundle, angr-op0dn.14.7)** No silent
-   divergence-risk option ships in the ``symbolic`` bundle any more, so a plain
-   ``entry_state()`` carries none. The remaining silent options
-   (``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES`` in ``fastpath``;
-   ``PRODUCE_ZERODIV_SUCCESSORS`` / ``ZERO_FILL_UNCONSTRAINED_REGISTERS`` in
-   ``tracing``) ride bundles the user reaches only by passing ``mode=``, which
-   is itself an opt-in — they are dispatcher-routable and tracked separately.
+2. **(landed, angr-op0dn.14.7 + angr-op0dn.14.9)** No silent divergence-risk
+   option ships in *any* default mode bundle. The ``symbolic`` bundle (what a
+   plain ``entry_state()`` hands out) was drained first; the four that rode the
+   ``fastpath`` / ``tracing`` bundles then resolved without a feature, three of
+   them because Rust was already doing the right thing:
+   ``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES`` are honored
+   (forwarded to ``configure_concretization_strategies``; the native load/store
+   sites take the same early return Python does),
+   ``ZERO_FILL_UNCONSTRAINED_REGISTERS`` matches by default (Rust's
+   ``RegisterFile`` is zero-backed), and ``PRODUCE_ZERODIV_SUCCESSORS`` — the
+   one real gap, since Z3's division is total and Rust never emits the SigFPE
+   successor — was promoted to raise, which the dispatcher routes to Python.
 3. The rest of the silent surface is empty — either fixed, or on an explicit
    accepted-divergence list. Today that is the 63 flip-blocking bridge sites
    from the M6.5a fallback census plus the ``constraints`` inspect event that

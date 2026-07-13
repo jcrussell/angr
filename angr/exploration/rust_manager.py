@@ -418,6 +418,19 @@ _RAISE_OPTION_NAMES = frozenset(
         "BYPASS_ERRORED_IRCCALL",
         "BYPASS_ERRORED_IRSTMT",
         "CONSTRAINT_TRACKING_IN_SOLVER",
+        # PRODUCE_ZERODIV_SUCCESSORS (promoted angr-op0dn.14.9). Python's
+        # zero-division path is a *lifting* one: irop.py raises
+        # SimZeroDivisionException on a concrete zero divisor, the resilience
+        # mixin turns that into an `Ijk_SigFPE_IntDiv` exit, and
+        # engines/successors.py::add_successor keeps that successor only when
+        # this option is set (it drops it otherwise). The Rust interpreter has
+        # no such path at all: DivS/DivU lower to Z3's bvsdiv/bvudiv, which are
+        # *total* (Z3 defines x/0), so no SigFPE exit is ever produced and the
+        # option can never fire. It ships only in the `tracing` bundle, which a
+        # user reaches by passing mode= — an opt-in, so the raise is routable:
+        # the auto-dispatcher sends those workloads to Python rather than
+        # silently dropping the divide-by-zero successor.
+        "PRODUCE_ZERODIV_SUCCESSORS",
     }
 )
 
