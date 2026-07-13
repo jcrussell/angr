@@ -194,14 +194,16 @@ impl RustExplorationManager {
             let assumed = ctx.get_assumed_constraints();
             let mut results = Vec::new();
             for (bv, is_true) in &assumed {
-                if let Ok(ast) = rustbv_to_claripy(py, bv, claripy.as_any()) {
-                    if *is_true {
-                        results.push(ast);
-                    } else {
-                        if let Ok(negated) = claripy.call_method1("Not", (ast,)) {
-                            results.push(negated.unbind())
-                        }
-                    }
+                // Shared with the native `constraints` inspect dispatch — a
+                // BV-typed guard must be compared against BVV(1|0, 1), not
+                // handed to `claripy.Not` (angr-op0dn.14.4.1).
+                if let Ok(c) = crate::claripy_bridge::assumed_guard_to_claripy(
+                    py,
+                    bv,
+                    claripy.as_any(),
+                    *is_true,
+                ) {
+                    results.push(c);
                 }
             }
             Ok(results)

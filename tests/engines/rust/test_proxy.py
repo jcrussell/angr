@@ -524,6 +524,49 @@ class TestRustInspectMarshalling:
         assert any(str(c) == str(x == 7) for c in cons)
         assert not any(str(c) == str(x == 99) for c in cons)
 
+    def test_native_fork_guard_fires_constraints_bp(self, fauxware_project):
+        """The native fork-guard add fires the constraints BP (angr-op0dn.14.4.1).
+
+        No proxy solver is involved: exploring fauxware forks on the symbolic
+        password compare, and `exploration::helpers::add_fork_guard_constraint`
+        dispatches BP_BEFORE / BP_AFTER around the `assume_true`/`assume_false`
+        that installs the branch guard on the continuing state.
+        """
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        seen = []
+
+        def on_before(s):
+            seen.append(("before", list(s.inspect.added_constraints or [])))
+
+        def on_after(s):
+            seen.append(("after", list(s.inspect.added_constraints or [])))
+
+        ins = mgr._get_inspect_proxy()
+        ins.b("constraints", when="before", action=on_before)
+        ins.b("constraints", when="after", action=on_after)
+
+        mgr.run(max_steps=30)
+
+        whens = [w for w, _ in seen]
+        assert "before" in whens and "after" in whens, f"no before/after pair: {whens}"
+        # Every fired event carries the guard as a one-element list.
+        assert all(len(cons) == 1 for _, cons in seen), seen
+        # And the guard is a real (symbolic or concrete) claripy AST, not None.
+        assert all(hasattr(cons[0], "op") for _, cons in seen), seen
+
+    def test_native_fork_guard_no_bp_no_dispatch(self, fauxware_project):
+        """With no constraints BP registered, the native guard add is silent."""
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        # Bitmask gate keeps bit 19 clear -> Rust never calls into Python.
+        assert not mgr._inspect_breakpoints.get("constraints")
+        mgr.run(max_steps=10)
+        assert mgr.stats["steps"] > 0
+
     def test_dispatch_vex_lift_fires_before_and_after(self, fauxware_project):
         """_cb_lift_block dispatches vex_lift BP_BEFORE then BP_AFTER (angr-4aach)."""
         import claripy
@@ -1741,9 +1784,10 @@ class TestRustInspectExtendedEvents:
                     "simprocedure",
                     "syscall",
                     "dirty",
-                    # angr-4aach: constraints fires from RustSolverProxyPlugin.add,
-                    # vex_lift from _cb_lift_block — both Python-side, no Rust slot.
-                    "constraints",
+                    # angr-4aach: vex_lift fires from _cb_lift_block — Python-side,
+                    # no Rust slot. `constraints` left this set in angr-op0dn.14.4.1:
+                    # it now ALSO fires natively from the fork-guard add, so it does
+                    # have a `set_inspect_constraints` slot.
                     "vex_lift",
                 }
             )

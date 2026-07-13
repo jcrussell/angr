@@ -206,6 +206,7 @@ impl RustExplorationManager {
             prof: &prof,
             native_procs: &self.native_procedures,
             native_syscalls: &self.native_syscalls,
+            callbacks: Some(callbacks),
         };
         let outcome = run_post_step_core(&cc, state, inputs, root_hint);
         self.apply_core_outcome(callbacks, &prof, outcome, terminal_sink)
@@ -888,12 +889,14 @@ impl RustExplorationManager {
 
         for fork in &deferred_forks {
             if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-                // Add the taken-path constraint to the main state
-                if fork.path_taken {
-                    successors[0].solver().borrow().assume_true(condition);
-                } else {
-                    successors[0].solver().borrow().assume_false(condition);
-                }
+                // Add the taken-path constraint to the main state (fires the
+                // constraints inspect BP around the add — angr-op0dn.14.4.1).
+                super::helpers::add_fork_guard_constraint(
+                    self.callbacks.as_ref(),
+                    &successors[0],
+                    condition,
+                    fork.path_taken,
+                );
 
                 // Create forked state for the unexplored path
                 let forked = super::helpers::build_unexplored_fork(

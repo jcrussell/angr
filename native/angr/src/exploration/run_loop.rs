@@ -721,6 +721,7 @@ impl RustExplorationManager {
                     prof: &wave_prof,
                     native_procs: &wave_procs,
                     native_syscalls: &wave_syscalls,
+                    callbacks: Some(&wave_callbacks),
                 };
                 parallel_process_state(
                     state,
@@ -1157,6 +1158,7 @@ impl RustExplorationManager {
                 prof: &proc_prof,
                 native_procs: &proc_procs,
                 native_syscalls: &proc_syscalls,
+                callbacks: Some(&proc_callbacks),
             };
             parallel_process_state(
                 state,

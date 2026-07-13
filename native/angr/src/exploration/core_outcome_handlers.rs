@@ -73,11 +73,12 @@ pub(super) fn materialize_deferred_forks_core(
 
     for fork in deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            if fork.path_taken {
-                base.solver().borrow().assume_true(condition);
-            } else {
-                base.solver().borrow().assume_false(condition);
-            }
+            super::super::helpers::add_fork_guard_constraint(
+                cc.callbacks,
+                base,
+                condition,
+                fork.path_taken,
+            );
 
             let fork_start = if ctx.profiling_enabled {
                 Some(Instant::now())
@@ -193,11 +194,12 @@ fn process_deferred_forks_into_core(
 
     for fork in &deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            if fork.path_taken {
-                base.solver().borrow().assume_true(condition);
-            } else {
-                base.solver().borrow().assume_false(condition);
-            }
+            super::super::helpers::add_fork_guard_constraint(
+                cc.callbacks,
+                base,
+                condition,
+                fork.path_taken,
+            );
 
             let forked = super::super::helpers::build_unexplored_fork(
                 base,

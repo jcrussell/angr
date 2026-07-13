@@ -107,6 +107,44 @@ fn ensure_claripy_ast(
     Ok(obj.clone())
 }
 
+/// Materialize one `(guard, is_assumed_true)` entry from a `SymContext`'s
+/// assumed log as a claripy **boolean** constraint (angr-op0dn.14.4.1).
+///
+/// The guard is a 1-bit `RustBV`. `rustbv_to_claripy` lowers it to whatever
+/// claripy type its op tree implies — a `Bool` for a comparison, but a 1-bit
+/// `BV` for e.g. an `Extract`/`Ite`-derived guard. `claripy.Not()` on a BV
+/// returns `NotImplemented` rather than raising, so a BV-typed guard used to
+/// export as the `NotImplemented` singleton. Compare a BV guard against
+/// `BVV(1|0, 1)` instead — the same `guard != 0` semantics the Python engine
+/// gives a VEX exit guard — and reserve `Not` for genuinely boolean guards.
+///
+/// Shared by `_export_state_constraints` and the native `constraints` inspect
+/// dispatch so both render an assumed guard identically.
+pub fn assumed_guard_to_claripy(
+    py: Python<'_>,
+    bv: &RustBV,
+    claripy_mod: &Bound<'_, PyAny>,
+    is_true: bool,
+) -> PyResult<Py<PyAny>> {
+    let ast = rustbv_to_claripy(py, bv, claripy_mod)?;
+    let bound = ast.bind(py);
+    // Bool ASTs have `length is None`; BV ASTs carry their bit width.
+    let is_bv = bound
+        .getattr("length")
+        .map(|l| !l.is_none())
+        .unwrap_or(false);
+    if is_bv {
+        let bit = u64::from(is_true);
+        let bvv = claripy_mod.call_method1("BVV", (bit, 1u32))?;
+        return Ok(bound.call_method1("__eq__", (bvv,))?.unbind());
+    }
+    if is_true {
+        Ok(ast)
+    } else {
+        Ok(claripy_mod.call_method1("Not", (ast,))?.unbind())
+    }
+}
+
 /// Convert a RustBV back to a claripy AST.
 ///
 /// This is used when returning symbolic results to Python.

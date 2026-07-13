@@ -984,6 +984,47 @@ pub(crate) fn prepare_shared_callback_solver(
 /// (assume taken-path constraint), `set_root` lineage, profiling counters, and
 /// SAT/UNSAT routing — and differ only in which state they fork from and which
 /// condition / snapshot map they pass in.
+/// Install a deferred fork's branch guard on the continuing state, firing the
+/// `state.inspect.constraints` BP around the add (angr-op0dn.14.4.1).
+///
+/// `is_true` selects the polarity: `assume_true(guard)` for the taken path,
+/// `assume_false(guard)` for the fallthrough. Mirrors Python's
+/// `state_plugins/solver.py::add`, which fires `constraints` BP_BEFORE with
+/// `added_constraints` and BP_AFTER once the solver has them — here the
+/// successor receiving the guard is the base state itself (Rust mutates the
+/// stepped state in place and mints a *separate* state for the unexplored
+/// side, whose inverted guard is installed inside `build_unexplored_fork`).
+///
+/// Bit 19 = `_INSPECT_EVENT_SPECS["constraints"]`; the no-BP case costs a
+/// single relaxed atomic load. Mutation of `added_constraints` by the BP is
+/// NOT honored on this path (the guard is already lowered to a `RustBV`);
+/// the `RustSolverProxyPlugin.add` path does honor it.
+#[inline]
+pub(crate) fn add_fork_guard_constraint(
+    callbacks: Option<&PythonCallbacks>,
+    state: &RustSimState,
+    guard: &RustBV,
+    is_true: bool,
+) {
+    let cb = callbacks.filter(|c| c.inspect_event_enabled(19));
+    let state_id = state.state_id() as i64;
+    if let Some(c) = cb
+        && let Err(e) = c.call_inspect_constraints(state_id, "before", guard, is_true)
+    {
+        log::debug!("constraints inspect dispatch raised (state {state_id}, before): {e}");
+    }
+    if is_true {
+        state.solver().borrow().assume_true(guard);
+    } else {
+        state.solver().borrow().assume_false(guard);
+    }
+    if let Some(c) = cb
+        && let Err(e) = c.call_inspect_constraints(state_id, "after", guard, is_true)
+    {
+        log::debug!("constraints inspect dispatch raised (state {state_id}, after): {e}");
+    }
+}
+
 pub(crate) fn build_unexplored_fork(
     base: &RustSimState,
     fork: &DeferredFork,

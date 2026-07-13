@@ -280,6 +280,19 @@ pub struct PythonCallbacks {
     /// event takes NO attrs in `inspect_attributes`; the dispatch is
     /// state_id + when only. Gated on `inspect_event_enabled(4)`.
     pub inspect_fork: Option<Py<PyAny>>,
+    /// `state.inspect.constraints` dispatcher (angr-op0dn.14.4.1).
+    ///
+    /// Signature: `fn(state_id: int, when: str, added_constraints: list) -> Any`.
+    /// Fired from the native fork-guard add sites (see
+    /// `exploration::helpers::add_fork_guard_constraint`) around the
+    /// `assume_true` / `assume_false` that installs a branch guard on the
+    /// continuing state, mirroring Python's `state_plugins/solver.py::add`.
+    /// The Python endpoint is `RustExplorationManager._cb_inspect_constraints`,
+    /// shared with the `RustSolverProxyPlugin.add` dispatch. Gated on
+    /// `inspect_event_enabled(19)`. The BP's return value (mutated
+    /// `added_constraints`) is honored by the proxy-add path but NOT by this
+    /// native path — the guard is already lowered into a `RustBV`.
+    pub inspect_constraints: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -353,6 +366,7 @@ impl PythonCallbacks {
             inspect_address_concretization: None,
             inspect_symbolic_variable: None,
             inspect_fork: None,
+            inspect_constraints: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -657,6 +671,13 @@ impl PythonCallbacks {
         self.inspect_fork = Some(cb);
     }
 
+    /// Set the inspect constraints callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, added_constraints: list) -> Any`.
+    pub fn set_inspect_constraints(&mut self, cb: Py<PyAny>) {
+        self.inspect_constraints = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -948,6 +969,7 @@ impl PythonCallbacks {
             &self.inspect_address_concretization,
             &self.inspect_symbolic_variable,
             &self.inspect_fork,
+            &self.inspect_constraints,
         ]
         .into_iter()
         .flatten()
@@ -994,6 +1016,7 @@ impl PythonCallbacks {
         self.inspect_address_concretization = None;
         self.inspect_symbolic_variable = None;
         self.inspect_fork = None;
+        self.inspect_constraints = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }

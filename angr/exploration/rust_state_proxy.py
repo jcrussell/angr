@@ -2693,22 +2693,28 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": "after",
     },
-    # angr-4aach: constraints dispatch fires from the Python constraint
-    # write-through path — ``RustSolverProxyPlugin.add`` in this module —
-    # which is the proxy solver installed on SimProcedure callback states.
-    # Mirrors Python's ``state_plugins/solver.py`` where ``constraints``
-    # fires ``BP_BEFORE`` (with ``added_constraints``) then ``BP_AFTER``
-    # around ``self._solver.add(...)``. ``dispatch_origin: 'python'`` — the
-    # Rust engine adds fork-guard constraints natively and does NOT fire
-    # this event for them (MVP gap, matches the simprocedure/syscall/dirty
-    # Python-dispatch pattern). User mutation of ``added_constraints`` in a
-    # BP_BEFORE action IS honored: the write-through re-reads the attr and
-    # installs the (possibly-replaced) list.
+    # angr-4aach / angr-op0dn.14.4.1: constraints has TWO dispatch origins,
+    # both landing on ``RustExplorationManager._cb_inspect_constraints``:
+    #
+    #   1. Python — ``RustSolverProxyPlugin.add`` in this module, the proxy
+    #      solver installed on SimProcedure callback states. User mutation of
+    #      ``added_constraints`` in a BP_BEFORE action IS honored here: the
+    #      write-through re-reads the attr and installs the replaced list.
+    #   2. Rust — ``exploration::helpers::add_fork_guard_constraint``, the
+    #      branch-guard add on the continuing state during deferred-fork
+    #      materialization. Mutation is NOT honored there (the guard is
+    #      already lowered into a ``RustBV``), and the inverted guard the
+    #      *forked* state receives inside ``build_unexplored_fork`` does not
+    #      fire its own pair — the ``fork`` BP covers that state's creation.
+    #
+    # Both mirror Python's ``state_plugins/solver.py``, which fires
+    # ``BP_BEFORE`` (with ``added_constraints``) then ``BP_AFTER`` around
+    # ``self._solver.add(...)``. No ``dispatch_origin: 'python'`` — the Rust
+    # slot IS registered so origin 2 has a target.
     "constraints": {
         "bit": 19,
         "attrs": ("added_constraints",),
         "when_fired": "before",
-        "dispatch_origin": "python",
     },
     # angr-4aach: vex_lift dispatch fires from ``_cb_lift_block`` in
     # rust_manager.py, the Python lift callback the Rust engine invokes on a

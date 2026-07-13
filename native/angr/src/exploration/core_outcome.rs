@@ -49,7 +49,7 @@ use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 
-use crate::callbacks::{DeferredFork, RunErrorKind, RunResult};
+use crate::callbacks::{DeferredFork, PythonCallbacks, RunErrorKind, RunResult};
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
 use crate::procedures::{
     NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome, ProcedureError,
@@ -333,6 +333,10 @@ pub(crate) struct CoreCtx<'a> {
     pub(crate) prof: &'a ParallelProfiling,
     pub(crate) native_procs: &'a NativeProcedureRegistry,
     pub(crate) native_syscalls: &'a NativeSyscallRegistry,
+    /// Python callbacks, for the inspect BPs the post-step core fires itself
+    /// (currently `constraints`, from the fork-guard add — angr-op0dn.14.4.1).
+    /// `None` in the Rust-only unit tests, which have no Python side.
+    pub(crate) callbacks: Option<&'a PythonCallbacks>,
 }
 
 /// The deferred-fork payload the post-step arms thread through and, on a Python

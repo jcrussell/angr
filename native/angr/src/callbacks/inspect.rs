@@ -382,4 +382,48 @@ impl PythonCallbacks {
             Ok(())
         })
     }
+
+    /// Invoke the Python inspect constraints callback for a natively-added
+    /// branch guard (angr-op0dn.14.4.1).
+    ///
+    /// `guard` is the 1-bit condition BV as passed to `assume_true` /
+    /// `assume_false`; `is_true` is that polarity. The added constraint is
+    /// materialized for Python exactly the way `_export_state_constraints`
+    /// does it — `rustbv_to_claripy(guard)`, wrapped in `claripy.Not(..)`
+    /// when the polarity is false — and handed to the BP as a one-element
+    /// `added_constraints` list.
+    ///
+    /// Caller gates on `inspect_event_enabled(19)`. A claripy import or
+    /// export failure drops the event (returns `Ok(())`): a BP that cannot
+    /// be materialized must not halt exploration.
+    pub fn call_inspect_constraints(
+        &self,
+        state_id: i64,
+        when: &str,
+        guard: &crate::symbolic::RustBV,
+        is_true: bool,
+    ) -> PyResult<()> {
+        Python::attach(|py| {
+            let _gil = crate::gil_profile::GilWorkGuard::enter();
+            let cb = match self.inspect_constraints.as_ref() {
+                Some(cb) => cb,
+                None => return Ok(()),
+            };
+            let claripy = py.import("claripy")?;
+            let constraint = match crate::claripy_bridge::assumed_guard_to_claripy(
+                py,
+                guard,
+                claripy.as_any(),
+                is_true,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::debug!("constraints inspect export failed (state {state_id}): {e}");
+                    return Ok(());
+                }
+            };
+            cb.call1(py, (state_id, when, vec![constraint]))?;
+            Ok(())
+        })
+    }
 }

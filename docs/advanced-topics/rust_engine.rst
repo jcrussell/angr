@@ -2357,13 +2357,37 @@ the Rust dispatch site (``call_inspect_mem_read`` /
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
-Registering a BP for ``constraints``, ``vex_lift``,
-``engine_process``, ``memory_page_map``, ``cfg_handle_job``,
-``vfg_handle_successor``, or ``vfg_widen_state`` raises
-``NotImplementedError`` with a message pointing at this document.
-``_NoOpInspectProxy`` previously silently accepted every registration
-(see angr-osuu); raising loudly prevents users from depending on a
-feature the engine cannot fulfill.
+``constraints`` and ``vex_lift`` are supported (see the table above);
+the residual unsupported set is ``engine_process``, ``memory_page_map``,
+``cfg_handle_job``, ``vfg_handle_successor``, and ``vfg_widen_state``.
+Registering a BP for one of those raises ``NotImplementedError`` with a
+message pointing at this document. ``_NoOpInspectProxy`` previously
+silently accepted every registration (see angr-osuu); raising loudly
+prevents users from depending on a feature the engine cannot fulfill.
+
+None of the five is an *engine* event: they fire from angr components
+that sit outside the Rust manager entirely — ``engine_process`` from
+``SimEngine.process`` (the Python engine's own entry point, which the
+Rust manager replaces), ``memory_page_map`` from the Python paged-memory
+mixins, and the ``cfg_*`` / ``vfg_*`` events from the CFG and VFG
+analyses (which always run on Python states). A workload that needs any
+of them is not running under the Rust engine's step loop anyway.
+
+Two dispatch caveats on the events that *are* supported:
+
+* ``constraints`` fires from two origins — the Python solver
+  write-through (``RustSolverProxyPlugin.add``, on SimProcedure callback
+  states) and the native fork-guard add
+  (``exploration::helpers::add_fork_guard_constraint``, when a deferred
+  fork's branch guard is installed on the continuing state). A
+  ``BP_BEFORE`` action may replace ``added_constraints`` on the first
+  path; on the native path the guard is already lowered into a Rust BV,
+  so a replacement is ignored. The inverted guard the *forked* state
+  receives does not fire its own pair — the ``fork`` BP marks that
+  state's creation.
+* ``vex_lift`` fires from the Python lift callback (the block-cache miss
+  path). The feature-gated native in-process libVEX lift bypasses that
+  callback and does not fire the event.
 
 Manager-wide BP storage
 ~~~~~~~~~~~~~~~~~~~~~~~
