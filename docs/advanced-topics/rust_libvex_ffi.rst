@@ -25,8 +25,9 @@ dominates, and for parallel warmup (it removes a GIL serialization point).
 
 The key correctness argument: bind the **same libVEX** pyvex already uses,
 rather than reimplementing lifting in Rust from scratch (enormous and
-correctness-risky — the ``NativeVEXLifter`` stub in ``vex/lifter.rs`` exists for
-exactly that reason). Same libVEX, same configuration ⇒ same ``IRSB``.
+correctness-risky — an earlier from-scratch ``NativeVEXLifter`` stub never got
+past returning ``LiftError::Unsupported``, and was deleted in Stage-1 close-out
+for exactly that reason). Same libVEX, same configuration ⇒ same ``IRSB``.
 
 Verdict: GO on feasibility
 --------------------------

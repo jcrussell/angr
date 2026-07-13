@@ -201,6 +201,37 @@ unsafe fn c_op(op: ffi::IROp) -> super::ir::IROp {
     }
 }
 
+/// Expand VEX's restricted 16-bit `Ico_V128` pattern into the full 128-bit value.
+///
+/// libVEX stores a V128 const as one bit per byte lane: bit `i` set means byte
+/// `i` (counting from the least significant) is `0xff`, clear means `0x00`.
+/// pyvex expands the same way in `IRConst.V128._from_c`, so parity with the
+/// serialized pyvex path requires expanding here rather than passing the raw
+/// pattern through.
+fn expand_v128(pattern: u16) -> u128 {
+    let mut value: u128 = 0;
+    for i in 0..16 {
+        if (pattern >> i) & 1 == 1 {
+            value |= 0xffu128 << (8 * i);
+        }
+    }
+    value
+}
+
+/// Expand VEX's restricted 32-bit `Ico_V256` pattern into four 64-bit limbs.
+///
+/// Same one-bit-per-byte-lane encoding as [`expand_v128`], over 32 byte lanes.
+/// Limbs are ascending: `limbs[0]` holds bits 0..63.
+fn expand_v256(pattern: u32) -> [u64; 4] {
+    let mut limbs = [0u64; 4];
+    for i in 0..32 {
+        if (pattern >> i) & 1 == 1 {
+            limbs[i / 8] |= 0xffu64 << (8 * (i % 8));
+        }
+    }
+    limbs
+}
+
 /// Marshal a C `IRConst`.
 ///
 /// # Safety
@@ -229,12 +260,9 @@ unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
     } else if tag == ffi::IRConstTag::Ico_F64i.0 {
         IRConst::F64(f64::from_bits(ico.F64i))
     } else if tag == ffi::IRConstTag::Ico_V128.0 {
-        // VEX encodes a V128 const as a 16-bit "one bit per byte" pattern.
-        // Stage-1 stores the raw pattern zero-extended; the .4 parity harness
-        // owns exact V128/V256 const expansion.
-        IRConst::V128(ico.V128 as u128)
+        IRConst::V128(expand_v128(ico.V128))
     } else if tag == ffi::IRConstTag::Ico_V256.0 {
-        IRConst::V256([ico.V256 as u64, 0, 0, 0])
+        IRConst::V256(expand_v256(ico.V256))
     } else {
         IRConst::U64(0)
     }

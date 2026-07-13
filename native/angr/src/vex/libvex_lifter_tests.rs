@@ -77,3 +77,25 @@ fn test_non_amd64_rejected() {
         .expect_err("non-AMD64 must be rejected in Stage-1");
     assert!(matches!(err, LiftError::InvalidArch(_)));
 }
+
+/// libVEX stores restricted-vector consts as one bit per byte lane; pyvex
+/// expands them, so the marshaller must too. The AMD64 corpus only ever
+/// produces the all-zero and all-ones patterns, so cover a mixed one here.
+#[test]
+fn test_expand_v128_pattern() {
+    assert_eq!(expand_v128(0x0000), 0);
+    assert_eq!(expand_v128(0xffff), u128::MAX);
+    assert_eq!(expand_v128(0x0001), 0xff);
+    assert_eq!(expand_v128(0x8000), 0xff << 120);
+    assert_eq!(expand_v128(0x0003), 0xffff);
+}
+
+#[test]
+fn test_expand_v256_pattern() {
+    assert_eq!(expand_v256(0x0000_0000), [0; 4]);
+    assert_eq!(expand_v256(0xffff_ffff), [u64::MAX; 4]);
+    assert_eq!(expand_v256(0x0000_0001), [0xff, 0, 0, 0]);
+    // Bit 8 is the first lane of the second limb.
+    assert_eq!(expand_v256(0x0000_0100), [0, 0xff, 0, 0]);
+    assert_eq!(expand_v256(0x8000_0000), [0, 0, 0, 0xff << 56]);
+}

@@ -28,8 +28,47 @@ import argparse
 import json
 import sys
 
+import archinfo
+import pyvex
+
 import angr
 from angr.exploration.rust_irsb_serializer import serialize_irsb
+
+# Hand-assembled blocks covering IR shapes a recursive-descent walk of an
+# ordinary binary never reaches. Real corpora are SSE-const-free, so without
+# these the V128/V256 restricted-vector const marshalling is untested.
+# Addresses sit well above any real image so they can never collide.
+SYNTHETIC_BLOCKS: list[tuple[int, str, str]] = [
+    # pcmpeqd xmm0, xmm0 ; ret  -> Ico_V128 all-ones (pattern 0xffff)
+    (0x7F00_0000, "660f76c0c3", "V128 all-ones const"),
+    # pxor xmm0, xmm0 ; ret     -> Ico_V128 zero
+    (0x7F00_0010, "660fefc0c3", "V128 zero const"),
+    # vpxor ymm0, ymm0, ymm0 ; ret -> Ico_V256 zero
+    (0x7F00_0020, "c5fdefc0c3", "V256 zero const"),
+    # vzeroall ; ret            -> a run of Ico_V128 zero consts
+    (0x7F00_0030, "c5fc77c3", "V128 const run"),
+]
+
+
+def synthetic_blocks() -> list[dict]:
+    """Lift the hand-assembled SYNTHETIC_BLOCKS through the production path."""
+    arch = archinfo.ArchAMD64()
+    out: list[dict] = []
+    for addr, hex_bytes, label in SYNTHETIC_BLOCKS:
+        raw = bytes.fromhex(hex_bytes)
+        irsb = pyvex.lift(raw, addr, arch)
+        if irsb.size == 0:
+            print(f"ERROR: synthetic block {label} @ 0x{addr:x} did not lift", file=sys.stderr)
+            continue
+        out.append(
+            {
+                "addr": addr,
+                "arch": "AMD64",
+                "bytes": raw[: irsb.size].hex(),
+                "pyvex_json": serialize_irsb(irsb),
+            }
+        )
+    return out
 
 
 def collect_blocks(binary: str, max_blocks: int) -> list[dict]:
@@ -88,6 +127,8 @@ def main() -> int:
     for binary in args.binaries:
         for entry in collect_blocks(binary, args.max_blocks):
             merged[(entry["addr"], entry["bytes"])] = entry
+    for entry in synthetic_blocks():
+        merged[(entry["addr"], entry["bytes"])] = entry
 
     blocks = sorted(merged.values(), key=lambda e: (e["addr"], e["bytes"]))
     if not blocks:

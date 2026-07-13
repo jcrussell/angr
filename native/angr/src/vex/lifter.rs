@@ -3,8 +3,6 @@
 //! This module provides the interface for lifting machine code to VEX IR.
 //! Lifting is done via pyvex through a Python callback.
 
-use std::collections::HashMap;
-
 use super::ir::{Endness, IRConst, IRExpr, IROp, IRSB, IRStmt, IRType, JumpKind, VexArch};
 
 /// Errors from VEX lifting.
@@ -59,50 +57,6 @@ pub trait VEXLifter {
         result.tyenv = irsb.tyenv;
 
         Ok(result)
-    }
-}
-
-/// Native VEX lifter (using embedded test data for now).
-///
-/// In a full implementation, this would use libvex-rs or similar
-/// to lift machine code to VEX IR.
-pub struct NativeVEXLifter {
-    /// Cached lifted blocks.
-    cache: parking_lot::RwLock<HashMap<(u64, VexArch), IRSB>>,
-}
-
-impl NativeVEXLifter {
-    /// Create a new native VEX lifter.
-    pub fn new() -> Self {
-        NativeVEXLifter {
-            cache: parking_lot::RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Pre-populate the cache with a lifted block.
-    pub fn add_block(&self, irsb: IRSB) {
-        let key = (irsb.addr, irsb.arch);
-        self.cache.write().insert(key, irsb);
-    }
-}
-
-impl Default for NativeVEXLifter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl VEXLifter for NativeVEXLifter {
-    fn lift(&self, _bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
-        // Check cache first
-        if let Some(irsb) = self.cache.read().get(&(addr, arch)) {
-            return Ok(irsb.clone());
-        }
-
-        // Return error indicating fallback needed
-        Err(LiftError::Unsupported(
-            "native lifting not available; use pyvex callback".to_string(),
-        ))
     }
 }
 
