@@ -405,7 +405,7 @@ fn parallel_process_state(
         CoreReturn::NeedsPython(bounce) => {
             let PendingBounce {
                 kind,
-                state: bstate,
+                state: mut bstate,
                 deferred_forks,
                 last_condition: _,
                 stored_conditions,
@@ -413,6 +413,8 @@ fn parallel_process_state(
             } = bounce;
             // Materialize the bounce's deferred forks in-thread so no unexplored
             // branch is lost across the (!Send loose-condition) bounce boundary.
+            // Done BEFORE the pc stamp below so the forks are derived from the
+            // exact same base state the single-threaded path forks from.
             let (forks, pruned2, _ids) = materialize_bounce_forks(
                 cc,
                 &bstate,
@@ -421,6 +423,21 @@ fn parallel_process_state(
                 fork_snapshots,
                 root_hint,
             );
+            // angr-op0dn.13.11: the state-update preamble above stamped
+            // `step.new_pc` — which is 0 for a hook / SimProcedure bounce — so a
+            // bounce state leaves the worker with pc=0. `dispatch_bounce`
+            // overwrites the pc for exactly these kinds, so the bounce path does
+            // not care; but the coordinator can also route this state back to
+            // `STASH_ACTIVE` (the untagged-residual arm of
+            // `route_materialized_terminal`, or `flush_parked_bounces_to_active`
+            // at snapshot time), where pc=0 makes it die at its next lift
+            // ("Lift error at 0x0") and takes its whole subtree with it. Stamp
+            // the re-enterable entry address here instead: the state is parked AT
+            // the call site with the callback not yet run, so resuming from the
+            // bounce target is a faithful replay.
+            if let Some(addr) = bounce_target_addr(&kind) {
+                bstate.set_pc(addr);
+            }
             let bid = bstate.state_id();
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
