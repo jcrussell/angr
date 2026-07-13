@@ -1,325 +1,432 @@
 {
- "_note": "S1 spike (angr-op0dn.3): per-check structural classes, ANGR_RUST_QUERY_CLASS=1. Classes sum to z3_check_count. syntactic_decide added by angr-op0dn.9.1 (2026-07-13): boolean queries whose verdict is fixed by syntax alone despite free symbols (reflexive cmp, Ult(x,0)/Ule(x,UMAX) bounds, mask-bit contradictions). It is 0 corpus-wide, which VOIDs 9.1 \u2014 the other buckets are unchanged from the original census.",
- "addressable_pct": 2.2,
- "corpus_totals": {
-  "trivial_decide": 2,
-  "syntactic_decide": 0,
-  "single_var_range": 27,
-  "forced_value": 0,
-  "free_witness": 332,
-  "hard": 959,
-  "unclassified": 0,
-  "z3_check_count": 1320
- },
- "per_bench": {
-  "ais3_crackme": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 3,
-   "forced_value": 0,
-   "free_witness": 1,
-   "hard": 118,
-   "unclassified": 0,
-   "z3_check_count": 122
-  },
-  "android_arm_license_validation": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 16,
-   "forced_value": 0,
-   "free_witness": 1,
-   "hard": 0,
-   "unclassified": 0,
-   "z3_check_count": 17
-  },
-  "cli_ctype_fprintf": {
-   "trivial_decide": 1,
-   "syntactic_decide": 0,
-   "single_var_range": 8,
-   "forced_value": 0,
-   "free_witness": 158,
-   "hard": 385,
-   "unclassified": 0,
-   "z3_check_count": 552
-  },
-  "csgames2018": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 99,
-   "hard": 183,
-   "unclassified": 0,
-   "z3_check_count": 282
-  },
-  "defcamp_r100": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 1,
-   "hard": 25,
-   "unclassified": 0,
-   "z3_check_count": 26
-  },
-  "defcon2016quals_baby-re": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 29,
-   "hard": 0,
-   "unclassified": 0,
-   "z3_check_count": 29
-  },
-  "fauxware": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 17,
-   "hard": 5,
-   "unclassified": 0,
-   "z3_check_count": 22
-  },
-  "google2016_unbreakable_0": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 4,
-   "hard": 0,
-   "unclassified": 0,
-   "z3_check_count": 4
-  },
-  "sharif7_rev50": {
-   "trivial_decide": 1,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 1,
-   "hard": 0,
-   "unclassified": 0,
-   "z3_check_count": 2
-  },
-  "strcpy_find": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 1,
-   "hard": 3,
-   "unclassified": 0,
-   "z3_check_count": 4
-  },
-  "whitehatvn2015_re400": {
-   "trivial_decide": 0,
-   "syntactic_decide": 0,
-   "single_var_range": 0,
-   "forced_value": 0,
-   "free_witness": 20,
-   "hard": 240,
-   "unclassified": 0,
-   "z3_check_count": 260
-  }
- },
- "m1b_kill_gate": {
-  "_note": "angr-op0dn.9.2 (M1.b) KILL-gate measurement, 2026-07-13. The bead's gate: KILL if the single_var_range bucket is <~10% of the MinInit/MinSearch/MaxInit/MaxSearch/Eval site counts \u2014 the sites 9.2 would intercept. (EvalUpto is out of scope by the ovqja.5 faithfulness partition: its witness SET is solver-chosen.) Same 11 benches, same run as the class census, ANGR_RUST_QUERY_CLASS=1. Class and site counters are independent tallies of the same checks, so per bench the checks that are BOTH single_var_range AND at a 9.2 site are at most min(single_var_range, min_max_eval_sites) \u2014 that is the addressable_upper_bound column, and it is what the gate is decided on.",
-  "single_var_range_total": 27,
-  "min_max_eval_site_total": 549,
-  "ratio_pct": 4.9,
-  "addressable_upper_bound_total": 10,
-  "addressable_upper_bound_pct": 1.8,
-  "gate_threshold_pct": 10,
-  "verdict": "KILL",
-  "site_totals": {
-   "branch_false": 112,
-   "branch_true": 206,
-   "eval": 37,
-   "eval_upto": 295,
-   "max_init": 0,
-   "max_search": 385,
-   "min_init": 0,
-   "min_search": 127,
-   "satisfiable": 160
+  "_note": "S1 spike (angr-op0dn.3): per-check structural classes, ANGR_RUST_QUERY_CLASS=1. Classes sum to z3_check_count. syntactic_decide added by angr-op0dn.9.1 (2026-07-13): boolean queries whose verdict is fixed by syntax alone despite free symbols (reflexive cmp, Ult(x,0)/Ule(x,UMAX) bounds, mask-bit contradictions). It is 0 corpus-wide, which VOIDs 9.1 \u2014 the other buckets are unchanged from the original census.",
+  "addressable_pct": 2.2,
+  "corpus_totals": {
+    "trivial_decide": 2,
+    "syntactic_decide": 0,
+    "single_var_range": 27,
+    "forced_value": 0,
+    "free_witness": 332,
+    "hard": 959,
+    "unclassified": 0,
+    "z3_check_count": 1320
   },
   "per_bench": {
-   "ais3_crackme": {
-    "single_var_range": 3,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 1,
-    "sites": {
-     "satisfiable": 48,
-     "branch_true": 25,
-     "branch_false": 48,
-     "eval": 1,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
+    "ais3_crackme": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 3,
+      "forced_value": 0,
+      "free_witness": 1,
+      "hard": 118,
+      "unclassified": 0,
+      "z3_check_count": 122
+    },
+    "android_arm_license_validation": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 16,
+      "forced_value": 0,
+      "free_witness": 1,
+      "hard": 0,
+      "unclassified": 0,
+      "z3_check_count": 17
+    },
+    "cli_ctype_fprintf": {
+      "trivial_decide": 1,
+      "syntactic_decide": 0,
+      "single_var_range": 8,
+      "forced_value": 0,
+      "free_witness": 158,
+      "hard": 385,
+      "unclassified": 0,
+      "z3_check_count": 552
+    },
+    "csgames2018": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 99,
+      "hard": 183,
+      "unclassified": 0,
+      "z3_check_count": 282
+    },
+    "defcamp_r100": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 1,
+      "hard": 25,
+      "unclassified": 0,
+      "z3_check_count": 26
+    },
+    "defcon2016quals_baby-re": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 29,
+      "hard": 0,
+      "unclassified": 0,
+      "z3_check_count": 29
+    },
+    "fauxware": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 17,
+      "hard": 5,
+      "unclassified": 0,
+      "z3_check_count": 22
+    },
+    "google2016_unbreakable_0": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 4,
+      "hard": 0,
+      "unclassified": 0,
+      "z3_check_count": 4
+    },
+    "sharif7_rev50": {
+      "trivial_decide": 1,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 1,
+      "hard": 0,
+      "unclassified": 0,
+      "z3_check_count": 2
+    },
+    "strcpy_find": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 1,
+      "hard": 3,
+      "unclassified": 0,
+      "z3_check_count": 4
+    },
+    "whitehatvn2015_re400": {
+      "trivial_decide": 0,
+      "syntactic_decide": 0,
+      "single_var_range": 0,
+      "forced_value": 0,
+      "free_witness": 20,
+      "hard": 240,
+      "unclassified": 0,
+      "z3_check_count": 260
     }
-   },
-   "android_arm_license_validation": {
-    "single_var_range": 16,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 1,
-    "sites": {
-     "satisfiable": 6,
-     "branch_true": 5,
-     "branch_false": 5,
-     "eval": 1,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
+  },
+  "m1b_kill_gate": {
+    "_note": "angr-op0dn.9.2 (M1.b) KILL-gate measurement, 2026-07-13. The bead's gate: KILL if the single_var_range bucket is <~10% of the MinInit/MinSearch/MaxInit/MaxSearch/Eval site counts \u2014 the sites 9.2 would intercept. (EvalUpto is out of scope by the ovqja.5 faithfulness partition: its witness SET is solver-chosen.) Same 11 benches, same run as the class census, ANGR_RUST_QUERY_CLASS=1. Class and site counters are independent tallies of the same checks, so per bench the checks that are BOTH single_var_range AND at a 9.2 site are at most min(single_var_range, min_max_eval_sites) \u2014 that is the addressable_upper_bound column, and it is what the gate is decided on.",
+    "single_var_range_total": 27,
+    "min_max_eval_site_total": 549,
+    "ratio_pct": 4.9,
+    "addressable_upper_bound_total": 10,
+    "addressable_upper_bound_pct": 1.8,
+    "gate_threshold_pct": 10,
+    "verdict": "KILL",
+    "site_totals": {
+      "branch_false": 112,
+      "branch_true": 206,
+      "eval": 37,
+      "eval_upto": 295,
+      "max_init": 0,
+      "max_search": 385,
+      "min_init": 0,
+      "min_search": 127,
+      "satisfiable": 160
+    },
+    "per_bench": {
+      "ais3_crackme": {
+        "single_var_range": 3,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 1,
+        "sites": {
+          "satisfiable": 48,
+          "branch_true": 25,
+          "branch_false": 48,
+          "eval": 1,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "android_arm_license_validation": {
+        "single_var_range": 16,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 1,
+        "sites": {
+          "satisfiable": 6,
+          "branch_true": 5,
+          "branch_false": 5,
+          "eval": 1,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "cli_ctype_fprintf": {
+        "single_var_range": 8,
+        "min_max_eval_sites": 385,
+        "addressable_upper_bound": 8,
+        "sites": {
+          "satisfiable": 5,
+          "branch_true": 3,
+          "branch_false": 1,
+          "eval": 0,
+          "eval_upto": 158,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 385
+        }
+      },
+      "csgames2018": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 127,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 23,
+          "branch_true": 15,
+          "branch_false": 20,
+          "eval": 0,
+          "eval_upto": 99,
+          "min_init": 0,
+          "min_search": 127,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "defcamp_r100": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 12,
+          "branch_true": 12,
+          "branch_false": 1,
+          "eval": 1,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "defcon2016quals_baby-re": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 29,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 0,
+          "branch_true": 0,
+          "branch_false": 0,
+          "eval": 29,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "fauxware": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 3,
+          "branch_true": 1,
+          "branch_false": 1,
+          "eval": 1,
+          "eval_upto": 16,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "google2016_unbreakable_0": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 2,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 0,
+          "branch_true": 0,
+          "branch_false": 0,
+          "eval": 2,
+          "eval_upto": 2,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "sharif7_rev50": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 1,
+          "branch_true": 0,
+          "branch_false": 0,
+          "eval": 1,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "strcpy_find": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 1,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 1,
+          "branch_true": 1,
+          "branch_false": 1,
+          "eval": 1,
+          "eval_upto": 0,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      },
+      "whitehatvn2015_re400": {
+        "single_var_range": 0,
+        "min_max_eval_sites": 0,
+        "addressable_upper_bound": 0,
+        "sites": {
+          "satisfiable": 61,
+          "branch_true": 144,
+          "branch_false": 35,
+          "eval": 0,
+          "eval_upto": 20,
+          "min_init": 0,
+          "min_search": 0,
+          "max_init": 0,
+          "max_search": 0
+        }
+      }
     }
-   },
-   "cli_ctype_fprintf": {
-    "single_var_range": 8,
-    "min_max_eval_sites": 385,
-    "addressable_upper_bound": 8,
-    "sites": {
-     "satisfiable": 5,
-     "branch_true": 3,
-     "branch_false": 1,
-     "eval": 0,
-     "eval_upto": 158,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 385
+  },
+  "m1d_bool_rebuild": {
+    "_note": "angr-op0dn.9.6 \u2014 sizing input for M1.d / angr-op0dn.9.4 (extend the per-Expression Z3 AST memo to the native Bool path). Same 11 fast-tier benches as the S1 query-class census. Counters added in symbolic/stats.rs (z3_bool_build, z3_bool_build_nodes, z3_bool_memo_reused_nodes, z3_bool_memoized_subtree); RustBV::to_z3_bool brackets each top-level conversion with the (z3_ast_cache_miss, z3_ast_memo_hit) pair, so built = Dmiss - Dmemo_hit is the Z3-node work the call actually did and reused = Dmemo_hit is what the BV memo already served. READ THE RIGHT RATIO: the Bool path's SHARE of AST work is large (66.7% of top-level builds, 88.2% of all constructed nodes), but a memo can only remove REPEAT conversions. A repeat of a compound-operand Bool node lands in z3_bool_memoized_subtree by construction (its operand subtrees memo-hit, so it builds <=1 node \u2014 the comparison itself). That bucket is 442 calls / 442-ish nodes = 6.5% of all constructed nodes, each a single hash-consed mk_eq. The other 5,564 nodes the Bool path builds are FIRST conversions, which no memo removes. The bead predicted this ('each rebuild is one hash-consed Z3 node once operands memo-hit').",
+    "corpus_totals": {
+      "z3_ast_build": 1523,
+      "z3_bool_build": 1016,
+      "z3_bool_build_nodes": 6006,
+      "z3_bool_memo_reused_nodes": 739,
+      "z3_bool_memoized_subtree": 442,
+      "all_built_nodes": 6808
+    },
+    "bool_share_of_top_level_builds_pct": 66.7,
+    "bool_share_of_built_nodes_pct": 88.2,
+    "memo_addressable_nodes_pct": 6.5,
+    "nodes_saved_per_addressable_call": 1,
+    "gate": "KILL if the Bool-REBUILD share of z3_ast_build measures trivial (angr-op0dn.9.4 acceptance criteria)",
+    "verdict": "KILL angr-op0dn.9.4. Memo-addressable node-build work is 6.5% of the corpus total and is one hash-consed comparison node per call; the ovqja.3 BV memo already absorbs every compound subtree on the Bool path (z3_bool_memo_reused_nodes=739). Not worth a widened memo slot / side table plus its context-guard + translate-reset + serde-skip obligations.",
+    "per_bench": {
+      "ais3_crackme": {
+        "z3_ast_build": 170,
+        "z3_bool_build": 168,
+        "z3_bool_build_nodes": 882,
+        "z3_bool_memo_reused_nodes": 120,
+        "z3_bool_memoized_subtree": 120,
+        "all_built_nodes": 885
+      },
+      "android_arm_license_validation": {
+        "z3_ast_build": 31,
+        "z3_bool_build": 25,
+        "z3_bool_build_nodes": 65,
+        "z3_bool_memo_reused_nodes": 20,
+        "z3_bool_memoized_subtree": 20,
+        "all_built_nodes": 71
+      },
+      "cli_ctype_fprintf": {
+        "z3_ast_build": 54,
+        "z3_bool_build": 6,
+        "z3_bool_build_nodes": 40,
+        "z3_bool_memo_reused_nodes": 2,
+        "z3_bool_memoized_subtree": 2,
+        "all_built_nodes": 110
+      },
+      "csgames2018": {
+        "z3_ast_build": 69,
+        "z3_bool_build": 67,
+        "z3_bool_build_nodes": 278,
+        "z3_bool_memo_reused_nodes": 58,
+        "z3_bool_memoized_subtree": 44,
+        "all_built_nodes": 280
+      },
+      "defcamp_r100": {
+        "z3_ast_build": 544,
+        "z3_bool_build": 289,
+        "z3_bool_build_nodes": 638,
+        "z3_bool_memo_reused_nodes": 24,
+        "z3_bool_memoized_subtree": 24,
+        "all_built_nodes": 893
+      },
+      "defcon2016quals_baby-re": {
+        "z3_ast_build": 95,
+        "z3_bool_build": 54,
+        "z3_bool_build_nodes": 1309,
+        "z3_bool_memo_reused_nodes": 27,
+        "z3_bool_memoized_subtree": 27,
+        "all_built_nodes": 1350
+      },
+      "fauxware": {
+        "z3_ast_build": 48,
+        "z3_bool_build": 3,
+        "z3_bool_build_nodes": 110,
+        "z3_bool_memo_reused_nodes": 2,
+        "z3_bool_memoized_subtree": 2,
+        "all_built_nodes": 163
+      },
+      "google2016_unbreakable_0": {
+        "z3_ast_build": 173,
+        "z3_bool_build": 102,
+        "z3_bool_build_nodes": 1074,
+        "z3_bool_memo_reused_nodes": 276,
+        "z3_bool_memoized_subtree": 51,
+        "all_built_nodes": 1384
+      },
+      "sharif7_rev50": {
+        "z3_ast_build": 1,
+        "z3_bool_build": 0,
+        "z3_bool_build_nodes": 0,
+        "z3_bool_memo_reused_nodes": 0,
+        "z3_bool_memoized_subtree": 0,
+        "all_built_nodes": 1
+      },
+      "strcpy_find": {
+        "z3_ast_build": 4,
+        "z3_bool_build": 3,
+        "z3_bool_build_nodes": 384,
+        "z3_bool_memo_reused_nodes": 2,
+        "z3_bool_memoized_subtree": 2,
+        "all_built_nodes": 385
+      },
+      "whitehatvn2015_re400": {
+        "z3_ast_build": 334,
+        "z3_bool_build": 299,
+        "z3_bool_build_nodes": 1226,
+        "z3_bool_memo_reused_nodes": 208,
+        "z3_bool_memoized_subtree": 150,
+        "all_built_nodes": 1286
+      }
     }
-   },
-   "csgames2018": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 127,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 23,
-     "branch_true": 15,
-     "branch_false": 20,
-     "eval": 0,
-     "eval_upto": 99,
-     "min_init": 0,
-     "min_search": 127,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "defcamp_r100": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 12,
-     "branch_true": 12,
-     "branch_false": 1,
-     "eval": 1,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "defcon2016quals_baby-re": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 29,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 0,
-     "branch_true": 0,
-     "branch_false": 0,
-     "eval": 29,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "fauxware": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 3,
-     "branch_true": 1,
-     "branch_false": 1,
-     "eval": 1,
-     "eval_upto": 16,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "google2016_unbreakable_0": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 2,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 0,
-     "branch_true": 0,
-     "branch_false": 0,
-     "eval": 2,
-     "eval_upto": 2,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "sharif7_rev50": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 1,
-     "branch_true": 0,
-     "branch_false": 0,
-     "eval": 1,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "strcpy_find": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 1,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 1,
-     "branch_true": 1,
-     "branch_false": 1,
-     "eval": 1,
-     "eval_upto": 0,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   },
-   "whitehatvn2015_re400": {
-    "single_var_range": 0,
-    "min_max_eval_sites": 0,
-    "addressable_upper_bound": 0,
-    "sites": {
-     "satisfiable": 61,
-     "branch_true": 144,
-     "branch_false": 35,
-     "eval": 0,
-     "eval_upto": 20,
-     "min_init": 0,
-     "min_search": 0,
-     "max_init": 0,
-     "max_search": 0
-    }
-   }
   }
- }
 }

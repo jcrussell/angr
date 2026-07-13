@@ -72,6 +72,34 @@ pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// `z3::ast::BV` was returned via a refcount bump. Distinct from
 /// `z3_ast_cache_hit`, which only dedups shared subtrees *within* one call.
 pub(crate) static Z3_AST_MEMO_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of top-level `to_z3_bool()` calls — the native-Bool half of
+/// `z3_ast_build` (angr-op0dn.9.6).
+///
+/// The `Expression` memo (`z3_ast_memo_hit`) only covers the *BV* path: a
+/// repeat `to_z3_bool()` of the same node rebuilds its top comparison node
+/// every time, because `RustBV::Expression` has nowhere to cache a
+/// `z3::ast::Bool`. These counters size what a Bool memo (angr-op0dn.9.4)
+/// could actually save.
+pub(crate) static Z3_BOOL_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Z3 nodes genuinely *constructed* across all top-level `to_z3_bool()` calls.
+///
+/// Measured per call as `Δz3_ast_cache_miss − Δz3_ast_memo_hit`: a miss is a
+/// unique RustBV node visited in the call, and a memo hit is a node whose
+/// compound tree was returned by refcount bump instead of rebuilt. The
+/// difference is the work a Bool memo would remove on a repeat conversion —
+/// the numerator for M1.d's payoff.
+pub(crate) static Z3_BOOL_BUILD_NODES: AtomicU64 = AtomicU64::new(0);
+/// Z3 nodes served from the persistent BV memo during top-level
+/// `to_z3_bool()` calls (the `Δz3_ast_memo_hit` half of the same split).
+pub(crate) static Z3_BOOL_MEMO_REUSED_NODES: AtomicU64 = AtomicU64::new(0);
+/// Top-level `to_z3_bool()` calls whose operand subtrees came entirely from
+/// the BV memo, so the only Z3 node built was the comparison itself
+/// (`reused > 0 && built <= 1`).
+///
+/// These are exactly the calls a Bool memo turns into a refcount bump, and it
+/// saves ~1 node each. A high share here means M1.d's ceiling is ~1 Z3 node
+/// per call, not a tree rebuild.
+pub(crate) static Z3_BOOL_MEMOIZED_SUBTREE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
 pub(crate) static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Unsat.
@@ -352,6 +380,22 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_ast_memo_hit".into(),
         Z3_AST_MEMO_HIT_COUNT.load(Ordering::Relaxed),
     );
+    stats.insert(
+        "z3_bool_build".into(),
+        Z3_BOOL_BUILD_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_bool_build_nodes".into(),
+        Z3_BOOL_BUILD_NODES.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_bool_memo_reused_nodes".into(),
+        Z3_BOOL_MEMO_REUSED_NODES.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_bool_memoized_subtree".into(),
+        Z3_BOOL_MEMOIZED_SUBTREE_COUNT.load(Ordering::Relaxed),
+    );
     stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
     stats.insert(
         "z3_unsat_count".into(),
@@ -599,6 +643,10 @@ pub fn reset_solver_stats() {
     Z3_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_MEMO_HIT_COUNT.store(0, Ordering::Relaxed);
+    Z3_BOOL_BUILD_COUNT.store(0, Ordering::Relaxed);
+    Z3_BOOL_BUILD_NODES.store(0, Ordering::Relaxed);
+    Z3_BOOL_MEMO_REUSED_NODES.store(0, Ordering::Relaxed);
+    Z3_BOOL_MEMOIZED_SUBTREE_COUNT.store(0, Ordering::Relaxed);
     Z3_SAT_COUNT.store(0, Ordering::Relaxed);
     Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
     Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
@@ -703,6 +751,35 @@ pub fn record_z3_ast_cache_miss() {
 #[inline]
 pub fn record_z3_ast_memo_hit() {
     Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read the (cache_miss, memo_hit) node counters, for bracketing one top-level
+/// conversion (angr-op0dn.9.6).
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+pub(crate) fn ast_node_counters() -> (u64, u64) {
+    (
+        Z3_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
+        Z3_AST_MEMO_HIT_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Record one top-level `to_z3_bool()` conversion, split into the Z3 nodes it
+/// built versus the ones the persistent BV memo served (angr-op0dn.9.6).
+///
+/// The split is derived from process-wide counter deltas, so a concurrent
+/// conversion on another engine thread can leak into a bracket. Census runs
+/// are single-threaded; treat the numbers as approximate under the parallel
+/// scheduler.
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+pub(crate) fn record_z3_bool_build(built: u64, reused: u64) {
+    Z3_BOOL_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+    Z3_BOOL_BUILD_NODES.fetch_add(built, Ordering::Relaxed);
+    Z3_BOOL_MEMO_REUSED_NODES.fetch_add(reused, Ordering::Relaxed);
+    if reused > 0 && built <= 1 {
+        Z3_BOOL_MEMOIZED_SUBTREE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // -----------------------------------------------------------------------------
