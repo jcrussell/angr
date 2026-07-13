@@ -96,6 +96,10 @@
 //!   keyed by `state_id` must prune against `any_stash`, not invent
 //!   per-structure LRU caps. Enforced at `next_state_id()` below; the
 //!   `debug_assert!` in `fork()` confirms the child ID is fresh.
+//!   Snapshot restore imports IDs minted under a *foreign* counter, so
+//!   `from_snapshot` calls `reserve_state_id()` to lift the local counter
+//!   above every restored ID — otherwise a resumed manager re-mints live
+//!   IDs and the collisions silently clobber the stash index.
 //! - **`state-metadata-dataclass`** — Per-state Python AST metadata
 //!   (`symbolic_pages`, `hook_symbolic_memory`, `addr_to_ast`) is owned by
 //!   `RustSimState` on the Rust side; the Python `RustStateCacheMixin`
@@ -199,6 +203,18 @@ static NEXT_STATE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// side shadow structure depends on this property.
 fn next_state_id() -> u64 {
     NEXT_STATE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Raise `NEXT_STATE_ID` so the next minted ID is strictly greater than `id`.
+///
+/// Restoring a snapshot re-materializes states whose IDs were minted by a
+/// *different* process (or a different counter epoch), so the local counter
+/// knows nothing about them. Without this, a resumed manager mints IDs that
+/// collide with its own restored states, and the collisions silently
+/// overwrite entries in the `StashManager` state index — see the
+/// `state-id-never-reused` invariant above.
+pub(crate) fn reserve_state_id(id: u64) {
+    NEXT_STATE_ID.fetch_max(id.saturating_add(1), std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Pointers to the three glibc locale ctype lookup tables, exposed via the

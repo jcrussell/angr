@@ -188,6 +188,9 @@ impl RustSimState {
         let arch = arch_from_name(&snap.arch_name).ok_or_else(|| SnapshotError::UnknownArch {
             name: snap.arch_name.clone(),
         })?;
+        // The restored ID was minted by another process/epoch; teach the local
+        // counter about it so later forks cannot re-mint it (`state-id-never-reused`).
+        crate::state::reserve_state_id(snap.state_id);
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
         // angr-t3l5o Phase 0b: time the symbolic-memory page rebuild (the

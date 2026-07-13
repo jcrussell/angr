@@ -1180,6 +1180,35 @@ fn test_state_snapshot_round_trip_buckets_a_b_c() {
     assert_state_round_trip(&orig, &restored);
 }
 
+/// `state-id-never-reused` across a snapshot boundary: a restored state carries
+/// an ID minted by a foreign counter, so `from_snapshot` must lift the local
+/// counter above it. Otherwise a resumed manager re-mints IDs that are live in
+/// its own stashes (angr-op0dn.13.14).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_from_snapshot_reserves_foreign_state_id() {
+    let mut snap = build_populated_state().to_snapshot();
+    // An ID far above anything this process's counter has issued.
+    snap.state_id = u32::MAX as u64;
+    let restored = RustSimState::from_snapshot(snap).expect("from_snapshot");
+    assert_eq!(restored.state_id(), u32::MAX as u64);
+
+    let fresh = build_populated_state();
+    assert!(
+        fresh.state_id() > restored.state_id(),
+        "counter must be lifted past a restored ID; fresh={} restored={}",
+        fresh.state_id(),
+        restored.state_id(),
+    );
+    let forked = restored.fork_true(&RustBV::concrete(1, 1));
+    assert!(
+        forked.state_id() > restored.state_id(),
+        "fork of a restored state must not re-mint a live ID; child={} parent={}",
+        forked.state_id(),
+        restored.state_id(),
+    );
+}
+
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_state_to_from_serialized_round_trip() {
