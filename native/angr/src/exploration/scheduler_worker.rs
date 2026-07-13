@@ -20,12 +20,11 @@ use super::*;
 /// `local` its persistent live frontier — all owned by [`worker_thread`] and
 /// reused across waves (angr-nkoct increment 1).
 ///
-/// `local` may carry states RETAINED from a previous wave (none today: waves run
-/// to quiescence, so it is empty at entry). Any such carry-over is counted into
-/// `job.pending` up front so quiescence accounting stays balanced — each retained
-/// state's terminal `pending.fetch_sub(1)` is matched by this add. With an empty
-/// `local` (the invariant today) this is `fetch_add(0)`, a no-op, so the
-/// byte-stable scheduler unit tests and single-threaded parity are unaffected.
+/// `local` is empty at entry in every reachable case — a wave either runs to
+/// quiescence or drains its frontier on cancel (Bug M1, angr-op0dn.13.8) — so the
+/// carry-over accounting below is a defensive `fetch_add(0)`. It is kept so that
+/// any future retention path stays balanced: a carried-over state's terminal
+/// `pending.fetch_sub(1)` must be matched by an add here.
 pub(super) fn worker_loop(
     job: &WaveJob,
     ctx: &Context,
@@ -43,21 +42,17 @@ pub(super) fn worker_loop(
 
     loop {
         if t.cancel.is_cancelled() {
-            // Bug M1 (known limitation of WAVE mode; the steady-state session
-            // loop drains instead): on cancel (e.g. the run loop hit
-            // `num_find`) the worker stops HERE, at a task boundary, dropping
-            // whatever live states remain on its `local` queue (and any surplus
-            // still sitting on the injector). Those un-dispatched frontier states
-            // are NOT materialized back across the join, so the run loop's active
-            // stash loses them — `run_loop_parallel`'s post-`num_find`
-            // `active_count()` is smaller than the single-threaded loop's and the
-            // un-explored frontier is not resumable. The FOUND set is unaffected
-            // (every found terminal was materialized before cancel propagated).
-            // Draining + materializing the remainder here would pay serde for
-            // states we are about to discard, so it is deliberately not done; see
-            // the `run_loop_parallel` doc comment. NOTE the states stay ON
-            // `local` (not cleared): the persistent frontier (angr-nkoct
-            // increment 1) retains them for the next wave, if one runs.
+            // Bug M1 fix (angr-op0dn.13.8): on cancel (e.g. the run loop hit
+            // `num_find`) the worker stops HERE, at a task boundary, and DRAINS
+            // its un-dispatched local frontier into `results` as untagged
+            // payloads — the coordinator routes those back to `STASH_ACTIVE`, so
+            // the post-`num_find` active stash matches the single-threaded loop's
+            // and the un-explored frontier stays resumable. The injector surplus
+            // is drained by the coordinator after the barrier
+            // (`WaveJob::drain_residual_payloads`). This pays serde for states the
+            // caller may discard; that is the price of resumability, and it is
+            // bounded by the residual frontier (never the explored set).
+            drain_local_into_results(job, local);
             return;
         }
 
@@ -71,8 +66,8 @@ pub(super) fn worker_loop(
         let outcome = (job.process)(state, &t.cancel, block_cache);
 
         // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
-        // `worker_session_loop`. Wave mode drops rather than drains the residual
-        // frontier (Bug M1), but the in-flight step itself was still executed.
+        // `worker_session_loop`. The step's products are drained back on the next
+        // iteration's cancel check, but the step itself was still speculative.
         if t.cancel.is_cancelled() && !outcome.request_cancel {
             t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
         }
@@ -110,7 +105,11 @@ pub(super) fn worker_loop(
 
         if outcome.request_cancel {
             t.cancel.cancel();
-            return;
+            // Loop back to the cancel check, which drains this worker's residual
+            // frontier into `results` before returning (the twin of
+            // `worker_session_loop`). Returning straight from here would drop the
+            // finder's OWN backlog — the very states Bug M1 is about, and the
+            // ones most likely to be live (it just forked them).
         }
     }
 }
@@ -146,10 +145,10 @@ pub(super) fn worker_session_loop(
 ) {
     let t = &session.transport;
 
-    // Absorb any frontier a prior CANCELLED wave retained on `local` (the wave
-    // loop's M1 retention path) into this session's quiescence accounting, so
-    // mode-mixing on one pool is safe. A normal wake ping enters with `local`
-    // empty and this is a no-op.
+    // Defensive: absorb any frontier a prior wave left on `local` into this
+    // session's quiescence accounting, so mode-mixing on one pool is safe. Both
+    // loops now leave `local` empty on every exit (quiesced or cancel-drained),
+    // so this is a no-op in practice.
     if !local.is_empty() {
         t.pending.fetch_add(local.len(), Ordering::SeqCst);
     }
@@ -223,23 +222,46 @@ pub(super) fn worker_session_loop(
     }
 }
 
-/// Detach every residual live state on `local` and stream it upstream as an
-/// (untagged) `Terminal` — the coordinator routes untagged payloads back to the
-/// active stash. Balances `pending` for the states it removes. This is the
-/// steady-state fix for wave-mode Bug M1: a cancelled/finalized session returns
-/// its un-explored frontier instead of dropping it.
-pub(super) fn drain_local_upstream(session: &RunSession, local: &mut VecDeque<RustSimState>) {
+/// Detach every residual live state on `local` and hand it to `sink` as an
+/// (untagged) migration payload — the coordinator routes untagged payloads back
+/// to the active stash. Balances `pending` and counts `residual_drains` for the
+/// states it removes. The worker-local half of the Bug M1 cancel-drain, shared
+/// by both modes (DRY); the two callers differ only in the transport the payload
+/// leaves on (session mpsc vs. the wave's `results` vec).
+fn drain_local_with(
+    t: &WorkTransport,
+    local: &mut VecDeque<RustSimState>,
+    mut sink: impl FnMut(StateMigrationPayload),
+) {
     if local.is_empty() {
         return;
     }
-    let t = &session.transport;
     let n = local.len();
     for state in local.drain(..) {
-        let payload = state.detach_for_migration();
         t.counters.residual_drains.fetch_add(1, Ordering::SeqCst);
-        let _ = session.up_tx.send(WorkerUp::Terminal { payload });
+        sink(state.detach_for_migration());
     }
     t.pending.fetch_sub(n, Ordering::SeqCst);
+}
+
+/// Wave-mode residual drain: push the un-dispatched local frontier into the
+/// wave's shared `results` vec, where the post-barrier coordinator picks it up
+/// alongside the materialized terminals.
+fn drain_local_into_results(job: &WaveJob, local: &mut VecDeque<RustSimState>) {
+    if local.is_empty() {
+        return;
+    }
+    let mut guard = job.results.lock().expect("results mutex poisoned");
+    drain_local_with(&job.transport, local, |payload| guard.push(payload));
+}
+
+/// Steady-mode residual drain: stream the un-dispatched local frontier upstream
+/// as untagged `Terminal`s. Sends ignore errors (the coordinator may already
+/// have dropped the receiver after finalize).
+pub(super) fn drain_local_upstream(session: &RunSession, local: &mut VecDeque<RustSimState>) {
+    drain_local_with(&session.transport, local, |payload| {
+        let _ = session.up_tx.send(WorkerUp::Terminal { payload });
+    });
 }
 
 /// Pull the next state to process: the live local queue first (LIFO — the

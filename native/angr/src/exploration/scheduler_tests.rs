@@ -608,7 +608,7 @@ fn test_summaries_pay_no_serde_and_fraction() {
 // inject seeds, receive streamed WorkerUp messages, wake parked workers.
 // ------------------------------------------------------------------
 
-use super::{PersistentPool, RunSession, WorkerUp};
+use super::{PersistentPool, RunSession, WaveJob, WorkerUp};
 use crate::state::StateMigrationPayload;
 use std::time::Duration;
 
@@ -859,6 +859,83 @@ fn test_session_cancel_drains_residual_frontier() {
     assert_eq!(terminals.len() + injector_residuals.len(), WIDTH);
 
     for payload in terminals.into_iter().chain(injector_residuals) {
+        let state = payload.reattach(&main_ctx).expect("reattach residual");
+        let rax = state.get_register("rax").expect("rax");
+        assert_eq!(
+            state.solver().borrow().eval(&rax),
+            Some(WITNESS as u128),
+            "residual states keep their constraints through the drain",
+        );
+    }
+}
+
+// angr-op0dn.13.8 (Bug M1): the WAVE loop drains its residual frontier on
+// cancel too — the twin of test_session_cancel_drains_residual_frontier. A root
+// fans out WIDTH children; processing any child requests cancel, so whichever
+// worker holds the sibling backlog drains it into `results` and the coordinator
+// pulls the never-stolen injector surplus after the barrier. Conservation is
+// EXACT: every child comes back as a processed terminal or a residual.
+#[test]
+fn test_wave_cancel_drains_residual_frontier() {
+    const WIDTH: usize = 40;
+    const WITNESS: u64 = 0xF2F2;
+    const WORKERS: usize = 2;
+    let main_ctx = Context::thread_local();
+
+    let mut root = pinned_state("wave_drain_root", WITNESS);
+    root.set_register("rbx", RustBV::concrete(0, 64));
+
+    let pool = PersistentPool::new(WORKERS);
+    let job = WaveJob::new(
+        vec![root.detach_for_migration()],
+        Box::new(
+            move |state: RustSimState,
+                  _cancel: &super::CancelToken,
+                  _cache: &mut lru::LruCache<u64, Arc<crate::vex::IRSB>>| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker");
+                if depth == 0 {
+                    let one = RustBV::concrete(1, 64);
+                    let children: Vec<RustSimState> = (0..WIDTH)
+                        .map(|_| {
+                            let mut c = state.fork();
+                            c.set_register("rbx", one.clone());
+                            c
+                        })
+                        .collect();
+                    return TaskOutcome::continuing(children);
+                }
+                TaskOutcome {
+                    continue_states: Vec::new(),
+                    terminal_states: vec![state],
+                    terminal_summaries: Vec::new(),
+                    request_cancel: true,
+                }
+            },
+        ),
+    );
+
+    let (mut job, _barrier_stats) = pool.run_wave(job);
+    let mut recovered = job.take_results();
+    recovered.extend(job.drain_residual_payloads());
+
+    let stats = job.stats();
+    assert!(
+        stats.residual_drains > 0,
+        "a cancelled wave must drain a residual frontier (got {} terminals, {} residual)",
+        stats.materialized_terminals,
+        stats.residual_drains,
+    );
+    assert_eq!(
+        stats.materialized_terminals + stats.residual_drains,
+        WIDTH,
+        "no child lost or duplicated across the wave cancel",
+    );
+    assert_eq!(recovered.len(), WIDTH, "every child crosses the join");
+
+    for payload in recovered {
         let state = payload.reattach(&main_ctx).expect("reattach residual");
         let rax = state.get_register("rax").expect("rax");
         assert_eq!(

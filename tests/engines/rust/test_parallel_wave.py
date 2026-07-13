@@ -301,6 +301,80 @@ class TestParallelExhaustiveSynthetic:
         assert {s.addr for s in found} == {target_addr}
 
 
+def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
+    """``_explore_pbounce`` with a caller-chosen ``num_find`` (< 8 => early cancel)."""
+    if workers > 1:
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
+    else:
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+
+    main_sym = project.loader.find_symbol("main")
+    target = project.loader.find_symbol("reach_target")
+    state = project.factory.blank_state(addr=main_sym.rebased_addr)
+    state.posix.stdin.content.append((claripy.BVS("stdin", 32 * 8), claripy.BVV(32, state.arch.bits)))
+
+    mgr = RustExplorationManager(project, [state])
+    assert mgr.stats["parallel_real_workers"] == workers
+    mgr.explore(find=target.rebased_addr, num_find=num_find, n=4096)
+    return mgr, target.rebased_addr
+
+
+class TestParallelCancelFrontier:
+    """angr-op0dn.13.8 (Bug M1): a ``num_find`` early-exit must NOT eat the
+    un-explored frontier.
+
+    Reaching ``num_find`` trips the scheduler's ``CancelToken``. Every worker
+    stops at its next task boundary; before the fix it dropped its un-dispatched
+    worker-local states (and the never-stolen injector surplus) on the floor, so
+    the post-explore active stash was a strict subset of the single-threaded
+    loop's and the exploration was not resumable. Now both halves are drained
+    back to ``STASH_ACTIVE`` (counted by ``parallel_residual_drains``).
+
+    Driven on the 8-leaf synthetic, not fauxware: a find-1 cancel needs a WIDE
+    live frontier at the cancel boundary to have anything to lose. Fauxware
+    reaches ``accepted`` with an empty worker-local queue, so it cannot observe
+    the bug at all.
+    """
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_frontier_survives_num_find_cancel(self, pbounce_project, workers, monkeypatch):
+        """A find-1 early exit still leaves a live active frontier behind.
+
+        This is the end-to-end smoke check; the EXACT conservation proof (every
+        child comes back as a processed terminal, a worker-local residual, or an
+        injector residual — nothing lost, ``pending`` balanced) is the Rust unit
+        test ``scheduler::tests::test_wave_cancel_drains_residual_frontier``,
+        which can pin a 40-wide frontier at the cancel boundary. No cheap real
+        binary reliably does: on this synthetic the DFS has already dispatched
+        most of the tree by the time a leaf is found, so the residual is small
+        and its size is timing-dependent — hence no counter assertion here.
+        """
+        mgr, _ = _explore_pbounce_find_k(pbounce_project, workers, monkeypatch, num_find=1)
+
+        assert len(list(mgr.found)) >= 1
+        active = len(list(mgr.active))
+        assert active > 0, f"workers={workers} lost the whole frontier on cancel (active={active})"
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_cancelled_frontier_is_resumable(self, pbounce_project, workers, monkeypatch):
+        """The drained frontier is LIVE: after a find-1 early cancel, resuming the
+        same manager to ``num_find=8`` still reaches all 8 leaves. Pre-fix the
+        residual frontier is gone, so the resumed explore can never make up the
+        difference and the drain count comes up short."""
+        mgr, target_addr = _explore_pbounce_find_k(pbounce_project, workers, monkeypatch, num_find=1)
+        found_first = len(list(mgr.found))
+        assert found_first < _SYNTH_LEAVES, "the first explore must have exited early to test resumability"
+
+        mgr.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+        found = list(mgr.found)
+        assert len(list(mgr.errored)) == 0, f"workers={workers} errored: {list(mgr.errored)}"
+        assert len(found) == _SYNTH_LEAVES, (
+            f"workers={workers}: resumed find-all drained {len(found)} leaves, expected {_SYNTH_LEAVES} "
+            f"(first pass found {found_first})"
+        )
+        assert {s.addr for s in found} == {target_addr}
+
+
 def _explore_steady(project, monkeypatch, num_find=2):
     """Explore fauxware under the steady-state loop (angr-nkoct).
 

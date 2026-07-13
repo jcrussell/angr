@@ -271,11 +271,13 @@ pub(crate) struct SchedulerCounters {
     /// States re-injected after a Python resume callback
     /// ([`RunSession::inject_resumed`]); 0 in wave mode.
     resume_reinjects: AtomicUsize,
-    /// Still-live frontier states a session worker detached and streamed back to
-    /// the coordinator on cancel/finalize ([`worker::drain_local_upstream`]) instead of
-    /// dropping them (the wave loop's Bug M1). Distinct from
-    /// `materialized_terminals` so residual drains never pollute the honest
-    /// steal fraction. 0 in wave mode.
+    /// Still-live frontier states a worker detached and handed back to the
+    /// coordinator on cancel/finalize instead of dropping them (the Bug M1
+    /// cancel-drain: [`worker::drain_local_upstream`] in session mode, the
+    /// wave loop's `results` push in wave mode), PLUS the never-stolen injector
+    /// surplus the coordinator pulls with [`WorkTransport::drain_residual_payloads`].
+    /// Distinct from `materialized_terminals` so residual drains never pollute
+    /// the honest steal fraction. 0 unless the run was cancelled.
     residual_drains: AtomicUsize,
     /// Steps a worker executed AFTER cancellation was already requested by a
     /// *different* origin (a peer worker's find or the coordinator's num_find
@@ -323,8 +325,8 @@ pub struct SchedulerStats {
     /// States re-injected after a Python resume (0 in wave mode; counted by
     /// [`RunSession::inject_resumed`]).
     pub resume_reinjects: usize,
-    /// Still-live frontier states drained back to the coordinator on session
-    /// cancel/finalize (0 in wave mode, which drops them — Bug M1).
+    /// Still-live frontier states drained back to the coordinator on cancel /
+    /// finalize (both modes; 0 unless the run was cancelled).
     pub residual_drains: usize,
     /// Post-find speculative steps: work committed on a worker after another
     /// origin already requested cancel (angr-1ilq.8). See
@@ -443,6 +445,34 @@ impl WorkTransport {
             policy,
         }
     }
+
+    /// Pull every payload still sitting on the injector (offloaded surplus that
+    /// was never stolen) so a cancelled/finalized run loses nothing — the
+    /// injector half of Bug M1 (the worker-local half is
+    /// [`worker::drain_local_upstream`]). Balances `pending` and counts the
+    /// drained states into `residual_drains`.
+    ///
+    /// Sound only once no worker can steal again: after the wave barrier
+    /// (wave mode) or once every worker has acked `Paused` (session mode). A
+    /// stale wake ping on a cancelled session re-acks `Paused` without touching
+    /// the injector (the cancel check precedes dispatch), so no worker races it.
+    fn drain_residual_payloads(&self) -> Vec<StateMigrationPayload> {
+        let mut out = Vec::new();
+        loop {
+            match self.injector.steal() {
+                Steal::Success(payload) => out.push(payload),
+                Steal::Retry => continue,
+                Steal::Empty => break,
+            }
+        }
+        if !out.is_empty() {
+            self.pending.fetch_sub(out.len(), Ordering::SeqCst);
+            self.counters
+                .residual_drains
+                .fetch_add(out.len(), Ordering::SeqCst);
+        }
+        out
+    }
 }
 
 /// All per-wave state a worker touches, fed to the persistent pool as an
@@ -545,6 +575,17 @@ impl WaveJob {
     /// coordinator, which reads `summaries` separately (or ignores them).
     pub(crate) fn take_results(&mut self) -> Vec<StateMigrationPayload> {
         std::mem::take(&mut *self.results.lock().expect("results mutex poisoned"))
+    }
+
+    /// Coordinator-side post-barrier helper: pull the surplus a cancelled wave
+    /// left on the injector (offloaded but never stolen) so the un-explored
+    /// frontier survives a `num_find` early-exit — the injector half of Bug M1
+    /// (angr-op0dn.13.8). Untagged, exactly like the worker-local residuals the
+    /// wave loop drains into `results`, so the coordinator routes both back to
+    /// the active stash. Call only after the wave barrier, where no worker can
+    /// steal again.
+    pub(crate) fn drain_residual_payloads(&self) -> Vec<StateMigrationPayload> {
+        self.transport.drain_residual_payloads()
     }
 }
 
@@ -696,31 +737,9 @@ impl RunSession {
     }
 
     /// Coordinator-side finalize helper: after every worker has acked `Paused`,
-    /// pull any surplus payloads still sitting on the injector (offloaded but
-    /// never stolen) so a finalized session loses nothing — the injector half
-    /// of wave-mode Bug M1 (the worker-local half is [`worker::drain_local_upstream`]).
-    /// Sound only once all workers are parked: a stale wake ping on a cancelled
-    /// session re-acks `Paused` without touching the injector (the cancel check
-    /// precedes dispatch), so no worker races this steal.
+    /// pull the injector surplus back ([`WorkTransport::drain_residual_payloads`]).
     pub(crate) fn drain_residual_payloads(&self) -> Vec<StateMigrationPayload> {
-        let mut out = Vec::new();
-        loop {
-            match self.transport.injector.steal() {
-                Steal::Success(payload) => out.push(payload),
-                Steal::Retry => continue,
-                Steal::Empty => break,
-            }
-        }
-        if !out.is_empty() {
-            self.transport
-                .pending
-                .fetch_sub(out.len(), Ordering::SeqCst);
-            self.transport
-                .counters
-                .residual_drains
-                .fetch_add(out.len(), Ordering::SeqCst);
-        }
-        out
+        self.transport.drain_residual_payloads()
     }
 
     /// Bump the bounce-roundtrip counter — called by the coordinator as it

@@ -406,9 +406,10 @@ pub struct RustExplorationManager {
     /// monkeypatch it). Opt-in for the steady-state loop during angr-nkoct
     /// phases C-D; flipped to opt-out once the measurement gate passes.
     pub(crate) parallel_steady_env: bool,
-    /// Residual live frontier states a steady-session finalize returned to
-    /// `STASH_ACTIVE` instead of dropping (wave-mode Bug M1's fix), folded
-    /// from `SchedulerStats::residual_drains`.
+    /// Residual live frontier states a cancelled parallel run returned to
+    /// `STASH_ACTIVE` instead of dropping (the Bug M1 cancel-drain; both the
+    /// wave loop and a steady-session finalize), folded from
+    /// `SchedulerStats::residual_drains`.
     pub(crate) parallel_residual_drains: u64,
     /// Post-find speculative steps: work committed on a worker after another
     /// origin already requested cancel (angr-1ilq.8 measure-first), folded from

@@ -77,16 +77,17 @@ use std::time::Duration;
 /// to that stash; `Bounce` carries the [`BounceKind`] the coordinator replays
 /// through `dispatch_bounce` (with empty deferred-fork data — the worker already
 /// materialized those forks locally).
+///
+/// A payload with NO `kind_map` entry (`None`) is the fourth case: a still-live
+/// frontier state a worker drained back across the cancel boundary (Bug M1), or
+/// the injector surplus the coordinator drained after the barrier. Neither ever
+/// reached `run_post_step_core`, so neither can be tagged here; the coordinator
+/// routes untagged payloads as bare active successors.
 #[derive(Clone)]
 pub(crate) enum MatKind {
     Found,
     Unconstrained,
     Bounce(BounceKind),
-    /// A still-live frontier state drained back across the cancel boundary
-    /// (Phase 3's cancel-drain). Added now so the enum is stable for the
-    /// steady-state coordinator; not produced by any path yet.
-    #[allow(dead_code)]
-    ActiveResidual,
 }
 
 // NOTE (angr-nkoct steady-state Phase B): the duplex-protocol types this file
@@ -264,8 +265,17 @@ fn parallel_process_state(
     }
 
     if cancel.is_cancelled() {
-        // Bail cheaply; the scheduler is winding down.
-        return TaskOutcome::summarized(Vec::new());
+        // A peer already hit `num_find` while this state was being dispatched.
+        // Bail WITHOUT stepping, but hand the state back as an untagged terminal
+        // (no `kind_map` entry) so the coordinator routes it to `STASH_ACTIVE`:
+        // it is an un-explored frontier state, and dropping it here would lose it
+        // exactly like the pre-fix cancel path did (Bug M1, angr-op0dn.13.8).
+        return TaskOutcome {
+            continue_states: Vec::new(),
+            terminal_states: vec![state],
+            terminal_summaries: Vec::new(),
+            request_cancel: false,
+        };
     }
 
     // --- Step (PC is not a find/avoid address). ---
@@ -541,19 +551,19 @@ impl RustExplorationManager {
     /// tracking has no clean parallel analogue and addresses-based exploration is
     /// the parallel-favourable case.
     ///
-    /// **Known limitation — `num_find` early-exit does not preserve the active
-    /// frontier (Bug M1).** When a wave reaches `num_find`, a worker trips the
-    /// shared [`CancelToken`]; every worker stops at its next *task boundary*,
-    /// leaving its un-dispatched worker-local live states and the injector's
-    /// surplus undrained — those states are dropped at the `thread::scope` join
-    /// (`scheduler.rs`), never returned to `STASH_ACTIVE`. The FOUND set is still
-    /// correct, but unlike the single-threaded loop (which leaves the active stash
-    /// intact when `found_count >= num_find`), the parallel path's post-explore
-    /// `active_count()` is smaller and the un-explored frontier is NOT resumable.
-    /// A clean fix would have the scheduler drain + materialize the remaining
-    /// frontier on cancel, paying serde for states it is about to discard; that
-    /// is deferred (the byte-stable scheduler tests pin the current drop-on-cancel
-    /// behaviour). See the `CancelToken` doc and `scheduler_worker.rs::worker_loop`.
+    /// **`num_find` early-exit preserves the active frontier (Bug M1, fixed in
+    /// angr-op0dn.13.8).** When a wave reaches `num_find`, a worker trips the
+    /// shared [`CancelToken`] and every worker stops at its next *task boundary*.
+    /// Both halves of the un-explored frontier are drained back rather than
+    /// dropped: each worker detaches its un-dispatched local states into the
+    /// wave's `results` (`scheduler_worker.rs::worker_loop`), and the coordinator
+    /// pulls the never-stolen injector surplus after the barrier
+    /// (`WaveJob::drain_residual_payloads`). Both arrive UNTAGGED (no `kind_map`
+    /// entry), so `route_materialized_terminal` routes them as bare active
+    /// successors — post-explore `active_count()` therefore matches the
+    /// single-threaded loop's and the frontier is resumable. `residual_drains`
+    /// counts every such state; the serde is bounded by the residual frontier,
+    /// never the explored set.
     pub(crate) fn run_loop_parallel(
         &mut self,
         py: Python<'_>,
@@ -714,15 +724,24 @@ impl RustExplorationManager {
                 .parallel_pool
                 .as_ref()
                 .expect("parallel pool just created");
-            let (mut job, stats) = py.detach(|| pool.run_wave(job));
+            // The barrier's own stats snapshot predates the coordinator's
+            // injector drain below, so it is re-taken afterwards (`job.stats()`)
+            // to include those `residual_drains`.
+            let (mut job, _barrier_stats) = py.detach(|| pool.run_wave(job));
 
             // ---- Back on the GIL thread: apply deferred mutations. ----
 
-            // Recover the materialized terminals, then DROP the wave (and its
-            // process closure) to release the closure's `Arc` clones of `prof` /
-            // `shared` — required before `Arc::into_inner` can recover sole
-            // ownership of `shared` below.
-            let materialized = job.take_results();
+            // Recover the materialized terminals plus (on a cancelled wave) the
+            // injector surplus no worker ever stole — the coordinator half of the
+            // Bug M1 cancel-drain; the worker-local half already pushed its
+            // residual frontier into `results`. Both are untagged and route back
+            // to `STASH_ACTIVE` below. Then DROP the wave (and its process
+            // closure) to release the closure's `Arc` clones of `prof` / `shared`
+            // — required before `Arc::into_inner` can recover sole ownership of
+            // `shared`.
+            let mut materialized = job.take_results();
+            materialized.extend(job.drain_residual_payloads());
+            let stats = job.stats();
             drop(job);
 
             // M2 + counter fold: drain the workers' `stepped` count and queued
@@ -769,6 +788,7 @@ impl RustExplorationManager {
             self.parallel_bounce_roundtrips += stats.bounce_roundtrips as u64;
             self.parallel_resume_reinjects += stats.resume_reinjects as u64;
             self.parallel_post_cancel_steps += stats.post_cancel_steps as u64;
+            self.parallel_residual_drains += stats.residual_drains as u64;
             dispatched_total += stats.dispatches() as u64;
             self.apply_uniqueness_filter();
             self.apply_native_techniques();
@@ -880,19 +900,17 @@ impl RustExplorationManager {
                     _ => bounce_queue.push((state, kind, root)),
                 }
             }
-            Some(MatKind::ActiveResidual) => {
-                // Phase 1 scaffolding: no path produces this yet. Its
-                // future semantics (a live frontier state drained back on
-                // cancel) is a bare active successor, so route it as one —
-                // nothing is silently lost if a later phase emits it before
-                // wiring the full cancel-drain handler.
-                self.sm.set_root(id, root);
-                self.route_successor(state, true);
-            }
             None => {
-                // Untagged materialized state — should not happen; treat
-                // as a bare active successor so nothing is silently lost.
-                log::error!("parallel: untagged materialized state {id}; re-routing");
+                // A still-live frontier state drained back across the cancel
+                // boundary (Bug M1): both the worker-local drain and the
+                // coordinator's injector drain emit these UNTAGGED (the worker
+                // never ran `run_post_step_core` on them, so there is no
+                // `kind_map` entry to stamp). Semantically it
+                // is a bare active successor — one the single-threaded loop
+                // would have left sitting in `STASH_ACTIVE` — so route it as
+                // one, honoring find/avoid addresses exactly as `route_successor`
+                // does for a fresh successor.
+                self.sm.set_root(id, root);
                 self.route_successor(state, true);
             }
         }
