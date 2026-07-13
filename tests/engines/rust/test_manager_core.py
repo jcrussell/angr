@@ -2431,3 +2431,50 @@ class TestCallablePredicates:
         result = proxy.eval(x, cast_to=bytes)
         assert isinstance(result, bytes), f"eval(cast_to=bytes) should return bytes, got {type(result)}"
         assert result == b"ABCD"
+
+
+class TestSeedAtFindAddress:
+    """angr-lyvf2: a seed state already sitting on the find address is FOUND.
+
+    The Rust manager fast-forwards an entry-point seed to ``main`` in Python
+    (``_run_python_init_if_needed``) before Rust ever sees it, so Rust's
+    pre-step ``find_addrs`` check cannot match the seed's own PC. Vanilla
+    angr's ``Explorer`` matches such a state in ``filter()``, before the first
+    step, so ``explore(find=proj.entry)`` must find it immediately rather than
+    explore the binary to exhaustion.
+    """
+
+    def test_seed_on_find_addr_is_found_unstepped(self, fauxware_project):
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.explore(find=proj.entry, num_find=1, max_steps=3)
+
+        assert len(mgr.found) == 1, f"seed at find addr not found: {mgr.stash_counts()}"
+        assert mgr.found[0].addr == proj.entry, "found state must be the UN-advanced seed"
+        # The fast-forwarded counterpart is dropped, mirroring Explorer.filter()
+        # moving the state out of active.
+        assert len(mgr.active) == 0, f"advanced counterpart left in active: {mgr.stash_counts()}"
+
+    def test_matches_python_engine(self, fauxware_project):
+        """Same seeding, Rust vs vanilla: both report every seed as found."""
+        proj = fauxware_project
+        seeds = 3
+
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state() for _ in range(seeds)])
+        mgr.explore(find=proj.entry, num_find=1, max_steps=3)
+
+        sm = proj.factory.simulation_manager([proj.factory.entry_state() for _ in range(seeds)])
+        sm.explore(find=proj.entry, num_find=1, n=3)
+
+        assert len(mgr.found) == len(sm.found) == seeds
+        assert len(mgr.active) == len(sm.active) == 0
+
+    def test_non_find_seed_still_explores(self, fauxware_project):
+        """A seed whose entry PC is NOT a find target is unaffected (no early found)."""
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        # Nonsense find address: nothing is routed early, exploration proceeds.
+        mgr.explore(find=proj.entry + 1, num_find=1, max_steps=2)
+
+        assert len(mgr.found) == 0
+        assert len(mgr.active) > 0, "seed must remain explorable"

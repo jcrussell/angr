@@ -1361,6 +1361,11 @@ class RustExplorationManager(
         # Using regular dict with periodic cleanup to prevent memory leaks
         self._state_cache: dict[int, angr.SimState] = {}
 
+        # angr-lyvf2: seeds the Python init skip fast-forwarded past their own
+        # PC, as (pre-init addr, un-advanced SimState, rust id of the advanced
+        # state). `explore()` consumes this once, then drops the refs.
+        self._preinit_seeds: list[tuple[int, angr.SimState, int | None]] = []
+
         # Lazy SimState references handed out by _get_stash_states. Keyed by
         # Rust state id so repeated stash reads return the same wrapper
         # (preserves the `mgr.active[0] is mgr.active[0]` invariant). Wrappers
@@ -1610,12 +1615,21 @@ class RustExplorationManager(
                 # first. This handles C++ constructors, .init_array, etc.
                 # that the Rust engine can't execute correctly.
                 _t0 = time.perf_counter_ns()
+                seed_state, seed_addr = state, state.addr
                 state = self._run_python_init_if_needed(state)
                 self._perf_stats.add_init_phase("python_run", time.perf_counter_ns() - _t0)
 
                 _t0 = time.perf_counter_ns()
-                self._add_rust_state("active", state)
+                sid = self._add_rust_state("active", state)
                 self._perf_stats.add_init_phase("add_rust_state", time.perf_counter_ns() - _t0)
+
+                # angr-lyvf2: the init skip fast-forwards the seed past its own
+                # PC, so Rust's pre-step find check can never see `seed_addr`.
+                # Park the un-advanced seed so `explore()` can route it to FOUND
+                # if the caller's find targets that address (vanilla angr's
+                # Explorer matches it at filter() time, before any step).
+                if state.addr != seed_addr:
+                    self._preinit_seeds.append((seed_addr, seed_state, sid))
 
         self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
 
@@ -4306,6 +4320,42 @@ class RustExplorationManager(
         """Return the number of distinct register-combinations seen so far."""
         return self._rust_mgr.uniqueness_set_size()
 
+    def _route_preinit_seed_finds(self, find_addrs: list[int]) -> None:
+        """Route seeds the Python init skip fast-forwarded past a find address.
+
+        A state constructed at the entry point is stepped to ``main`` in Python
+        before it ever reaches Rust (``_run_python_init_if_needed``), so Rust's
+        pre-step ``find_addrs`` check never sees the seed's own PC and
+        ``explore(find=proj.entry)`` would explore forever instead of finding
+        (angr-lyvf2). Vanilla angr's ``Explorer`` matches such a state in
+        ``filter()``, before the first step, so it belongs in FOUND unstepped:
+        push the un-advanced seed into the found stash and drop its
+        fast-forwarded counterpart from active, exactly as ``filter()`` moves
+        the state out of active.
+
+        Consumes ``_preinit_seeds`` — one address-based ``explore()`` decides
+        the question for every parked seed, and the refs are released either way.
+        """
+        seeds, self._preinit_seeds = self._preinit_seeds, []
+        targets = set(find_addrs)
+        routed = False
+        for seed_addr, seed_state, sid in seeds:
+            if seed_addr not in targets:
+                continue
+            if sid is not None:
+                try:
+                    if self._rust_mgr.drop_state_from_stash(sid, "active"):
+                        self._state_cache.pop(sid, None)
+                        self._state_roots.pop(sid, None)
+                except Exception as e:
+                    # cat-(b) BENIGN: the advanced state stays in active and is
+                    # explored redundantly; the seed is still reported as found.
+                    l.debug("preinit seed drop(sid=%d) failed: %s: %s", sid, type(e).__name__, e)
+            self._add_rust_state("found", seed_state)
+            routed = True
+        if routed:
+            self._invalidate_state_export_cache()
+
     def explore(
         self,
         find: int | list | Callable | None = None,
@@ -4349,6 +4399,8 @@ class RustExplorationManager(
             # angr-027h: remember whether this is an address-based find so the
             # two-phase eager retry only fires when there is a concrete target.
             self._explore_find_addrs = None if callable(find) else find_addrs
+            if not callable(find):
+                self._route_preinit_seed_finds(find_addrs)
 
         # Set avoid addresses
         if avoid is not None:
