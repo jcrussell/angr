@@ -12,8 +12,8 @@ use pyo3::types::PyTuple;
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 use super::cache::{
-    AST_CACHE, lookup_symbol_by_hash, lookup_symbol_by_name_and_width, store_claripy_ast_with_info,
-    store_expression_ast_by_operands,
+    AST_CACHE, lookup_symbol_by_hash, lookup_symbol_by_name_and_width, lookup_symbol_name_by_id,
+    store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 use super::{BridgeError, extract_int_value, is_claripy_ast};
 
@@ -191,8 +191,20 @@ pub fn claripy_to_rustbv(
             // If this symbol was already imported, return the existing RustBV
             // to maintain identity across Python<->Rust boundary
             if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-                // Symbol already registered, return a reference to it
-                return Ok(RustBV::symbolic_with_id(existing_id, &name, width));
+                // Symbol already registered, return a reference to it.
+                //
+                // Rebuild it under the CANONICAL Rust name, not the name this
+                // claripy AST carries: the Z3 constant behind a Symbolic is
+                // `BV::new_const(name, width)`, so reusing the id with a
+                // different string produces a variable Z3 considers unrelated
+                // to the original — the id makes the RustBV/export layer look
+                // right while every constraint quietly stops binding
+                // (angr-izov2). The names differ whenever the symbol was minted
+                // in Rust and exported: `claripy.BVS(name, w)` renames to
+                // `name_<counter>_<w>` unless `explicit_name` is set.
+                let canonical = lookup_symbol_name_by_id(existing_id);
+                let bound_name = canonical.as_deref().unwrap_or(&name);
+                return Ok(RustBV::symbolic_with_id(existing_id, bound_name, width));
             }
 
             // Also check by name+width for cases where the hash changed but name is stable
@@ -585,7 +597,10 @@ pub fn claripy_to_rustbv(
             let width: u32 = 1;
 
             if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-                return Ok(RustBV::symbolic_with_id(existing_id, &name, width));
+                // Canonical Rust name, per the BVS branch above (angr-izov2).
+                let canonical = lookup_symbol_name_by_id(existing_id);
+                let bound_name = canonical.as_deref().unwrap_or(&name);
+                return Ok(RustBV::symbolic_with_id(existing_id, bound_name, width));
             }
             if let Some(info) = lookup_symbol_by_name_and_width(&name, width) {
                 return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));

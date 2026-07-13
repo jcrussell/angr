@@ -69,6 +69,13 @@ def seeded_found():
     return list(mgr.found), stdin_bvs
 
 
+# (b[0], b[1], b[2]) nonzero-ness of the six leaves whose find gate is
+# satisfiable — every leaf except s=0 (0,0,0) and s=4 (0,0,1).
+_FEASIBLE_LEAVES = {
+    (b0, b1, b2) for b0 in (0, 1) for b1 in (0, 1) for b2 in (0, 1) if (b0 + 2 * b1 + 4 * b2) not in (0, 4)
+}
+
+
 def _leaf_pattern(data: bytes) -> tuple[int, ...]:
     """Which of the three branched-on bytes are nonzero -- the leaf's identity."""
     return tuple(1 if b else 0 for b in data[:3])
@@ -76,16 +83,27 @@ def _leaf_pattern(data: bytes) -> tuple[int, ...]:
 
 class TestSeededStdinSolves:
     def test_exhaustive_drain(self, seeded_found):
+        """Every FEASIBLE leaf is drained.
+
+        Only six of the 2^W leaves are feasible: s=0 and s=4 force b[0]==0 and
+        b[1]==0, which makes the accumulator a constant whose low byte can never
+        be the gate's 0xee (bd memory ``pbounce-synthetic-only-6-feasible-leaves``).
+        This used to assert all eight, which only held because a bounced value
+        lost its constraints and made the infeasible leaves look satisfiable
+        (angr-izov2).
+        """
         found, _ = seeded_found
-        assert len(found) == _LEAVES
+        patterns = {_leaf_pattern(s.posix.dumps(0)) for s in found}
+        assert patterns >= _FEASIBLE_LEAVES
 
     def test_eval_of_seeding_bvs_is_leaf_consistent(self, seeded_found):
         """Each found state solves the harness's BVS to its own leaf's byte shape."""
         found, stdin_bvs = seeded_found
         patterns = {_leaf_pattern(s.solver.eval(stdin_bvs, cast_to=bytes)) for s in found}
-        # A bijection onto the 8 leaves: pre-fix every state evaluated the BVS
-        # to all zeros, collapsing this set to a single (0, 0, 0) entry.
-        assert len(patterns) == _LEAVES
+        # Every feasible leaf shows up with its own byte shape: pre-fix every
+        # state evaluated the BVS to all zeros, collapsing this set to a single
+        # (0, 0, 0) entry.
+        assert patterns >= _FEASIBLE_LEAVES
 
     def test_dumps_is_the_seeded_chunk_only(self, seeded_found):
         """dumps(0) is the solved seed chunk -- no zero prefix, no duplicate injection."""

@@ -234,6 +234,14 @@ pub fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
     global_registry().lookup_by_hash(py_hash)
 }
 
+/// Look up the canonical Rust-side name of a registered symbol id.
+///
+/// A symbol's Z3 constant is named after its Rust name, so an importer that
+/// resolves a symbol by id must rebuild it with this name (angr-izov2).
+pub fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
+    global_registry().lookup_name_by_id(rust_id)
+}
+
 /// Look up symbol info by name (deprecated - use lookup_symbol_by_name_and_width).
 ///
 /// This is used when we receive a symbol by name and need to find its Rust ID.

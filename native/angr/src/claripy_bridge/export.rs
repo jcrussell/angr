@@ -14,7 +14,8 @@ use pyo3::types::{PyBytes, PyInt};
 use crate::symbolic::RustBV;
 
 use super::cache::{
-    get_claripy_ast, get_expression_ast_by_operands, store_expression_ast_by_operands,
+    get_claripy_ast, get_expression_ast_by_operands, store_claripy_ast_with_info,
+    store_expression_ast_by_operands,
 };
 
 /// Ensure a Py<PyAny> is a claripy AST, wrapping ints/bools if needed.
@@ -267,13 +268,28 @@ fn rustbv_to_claripy_memo(
             }
         }
         RustBV::Symbolic {
-            id: _, name, width, ..
+            id, name, width, ..
         } => {
-            // Cache was already checked above, so this is a symbol created purely in Rust
-            // Create new claripy.BVS(name, width)
-            claripy_mod
+            // Cache was already checked above, so this is a symbol minted purely
+            // inside Rust (e.g. a `stdin_N_i` byte from the native read proc).
+            //
+            // Register the fresh claripy BVS against THIS symbol id under the
+            // RUST name (angr-izov2). `claripy.BVS(name, w)` without
+            // `explicit_name` renames the symbol to `name_<counter>_<w>`, so
+            // without a registration neither the hash nor the name+width lookup
+            // in `claripy_to_rustbv` can recognise the AST on the way back: the
+            // importer mints a brand new, unconstrained Rust symbol and every
+            // constraint carried by the original leaf silently stops binding.
+            // That is exactly what a Python bounce (SimProcedure hook) does to
+            // a symbolic value it returns. Registering by hash also pins the
+            // exported AST, so repeated exports of this symbol hand Python the
+            // same claripy object.
+            let ast: Py<PyAny> = claripy_mod
                 .call_method1("BVS", (&**name, *width))
-                .map(std::convert::Into::into)
+                .map(Py::<PyAny>::from)?;
+            let py_hash = ast.bind(py).hash()? as i64;
+            store_claripy_ast_with_info(py_hash, *id, name, *width, ast.clone_ref(py));
+            Ok(ast)
         }
         RustBV::Constrained { value, width, .. } => {
             // For constrained values, return the concrete value

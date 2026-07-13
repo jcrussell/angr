@@ -56,6 +56,18 @@ pub struct SymbolicIdentityRegistry {
     /// its Rust ID and original Python AST.
     name_to_info: RwLock<HashMap<String, SymbolInfo>>,
 
+    /// Map from Rust symbol ID to the Rust-side symbol NAME.
+    ///
+    /// A `RustBV::Symbolic`'s Z3 constant is built from its *name*
+    /// (`RustBV::from_parts` → `z3::ast::BV::new_const(name, width)`), not from
+    /// its id. Re-binding an imported claripy AST to an existing id while
+    /// carrying claripy's own (renamed) string therefore yields a RustBV that
+    /// *looks* like the original symbol at the RustBV/export layer but is a
+    /// completely different variable to Z3 — every constraint on the original
+    /// silently stops binding (angr-izov2). Importers use this map to recover
+    /// the canonical Rust name whenever they resolve a symbol by id.
+    rust_id_to_name: RwLock<HashMap<u64, String>>,
+
     /// Next available ID for new symbols.
     next_id: AtomicU64,
 
@@ -87,6 +99,7 @@ impl SymbolicIdentityRegistry {
             py_hash_to_rust_id: RwLock::new(HashMap::new()),
             rust_id_to_py: RwLock::new(HashMap::new()),
             name_to_info: RwLock::new(HashMap::new()),
+            rust_id_to_name: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(0),
             stats: RwLock::new(RegistryStats::default()),
         }
@@ -116,9 +129,21 @@ impl SymbolicIdentityRegistry {
                 py_hash,
             },
         );
+        self.rust_id_to_name
+            .write()
+            .insert(rust_id, name.to_string());
 
         // Update stats
         self.stats.write().new_registrations += 1;
+    }
+
+    /// Look up the canonical Rust-side name of a registered symbol id.
+    ///
+    /// The name is what backs the symbol's Z3 constant, so any importer that
+    /// resolves a symbol by id must rebuild it with THIS name rather than with
+    /// whatever string the incoming claripy AST carries (angr-izov2).
+    pub fn lookup_name_by_id(&self, rust_id: u64) -> Option<String> {
+        self.rust_id_to_name.read().get(&rust_id).cloned()
     }
 
     /// Look up a Rust symbol ID by Python AST hash.
@@ -230,6 +255,7 @@ impl SymbolicIdentityRegistry {
         self.py_hash_to_rust_id.write().clear();
         self.rust_id_to_py.write().clear();
         self.name_to_info.write().clear();
+        self.rust_id_to_name.write().clear();
         *self.stats.write() = RegistryStats::default();
     }
 

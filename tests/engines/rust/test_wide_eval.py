@@ -25,7 +25,10 @@ constraint, so a per-byte model is observably wrong.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 
 import claripy
 import pytest
@@ -158,3 +161,98 @@ class TestFoundStatesAreSatisfiable:
         for state in found:
             data = state.posix.dumps(0)
             assert data[0] or data[1], "an infeasible (b[0]==0, b[1]==0) leaf reached the found stash"
+
+
+# The bounce scenario runs in a FRESH interpreter: the Rust symbol registry is
+# process-global and never cleared between explorations, and symbol ids come
+# from a per-context counter, so a manager that ran earlier in the same process
+# can leave entries that alias this run's ids (angr-je2xt). In-process the
+# exploration would silently fall back to the pre-fix behaviour.
+_BOUNCE_SCRIPT = """
+import json, os, resource, sys
+
+resource.setrlimit(resource.RLIMIT_AS, (4 * 1024**3, 4 * 1024**3))
+
+import claripy
+import angr
+from angr.exploration.rust_manager import RustExplorationManager
+
+path = sys.argv[1]
+U32 = 0xFFFFFFFF
+
+
+def reaches(data):
+    s = (1 if data[0] else 0) + (2 if data[1] else 0) + (4 if data[2] else 0)
+    acc = (s + 0x1234567) & U32
+    for i in (0, 1):
+        acc = ((acc * 1103515245 + 12345) & U32) ^ (acc >> 3)
+        acc = (acc + data[i]) & U32
+    return (acc & 0xFF) == 0xEE
+
+
+class Identity(angr.SimProcedure):
+    def run(self, x):
+        return x
+
+
+project = angr.Project(path, auto_load_libs=False)
+target = project.loader.find_symbol("reach_target").rebased_addr
+project.hook(project.loader.find_symbol("trap_point").rebased_addr, Identity(), length=0)
+
+seed = claripy.BVS("stdin", 32 * 8)
+state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
+state.posix.stdin.content.append((seed, claripy.BVV(32, state.arch.bits)))
+
+mgr = RustExplorationManager(project, [state])
+mgr.explore(find=target, num_find=8, n=4096)
+
+models = [s.posix.dumps(0) for s in mgr.found]
+print("RESULT " + json.dumps({
+    "found": len(models),
+    "reaching": [m.hex() for m in models if reaches(m)],
+}))
+"""
+
+
+class TestPythonBouncePreservesIdentity:
+    """A value that round-trips through a Python SimProcedure keeps its constraints.
+
+    A ``RustBV::Symbolic``'s Z3 constant is built from its *name*
+    (``RustBV::from_parts`` -> ``BV::new_const``), while the claripy bridge
+    re-binds an imported symbol by *id*. ``claripy.BVS(name, w)`` renames the
+    symbol to ``name_<counter>_<w>`` unless ``explicit_name`` is set, so a
+    Rust-minted leaf (``stdin_N_i`` from the native read proc) came back from a
+    Python bounce carrying the original id but a different name — a variable Z3
+    considers unrelated. The RustBV/export layer still showed the right tree, so
+    the accumulator looked correct while every constraint on it quietly stopped
+    binding and the find gate ended up constraining nothing (angr-izov2). Export
+    now registers the minted claripy AST against the Rust symbol, and import
+    rebuilds a by-id hit under the canonical Rust name.
+    """
+
+    def test_bounced_models_reach_the_target(self):
+        """Each feasible leaf's model must still drive the program to the target."""
+        if not os.path.exists(_SYNTH_PATH):
+            pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
+
+        proc = subprocess.run(
+            [sys.executable, "-c", _BOUNCE_SCRIPT, _SYNTH_PATH],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=True,
+        )
+        line = next(x for x in proc.stdout.splitlines() if x.startswith("RESULT "))
+        result = json.loads(line[len("RESULT ") :])
+
+        # Six of the eight leaves are feasible (s=0 and s=4 force a constant
+        # accumulator). Before the fix only the two leaves that never bounce
+        # (s=3, s=7) produced a model that reached the target.
+        assert len(result["reaching"]) >= 6, (
+            f"only {len(result['reaching'])}/{result['found']} bounced found-states "
+            "produce a model that reaches reach_target — the bounce dropped path constraints"
+        )
+        # A model that reached the target cannot have left the gate bytes at zero.
+        for model in result["reaching"]:
+            data = bytes.fromhex(model)
+            assert data[0] or data[1], "gate model left every accumulator byte unconstrained"
