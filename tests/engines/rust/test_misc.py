@@ -1512,6 +1512,37 @@ class TestSnapshotRoundTrip:
         with pytest.raises(ValueError, match="empty snapshot envelope"):
             mgr.load_snapshot(str(empty_path))
 
+    def test_load_snapshot_disables_phase2_eager_retry(self, fauxware_project, tmp_path):
+        """angr-op0dn.13.12: a resumed manager must not re-seed the placeholder
+        state its constructor was handed.
+
+        The angr-027h phase-2 retry re-seeds ``_initial_seed_states`` when an
+        address-based find exhausts. After ``load_snapshot`` those are the
+        pre-load placeholder, not the restored frontier, so replaying them would
+        explore a path the caller never asked to resume (and flip
+        ``use_deferred_forks`` off globally, which drops stored branch conditions
+        on the parallel path). ``load_snapshot`` therefore retires phase 2.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step(n=1)
+        assert mgr._initial_seed_states, "pre-condition: the constructor kept its seed copies"
+        assert getattr(mgr, "_phase2_retried", False) is False
+
+        snapshot_path = tmp_path / "phase2.snap"
+        mgr.dump_snapshot(str(snapshot_path))
+
+        placeholder = fauxware_project.factory.entry_state()
+        resumed = RustExplorationManager(fauxware_project, [placeholder])
+        resumed.load_snapshot(str(snapshot_path))
+
+        assert resumed._initial_seed_states is None
+        assert resumed._phase2_retried is True
+        # The guard is what the retry itself checks, so the retry is now a no-op
+        # even with an address-based find pending and nothing found.
+        resumed._explore_find_addrs = {fauxware_project.entry}
+        assert resumed._maybe_phase2_eager_retry(num_find=1) is False
+
     def test_load_from_disk_constructs_fresh_manager_without_placeholder(self, fauxware_project, tmp_path):
         """angr-9o4n: the v1.0 classmethod constructs a fresh manager
         without requiring the caller to pre-build an entry state purely

@@ -6067,6 +6067,17 @@ class RustExplorationManager(
         # preserves them), so external state-export caches indexed by id
         # must be flushed.
         self._invalidate_state_export_cache()
+        # angr-op0dn.13.12: the restored frontier — not the state this manager
+        # was constructed with — is now the exploration's root. The angr-027h
+        # phase-2 eager retry re-seeds `_initial_seed_states`, i.e. the caller's
+        # pre-load placeholder state (`load_from_disk` passes none at all), which
+        # would restart the exploration from a path the user never asked to
+        # resume and additionally flip `use_deferred_forks` off globally (on the
+        # parallel path that drops the stored branch conditions and forks
+        # unconstrained). The mid-path frontier cannot be replayed eagerly from
+        # its own states, so phase 2 is simply disabled for a resumed manager.
+        self._initial_seed_states = None
+        self._phase2_retried = True
 
     @classmethod
     def load_from_disk(
