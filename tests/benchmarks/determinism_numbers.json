@@ -1,0 +1,200 @@
+{
+  "bead": "angr-op0dn.4",
+  "census": {
+    "ais3_crackme": {
+      "baseline": {
+        "cv": 0.0222,
+        "cv_floor_same_work": 0.0222,
+        "found_pcs_identical": true,
+        "max_s": 0.8773,
+        "mean_s": 0.8427,
+        "min_s": 0.8211,
+        "model_choice_var_share": 0.0,
+        "n": 8,
+        "output_identical": true,
+        "result_identical": true,
+        "work_group_sizes": [
+          8
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      },
+      "deterministic": {
+        "cv": 0.025,
+        "cv_floor_same_work": 0.025,
+        "found_pcs_identical": true,
+        "max_s": 0.8857,
+        "mean_s": 0.842,
+        "min_s": 0.822,
+        "model_choice_var_share": 0.0,
+        "n": 8,
+        "output_identical": true,
+        "result_identical": true,
+        "work_group_sizes": [
+          8
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      }
+    },
+    "csgames2018": {
+      "baseline": {
+        "cv": 0.0126,
+        "cv_floor_same_work": 0.0,
+        "distinct_outputs": [
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'W9J8-AA-b1X-k1zX'\nb'N0A0-A5-M0Y-a0AA'\nb'N0A0-A5-M0Y-a2AA'\nb'N0A0-A5-M0Y-a1AA'\nb'N0A0-A5-M0Y-a3AA'\nb'O0A0-A5-M0Y-a0AA'\nb'O0A0-A5-M0Y-a1AA'\nb'O0A0-A5-M0Y-a3AA'\nb'O0A0-A5-M0Y-a2AA'\nb'N0A0-A5-M0Y-a0A",
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'i1AH-C6-x0s-n1zZ'\nb'hNaJ-HU-51Z-dC00'\nb'hJYJ-HQ-51Z-dC00'\nb'hJYJ-HQ-51Z-dB00'\nb'hJYJ-HQ-51Z-dA00'\nb'hJYJ-HQ-41Z-dB00'\nb'hJYJ-HQ-41Z-dA00'\nb'hJYJ-HQ-41Z-dC00'\nb'hJYJ-HQ-61Z-dA00'\nb'hJYJ-HQ-61Z-dB0",
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'mKZE-AQ-k3Z-k2zz'\nb'xZiN-Aa-11X-d7D0'\nb'xZiN-Aa-11X-d6D0'\nb'xZiN-Aa-11X-d4D0'\nb'xZiN-Aa-11X-d5D0'\nb'xZiN-Aa-11X-d4D8'\nb'xZiN-Aa-11X-d5D8'\nb'xZiN-Aa-11X-d6D8'\nb'xZiN-Aa-11X-d7D8'\nb'xZiN-Aa-11X-d4D"
+        ],
+        "found_pcs_identical": true,
+        "max_s": 0.7789,
+        "mean_s": 0.7643,
+        "min_s": 0.7487,
+        "model_choice_var_share": 1.0,
+        "n": 6,
+        "output_identical": false,
+        "result_identical": false,
+        "work_diff_keys": [
+          "z3_check_count",
+          "z3_sat_count",
+          "z3_unsat_count"
+        ],
+        "work_group_sizes": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "work_groups": 6,
+        "work_identical": false,
+        "z3_internal_var_share": 0.0
+      },
+      "deterministic": {
+        "cv": 0.0283,
+        "cv_floor_same_work": 0.0082,
+        "distinct_outputs": [
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'ZAP7-CF-H1p-i0B8'\nb'N0A0-A5-M0Y-a0AA'\nb'N0A0-A5-M0Y-a1AA'\nb'N0A0-A5-M0Y-a2AA'\nb'N0A0-A5-M0Y-a3AA'\nb'N0A0-A5-M0Y-a0AQ'\nb'N0A0-A5-M0Y-a2AQ'\nb'N0A0-A5-M0Y-a3AQ'\nb'N0A0-A5-M0Y-a1AQ'\nb'N0A0-A5-M0Y-a0A",
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'i1AH-C6-x0s-n1zZ'\nb'hNaJ-HU-51Z-dC00'\nb'hJYJ-HQ-51Z-dC00'\nb'hJYJ-HQ-51Z-dB00'\nb'hJYJ-HQ-51Z-dA00'\nb'hJYJ-HQ-41Z-dB00'\nb'hJYJ-HQ-41Z-dA00'\nb'hJYJ-HQ-41Z-dC00'\nb'hJYJ-HQ-61Z-dA00'\nb'hJYJ-HQ-61Z-dB0",
+          "We found at least 103930336094014804597256773575451361601 keys! The Recording Industry Association of Space Penguins says their entire galaxy is now bankrupt, so we might as well have 100 of their keys:\nb'mKZE-AQ-k3Z-k2zz'\nb'xZiN-Aa-11X-d7D0'\nb'xZiN-Aa-11X-d6D0'\nb'xZiN-Aa-11X-d4D0'\nb'xZiN-Aa-11X-d5D0'\nb'xZiN-Aa-11X-d4D8'\nb'xZiN-Aa-11X-d5D8'\nb'xZiN-Aa-11X-d6D8'\nb'xZiN-Aa-11X-d7D8'\nb'xZiN-Aa-11X-d4D"
+        ],
+        "found_pcs_identical": true,
+        "max_s": 0.818,
+        "mean_s": 0.7799,
+        "min_s": 0.7564,
+        "model_choice_var_share": 0.9169,
+        "n": 6,
+        "output_identical": false,
+        "result_identical": false,
+        "work_diff_keys": [
+          "z3_check_count",
+          "z3_sat_count",
+          "z3_unsat_count"
+        ],
+        "work_group_sizes": [
+          2,
+          2,
+          1,
+          1
+        ],
+        "work_groups": 4,
+        "work_identical": false,
+        "z3_internal_var_share": 0.0831
+      }
+    },
+    "ekopartyctf2016_sokohashv2": {
+      "baseline": {
+        "cv": 0.1197,
+        "cv_floor_same_work": 0.1197,
+        "distinct_outputs": [
+          "Expected is '[('0x4216c0', '0x39'), ('0x4216c1', '0xc0'), ('0x4216c8', '0xd0'), ('0x4216c9', '0x22'), ('0x4216d0', '0x6d'), ('0x4216d1', '0x20'), ('0x4216d8', '0xa3'), ('0x4216d9', '0xc3'), ('0x4216e0', '0x16'), ('0x4216e1', '0x30'), ('0x4216e8', '0xd'), ('0x4216e9', '0x1'), ('0x4216f0', '0x66'), ('0x4216f1', '0x6c'), ('0x4216f8', '0x6e'), ('0x4216f9', '0x93'), ('0x421700', '0x3a'), ('0x421701', '"
+        ],
+        "found_pcs_identical": true,
+        "max_s": 2.4759,
+        "mean_s": 2.2518,
+        "min_s": 1.7229,
+        "model_choice_var_share": 0.0,
+        "n": 5,
+        "output_identical": true,
+        "result_identical": true,
+        "work_diff_keys": [],
+        "work_group_sizes": [
+          5
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      },
+      "deterministic": {
+        "cv": 0.1712,
+        "cv_floor_same_work": 0.1712,
+        "distinct_outputs": [
+          "Expected is '[('0x4216c0', '0x39'), ('0x4216c1', '0xc0'), ('0x4216c8', '0xd0'), ('0x4216c9', '0x22'), ('0x4216d0', '0x6d'), ('0x4216d1', '0x20'), ('0x4216d8', '0xa3'), ('0x4216d9', '0xc3'), ('0x4216e0', '0x16'), ('0x4216e1', '0x30'), ('0x4216e8', '0xd'), ('0x4216e9', '0x1'), ('0x4216f0', '0x66'), ('0x4216f1', '0x6c'), ('0x4216f8', '0x6e'), ('0x4216f9', '0x93'), ('0x421700', '0x3a'), ('0x421701', '"
+        ],
+        "found_pcs_identical": true,
+        "max_s": 2.433,
+        "mean_s": 2.0931,
+        "min_s": 1.6448,
+        "model_choice_var_share": 0.0,
+        "n": 5,
+        "output_identical": true,
+        "result_identical": true,
+        "work_diff_keys": [],
+        "work_group_sizes": [
+          5
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      }
+    },
+    "google2016_unbreakable_1": {
+      "baseline": {
+        "cv": 0.428,
+        "cv_floor_same_work": 0.428,
+        "found_pcs_identical": true,
+        "max_s": 5.3696,
+        "mean_s": 2.6847,
+        "min_s": 1.6039,
+        "model_choice_var_share": 0.0,
+        "n": 8,
+        "output_identical": true,
+        "result_identical": true,
+        "work_group_sizes": [
+          8
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      },
+      "deterministic": {
+        "cv": 0.3115,
+        "cv_floor_same_work": 0.3115,
+        "found_pcs_identical": true,
+        "max_s": 4.06,
+        "mean_s": 2.7362,
+        "min_s": 1.6719,
+        "model_choice_var_share": 0.0,
+        "n": 8,
+        "output_identical": true,
+        "result_identical": true,
+        "work_group_sizes": [
+          8
+        ],
+        "work_groups": 1,
+        "work_identical": true,
+        "z3_internal_var_share": 1.0
+      }
+    }
+  },
+  "note": "S3 census. Per bench x mode: wall-clock variance decomposed by work fingerprint. model_choice_var_share = between-work-group (boundary-fixable); z3_internal_var_share = within-group, identical work at different speed (irreducible). Generated by tests/benchmarks/run_determinism_census.py.",
+  "repeats": {
+    "ais3_crackme": 8,
+    "csgames2018": 6,
+    "ekopartyctf2016_sokohashv2": 5,
+    "google2016_unbreakable_1": 8
+  }
+}
