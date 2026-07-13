@@ -1784,6 +1784,22 @@ impl RustExplorationManager {
         self._export_state(state_id)
     }
 
+    /// Step a single state out-of-band and return its successors bucketed by
+    /// category, WITHOUT stashing them (E1.a).
+    ///
+    /// `extra_stop_points` are stop addresses honored for this call only, on
+    /// top of the manager-level stop addresses. Every returned state is parked
+    /// in the `_step_out` stash; the caller places it with `move_state()`.
+    /// See `stepping::_step_state` for the body.
+    #[pyo3(signature = (state_id, extra_stop_points=None))]
+    pub fn step_state(
+        &mut self,
+        state_id: u64,
+        extra_stop_points: Option<Vec<u64>>,
+    ) -> PyResult<HashMap<String, Vec<crate::state::ExplorationStateSnapshot>>> {
+        self._step_state(state_id, extra_stop_points)
+    }
+
     /// Export a state by ID, flushing pending writes first.
     pub fn export_state_flushed(
         &mut self,

@@ -6,9 +6,11 @@ use super::*;
 use crate::arch::RegisterFile;
 use crate::interpreter::BranchSnapshot;
 use crate::memory::SymbolicMemory;
+use crate::stash::STASH_STEP_OUT;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
 use lru::LruCache;
+use pyo3::exceptions::PyNotImplementedError;
 
 /// Error during state stepping.
 ///
@@ -94,8 +96,32 @@ impl RustExplorationManager {
     pub(crate) fn step_state_with_skip(
         &mut self,
         callbacks: &PythonCallbacks,
+        state: RustSimState,
+        skip_addr: Option<u64>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        self.step_state_inner(callbacks, state, skip_addr, &[], None)
+    }
+
+    /// Body of [`step_state_with_skip`], with the two knobs the out-of-band
+    /// `step_state()` pymethod (E1.a) needs:
+    ///
+    /// * `extra_stops` — stop addresses that apply to THIS call only. Unioned
+    ///   into the step context's `stop_addrs` (the interpreter's break logic
+    ///   already keys off that set); the manager-level `stop_addrs` are left
+    ///   alone.
+    /// * `terminal_sink` — when `Some`, the pruned/side-effect terminal states
+    ///   that `apply_core_outcome` would push into their stashes are handed to
+    ///   the caller instead, so a caller that owns state placement does not get
+    ///   them stashed behind its back.
+    ///
+    /// [`step_state_with_skip`]: Self::step_state_with_skip
+    pub(crate) fn step_state_inner(
+        &mut self,
+        callbacks: &PythonCallbacks,
         mut state: RustSimState,
         skip_addr: Option<u64>,
+        extra_stops: &[u64],
+        terminal_sink: Option<&mut Vec<(String, RustSimState)>>,
     ) -> Result<Vec<RustSimState>, StepError> {
         let setup_start = if self.profiling.profiling_enabled {
             Some(std::time::Instant::now())
@@ -107,7 +133,8 @@ impl RustExplorationManager {
         // Snapshot the read-only step config once (angr-vh834); reused by both
         // the interpreter step and the post-step core so the single-threaded
         // path takes exactly one `step_context()` clone per step.
-        let ctx = self.step_context();
+        let mut ctx = self.step_context();
+        ctx.stop_addrs.extend(extra_stops.iter().copied());
 
         // Run the VEX interpreter to its next event.
         let step = super::step_core::run_interpreter_step_core(
@@ -181,7 +208,7 @@ impl RustExplorationManager {
             native_syscalls: &self.native_syscalls,
         };
         let outcome = run_post_step_core(&cc, state, inputs, root_hint);
-        self.apply_core_outcome(callbacks, &prof, outcome)
+        self.apply_core_outcome(callbacks, &prof, outcome, terminal_sink)
     }
 
     /// Apply the deferred mutations the `&mut self`-free post-step core recorded
@@ -189,11 +216,18 @@ impl RustExplorationManager {
     /// fold profiling/counters, stamp `set_root` on every fork, fire each
     /// `dispatch_fork_inspect`, push pruned + side-effect terminal states, then
     /// translate the routing decision into the `Result` the run loop consumes.
+    ///
+    /// `terminal_sink` diverts steps 5-6: with `Some`, the pruned and
+    /// side-effect terminal states are handed to the caller (tagged with the
+    /// stash they *would* have gone to) instead of being pushed. Only
+    /// `step_state()` (E1.a) passes it — the run loop passes `None` and keeps
+    /// the legacy push behaviour byte-for-byte.
     fn apply_core_outcome(
         &mut self,
         callbacks: &PythonCallbacks,
         prof: &ParallelProfiling,
         outcome: CoreOutcome,
+        terminal_sink: Option<&mut Vec<(String, RustSimState)>>,
     ) -> Result<Vec<RustSimState>, StepError> {
         let CoreOutcome {
             ret,
@@ -242,14 +276,19 @@ impl RustExplorationManager {
         }
 
         // 5. Push UNSAT forks to STASH_PRUNED.
-        for s in pruned {
-            self.push_or_drop_terminal(STASH_PRUNED, s);
-        }
-
         // 6. Side-effect terminal pushes (no-return main state from a native
         //    `exit` / no-return proc, deadended while its forks continue).
-        for (s, stash) in terminal_pushes {
-            self.push_or_drop_terminal(stash, s);
+        //    Both are diverted to the caller when a terminal sink is set.
+        let terminals = pruned
+            .into_iter()
+            .map(|s| (STASH_PRUNED, s))
+            .chain(terminal_pushes.into_iter().map(|(s, stash)| (stash, s)));
+        if let Some(sink) = terminal_sink {
+            sink.extend(terminals.map(|(stash, s)| (stash.to_string(), s)));
+        } else {
+            for (stash, s) in terminals {
+                self.push_or_drop_terminal(stash, s);
+            }
         }
 
         // 7. Translate the routing decision.
@@ -260,6 +299,81 @@ impl RustExplorationManager {
             CoreReturn::Unconstrained(state, forks) => Err(StepError::Unconstrained(state, forks)),
             CoreReturn::NeedsPython(bounce) => self.dispatch_bounce(callbacks, bounce),
         }
+    }
+
+    /// Body of the `step_state()` pymethod (E1.a): step ONE state out-of-band
+    /// and hand its successors back to the caller instead of stashing them.
+    ///
+    /// The state is taken out of whatever stash holds it, stepped once (with
+    /// `extra_stop_points` unioned into the stop-address set for this call
+    /// only), and every resulting state — successors, unconstrained, pruned,
+    /// deadended, errored — is parked in [`STASH_STEP_OUT`]. The returned map
+    /// buckets their snapshots by category (`"flat"` for live successors, the
+    /// destination stash name for the terminals) so the Python caller can place
+    /// each one with `move_state(id, "_step_out", ...)`. Nothing lands in
+    /// `active`/`deadended`/... behind the caller's back.
+    ///
+    /// A step that needs a Python callback bounce (SimProcedure, hook, syscall)
+    /// raises `NotImplementedError` and consumes the state — driving the
+    /// callback protocol from this entry point is E1.b's job.
+    pub(crate) fn _step_state(
+        &mut self,
+        state_id: u64,
+        extra_stop_points: Option<Vec<u64>>,
+    ) -> PyResult<HashMap<String, Vec<crate::state::ExplorationStateSnapshot>>> {
+        let callbacks = self
+            .callbacks
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("callbacks not set"))?
+            .clone();
+        let state = self
+            .sm
+            .take_state(state_id)
+            .ok_or_else(|| PyValueError::new_err(format!("state {state_id} not found")))?;
+
+        let extra_stops = extra_stop_points.unwrap_or_default();
+        let mut terminals: Vec<(String, RustSimState)> = Vec::new();
+        let outcome =
+            self.step_state_inner(&callbacks, state, None, &extra_stops, Some(&mut terminals));
+
+        let mut buckets: Vec<(String, RustSimState)> = match outcome {
+            Ok(successors) => successors
+                .into_iter()
+                .map(|s| ("flat".to_string(), s))
+                .collect(),
+            Err(StepError::Deadended(s)) => vec![(STASH_DEADENDED.to_string(), s)],
+            Err(StepError::Error(s, message)) => {
+                self.errors.push((s.pc(), message, state_id));
+                vec![(STASH_ERRORED.to_string(), s)]
+            }
+            // The unconstrained state goes to its own bucket; the loop-exit
+            // forks materialized alongside it are live successors (angr-027h).
+            Err(StepError::Unconstrained(s, forks)) => {
+                let mut out = vec![(STASH_UNCONSTRAINED.to_string(), s)];
+                out.extend(forks.into_iter().map(|f| ("flat".to_string(), f)));
+                out
+            }
+            Err(StepError::NeedCallback(pending)) => {
+                return Err(PyNotImplementedError::new_err(format!(
+                    "step_state() cannot drive Python callback bounces yet (reason: {:?})",
+                    pending.reason
+                )));
+            }
+        };
+        buckets.extend(terminals);
+
+        let mut snapshots: HashMap<String, Vec<crate::state::ExplorationStateSnapshot>> =
+            HashMap::new();
+        for (bucket, state) in buckets {
+            snapshots
+                .entry(bucket)
+                .or_default()
+                .push(state.export_full());
+            let id = state.state_id();
+            self.index_state(id, STASH_STEP_OUT);
+            self.sm.ensure_stash(STASH_STEP_OUT).push_back(state);
+        }
+        Ok(snapshots)
     }
 
     /// Fold a `CoreOutcome`'s manager-level counter deltas (native-proc /

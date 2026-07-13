@@ -35,6 +35,10 @@ pub const STASH_DEADENDED: &str = "deadended";
 pub const STASH_ERRORED: &str = "errored";
 pub const STASH_PRUNED: &str = "pruned";
 pub const STASH_UNCONSTRAINED: &str = "unconstrained";
+/// Quarantine stash holding the successors of a `step_state()` call (E1.a).
+/// `step_state` deliberately does NOT auto-stash: the Python caller owns
+/// placement and moves each returned state out with `move_state()`.
+pub const STASH_STEP_OUT: &str = "_step_out";
 
 /// Standard stash names pre-registered at construction. Anything else triggers
 /// a one-time `log::warn!` on first creation via `ensure_stash` — typo guard
@@ -159,8 +163,12 @@ impl StashManager {
     /// that typos like `actve` for `active` are surfaced rather than silently
     /// vanishing into an invisible stash. Subsequent calls with the same name
     /// are silent — the stash exists in the map after the first creation.
+    ///
+    /// [`STASH_STEP_OUT`] is created on demand (not pre-registered — it must
+    /// not show up in `stash_counts()` for managers that never call
+    /// `step_state()`), so it is exempt from the typo warning.
     pub fn ensure_stash(&mut self, name: &str) -> &mut VecDeque<RustSimState> {
-        if !self.stashes.contains_key(name) {
+        if !self.stashes.contains_key(name) && name != STASH_STEP_OUT {
             log::warn!(
                 "Rust exploration: creating new stash '{name}' (not one of the \
                  standard stashes {STANDARD_STASHES:?}); if this is a typo, the state will be \
@@ -369,6 +377,25 @@ impl StashManager {
             }
         }
         None
+    }
+
+    /// Remove a state from whichever stash holds it and return it by value.
+    ///
+    /// Used by `step_state()` (E1.a), which steps a state out-of-band: the
+    /// state must leave its stash for the duration of the step, exactly as the
+    /// run loop's `pop_active` takes it off the active stash.
+    pub fn take_state(&mut self, state_id: u64) -> Option<RustSimState> {
+        let stash_name = self.stash_of(state_id).map(str::to_string).or_else(|| {
+            self.stashes
+                .iter()
+                .find(|(_, stash)| stash.iter().any(|s| s.state_id() == state_id))
+                .map(|(name, _)| name.clone())
+        })?;
+        let stash = self.stashes.get_mut(&stash_name)?;
+        let idx = stash.iter().position(|s| s.state_id() == state_id)?;
+        let state = stash.remove(idx);
+        self.unindex(state_id);
+        state
     }
 
     /// Find a mutable reference to a state by ID.
