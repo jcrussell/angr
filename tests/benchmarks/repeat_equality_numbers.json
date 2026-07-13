@@ -13,9 +13,50 @@
         "0x400602*1"
       ],
       "gated": true,
+      "model_gated": true,
       "model_identical": true,
       "model_samples": [
         "b'ais3{I_tak3_g00d_n0t3s}\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x0"
+      ],
+      "n": 20
+    },
+    "codegate_2017-angrybird": {
+      "distinct_found": [
+        "1479489c3de203e1"
+      ],
+      "distinct_models": [
+        "91f544610ae14040"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x404fab*1"
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "b'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'"
+      ],
+      "n": 20
+    },
+    "csaw_wyvern": {
+      "distinct_found": [
+        "e3b0c44298fc1c14"
+      ],
+      "distinct_models": [
+        "6dd25eb506424447"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        ""
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "None\nTime elapsed: <float>"
       ],
       "n": 20
     },
@@ -32,9 +73,36 @@
         "0x400844*1"
       ],
       "gated": true,
+      "model_gated": true,
       "model_identical": true,
       "model_samples": [
         "b'Code_Talkers'"
+      ],
+      "n": 20
+    },
+    "ekopartyctf2016_rev250": {
+      "distinct_found": [
+        "fcb1df7e51ed1158"
+      ],
+      "distinct_models": [
+        "332dc5c7307f4597",
+        "9bf3c9b7e099ff64",
+        "b84cf2e7d331703f",
+        "f45a3f748c87e498"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x403a40*1"
+      ],
+      "gated": true,
+      "model_gated": false,
+      "model_identical": false,
+      "model_report_only_reason": "posix.dumps(0) over partially-constrained stdin (angr-op0dn.10.7)",
+      "model_samples": [
+        "creating state\nadding constaints to stdin\ncreating state and simgr\nrunning explorer\nfound solution\nfound correct input/team name: b'?????????????????????????????????????????????????/??????????????????",
+        "creating state\nadding constaints to stdin\ncreating state and simgr\nrunning explorer\nfound solution\nfound correct input/team name: b'?????????????????????????????????????????????????? ?????????????????",
+        "creating state\nadding constaints to stdin\ncreating state and simgr\nrunning explorer\nfound solution\nfound correct input/team name: b'??????????????????????????????????????????????????@?????????????????"
       ],
       "n": 20
     },
@@ -51,9 +119,90 @@
         ""
       ],
       "gated": true,
+      "model_gated": true,
       "model_identical": true,
       "model_samples": [
         "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000SOSNEAKY\u0000"
+      ],
+      "n": 20
+    },
+    "flareon2015_10": {
+      "distinct_found": [
+        "e3b0c44298fc1c14"
+      ],
+      "distinct_models": [
+        "cedb56901af57642"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        ""
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "b'unconditional_conditions@flare-on.com'"
+      ],
+      "n": 20
+    },
+    "flareon2015_5": {
+      "distinct_found": [
+        "e91016a0683cb199"
+      ],
+      "distinct_models": [
+        "8cf83e31669c0bdd"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x4011ec*1"
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "b'Sp1cy_7_layer_OSI_dip@flare-on.com'"
+      ],
+      "n": 20
+    },
+    "mma_howtouse": {
+      "distinct_found": [
+        "e3b0c44298fc1c14"
+      ],
+      "distinct_models": [
+        "4136b15ece302338"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        ""
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}"
+      ],
+      "n": 20
+    },
+    "sym-write": {
+      "distinct_found": [
+        "9fe4092ea6a53ab8"
+      ],
+      "distinct_models": [
+        "54a985cadff58200"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x8201050*2"
+      ],
+      "gated": true,
+      "model_gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, "
       ],
       "n": 20
     }

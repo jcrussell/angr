@@ -63,6 +63,34 @@ def test_synthetic_model_bytes_mismatch_fails():
     assert not v["model_identical"]
 
 
+def test_wall_clock_in_stdout_cannot_decide_the_gate():
+    # csaw_wyvern prints its own "Time elapsed: 14.577634572982788" line. That
+    # is wall clock, which this harness promises never to assert on — so the
+    # model projection must redact it, or every repeat differs for free.
+    runs = [_run("0x1*1", f"None\nTime elapsed: 14.5{i}7634572982788\n") for i in range(5)]
+    v = rre.equality_verdict(runs)
+    assert v["equal"], v["distinct_models"]
+    # ...but a real model-byte change is still caught through the redaction.
+    runs.append(_run("0x1*1", "flag{xyz}\nTime elapsed: 14.599999999999\n"))
+    assert not rre.equality_verdict(runs)["model_identical"]
+
+
+def test_python_model_eval_bench_gates_on_found_set_only():
+    # The model-bytes projection is downgraded to report-only for these, but
+    # their found set stays enforced — the exemption must not swallow the bench.
+    runs = [_run("0x1*1", "input=aaa"), _run("0x1*1", "input=bbb")]
+    v = rre.equality_verdict(runs, model_gated=False)
+    assert v["equal"] and not v["model_identical"] and v["found_identical"]
+
+    diverged = [_run("0x1*1", "input=aaa"), _run("0x2*1", "input=aaa")]
+    assert not rre.equality_verdict(diverged, model_gated=False)["equal"]
+
+
+def test_python_model_eval_benches_are_a_subset_of_the_swept_corpus():
+    swept = set(rre.GATE_CORPUS) | set(rre.MEDIUM_CORPUS) | BIMODAL_BENCHMARKS
+    assert set(rre.PYTHON_MODEL_EVAL_BENCHES) <= swept
+
+
 def test_no_runs_is_not_equal():
     # A bench whose every repeat crashed proves nothing; passing it would make
     # the gate vacuous.
@@ -96,6 +124,21 @@ def test_empty_census_fails():
 
 def test_gate_corpus_excludes_bimodal_benches():
     assert not (set(rre.GATE_CORPUS) & BIMODAL_BENCHMARKS)
+
+
+def test_medium_corpus_is_derived_from_the_regression_suite():
+    """MEDIUM_CORPUS must track run_regression's MEDIUM_SUITE, minus bimodal.
+
+    Re-listing the names here would let the two drift apart silently, which is
+    exactly what the derivation exists to prevent — so assert the derivation,
+    not a hardcoded list.
+    """
+    from run_regression import MEDIUM_SUITE
+
+    assert not (set(rre.MEDIUM_CORPUS) & BIMODAL_BENCHMARKS)
+    expected = [e[0] for e in MEDIUM_SUITE if e[0] not in BIMODAL_BENCHMARKS]
+    assert expected == rre.MEDIUM_CORPUS
+    assert rre.MEDIUM_CORPUS, "MEDIUM_SUITE is entirely bimodal — the sweep would be vacuous"
 
 
 @pytest.mark.skipif(

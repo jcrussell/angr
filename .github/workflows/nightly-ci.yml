@@ -269,6 +269,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+  repeat_run_equality:
+    name: Repeat-Run Result Equality (M2 determinism)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      - name: Run the M2 equality gate test (fast corpus, N=5)
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+          # The gate test in tests/benchmarks/test_repeat_run_equality.py is
+          # skipped unless this is set, so that a plain `pytest tests/benchmarks`
+          # stays millisecond-fast. This job is the thing that actually runs it.
+          ANGR_REPEAT_EQUALITY_GATE: "1"
+        run: uv run pytest tests/benchmarks/test_repeat_run_equality.py --tb=short
+        timeout-minutes: 10
+      - name: Run the equality sweep over the medium tier (N=5)
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        # Result-equality only — this harness makes zero timing assertions, so
+        # the bimodal benches' timing variance cannot fail it (they are excluded
+        # from the gated set anyway; see BIMODAL_BENCHMARKS in run_regression).
+        run: |
+          uv run python tests/benchmarks/repeat_run_equality.py \
+            --medium --runs 5 --json repeat_equality_report.json
+        timeout-minutes: 20
+      - name: Upload equality census
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: repeat-equality-report
+          path: repeat_equality_report.json
+          if-no-files-found: warn
+          retention-days: 90
+
   property_fuzzer:
     name: Differential Property Fuzzer
     runs-on: ubuntu-latest

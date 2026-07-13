@@ -36,6 +36,7 @@ Usage::
 
     python tests/benchmarks/repeat_run_equality.py                    # gate corpus, N=5
     python tests/benchmarks/repeat_run_equality.py --runs 20 --json /tmp/eq.json
+    python tests/benchmarks/repeat_run_equality.py --medium              # + MEDIUM_SUITE
     python tests/benchmarks/repeat_run_equality.py --include-bimodal  # report-only extras
     python tests/benchmarks/repeat_run_equality.py --examples csgames2018
 
@@ -48,20 +49,52 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from content_fingerprint import _stable_digest
 from run_determinism_census import run_repeat
-from run_regression import BIMODAL_BENCHMARKS
+from run_regression import BIMODAL_BENCHMARKS, MEDIUM_SUITE
 from run_single import DEFAULT_MEM_LIMIT_MB
 
 # Fast, non-bimodal, memory-safe benches. Small enough that N=5 is a viable
 # pytest gate; the 20-run corpus sweep is a close-out artifact, not a gate.
 GATE_CORPUS = ["fauxware", "ais3_crackme", "defcamp_r100"]
 
+# The heavier tier (angr-op0dn.10.6), derived from run_regression's MEDIUM_SUITE
+# rather than re-listed, so a bench added there is swept here too. The bimodal
+# entries drop out: their *timing* exemption does not extend to results, but
+# they stay report-only via --include-bimodal, same as in the fast corpus.
+MEDIUM_CORPUS = [entry[0] for entry in MEDIUM_SUITE if entry[0] not in BIMODAL_BENCHMARKS]
+
 DEFAULT_TIMEOUT = 120
+
+# Benches whose model bytes are evaluated on the PYTHON side, after the found
+# state is exported (e.g. csaw_wyvern / ekopartyctf2016_rev250 call
+# ``one_found.posix.dumps(0)``), on stdin that is only partially constrained.
+# Strict mode canonicalizes the *Rust* solver's witness choice; it does not
+# reach claripy's own model choice for the leftover free bytes, so those benches
+# print a different-but-equally-valid input each run. Their found set is still
+# gated — only the model-bytes projection is downgraded to report-only.
+# Tracked by angr-op0dn.10.7; this map shrinks as that bead lands, and a bench
+# listed here whose model turns out stable is a signal to remove it.
+PYTHON_MODEL_EVAL_BENCHES = {
+    "ekopartyctf2016_rev250": "posix.dumps(0) over partially-constrained stdin (angr-op0dn.10.7)",
+}
+
+# Wall clock must never decide this gate (see the module docstring), but benches
+# print it into stdout — csaw_wyvern's own ``Time elapsed: 14.577634572982788``
+# would otherwise make every repeat's model fingerprint unique. Redact any float
+# with >=3 decimal places: that is a timing/duration shape, while flags and
+# byte-string models are printed as text or ``b'...'`` reprs.
+_FLOAT_NOISE = re.compile(r"\d+\.\d{3,}")
+
+
+def _normalize_output(output: str) -> str:
+    """Strip wall-clock noise from a bench's stdout before fingerprinting it."""
+    return _FLOAT_NOISE.sub("<float>", output)
 
 
 def _digest(*parts: str) -> str:
@@ -73,12 +106,12 @@ def run_fingerprints(res: dict) -> dict:
     """Project one ``run_single`` child result onto the two compared values.
 
     ``found_fp`` fingerprints the found-state pc multiset; ``model_fp``
-    fingerprints the bench's stdout, which carries the evaluated model bytes
-    (flag / solution) the user would report.
+    fingerprints the bench's stdout — timing-redacted — which carries the
+    evaluated model bytes (flag / solution) the user would report.
     """
     stats = res.get("stats") or {}
     found_pcs = str(stats.get("found_pcs", ""))
-    output = res.get("output", "")
+    output = _normalize_output(res.get("output", ""))
     return {
         "found_pcs": found_pcs,
         "found_fp": _digest(found_pcs),
@@ -87,20 +120,27 @@ def run_fingerprints(res: dict) -> dict:
     }
 
 
-def equality_verdict(runs: list[dict]) -> dict:
+def equality_verdict(runs: list[dict], *, model_gated: bool = True) -> dict:
     """Pure equality decision over the per-run projections of one bench.
 
     ``runs`` are ``run_fingerprints`` dicts. Equal iff every repeat agrees on
     both projections. Zero repeats is *not* equal — a bench that never ran
     proves nothing, and silently passing it would make the gate vacuous.
+
+    ``model_gated=False`` (a ``PYTHON_MODEL_EVAL_BENCHES`` member) keeps the
+    found-set projection enforced but reports the model-bytes projection instead
+    of enforcing it.
     """
     found = {r["found_fp"] for r in runs}
     models = {r["model_fp"] for r in runs}
+    found_identical = len(found) == 1
+    model_identical = len(models) == 1
     return {
         "n": len(runs),
-        "found_identical": len(found) == 1,
-        "model_identical": len(models) == 1,
-        "equal": bool(runs) and len(found) == 1 and len(models) == 1,
+        "found_identical": found_identical,
+        "model_identical": model_identical,
+        "model_gated": model_gated,
+        "equal": bool(runs) and found_identical and (model_identical or not model_gated),
         "distinct_found": sorted(found),
         "distinct_models": sorted(models),
         # Kept for triage: what the disagreeing runs actually produced.
@@ -149,8 +189,10 @@ def run_equality(
     census: dict[str, dict] = {}
     for name in names:
         projections = run_bench(name, runs, deterministic=deterministic, mem_limit_mb=mem_limit_mb, timeout=timeout)
-        verdict = equality_verdict(projections)
+        verdict = equality_verdict(projections, model_gated=name not in PYTHON_MODEL_EVAL_BENCHES)
         verdict["gated"] = name not in BIMODAL_BENCHMARKS
+        if name in PYTHON_MODEL_EVAL_BENCHES:
+            verdict["model_report_only_reason"] = PYTHON_MODEL_EVAL_BENCHES[name]
         census[name] = verdict
     return census
 
@@ -159,6 +201,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-n", "--runs", type=int, default=5, help="repeats per bench (default 5)")
     ap.add_argument("--examples", nargs="+", help=f"benches to check (default: {' '.join(GATE_CORPUS)})")
+    ap.add_argument(
+        "--medium",
+        action="store_true",
+        help="also check the non-bimodal MEDIUM_SUITE benches (gated, but slow: "
+        "~30s/repeat for the whole tier, so N=20 is a ~20min close-out sweep, not a gate)",
+    )
     ap.add_argument(
         "--include-bimodal",
         action="store_true",
@@ -177,6 +225,8 @@ def main() -> int:
     args = ap.parse_args()
 
     names = list(args.examples or GATE_CORPUS)
+    if args.medium:
+        names += [b for b in MEDIUM_CORPUS if b not in names]
     if args.include_bimodal:
         names += [b for b in sorted(BIMODAL_BENCHMARKS) if b not in names]
 
@@ -195,14 +245,18 @@ def main() -> int:
     print(f"{'bench':<32} {'n':>2} {'found=':>7} {'model=':>7} {'gate':>7} {'verdict':>8}")
     print("-" * 84)
     for name, v in census.items():
+        model = "yes" if v["model_identical"] else "NO"
+        if not v.get("model_gated", True):
+            model += "*"
         print(
             f"{name:<32} {v['n']:>2} {'yes' if v['found_identical'] else 'NO':>7} "
-            f"{'yes' if v['model_identical'] else 'NO':>7} "
+            f"{model:>7} "
             f"{'gate' if v['gated'] else 'report':>7} {'EQUAL' if v['equal'] else 'DIFFER':>8}"
         )
     print("-" * 84)
     print("found= : found-state pc multiset identical across every repeat")
-    print("model= : evaluated model bytes (bench stdout) identical across every repeat")
+    print("model= : evaluated model bytes (bench stdout, timing redacted) identical across every repeat")
+    print("     * : model evaluated in Python on partially-constrained input — reported, not gated")
     print("report : bimodal bench (BIMODAL_BENCHMARKS) — reported, never gated")
 
     code = census_exit_code(census)
