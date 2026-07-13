@@ -3,7 +3,7 @@
     "callback_count": 0,
     "peak_memory_mb": 285.0,
     "python_time": null,
-    "rust_time": 0.51,
+    "rust_time": 0.41,
     "state_creations": 0,
     "steps": 0
   },
@@ -27,7 +27,7 @@
     "callback_count": 0,
     "peak_memory_mb": 212.0,
     "python_time": null,
-    "rust_time": 0.39,
+    "rust_time": 0.25,
     "state_creations": 0,
     "steps": 0
   },
@@ -107,7 +107,7 @@
     "callback_count": 13,
     "peak_memory_mb": 282.8,
     "python_time": 1.455,
-    "rust_time": 0.722,
+    "rust_time": 0.53,
     "state_creations": 0,
     "steps": 40
   },
@@ -195,7 +195,7 @@
     "callback_count": 0,
     "peak_memory_mb": 221.7,
     "python_time": null,
-    "rust_time": 0.36,
+    "rust_time": 0.26,
     "state_creations": 0,
     "steps": 0
   },
@@ -203,7 +203,7 @@
     "callback_count": 0,
     "peak_memory_mb": 285.0,
     "python_time": null,
-    "rust_time": 0.57,
+    "rust_time": 0.43,
     "state_creations": 0,
     "steps": 0
   },
@@ -211,7 +211,7 @@
     "callback_count": 0,
     "peak_memory_mb": 252.0,
     "python_time": null,
-    "rust_time": 0.56,
+    "rust_time": 0.43,
     "state_creations": 0,
     "steps": 0
   },
@@ -267,7 +267,7 @@
     "callback_count": 175,
     "peak_memory_mb": 172.0,
     "python_time": 3.32,
-    "rust_time": 0.9,
+    "rust_time": 0.2,
     "state_creations": 0,
     "steps": 77
   },
@@ -283,7 +283,7 @@
     "callback_count": 5,
     "peak_memory_mb": 200.0,
     "python_time": null,
-    "rust_time": 0.4,
+    "rust_time": 0.33,
     "state_creations": 0,
     "steps": 2
   }
