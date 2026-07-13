@@ -210,6 +210,83 @@ impl RustExplorationManager {
         })
     }
 
+    /// Unsat core for one state, as claripy ASTs (angr-op0dn.14.2).
+    ///
+    /// Backs `RustSolverProxyPlugin.unsat_core` / `SimSolver.unsat_core` under
+    /// `CONSTRAINT_TRACKING_IN_SOLVER`. `SymContext::unsat_core_assumed` returns
+    /// indices into `get_assumed_constraints()`, the same list
+    /// `_export_state_constraints` turns into `state.solver.constraints`, so the
+    /// core is exported through the same `assumed_guard_to_claripy` conversion —
+    /// keeping the returned ASTs identical (`is` for cached claripy ASTs, equal
+    /// otherwise) to the corresponding `state.solver.constraints` entries.
+    ///
+    /// `extra_constraints` are asserted untracked, so they never appear in the
+    /// core — matching claripy's tracking-solver semantics.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn _state_unsat_core(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        extra_constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let claripy = py.import("claripy")?;
+        self.with_state(state_id, |state| {
+            let solver_ref = state.solver();
+            let ctx = solver_ref.borrow();
+            let ctx_ref: &SymContext = &ctx;
+
+            let mut extra = Vec::new();
+            for item in extra_constraints.iter() {
+                match claripy_to_rustbv(py, &item, ctx_ref) {
+                    Ok(bv) => {
+                        let cond = if bv.width() == 1 {
+                            bv.to_z3_bool()
+                        } else {
+                            let zero = RustBV::concrete(0, bv.width());
+                            bv.ne(&zero, ctx_ref).to_z3_bool()
+                        };
+                        extra.push(cond);
+                    }
+                    Err(e) => {
+                        // cat-(c) WRONG-ANSWER RISK: an extra constraint that
+                        // fails to convert would silently widen the core (the
+                        // rebuilt solver is missing a fact the caller asked to
+                        // assume). Raise rather than report a core computed
+                        // against the wrong constraint set.
+                        return Err(PyValueError::new_err(format!(
+                            "unsat_core: could not convert extra_constraint: {e}"
+                        )));
+                    }
+                }
+            }
+
+            let assumed = ctx.get_assumed_constraints();
+            let mut results = Vec::new();
+            for idx in ctx.unsat_core_assumed(&extra) {
+                let (bv, is_true) = &assumed[idx];
+                if let Ok(c) = crate::claripy_bridge::assumed_guard_to_claripy(
+                    py,
+                    bv,
+                    claripy.as_any(),
+                    *is_true,
+                ) {
+                    results.push(c);
+                }
+            }
+            Ok(results)
+        })
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub(crate) fn _state_unsat_core(
+        &self,
+        _py: Python<'_>,
+        _state_id: u64,
+        _extra_constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        Ok(Vec::new())
+    }
+
     // -------------------------------------------------------------------------
     // Solver timeout / mmap / brk plumbing (state-keyed)
     // -------------------------------------------------------------------------

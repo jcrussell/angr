@@ -480,14 +480,29 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
         pass
 
     def unsat_core(self, extra_constraints=()):
-        # Rust solver doesn't currently expose an unsat-core API; the
-        # caller path that needs it (claripy's MIN_DEPTH / explore-with-
-        # techniques) is rare. Return an empty list rather than raising
-        # so SimProcedures that opportunistically inspect the core don't
-        # crash. Matches the prior monkey-patch behavior, which left
-        # unsat_core untouched on Python's solver — equivalent to "the
-        # Python solver had no unsat core to report".
-        return []
+        """Constraints Z3 blames for this state being UNSAT (angr-op0dn.14.2).
+
+        Returns a subset of ``self.constraints`` — the same claripy ASTs
+        ``export_state_constraints`` yields — or ``[]`` when the state is SAT,
+        matching ``SimSolver.unsat_core``. ``extra_constraints`` are assumed but
+        never reported, as in claripy's tracking solver.
+
+        Unlike Python's SimSolver, tracking is not armed at add time: the Rust
+        engine asserts path constraints untracked (assumption literals are too
+        expensive on the fork path) and rebuilds a tracked solver from the
+        assumed-constraint IR here, on demand. So the core is complete even
+        though no option was set *before* execution.
+
+        Without ``CONSTRAINT_TRACKING_IN_SOLVER`` on the bound state this keeps
+        returning ``[]`` rather than raising (SimSolver raises SimSolverOptionError)
+        — ``invariant-rust-solver-proxy-required-surface``: SimProcedures that
+        opportunistically peek at the core must not crash.
+        """
+        opts = getattr(self.state, "options", None) if self.state is not None else None
+        if opts is not None and "CONSTRAINT_TRACKING_IN_SOLVER" not in opts:
+            return []
+        extras = [self._unwrap_constraint(c) for c in extra_constraints]
+        return list(self._mgr.state_unsat_core(self._state_id, extras))
 
     def eval_to_ast(self, e, n, extra_constraints=(), exact=None):
         """Return up to ``n`` concrete solutions as claripy BVVs."""

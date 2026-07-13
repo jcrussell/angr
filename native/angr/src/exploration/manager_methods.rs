@@ -1298,6 +1298,17 @@ impl RustExplorationManager {
         self._export_state_constraints(py, state_id)
     }
 
+    /// Unsat core for a state, as the subset of `export_state_constraints`
+    /// that Z3 blames for the contradiction. Empty when the state is SAT.
+    pub fn state_unsat_core(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        extra_constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        self._state_unsat_core(py, state_id, extra_constraints)
+    }
+
     /// Set the Z3 solver timeout (ms) on a specific state's solver context.
     ///
     /// Future forks of this state inherit the new timeout.  Used by

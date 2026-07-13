@@ -366,13 +366,16 @@ _REJECTED_OPTION_NAMES = frozenset(
 # claripy Solver (state_plugins/solver.py _init_add_constraints) so that
 # unsat_core() can name the constraints that made a state infeasible;
 # without it, unsat_core() refuses to run at all (raises
-# SimSolverOptionError). The Rust engine adds its constraints straight to
-# the shared Z3 solver with no assumption literals, so an opting-in user
-# gets a *silently empty* unsat core instead of the diagnostic they asked
-# for — the one failure mode the option exists to prevent. Promoted to
-# raise (angr-op0dn.14.8, 2026-07-13); wiring tracked adds through
-# RustSolverProxy is the independent feature call tracked by
-# angr-op0dn.14.2.
+# SimSolverOptionError). It was raise-listed (angr-op0dn.14.8) while the
+# Rust engine had no core to give: constraints go onto the shared Z3
+# solver with no assumption literals, so an opting-in user got a
+# *silently empty* core — the one failure mode the option exists to
+# prevent. STAYS raise-listed pending angr-op0dn.14.2: the native
+# on-demand core (SymContext::unsat_core_assumed, reached from
+# RustSolverProxyPlugin.unsat_core) is in tree and green on a Rust-owned
+# Z3 context, but under the *shared claripy* context Z3 reports Unsat and
+# then hands back an EMPTY core — so the proxy would still surface a
+# silently-empty diagnostic. Demote only once that is fixed.
 #
 # CONCRETIZE_SYMBOLIC_WRITE_SIZES is NOT promoted. Its only in-tree
 # consumer is SimFileBase._prep_generic (storage/file.py), and every

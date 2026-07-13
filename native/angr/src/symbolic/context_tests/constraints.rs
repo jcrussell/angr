@@ -692,3 +692,36 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     assert!(sibling_a.solution(&x_a, 5));
     assert!(!sibling_a.solution(&x_a, 42));
 }
+
+/// angr-op0dn.14.2: `unsat_core_assumed` rebuilds a tracked solver from the
+/// assumed-constraint IR at query time, so constraints the engine added
+/// UNTRACKED (the `assume_true`/`assume_false` fork-guard path) are still
+/// nameable. The returned indices index `get_assumed_constraints()`, which is
+/// the list `state.solver.constraints` exports.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_unsat_core_assumed_names_untracked_engine_constraints() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_uca_x", 8);
+    let five = RustBV::concrete(5, 8);
+    let six = RustBV::concrete(6, 8);
+    let seven = RustBV::concrete(7, 8);
+
+    // Added via the engine's untracked path — no assumption literals.
+    ctx.assume_true(&x.eq(&five, &ctx));
+    ctx.assume_true(&x.eq(&six, &ctx));
+    ctx.assume_false(&x.eq(&seven, &ctx));
+
+    assert_eq!(ctx.get_assumed_constraints().len(), 3);
+    assert!(!ctx.is_sat());
+    // The live solver has no trackers, so the eager API reports nothing...
+    assert!(ctx.unsat_core().is_empty());
+    // ...but the on-demand core blames the contradicting pair (0, 1) and
+    // leaves the innocent x != 7 (index 2) out.
+    let core = ctx.unsat_core_assumed(&[]);
+    assert!(
+        core.contains(&0) && core.contains(&1),
+        "expected indices 0 and 1 in core, got {core:?}"
+    );
+    assert!(!core.contains(&2), "innocent constraint blamed: {core:?}");
+}

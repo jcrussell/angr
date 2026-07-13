@@ -270,6 +270,114 @@ impl SymContext {
         result
     }
 
+    /// Compute an unsat core over the *assumed-constraint* list, on demand.
+    ///
+    /// Complements [`Self::unsat_core`], which only reports constraints the
+    /// caller opted into tracking at add time via
+    /// `add_constraint_tracked_indexed`. The engine's own path constraints
+    /// (fork guards, SimProc adds) go in untracked — tracking booleans cost
+    /// a fresh Bool symbol + `assert_and_track` per constraint on the hot
+    /// path — so a core read off the live solver would be *silently
+    /// incomplete*, which is the one failure mode `CONSTRAINT_TRACKING_IN_SOLVER`
+    /// exists to prevent.
+    ///
+    /// Instead of tracking eagerly, rebuild a throwaway solver at query time
+    /// from the constraint IR the context already keeps: `assumed_constraints`
+    /// (the `(RustBV, is_true)` pairs that `get_assumed_constraints` exports as
+    /// `state.solver.constraints`) asserted *tracked*, plus the residual
+    /// no-RustBV assertions (`non_bv_assertions`) and `extra` asserted
+    /// *untracked*. That is the same shared ∪ local pair `to_snapshot` rebuilds
+    /// a context from, so the core is complete; untracked asserts are excluded
+    /// from the core by construction, exactly like Python's claripy tracking
+    /// solver excludes `extra_constraints`.
+    ///
+    /// The returned indices are positions in `get_assumed_constraints()` — so
+    /// they index `state.solver.constraints` 1:1. Empty when the constraint set
+    /// is SAT (Z3 produces no core), matching `SimSolver.unsat_core`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn unsat_core_assumed(&self, extra: &[z3::ast::Bool]) -> Vec<usize> {
+        use z3::SatResult;
+
+        let assumed = self.get_assumed_constraints();
+        // Assumption literals + `check_assumptions`, NOT `assert_and_track` +
+        // `check`. The latter needs the solver's `unsat_core` param armed
+        // before the first assert, and under the shared claripy Z3 context
+        // (which angr runs in) it is not: the tracker is recorded but
+        // `get_unsat_core()` comes back EMPTY on an Unsat verdict — a silent
+        // wrong answer. `check_assumptions` always produces a core over the
+        // literals it is handed, so it needs no solver configuration.
+        // The solver is also a plain `z3::Solver`, not `build_solver`: the
+        // tactic-backed variant `build_solver` can return (ANGR_Z3_TACTIC)
+        // cannot produce cores at all.
+        let solver = z3::Solver::new();
+        let mut params = z3::Params::new();
+        params.set_u32("timeout", self.timeout_ms.load(Ordering::SeqCst));
+        solver.set_params(&params);
+
+        let mut trackers = Vec::with_capacity(assumed.len());
+        for (idx, (bv, is_true)) in assumed.iter().enumerate() {
+            let cond = self.assumed_pair_to_z3_bool(bv, *is_true);
+            let tracker = z3::ast::Bool::new_const(format!("__core_{idx}").as_str());
+            solver.assert(tracker.implies(&cond));
+            trackers.push(tracker);
+        }
+        // Residual (no-RustBV) assertions: needed for a faithful SAT/UNSAT
+        // verdict, but they have no claripy AST to report, so assert
+        // unconditionally — with no literal guarding them they can never
+        // appear in the core.
+        let shared_non_bv = self.non_bv_assertions_shared.lock().clone();
+        for c in shared_non_bv.iter() {
+            solver.assert(c);
+        }
+        {
+            let local = self.local_constraints.lock();
+            for c in local.non_bv_assertions.iter() {
+                solver.assert(c);
+            }
+        }
+        for c in extra {
+            solver.assert(c);
+        }
+
+        // KNOWN GAP (angr-op0dn.14.2, WIP): under the *shared claripy* Z3
+        // context this returns Unsat but `get_unsat_core()` comes back EMPTY,
+        // so the Python-facing path is still dark. Standalone (Rust-owned
+        // context) it works — see
+        // `test_unsat_core_assumed_names_untracked_engine_constraints`.
+        if solver.check_assumptions(&trackers) != SatResult::Unsat {
+            return Vec::new();
+        }
+        let mut core: Vec<usize> = solver
+            .get_unsat_core()
+            .iter()
+            .filter_map(|ast| {
+                format!("{ast}")
+                    .strip_prefix("__core_")
+                    .and_then(|s| s.parse::<usize>().ok())
+            })
+            .collect();
+        core.sort_unstable();
+        core
+    }
+
+    /// Rebuild the Z3 Bool for one `(RustBV, is_true)` assumed-constraint pair.
+    ///
+    /// Mirrors `assume_true` / `assume_false`'s symbolic path: a width-1 guard
+    /// becomes a Bool directly; a wider BV is a C-style truth test (`bv != 0`).
+    /// `is_true == false` negates. The concrete fast paths in `assume_*` are
+    /// deliberately NOT replicated — a concrete guard round-trips through Z3 as
+    /// a constant Bool, which the solver folds away.
+    #[cfg(feature = "vex-engine-z3")]
+    fn assumed_pair_to_z3_bool(&self, bv: &super::RustBV, is_true: bool) -> z3::ast::Bool {
+        let cond = if bv.width() == 1 {
+            bv.to_z3_bool()
+        } else {
+            let zero = super::RustBV::concrete(0, bv.width());
+            bv.ne(&zero, self).to_z3_bool()
+        };
+        if is_true { cond } else { cond.not() }
+    }
+
     /// Get all solver assertions as strings.
     ///
     /// Returns string representations of all Z3 constraints. Useful for debugging
@@ -320,6 +428,12 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn unsat_core(&self) -> Vec<usize> {
+        // Without Z3, no unsat core available
+        vec![]
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn unsat_core_assumed(&self, _extra: &[()]) -> Vec<usize> {
         // Without Z3, no unsat core available
         vec![]
     }
