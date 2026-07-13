@@ -11,6 +11,7 @@ import claripy
 from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
 from angr.exploration.rust_state_export import POSIX_SYNC_FDS, _concrete_stream_len, _posix_stream
+from angr.storage.file import SimFile, SimFileDescriptor
 
 if TYPE_CHECKING:
     import angr
@@ -403,6 +404,62 @@ class RustCallbackDispatchMixin:
             # cat-(b) FALLBACK WITH LOSS: Rust fd write to posix failed;
             # posix.dumps(fd) misses the native output. Debug-logs.
             l.debug("Failed to inject Rust fd %d output into posix: %s", fd, e)
+
+    def _inject_rust_fds(self, state, state_id):
+        """Seed fds that native code opened into the callback state's posix table.
+
+        Inbound half of the fd-table channel whose outbound half is
+        ``rust_state_export::_sync_state_posix_fds_to_rust`` (angr-op0dn.14.1.6).
+        A native ``open`` allocates the fd on Rust's ``FileSystem`` only; the
+        cached callback state's ``state.posix.fd`` never learns of it. Two
+        consequences this fixes: a bounced proc that reads/writes such an fd
+        sees a closed fd, and ``posix._pick_fd`` — which picks the lowest fd
+        *it* does not know about — can hand a bounced ``open()`` a number Rust
+        is already using, so the two sides end up pointing at different files.
+
+        Idempotent: an fd already in ``state.posix.fd`` is left alone, which
+        matters because the cached callback state is reused across bounces.
+        """
+        # Fast check: the standard three fds always exist on both sides, so a
+        # state that opened nothing natively never crosses the FFI further.
+        if not self._rust_mgr.has_state_extra_fds(state_id):
+            return
+        posix = state.plugins.get("posix")
+        if posix is None:
+            return
+        try:
+            rust_fds = self._rust_mgr.get_state_open_fds(state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: without the fd list the bounced proc
+            # keeps the pre-fix behavior (native fds invisible to it).
+            l.debug("get_state_open_fds(%d) failed: %s", state_id, e)
+            return
+        for fd, name, position, flags, _content_len, is_open in rust_fds:
+            if fd <= 2 or not is_open or fd in posix.fd or not name:
+                continue
+            try:
+                content = bytes(self._rust_mgr.get_state_fd_content(state_id, fd))
+            except Exception as e:
+                l.debug("get_state_fd_content(%d, %d) failed: %s", state_id, fd, e)
+                continue
+            path = name.encode() if isinstance(name, str) else name
+            simfile = state.fs.get(path)
+            if simfile is None:
+                # Rust descriptors hold concrete bytes, so the mirror SimFile is
+                # a concrete one. has_end is left to the state's FILES_HAVE_EOF
+                # option, matching what posix.open would have built.
+                simfile = SimFile(path, content=content, size=len(content))
+                if not state.fs.insert(path, simfile):
+                    l.debug("could not insert mirror SimFile for native fd %d (%s)", fd, name)
+                    continue
+            # else: a SimFile for this path already exists (e.g. pre-seeded by
+            # the harness). cat-(b) FALLBACK WITH LOSS: bytes the native side
+            # appended to it are not merged in — clobbering a possibly symbolic
+            # pre-seeded file with Rust's concrete snapshot would be worse.
+            simfd = SimFileDescriptor(simfile, flags)
+            simfd.set_state(state)
+            simfd._pos = position
+            posix.fd[fd] = simfd
 
     def _inject_rust_stdin(self, state, state_id):
         """Inject Rust-side stdin data into posix.dumps(0).
@@ -2429,6 +2486,10 @@ class RustCallbackDispatchMixin:
                 # (or appends to it) must see the native output that preceded
                 # it. Idempotent, so the reused cached state is safe.
                 self._inject_rust_stdout(state, event.callback_state_id)
+                # angr-op0dn.14.1.6: fds a native open() created must be usable
+                # by the bounced proc — and must be visible to posix._pick_fd so
+                # a bounced open() does not collide with one of them.
+                self._inject_rust_fds(state, event.callback_state_id)
 
         return state
 

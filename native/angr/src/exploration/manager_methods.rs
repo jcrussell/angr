@@ -2143,6 +2143,15 @@ impl RustExplorationManager {
         self._get_state_open_fds(state_id)
     }
 
+    /// True when the state has an open fd above stderr.
+    ///
+    /// Fast-path gate for the inbound callback fd sync (angr-op0dn.14.1.6) so
+    /// the common bounce (nothing opened natively) never pays for the
+    /// `get_state_open_fds` tuple list.
+    pub fn has_state_extra_fds(&self, state_id: u64) -> bool {
+        self._has_state_extra_fds(state_id)
+    }
+
     /// Get the content of a file descriptor for a state.
     pub fn get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         self._get_state_fd_content(state_id, fd)

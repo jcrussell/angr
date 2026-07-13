@@ -729,6 +729,70 @@ class TestCallbackFdTableSync:
         mgr._sync_state_posix_fds_to_rust(state, 1)
 
 
+class TestCallbackFdInboundSync:
+    """The inbound half of the callback fd-table channel (angr-op0dn.14.1.6).
+
+    An fd a *native* open created lives only on Rust's ``FileSystem``. Without
+    seeding it into the callback state's ``state.posix.fd``, a bounced proc
+    sees a closed fd — and ``posix._pick_fd``, which only knows the fds Python
+    allocated, can hand a bounced ``open()`` a number Rust already uses.
+    """
+
+    O_RDONLY = 0
+
+    @pytest.fixture
+    def mgr_and_sid(self):
+        import os
+
+        proj = angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        return proj, mgr, sid
+
+    def test_native_fd_is_usable_by_a_bounced_proc(self, mgr_and_sid):
+        """A read on an fd that only Rust knew about must return its bytes."""
+        proj, mgr, sid = mgr_and_sid
+        assert mgr._rust_mgr.register_state_fd(sid, 7, "/tmp/native-open.txt", self.O_RDONLY, b"NATIVE", 0)
+
+        state = proj.factory.entry_state()
+        assert 7 not in state.posix.fd, "test is vacuous — fd 7 already known to Python"
+        mgr._inject_rust_fds(state, sid)
+
+        assert 7 in state.posix.fd, "native fd never reached the callback state's posix table"
+        assert state.fs.get(b"/tmp/native-open.txt") is not None
+        data, _ = state.posix.get_fd(7).read_data(6)
+        assert state.solver.eval(data, cast_to=bytes) == b"NATIVE"
+
+    def test_bounced_open_does_not_reuse_a_native_fd(self, mgr_and_sid):
+        """``_pick_fd`` must see the native fd, or the two sides end up pointing
+        at different files under one number."""
+        proj, mgr, sid = mgr_and_sid
+        # 3 is exactly what _pick_fd hands out first on a fresh state.
+        assert mgr._rust_mgr.register_state_fd(sid, 3, "/tmp/native-3.txt", self.O_RDONLY, b"", 0)
+
+        state = proj.factory.entry_state()
+        assert state.posix._pick_fd() == 3, "test is vacuous — 3 was not the next fd anyway"
+        mgr._inject_rust_fds(state, sid)
+
+        new_fd = state.posix.open(b"/tmp/bounced.txt", claripy.BVV(1, 32))
+        assert new_fd != 3, "bounced open() collided with the native fd"
+        assert state.posix.get_fd(3).file.name == b"/tmp/native-3.txt"
+
+    def test_no_extra_fds_skips_the_ffi(self, mgr_and_sid):
+        """A state with nothing open above stderr must not pay for the fd list."""
+        proj, mgr, _sid = mgr_and_sid
+
+        class Tripwire:
+            def has_state_extra_fds(self, _state_id):
+                return False
+
+            def get_state_open_fds(self, _state_id):
+                raise AssertionError("inbound fd seed crossed the FFI with no fds above stderr")
+
+        mgr._rust_mgr = Tripwire()
+        mgr._inject_rust_fds(proj.factory.entry_state(), 1)
+
+
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict
     into Rust ``RustSimState`` (angr-p8o3).

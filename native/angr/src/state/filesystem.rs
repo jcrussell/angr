@@ -1056,6 +1056,17 @@ impl FileSystem {
         fds
     }
 
+    /// True when any fd above stderr is open — i.e. native code has opened a
+    /// file the standard three descriptors do not cover.
+    ///
+    /// The fast-path gate for the inbound callback fd sync
+    /// (angr-op0dn.14.1.6): a bounced SimProcedure only needs its posix fd
+    /// table seeded when this is true, so the common case pays one bool over
+    /// the FFI instead of a `Vec<(u32, String, ..)>` of the std fds.
+    pub fn has_fds_above_stderr(&self) -> bool {
+        self.fds.iter().any(|(&fd, d)| fd > 2 && d.is_open)
+    }
+
     /// Get the next fd number (for pre-allocating).
     pub fn next_fd(&self) -> u32 {
         self.next_fd
