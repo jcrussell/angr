@@ -421,6 +421,44 @@ impl RustExplorationManager {
         self.constraint_solver.solver_timeout_ms = timeout_ms;
     }
 
+    /// Turn strict-deterministic witness selection on or off (angr-op0dn.10.3).
+    ///
+    /// With it on, every state entering a stash — and, by inheritance, every
+    /// fork of one — evaluates with `SymContext`'s canonical-witness path:
+    /// `eval` returns the unsigned minimum of the feasible set and `eval_upto`
+    /// its ascending prefix, so a truncated result is reproducible instead of
+    /// being whatever model Z3 happened to build. States already in a stash
+    /// are updated in place, so the order of this call relative to
+    /// `add_state` does not matter.
+    ///
+    /// Costs Z3 checks (an `O(log width)` binary search per witness), hence
+    /// opt-in. Note this makes *witness choice* deterministic; with more than
+    /// one real scheduler worker the steal order still varies, so the found
+    /// set is stable but the order states are reported in is not.
+    pub fn set_deterministic(&mut self, v: bool) {
+        self.constraint_solver.deterministic = v;
+        for states in self.sm.stashes_mut().values_mut() {
+            for state in states.iter() {
+                constraints::apply_state_deterministic(state, v);
+            }
+        }
+        log::debug!("Strict-deterministic witness selection set to {v}");
+    }
+
+    /// Whether strict-deterministic witness selection is on (angr-op0dn.10.3).
+    pub fn is_deterministic(&self) -> bool {
+        self.constraint_solver.deterministic
+    }
+
+    /// Whether one state's solver is in strict-deterministic mode. The
+    /// round-trip probe for `set_deterministic`: the manager-level flag is
+    /// only meaningful if it actually reached the per-state `SymContext`.
+    pub fn state_is_deterministic(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| {
+            Ok(constraints::state_is_deterministic(state))
+        })
+    }
+
     /// Set the maximum number of states in the active stash.
     /// When the limit is reached, new forked states are pruned to avoid OOM.
     /// None (default) means no limit.

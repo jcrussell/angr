@@ -887,18 +887,50 @@ Implementation:
   rather than ``Z3_solver_set_params`` — the solver-level path
   empirically *corrupts* the solver for these keys (see iaol.1
   finding above).
+* Since angr-op0dn.10.3 the flag also turns on **strict-deterministic
+  witness selection** in every state's ``SymContext``
+  (``RustExplorationManager.set_deterministic`` on the Rust manager,
+  propagated as each state enters a stash and inherited by every fork).
+  The seed pin only stabilizes *which model Z3 builds*; witness
+  selection makes the answer a function of the asserted constraints
+  alone, which is what the seed pin could never guarantee:
+
+  - ``eval`` returns the unsigned **minimum** of the feasible set
+    rather than whatever value Z3's model happened to carry.
+  - ``eval_upto(n)`` returns the **ascending prefix** of the feasible
+    set, so a truncated result is a canonical prefix of the sorted
+    full set instead of an arbitrary Z3-chosen subset.
+
+  This costs Z3 checks — each witness is an ``O(log width)`` binary
+  search instead of one ``get_model``, and the warm model-cache seed is
+  deliberately bypassed (a cached model is a history-dependent witness,
+  exactly the nondeterminism the mode removes). That is why the mode is
+  opt-in rather than the default.
 
 What the flag does **not** close:
 
 * Z3 4.13 retains heuristic latitude (variable selection ordering,
   restart timing, internal simplification passes) that is not bounded
-  by the two pinned seeds. Two fresh ``RustSolverContext`` instances
-  with identical asserted constraints can still produce different
-  ``eval()`` witnesses for under-constrained variables.
-* The ``defcamp_r100`` trailing-byte mismatch is the canonical
-  residual case — ``run_regression.py`` normalizes the symbolic-fill
-  padding so the bench still passes, but raw ``posix.dumps(0)`` bytes
-  can differ across runs even with the flag set.
+  by the two pinned seeds. This no longer leaks into ``eval`` /
+  ``eval_upto`` results, but it does still affect solve *timing* and
+  any query whose answer is not canonicalized.
+* Bitvectors **wider than 128 bits**: the binary search tracks its
+  bounds in ``u128``, so ``eval_upto_wide`` keeps only the weaker
+  enumerate-then-sort ordering (canonical only when ``n`` is at least
+  the number of feasible values), and wide ``eval`` falls back to the
+  default model path.
+* **Multiple scheduler workers** (``RUST_PARALLEL_WORKERS`` > 1): the
+  work-stealing pool's steal order is nondeterministic by design, so
+  the found *set* still matches a serial run but the order states are
+  found in does not. Constructing a manager with ``deterministic=True``
+  under a multi-worker pool emits a ``RuntimeWarning`` saying so; it is
+  a warning rather than an error because witness choice is per-state
+  and stays canonical. Set ``RUST_PARALLEL_WORKERS=1`` for a fully
+  reproducible run.
+* The ``defcamp_r100`` trailing-byte mismatch was the canonical
+  residual case for the seed-pin-only mode —
+  ``run_regression.py`` normalizes the symbolic-fill padding so the
+  bench passes regardless.
 
 Coverage is exercised by
 ``tests/engines/rust/test_solver_ops.py::TestDeterministicMode`` —

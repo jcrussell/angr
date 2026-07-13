@@ -59,6 +59,11 @@ impl RustExplorationManager {
                 .set_timeout(self.constraint_solver.solver_timeout_ms);
         }
 
+        // Propagate strict-deterministic witness selection (angr-op0dn.10.3)
+        if self.constraint_solver.deterministic {
+            super::constraints::apply_state_deterministic(&state, true);
+        }
+
         // Propagate per-state history cap
         state.set_max_history(self.environment.max_history);
 
@@ -94,6 +99,13 @@ impl RustExplorationManager {
                 .solver()
                 .borrow()
                 .set_timeout(self.constraint_solver.solver_timeout_ms);
+        }
+
+        // Propagate strict-deterministic witness selection (angr-op0dn.10.3).
+        // The fork copies the source state's flag, so an explicit set is only
+        // needed when the manager is deterministic and the source was not.
+        if self.constraint_solver.deterministic {
+            super::constraints::apply_state_deterministic(&forked, true);
         }
 
         // Propagate per-state history cap

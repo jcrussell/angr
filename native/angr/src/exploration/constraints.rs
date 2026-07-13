@@ -22,6 +22,13 @@ pub(crate) struct ConstraintSolver {
     pub(crate) lazy_solves: bool,
     /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     pub(crate) solver_timeout_ms: u32,
+    /// Strict-deterministic witness selection (angr-op0dn.10.3, M2.3). When
+    /// true, every state entering a stash gets
+    /// [`SymContext::set_deterministic`](crate::symbolic::SymContext::set_deterministic),
+    /// so `eval` returns the unsigned-minimum witness and `eval_upto` the
+    /// ascending prefix of the feasible set. Forks inherit from their parent,
+    /// so seeding the states that enter the manager covers the lineage.
+    pub(crate) deterministic: bool,
 }
 
 impl ConstraintSolver {
@@ -29,8 +36,34 @@ impl ConstraintSolver {
         ConstraintSolver {
             lazy_solves: false,
             solver_timeout_ms: DEFAULT_SOLVER_TIMEOUT_MS,
+            deterministic: false,
         }
     }
+}
+
+/// Apply strict-deterministic witness selection to one state's solver.
+///
+/// Single seam for the `deterministic` flag so `_create_state`, `_add_state`
+/// and `set_deterministic` share one cfg-gated body: on a non-Z3 build there
+/// is no `SymContext::set_deterministic` and the flag is inert.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn apply_state_deterministic(state: &crate::state::RustSimState, v: bool) {
+    state.solver().borrow().set_deterministic(v);
+}
+
+#[cfg(not(feature = "vex-engine-z3"))]
+pub(crate) fn apply_state_deterministic(_state: &crate::state::RustSimState, _v: bool) {}
+
+/// Whether a state's solver is in strict-deterministic mode. Always false on
+/// a non-Z3 build, where the mode does not exist.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn state_is_deterministic(state: &crate::state::RustSimState) -> bool {
+    state.solver().borrow().is_deterministic()
+}
+
+#[cfg(not(feature = "vex-engine-z3"))]
+pub(crate) fn state_is_deterministic(_state: &crate::state::RustSimState) -> bool {
+    false
 }
 
 /// Per-run tracking sets used by uniqueness filtering and the find/avoid

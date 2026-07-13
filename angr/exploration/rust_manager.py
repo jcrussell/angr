@@ -689,6 +689,36 @@ def _apply_deterministic_z3_globals() -> None:
     l.debug("Pinned Z3 smt.random_seed=0 + sat.random_seed=0 (deterministic mode)")
 
 
+def _warn_if_parallel_nondeterministic() -> bool:
+    """Warn when ``deterministic=True`` meets a multi-worker scheduler.
+
+    ``RUST_PARALLEL_WORKERS`` > 1 runs the work-stealing pool, whose steal
+    order is nondeterministic *by design*: the set of found states still
+    matches a serial run, but which state is found first — and hence the
+    order results are reported in — does not. Witness choice stays canonical
+    (that part is per-state), so this is a warning, not an error: the
+    combination is legitimate when only the found *set* matters.
+
+    Returns True when the warning fired (multi-worker + deterministic).
+    Deliberately does NOT touch Z3's parallel mode — see bd memory
+    ``avoid-z3-parallel-enable``.
+    """
+    try:
+        workers = int(os.environ.get("RUST_PARALLEL_WORKERS", "1"))
+    except ValueError:
+        return False
+    if workers <= 1:
+        return False
+    warnings.warn(
+        f"deterministic=True with RUST_PARALLEL_WORKERS={workers}: witness choice is canonical, "
+        "but the work-stealing scheduler's steal order is nondeterministic, so the order in which "
+        "states are found is not reproducible. Set RUST_PARALLEL_WORKERS=1 for a fully reproducible run.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return True
+
+
 def set_rust_log_level(level: str = "info") -> None:
     """Set the Rust-side log level.
 
@@ -1277,6 +1307,7 @@ class RustExplorationManager(
         # set it persists for every subsequent solver.
         if deterministic:
             _apply_deterministic_z3_globals()
+            _warn_if_parallel_nondeterministic()
         self._deterministic = bool(deterministic)
 
         if not RUST_EXPLORATION_AVAILABLE:
@@ -1299,6 +1330,15 @@ class RustExplorationManager(
         simos_name = getattr(getattr(project, "simos", None), "name", None) or ""
         if simos_name:
             self._rust_mgr.set_os_name(simos_name)
+
+        # angr-op0dn.10.3: strict-deterministic witness selection. The Z3 seed
+        # pin above only stabilizes *which model Z3 builds*; this makes the
+        # witness a function of the constraints alone (unsigned-minimum for
+        # `eval`, ascending prefix for `eval_upto`), which is what makes a
+        # truncated result reproducible. Every state entering a stash inherits
+        # it, and forks inherit from their parent.
+        if self._deterministic:
+            self._rust_mgr.set_deterministic(True)
 
         # Configure solver timeout
         if solver_timeout_ms != 30000:

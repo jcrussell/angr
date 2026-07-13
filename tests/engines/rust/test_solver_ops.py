@@ -5,6 +5,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 import angr
@@ -603,6 +605,51 @@ class TestDeterministicMode:
             "drifted; consider weakening to a padding-tolerant comparison "
             "rather than disabling — see rust_engine.rst 'Deterministic mode'."
         )
+
+    def test_deterministic_reaches_state_solvers(self, fauxware_project):
+        """angr-op0dn.10.3: the kwarg reaches each state's Rust SymContext.
+
+        The manager-level flag is only meaningful if the per-state solver
+        actually switches to the canonical-witness path — a flag stored on
+        ``self`` and consulted nowhere (the pre-10.3 state of the world) would
+        pass ``test_deterministic_kwarg_accepted`` and still return arbitrary
+        Z3 witnesses. Probe the state solver itself, not the manager mirror.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
+        assert mgr._rust_mgr.is_deterministic() is True
+        ids = mgr._rust_mgr.get_state_ids("active")
+        assert ids, "expected the seed state in the active stash"
+        assert all(mgr._rust_mgr.state_is_deterministic(sid) for sid in ids)
+
+        # Off by default, all the way down.
+        state2 = fauxware_project.factory.entry_state()
+        mgr2 = RustExplorationManager(fauxware_project, [state2])
+        assert mgr2._rust_mgr.is_deterministic() is False
+        ids2 = mgr2._rust_mgr.get_state_ids("active")
+        assert ids2 and not any(mgr2._rust_mgr.state_is_deterministic(sid) for sid in ids2)
+
+    def test_deterministic_warns_with_multiple_workers(self, fauxware_project, monkeypatch):
+        """Multi-worker scheduler + deterministic=True warns, does not raise.
+
+        Steal order in the work-stealing pool is nondeterministic by design
+        (scheduler_tests.rs::test_determinism_result_set): the found *set* is
+        stable, the order is not. The combination stays legal — witness choice
+        is per-state and still canonical — so the user gets a warning.
+        """
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "4")
+        state = fauxware_project.factory.entry_state()
+        with pytest.warns(RuntimeWarning, match="steal order"):
+            mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
+        assert mgr._rust_mgr.is_deterministic() is True
+
+    def test_no_warning_single_worker(self, fauxware_project, monkeypatch):
+        """The guard fires on worker count, not on the flag alone."""
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "1")
+        state = fauxware_project.factory.entry_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            RustExplorationManager(fauxware_project, [state], deterministic=True)
 
 
 class TestRustStateRegisters:
