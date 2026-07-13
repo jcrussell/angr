@@ -885,3 +885,77 @@ fn test_deterministic_flag_default_and_unsat() {
     let child = ctx.fork();
     assert!(child.is_deterministic());
 }
+
+/// Strict-deterministic mode (angr-op0dn.10.7): `eval_many` returns the
+/// lexicographic minimum over the parts *in order*, not an arbitrary joint
+/// model. This is the path `posix.dumps(0)` on an exported found state takes
+/// (byte-`Extract` decomposition → `eval_batch` → `eval_many`), and until 10.7
+/// it read whatever assignment Z3 happened to build — which made a partially
+/// constrained stdin print a different-but-valid answer on nearly every run.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_deterministic_is_lex_min() {
+    for _ in 0..10 {
+        let ctx = SymContext::new();
+        ctx.set_deterministic(true);
+        // hi is pinned; lo is free below 4 — so only a canonical rule fixes it.
+        let hi = RustBV::symbolic(&ctx, "hi", 8);
+        let lo = RustBV::symbolic(&ctx, "lo", 8);
+        let seven = RustBV::concrete(7, 8);
+        let four = RustBV::concrete(4, 8);
+        let hi_eq = hi.eq(&seven, &ctx);
+        let lo_lt = lo.ult(&four, &ctx);
+        ctx.assume_true(&hi_eq);
+        ctx.assume_true(&lo_lt);
+
+        // Warm the model cache first: under the flag its arbitrary witness must
+        // not leak into the choice (same guard as `eval`).
+        assert!(ctx.is_sat());
+        assert_eq!(
+            ctx.eval_many(&[hi.clone(), lo.clone(), RustBV::concrete(9, 8)]),
+            Some(vec![7, 0, 9]),
+        );
+    }
+}
+
+/// The joint witness must still come off ONE assignment (angr-ue4ro): a
+/// cross-part constraint has to hold for the values `eval_many` hands back.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_deterministic_respects_cross_part_constraint() {
+    let ctx = SymContext::new();
+    ctx.set_deterministic(true);
+    let a = RustBV::symbolic(&ctx, "a", 8);
+    let b = RustBV::symbolic(&ctx, "b", 8);
+    let ten = RustBV::concrete(10, 8);
+    // a > b, so minimizing `a` first still forces b < a — lex order matters.
+    let gt = a.ugt(&b, &ctx);
+    let a_lt = a.ult(&ten, &ctx);
+    ctx.assume_true(&gt);
+    ctx.assume_true(&a_lt);
+
+    let vals = ctx.eval_many(&[a, b]).expect("sat");
+    assert_eq!(vals, vec![1, 0], "lex-min under a > b");
+}
+
+/// `eval_wide` under the flag returns the unsigned minimum as big-endian bytes,
+/// for widths past the 128-bit ceiling where `min` reports None (angr-cxw7).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_wide_deterministic_is_unsigned_min() {
+    const WIDTH: u32 = 192;
+    let byte_len = (WIDTH / 8) as usize;
+    let mut expected = vec![0u8; byte_len];
+    expected[byte_len - 1] = 3;
+
+    for _ in 0..5 {
+        let ctx = SymContext::new();
+        ctx.set_deterministic(true);
+        let x = RustBV::symbolic(&ctx, "x", WIDTH);
+        let three = RustBV::concrete(3, WIDTH);
+        let ge = x.uge(&three, &ctx);
+        ctx.assume_true(&ge);
+
+        assert_eq!(ctx.eval_wide(&x), Some(expected.clone()));
+    }
+}

@@ -71,18 +71,20 @@ MEDIUM_CORPUS = [entry[0] for entry in MEDIUM_SUITE if entry[0] not in BIMODAL_B
 
 DEFAULT_TIMEOUT = 120
 
-# Benches whose model bytes are evaluated on the PYTHON side, after the found
-# state is exported (e.g. csaw_wyvern / ekopartyctf2016_rev250 call
-# ``one_found.posix.dumps(0)``), on stdin that is only partially constrained.
-# Strict mode canonicalizes the *Rust* solver's witness choice; it does not
-# reach claripy's own model choice for the leftover free bytes, so those benches
-# print a different-but-equally-valid input each run. Their found set is still
-# gated — only the model-bytes projection is downgraded to report-only.
-# Tracked by angr-op0dn.10.7; this map shrinks as that bead lands, and a bench
-# listed here whose model turns out stable is a signal to remove it.
-PYTHON_MODEL_EVAL_BENCHES = {
-    "ekopartyctf2016_rev250": "posix.dumps(0) over partially-constrained stdin (angr-op0dn.10.7)",
-}
+# Benches whose model bytes cannot be gated: the value the bench prints is not a
+# function of the constraints alone, so repeats may legitimately differ. Their
+# found set is still gated — only the model-bytes projection is report-only.
+#
+# EMPTY as of angr-op0dn.10.7. It held ekopartyctf2016_rev250, whose
+# ``posix.dumps(0)`` over a partially-constrained stdin printed a
+# different-but-valid input on most repeats. The diagnosis in the bead — "the
+# witness is claripy's, chosen past the export boundary" — turned out to be
+# wrong: that eval *does* reach the Rust solver (via ``RustSolverFallback``), but
+# through ``eval_batch``/``eval_wide``, the two multi-part paths that 10.2 never
+# canonicalized. They now take the lexicographic-minimum joint witness, and the
+# bench is byte-identical across 20 strict repeats. Add an entry here only for a
+# bench whose model genuinely is not constraint-determined, and say why.
+PYTHON_MODEL_EVAL_BENCHES: dict[str, str] = {}
 
 # Wall clock must never decide this gate (see the module docstring), but benches
 # print it into stdout — csaw_wyvern's own ``Time elapsed: 14.577634572982788``

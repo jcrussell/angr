@@ -413,6 +413,19 @@ impl SymContext {
             return Some(u128_to_be_bytes_width(v, width));
         }
 
+        // Strict-deterministic mode (angr-op0dn.10.7): the wide witness is the
+        // unsigned minimum of the feasible set, the same rule `eval` follows in
+        // this mode (angr-op0dn.10.2) — `min` itself is unusable above 128 bits
+        // (angr-cxw7), so the minimum is built byte-wise instead. Deliberately
+        // skips the model-cache read below for the reason `eval` does: a cached
+        // model is a history-dependent arbitrary witness.
+        if self.is_deterministic() {
+            let _class = query_class::scope(|| {
+                query_class::classify_eval(bv, &self.get_assumed_constraints())
+            });
+            return self.min_wide(bv);
+        }
+
         {
             let cache = self.model_cache.borrow();
             if let Some(ref model) = *cache {
@@ -460,6 +473,35 @@ impl SymContext {
     pub fn eval_many(&self, bvs: &[RustBV]) -> Option<Vec<u128>> {
         if bvs.is_empty() {
             return Some(Vec::new());
+        }
+
+        // Strict-deterministic mode (angr-op0dn.10.7): minimize the parts in
+        // order under each other's pinned values, so the joint witness is a
+        // function of the constraints alone instead of whatever model Z3 built.
+        // Parts wider than 128 bits keep the arbitrary-model path — `bsearch_min`
+        // tracks its bounds in a u128 and has nothing canonical to return there
+        // (angr-cxw7), same carve-out `eval_upto` makes. Skips the model cache
+        // below for the reason `eval` does: a cached model is an arbitrary,
+        // history-dependent witness.
+        if self.is_deterministic() && bvs.iter().all(|bv| bv.width() <= 128) {
+            let _class = query_class::scope(|| {
+                query_class::classify_eval_many(bvs, &self.get_assumed_constraints())
+            });
+            let symbolic: Vec<(z3::ast::BV, u32)> = bvs
+                .iter()
+                .filter(|bv| bv.as_u128().is_none())
+                .map(|bv| (bv.to_z3_ast(), bv.width()))
+                .collect();
+            let mins = if symbolic.is_empty() {
+                Vec::new()
+            } else {
+                self.lex_min_witness(&symbolic)?
+            };
+            let mut mins = mins.into_iter();
+            return bvs
+                .iter()
+                .map(|bv| bv.as_u128().or_else(|| mins.next()))
+                .collect();
         }
 
         {
@@ -599,6 +641,72 @@ impl SymContext {
     /// model-cache seed is bypassed and `model_cache` is left untouched (a
     /// history-dependent seed is precisely the nondeterminism being removed).
     #[cfg(feature = "vex-engine-z3")]
+    /// Canonical joint witness: the lexicographic minimum over `parts`, in the
+    /// order given (angr-op0dn.10.7). `parts` must be non-empty and every width
+    /// must be <= 128 (the `bsearch_min` bound; see `min`).
+    ///
+    /// Each part is minimized with every earlier part pinned to its own chosen
+    /// value, so all parts still come off ONE satisfying assignment (the
+    /// angr-ue4ro invariant) while that assignment is now determined by the
+    /// constraints rather than by Z3's search. For the big-endian byte
+    /// decomposition both callers hand it, the lexicographic minimum over the
+    /// parts IS the unsigned minimum of the reassembled value — the witness rule
+    /// `eval` uses in this mode (angr-op0dn.10.2).
+    ///
+    /// `None` when the constraint set is unsat.
+    #[cfg(feature = "vex-engine-z3")]
+    fn lex_min_witness(&self, parts: &[(z3::ast::BV, u32)]) -> Option<Vec<u128>> {
+        self.with_z3_solver(|solver| {
+            solver.push();
+            let mut values = Vec::with_capacity(parts.len());
+            for (ast, width) in parts {
+                // The pins asserted below are satisfiable by construction, so an
+                // unsat here can only come from the base constraint set.
+                if !matches!(timed_check(solver, CheckSite::Eval), z3::SatResult::Sat) {
+                    solver.pop(1);
+                    self.sat_cache.set(Some(false));
+                    return None;
+                }
+                let max_val = if *width >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << width) - 1
+                };
+                let value = bsearch_min(solver, ast, *width, 0, max_val, |a, m| a.bvule(m));
+                solver.assert(ast.eq(make_bv_const(value, *width)));
+                values.push(value);
+            }
+            solver.pop(1);
+            self.sat_cache.set(Some(true));
+            Some(values)
+        })
+    }
+
+    /// Unsigned minimum of a bitvector of ANY width, as big-endian bytes
+    /// (angr-op0dn.10.7). The strict-deterministic witness for `eval_wide`,
+    /// where `min` cannot be reused because it reports `None` above 128 bits
+    /// (angr-cxw7). Minimizing the big-endian bytes most-significant-first is
+    /// exactly minimizing the value, and each byte fits `bsearch_min`'s u128.
+    #[cfg(feature = "vex-engine-z3")]
+    fn min_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
+        let ast = bv.to_z3_ast();
+        let mut parts = Vec::with_capacity(bv.width().div_ceil(8) as usize);
+        let mut hi = bv.width();
+        while hi > 0 {
+            // The most-significant part is narrower than a byte when the width
+            // is not a multiple of 8; it still lands in one output byte.
+            let lo = hi.saturating_sub(8);
+            parts.push((ast.extract(hi - 1, lo), hi - lo));
+            hi = lo;
+        }
+        Some(
+            self.lex_min_witness(&parts)?
+                .into_iter()
+                .map(|v| v as u8)
+                .collect(),
+        )
+    }
+
     fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         let width = bv.width();
         let ast = bv.to_z3_ast();

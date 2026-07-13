@@ -900,6 +900,15 @@ Implementation:
   - ``eval_upto(n)`` returns the **ascending prefix** of the feasible
     set, so a truncated result is a canonical prefix of the sorted
     full set instead of an arbitrary Z3-chosen subset.
+  - ``eval_wide`` and the multi-part ``eval_batch`` (angr-op0dn.10.7)
+    return the **lexicographic minimum** over their parts, minimized in
+    order with each earlier part pinned. All parts still come off one
+    satisfying assignment, and because both callers decompose
+    big-endian, that minimum *is* the unsigned minimum of the
+    reassembled value — the same rule ``eval`` follows. These are the
+    paths a user's ``state.solver.eval(x, cast_to=bytes)`` or
+    ``posix.dumps(0)`` takes on an exported found state, so an answer
+    printed after exploration is now canonical too.
 
   This costs Z3 checks — each witness is an ``O(log width)`` binary
   search instead of one ``get_model``, and the warm model-cache seed is
@@ -917,8 +926,10 @@ What the flag does **not** close:
 * Bitvectors **wider than 128 bits**: the binary search tracks its
   bounds in ``u128``, so ``eval_upto_wide`` keeps only the weaker
   enumerate-then-sort ordering (canonical only when ``n`` is at least
-  the number of feasible values), and wide ``eval`` falls back to the
-  default model path.
+  the number of feasible values). Single-witness ``eval_wide`` *is*
+  canonical at any width — it minimizes byte by byte, and each byte
+  fits the search — but an ``eval_batch`` whose individual parts exceed
+  128 bits still falls back to the arbitrary-model path.
 * **Multiple scheduler workers** (``RUST_PARALLEL_WORKERS`` > 1): the
   work-stealing pool's steal order is nondeterministic by design, so
   the found *set* still matches a serial run but the order states are
