@@ -260,6 +260,122 @@ pub fn tick_and_sample_for_thrash(
     sample_for_thrash(tick, sample_interval, min_switches, hot_threshold_pct)
 }
 
+// =============================================================================
+// Per-lineage-tree census (angr-g1fev)
+// =============================================================================
+// The v5ht sampler decides ONCE, GLOBALLY, from a >=20-switch window
+// summed over every tree. The follow-up proposal is to decide per tree
+// instead. That is only buildable if individual trees actually accumulate
+// enough switches to support a decision window — these counters measure
+// exactly that, and whether a tree's early hot ratio predicts its later
+// one (the rev250 mispredict from tools/decisions/solver_pool_design.md
+// sec 7).
+//
+// A "tree" is one `SharedLineageSolver` (one Arc minted by a fork-gate
+// hit; see `SymContext::fork`). Windows are counted in switches ON THAT
+// TREE.
+
+/// Switch count at which a tree's early hot ratio is first evaluated.
+const CENSUS_EARLY_WINDOW: u64 = 8;
+/// Switch count at which the same tree's later hot ratio is evaluated,
+/// so early-vs-late disagreement (mispredict) can be counted.
+const CENSUS_LATE_WINDOW: u64 = 24;
+/// Hot-ratio percentage above which a tree is classified "hot" (the
+/// ratio at which the switch_to trade is believed to pay). Matches the
+/// v5ht global sampler's default threshold.
+const CENSUS_HOT_PCT: u64 = 35;
+
+/// Bumped by [`reset_lineage_stats`]. Trees outlive a stats reset (the
+/// manager resets counters at the start of every `run()`, but the state
+/// graph — and its lineage Arcs — can predate it), so a tree carries the
+/// epoch it last counted under and zeroes its own switch/hot counters
+/// when it sees a newer one. Without this, a tree minted before the
+/// reset reports a switch count the per-run globals cannot explain.
+static CENSUS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+static TREES_MINTED: AtomicU64 = AtomicU64::new(0);
+static TREES_WITH_SWITCH: AtomicU64 = AtomicU64::new(0);
+static TREES_REACHING_EARLY: AtomicU64 = AtomicU64::new(0);
+static TREES_HOT_AT_EARLY: AtomicU64 = AtomicU64::new(0);
+static TREES_REACHING_LATE: AtomicU64 = AtomicU64::new(0);
+static TREES_HOT_AT_LATE: AtomicU64 = AtomicU64::new(0);
+/// Trees judged cold at [`CENSUS_EARLY_WINDOW`] but hot at
+/// [`CENSUS_LATE_WINDOW`] — i.e. a per-tree early decision would have
+/// dismantled a tree that goes on to pay. This is the rev250 failure
+/// mode, measured per tree rather than globally.
+static TREES_MISPREDICT_COLD: AtomicU64 = AtomicU64::new(0);
+/// Largest switch count reached by any single tree.
+static TREE_SWITCH_MAX: AtomicU64 = AtomicU64::new(0);
+
+fn note_tree_minted() {
+    TREES_MINTED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Fold one tree's running (switches, hots) into the census at the
+/// window boundaries. Called from `SharedLineageSolver::census_switch`,
+/// so it runs on every switch — kept to a couple of compares plus one
+/// `fetch_max` off the boundaries.
+fn note_tree_switch(switches: u64, hots: u64, hots_at_early: u64) {
+    TREE_SWITCH_MAX.fetch_max(switches, Ordering::Relaxed);
+    if switches == 1 {
+        TREES_WITH_SWITCH.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let hot = |h: u64, n: u64| h * 100 >= CENSUS_HOT_PCT * n;
+    if switches == CENSUS_EARLY_WINDOW {
+        TREES_REACHING_EARLY.fetch_add(1, Ordering::Relaxed);
+        if hot(hots, switches) {
+            TREES_HOT_AT_EARLY.fetch_add(1, Ordering::Relaxed);
+        }
+    } else if switches == CENSUS_LATE_WINDOW {
+        TREES_REACHING_LATE.fetch_add(1, Ordering::Relaxed);
+        let hot_late = hot(hots, switches);
+        if hot_late {
+            TREES_HOT_AT_LATE.fetch_add(1, Ordering::Relaxed);
+        }
+        // The per-tree analogue of the rev250 failure: an early-window
+        // decision would have dismantled this tree, yet it turns hot.
+        if hot_late && !hot(hots_at_early, CENSUS_EARLY_WINDOW) {
+            TREES_MISPREDICT_COLD.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Snapshot the per-lineage-tree census counters (angr-g1fev).
+pub fn tree_census_stats() -> [(&'static str, u64); 8] {
+    [
+        ("lineage_trees_minted", TREES_MINTED.load(Ordering::Relaxed)),
+        (
+            "lineage_trees_with_switch",
+            TREES_WITH_SWITCH.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_trees_reaching_early_window",
+            TREES_REACHING_EARLY.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_trees_hot_at_early_window",
+            TREES_HOT_AT_EARLY.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_trees_reaching_late_window",
+            TREES_REACHING_LATE.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_trees_hot_at_late_window",
+            TREES_HOT_AT_LATE.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_trees_mispredict_cold_early",
+            TREES_MISPREDICT_COLD.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_tree_switch_max",
+            TREE_SWITCH_MAX.load(Ordering::Relaxed),
+        ),
+    ]
+}
+
 /// Snapshot the runtime-thrash-detection counters. Exposed alongside
 /// [`lineage_stats`] so the integration patch can fold them into
 /// `get_solver_stats`.
@@ -365,6 +481,15 @@ pub fn reset_lineage_stats() {
     LAST_SAMPLE_SWITCH_COUNT.store(0, Ordering::Relaxed);
     LAST_SAMPLE_HOT_COUNT.store(0, Ordering::Relaxed);
     LAST_SAMPLE_STEP.store(0, Ordering::Relaxed);
+    TREES_MINTED.store(0, Ordering::Relaxed);
+    TREES_WITH_SWITCH.store(0, Ordering::Relaxed);
+    TREES_REACHING_EARLY.store(0, Ordering::Relaxed);
+    TREES_HOT_AT_EARLY.store(0, Ordering::Relaxed);
+    TREES_REACHING_LATE.store(0, Ordering::Relaxed);
+    TREES_HOT_AT_LATE.store(0, Ordering::Relaxed);
+    TREES_MISPREDICT_COLD.store(0, Ordering::Relaxed);
+    TREE_SWITCH_MAX.store(0, Ordering::Relaxed);
+    CENSUS_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Z3 solver shared by all states in one lineage, with a scope-tracked
@@ -378,6 +503,19 @@ pub fn reset_lineage_stats() {
 pub struct SharedLineageSolver {
     z3: z3::Solver,
     loaded_path: ScopePath,
+    /// Switch/hot counts for THIS tree only (angr-g1fev census). The
+    /// global `LINEAGE_SWITCH_*` counters sum these across every tree,
+    /// which is exactly what makes the global sampler unable to decide
+    /// per-tree.
+    switches: u64,
+    hots: u64,
+    /// `hots` snapshotted at [`CENSUS_EARLY_WINDOW`] switches, so the
+    /// late window can tell whether an early per-tree decision would
+    /// have mispredicted this tree.
+    hots_at_early: u64,
+    /// [`CENSUS_EPOCH`] value these per-tree counters were last counted
+    /// under; a mismatch means a stats reset happened and they are stale.
+    epoch: u64,
 }
 
 impl SharedLineageSolver {
@@ -386,10 +524,36 @@ impl SharedLineageSolver {
     /// any [`switch_to`](Self::switch_to)/[`with_solver`](Self::with_solver)
     /// calls — they sit at scope 0 and are never popped.
     pub fn new(z3: z3::Solver) -> Self {
+        note_tree_minted();
         SharedLineageSolver {
             z3,
             loaded_path: ScopePath::new(),
+            switches: 0,
+            hots: 0,
+            hots_at_early: 0,
+            epoch: CENSUS_EPOCH.load(Ordering::Relaxed),
         }
+    }
+
+    /// Record one switch on this tree and feed the per-tree census
+    /// (angr-g1fev). Called at the top of [`switch_to`]; `hot` says
+    /// whether the switch was a no-op (0 pops, 0 pushes).
+    fn census_switch(&mut self, hot: bool) {
+        let epoch = CENSUS_EPOCH.load(Ordering::Relaxed);
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.switches = 0;
+            self.hots = 0;
+            self.hots_at_early = 0;
+        }
+        self.switches += 1;
+        if hot {
+            self.hots += 1;
+        }
+        if self.switches == CENSUS_EARLY_WINDOW {
+            self.hots_at_early = self.hots;
+        }
+        note_tree_switch(self.switches, self.hots, self.hots_at_early);
     }
 
     /// Assert a base constraint at scope 0 (unscoped — never popped).
@@ -439,6 +603,7 @@ impl SharedLineageSolver {
         {
             LINEAGE_SWITCH_HOT_COUNT.fetch_add(1, Ordering::Relaxed);
             LINEAGE_SWITCH_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            self.census_switch(true);
             return (0, 0);
         }
 
@@ -453,8 +618,11 @@ impl SharedLineageSolver {
             // SWITCH_HOT but NOT SWITCH_FAST_PATH to keep the fast-path
             // counter a strict measure of the O(1) short-circuit.
             LINEAGE_SWITCH_HOT_COUNT.fetch_add(1, Ordering::Relaxed);
+            self.census_switch(true);
             return (0, 0);
         }
+
+        self.census_switch(false);
 
         if pops > 0 {
             self.z3.pop(pops as u32);

@@ -194,6 +194,52 @@ if someone proposes a *pre-execution* predictor (e.g. CFG fork density) with
 evidence, or fixes the sampler to decide per-lineage-tree instead of once,
 globally, early (filed as a follow-up bead).
 
+## 7b. Follow-up (angr-g1fev, 2026-07-13): the per-tree sampler is dead too
+
+The follow-up the section above left open — "fix the sampler to decide
+per-lineage-tree instead of once, globally, early" — was measured before being
+built, via a per-tree census (`lineage::tree_census_stats`, emitted under
+`get_solver_stats`; a "tree" is one `SharedLineageSolver` Arc minted by the
+fork gate). It is **not buildable on this signal**. Both halves of the gate
+fail, for opposite reasons:
+
+| counter (`--use-shared-lineage-solver`) | rev250 (the WIN) | unbreakable_0 (the anti-case) |
+|---|---|---|
+| `lineage_trees_minted` | 59 | 16 |
+| `lineage_trees_with_switch` | 44 | 9 |
+| `lineage_trees_reaching_early_window` (≥8 switches) | 9 | **0** |
+| `lineage_trees_reaching_late_window` (≥24 switches) | 1 | 0 |
+| `lineage_tree_switch_max` | 47 | **6** |
+| `lineage_trees_hot_at_early_window` | 9 | 0 |
+| `lineage_trees_hot_at_late_window` | **0** | 0 |
+| global hot ratio | 95/241 = 39 % | 1/22 = 4.5 % |
+
+1. **The anti-case has no window to decide in.** On `unbreakable_0` the
+   busiest tree ever sees **6** switches, so *no* per-tree window — even a
+   4-switch one — collects a usable sample before the run ends. A per-tree
+   valve can never fire there, so the +10 % regression stands untouched. The
+   cost it would need to avoid is not switch-driven anyway: 22 switches and 4
+   checks, with check time up 57 ms — the damage is minting a fresh solver and
+   losing the per-context solver's incremental state, which is paid at
+   **fork** time, before any switch exists to sample.
+2. **On the bench that pays, the per-tree ratio contradicts the aggregate.**
+   rev250's 39 % hot is an *aggregate over 44 short-lived trees*, not a
+   property of any one of them: 50 of 59 trees never reach 8 switches. All 9
+   trees that do are hot at the early window, yet the single tree that reaches
+   24 switches is **cold** there — so a re-evaluating per-tree valve would
+   dismantle the longest-lived tree, exactly the one carrying the win, and
+   fail the gate's "rev250 must keep its lineage" clause.
+
+The population is the finding: minted trees are overwhelmingly stillborn
+(75 % of rev250's, 44 % of unbreakable_0's never switch at all), so "the tree"
+is the wrong decision unit — there is no per-tree steady state to detect. The
+census counters are kept as the standing evidence; they cost nothing on the
+default path, since `switch_to` only runs when a lineage exists (opt-in).
+
+**Verdict: VOID.** `use_shared_lineage_solver` stays opt-in and the v5ht global
+valve stays as-is. Do not re-attempt a hot-ratio-shaped valve (global, per-tree,
+or re-evaluating) — only a *pre-fork* predictor of mint cost could move this.
+
 ## 8. Cross-references
 
 - Source: `native/angr/src/symbolic/context.rs` (`fn solver`),

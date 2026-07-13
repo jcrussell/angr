@@ -597,6 +597,14 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     for (name, value) in super::lineage::dismantle_stats() {
         stats.insert(name.into(), value);
     }
+    // angr-g1fev: per-lineage-tree census. Answers whether a per-tree
+    // (rather than global one-shot) dismantle decision is even
+    // buildable — a tree that never reaches a decision window cannot be
+    // decided about individually.
+    #[cfg(feature = "vex-engine-z3")]
+    for (name, value) in super::lineage::tree_census_stats() {
+        stats.insert(name.into(), value);
+    }
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
