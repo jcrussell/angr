@@ -2716,18 +2716,28 @@ _INSPECT_EVENT_SPECS: dict = {
         "attrs": ("added_constraints",),
         "when_fired": "before",
     },
-    # angr-4aach: vex_lift dispatch fires from ``_cb_lift_block`` in
-    # rust_manager.py, the Python lift callback the Rust engine invokes on a
-    # block-cache miss. Mirrors Python's ``engines/vex/lifter.py`` which
-    # fires ``vex_lift`` only when the lifter cache is NOT used —
-    # ``_cb_lift_block`` is exactly that miss path. Fires ``BP_BEFORE``
-    # (``vex_lift_addr``, ``vex_lift_size=None``, ``vex_lift_buff``) before
-    # the lift and ``BP_AFTER`` (``vex_lift_addr``, ``vex_lift_size`` = the
-    # lifted IRSB's byte size) after. ``dispatch_origin: 'python'``. The
-    # native in-process libVEX lift path (feature-gated, off by default)
-    # bypasses ``_cb_lift_block`` and does NOT fire this event (MVP gap).
-    # User mutation of ``vex_lift_buff`` / ``vex_lift_addr`` / vex_lift_size
-    # in BP_BEFORE is NOT honored — the lift uses the engine's own bytes.
+    # angr-4aach / angr-op0dn.14.4.2: vex_lift has TWO dispatch origins, both
+    # landing on ``RustExplorationManager._cb_inspect_vex_lift``:
+    #
+    #   1. Python — ``_cb_lift_block`` in rust_manager.py, the lift callback the
+    #      Rust engine invokes on a block-cache miss.
+    #   2. Rust — ``interpreter/execution.rs::try_native_lift``, the in-process
+    #      libVEX lift (cargo feature ``libvex-ffi``, and only for blocks whose
+    #      bytes are concrete). That path bypasses ``_cb_lift_block`` entirely,
+    #      so without its own fire the event would silently vanish on a
+    #      feature-on build. Both fires happen after libVEX has run, so exactly
+    #      one BEFORE/AFTER pair is emitted per lift even when a native miss
+    #      falls through to origin 1.
+    #
+    # Both mirror Python's ``engines/vex/lifter.py``, which fires ``vex_lift``
+    # only when the lifter cache is NOT used — a block-cache miss is exactly
+    # that path. ``BP_BEFORE`` carries (``vex_lift_addr``, ``vex_lift_size=None``,
+    # ``vex_lift_buff``); ``BP_AFTER`` carries (``vex_lift_addr``,
+    # ``vex_lift_size`` = the lifted IRSB's byte size). No
+    # ``dispatch_origin: 'python'`` — the Rust slot IS registered so origin 2
+    # has a target. User mutation of ``vex_lift_buff`` / ``vex_lift_addr`` /
+    # ``vex_lift_size`` in BP_BEFORE is NOT honored on either origin — the lift
+    # uses the engine's own bytes.
     "vex_lift": {
         "bit": 20,
         "attrs": (
@@ -2736,7 +2746,6 @@ _INSPECT_EVENT_SPECS: dict = {
             "vex_lift_buff",
         ),
         "when_fired": "before",
-        "dispatch_origin": "python",
     },
 }
 

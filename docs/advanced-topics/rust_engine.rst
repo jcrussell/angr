@@ -33,13 +33,14 @@ Overview
   ``call``, ``return``, ``simprocedure``, ``syscall``, ``dirty``,
   ``tmp_read``, ``tmp_write``, ``statement``, ``expr``,
   ``address_concretization``, ``symbolic_variable``, ``fork``,
-  ``constraints``, and ``vex_lift``. Two MVP gaps remain in the last
-  pair: ``constraints`` fires only for constraints added through the
-  Python proxy solver (``state.solver.add`` in a SimProcedure), not for
-  fork-guard constraints the Rust engine adds natively; and ``vex_lift``
-  fires only on the Python lift path (Rust block-cache miss →
-  ``_cb_lift_block``), not on the feature-gated native in-process libVEX
-  lift. Both are attributed to a representative active state.
+  ``constraints``, and ``vex_lift``. The last pair each fire from two
+  origins: ``constraints`` from the Python proxy solver
+  (``state.solver.add`` in a SimProcedure) *and* from the fork-guard
+  constraints the engine adds natively; ``vex_lift`` from the Python lift
+  callback (Rust block-cache miss → ``_cb_lift_block``) *and* from the
+  feature-gated native in-process libVEX lift. On the native origin of
+  each, a ``BP_BEFORE`` mutation of the staged attrs is not honored — the
+  guard is already a Rust BV, and the block's bytes are already lifted.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure or
   bimodal Z3 solver nondeterminism.
@@ -2195,9 +2196,9 @@ Consequently the flip gate is:
    successor — was promoted to raise, which the dispatcher routes to Python.
 3. The rest of the silent surface is empty — either fixed, or on an explicit
    accepted-divergence list. Today that is the 63 flip-blocking bridge sites
-   from the M6.5a fallback census plus the ``constraints`` inspect event that
-   the native fork-guard add path does not fire. (``vex_lift`` on the native
-   libVEX lift is dormant until E2 ships enabled.)
+   from the M6.5a fallback census. Both native-dispatch inspect gaps are
+   closed: the fork-guard ``constraints`` fire (angr-op0dn.14.4.1) and the
+   native-libVEX-lift ``vex_lift`` fire (angr-op0dn.14.4.2).
 4. M2 result-determinism holds on non-bimodal cases, accepting the permanent
    bimodal timing carve-out.
 
@@ -2385,9 +2386,14 @@ Two dispatch caveats on the events that *are* supported:
   so a replacement is ignored. The inverted guard the *forked* state
   receives does not fire its own pair — the ``fork`` BP marks that
   state's creation.
-* ``vex_lift`` fires from the Python lift callback (the block-cache miss
-  path). The feature-gated native in-process libVEX lift bypasses that
-  callback and does not fire the event.
+* ``vex_lift`` fires from both lift paths: the Python lift callback (the
+  block-cache miss path, ``_cb_lift_block``) and the feature-gated native
+  in-process libVEX lift (``interpreter/execution.rs::try_native_lift``),
+  which bypasses that callback. Exactly one ``BP_BEFORE``/``BP_AFTER``
+  pair is fired per lift — on the native path both fire once libVEX has
+  run, so a ``BP_BEFORE`` mutation of ``vex_lift_buff`` /
+  ``vex_lift_addr`` / ``vex_lift_size`` is ignored there (it is ignored on
+  the Python path too: the engine lifts its own bytes).
 
 Manager-wide BP storage
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -2443,8 +2449,8 @@ this document so callers can find these workarounds in order:
    above; check it before falling back to the next workarounds.
 
 2. **Drop back to the Python engine** for analyses that fundamentally
-   depend on an unsupported event (``constraints``, ``vex_lift``, …)
-   or on an unsupported write-back of a supported event (e.g.,
+   depend on an unsupported event (``engine_process``, ``memory_page_map``,
+   …) or on an unsupported write-back of a supported event (e.g.,
    overriding ``reg_write_expr`` or ``expr_result`` — see *BP attribute
    write-back* above for the honored vs. read-only split):
 

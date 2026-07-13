@@ -592,6 +592,63 @@ class TestRustInspectMarshalling:
         assert isinstance(before_addr, claripy.ast.bv.BV)
         assert isinstance(after_addr, claripy.ast.bv.BV)
 
+    def test_native_lift_fires_vex_lift(self):
+        """The native libVEX lift fires its own vex_lift pair (angr-op0dn.14.4.2).
+
+        ``try_native_lift`` bypasses ``_cb_lift_block``, so on a feature-on
+        build the Python-lift dispatch above never runs for a natively-lifted
+        block — the Rust dispatch is the only thing keeping the event alive.
+        Skipped on a build without ``--features libvex-ffi``.
+        """
+        import claripy
+
+        import angr
+        import angr.sim_options as o
+
+        try:
+            from angr.rustylib.vex_engine import libvex_ffi_enabled
+        except ImportError:
+            pytest.skip("build without --features libvex-ffi")
+        if not libvex_ffi_enabled():
+            pytest.skip("build without --features libvex-ffi")
+
+        # Two-instruction blob: the cold block is served from the binary-region
+        # store, so it lifts natively (see test_native_lift_serves_cold_blob).
+        shellcode = bytes.fromhex("4831c0") + bytes.fromhex("c3")  # xor rax,rax ; ret
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+        )
+        state.regs.rsp = 0x7FFFF0000
+
+        mgr = RustExplorationManager(proj, [state], use_native_lift=True)
+        mgr._rust_mgr.load_binary_regions([(0x1000, shellcode)])
+        mgr.enable_profiling()
+
+        events = []
+
+        def on_lift(s):
+            events.append((s.inspect.vex_lift_addr, s.inspect.vex_lift_size, s.inspect.vex_lift_buff))
+
+        mgr._get_inspect_proxy().b("vex_lift", when="before", action=on_lift)
+        mgr._get_inspect_proxy().b("vex_lift", when="after", action=on_lift)
+        mgr.run(max_steps=5)
+
+        assert mgr.stats.get("rust_native_lift_count", 0) > 0, "nothing lifted natively; test is vacuous"
+        # Exactly one BEFORE/AFTER pair per lifted block — a native lift must
+        # not also fall through to the _cb_lift_block dispatch.
+        assert len(events) == 2 * mgr.stats["rust_native_lift_count"], events
+
+        before_addr, before_size, before_buff = events[0]
+        after_addr, after_size, _after_buff = events[1]
+        assert isinstance(before_addr, claripy.ast.bv.BV)
+        assert isinstance(after_addr, claripy.ast.bv.BV)
+        assert before_size is None
+        assert isinstance(after_size, int) and after_size > 0
+        # The BEFORE fire carries the bytes handed to libVEX.
+        assert isinstance(before_buff, bytes) and before_buff.startswith(shellcode[:3])
+
     def test_mem_read_expr_unchanged_returns_none(self, fauxware_project):
         """A read BP that does not touch mem_read_expr leaves the value
         unchanged — the callback returns None so the original load stands."""
@@ -1781,14 +1838,13 @@ class TestRustInspectExtendedEvents:
         assert (
             frozenset(
                 {
+                    # `constraints` left this set in angr-op0dn.14.4.1 (it also
+                    # fires natively from the fork-guard add) and `vex_lift` in
+                    # angr-op0dn.14.4.2 (it also fires from the native libVEX
+                    # lift), so both now have a `set_inspect_<event>` slot.
                     "simprocedure",
                     "syscall",
                     "dirty",
-                    # angr-4aach: vex_lift fires from _cb_lift_block — Python-side,
-                    # no Rust slot. `constraints` left this set in angr-op0dn.14.4.1:
-                    # it now ALSO fires natively from the fork-guard add, so it does
-                    # have a `set_inspect_constraints` slot.
-                    "vex_lift",
                 }
             )
             == _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS

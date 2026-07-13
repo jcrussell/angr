@@ -3293,9 +3293,19 @@ class RustExplorationManager(
             # state so `state.inspect` routes through the RustInspectProxy
             # (a real-SimState fallback would not see the staged attrs).
             if state_id is None or state_id < 0:
-                active_ids = self._rust_mgr.get_state_ids("active")
-                if active_ids:
-                    state_id = active_ids[0]
+                # The native-lift fire (angr-op0dn.14.4.2) arrives mid-step,
+                # while the Rust manager is mutably borrowed — `get_state_ids`
+                # would raise "Already mutably borrowed" there. The thread-local
+                # stepping id names the state whose block is being lifted and
+                # costs no borrow, so prefer it and keep the stash query as the
+                # out-of-step fallback (`_cb_lift_block` called directly).
+                stepping_id = self._get_stepping_state_id()
+                if stepping_id is not None:
+                    state_id = stepping_id
+                else:
+                    active_ids = self._rust_mgr.get_state_ids("active")
+                    if active_ids:
+                        state_id = active_ids[0]
             self._dispatch_inspect_event(
                 "vex_lift",
                 state_id,

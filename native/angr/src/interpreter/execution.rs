@@ -407,7 +407,7 @@ impl<'a> VEXInterpreter<'a> {
         // serve a block.
         #[cfg(feature = "libvex-ffi")]
         if self.native_lift_enabled {
-            match self.try_native_lift(addr) {
+            match self.try_native_lift(addr, callbacks) {
                 Ok(irsb) => {
                     self.stats.native_lift_count += 1;
                     let arc_irsb = Arc::new(irsb);
@@ -513,8 +513,21 @@ impl<'a> VEXInterpreter<'a> {
     /// the native shim uses pyvex's compiled defaults (same as
     /// `vex_opt_level == None`), so a block carrying an explicit opt_level
     /// override is left to the callback to preserve exact parity.
+    ///
+    /// On success this fires the `vex_lift` inspect pair (angr-op0dn.14.4.2) —
+    /// the Python-lift dispatch lives in `_cb_lift_block`, which this path
+    /// bypasses. Both fires happen *after* libVEX has run, so exactly one
+    /// BEFORE/AFTER pair is emitted per lift: firing BEFORE eagerly would
+    /// double-fire it whenever a miss falls through to `_cb_lift_block`, which
+    /// fires its own pair. The cost is that BP_BEFORE mutation of
+    /// `vex_lift_buff` / `vex_lift_addr` is not honored on this path (the same
+    /// MVP gap the native `constraints` fire has).
     #[cfg(feature = "libvex-ffi")]
-    fn try_native_lift(&self, addr: u64) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
+    fn try_native_lift(
+        &self,
+        addr: u64,
+        callbacks: &PythonCallbacks,
+    ) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
         use crate::vex::VEXLifter;
 
         // Opt-level overrides change libVEX optimization and thus IRSB shape;
@@ -527,12 +540,31 @@ impl<'a> VEXInterpreter<'a> {
             .native_lift_source_bytes(addr)
             .ok_or(NativeLiftMiss::NoConcreteBytes)?;
 
-        self.native_lifter
+        let irsb = self
+            .native_lifter
             .lift(&bytes, addr, self.arch)
             .map_err(|e| {
                 log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
                 NativeLiftMiss::LiftError
-            })
+            })?;
+
+        if callbacks.inspect_event_enabled(20) {
+            let size = irsb.size();
+            // A lift is state-independent: -1 lets the Python endpoint attribute
+            // the event to a representative active state, exactly as the
+            // `_cb_lift_block` dispatch does.
+            let bytes_for_bp = &bytes[..bytes.len().min(size.max(1) as usize)];
+            if let Err(e) =
+                callbacks.call_inspect_vex_lift(-1, "before", addr, None, Some(bytes_for_bp))
+            {
+                log::debug!("vex_lift inspect (before) dispatch failed at 0x{addr:x}: {e}");
+            }
+            if let Err(e) = callbacks.call_inspect_vex_lift(-1, "after", addr, Some(size), None) {
+                log::debug!("vex_lift inspect (after) dispatch failed at 0x{addr:x}: {e}");
+            }
+        }
+
+        Ok(irsb)
     }
 
     /// Source the block bytes for a native lift at `addr`, or `None` when no

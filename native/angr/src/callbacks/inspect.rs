@@ -426,4 +426,34 @@ impl PythonCallbacks {
             Ok(())
         })
     }
+
+    /// Invoke the Python inspect vex_lift callback for a block served by the
+    /// native in-process libVEX lifter (angr-op0dn.14.4.2).
+    ///
+    /// `size` is `None` on the BEFORE fire and the lifted IRSB's byte size on
+    /// the AFTER fire; `buff` carries the bytes handed to libVEX (BEFORE only),
+    /// mirroring what `_cb_lift_block` passes on the Python-lift path.
+    /// `state_id` is `-1` there too — a lift is state-independent, so the
+    /// Python endpoint attributes it to a representative active state.
+    ///
+    /// Caller gates on `inspect_event_enabled(20)`.
+    pub fn call_inspect_vex_lift(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: Option<u32>,
+        buff: Option<&[u8]>,
+    ) -> PyResult<()> {
+        Python::attach(|py| {
+            let _gil = crate::gil_profile::GilWorkGuard::enter();
+            let cb = match self.inspect_vex_lift.as_ref() {
+                Some(cb) => cb,
+                None => return Ok(()),
+            };
+            let buff_obj = buff.map(|b| PyBytes::new(py, b));
+            cb.call1(py, (state_id, when, addr, size, buff_obj))?;
+            Ok(())
+        })
+    }
 }

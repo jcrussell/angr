@@ -293,6 +293,21 @@ pub struct PythonCallbacks {
     /// `added_constraints`) is honored by the proxy-add path but NOT by this
     /// native path — the guard is already lowered into a `RustBV`.
     pub inspect_constraints: Option<Py<PyAny>>,
+    /// `state.inspect.vex_lift` dispatcher for the NATIVE lift path
+    /// (angr-op0dn.14.4.2).
+    ///
+    /// Signature: `fn(state_id: int, when: str, addr: int, size: int | None,
+    /// buff: bytes | None) -> None`. Fired from `try_native_lift`
+    /// (`interpreter/execution.rs`) when the feature-gated in-process libVEX
+    /// lifter serves a block — that path bypasses `_cb_lift_block`, which is
+    /// where the Python-lift dispatch of this event lives. The Python
+    /// endpoint, `RustExplorationManager._cb_inspect_vex_lift`, is shared by
+    /// both origins. Gated on `inspect_event_enabled(20)`. The BP_BEFORE pair
+    /// member is fired only once the native lift has succeeded, so user
+    /// mutation of `vex_lift_buff` / `vex_lift_addr` is not honored here (the
+    /// bytes are already lifted); firing it eagerly would double-fire BEFORE
+    /// whenever the native lift misses and the Python callback re-fires it.
+    pub inspect_vex_lift: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -367,6 +382,7 @@ impl PythonCallbacks {
             inspect_symbolic_variable: None,
             inspect_fork: None,
             inspect_constraints: None,
+            inspect_vex_lift: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -678,6 +694,14 @@ impl PythonCallbacks {
         self.inspect_constraints = Some(cb);
     }
 
+    /// Set the inspect vex_lift callback (native-lift dispatch origin).
+    ///
+    /// Signature: `fn(state_id: int, when: str, addr: int, size: int | None,
+    ///                buff: bytes | None) -> None`.
+    pub fn set_inspect_vex_lift(&mut self, cb: Py<PyAny>) {
+        self.inspect_vex_lift = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -970,6 +994,7 @@ impl PythonCallbacks {
             &self.inspect_symbolic_variable,
             &self.inspect_fork,
             &self.inspect_constraints,
+            &self.inspect_vex_lift,
         ]
         .into_iter()
         .flatten()
@@ -1017,6 +1042,7 @@ impl PythonCallbacks {
         self.inspect_symbolic_variable = None;
         self.inspect_fork = None;
         self.inspect_constraints = None;
+        self.inspect_vex_lift = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
