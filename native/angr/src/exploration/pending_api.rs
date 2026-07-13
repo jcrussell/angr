@@ -261,25 +261,25 @@ impl RustExplorationManager {
         byte_asts: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
-            let bytes: Vec<crate::symbolic::RustBV> = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let mut bytes = Vec::with_capacity(byte_asts.len());
-                for (idx, item) in byte_asts.iter().enumerate() {
-                    let bv = claripy_to_rustbv(py, &item, &sym_ctx).map_err(|e| {
-                        PyValueError::new_err(format!("AST conversion (byte {idx}): {e}"))
-                    })?;
-                    if bv.width() != 8 {
-                        return Err(PyValueError::new_err(format!(
-                            "file content byte {idx} has width {} (expected 8)",
-                            bv.width()
-                        )));
-                    }
-                    bytes.push(bv);
-                }
-                bytes
-            };
+            let bytes = import_byte_asts(py, state, byte_asts)?;
             state.file_system().register_file_content(path, bytes);
+            Ok(())
+        })
+    }
+
+    /// Attach `byte_asts` to fd 0 as bounded symbolic content (angr-mb09c).
+    /// Seed-time channel for a Python-filled `posix.stdin.content`; see
+    /// `FileSystem::set_fd_content_sym` for why the path registry cannot
+    /// reach an already-open fd.
+    pub(crate) fn _seed_stdin_content(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        byte_asts: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bytes = import_byte_asts(py, state, byte_asts)?;
+            state.file_system().set_fd_content_sym(0, bytes);
             Ok(())
         })
     }
@@ -716,4 +716,29 @@ impl RustExplorationManager {
     pub(crate) fn _clear_skip_hook_for_addr(&mut self, addr: u64) {
         self.skip_hook_stack.retain(|&(a, _)| a != addr);
     }
+}
+
+/// Import a list of claripy byte ASTs into `state`'s solver context as 8-bit
+/// `RustBV`s, preserving BVS identity (`claripy_to_rustbv` interns leaves).
+/// Shared by the symbolic-file registry and the stdin seed channel.
+fn import_byte_asts(
+    py: Python<'_>,
+    state: &crate::state::RustSimState,
+    byte_asts: &Bound<'_, pyo3::types::PyList>,
+) -> PyResult<Vec<crate::symbolic::RustBV>> {
+    let solver_ref = state.solver();
+    let sym_ctx = solver_ref.borrow();
+    let mut bytes = Vec::with_capacity(byte_asts.len());
+    for (idx, item) in byte_asts.iter().enumerate() {
+        let bv = claripy_to_rustbv(py, &item, &sym_ctx)
+            .map_err(|e| PyValueError::new_err(format!("AST conversion (byte {idx}): {e}")))?;
+        if bv.width() != 8 {
+            return Err(PyValueError::new_err(format!(
+                "content byte {idx} has width {} (expected 8)",
+                bv.width()
+            )));
+        }
+        bytes.push(bv);
+    }
+    Ok(bytes)
 }

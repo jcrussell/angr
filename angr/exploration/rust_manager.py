@@ -3547,6 +3547,41 @@ class RustExplorationManager(
     # per byte, so this bounds both export time and per-state memory.
     _FS_EXPORT_MAX_FILE_SIZE = 65536
 
+    def _seed_stdin_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
+        """Push a harness-filled ``posix.stdin.content`` into Rust's fd 0 (angr-mb09c).
+
+        A harness that seeds stdin itself --- ``state.posix.stdin.content.append((BVS, n))``
+        on a blank_state, or ``entry_state(stdin=SimFileStream(content=BVS))`` --- expects
+        the found state to solve for THAT symbol. Without this push the native
+        ``read(0, ...)`` mints its own ``stdin_*`` bytes and the harness's BVS stays
+        unconstrained: ``solver.eval(bvs)`` returns zeros and ``posix.dumps(0)`` shows a
+        bogus zero prefix ahead of the injected bytes. Attaching the same claripy byte
+        ASTs as fd 0's symbolic content makes the Rust path condition reference the
+        harness's own symbol (the bridge import preserves BVS identity), so both queries
+        answer correctly off the Rust solver fallback.
+
+        Best-effort: any stream shape we cannot flatten to whole bytes is skipped and
+        Rust keeps the fresh-symbol behavior.
+        """
+        try:
+            stdin = getattr(getattr(angr_state, "posix", None), "stdin", None)
+            content = getattr(stdin, "content", None)
+            if not content:
+                return
+            asts = []
+            for data, _size in content:
+                if not isinstance(data, claripy.ast.BV) or data.length % 8:
+                    return
+                asts.extend(data.chop(8))  # chop(8)[0] is the byte at stream offset 0
+            if not asts or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
+                return
+            self._rust_mgr.seed_stdin_content(state_id, asts)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)
+            # mints fresh symbols, so the harness's BVS stays unconstrained on
+            # exported states (the pre-angr-mb09c behavior). Debug-logs.
+            l.debug("stdin seed push failed for state %d: %s: %s", state_id, type(e).__name__, e)
+
     def _export_fs_files_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
         """Export eligible ``state.fs._files`` entries into the Rust
         FileSystem's path-keyed symbolic-content registry (angr-0xyq2
@@ -3908,6 +3943,11 @@ class RustExplorationManager(
             # so content bytes referenced by installed constraints resolve
             # to the same Rust symbols.
             self._export_fs_files_to_rust(angr_state, actual_state_id)
+
+            # Same channel for a harness-seeded posix.stdin (angr-mb09c): after
+            # the constraint install, so bytes referenced by installed
+            # constraints resolve to the same Rust symbols.
+            self._seed_stdin_to_rust(angr_state, actual_state_id)
 
             # Lineage-aware demotion (angr-qluof pt2): on a cross-manager
             # transfer the export above re-arms any symbolic-file path the

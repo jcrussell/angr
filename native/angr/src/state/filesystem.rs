@@ -503,6 +503,28 @@ impl FileSystem {
         Arc::make_mut(&mut self.file_contents).insert(norm, crate::arc_shared(bytes));
     }
 
+    /// Attach bounded symbolic content directly to an already-open fd,
+    /// without going through the path registry. This is the seed-time
+    /// channel for a Python-side `posix.stdin` stream whose content the
+    /// harness filled in (`state.posix.stdin.content.append((BVS, n))`):
+    /// fd 0 is open from `FileSystem::default`, so `register_file_content`
+    /// (which only attaches on a later `open`) can never reach it. Reads
+    /// then serve the harness's own BVS bytes through `read_sym` instead of
+    /// minting fresh stdin symbols, which is what makes the seeding BVS
+    /// evaluable on an exported found state (angr-mb09c).
+    ///
+    /// Position is left as-is (0 on a seed state). No-op on an unknown fd.
+    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
+    pub fn set_fd_content_sym(&mut self, fd: u32, bytes: Vec<RustBV>) {
+        if !self.fds.contains_key(&fd) {
+            return;
+        }
+        Arc::make_mut(&mut self.fds)
+            .get_mut(&fd)
+            .expect("fd existed above")
+            .content_sym = Some(crate::arc_shared(bytes));
+    }
+
     /// Look up registered symbolic content for a (possibly relative)
     /// path. Returns a shared handle (refcount bump) when the
     /// cwd-normalized path has a registry entry.

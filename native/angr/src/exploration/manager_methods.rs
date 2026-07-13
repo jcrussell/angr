@@ -1055,6 +1055,24 @@ impl RustExplorationManager {
         self._register_file_content(py, state_id, path, byte_asts)
     }
 
+    /// Seed fd 0 with the harness's own symbolic stdin bytes (angr-mb09c):
+    /// one 8-bit claripy AST per byte, in file order, taken from a
+    /// Python-filled `state.posix.stdin.content`. Native `read(0, ...)`
+    /// serves these instead of minting fresh `stdin_*` symbols, so the path
+    /// condition on an exported found state references the harness's BVS and
+    /// `solver.eval(bvs)` / `posix.dumps(0)` return the real solution. Reads
+    /// past the seeded content fall back to fresh symbols. Errors (not
+    /// panics) on unknown `state_id`, a non-convertible AST, or a non-8-bit
+    /// entry. See `pending_api::_seed_stdin_content` for the body.
+    pub fn seed_stdin_content(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        byte_asts: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        self._seed_stdin_content(py, state_id, byte_asts)
+    }
+
     /// The cwd-normalized paths a state's lineage has demoted to Python
     /// ownership via native writes (angr-qluof). The Python re-add path
     /// (merge / legacy-fork push) queries these before re-registering
