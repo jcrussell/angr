@@ -1,0 +1,64 @@
+{
+  "census": {
+    "ais3_crackme": {
+      "distinct_found": [
+        "7c75718578bf7d01"
+      ],
+      "distinct_models": [
+        "03c820a322892eec"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x400602*1"
+      ],
+      "gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "b'ais3{I_tak3_g00d_n0t3s}\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x0"
+      ],
+      "n": 20
+    },
+    "defcamp_r100": {
+      "distinct_found": [
+        "84632f641e753881"
+      ],
+      "distinct_models": [
+        "fe79d5c9a237a4fd"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        "0x400844*1"
+      ],
+      "gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "b'Code_Talkers'"
+      ],
+      "n": 20
+    },
+    "fauxware": {
+      "distinct_found": [
+        "e3b0c44298fc1c14"
+      ],
+      "distinct_models": [
+        "12d54ae5f5877321"
+      ],
+      "equal": true,
+      "found_identical": true,
+      "found_pcs": [
+        ""
+      ],
+      "gated": true,
+      "model_identical": true,
+      "model_samples": [
+        "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000SOSNEAKY\u0000"
+      ],
+      "n": 20
+    }
+  },
+  "deterministic": true,
+  "exit_code": 0,
+  "runs": 20
+}
