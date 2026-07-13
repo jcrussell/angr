@@ -111,13 +111,17 @@ class TestFactoryKwargsAreNeverDropped:
 class TestRaiseOptionPredicate:
     """The raise-option list has exactly one source of truth."""
 
+    # Every mode bundle ships EXTENDED_IROP_SUPPORT, and its *absence* is itself
+    # an offense (_REQUIRED_OPTION_NAMES, angr-op0dn.14.7 — see
+    # test_default_bundle_options.py), so a realistic option set carries it.
     def test_predicate_flags_offending_options(self):
-        assert rust_unsupported_options({"TRACK_MEMORY_ACTIONS", "SYMBOLIC"}) == ["TRACK_MEMORY_ACTIONS"]
-        assert rust_unsupported_options({"SYMBOLIC"}) == []
+        base = {"SYMBOLIC", "EXTENDED_IROP_SUPPORT"}
+        assert rust_unsupported_options(base | {"TRACK_MEMORY_ACTIONS"}) == ["TRACK_MEMORY_ACTIONS"]
+        assert rust_unsupported_options(base) == []
         assert rust_unsupported_options(None) == []
 
     def test_predicate_is_sorted_and_complete(self):
-        offending = rust_unsupported_options({"CONCRETIZE", "CALLLESS", "SYMBOLIC"})
+        offending = rust_unsupported_options({"CONCRETIZE", "CALLLESS", "SYMBOLIC", "EXTENDED_IROP_SUPPORT"})
         assert offending == ["CALLLESS", "CONCRETIZE"]
 
     def test_constructor_consumes_the_predicate(self, fauxware_project):

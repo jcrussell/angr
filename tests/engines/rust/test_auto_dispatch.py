@@ -48,7 +48,11 @@ def _fake_project(arch_name: str = "AMD64"):
 
 
 def _fake_state(*options: str):
-    return SimpleNamespace(options=set(options))
+    # Every mode bundle carries EXTENDED_IROP_SUPPORT, so every real state has
+    # it; a state *without* it asks for the narrow IR-op table, which the Rust
+    # engine cannot honor (_REQUIRED_OPTION_NAMES — see TestRequiredOptionGate
+    # in test_default_bundle_options.py).
+    return SimpleNamespace(options={"EXTENDED_IROP_SUPPORT", *options})
 
 
 class TestArchPredicate:

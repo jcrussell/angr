@@ -225,8 +225,13 @@ except ImportError:
 # `TRACK_MEMORY_MAPPING` — are intentionally **excluded** here because they
 # ship in the default `symbolic` mode bundle (sim_options.py:391, 374). Every
 # `factory.entry_state()` would otherwise trigger a warning the user did not
-# choose. They remain divergence-risk in the doc; this set covers the options
-# a user must opt into.
+# choose. This set covers the options a user must opt into; the two
+# default-bundle ones are resolved at their *consumption* site instead
+# (angr-op0dn.14.7): TRACK_CONSTRAINT_ACTIONS' only observable effect is the
+# SimActionConstraint stream, and reading `state.history.actions` warns once via
+# `_RustOwnedSimStateHistory` (rust_state_export.py); TRACK_MEMORY_MAPPING is
+# vestigial — no code in angr or its dependencies reads it, only
+# analyses/identifier/runner.py adds it — so ignoring it cannot diverge.
 _REJECTED_OPTION_NAMES = frozenset(
     {
         # Conservative read strategy: refuses to concretize on range-check
@@ -416,26 +421,61 @@ _RAISE_OPTION_NAMES = frozenset(
     }
 )
 
+# Inverse-polarity gate (angr-op0dn.14.7): options Rust cannot honor by their
+# *absence*. Same shape as the CGC_NON_BLOCKING_FDS polarity trap (angr-op0dn.14.8):
+# the divergent configuration is the one where the option is UNSET.
+#
+# EXTENDED_IROP_SUPPORT ships in every mode bundle, so `_RAISE_OPTION_NAMES`
+# could never carry it — routing on its presence routes every user to Python.
+# But the option only ever *widens* Python's op table: `vexop_to_simop`
+# (engines/vex/claripy/irop.py) auto-generates a SimIROp from the op name when
+# `extended=True` and raises UnsupportedIROpError when it is False. Set (the
+# default) it is therefore honored transparently — Rust runs the op natively, or
+# defers the block to Python where extended=True applies. Unset, the user is
+# asking for the *narrow* table, and the Rust interpreter has no narrow mode:
+# it would execute an auto-generated-only op where Python would have refused.
+# That is the only direction it can diverge, and it is an explicit opt-out of a
+# default option, so we make it loud (and auto-dispatch routes it to Python).
+_REQUIRED_OPTION_NAMES = frozenset({"EXTENDED_IROP_SUPPORT"})
+
+
+def rust_missing_required_options(options) -> list[str]:
+    """Return the sorted ``_REQUIRED_OPTION_NAMES`` *absent* from *options*.
+
+    ``options is None`` means "no state to judge" (a bare container, not a
+    SimState) and yields no offenders; an explicitly empty option set does
+    offend, since that state really would run with the narrow op table under
+    Python.
+    """
+    if options is None:
+        return []
+    return sorted(name for name in _REQUIRED_OPTION_NAMES if name not in options)
+
 
 def rust_unsupported_options(options) -> list[str]:
-    """Return the sorted ``_RAISE_OPTION_NAMES`` present in *options*.
+    """Return the option settings in *options* that the Rust engine refuses.
 
     Single source of truth for "the Rust engine refuses this state". The
     manager constructor (:meth:`RustExplorationManager._check_raise_options`)
     and the engine dispatcher in :meth:`angr.factory.AngrObjectFactory.simulation_manager`
     both consume this rather than re-deriving the option list.
 
+    Covers both polarities: a ``_RAISE_OPTION_NAMES`` member that is set, and a
+    ``_REQUIRED_OPTION_NAMES`` member that is not (reported as ``unset NAME``).
+
     Args:
         options: A ``SimState.options`` set (or any container of option
             names / SimOption objects), possibly ``None``.
 
     Returns:
-        Sorted list of offending option names; empty when the state is
+        Sorted list of offending settings; empty when the state is
         Rust-eligible.
     """
-    if not options:
+    if options is None:
         return []
-    return sorted(name for name in _RAISE_OPTION_NAMES if name in options)
+    offending = [name for name in _RAISE_OPTION_NAMES if name in options]
+    offending += [f"unset {name}" for name in rust_missing_required_options(options)]
+    return sorted(offending)
 
 
 def state_requires_python_engine(state) -> bool:
@@ -3683,23 +3723,24 @@ class RustExplorationManager(
         self._warned_rejected_options.update(unseen)
 
     def _check_raise_options(self, options) -> None:
-        """Raise NotImplementedError if any ``_RAISE_OPTION_NAMES`` are set.
+        """Raise NotImplementedError on a SimOption setting Rust cannot provide.
 
-        These SimOptions request behavior the Rust engine cannot provide
-        (action streams, eager concretization, conservative-write refusal,
-        ret-emulation, calless short-circuits, ancestor strongrefs,
-        symbolic register fill, etc.). Silent divergence has burned users
-        in the past, so we hard-fail at the manager boundary to force a
-        drop to the Python engine.
+        Both polarities (see :func:`rust_unsupported_options`): a
+        ``_RAISE_OPTION_NAMES`` member that is set — action streams, eager
+        concretization, conservative-write refusal, ret-emulation, calless
+        short-circuits, symbolic register fill, … — or a
+        ``_REQUIRED_OPTION_NAMES`` member that is not. Silent divergence has
+        burned users in the past, so we hard-fail at the manager boundary to
+        force a drop to the Python engine.
         """
         offending = rust_unsupported_options(options)
         if not offending:
             return
         names = ", ".join(offending)
         raise NotImplementedError(
-            f"SimOption(s) {{{names}}} request behavior the Rust engine "
-            "cannot provide. Drop use_rust_engine=True (or remove these "
-            "options from state.options) and rerun with the Python "
+            f"SimOption setting(s) {{{names}}} request behavior the Rust "
+            "engine cannot provide. Drop use_rust_engine=True (or fix these "
+            "options on state.options) and rerun with the Python "
             "engine. See docs/advanced-topics/rust_engine.rst for the "
             "full matrix."
         )

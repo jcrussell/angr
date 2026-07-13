@@ -126,9 +126,31 @@ _EXONERATED = {
     "(syscalls/cgc.rs NativeFdwaitSyscall) implements exactly the option-is-set behavior and now "
     "falls back to Python when the option is unset, where the Python proc's unconstrained ready "
     "bits are produced.",
+    "TRACK_MEMORY_MAPPING": "Vestigial: nothing in angr (or its ecosystem deps) ever *reads* it. "
+    "The only in-tree reference adds it to an option set (analyses/identifier/runner.py, "
+    "Runner.__init__); no code path branches on its presence, so ignoring it cannot change an "
+    "answer. Listed as divergence-risk in the matrix only by association with the TRACK_* family. "
+    "(angr-op0dn.14.7)",
     "TRACK_ACTION_HISTORY": "Demoted from raise in angr-fkvt: unlike its TRACK_*_ACTIONS siblings it "
     "does not gate action recording. Its only in-tree consumer (state_plugins/preconstrainer.py) "
     "uses it as a metadata flag whose clear/restore is a vacuous no-op under Rust.",
+}
+
+
+# Divergence-risk options that ship in a *default* mode bundle — so they can
+# neither raise nor warn at option-set time without firing for a user who opted
+# into nothing — but whose one observable effect is attributable at its
+# *consumption* site instead. Counted as "warn" (degraded but attributable), not
+# silent: the user does get a diagnostic, just at read time rather than
+# construction time.
+_CONSUMPTION_WARNED = {
+    "TRACK_CONSTRAINT_ACTIONS": "Its only observable effect is the SimActionConstraint stream "
+    "(state_plugins/solver.py SimSolver.add), and the Rust engine emits no SimActions. Reading "
+    "`state.history.actions` on a Rust-owned state warns once per process via "
+    "`_RustOwnedSimStateHistory` (angr/exploration/rust_state_export.py) — so the empty stream is "
+    "attributable at the point the user actually consumes it. Ships in the `symbolic` bundle, "
+    "hence excluded from _RAISE_OPTION_NAMES / _REJECTED_OPTION_NAMES by construction. "
+    "(angr-op0dn.14.7)",
 }
 
 
@@ -137,10 +159,26 @@ def _read(p: Path) -> str:
 
 
 def _option_tiers() -> tuple[frozenset[str], frozenset[str]]:
-    """Live ``_RAISE_OPTION_NAMES`` / ``_REJECTED_OPTION_NAMES`` from the bridge."""
-    from angr.exploration.rust_manager import _RAISE_OPTION_NAMES, _REJECTED_OPTION_NAMES
+    """Live raise / warn option sets from the bridge.
 
-    return frozenset(_RAISE_OPTION_NAMES), frozenset(_REJECTED_OPTION_NAMES)
+    The raise tier is both polarities of the hard gate: ``_RAISE_OPTION_NAMES``
+    (refused when set) plus ``_REQUIRED_OPTION_NAMES`` (refused when *unset* —
+    the inverse-polarity gate, angr-op0dn.14.7). Either way the manager raises
+    and the auto-dispatcher routes to Python, so neither is a silent divergence.
+
+    The warn tier is ``_REJECTED_OPTION_NAMES`` (warn-once at manager
+    construction) plus ``_CONSUMPTION_WARNED`` (warn-once at the read site).
+    """
+    from angr.exploration.rust_manager import (
+        _RAISE_OPTION_NAMES,
+        _REJECTED_OPTION_NAMES,
+        _REQUIRED_OPTION_NAMES,
+    )
+
+    return (
+        frozenset(_RAISE_OPTION_NAMES | _REQUIRED_OPTION_NAMES),
+        frozenset(_REJECTED_OPTION_NAMES) | frozenset(_CONSUMPTION_WARNED),
+    )
 
 
 def _docs_matrix() -> dict[str, set[str]]:
@@ -276,6 +314,11 @@ def collect() -> dict:
     silent_live = [o for o in options if o["tier"] == "silent" and o["py_consumer_modules"] > 0]
     silent_default = [o for o in silent_live if o["in_default_modes"]]
     silent_opted = [o for o in silent_live if not o["in_default_modes"]]
+    # `symbolic` is the bundle `factory.entry_state()` hands out with no
+    # argument, so a silent option living *there* is the true 100%-of-users
+    # case. The other bundles (fastpath / static / tracing) are reached only by
+    # passing mode=, which is itself an opt-in.
+    silent_entry_state = [o for o in silent_default if "symbolic" in o["in_default_modes"]]
 
     supported_events = set(_INSPECT_EVENT_SPECS)
     all_events = {e.value if hasattr(e, "value") else str(e) for e in EventType}
@@ -300,8 +343,10 @@ def collect() -> dict:
             t: sum(1 for o in options if o["tier"] == t) for t in ("raise", "warn", "exonerated", "silent")
         },
         "exonerated_options": _EXONERATED,
+        "consumption_warned_options": _CONSUMPTION_WARNED,
         "silent_live_options": [o["option"] for o in silent_live],
         "silent_default_mode_options": [o["option"] for o in silent_default],
+        "silent_entry_state_options": [o["option"] for o in silent_entry_state],
         "silent_opt_in_options": [o["option"] for o in silent_opted],
         "matrix_counts": {k: len(v) for k, v in matrix.items()},
         "inspect": {
@@ -379,6 +424,7 @@ def main() -> int:
     print(f"  silent:                                       {counts['silent']}")
     print(f"    live (>=1 Python consumer):     {len(census['silent_live_options'])}")
     print(f"    of those, in a default bundle:  {census['silent_default_mode_options']}")
+    print(f"    of those, in `symbolic` (= plain entry_state()): {census['silent_entry_state_options']}")
     print(f"    of those, opt-in only:          {census['silent_opt_in_options']}")
     print()
     print("=== state.inspect ===")

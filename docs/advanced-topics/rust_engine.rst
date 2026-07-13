@@ -1851,11 +1851,16 @@ vs. Python.
        regardless, so silent acceptance misleads users who rely on
        ``state.history.actions``.
    * - ``TRACK_CONSTRAINT_ACTIONS``
-     - Populate ``state.history.actions`` with ``SimAction*`` records.
-     - **(b) explicitly reject** — ships in the default ``symbolic``
-       mode bundle so cannot raise without spamming every
-       ``entry_state()``; warn-on-read via
-       ``_RustOwnedSimStateHistory`` instead.
+     - Populate ``state.history.actions`` with ``SimActionConstraint``
+       records.
+     - **(b) explicitly reject, attributed at the read site** — ships in the
+       default ``symbolic`` mode bundle so it can neither raise nor warn at
+       manager construction without firing for every ``entry_state()``. Its
+       only observable effect is the action stream, and reading
+       ``state.history.actions`` on a Rust-owned state warns once per process
+       via ``_RustOwnedSimStateHistory``
+       (``angr/exploration/rust_state_export.py``), so the divergence is
+       attributable where the user actually consumes it (``angr-op0dn.14.7``).
    * - ``TRACK_ACTION_HISTORY``
      - Metadata flag toggled around preconstraint; not a
        ``TRACK_*_ACTIONS`` recording gate.
@@ -1866,8 +1871,14 @@ vs. Python.
        no-op under Rust, which never records actions. Removed from
        ``_RAISE_OPTION_NAMES`` (unblocks AEG workloads, ``angr-86c4``).
    * - ``TRACK_MEMORY_MAPPING``
-     - Logs map/unmap into ``state.history``.
-     - (b) explicitly reject.
+     - Nominally logs map/unmap into ``state.history``.
+     - **Vacuous** (``angr-op0dn.14.7``). Vestigial in current angr: nothing
+       in the tree (or in ``claripy`` / ``cle`` / ``pyvex``) ever *reads* the
+       option — the sole reference adds it to an option set
+       (``analyses/identifier/runner.py``). No code path branches on it, so
+       Rust ignoring it cannot change an answer. Kept in this table only
+       because the ``TRACK_*`` family it is named after is genuinely
+       divergence-risk.
    * - ``CONSTRAINT_TRACKING_IN_SOLVER``
      - Required for ``solver.unsat_core()``.
      - **(c) raise NotImplementedError** at manager construction
@@ -1969,8 +1980,17 @@ vs. Python.
      - Spawns successor with ``divisor == 0``.
      - (a) implement — Rust treats div-by-zero as a single state.
    * - ``EXTENDED_IROP_SUPPORT``
-     - pyvex extended ops; Rust may not handle every op.
-     - (a) implement / audit per-op coverage.
+     - Widens Python's IR-op table: ``vexop_to_simop`` auto-generates a
+       ``SimIROp`` from the op name instead of raising
+       ``UnsupportedIROpError``.
+     - **Honored when set** (the default in every mode bundle) — Rust runs
+       the op natively, or defers the block to Python where the widening
+       applies. **Raises when unset** (``angr-op0dn.14.7``): removing it asks
+       for the *narrow* op table, and the Rust interpreter has no narrow mode,
+       so it would execute an op Python would have refused. This is the
+       inverse-polarity gate ``_REQUIRED_OPTION_NAMES``
+       (``angr/exploration/rust_manager.py``) — the only option refused by its
+       *absence*.
    * - ``CGC_NON_BLOCKING_FDS``
      - When *not* set, Python's ``fdwait`` SimProcedure returns symbolic
        1-bit ready flags for each fd; when set, it returns concrete 1.
@@ -2128,19 +2148,43 @@ divergence the moment it is not. Each of the three has to be individually
 resolved — implemented, proved vacuous the way the 8 exonerations were, or
 accepted with an explicit documented carve-out. There is no fourth option.
 
+``angr-op0dn.14.7`` resolved all three, one per route, and each answer is a
+different shape:
+
+* ``EXTENDED_IROP_SUPPORT`` — **inverse polarity**. The option only ever
+  *widens* Python's op table, so set (the default) it is honored transparently;
+  the divergent configuration is the one where the user *removes* it. So it does
+  not belong in ``_RAISE_OPTION_NAMES`` (presence) but in the new
+  ``_REQUIRED_OPTION_NAMES`` (absence). Now loud, hence dispatcher-routable, and
+  the default path is untouched.
+* ``TRACK_CONSTRAINT_ACTIONS`` — **attributed at the consumption site**. It
+  cannot raise or warn at construction, but its one observable effect is the
+  ``SimActionConstraint`` stream, and ``_RustOwnedSimStateHistory`` already
+  warns once when a Rust-owned state's ``history.actions`` is read. The
+  divergence is therefore attributable exactly where a user could notice it.
+* ``TRACK_MEMORY_MAPPING`` — **vacuous**. Nothing in angr or its ecosystem deps
+  reads the option; the only reference adds it to an option set. Exonerated with
+  a citation, and a test guards against it gaining a reader.
+
 Consequently the flip gate is:
 
 1. **(landed, angr-op0dn.14.5.2)** The tri-state dispatcher exists, and every
    loud item (raise-options, unsupported arch, pre-registered unsupported
    inspect events, technique/SimulationManager-only kwargs) routes to Python
    instead of throwing — see `Automatic engine selection`_ above.
-2. The silent surface is empty — either fixed, or on an explicit
-   accepted-divergence list. Today it is 13 items: the 10 live silent options
-   above, the 63 flip-blocking bridge sites from the M6.5a fallback census, and
-   the ``constraints`` inspect event that the native fork-guard add path does
-   not fire. (``vex_lift`` on the native libVEX lift is a 14th, dormant until E2
-   ships enabled.)
-3. M2 result-determinism holds on non-bimodal cases, accepting the permanent
+2. **(landed for the default bundle, angr-op0dn.14.7)** No silent
+   divergence-risk option ships in the ``symbolic`` bundle any more, so a plain
+   ``entry_state()`` carries none. The remaining silent options
+   (``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES`` in ``fastpath``;
+   ``PRODUCE_ZERODIV_SUCCESSORS`` / ``ZERO_FILL_UNCONSTRAINED_REGISTERS`` in
+   ``tracing``) ride bundles the user reaches only by passing ``mode=``, which
+   is itself an opt-in — they are dispatcher-routable and tracked separately.
+3. The rest of the silent surface is empty — either fixed, or on an explicit
+   accepted-divergence list. Today that is the 63 flip-blocking bridge sites
+   from the M6.5a fallback census plus the ``constraints`` inspect event that
+   the native fork-guard add path does not fire. (``vex_lift`` on the native
+   libVEX lift is dormant until E2 ships enabled.)
+4. M2 result-determinism holds on non-bimodal cases, accepting the permanent
    bimodal timing carve-out.
 
 The cheap move for the *opt-in* silent options was worth naming, because it was

@@ -29,10 +29,13 @@ class _RustOwnedSimStateHistory(SimStateHistory):
     The Rust engine does not populate ``recent_actions`` / ``recent_events``,
     so these properties return empty iterators no matter what
     ``TRACK_CONSTRAINT_ACTIONS`` / ``TRACK_MEMORY_ACTIONS`` / ``TRACK_*`` are
-    set. The relevant options ship in the default ``symbolic`` mode bundle, so
-    we can't warn on add() without spamming every ``entry_state()``; instead
-    we install this subclass on every materialized Rust-owned SimState and
-    warn the first time the empty stream is actually read.
+    set. The ``TRACK_*_ACTIONS`` siblings all raise at manager construction
+    (``_RAISE_OPTION_NAMES``), but ``TRACK_CONSTRAINT_ACTIONS`` ships in the
+    default ``symbolic`` mode bundle and so cannot — raising (or warning on
+    add()) would fire for every ``entry_state()``. This read-time hook is that
+    option's attribution point instead (angr-op0dn.14.7): we install the
+    subclass on every materialized Rust-owned SimState and warn the first time
+    the empty stream is actually read.
 
     Class-level flag (not instance-level) — one warning per process even
     across managers and states.
@@ -46,9 +49,11 @@ class _RustOwnedSimStateHistory(SimStateHistory):
             return
         cls._WARNED = True
         warnings.warn(
-            f"state.history.{attr} is empty: the Rust engine does not "
-            "produce SimAction/SimEvent records, so the TRACK_*_ACTIONS / "
-            "TRACK_MEMORY_MAPPING SimOptions have no effect under "
+            f"state.history.{attr} is empty (or missing the records the Rust "
+            "engine produced natively): the Rust engine does not emit "
+            "SimAction/SimEvent records, so TRACK_CONSTRAINT_ACTIONS — the one "
+            "TRACK_*_ACTIONS option that ships in the default `symbolic` bundle "
+            "and therefore cannot raise — has no effect under "
             "RustExplorationManager. Use the Python engine (drop "
             "use_rust_engine=True) for action-stream-driven analyses. See "
             "docs/advanced-topics/rust_engine.rst.",
@@ -1562,11 +1567,11 @@ class RustStateExportMixin:
 
         # Promote state.history to the warn-on-read variant. Catches the
         # silent-divergence case where users rely on state.history.actions /
-        # state.history.events (populated under Python by TRACK_*_ACTIONS /
-        # TRACK_MEMORY_MAPPING; never populated under Rust). The relevant
-        # options ship in the default 'symbolic' bundle, so we can't warn on
-        # add() without spamming entry_state(); the read-time hook fires
-        # only when the empty stream is actually consumed.
+        # state.history.events (populated under Python by TRACK_*_ACTIONS;
+        # never populated under Rust). TRACK_CONSTRAINT_ACTIONS — the one such
+        # option in the default 'symbolic' bundle, hence the one that cannot
+        # raise — would otherwise warn on every entry_state(); the read-time
+        # hook fires only when the empty stream is actually consumed.
         _install_rust_history_warning(state)
 
     def eval_memory(self, state_id: int, addr: int, size: int) -> bytes | None:
