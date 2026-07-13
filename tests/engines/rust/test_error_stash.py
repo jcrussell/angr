@@ -853,7 +853,13 @@ class TestErrorRecovery:
         state.regs.rsp = 0x7FFFF0000
         state.memory.store(0x7FFFF0000, b"\x00" * 8)
 
-        mgr = RustExplorationManager(proj, [state])
+        # use_native_lift=False: this test pins the *callback* dirty-bytes
+        # contract, and the native libVEX seam bypasses _cb_lift_block
+        # entirely (it reads the live bytes straight out of rust_memory, so
+        # it gets SMC freshness without the dirty_bytes plumbing — see
+        # test_smc_native_lift_executes_stored_bytes). Without this the test
+        # records zero lifts at 0x1010 on a --features libvex-ffi build.
+        mgr = RustExplorationManager(proj, [state], use_native_lift=False)
         # load_shellcode's cle Blob has obj.binary == None, so the default
         # _load_binary_regions skips it and `is_in_binary` returns False
         # everywhere — the engine then treats the jmp at 0x100d as an
@@ -891,6 +897,72 @@ class TestErrorRecovery:
             f"dirty_bytes[0] should be 0xc3 (the byte just stored), got "
             f"0x{last_bytes[0]:02x} (full: {last_bytes[:8].hex()})"
         )
+
+    def test_smc_native_lift_executes_stored_bytes(self):
+        """The native libVEX seam must honor SMC too.
+
+        ``try_native_lift`` sources block bytes from ``rust_memory``, so a
+        store to in-binary code is visible to it without any dirty_bytes
+        plumbing — but that is only true if the lift really reads the state's
+        memory and not the (stale) cle binary image. Distinguish the two
+        behaviorally: the static byte at 0x1010 is an infinite self-loop
+        (``jmp $``), and the store overwrites it with ``ret``. Executing the
+        stale image loops forever (a state is still active at max_steps);
+        executing the stored bytes returns and drains the active stash.
+
+        No-op on a build without ``--features libvex-ffi`` (the manager's
+        native-lift default is inert there and the callback path, covered by
+        test_smc_rust_passes_dirty_bytes_to_python_lift, serves the lift).
+        """
+        import angr.sim_options as o
+
+        # Same layout as the callback test, except 0x1010 is `eb fe` (jmp $)
+        # statically; the store at 0x100a rewrites its first byte to 0xc3,
+        # turning it into `ret` (the trailing 0xfe is then unreachable).
+        shellcode = (
+            bytes.fromhex("48b81010000000000000")  # mov rax, 0x1010
+            + bytes.fromhex("c600c3")  # mov byte [rax], 0xc3
+            + bytes.fromhex("ffe0")  # jmp rax
+            + b"\x00"  # padding to align 0x1010
+            + bytes.fromhex("ebfe")  # jmp $ (static at 0x1010)
+        )
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        state.regs.rsp = 0x7FFFF0000
+        state.memory.store(0x7FFFF0000, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state], use_native_lift=True)
+        # See load-shellcode-blob-binary-none (as in the callback test).
+        mgr._rust_mgr.load_binary_regions([(0x1000, shellcode)])
+        # The interpreter lift counters are only published under profiling.
+        mgr.enable_profiling()
+        mgr.run(max_steps=10)
+
+        assert not mgr.stashes.get("active"), (
+            "a state is still active after 10 steps — the lift at 0x1010 saw "
+            "the stale `jmp $` from the binary image instead of the stored "
+            f"`ret`; stashes: { {k: len(v) for k, v in mgr.stashes.items() if v} }"
+        )
+
+        # On a feature-on build the assertion above is only meaningful if the
+        # native seam actually served a lift — otherwise this silently
+        # degrades into a second copy of the callback-path test.
+        try:
+            from angr.rustylib.vex_engine import libvex_ffi_enabled
+        except ImportError:
+            libvex_ffi_enabled = None
+        if libvex_ffi_enabled is not None and libvex_ffi_enabled():
+            assert mgr.stats.get("rust_native_lift_count", 0) > 0, (
+                "libvex-ffi build with use_native_lift=True lifted nothing "
+                "natively; the SMC assertion above did not exercise the "
+                "native seam"
+            )
 
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""

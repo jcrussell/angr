@@ -214,7 +214,7 @@ def _run_in_child(
     diff_max_snapshots=200,
     use_shared_lineage_solver=False,
     deterministic=False,
-    native_lift=False,
+    native_lift=None,
 ):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import importlib.util
@@ -298,7 +298,9 @@ def _run_in_child(
                 states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
                 deterministic=deterministic,
-                use_native_lift=native_lift,
+                # None => inherit the manager default (on for an AMD64
+                # libvex-ffi build); True/False force the seam on/off.
+                **({} if native_lift is None else {"use_native_lift": native_lift}),
             )
             rust_mgr_instance.enable_profiling()
             if strategy != "bfs":
@@ -712,7 +714,7 @@ def run_example(
     counters_json=False,
     use_shared_lineage_solver=False,
     deterministic=False,
-    native_lift=False,
+    native_lift=None,
 ):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
@@ -1000,11 +1002,14 @@ def main():
     )
     parser.add_argument(
         "--native-lift",
-        action="store_true",
-        help="Rust engine only. Construct RustExplorationManager with "
-        "use_native_lift=True so cold-block lifting uses the in-process "
-        "native libVEX seam (z087y Stage-2). No-op unless the .so was "
-        "built --features libvex-ffi AND the project arch is AMD64.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Rust engine only. Force use_native_lift on/off, so cold-block "
+        "lifting does (or does not) use the in-process native libVEX seam. "
+        "Default is to inherit the RustExplorationManager default, which is "
+        "on for an AMD64 project when the .so was built --features "
+        "libvex-ffi and inert otherwise (z087y Stage-3). --no-native-lift "
+        "is the A/B control arm.",
     )
     args = parser.parse_args()
 

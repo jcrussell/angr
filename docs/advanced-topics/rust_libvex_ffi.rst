@@ -136,3 +136,80 @@ Open risks (all inherited, none new after this verdict)
 * **Thread-safety:** libVEX global state (``vex_control``, the arena) is not
   re-entrant; a parallel backend needs a per-worker lift lock or one lifter
   thread. Relevant to the parallel epic, not to single-threaded Stage-1.
+
+Stage-3 verdict: AMD64 default-on (measured)
+--------------------------------------------
+
+``RustExplorationManager(use_native_lift=...)`` defaults to **True** as of bd
+``angr-op0dn.2.2``. The flag is still double-guarded: it only reaches
+``set_native_lift_enabled(True)`` when ``libvex_ffi_enabled()`` is true (i.e.
+the ``.so`` was built ``--features libvex-ffi``, which is **not** a default
+cargo feature) *and* ``project.arch.name == "AMD64"``. On a stock build the
+default is therefore inert, and nothing about the shipped engine changes.
+
+Evidence (feature-on cargo build, ``run_single.py --native-lift`` vs
+``--no-native-lift``, wall-clock over 3 reps unless noted):
+
+.. list-table::
+   :header-rows: 1
+
+   * - bench
+     - off (s)
+     - on (s)
+     - native / fallback lifts
+     - GIL work
+   * - ``codegate_2017-angrybird``
+     - 4.33 / 4.39 / 4.42
+     - 3.68 / 3.90 / 3.94
+     - all native, 0 fallback
+     - —
+   * - ``ekopartyctf2016_rev250``
+     - 2.53 / 2.63 / 2.75
+     - 2.40 / 2.44 / 2.47
+     - 221 / 0
+     - 356 ms → 198 ms
+   * - ``xmllint_getenv``
+     - 3.83 / 3.84 / 3.86
+     - 3.79 / 3.79 / 3.81
+     - 135 / 0
+     - 96 ms → 65 ms
+   * - ``fauxware``
+     - 0.24
+     - 0.23–0.24
+     - 14 / 0
+     - 3.0 ms → 0
+   * - ``mma_howtouse`` (callback-heavy)
+     - 4.81–4.84
+     - 4.81–4.93
+     - —
+     - —
+   * - ``cow_fork_scaling`` (5 reps, min)
+     - 2.62
+     - 2.60
+     - **21 / 256**
+     - 193 ms → 182 ms
+   * - ``google2016_unbreakable_1`` (bimodal)
+     - 2.03–10.63
+     - 2.27–3.16
+     - —
+     - within bimodal noise
+
+Reading: the two lift-warmup-heavy real binaries win (``angrybird`` ≈ 13 %,
+``rev250`` ≈ 7 %); everything else is flat; **nothing regresses**; ``found`` is
+unchanged everywhere. The GIL-work drop (30–45 %) is the durable result and the
+original ROI thesis — it removes a serialization point that matters for parallel
+warmup even where it does not move single-threaded wall-clock.
+
+Native-lift hit rate depends on the memory sidecar
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``try_native_lift`` sources block bytes from ``rust_memory`` via
+``read_concrete_bytes_for_lift``; when the ``.text`` page is not resident in the
+Rust sidecar it returns ``None`` and the lift falls back to the pyvex callback
+(counted in ``rust_native_lift_fallback_count``). ``cow_fork_scaling`` builds its
+state with ``blank_state`` and consequently serves only 21 of 277 lifts natively.
+This is a **hit-rate**, not a correctness, issue — the fallback IRSB is identical
+and wall-clock stays flat — but it means the win is concentrated on
+``entry_state`` / ``full_init_state`` workloads today. Sourcing the bytes from the
+already-loaded binary-region store (``_load_binary_regions``) on a sidecar miss is
+tracked follow-up work.

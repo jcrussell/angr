@@ -873,7 +873,7 @@ class RustExplorationManager(
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         use_simproc_fork_via_rust: bool | None = None,
-        use_native_lift: bool = False,
+        use_native_lift: bool = True,
         symlinks: dict | None = None,
         **kwargs,
     ):
@@ -989,6 +989,16 @@ class RustExplorationManager(
                 through boundary). When ``None`` (default), the env var
                 ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles it on;
                 otherwise off.
+            use_native_lift: If True (default), lift cold blocks in-process
+                through the native libVEX seam instead of the pyvex Python
+                callback. Requires a ``--features libvex-ffi`` build and an
+                AMD64 target; on any other build/arch the flag is inert and
+                lifting stays on the callback path. Blocks whose bytes are
+                not fully concrete in the Rust memory sidecar (and blocks
+                with a VEX opt-level override) fall back to the callback
+                with an identical IRSB, so setting this False only costs
+                speed, never fidelity. See
+                docs/advanced-topics/rust_libvex_ffi.rst.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -1105,12 +1115,16 @@ class RustExplorationManager(
         if max_history != 1000:
             self._rust_mgr.set_max_history(max_history)
 
-        # z087y Stage-2: opt into native (in-process) libVEX cold-block
-        # lifting. Only flip the flag when the .so was compiled with the
-        # `libvex-ffi` feature (probed via `libvex_ffi_enabled()`) AND the
-        # target is AMD64 — the only arch the native lifter marshals today.
-        # Off by default; on unsupported builds the Rust setter is a no-op
-        # stub, so the guard is belt-and-suspenders.
+        # z087y Stage-3: native (in-process) libVEX cold-block lifting. Only
+        # flip the flag when the .so was compiled with the `libvex-ffi`
+        # feature (probed via `libvex_ffi_enabled()`) AND the target is AMD64
+        # — the only arch the native lifter marshals today. On by default
+        # since angr-op0dn.2.2 (bench evidence in
+        # docs/advanced-topics/rust_libvex_ffi.rst): no bench regressed, wins
+        # up to 13%, and any block the native lifter cannot serve falls back
+        # to the pyvex callback with an identical IRSB. `libvex-ffi` is still
+        # a non-default cargo feature, so on a stock build the probe is False
+        # and this is inert.
         self._use_native_lift = bool(use_native_lift)
         if self._use_native_lift:
             try:
