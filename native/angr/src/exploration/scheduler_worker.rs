@@ -90,12 +90,9 @@ pub(super) fn worker_loop(
 
         // Summaries pay no serde — record and drop the full states in-context.
         if !outcome.terminal_summaries.is_empty() {
-            let n = outcome.terminal_summaries.len();
+            t.counters.record_summaries(&outcome.terminal_summaries);
             let mut guard = job.summaries.lock().expect("summaries mutex poisoned");
             guard.extend(outcome.terminal_summaries);
-            t.counters
-                .summarized_terminals
-                .fetch_add(n, Ordering::SeqCst);
         }
 
         // Shed surplus to the injector if a sibling is starving or we are over
@@ -206,11 +203,7 @@ pub(super) fn worker_session_loop(
 
         // Dead paths stay cheap summaries, counted and dropped in-context (the
         // same deadended-content caveat as wave mode).
-        if !outcome.terminal_summaries.is_empty() {
-            t.counters
-                .summarized_terminals
-                .fetch_add(outcome.terminal_summaries.len(), Ordering::SeqCst);
-        }
+        t.counters.record_summaries(&outcome.terminal_summaries);
 
         offload_surplus(local, &t.injector, &t.idle_workers, &t.counters);
 

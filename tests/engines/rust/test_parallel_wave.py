@@ -652,3 +652,58 @@ class TestParallelSteady:
                 (FAUXWARE_ACCEPTED_ADDR, False),
             }
         )
+
+
+def _drain_pbounce(project, workers, monkeypatch):
+    """Run the 8-leaf synthetic to quiescence (no ``find``, so no cancel).
+
+    Without a find target every path runs to a terminal, so the terminal
+    *counters* are a property of the search tree rather than of where a cancel
+    token happened to land — the only regime in which the serial and parallel
+    arms are comparable at all (see ``snapshot-resume-spread-is-dump-side``).
+    """
+    if workers > 1:
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
+    else:
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+    mgr = RustExplorationManager(project, [_pbounce_state(project)])
+    mgr.run(n=4096)
+    return mgr
+
+
+class TestParallelTerminalAccounting:
+    """angr-op0dn.13.15 (1): dead paths are *counted* even though they are dropped.
+
+    A parallel worker never serializes a dead path back to the coordinator — it
+    records a ``TerminalSummary`` and drops the state in its own Z3 context. That
+    is the design (dead paths must not pay the serde tax), but before this the
+    summaries died in a scheduler-local atomic, so ``stats()["deadended_count"]``
+    read **0** on a parallel run where the serial loop reported 14. The counts now
+    ride back with ``SchedulerStats`` and land in the manager's terminal counters.
+
+    The *content* caveat stands and is asserted here: ``stash_counts()`` still
+    shows no ``deadended`` stash under parallel, because the states themselves are
+    gone. Callers that need the terminal states must run single-threaded.
+    """
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_deadended_count_survives_the_worker_boundary(self, pbounce_project, workers, monkeypatch):
+        serial = _drain_pbounce(pbounce_project, 1, monkeypatch).stats["deadended_count"]
+        assert serial > 0, "the serial drain must produce dead paths for this test to mean anything"
+
+        mgr = _drain_pbounce(pbounce_project, workers, monkeypatch)
+        assert mgr.stats["parallel_real_workers"] == workers
+        assert mgr.stats["deadended_count"] >= serial, (
+            f"workers={workers}: parallel run counted {mgr.stats['deadended_count']} dead paths, "
+            f"serial counted {serial} — summarized terminals are not reaching the manager"
+        )
+        # `>=` not `==` on purpose: the parallel arm currently drains 2 paths MORE
+        # than serial on this binary (16 vs 14; the Python engine agrees with
+        # serial at 14), which is a separate over-collection bug tracked as
+        # angr-op0dn.13.16. Tighten to `==` when that lands.
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_deadended_states_are_not_recoverable_under_parallel(self, pbounce_project, workers, monkeypatch):
+        """The documented content caveat: counted, not stashed."""
+        mgr = _drain_pbounce(pbounce_project, workers, monkeypatch)
+        assert mgr.stash_counts().get("deadended", 0) == 0

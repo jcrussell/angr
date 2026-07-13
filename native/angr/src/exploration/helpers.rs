@@ -1,9 +1,10 @@
 use super::*;
 
 impl RustExplorationManager {
-    /// Fold a scheduler run's real (not modelled) dispatch accounting into the
-    /// manager: per-worker dispatch counts plus the frontier-width histogram /
-    /// peak (angr-op0dn.13.9). Shared by BOTH parallel loops — the wave loop
+    /// Fold a scheduler run's real (not modelled) accounting into the manager:
+    /// per-worker dispatch counts, the frontier-width histogram / peak
+    /// (angr-op0dn.13.9), and the dead-path terminal counts the workers only
+    /// summarized (angr-op0dn.13.15). Shared by BOTH parallel loops — the wave loop
     /// and the steady-state coordinator — so frontier residency is no longer a
     /// blind spot for the width audit and the S7 find-all gate.
     ///
@@ -32,6 +33,18 @@ impl RustExplorationManager {
         for (i, count) in stats.worker_dispatches.iter().take(workers).enumerate() {
             self.parallel_worker_dispatch[i] += *count as u64;
         }
+
+        // Dead-path terminal accounting (angr-op0dn.13.15). Workers drop the
+        // summarized states in their own context — their full symbolic content is
+        // not recoverable through the parallel path — but the COUNTS must still
+        // land, or `stats()["deadended_count"]` reads 0 on a parallel run where
+        // the serial loop reports N terminal paths. Materialized terminals
+        // (found / unconstrained / bounce) are counted by the coordinator's
+        // `push_or_drop_terminal` in `route_materialized_terminal` and never
+        // appear as summaries, so there is no double count.
+        self.sm.deadended_count += stats.summarized_deadended as u64;
+        self.sm.errored_count += stats.summarized_errored as u64;
+        self.sm.pruned_count += stats.summarized_pruned as u64;
     }
 
     /// DS-instr (angr-11djq.16): sample the active stash once per step and

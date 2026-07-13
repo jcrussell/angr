@@ -260,6 +260,15 @@ pub(crate) struct SchedulerCounters {
     surplus_offloaded: AtomicUsize,
     materialized_terminals: AtomicUsize,
     summarized_terminals: AtomicUsize,
+    /// Per-disposition split of `summarized_terminals` (angr-op0dn.13.15). The
+    /// summarized states themselves are dropped in-worker, but their *counts*
+    /// must still reach the manager's `deadended_count` / `pruned_count` /
+    /// `errored_count`, or a parallel run reports zero dead paths where the
+    /// serial loop reports N. `Avoided` never appears here (avoid-routing is a
+    /// coordinator decision), so there is no fourth slot.
+    summarized_deadended: AtomicUsize,
+    summarized_errored: AtomicUsize,
+    summarized_pruned: AtomicUsize,
     /// Payloads pulled from the injector and `reattach`ed into a worker's own Z3
     /// context (the injector-steal path). Observability only — equals
     /// `injector_dispatches` today; the two diverge once the steady-state
@@ -331,6 +340,30 @@ impl SchedulerCounters {
         self.width_hist[bucket].fetch_add(1, Ordering::Relaxed);
         self.max_width.fetch_max(width, Ordering::Relaxed);
     }
+
+    /// Record one task's dead-path summaries: the total plus the per-disposition
+    /// split the coordinator folds into the manager's terminal counters. Shared
+    /// by BOTH worker loops (wave + session) so neither can grow its own
+    /// accounting.
+    pub(crate) fn record_summaries(&self, summaries: &[TerminalSummary]) {
+        if summaries.is_empty() {
+            return;
+        }
+        self.summarized_terminals
+            .fetch_add(summaries.len(), Ordering::SeqCst);
+        for s in summaries {
+            let slot = match s.disposition {
+                TerminalDisposition::Deadended => &self.summarized_deadended,
+                TerminalDisposition::Errored => &self.summarized_errored,
+                TerminalDisposition::Pruned => &self.summarized_pruned,
+                // Avoid-routing is a coordinator decision (it needs the find/avoid
+                // predicates), so no worker ever summarizes one; counted under the
+                // total only.
+                TerminalDisposition::Avoided => continue,
+            };
+            slot.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Per-run accounting, the basis for the overhead-gate steal-fraction check.
@@ -358,6 +391,13 @@ pub struct SchedulerStats {
     pub materialized_terminals: usize,
     /// Dead-path terminals recorded as summaries (no serde).
     pub summarized_terminals: usize,
+    /// Per-disposition split of `summarized_terminals`; the coordinator folds
+    /// these into the manager's `deadended_count` / `errored_count` /
+    /// `pruned_count` so terminal accounting is worker-count invariant even
+    /// though the states themselves are dropped in-worker (angr-op0dn.13.15).
+    pub summarized_deadended: usize,
+    pub summarized_errored: usize,
+    pub summarized_pruned: usize,
     /// Payloads reattached into a worker's own Z3 context (injector-steal path).
     /// Observability only; see [`SchedulerCounters::reattaches`].
     pub reattaches: usize,
@@ -421,6 +461,9 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
         surplus_offloaded: counters.surplus_offloaded.load(Ordering::SeqCst),
         materialized_terminals: counters.materialized_terminals.load(Ordering::SeqCst),
         summarized_terminals: counters.summarized_terminals.load(Ordering::SeqCst),
+        summarized_deadended: counters.summarized_deadended.load(Ordering::SeqCst),
+        summarized_errored: counters.summarized_errored.load(Ordering::SeqCst),
+        summarized_pruned: counters.summarized_pruned.load(Ordering::SeqCst),
         reattaches: counters.reattaches.load(Ordering::SeqCst),
         bounce_roundtrips: counters.bounce_roundtrips.load(Ordering::SeqCst),
         resume_reinjects: counters.resume_reinjects.load(Ordering::SeqCst),
