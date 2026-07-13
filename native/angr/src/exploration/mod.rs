@@ -334,6 +334,12 @@ pub struct RustExplorationManager {
     /// steps with ≥2/≥3/≥5 concurrent states is the true parallel-favorability
     /// signal panhl.1 omitted. Buckets: [width==1, ==2, 3–4, 5–8, ≥9].
     pub(crate) parallel_width_hist: [u64; 5],
+    /// angr-op0dn.13.9: dispatches per real worker thread, folded from
+    /// `SchedulerStats::worker_dispatches` after each wave / session. Empty on
+    /// the serial path (the modelled homes live in `parallel_worker_of`);
+    /// under the parallel loops its max/min is the load-balance column the S7
+    /// find-all gate reports.
+    pub(crate) parallel_worker_dispatch: Vec<u64>,
     /// Sticky home-worker assignment per active state id, rebuilt each sample
     /// from the surviving frontier (bounds memory to the active width).
     pub(crate) parallel_worker_of: HashMap<u64, usize>,

@@ -179,6 +179,14 @@ impl RustExplorationManager {
         // fraction of steps with ≥3 concurrent states = (hist[2]+hist[3]+hist[4])
         // / sum(hist).
         dict.set_item("parallel_width_hist", self.parallel_width_hist.to_vec())?;
+        // angr-op0dn.13.9: real per-worker dispatch counts (both parallel loops;
+        // empty list on the serial path, where the modelled homes are all the
+        // migration model has). max/min over this vector is the S7 find-all
+        // gate's "states/worker balance" column.
+        dict.set_item(
+            "parallel_worker_dispatch",
+            self.parallel_worker_dispatch.clone(),
+        )?;
         // SI-B (angr-1ilq.3 increment 2b'): real state-migration serde tax,
         // measured by the opt-in shadow probe (RUST_PARALLEL_SHADOW_PROBE). All
         // zero unless the probe is on; feeds the 2b' overhead GO/NO-GO gate.

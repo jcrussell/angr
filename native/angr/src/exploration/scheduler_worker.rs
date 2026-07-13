@@ -26,6 +26,7 @@ use super::*;
 /// any future retention path stays balanced: a carried-over state's terminal
 /// `pending.fetch_sub(1)` must be matched by an add here.
 pub(super) fn worker_loop(
+    worker_id: usize,
     job: &WaveJob,
     ctx: &Context,
     block_cache: &mut LruCache<u64, Arc<IRSB>>,
@@ -56,7 +57,7 @@ pub(super) fn worker_loop(
             return;
         }
 
-        let state = match dispatch_next(t, local, ctx) {
+        let state = match dispatch_next(worker_id, t, local, ctx) {
             Some(state) => state,
             // No task available and nothing outstanding anywhere (or
             // cancelled): no future task can ever appear this wave.
@@ -160,7 +161,7 @@ pub(super) fn worker_session_loop(
             return;
         }
 
-        let state = match dispatch_next(t, local, ctx) {
+        let state = match dispatch_next(worker_id, t, local, ctx) {
             Some(state) => state,
             None => {
                 if t.cancel.is_cancelled() {
@@ -272,6 +273,7 @@ pub(super) fn drain_local_upstream(session: &RunSession, local: &mut VecDeque<Ru
 /// dispatch half of the two modes is identical; only terminal transport and
 /// end-of-work behavior differ).
 pub(super) fn dispatch_next(
+    worker_id: usize,
     t: &WorkTransport,
     local: &mut VecDeque<RustSimState>,
     ctx: &Context,
@@ -283,6 +285,7 @@ pub(super) fn dispatch_next(
         match t.policy.select(local) {
             Some(state) => {
                 t.counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
+                t.record_dispatch(worker_id);
                 return Some(state);
             }
             None => {
@@ -299,6 +302,7 @@ pub(super) fn dispatch_next(
                                 // Observability only (angr-vh834 Phase 1): count every
                                 // injector-steal reattach. No routing change.
                                 t.counters.reattaches.fetch_add(1, Ordering::SeqCst);
+                                t.record_dispatch(worker_id);
                                 return Some(state);
                             }
                             Err(err) => {

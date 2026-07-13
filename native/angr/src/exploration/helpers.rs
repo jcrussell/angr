@@ -1,6 +1,39 @@
 use super::*;
 
 impl RustExplorationManager {
+    /// Fold a scheduler run's real (not modelled) dispatch accounting into the
+    /// manager: per-worker dispatch counts plus the frontier-width histogram /
+    /// peak (angr-op0dn.13.9). Shared by BOTH parallel loops — the wave loop
+    /// and the steady-state coordinator — so frontier residency is no longer a
+    /// blind spot for the width audit and the S7 find-all gate.
+    ///
+    /// The width buckets come from the same sampler as the serial model's
+    /// `record_migration_sample`, so `parallel_width_hist` stays a single
+    /// comparable series regardless of which loop produced it.
+    pub(crate) fn fold_scheduler_dispatch_stats(&mut self, stats: &scheduler::SchedulerStats) {
+        for (i, count) in stats.width_hist.iter().enumerate() {
+            self.parallel_width_hist[i] += *count as u64;
+        }
+        self.parallel_max_active_width = self.parallel_max_active_width.max(stats.max_width as u64);
+
+        // Trim to the REAL pool size, not `parallel_num_workers` (the migration
+        // model's modelled worker count, which is independent and defaults to 4):
+        // the counter array is fixed-size (`MAX_TRACKED_WORKERS`), and slots past
+        // the real pool can never be non-zero. Sizing by the modelled count would
+        // pad the vector with phantom zero-dispatch workers and make the gate's
+        // max/min balance ratio a spurious `inf`. Both parallel loops clamp the
+        // pool to `max(2)`, matching the `max(2)` here.
+        let workers = self
+            .parallel_real_workers
+            .clamp(2, scheduler::MAX_TRACKED_WORKERS);
+        if self.parallel_worker_dispatch.len() < workers {
+            self.parallel_worker_dispatch.resize(workers, 0);
+        }
+        for (i, count) in stats.worker_dispatches.iter().take(workers).enumerate() {
+            self.parallel_worker_dispatch[i] += *count as u64;
+        }
+    }
+
     /// DS-instr (angr-11djq.16): sample the active stash once per step and
     /// accumulate state-reconvergence counters. A "collision" is two or more
     /// active states sharing a `(pc, callstack-return-addr-chain)` key at the

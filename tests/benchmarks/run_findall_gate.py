@@ -30,10 +30,10 @@ Reported per (bench, workers): parallel_tasks, parallel_migrations, steal fracti
 parallel_reattaches, parallel_residual_drains, parallel_bounce_roundtrips,
 gil_work_time_ns / run_wall_time_ns, and the found-set fingerprint.
 
-Known gap: there is no per-worker dispatch counter in the Rust engine today
-(``stats_api.rs`` exposes only aggregate ``parallel_tasks`` / ``parallel_migrations``),
-so the "states/worker balance (max/min dispatched per worker)" column is reported
-as ``n/a`` rather than faked. Adding it is bd angr-op0dn.13.9.
+The ``bal`` column is the states/worker balance (max/min of
+``parallel_worker_dispatch``, angr-op0dn.13.9): 1.00 is a perfectly even split,
+``inf`` means some worker never dispatched a single state, and ``n/a`` is the
+serial path (workers=1 runs the single-threaded loop, which has no workers).
 
 Usage:
     python tests/benchmarks/run_findall_gate.py                        # default corpus
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import statistics
@@ -151,13 +152,29 @@ def run_one(bench: str, workers: int, timeout: int, steady: bool) -> dict | None
         "gil_work_time_ns": stats.get("gil_work_time_ns", 0),
         "run_wall_time_ns": run_wall_ns,
         "gil_fraction": (stats.get("gil_work_time_ns", 0) / run_wall_ns) if run_wall_ns else 0.0,
-        # No per-worker dispatch counter exists yet (angr-op0dn.13.9).
-        "per_worker_dispatch": None,
+        # angr-op0dn.13.9: real per-worker dispatch counts. Empty on the serial
+        # path (workers=1 runs the single-threaded loop, which has no workers).
+        "per_worker_dispatch": list(stats.get("parallel_worker_dispatch", [])),
     }
 
 
 def _median_i(reps: list[dict], key: str) -> int:
     return int(statistics.median([r[key] for r in reps]))
+
+
+def _balance(per_worker: list[int]) -> float | None:
+    """max/min dispatched per worker — the load-imbalance ratio (1.0 = perfect).
+
+    ``None`` when there is no worker vector (serial path) or some worker never
+    dispatched anything (a starved worker makes the ratio infinite, which is
+    itself the finding — the caller renders it as ``inf``).
+    """
+    if not per_worker:
+        return None
+    lo, hi = min(per_worker), max(per_worker)
+    if lo == 0:
+        return math.inf
+    return hi / lo
 
 
 def aggregate(bench: str, workers: int, reps: list[dict]) -> dict:
@@ -185,7 +202,11 @@ def aggregate(bench: str, workers: int, reps: list[dict]) -> dict:
         "width_hist": reps[0]["width_hist"],
         "max_active_width": max(r["max_active_width"] for r in reps),
         "gil_fraction": statistics.median([r["gil_fraction"] for r in reps]),
-        "per_worker_dispatch": None,
+        # Per-worker dispatch is per-rep (worker ids are not comparable across
+        # reps), so report the balance of the median-wall rep rather than a
+        # meaningless element-wise median.
+        "per_worker_dispatch": reps[0]["per_worker_dispatch"],
+        "dispatch_balance": _balance(reps[0]["per_worker_dispatch"]),
         "raw_reps": reps,
     }
 
@@ -220,7 +241,7 @@ def main() -> int:
 
     hdr = (
         f"{'bench':<34} {'w':>2} {'wall_med':>9} {'spread':>13} {'found':>5} {'tasks':>6} "
-        f"{'migr':>5} {'steal%':>7} {'reatt':>6} {'resid':>6} {'gil%':>6} {'peak_w':>6} {'bal':>4}"
+        f"{'migr':>5} {'steal%':>7} {'reatt':>6} {'resid':>6} {'gil%':>6} {'peak_w':>6} {'bal':>6}"
     )
     print(hdr)
     print("-" * len(hdr))
@@ -231,10 +252,12 @@ def main() -> int:
             if r["wall_min_s"] is not None and r["wall_max_s"] is not None
             else "-"
         )
+        bal = r["dispatch_balance"]
+        bal_s = "n/a" if bal is None else ("inf" if math.isinf(bal) else f"{bal:.2f}")
         print(
             f"{r['bench']:<34} {r['workers']:>2} {wall:>9} {spread:>13} {r['found']:>5} {r['tasks']:>6} "
             f"{r['migrations']:>5} {100 * r['steal_fraction']:>6.2f}% {r['reattaches']:>6} "
-            f"{r['residual_drains']:>6} {100 * r['gil_fraction']:>5.2f}% {r['max_active_width']:>6} {'n/a':>4}"
+            f"{r['residual_drains']:>6} {100 * r['gil_fraction']:>5.2f}% {r['max_active_width']:>6} {bal_s:>6}"
         )
 
     # --- the gate: found-set fingerprint identical across worker counts + reps ---

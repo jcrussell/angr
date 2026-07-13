@@ -289,6 +289,48 @@ pub(crate) struct SchedulerCounters {
     /// visible: the wasted work the find-aware dispatch bead (angr-1ilq.9)
     /// aims to eliminate. 0 until the first find raises a cancel.
     post_cancel_steps: AtomicUsize,
+    /// Dispatches per worker id (angr-op0dn.13.9): the load-balance column the
+    /// S7 find-all gate needs (`max/min dispatched per worker`). Indexed by
+    /// `worker_id`; ids >= [`MAX_TRACKED_WORKERS`] fold into the last slot
+    /// (documented lossiness — real runs use <= num_cpus workers).
+    worker_dispatches: [AtomicUsize; MAX_TRACKED_WORKERS],
+    /// Step-weighted schedulable-frontier width, bucketed as
+    /// `[==1, ==2, 3-4, 5-8, >=9]` — the parallel-path analogue of the serial
+    /// model's `parallel_width_hist` (`record_migration_sample` in helpers.rs).
+    /// Sampled at dispatch from `pending` (queued + in-flight states), so both
+    /// worker loops record it and the frontier-residency mode is no longer
+    /// invisible to the width audit.
+    width_hist: [AtomicUsize; 5],
+    /// Peak `pending` observed at dispatch — the parallel `max_active_width`.
+    max_width: AtomicUsize,
+}
+
+/// Per-worker dispatch slots tracked by [`SchedulerCounters::worker_dispatches`].
+/// 32 covers every realistic `RUST_PARALLEL_WORKERS`; higher ids fold into the
+/// last slot rather than allocating (the counters live on a hot path and
+/// `Default`-derived arrays cap at 32).
+pub(crate) const MAX_TRACKED_WORKERS: usize = 32;
+
+impl SchedulerCounters {
+    /// Record one dispatch on `worker_id` observing `width` schedulable states
+    /// (queued + in-flight, including the state being dispatched). Two relaxed
+    /// bumps plus a max-CAS: cheap enough for the dispatch hot path.
+    ///
+    /// Buckets match the serial model's `record_migration_sample` (helpers.rs)
+    /// so the two width histograms are directly comparable.
+    pub(crate) fn record_dispatch(&self, worker_id: usize, width: usize) {
+        self.worker_dispatches[worker_id.min(MAX_TRACKED_WORKERS - 1)]
+            .fetch_add(1, Ordering::Relaxed);
+        let bucket = match width {
+            0 | 1 => 0,
+            2 => 1,
+            3..=4 => 2,
+            5..=8 => 3,
+            _ => 4,
+        };
+        self.width_hist[bucket].fetch_add(1, Ordering::Relaxed);
+        self.max_width.fetch_max(width, Ordering::Relaxed);
+    }
 }
 
 /// Per-run accounting, the basis for the overhead-gate steal-fraction check.
@@ -332,6 +374,14 @@ pub struct SchedulerStats {
     /// origin already requested cancel (angr-1ilq.8). See
     /// [`SchedulerCounters::post_cancel_steps`].
     pub post_cancel_steps: usize,
+    /// Dispatches per worker id (angr-op0dn.13.9). Length is always
+    /// [`MAX_TRACKED_WORKERS`]; the run loop trims it to the configured worker
+    /// count before exporting. See [`SchedulerCounters::worker_dispatches`].
+    pub worker_dispatches: Vec<usize>,
+    /// Step-weighted frontier-width histogram `[==1, ==2, 3-4, 5-8, >=9]`.
+    pub width_hist: [usize; 5],
+    /// Peak schedulable-frontier width observed at dispatch.
+    pub max_width: usize,
 }
 
 impl SchedulerStats {
@@ -376,6 +426,13 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
         resume_reinjects: counters.resume_reinjects.load(Ordering::SeqCst),
         residual_drains: counters.residual_drains.load(Ordering::SeqCst),
         post_cancel_steps: counters.post_cancel_steps.load(Ordering::SeqCst),
+        worker_dispatches: counters
+            .worker_dispatches
+            .iter()
+            .map(|c| c.load(Ordering::SeqCst))
+            .collect(),
+        width_hist: std::array::from_fn(|i| counters.width_hist[i].load(Ordering::SeqCst)),
+        max_width: counters.max_width.load(Ordering::SeqCst),
     }
 }
 
@@ -444,6 +501,16 @@ impl WorkTransport {
             counters: SchedulerCounters::default(),
             policy,
         }
+    }
+
+    /// Record one dispatch on `worker_id`, sampling the schedulable-frontier
+    /// width from `pending` (angr-op0dn.13.9). `pending` counts queued +
+    /// in-flight states and is only decremented AFTER the step, so the sample
+    /// includes the state being dispatched — the same convention as the serial
+    /// model's `active + stepped` width in `record_migration_sample`.
+    fn record_dispatch(&self, worker_id: usize) {
+        let width = self.pending.load(Ordering::Relaxed);
+        self.counters.record_dispatch(worker_id, width);
     }
 
     /// Pull every payload still sitting on the injector (offloaded surplus that
@@ -934,7 +1001,7 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
     loop {
         match job_rx.recv() {
             Ok(WorkerCtl::Wave(job)) => {
-                worker_loop(&job, &z3ctx, &mut block_cache, &mut local);
+                worker_loop(worker_id, &job, &z3ctx, &mut block_cache, &mut local);
                 // Release this worker's Arc clone BEFORE signaling done — the
                 // invariant that makes the coordinator's `Arc::into_inner` safe.
                 drop(job);

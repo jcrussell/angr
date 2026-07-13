@@ -789,6 +789,7 @@ impl RustExplorationManager {
             self.parallel_resume_reinjects += stats.resume_reinjects as u64;
             self.parallel_post_cancel_steps += stats.post_cancel_steps as u64;
             self.parallel_residual_drains += stats.residual_drains as u64;
+            self.fold_scheduler_dispatch_stats(&stats);
             dispatched_total += stats.dispatches() as u64;
             self.apply_uniqueness_filter();
             self.apply_native_techniques();
@@ -1499,6 +1500,7 @@ impl RustExplorationManager {
         self.parallel_resume_reinjects += stats.resume_reinjects as u64;
         self.parallel_residual_drains += stats.residual_drains as u64;
         self.parallel_post_cancel_steps += stats.post_cancel_steps as u64;
+        self.fold_scheduler_dispatch_stats(&stats);
         {
             let drained =
                 std::mem::take(&mut *sess.shared.counters.lock().expect("counters poisoned"));

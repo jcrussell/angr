@@ -7,7 +7,8 @@
 
 use super::worker::dispatch_next;
 use super::{
-    LOCAL_HWM, ParallelScheduler, TaskOutcome, TerminalDisposition, TerminalSummary, WorkTransport,
+    LOCAL_HWM, MAX_TRACKED_WORKERS, ParallelScheduler, TaskOutcome, TerminalDisposition,
+    TerminalSummary, WorkTransport,
 };
 use crate::exploration::selection_policy::{Fifo, Lifo};
 use crate::state::RustSimState;
@@ -54,7 +55,7 @@ fn drain_local_with(policy: &'static str) -> (Vec<u64>, Vec<u64>) {
         local.push_back(st);
     }
     let mut dispatched = Vec::new();
-    while let Some(st) = dispatch_next(&transport, &mut local, &ctx) {
+    while let Some(st) = dispatch_next(0, &transport, &mut local, &ctx) {
         dispatched.push(st.state_id());
     }
     (inserted, dispatched)
@@ -989,4 +990,62 @@ fn test_session_determinism_result_set() {
     for (k, run) in runs.iter().enumerate() {
         assert_eq!(*run, expected, "session run {k} lost/changed a witness");
     }
+}
+
+// angr-op0dn.13.9: the real dispatch path must record BOTH the per-worker
+// dispatch vector and the frontier-width histogram, so the steady/wave loops
+// stop reporting width 0 (previously only the serial migration model sampled
+// width, leaving frontier-residency mode blind to the width audit and the S7
+// find-all gate's states/worker balance column).
+#[test]
+fn test_dispatch_records_width_and_per_worker_counts() {
+    const DEPTH: u64 = 6; // 64 leaves, 127 tasks — plenty of frontier to widen
+    let mut root = pinned_state("width_acc", 0xF00D);
+    root.set_register("rbx", RustBV::concrete(0, 64));
+
+    let sched = ParallelScheduler::new(4);
+    let (collected, _summaries, stats) =
+        sched.run_instrumented(vec![root.detach_for_migration()], |state, _cancel, _c| {
+            let depth = state
+                .get_register("rbx")
+                .and_then(|d| d.as_u64())
+                .expect("depth marker present");
+            if depth >= DEPTH {
+                return TaskOutcome::terminal(vec![state]);
+            }
+            let next = RustBV::concrete((depth + 1) as u128, 64);
+            let mut left = state.fork();
+            let mut right = state.fork();
+            left.set_register("rbx", next.clone());
+            right.set_register("rbx", next);
+            TaskOutcome::continuing(vec![left, right])
+        });
+    assert_eq!(collected.len(), 1usize << DEPTH, "no lost/duplicated work");
+
+    let dispatches = stats.dispatches();
+    assert_eq!(
+        stats.worker_dispatches.len(),
+        MAX_TRACKED_WORKERS,
+        "the per-worker vector is fixed-size; the run loop trims it",
+    );
+    assert_eq!(
+        stats.worker_dispatches.iter().sum::<usize>(),
+        dispatches,
+        "every dispatch must be attributed to exactly one worker",
+    );
+    assert_eq!(
+        stats.width_hist.iter().sum::<usize>(),
+        dispatches,
+        "every dispatch must land in exactly one width bucket",
+    );
+    assert!(
+        stats.max_width >= 2,
+        "a 2^{DEPTH} fork tree must widen the schedulable frontier past 1, got {}",
+        stats.max_width,
+    );
+    assert!(
+        stats.width_hist[1..].iter().sum::<usize>() > 0,
+        "sustained width must be recorded, not just the peak: {:?}",
+        stats.width_hist,
+    );
 }
