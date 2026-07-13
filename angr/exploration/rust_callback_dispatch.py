@@ -1043,6 +1043,7 @@ class RustCallbackDispatchMixin:
                 # to Rust; subsequent loads at sym_addr will see concrete bytes
                 # instead of the symbolic value.
                 pass
+        self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, tracked_writes or None)
 
     @staticmethod
@@ -1232,6 +1233,10 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Could not set skip_hook_addr: {e}")
 
+        # A bounced allocator bumped the Python break pointers; push them back
+        # so a later native malloc does not overlap what it handed out.
+        self._sync_state_heap_to_rust(succ_state, event.callback_state_id)
+
         # Resume Rust with the changes and any new constraints.
         # IMPORTANT: This must happen BEFORE symbolic imports, because
         # apply_changes writes concrete data which clears symbolic page markers.
@@ -1367,6 +1372,9 @@ class RustCallbackDispatchMixin:
                 # constraints from the hook are not synced to Rust. Debug-logs.
                 if _DBG:
                     l.debug(f"Could not extract constraints: {e}")
+
+        # Push back any heap bump the hook made (see _resume_with_state).
+        self._sync_state_heap_to_rust(state, event.callback_state_id)
 
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
@@ -2398,7 +2406,53 @@ class RustCallbackDispatchMixin:
             if getattr(self, "_use_callback_callstack_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_callstack_proxy(state, event.callback_state_id)
 
+            # angr-op0dn.14.1.3: seed Rust's break pointers into the heap plugin
+            # the first time the bounced proc touches it.
+            if event.callback_state_id is not None:
+                self._install_lazy_heap_sync(state, event.callback_state_id)
+
         return state
+
+    def _install_lazy_heap_sync(self, state, state_id):
+        """Seed Rust's heap_brk / mmap_base into ``state.heap`` on first access.
+
+        A bounced malloc/calloc/operator-new reads ``state.heap.heap_location``,
+        which on a freshly copied callback state is still the default
+        0xC0000000 — the same base Rust's bump allocator starts from. Any native
+        allocation that already ran has moved Rust's break pointer past it, so
+        the Python proc would hand out an address Rust already gave away.
+
+        The sync cannot be eager: the heap plugin is lazy and materializing it
+        costs ~65ms (``SimHeapBase.init_state`` maps the 8MB heap region), which
+        every callback would pay whether or not it allocates. So hook the
+        materialization instead — ``SimState.__getattr__`` routes an unregistered
+        plugin through ``self.get_plugin``, so an instance-level override sees
+        exactly the callbacks that do touch the heap and nothing else.
+
+        The write-back (Python bump -> Rust) is
+        ``_sync_state_heap_to_rust``, called from the resume paths.
+        """
+        if "heap" in state.plugins:
+            # Already materialized (the init-time push in ``_add_rust_state``
+            # touches ``state.heap``, so a state copied from the cache normally
+            # lands here). Sync now — no hook needed.
+            self._sync_rust_heap_brk_to_state(state, state_id)
+            self._sync_rust_mmap_base_to_state(state, state_id)
+            return
+
+        orig_get_plugin = state.get_plugin
+
+        def get_plugin(name):
+            fresh = name not in state.plugins
+            plugin = orig_get_plugin(name)
+            if name == "heap" and fresh:
+                # Both helpers re-enter through state.heap, but the plugin is
+                # registered by now so this hook sees fresh=False and stops.
+                self._sync_rust_heap_brk_to_state(state, state_id)
+                self._sync_rust_mmap_base_to_state(state, state_id)
+            return plugin
+
+        state.get_plugin = get_plugin
 
     def _install_callback_memory_proxy(self, state, state_id):
         """Swap ``state.memory`` for a ``RustMemoryProxy`` bound to ``state_id``.

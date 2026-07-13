@@ -468,6 +468,93 @@ class TestHeapBrkSync:
         assert states[0].heap.heap_location == higher
 
 
+class TestCallbackHeapSync:
+    """The SimProcedure-callback bounce must round-trip the heap break pointer.
+
+    Regression for angr-op0dn.14.1.3 (found by the M6.5a fallback census): the
+    heap sync helpers were export-path-only, so a bounced malloc/calloc/
+    operator-new read the *default* heap_location off its freshly copied
+    callback state — even when native allocations had already moved Rust's
+    heap_brk past it — and its own bump never reached Rust. Either half hands
+    out overlapping heap blocks.
+
+    Both directions are exercised through a Python-only SimProcedure (the Rust
+    engine has no handler for it, so hitting it forces the bounce).
+    """
+
+    @staticmethod
+    def _alloc_proc(record):
+        class AllocProc(angr.SimProcedure):
+            def run(self):
+                record.append(self.state.heap.allocate(0x30))
+                return 0
+
+        return AllocProc
+
+    @pytest.fixture
+    def hookable_project(self):
+        """Function-scoped: these tests install hooks, so they must not share
+        the module-scoped ``fauxware_project``."""
+        import os
+
+        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
+
+    def test_bounced_alloc_sees_rust_heap_brk(self, hookable_project):
+        """Inbound: a native allocation already moved Rust's heap_brk, so the
+        address the bounced proc hands out must sit above it.
+
+        Pre-fix the proc allocates from the default 0xC0000000 base and returns
+        an address Rust already gave away.
+        """
+        proj = hookable_project
+        allocated = []
+        proj.hook_symbol("puts", self._alloc_proc(allocated)())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        # Stand in for a prior native malloc that bumped Rust's bump allocator.
+        native_brk = 0xC000_4000
+        mgr._rust_mgr.set_state_heap_brk(sid, native_brk)
+
+        mgr.run(max_steps=60)
+
+        assert allocated, "puts hook never bounced — test would vacuously pass"
+        assert min(allocated) >= native_brk, (
+            f"bounced allocator handed out 0x{min(allocated):x}, below Rust's "
+            f"heap_brk 0x{native_brk:x} — it would overlap a native allocation"
+        )
+
+    def test_bounced_alloc_bump_reaches_rust(self, hookable_project):
+        """Outbound: the bump the bounced proc made must land in Rust, so a
+        later native malloc starts above it.
+
+        Checked against Rust directly (not the exported SimState) — the export
+        path takes max(rust, python), which would mask a missing write-back.
+        """
+        proj = hookable_project
+        allocated = []
+        proj.hook_symbol("puts", self._alloc_proc(allocated)())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=60)
+
+        assert allocated
+        expected = max(allocated) + 0x30
+        brks = [
+            mgr._rust_mgr.get_state_heap_brk(sid)
+            for stash in ("active", "deadended", "found", "avoid")
+            for sid in mgr._rust_mgr.get_state_ids(stash)
+        ]
+        assert brks, "no surviving Rust states to check"
+        assert max(brks) >= expected, (
+            f"Rust's heap_brk topped out at 0x{max(brks):x} but the bounced "
+            f"allocator ran up to 0x{expected:x} — the bump never reached Rust, "
+            f"so a native malloc would overlap it"
+        )
+
+
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict
     into Rust ``RustSimState`` (angr-p8o3).
@@ -1177,9 +1264,7 @@ class TestSymbolicRegisterSync:
         setattr(new_state.regs, reg, make_new_val(old_state))
 
         synced = {}
-        monkeypatch.setattr(
-            mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value)
-        )
+        monkeypatch.setattr(mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value))
         concrete = mgr._extract_register_changes(old_state, new_state)
         return synced, concrete
 
@@ -1197,9 +1282,7 @@ class TestSymbolicRegisterSync:
         assert state.regs.rdi.symbolic, "precondition: blank_state rdi is unconstrained"
 
         synced = {}
-        monkeypatch.setattr(
-            mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value)
-        )
+        monkeypatch.setattr(mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value))
         mgr._extract_register_changes(state, state.copy())
         assert "rdi" not in synced, "untouched symbolic register was needlessly re-synced"
 

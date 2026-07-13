@@ -728,6 +728,45 @@ class RustStateExportMixin:
         if rust_brk > py_loc:
             heap.heap_location = rust_brk
 
+    def _sync_state_heap_to_rust(self, state: angr.SimState, state_id: int):
+        """Push a Python-side heap bump back into Rust (callback write-back).
+
+        Reverse of _sync_rust_heap_brk_to_state / _sync_rust_mmap_base_to_state.
+        A bounced malloc/calloc/realloc/strdup (and C++ operator new, which
+        routes to angr's malloc) runs the Python SimProcedure, which bumps
+        state.heap.heap_location — and mmap_base for large allocations. Without
+        this write-back Rust keeps its old break pointer and a later *native*
+        malloc hands out an address overlapping the Python-allocated block
+        (angr-op0dn.14.1.3).
+
+        No-op when the heap plugin was never materialized on the callback state
+        — a plain dict membership test, so a proc that never touches the heap
+        pays nothing. That matters: materializing the plugin costs ~65ms because
+        SimHeapBase.init_state maps the 8MB heap region.
+
+        Take max(python, rust) for the same reason the inbound syncs do: never
+        walk a break pointer backwards.
+        """
+        heap = state.plugins.get("heap")
+        if heap is None:
+            return
+        for attr, getter, setter in (
+            ("heap_location", "get_state_heap_brk", "set_state_heap_brk"),
+            ("mmap_base", "get_state_mmap_base", "set_state_mmap_base"),
+        ):
+            py_val = getattr(heap, attr, None)
+            if not isinstance(py_val, int):
+                continue
+            try:
+                if py_val > getattr(self._rust_mgr, getter)(state_id):
+                    getattr(self._rust_mgr, setter)(state_id, py_val)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the Python-side bump does not
+                # reach Rust, so a later native allocation may overlap the
+                # block the bounced proc just handed out. Debug only — the
+                # state may simply have been dropped from Rust by now.
+                l.debug("heap %s write-back to Rust state %d failed: %s", attr, state_id, e)
+
     def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
         """Sync Rust-tracked call frames into state.callstack.
 
