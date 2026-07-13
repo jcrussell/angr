@@ -102,6 +102,26 @@ impl<'a> VEXInterpreter<'a> {
         None
     }
 
+    /// Read up to `max_size` bytes starting at `addr` from the load-time binary
+    /// regions, truncating at the end of the containing region. Returns `None`
+    /// when `addr` falls outside every region.
+    ///
+    /// Unlike [`Self::try_read_concrete_memory`] this tolerates a short read —
+    /// the native lifter stops at the block boundary, so a prefix suffices.
+    /// These are the *load-time* bytes: callers must not use them for a page a
+    /// store has dirtied (see `is_code_range_dirtied`).
+    #[cfg(feature = "libvex-ffi")]
+    pub(super) fn read_concrete_prefix(&self, addr: u64, max_size: usize) -> Option<&[u8]> {
+        for region in self.concrete_memory.iter() {
+            if addr >= region.base && addr < region.base + region.size {
+                let offset = (addr - region.base) as usize;
+                let end = offset.saturating_add(max_size).min(region.data.len());
+                return Some(&region.data[offset..end]);
+            }
+        }
+        None
+    }
+
     /// Check if an address is within loaded binary (concrete memory) regions.
     /// Used to distinguish internal function calls from external/library calls.
     pub fn is_in_binary(&self, addr: u64) -> bool {

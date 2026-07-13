@@ -964,6 +964,77 @@ class TestErrorRecovery:
                 "native seam"
             )
 
+    def test_native_lift_serves_cold_page_from_binary_regions(self):
+        """A cold code page must lift natively from the load-time image.
+
+        ``native_lift_source_bytes`` prefers the memory sidecar (it reflects
+        stores, so SMC works for free), but a code page only lands there once
+        something faults it in — so the *first* block of a page, and every block
+        of a ``load_shellcode`` blob, read empty there. Those used to drop to
+        the Python ``lift_block`` callback; they are now served from the
+        binary-region store (angr-op0dn.2.3). This blob's single block is
+        exactly that case: it must lift natively with zero callback lifts.
+
+        The jump to unmapped 0x40000 then pins the miss *attribution*: no lifter
+        can produce a block there, the callback returns the ``"{}"`` sentinel and
+        the state deadends, so nothing was lost by falling back. Counting those
+        as plain fallbacks is what made cow_fork_scaling read as 21 native lifts
+        against 256 misses when all 256 were return-to-0x0 deadend probes and the
+        native path was really serving 21 of 21 real blocks.
+
+        Skipped on a build without ``--features libvex-ffi``.
+        """
+        try:
+            from angr.rustylib.vex_engine import libvex_ffi_enabled
+        except ImportError:
+            pytest.skip("build without --features libvex-ffi")
+        if not libvex_ffi_enabled():
+            pytest.skip("build without --features libvex-ffi")
+
+        import angr.sim_options as o
+
+        shellcode = (
+            bytes.fromhex("48b80000040000000000")  # mov rax, 0x40000  (unmapped)
+            + bytes.fromhex("ffe0")  # jmp rax
+        )
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        state.regs.rsp = 0x7FFFF0000
+
+        mgr = RustExplorationManager(proj, [state], use_native_lift=True)
+        # See load-shellcode-blob-binary-none (as in the SMC tests above).
+        mgr._rust_mgr.load_binary_regions([(0x1000, shellcode)])
+        # The interpreter lift counters are only published under profiling.
+        mgr.enable_profiling()
+        mgr.run(max_steps=10)
+
+        native = mgr.stats.get("rust_native_lift_count", 0)
+        fallbacks = mgr.stats.get("rust_native_lift_fallback_count", 0)
+        probes = mgr.stats.get("rust_native_lift_deadend_probe_count", 0)
+        callback_lifts = mgr.stats.get("callback_lift_block_count", 0)
+
+        assert native > 0, (
+            "the cold blob block fell back to the Python lifter; the "
+            "binary-region byte source is not serving sidecar misses"
+        )
+        assert probes > 0, "the lift attempt at the unmapped address was not attributed as a deadend probe"
+        assert fallbacks == probes, (
+            f"native lift lost {fallbacks - probes} liftable block(s) to the Python "
+            "callback; the only fallback here should be the unmapped-address probe"
+        )
+        # The probe still visits the callback — that is how the "{}" sentinel
+        # (and the deadend) is produced. Every *liftable* block must not.
+        assert callback_lifts == probes, (
+            f"{callback_lifts - probes} liftable block(s) still lifted via the Python "
+            "callback; every real block of this blob is concrete in the binary-region store"
+        )
+
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""
         from angr.errors import SimMemoryError

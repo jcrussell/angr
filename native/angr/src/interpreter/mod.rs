@@ -286,6 +286,15 @@ define_execution_stats! {
     /// or a libVEX lift error). A high fallback:hit ratio means the native
     /// path is not paying off for that workload.
     native_lift_fallback_count: sum,
+    /// Subset of `native_lift_fallback_count`: misses at an address that lies
+    /// outside every loaded binary region, so no lifter — native or pyvex — can
+    /// produce a block. The Python callback returns the `"{}"` sentinel and the
+    /// state deadends; nothing was lost by falling back. Subtract this from
+    /// `native_lift_fallback_count` to get the misses that are genuinely lost
+    /// native-lift wins. Measured on `cow_fork_scaling` (angr-op0dn.2.3), all
+    /// 256 apparent fallbacks were return-to-0x0 deadend probes of exactly this
+    /// kind — the native path was in fact serving 21 of 21 real blocks.
+    native_lift_deadend_probe_count: sum,
 }
 
 /// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).

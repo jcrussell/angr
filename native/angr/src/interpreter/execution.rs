@@ -1,5 +1,19 @@
 use super::*;
 
+/// Why a native libVEX lift attempt did not produce an IRSB. Every variant
+/// falls back to the Python `lift_block` callback; the variant only drives
+/// counter attribution (see `native_lift_deadend_probe_count`).
+#[cfg(feature = "libvex-ffi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeLiftMiss {
+    /// The block carries a VEX opt_level override the native shim can't honor.
+    OptLevelOverride,
+    /// No concrete bytes at `addr` in rust_memory (unmapped or symbolic).
+    NoConcreteBytes,
+    /// libVEX itself failed to decode the bytes.
+    LiftError,
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Run the execution loop until an event requires Python handling.
     ///
@@ -393,15 +407,30 @@ impl<'a> VEXInterpreter<'a> {
         // serve a block.
         #[cfg(feature = "libvex-ffi")]
         if self.native_lift_enabled {
-            if let Some(irsb) = self.try_native_lift(addr) {
-                self.stats.native_lift_count += 1;
-                let arc_irsb = Arc::new(irsb);
-                if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
-                    self.stats.cache_eviction_count += 1;
+            match self.try_native_lift(addr) {
+                Ok(irsb) => {
+                    self.stats.native_lift_count += 1;
+                    let arc_irsb = Arc::new(irsb);
+                    if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
+                        self.stats.cache_eviction_count += 1;
+                    }
+                    return Ok(arc_irsb);
                 }
-                return Ok(arc_irsb);
+                Err(miss) => {
+                    self.stats.native_lift_fallback_count += 1;
+                    // An address outside every binary region has no bytes for
+                    // *anyone* to lift: the Python callback will return the "{}"
+                    // sentinel and the state deadends. Counting those as plain
+                    // fallbacks makes the native path look like it is missing
+                    // liftable blocks — cow_fork_scaling reads 21 hits / 256
+                    // fallbacks, but all 256 are return-to-0x0 deadend probes
+                    // (angr-op0dn.2.3). Split them out so the ratio means what
+                    // it looks like it means.
+                    if miss == NativeLiftMiss::NoConcreteBytes && !self.is_in_binary(addr) {
+                        self.stats.native_lift_deadend_probe_count += 1;
+                    }
+                }
             }
-            self.stats.native_lift_fallback_count += 1;
         }
 
         let lift_start = profile_start!(self);
@@ -475,33 +504,70 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Attempt an in-process native libVEX lift of the block at `addr`.
     ///
-    /// Returns `Some(irsb)` only when every prerequisite holds: rust_memory is
+    /// Returns `Ok(irsb)` only when every prerequisite holds: rust_memory is
     /// present, the block's leading bytes are fully concrete, the arch is
     /// supported by `NativeLibVEXLifter`, and libVEX lifts successfully.
-    /// Returns `None` on any miss so the caller falls back to the Python
-    /// `lift_block` callback. The per-address VEX opt_level override is honored
-    /// by the pyvex path only; the native shim uses pyvex's compiled defaults
-    /// (same as `vex_opt_level == None`), so a block carrying an explicit
-    /// opt_level override is left to the callback to preserve exact parity.
+    /// Returns `Err(NativeLiftMiss)` otherwise so the caller falls back to the
+    /// Python `lift_block` callback (and can attribute the miss). The
+    /// per-address VEX opt_level override is honored by the pyvex path only;
+    /// the native shim uses pyvex's compiled defaults (same as
+    /// `vex_opt_level == None`), so a block carrying an explicit opt_level
+    /// override is left to the callback to preserve exact parity.
     #[cfg(feature = "libvex-ffi")]
-    fn try_native_lift(&self, addr: u64) -> Option<crate::vex::ir::IRSB> {
+    fn try_native_lift(&self, addr: u64) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
         use crate::vex::VEXLifter;
 
         // Opt-level overrides change libVEX optimization and thus IRSB shape;
         // defer those blocks to the callback that can pass the override through.
         if self.vex_opt_level_overrides.contains_key(&addr) || self.vex_opt_level.is_some() {
-            return None;
+            return Err(NativeLiftMiss::OptLevelOverride);
         }
 
-        let rust_mem = self.rust_memory.as_ref()?;
+        let bytes = self
+            .native_lift_source_bytes(addr)
+            .ok_or(NativeLiftMiss::NoConcreteBytes)?;
+
+        self.native_lifter
+            .lift(&bytes, addr, self.arch)
+            .map_err(|e| {
+                log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
+                NativeLiftMiss::LiftError
+            })
+    }
+
+    /// Source the block bytes for a native lift at `addr`, or `None` when no
+    /// concrete bytes are available anywhere.
+    ///
+    /// The memory sidecar wins whenever it can serve the address: it reflects
+    /// stores, so self-modifying code lifts the post-store program for free.
+    /// But a code page only lands in the sidecar once something faults it in,
+    /// so a *cold* block — every block of a `load_shellcode` blob, the first
+    /// block of a page — reads empty there and used to drop to the Python
+    /// callback. Serve those from the load-time binary-region store instead
+    /// (angr-op0dn.2.3).
+    ///
+    /// That is only sound while the page is clean: a symbolic store into code
+    /// makes the sidecar read fail, and answering from the pristine image there
+    /// would silently lift the pre-store program. Dirtied pages are therefore
+    /// left to the callback, which passes fresh bytes through `byte_string=`.
+    #[cfg(feature = "libvex-ffi")]
+    fn native_lift_source_bytes(&self, addr: u64) -> Option<Vec<u8>> {
         // 5000 == pyvex's VEX_MAX_BYTES; libVEX stops at the block boundary so
         // trailing bytes beyond the block are simply unused.
-        let bytes = rust_mem.read_concrete_bytes_for_lift(addr, 5000)?;
-        if bytes.is_empty() {
-            return None;
+        const VEX_MAX_BYTES: usize = 5000;
+
+        if let Some(rust_mem) = self.rust_memory.as_ref()
+            && let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, VEX_MAX_BYTES)
+            && !bytes.is_empty()
+        {
+            return Some(bytes);
         }
 
-        self.native_lifter.lift(&bytes, addr, self.arch).ok()
+        if self.is_code_range_dirtied(addr, VEX_MAX_BYTES as u64) {
+            return None;
+        }
+        let bytes = self.read_concrete_prefix(addr, VEX_MAX_BYTES)?;
+        (!bytes.is_empty()).then(|| bytes.to_vec())
     }
 
     /// Execute a single block using the given callbacks.

@@ -200,16 +200,27 @@ unchanged everywhere. The GIL-work drop (30–45 %) is the durable result and th
 original ROI thesis — it removes a serialization point that matters for parallel
 warmup even where it does not move single-threaded wall-clock.
 
-Native-lift hit rate depends on the memory sidecar
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Where native lift gets its bytes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``try_native_lift`` sources block bytes from ``rust_memory`` via
-``read_concrete_bytes_for_lift``; when the ``.text`` page is not resident in the
-Rust sidecar it returns ``None`` and the lift falls back to the pyvex callback
-(counted in ``rust_native_lift_fallback_count``). ``cow_fork_scaling`` builds its
-state with ``blank_state`` and consequently serves only 21 of 277 lifts natively.
-This is a **hit-rate**, not a correctness, issue — the fallback IRSB is identical
-and wall-clock stays flat — but it means the win is concentrated on
-``entry_state`` / ``full_init_state`` workloads today. Sourcing the bytes from the
-already-loaded binary-region store (``_load_binary_regions``) on a sidecar miss is
-tracked follow-up work.
+``native_lift_source_bytes`` tries the memory sidecar first
+(``read_concrete_bytes_for_lift``): the sidecar reflects stores, so
+self-modifying code lifts the post-store program with no dirty-bytes plumbing.
+A code page only lands in the sidecar once something faults it in, though, so a
+**cold** block — the first block of a page, and every block of a
+``load_shellcode`` blob — reads empty there. Those are served from the load-time
+binary-region store (``_load_binary_regions``) instead of dropping to the pyvex
+callback, *except* on a page a store has dirtied: the load-time image is stale
+there, so such pages go to the callback, which passes fresh bytes through
+``byte_string=``.
+
+Reading ``rust_native_lift_fallback_count`` as a hit-rate gap is a trap. It
+counts every miss, including lift attempts at addresses that lie outside every
+loaded binary region — a state returning into unmapped memory, say. No lifter can
+produce a block there: the callback returns the ``"{}"`` sentinel and the state
+deadends, so nothing was lost by falling back. ``cow_fork_scaling`` reads 21
+native lifts against 256 fallbacks, which looks like a 7% hit rate, but all 256
+are return-to-``0x0`` deadend probes — the native path is serving **21 of 21**
+real blocks. ``rust_native_lift_deadend_probe_count`` splits those out; the
+genuinely-lost misses are ``fallback_count - deadend_probe_count``, and that is
+0 across the fast-tier corpus.
