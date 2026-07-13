@@ -105,36 +105,46 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
         "writes its table through state.memory.store (tracked by CallbackMemoryTracker) and returns a "
         "pointer in a synced register",
     ),
-    # --- heap: the bump is NOT written back on the callback path.
+    # --- heap: the bump round-trips since angr-op0dn.14.1.3 (the callback path
+    # now reads state.heap_brk in and pushes the bounced bump back out).
     "malloc": (
-        BLOCKING,
-        "heap plugin is not synced by _create_state_for_callback (only posix+libc are) and no "
-        "outbound heap channel exists: the bounced bump is lost, so a later native alloc can return "
-        "an overlapping address. Same failure mode as angr-um39j, but per-bounce rather than at init",
+        SILENT,
+        "the bounced heap bump now round-trips (angr-op0dn.14.1.3): _create_state_for_callback seeds "
+        "heap_location from Rust's brk and the resume path pushes it back, so a later native alloc "
+        "cannot overlap. Differential parity: test_fallback_parity.py::test_parity[malloc]",
     ),
     "calloc": (
-        BLOCKING,
-        "same as malloc: bounced heap bump never reaches Rust (no set_state_heap_brk caller on the callback path)",
+        SILENT,
+        "same channel as malloc (angr-op0dn.14.1.3). Differential parity, including the zeroed block: "
+        "test_fallback_parity.py::test_parity[calloc]",
     ),
-    # C++ new/delete land on angr's malloc/free SimProcedures, so they carry the
-    # same lost-heap-bump risk despite being 'intentional' on the closability axis.
-    "operator new(unsigned long)": (BLOCKING, "routes to angr's malloc proc: bounced heap bump never reaches Rust"),
-    "operator delete(void*)": (BLOCKING, "routes to angr's free proc: heap plugin mutation never reaches Rust"),
-    # --- posix stream writes: no outbound posix channel exists.
+    # C++ new/delete land on angr's malloc/free SimProcedures, so they inherit
+    # malloc's heap round-trip; parity is proven transitively via that proc.
+    "operator new(unsigned long)": (
+        SILENT,
+        "routes to angr's malloc proc, whose bounced bump round-trips (angr-op0dn.14.1.3); parity is the malloc row's",
+    ),
+    "operator delete(void*)": (
+        SILENT,
+        "routes to angr's free proc; angr's free is a no-op on the heap bump, so nothing is lost",
+    ),
+    # --- posix stream writes: the outbound posix channel landed in
+    # angr-op0dn.14.1.4 (bounced writes are replayed into Rust's fd buffer).
     "fwrite": (
-        BLOCKING,
-        "writes the callback SimState's posix buffer, which is never pushed back to Rust "
-        "(_inject_rust_stdout is export-path-only, and there is no outbound posix sync). Output "
-        "written by the bounce is invisible to a later posix.dumps(1). Also the known ~2.8ms/call "
-        "bounce cost (csyy9)",
+        SILENT,
+        "the bounced stream write now reaches Rust's fd buffer through the outbound posix channel "
+        "(angr-op0dn.14.1.4), so a later posix.dumps(1) sees it. Differential parity: "
+        "test_fallback_parity.py::test_parity[fwrite]. The known ~2.8ms/call bounce cost (csyy9) "
+        "remains a perf, not a correctness, issue",
     ),
-    "fputc": (BLOCKING, "same as fwrite: bounced stream write never reaches the Rust fd buffer"),
-    "fprintf": (BLOCKING, "same as fwrite: bounced stream write never reaches the Rust fd buffer"),
-    # --- fd path.
+    "fputc": (SILENT, "same outbound posix channel as fwrite. Parity: test_parity[fputc]"),
+    "fprintf": (SILENT, "same outbound posix channel as fwrite. Parity: test_parity[fprintf]"),
+    # --- fd path: both halves of the fd-table channel landed.
     "open": (
-        BLOCKING,
-        "allocates a Python-side fd; the posix fd table is not synced back, so the Rust state does "
-        "not learn the fd. Only benign while every subsequent op on that fd also bounces",
+        SILENT,
+        "a bounced open's fd is adopted into Rust's fd table (angr-op0dn.14.1.5) and Rust's own fds "
+        "are seeded into the callback state (angr-op0dn.14.1.6), so the two sides cannot disagree on "
+        "an fd number. Differential parity: test_fallback_parity.py::test_parity[open]",
     ),
     "read": (
         SILENT,
@@ -162,18 +172,19 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
 
 # Syscall numbers observed nonzero, keyed by the number the counter reports.
 #
-# Every syscall fallback that produces successors is flip-blocking today:
-# `rust_callback_dispatch._handle_syscall_callback_inner` passes the 2-tuple
-# returned by `_extract_memory_changes` straight to `resume_after_syscall`
-# (every other caller unpacks it), so the PyO3 conversion raises, the enclosing
-# `except Exception` swallows it, and the state resumes at `state.addr + 1`
-# with ALL register and memory changes discarded. Filed as its own bug bead.
+# Every syscall fallback used to be flip-blocking: `_handle_syscall_callback_inner`
+# passed the 2-tuple returned by `_extract_memory_changes` straight to
+# `resume_after_syscall` (every other caller unpacks it), so the PyO3 conversion
+# raised, the enclosing `except Exception` swallowed it, and the state resumed at
+# `state.addr + 1` with ALL register and memory changes discarded. Fixed in
+# angr-89w70; regression test
+# tests/engines/rust/test_syscalls.py::TestPythonSyscallFallbackSyncsChanges.
 SYSCALL_SEMANTICS: dict[str, tuple[str, str]] = {
     "334": (
-        BLOCKING,
+        SILENT,
         "faccessat: native syscall registered (syscalls/mod.rs) but bailed to Python. The Python "
-        "syscall resume path drops every register/memory change (unpacked-tuple bug in "
-        "_handle_syscall_callback_inner) and resumes at addr+1",
+        "syscall resume path now carries the bounce's register and memory changes back into Rust "
+        "(angr-89w70); proven by test_syscalls.py::TestPythonSyscallFallbackSyncsChanges",
     ),
 }
 

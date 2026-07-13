@@ -111,8 +111,8 @@
       ],
       "closability": "closable",
       "count": 1,
-      "rationale": "same as malloc: bounced heap bump never reaches Rust (no set_state_heap_brk caller on the callback path)",
-      "semantics": "flip-blocking"
+      "rationale": "same channel as malloc (angr-op0dn.14.1.3). Differential parity, including the zeroed block: test_fallback_parity.py::test_parity[calloc]",
+      "semantics": "silent-equivalent"
     },
     "fprintf": {
       "benches": [
@@ -120,8 +120,8 @@
       ],
       "closability": "closable",
       "count": 1,
-      "rationale": "same as fwrite: bounced stream write never reaches the Rust fd buffer",
-      "semantics": "flip-blocking"
+      "rationale": "same outbound posix channel as fwrite. Parity: test_parity[fprintf]",
+      "semantics": "silent-equivalent"
     },
     "fputc": {
       "benches": [
@@ -129,8 +129,8 @@
       ],
       "closability": "closable",
       "count": 48,
-      "rationale": "same as fwrite: bounced stream write never reaches the Rust fd buffer",
-      "semantics": "flip-blocking"
+      "rationale": "same outbound posix channel as fwrite. Parity: test_parity[fputc]",
+      "semantics": "silent-equivalent"
     },
     "fwrite": {
       "benches": [
@@ -138,8 +138,8 @@
       ],
       "closability": "closable",
       "count": 144,
-      "rationale": "writes the callback SimState's posix buffer, which is never pushed back to Rust (_inject_rust_stdout is export-path-only, and there is no outbound posix sync). Output written by the bounce is invisible to a later posix.dumps(1). Also the known ~2.8ms/call bounce cost (csyy9)",
-      "semantics": "flip-blocking"
+      "rationale": "the bounced stream write now reaches Rust's fd buffer through the outbound posix channel (angr-op0dn.14.1.4), so a later posix.dumps(1) sees it. Differential parity: test_fallback_parity.py::test_parity[fwrite]. The known ~2.8ms/call bounce cost (csyy9) remains a perf, not a correctness, issue",
+      "semantics": "silent-equivalent"
     },
     "get_flag": {
       "benches": [
@@ -165,8 +165,8 @@
       ],
       "closability": "closable",
       "count": 3,
-      "rationale": "heap plugin is not synced by _create_state_for_callback (only posix+libc are) and no outbound heap channel exists: the bounced bump is lost, so a later native alloc can return an overlapping address. Same failure mode as angr-um39j, but per-bounce rather than at init",
-      "semantics": "flip-blocking"
+      "rationale": "the bounced heap bump now round-trips (angr-op0dn.14.1.3): _create_state_for_callback seeds heap_location from Rust's brk and the resume path pushes it back, so a later native alloc cannot overlap. Differential parity: test_fallback_parity.py::test_parity[malloc]",
+      "semantics": "silent-equivalent"
     },
     "memmove": {
       "benches": [
@@ -192,8 +192,8 @@
       ],
       "closability": "closable",
       "count": 1,
-      "rationale": "allocates a Python-side fd; the posix fd table is not synced back, so the Rust state does not learn the fd. Only benign while every subsequent op on that fd also bounces",
-      "semantics": "flip-blocking"
+      "rationale": "a bounced open's fd is adopted into Rust's fd table (angr-op0dn.14.1.5) and Rust's own fds are seeded into the callback state (angr-op0dn.14.1.6), so the two sides cannot disagree on an fd number. Differential parity: test_fallback_parity.py::test_parity[open]",
+      "semantics": "silent-equivalent"
     },
     "operator delete(void*)": {
       "benches": [
@@ -201,8 +201,8 @@
       ],
       "closability": "intentional",
       "count": 5,
-      "rationale": "routes to angr's free proc: heap plugin mutation never reaches Rust",
-      "semantics": "flip-blocking"
+      "rationale": "routes to angr's free proc; angr's free is a no-op on the heap bump, so nothing is lost",
+      "semantics": "silent-equivalent"
     },
     "operator new(unsigned long)": {
       "benches": [
@@ -210,8 +210,8 @@
       ],
       "closability": "intentional",
       "count": 6,
-      "rationale": "routes to angr's malloc proc: bounced heap bump never reaches Rust",
-      "semantics": "flip-blocking"
+      "rationale": "routes to angr's malloc proc, whose bounced bump round-trips (angr-op0dn.14.1.3); parity is the malloc row's",
+      "semantics": "silent-equivalent"
     },
     "pthread_mutex_lock": {
       "benches": [
@@ -573,8 +573,7 @@
   },
   "summary": {
     "name_classes": {
-      "flip-blocking": 8,
-      "silent-equivalent": 22
+      "silent-equivalent": 30
     },
     "site_classes": {
       "flip-blocking": 63,
@@ -659,8 +658,8 @@
   "syscalls": {
     "334": {
       "count": 1,
-      "rationale": "faccessat: native syscall registered (syscalls/mod.rs) but bailed to Python. The Python syscall resume path drops every register/memory change (unpacked-tuple bug in _handle_syscall_callback_inner) and resumes at addr+1",
-      "semantics": "flip-blocking"
+      "rationale": "faccessat: native syscall registered (syscalls/mod.rs) but bailed to Python. The Python syscall resume path now carries the bounce's register and memory changes back into Rust (angr-89w70); proven by test_syscalls.py::TestPythonSyscallFallbackSyncsChanges",
+      "semantics": "silent-equivalent"
     }
   },
   "tag_sites": [

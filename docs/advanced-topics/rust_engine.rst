@@ -5054,46 +5054,64 @@ Reproduce (JSON artifact lands in
        --out tests/benchmarks/fallback_census.json
 
 Result: **30 distinct fallback names** observed across 14 benches (26
-benches never leave Rust). 22 are silent-equivalent — angr's own
-SimProcedure runs against a synced ``SimState`` and everything it
-touches (registers, memory, constraints, new symbols) crosses the
-resume FFI. Eight are flip-blocking, and they cluster into three
-root causes, none of which is the procedure's own logic:
+benches never leave Rust). The census opened with 22 silent-equivalent
+names — angr's own SimProcedure runs against a synced ``SimState`` and
+everything it touches (registers, memory, constraints, new symbols)
+crosses the resume FFI — and **eight flip-blocking** ones, clustered
+into three round-trip gaps in the callback path (never the procedure's
+own logic). All three gaps, plus the syscall-resume one, have since
+been closed:
 
 .. list-table::
    :header-rows: 1
-   :widths: 22 12 66
+   :widths: 22 10 46 22
 
    * - Fallback
      - Calls
-     - Why it can change the answer
+     - The gap that made it flip-blocking
+     - Closed by
    * - ``fwrite`` / ``fputc`` / ``fprintf``
      - 193
-     - The callback ``SimState`` gets no Rust-side posix buffer
-       (``_inject_rust_stdout`` runs only on the export path) and there
-       is **no outbound posix channel at all**, so a stream write made
-       during the bounce never reaches the Rust fd buffer that
+     - The callback ``SimState`` got no Rust-side posix buffer and there
+       was **no outbound posix channel at all**, so a stream write made
+       during the bounce never reached the Rust fd buffer that
        ``posix.dumps(1)`` reads back.
+     - ``angr-op0dn.14.1.4`` (outbound posix channel)
    * - ``malloc`` / ``calloc`` / ``operator new`` / ``operator delete``
      - 15
-     - ``_ensure_critical_plugins`` copies only ``posix`` and ``libc``
-       into the callback state, and the heap/brk push
-       (``_sync_rust_heap_brk_to_state``) is export-path-only. A bounced
-       allocator reads a stale ``heap_location`` and its bump is never
-       written back, so a later *native* alloc can hand out an
-       overlapping address (the per-bounce twin of ``angr-um39j``).
+     - ``_ensure_critical_plugins`` copied only ``posix`` and ``libc``
+       into the callback state, and the heap/brk push was export-path
+       only. A bounced allocator read a stale ``heap_location`` and its
+       bump was never written back, so a later *native* alloc could hand
+       out an overlapping address (the per-bounce twin of
+       ``angr-um39j``).
+     - ``angr-op0dn.14.1.3`` (heap-brk round-trip)
    * - ``open``
      - 1
-     - The posix fd table is not synced back; the Rust state never
-       learns the fd. Benign only while every later op on that fd also
-       bounces.
+     - The posix fd table was not synced in either direction, so the two
+       sides could disagree about what an fd number means.
+     - ``angr-op0dn.14.1.5`` + ``.14.1.6`` (fd-table round-trip)
    * - syscall ``334`` (and every Python syscall fallback)
      - 1
-     - ``_handle_syscall_callback_inner`` passes the 2-tuple returned by
+     - ``_handle_syscall_callback_inner`` passed the 2-tuple returned by
        ``_extract_memory_changes`` straight into ``resume_after_syscall``
-       (every other call site unpacks it), so the conversion raises, the
-       enclosing ``except`` swallows it, and the state resumes at
+       (every other call site unpacks it), so the conversion raised, the
+       enclosing ``except`` swallowed it, and the state resumed at
        ``addr + 1`` with all register and memory changes discarded.
+     - ``angr-89w70`` (unpack the tuple)
+
+Every census name is now **silent-equivalent**, and
+``angr-op0dn.14.1.2`` pins that down with evidence rather than
+inspection: ``tests/engines/rust/test_fallback_parity.py`` runs each
+classifiable name's call twice — once on ``RustExplorationManager``,
+once on the pure-Python engine — and asserts the two agree on every
+observable the proc touches (rax, the memory it wrote, ``posix.dumps``,
+the fd table). The names with no native counterpart to diff against
+(user hooks, C++ stdlib symbols) get a *documented divergence* row in
+:doc:`../extending-angr/native_coverage_matrix` instead. Two guard
+tests keep the artifact and the assertions from drifting: a new census
+name with neither a parity scenario nor a divergence row fails, and so
+does any row that is still classed flip-blocking.
 
 The tagged-site scan finds 354 sites: 80 ``cat-(a)`` (silent-equivalent),
 211 ``cat-(b)`` (logged-degraded), 63 ``cat-(c)`` (flip-blocking, mostly
@@ -5102,9 +5120,8 @@ in ``rust_manager.py`` and ``rust_callback_dispatch.py``). 71 of the
 deliberately (solver hot paths), the rest are listed in the artifact's
 ``summary.unlogged_degraded_sites`` as review candidates.
 
-Differential parity assertions for the classified fallbacks are
-``angr-op0dn.14.1.2``; the flip-blocking root causes are filed
-separately.
+The differential parity assertions for the classified fallbacks landed
+with ``angr-op0dn.14.1.2``.
 
 .. note::
 

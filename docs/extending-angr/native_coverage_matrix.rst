@@ -641,6 +641,51 @@ Stubbed / incomplete
   audit lands, these may be promoted to native handlers with explicit
   symbolic-input contracts.
 
+.. _native-documented-divergences:
+
+Documented divergences
+----------------------
+
+Every fallback name the census
+(:ref:`rust-engine-fallback-census`) observed is proven
+observationally silent by a differential parity assertion in
+``tests/engines/rust/test_fallback_parity.py``: the same call is run on
+``RustExplorationManager`` and on the pure-Python engine, and the two
+engines must agree on every observable the procedure touches (return
+register, the memory it wrote, ``posix.dumps``, the fd table).
+
+The names below are the exception. They have **no native counterpart to
+diff against** — angr's Python procedure *is* the reference
+implementation — so they carry a documented-divergence row here instead
+of an assertion. Divergence in these rows means "the Rust engine has no
+independent model", not "the two engines disagree".
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 62
+
+   * - Name(s)
+     - Why there is nothing to diff
+   * - ``UserHook``, ``my_scanf``, ``get_flag``, ``readline_hook``,
+       ``strtol_hook``
+     - User-supplied Python hooks (CTF ``solve.py`` procs). Python by
+       definition on both engines. ``_snapshot_orig_state`` hands any
+       ``UserHook`` a full ``state.copy()``, so everything it writes is
+       diffed back across the resume FFI.
+   * - ``operator new(unsigned long)``, ``operator delete(void*)``
+     - Resolve to angr's ``malloc`` / ``free`` procs. Parity is
+       inherited from those rows: the bounced heap bump round-trips
+       since ``angr-op0dn.14.1.3``, and ``free`` does not move the bump.
+   * - ``std::allocator<char>``, ``std::basic_string<...>``,
+       ``std::basic_ostream<...> operator<<``, ``std::string::length``
+     - C++ stdlib symbols. angr models them with a Python proc (or
+       ``ReturnUnconstrained``); the native registry claims no C++
+       symbol, so there is no second implementation to compare.
+
+A newly-observed fallback name must land in **one** of the two places —
+a parity scenario or a row above — or
+``test_fallback_parity.py::TestCensusCoverage`` fails.
+
 See also
 --------
 
