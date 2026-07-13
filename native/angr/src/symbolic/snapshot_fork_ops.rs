@@ -23,7 +23,7 @@ use super::context::{LocalConstraints, PushStack, freeze_into_shared};
 use super::{RustBV, SymContext, SymContextSnapshot};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -44,10 +44,12 @@ impl SymContext {
     /// runtime-only caches that rebuild on first query.
     ///
     /// The two runtime counters — `next_id` and `constraint_count` — ARE
-    /// captured and must be: a restored context is a *fresh* `SymContext`, so
-    /// leaving `next_id` at 0 makes the resume re-mint ids that the restored
-    /// `RustBV` leaves already own (angr-op0dn.13.14 — the ids are unique
-    /// within the source's id space, not across a restore into a new one).
+    /// captured and must be: the ids the restored `RustBV` leaves carry were
+    /// minted by the *source process*'s allocator, which this process's
+    /// allocator knows nothing about, so a resume would re-mint ids the
+    /// restored leaves already own (angr-op0dn.13.14). Restore raises the
+    /// global allocator past the captured watermark instead of pinning it, so
+    /// it can never hand back an id this process already issued.
     /// See [`SymContextSnapshot::next_id`].
     ///
     /// See `snapshot-serialization-design` for the broader plan and
@@ -156,7 +158,7 @@ impl SymContext {
             // fresh SymContext (next_id = 0) whose restored leaves already own
             // ids 0..watermark, so without this every symbol minted during the
             // resume aliases one of them.
-            next_id: self.next_id.load(Ordering::SeqCst),
+            next_id: crate::symbolic::symbol_id_watermark(),
         }
     }
 
@@ -246,20 +248,18 @@ impl SymContext {
     /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
     /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
-        // angr-op0dn.13.14: seed the id counter past every id the restored
-        // leaves already own. `self` is a fresh `SymContext` (next_id = 0),
-        // but the `RustBV::Symbolic` leaves deserialized into its registers /
-        // memory / constraints carry ids minted from the SOURCE counter. Left
-        // at 0, the first symbol minted during the resume re-uses id 0, 1, …
-        // — ids that restored leaves hold — and every id-keyed lookup (claripy
-        // export registry, `stored_conditions`, symbol table) aliases the two.
-        // A symbol aliased onto another collapses a downstream
+        // angr-op0dn.13.14: raise the global id allocator past every id the
+        // restored leaves already own. The `RustBV::Symbolic` leaves
+        // deserialized into this context's registers / memory / constraints
+        // carry ids minted by the SOURCE process's allocator, which ours never
+        // issued. Without the reserve, the first symbol minted during the
+        // resume re-uses an id a restored leaf holds, and every id-keyed lookup
+        // (claripy export registry, `stored_conditions`, symbol table) aliases
+        // the two. A symbol aliased onto another collapses a downstream
         // compare-and-branch to a CONCRETE guard, so `IRStmt::Exit` stops
         // forking and whole search subtrees vanish with no visible error.
-        // Legacy snapshots carry 0 here → nothing to seed.
-        if snap.next_id > 0 {
-            self.next_id.store(snap.next_id, Ordering::SeqCst);
-        }
+        // `fetch_max`, so a legacy snapshot's 0 is a no-op.
+        crate::symbolic::reserve_symbol_id(snap.next_id);
         #[cfg(feature = "vex-engine-z3")]
         {
             if snap.reassert_assumed {
@@ -630,7 +630,6 @@ impl SymContext {
         };
 
         SymContext {
-            next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(assumed_total_len),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
@@ -840,7 +839,6 @@ impl SymContext {
         };
 
         SymContext {
-            next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
@@ -915,12 +913,9 @@ impl SymContext {
             }
         }
 
-        // Set next_id to max across all contexts
-        let mut max_id = self.next_id.load(Ordering::SeqCst);
-        for other in others {
-            max_id = max_id.max(other.next_id.load(Ordering::SeqCst));
-        }
-        merged.next_id.store(max_id, Ordering::SeqCst);
+        // No id reconciliation needed: symbol ids come from the process-global
+        // allocator (`symbolic::bv_id_ops::NEXT_SYMBOL_ID`), so every input
+        // context's ids are already disjoint from every other's.
 
         // For each input context, guard its constraints with the merge condition:
         //   merge_cond_i => (constraint_1 AND constraint_2 AND ...)

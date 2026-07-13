@@ -10,6 +10,7 @@
 #[cfg(feature = "vex-engine-z3")]
 mod bv_codec;
 mod bv_id_ops;
+pub use bv_id_ops::{reserve_symbol_id, symbol_id_watermark};
 #[cfg(feature = "vex-engine-z3")]
 mod constraint_ops;
 mod context;

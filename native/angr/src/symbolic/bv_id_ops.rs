@@ -21,12 +21,44 @@
 
 use super::RustBV;
 use super::SymContext;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Process-global symbol-id allocator.
+///
+/// Symbol ids MUST be unique per process, not per [`SymContext`]: the maps that
+/// resolve an id back to its claripy AST / name / width
+/// (`symbolic::registry::GLOBAL_REGISTRY`, reached from the claripy-bridge
+/// export path) are process-global and outlive any one manager. A per-context
+/// counter starting at 0 therefore made the second exploration in a process
+/// mint ids the first one's symbols still own in the registry, so an exported
+/// symbol resolved to a *stranger's* claripy AST — the same aliasing failure
+/// angr-op0dn.13.14 fixed for snapshot resume, but across two explorations
+/// (angr-op0dn.13.16). Aliased symbols collapse a compare-and-branch to a
+/// concrete guard, which silently adds or drops whole search subtrees.
+///
+/// Mirrors the `state-id-never-reused` contract on `state::NEXT_STATE_ID`.
+static NEXT_SYMBOL_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Raise the global symbol-id counter so the next minted id is strictly greater
+/// than `id`. Used by snapshot restore, whose deserialized leaves carry ids
+/// minted by a *different* process (see
+/// [`SymContext::restore_from_snapshot`](crate::symbolic::SymContext::restore_from_snapshot)).
+pub fn reserve_symbol_id(id: u64) {
+    NEXT_SYMBOL_ID.fetch_max(id, Ordering::SeqCst);
+}
+
+/// The current high-water mark: every id minted so far is strictly below this.
+pub fn symbol_id_watermark() -> u64 {
+    NEXT_SYMBOL_ID.load(Ordering::SeqCst)
+}
 
 impl SymContext {
     /// Get the next unique ID for a symbolic variable.
+    ///
+    /// Allocates from the process-global [`NEXT_SYMBOL_ID`], not a per-context
+    /// counter — see that static for why.
     pub fn next_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::SeqCst)
+        NEXT_SYMBOL_ID.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Get the number of constraints.

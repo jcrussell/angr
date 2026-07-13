@@ -65,7 +65,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -312,9 +312,6 @@ pub enum ConstraintSyncError {
 /// - `transaction_commit()`: Commit constraints (validate and keep)
 /// - `transaction_rollback()`: Rollback on failure
 pub struct SymContext {
-    /// Counter for generating unique symbol IDs.
-    /// `pub(super)` for the `next_id` accessor in `bv_id_ops.rs` (slice 8).
-    pub(super) next_id: AtomicU64,
     /// Number of constraints added (for tracking).
     /// `pub(super)` for the `num_constraints` accessor in `bv_id_ops.rs`.
     pub(super) constraint_count: AtomicUsize,
@@ -523,7 +520,6 @@ impl SymContext {
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn new_mock() -> Self {
         SymContext {
-            next_id: AtomicU64::new(0),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
@@ -563,7 +559,6 @@ impl SymContext {
         let solver = build_solver(timeout_ms);
 
         SymContext {
-            next_id: AtomicU64::new(0),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_local_cache_lengths: Mutex::new(PushStack::new()),

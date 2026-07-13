@@ -3,10 +3,20 @@ use super::*;
 
 #[test]
 fn test_id_generation() {
+    // Ids come from the process-global allocator, so this asserts the contract
+    // that matters — strictly increasing, and never reissued to a *second*
+    // context (angr-op0dn.13.16) — rather than a fixed starting value, which
+    // depends on what other tests in this process minted first.
     let ctx = SymContext::new_mock();
-    assert_eq!(ctx.next_id(), 0);
-    assert_eq!(ctx.next_id(), 1);
-    assert_eq!(ctx.next_id(), 2);
+    let a = ctx.next_id();
+    let b = ctx.next_id();
+    assert_eq!(b, a + 1);
+
+    let other = SymContext::new_mock();
+    assert!(
+        other.next_id() > b,
+        "a fresh context must not reissue live ids"
+    );
 }
 
 #[test]

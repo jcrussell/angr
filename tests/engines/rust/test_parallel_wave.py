@@ -693,16 +693,10 @@ class TestParallelTerminalAccounting:
 
         mgr = _drain_pbounce(pbounce_project, workers, monkeypatch)
         assert mgr.stats["parallel_real_workers"] == workers
-        assert mgr.stats["deadended_count"] >= serial, (
+        assert mgr.stats["deadended_count"] == serial, (
             f"workers={workers}: parallel run counted {mgr.stats['deadended_count']} dead paths, "
             f"serial counted {serial} — summarized terminals are not reaching the manager"
         )
-        # `>=` not `==` on purpose: a parallel drain that runs *after* another
-        # drain in the same process collects 2 paths MORE than the first drain in
-        # a process (16 vs 14). angr-op0dn.13.16 traced that to process-warm
-        # state, NOT to the worker pool — see
-        # `TestSecondExplorationInAProcessDiverges` below. Tighten to `==` when
-        # the warm-state divergence lands.
 
     @pytest.mark.parametrize("workers", [2, 4])
     def test_deadended_states_are_not_recoverable_under_parallel(self, pbounce_project, workers, monkeypatch):
@@ -719,20 +713,17 @@ _SYNTH_TERMINALS = 14
 
 
 class TestSecondExplorationInAProcessDiverges:
-    """angr-op0dn.13.16: a Rust drain's leaf count depends on process history.
+    """angr-op0dn.13.16: a drain's leaf count must not depend on process history.
 
-    The first `RustExplorationManager` drain of the synthetic in a process ends
-    with 14 dead paths — matching the Python engine. Every *later* drain in the
-    same process ends with 16, and stays at 16 (run 3 does not grow to 18), so
-    some process-global warms up during the first exploration and makes the next
-    one fork twice more. It is **not** a parallel bug: it reproduces at
-    ``workers=1`` with a freshly-built `Project`, survives `clear_ast_cache()`
-    and dropping the first manager, and does *not* fire when the warm-up drain
-    is a different binary (fauxware). The over-collection the parallel tests see
-    is only this bug, observed through a serial baseline that ran first.
+    It used to: the first `RustExplorationManager` drain of the synthetic in a
+    process ended with 14 dead paths (matching the Python engine) and every
+    later drain in the same process ended with 16. Root cause was the symbol-id
+    allocator — a per-`SymContext` counter restarting at 0 for each exploration,
+    while the registry that resolves an id back to its claripy AST is
+    process-global, so a second exploration's symbols aliased the first's. The
+    counter is now process-global (`symbolic::bv_id_ops::NEXT_SYMBOL_ID`).
     """
 
-    @pytest.mark.xfail(strict=True, reason="angr-op0dn.13.16: warm-process drain over-collects 2 paths")
     def test_a_warm_process_drains_the_same_leaf_count_as_a_cold_one(self, pbounce_project, monkeypatch):
         _drain_pbounce(pbounce_project, 1, monkeypatch)  # warm the process
         warm = _drain_pbounce(pbounce_project, 1, monkeypatch).stats["deadended_count"]
