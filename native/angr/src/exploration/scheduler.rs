@@ -924,6 +924,19 @@ pub(crate) struct PersistentPool {
     num_workers: usize,
 }
 
+/// Stack size for each persistent worker thread (angr-h92bx).
+///
+/// The single-threaded run loop executes on CPython's *main* thread, whose
+/// stack is 8 MiB by default. A `std::thread` gets 2 MiB, and the stepping path
+/// recurses over AST shape (`claripy_bridge::import` self-recurses per operand,
+/// Z3 emission walks the `RustBV` tree). CGC benches with deep symbolic-stdin
+/// ASTs (CADET_00001) therefore ran fine at `RUST_PARALLEL_WORKERS=1` but blew
+/// the guard page on a worker at `W>=2` — `angr-worker-N ... segfault ... error 6`
+/// with the fault address one word below `sp`. Reserve 16 MiB (virtual; pages
+/// are committed lazily, so idle workers cost no RSS) to clear the main thread
+/// by 2x rather than fall short of it.
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 impl PersistentPool {
     /// Spawn `num_workers` (clamped to >= 1) persistent worker threads. Each
     /// creates its Z3 context once and then blocks waiting for the first wave.
@@ -939,6 +952,7 @@ impl PersistentPool {
             handles.push(
                 std::thread::Builder::new()
                     .name(format!("angr-worker-{worker_id}"))
+                    .stack_size(WORKER_STACK_SIZE)
                     .spawn(move || worker_thread(worker_id, job_rx, done_tx))
                     .expect("failed to spawn persistent worker thread"),
             );
