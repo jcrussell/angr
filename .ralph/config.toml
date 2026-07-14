@@ -17,6 +17,19 @@
 # Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).
 memory_limit_bytes = "6G"
 
+[gate]
+# The gate (tools/ralph-gate.sh, shared by the clean/ and dirty/ state hooks) now
+# runs `cargo test --release` ahead of the fast-tier benchmark regression.
+# Measured on a warm tree: 14s cargo test + 32s bench = 46s wall. An iteration
+# that touched native/ must rebuild the Rust test binaries first, which costs
+# ~2m — note that `cargo clippy --all-targets` does NOT warm them, since clippy's
+# driver keeps separate fingerprints from rustc's — so the realistic worst case
+# is ~3m. That still fits the 600s default, but the margin is thinner than it
+# was; 1200s keeps a slow/loaded box from tripping a timeout on what is really a
+# passing gate. All other [gate] knobs keep their built-in defaults:
+# soft_fail=true, run_when="commits-only".
+timeout_secs = 1200
+
 [runner]
 # Wrapper script that exports PATH for ~/.cargo/bin and sources .venv before
 # exec-ing claude. Without this, ralph would need to be invoked from an already

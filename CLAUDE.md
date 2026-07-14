@@ -399,9 +399,16 @@ lives in `.ralph/`:
 - `.ralph/prompts/{_header,_footer,clean,dirty,revert}.md` — per-state agent
   prompts. `_footer.md` carries the workflow steps, MEMORY SAFETY rules, and
   key-files map.
-- `.ralph/hooks/states/{clean,dirty}/gate` — benchmark regression check
-  (`tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15`),
-  matching the CI gate. Fires only on iterations that produced commits.
+- `.ralph/hooks/states/{clean,dirty}/gate` — thin wrappers around
+  `tools/ralph-gate.sh`, the shared gate body. Fires only on iterations that
+  produced commits. Two checks, fail-fast in order:
+  1. `cargo test --release` — the Rust unit + integration suite. These encode
+     contracts the Python suite never exercises; a real regression once survived
+     a full iteration because the gate skipped them (bd `angr-8kk32`, memory
+     `cargo-test-not-in-ralph-gate`). ~15s warm, ~2m when an iteration touched
+     `native/` and the test binaries must rebuild.
+  2. `tests/benchmarks/run_regression.py --rust-only --skip-bimodal
+     --threshold 0.15 --retry-failures 2` — matches the CI benchmark gate.
 - `.ralph/state/` — runtime state (FSM, logs, session.md handoff). Gitignored
   by ralph init.
 

@@ -1,23 +1,10 @@
 #!/bin/sh
-# states/clean/gate: benchmark regression check after the agent commits.
+# states/clean/gate: post-commit regression gate for the clean state.
 #
-# Runs only on iterations that produced commits, per [gate] run_when="commits-only".
-# soft_fail=true → regression surfaces in next prompt's {{.GateResult}}, the FSM
-# does NOT enter failed{}. Mirrors run_benchmark_gate() from the legacy
-# run_optimization_loop.py and the .github/workflows/ci.yml::benchmark_regression
-# job (--rust-only --skip-bimodal --threshold 0.15).
-#
-# --retry-failures 2: sub-second fast-tier benches are noise-dominated. Per the
-# `benchmark-regression-noise-floor` memory, a single failing gate run is not a
-# real regression — only believe it if the same bench fails twice consecutively.
-# This flag mechanizes that rule by re-running any timing regression up to 2x.
+# Thin wrapper — the checks (cargo test --release, then the fast-tier benchmark
+# regression) live in tools/ralph-gate.sh so this hook and dirty/gate cannot
+# drift apart. See that script for the rationale behind each check.
 #
 # Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PROMPT_FILE RALPH_ITER_JSON
 
-set -e
-export PATH="$HOME/.cargo/bin:$PATH"
-# shellcheck disable=SC1091
-. /home/ubuntu/repos/angr/.venv/bin/activate
-
-exec python tests/benchmarks/run_regression.py \
-    --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2
+exec /home/ubuntu/repos/angr/tools/ralph-gate.sh "$@"
