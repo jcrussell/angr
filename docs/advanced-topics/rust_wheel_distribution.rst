@@ -110,19 +110,73 @@ Prototype CI job
 ----------------
 
 ``.github/workflows/wheels.yml`` (added alongside this memo) is a **prototype**
-``cibuildwheel`` job encoding the decision above:
+``cibuildwheel`` job encoding the decision above. It is ``workflow_dispatch``-only;
+the tag trigger stays commented out until at least one leg is verified green
+(blocker #1 below). Since 2026-07-14 (angr-c4xcs.3) it is a **platform matrix**
+(``fail-fast: false`` — the legs are independent and none has run yet):
 
-* Builds in the ``manylinux`` image with ``libz3-dev`` + ``pkg-config``
-  installed (headers are build-time only; they never enter the wheel).
-* ``z3-solver`` is installed in the build environment so ``build.rs`` resolves
-  ``libz3.so``.
-* A custom ``CIBW_REPAIR_WHEEL_COMMAND_LINUX`` runs ``auditwheel repair
-  --exclude libz3.so`` then ``patchelf --set-rpath '$ORIGIN/../z3/lib'``.
-* A test step installs the repaired wheel into a clean venv and runs
-  ``make test-quick``.
+.. list-table::
+   :header-rows: 1
+   :widths: 22 14 22 42
 
-It is committed **unverified** — this environment has no Docker/network to run
-``cibuildwheel``. The verification is filed as a blocker bead (see below).
+   * - Leg
+     - Runner
+     - Repair tool
+     - Runpath after repair
+   * - ``manylinux x86_64``
+     - ubuntu-latest
+     - ``auditwheel`` + ``patchelf``
+     - ``$ORIGIN/../z3/lib``
+   * - ``manylinux aarch64``
+     - ubuntu-latest + QEMU
+     - ``auditwheel`` + ``patchelf``
+     - ``$ORIGIN/../z3/lib``
+   * - ``macos arm64``
+     - macos-14
+     - ``delocate`` + ``install_name_tool``
+     - ``@loader_path/../z3/lib``
+
+Common to every leg: the Rust toolchain and the Z3 **headers** are installed at
+build time only (never enter the wheel); ``z3-solver==4.13.0.0`` is installed in
+the build env so ``build.rs::find_z3_lib_dir`` resolves the library; the repair
+step **excludes** libz3 and relativizes the runpath; and ``CIBW_TEST_COMMAND``
+runs the AST-passthrough smoke test against the repaired wheel.
+
+Per-platform wrinkles worth knowing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **aarch64** reuses the x86_64 recipe verbatim under QEMU emulation (slow —
+  budget roughly an hour). It rests on one unverified assumption: that
+  ``z3-solver==4.13.0.0`` publishes a manylinux **aarch64** wheel. If it does
+  not, ``CIBW_BEFORE_BUILD_LINUX`` fails loudly, which is the right outcome — an
+  aarch64 angr wheel that excludes libz3 is useless to a user who cannot
+  ``pip install z3-solver`` on aarch64 either.
+* **macOS** needs three changes from the ELF recipe, all encoded in
+  ``CIBW_REPAIR_WHEEL_COMMAND_MACOS``: ``delocate-wheel --exclude libz3`` in
+  place of ``auditwheel``; ``install_name_tool -change`` to rewrite the
+  build-machine absolute libz3 path ``build.rs`` recorded as the dependent
+  install name into ``@rpath/libz3.dylib``, plus ``-add_rpath
+  @loader_path/../z3/lib``; and a ``codesign --force --sign -`` re-sign, because
+  ``install_name_tool`` invalidates the ad-hoc arm64 signature and an unsigned
+  ``.so`` will not load at all on Apple silicon. ``Z3_SYS_Z3_HEADER`` must be set
+  via ``CIBW_ENVIRONMENT_MACOS``, not exported from the before-build hook —
+  cibuildwheel runs that hook in its own shell, so the export never reaches cargo.
+
+Windows: out of scope, and not merely unfinished
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Windows is deliberately absent from the matrix. PE has **no RPATH equivalent**,
+so step 2 of the decision above — relativize the runpath to the ``z3-solver``
+package — has no mechanism on Windows. The standard tool (``delvewheel``) would
+copy ``z3.dll`` into the wheel, which is exactly the private-second-``Z3_context``
+failure this whole design exists to prevent. Supporting Windows therefore needs a
+*different* mechanism, not a matrix row: most plausibly an
+``os.add_dll_directory(<z3 package>/lib)`` call at ``angr`` import time, executed
+before the extension is loaded. That is a source change with its own correctness
+argument, filed separately.
+
+Every leg is committed **unverified** — this environment has no Docker/network to
+run ``cibuildwheel``. Verification is filed as a blocker bead (see below).
 
 Build-from-source fallback
 --------------------------
@@ -135,10 +189,12 @@ needed there; this memo only adds the *binary-distribution* option on top.
 Open blockers (filed as beads)
 -------------------------------
 
-#. Verify the ``wheels.yml`` job actually builds, repairs (``--exclude
-   libz3.so`` + ``$ORIGIN/../z3/lib`` runpath), and that the installed wheel
-   passes ``make test-quick`` in a clean venv **in CI** (cannot run locally —
-   no Docker/network).
+#. Verify the ``wheels.yml`` job actually builds, repairs (libz3 excluded +
+   relativized runpath), and that the installed wheel passes the smoke test in a
+   clean venv **in CI** (cannot run locally — no Docker/network). Filed as
+   angr-3gjm for the x86_64 leg; the aarch64 and macOS legs added by angr-c4xcs.3
+   inherit the same gate — none of the three has ever been executed, so a green
+   run of *any* leg is what unlocks the tag trigger.
 #. **RESOLVED (2026-06-15, angr-6f0i):** abi3 vs per-version decided in favour
    of abi3 — ``abi3-py310`` added to ``pyo3``, crate compiles clean against the
    full PyO3 surface (``py-clone`` + all ``#[pymethods]``), limited-ABI ``.so``

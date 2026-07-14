@@ -1,45 +1,93 @@
-# Prebuilt manylinux wheel for the Rust engine.
+# Prebuilt wheels for the Rust engine.
 #
-# PROTOTYPE — committed UNVERIFIED (bd bead angr-ivwn). See
+# PROTOTYPE — committed UNVERIFIED (bd beads angr-ivwn, angr-c4xcs.3). See
 # docs/advanced-topics/rust_wheel_distribution.rst for the design rationale.
 #
-# The crux: the Rust cdylib and claripy must load the SAME libz3.so at runtime
+# The crux: the Rust cdylib and claripy must load the SAME libz3 at runtime
 # (AST passthrough hands Z3 Ast pointers across the FFI boundary — a pointer is
-# only valid in its own Z3_context). Therefore this job MUST NOT let auditwheel
-# vendor libz3 into the wheel (that would give the extension a private, second
-# Z3 context). Instead it EXCLUDES libz3.so and relativizes RUNPATH to the
-# z3-solver wheel's install dir ($ORIGIN/../z3/lib). z3-solver is a runtime dep
-# (pinned 4.13.0.0 transitively via claripy==9.2.209 — do not widen; see the
-# avoid-pip-install-deps bd memory and the unversioned-SONAME warning in the memo).
+# only valid in its own Z3_context). Therefore this job MUST NOT let the repair
+# tool (auditwheel / delocate) vendor libz3 into the wheel — that would give the
+# extension a private, second Z3 context. Instead it EXCLUDES libz3 and
+# relativizes the runpath to the z3-solver wheel's install dir, which sits
+# beside angr/ in site-packages: $ORIGIN/../z3/lib on Linux,
+# @loader_path/../z3/lib on macOS. z3-solver is a runtime dep (pinned 4.13.0.0
+# transitively via claripy==9.2.209 — do not widen; see the avoid-pip-install-deps
+# bd memory and the unversioned-SONAME warning in the memo).
 #
-# Verification (clean-venv install + make test-quick + AST-passthrough smoke)
-# can only run in CI with Docker — it cannot be exercised in the dev sandbox.
+# Windows is deliberately NOT in the matrix: PE has no RPATH equivalent, so the
+# "link, do not bundle" layout has no mechanism there — delvewheel would copy
+# z3.dll into the wheel (a second Z3_context, the exact failure this design
+# exists to prevent). Closing that needs a different approach (an os.add_dll_directory
+# shim at angr import time pointing at the z3 package). Tracked separately.
+#
+# Verification (clean-venv install + AST-passthrough smoke) can only run in CI —
+# no Docker/network in the dev sandbox. NEITHER leg below has been executed yet.
 
 name: Wheels
 
 on:
   workflow_dispatch:
-  # Enable on tags once verified:
+  # Enable on tags once a leg is verified green (bd angr-3gjm):
   # push:
   #   tags:
   #     - "v*"
 
 jobs:
   build_wheels:
-    name: Build manylinux wheel
-    runs-on: ubuntu-latest
+    name: Wheel · ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      # One broken platform must not mask a green one — these legs are
+      # independent and (as of this commit) all unverified.
+      fail-fast: false
+      matrix:
+        include:
+          # abi3-py310 (pinned in native/angr/Cargo.toml) collapses the CPython
+          # axis to ONE wheel per platform covering 3.10+ — build on 3.10, the
+          # limited-ABI tag (cp310-abi3) is forward-compatible. Compile-verified
+          # clean against the full pyo3 surface (py-clone + all #[pymethods]);
+          # see angr-6f0i. So the matrix is purely platform × arch.
+          - name: manylinux x86_64
+            runs-on: ubuntu-latest
+            cibw-build: "cp310-manylinux_x86_64"
+            cibw-archs: "x86_64"
+            qemu: false
+          # aarch64 builds run the same manylinux recipe under QEMU emulation
+          # (slow: expect ~an hour). UNVERIFIED ASSUMPTION: z3-solver 4.13.0.0
+          # publishes a manylinux aarch64 wheel. If it does not, CIBW_BEFORE_BUILD
+          # fails loud here — which is the correct outcome, because an aarch64
+          # angr wheel that excludes libz3 is useless to a user who cannot pip
+          # install z3-solver on aarch64 either.
+          - name: manylinux aarch64
+            runs-on: ubuntu-latest
+            cibw-build: "cp310-manylinux_aarch64"
+            cibw-archs: "aarch64"
+            qemu: true
+          # macOS arm64 (Apple silicon). Different repair tool (delocate) and a
+          # different runpath token (@loader_path), same "exclude libz3" rule.
+          - name: macos arm64
+            runs-on: macos-14
+            cibw-build: "cp310-macosx_arm64"
+            cibw-archs: "arm64"
+            qemu: false
+
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+
+      # Emulation for the non-native Linux arch. Native legs skip this.
+      - name: Set up QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3
+        with:
+          platforms: arm64
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21.3
         env:
-          # Linux x86_64 only for the prototype. abi3-py310 (pinned in
-          # native/angr/Cargo.toml) collapses the matrix to ONE wheel covering
-          # CPython 3.10+ — build on 3.10, the limited-ABI tag (cp310-abi3) is
-          # forward-compatible. Compile-verified clean against the full pyo3
-          # surface (py-clone + all #[pymethods]); see angr-6f0i.
-          CIBW_BUILD: "cp310-manylinux_x86_64"
+          CIBW_BUILD: ${{ matrix.cibw-build }}
+          CIBW_ARCHS: ${{ matrix.cibw-archs }}
+
+          # ---- Linux (manylinux, both arches) --------------------------------
           # build.rs needs the Rust toolchain + z3 headers + z3-solver's libz3.so.
           # Headers are BUILD-TIME ONLY; they never enter the wheel.
           CIBW_BEFORE_ALL_LINUX: >
@@ -70,14 +118,53 @@ jobs:
               python -m wheel pack /tmp/wh/* -d {dest_dir} &&
               rm -rf /tmp/wh;
             done
+
+          # ---- macOS ---------------------------------------------------------
+          # Rust ships preinstalled on the GitHub macOS images; brew supplies z3.h
+          # for z3-sys bindgen (build-time only — the headers never enter the wheel).
+          CIBW_BEFORE_ALL_MACOS: brew install z3 pkg-config
+          # MACOSX_DEPLOYMENT_TARGET must match the macos-14 image's arm64 floor,
+          # else delocate rejects the wheel tag. Z3_SYS_Z3_HEADER must be set HERE,
+          # not exported from CIBW_BEFORE_BUILD_MACOS — cibuildwheel runs before-build
+          # in its own shell, so an export there never reaches cargo. /opt/homebrew is
+          # the Apple-silicon brew prefix `brew install z3` symlinks headers into (the
+          # same path setup.py::_resolve_z3_header probes).
+          CIBW_ENVIRONMENT_MACOS: 'MACOSX_DEPLOYMENT_TARGET="11.0" Z3_SYS_Z3_HEADER="/opt/homebrew/include/z3.h"'
+          CIBW_BEFORE_BUILD_MACOS: >
+            pip install z3-solver==4.13.0.0 delocate &&
+            (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after brew install z3" >&2; exit 1; })
+          # Mach-O analogue of the Linux repair. Three differences:
+          #  1. delocate (not auditwheel) is the vendoring tool; --exclude libz3
+          #     keeps it from copying libz3.dylib into angr/.dylibs/.
+          #  2. build.rs recorded the BUILD machine's absolute libz3 path as the
+          #     dependent install name. Rewrite it to @rpath/libz3.dylib and add
+          #     @loader_path/../z3/lib (the macOS spelling of $ORIGIN/../z3/lib),
+          #     so the installed extension resolves the USER's z3-solver dylib.
+          #  3. install_name_tool invalidates the ad-hoc arm64 signature — re-sign,
+          #     or the .so will not load at all on Apple silicon.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >
+            delocate-wheel --exclude libz3 --require-archs {delocate_archs} -w {dest_dir} -v {wheel} &&
+            for w in {dest_dir}/*.whl; do
+              python -m wheel unpack "$w" -d /tmp/wh &&
+              so=$(ls /tmp/wh/*/angr/rustylib*.so) &&
+              dep=$(otool -L "$so" | awk '/libz3/ {print $1; exit}') &&
+              test -n "$dep" &&
+              install_name_tool -change "$dep" '@rpath/libz3.dylib' "$so" &&
+              install_name_tool -add_rpath '@loader_path/../z3/lib' "$so" &&
+              codesign --force --sign - "$so" &&
+              python -m wheel pack /tmp/wh/* -d {dest_dir} &&
+              rm -rf /tmp/wh;
+            done
+
+          # ---- Test (all platforms) ------------------------------------------
           # Verify the repaired wheel installs clean and resolves the shared libz3.
           # The AST-passthrough smoke test (angr-9eit) is the load-bearing check:
           # it mints a Z3 AST in claripy and reads it back through the Rust solver,
-          # proving both halves resolved the SAME site-packages/z3/lib/libz3.so via
-          # the wheel's $ORIGIN/../z3/lib RUNPATH. If --exclude libz3.so had failed
-          # and the wheel vendored a private libz3 (a second Z3_context), this would
-          # crash or return a wrong answer. {project} is the cibuildwheel-provided
-          # repo root, so the script ships with the source checkout, not the wheel.
+          # proving both halves resolved the SAME site-packages/z3/lib/libz3 via
+          # the wheel's relativized runpath. If the --exclude had failed and the
+          # wheel vendored a private libz3 (a second Z3_context), this would crash
+          # or return a wrong answer. {project} is the cibuildwheel-provided repo
+          # root, so the script ships with the source checkout, not the wheel.
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: >
             python -c "import angr, z3, os; print('z3 lib:', os.path.dirname(z3.__file__))" &&
@@ -86,5 +173,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-manylinux-x86_64
+          # upload-artifact v4 requires unique names across the matrix.
+          name: wheels-${{ matrix.cibw-build }}
           path: ./wheelhouse/*.whl
