@@ -49,6 +49,15 @@ class PerformanceTracker:
         "callback_simprocedure_sc_sympage_ns",
         "callback_simprocedure_sc_meminstall_ns",
         "callback_simprocedure_sc_memreplay_ns",
+        # angr-gorvf.10: inside sc_memreplay — how many pages were replayed
+        # across all crossings, and the FFI-fetch vs Python-store split of the
+        # per-page cost. pages/crossing tells us whether the cumulative dirty
+        # set (Rust never clears it between crossings) is the problem.
+        "callback_simprocedure_replay_pages",
+        "callback_simprocedure_replay_ffi_ns",
+        "callback_simprocedure_replay_store_ns",
+        "callback_simprocedure_replay_sym_ns",
+        "callback_simprocedure_replay_sym_entries",
         # angr-gorvf.9: the same four phases, restricted to the process's FIRST
         # SimProcedure crossing (one-time warmup). Subtract these from the
         # totals above to get steady-state per-crossing cost.
@@ -126,6 +135,21 @@ class PerformanceTracker:
         into its internal components inside ``_create_state_for_callback``.
         """
         self._stats[f"callback_simprocedure_sc_{subphase}_ns"] += ns
+
+    def add_replay_page(self, ffi_ns: int, store_ns: int, sym_ns: int, sym_entries: int) -> None:
+        """One dirty page replayed into the callback SimState (angr-gorvf.10).
+
+        ``store_ns`` covers both halves of the page (concrete blit + symbolic
+        objects); ``sym_ns`` / ``sym_entries`` isolate the symbolic half, which
+        is what the per-page cost is actually made of — a page carries ~169
+        symbolic objects on csaw_wyvern and they, not the concrete bytes, were
+        the 260ms.
+        """
+        self._stats["callback_simprocedure_replay_pages"] += 1
+        self._stats["callback_simprocedure_replay_ffi_ns"] += ffi_ns
+        self._stats["callback_simprocedure_replay_store_ns"] += store_ns
+        self._stats["callback_simprocedure_replay_sym_ns"] += sym_ns
+        self._stats["callback_simprocedure_replay_sym_entries"] += sym_entries
 
     def record_memory_load(self, ns: int) -> None:
         self._stats["callback_memory_load_count"] += 1

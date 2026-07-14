@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import claripy
@@ -1876,6 +1877,65 @@ class RustStateSyncMixin:
             # callback runs with potentially stale stack contents.
             pass
 
+    @staticmethod
+    def _acquire_ultrapage(state: angr.SimState, page_addr: int):
+        """Get the writable UltraPage backing `page_addr`, or None.
+
+        Used by the two dirty-page replay fast paths below to talk to the page
+        directly instead of through the memory-mixin stack. ``writing=True``
+        routes through ``acquire_unique()``, so a page shared with another
+        state is copy-on-written rather than mutated in place.
+
+        Returns None — meaning "caller must use the generic ``memory.store``" —
+        when this is not a 4096-byte UltraPage, or when any of the mixins the
+        fast path skips would actually have work to do. Of the mixins above the
+        paged store, only ConvenientMappingsMixin has store-side state, and it
+        is inert unless one of these three options is set; Inspect and both
+        Actions mixins are already disabled by the ``inspect=False`` /
+        ``disable_actions=True`` the generic path passes, and the addresses and
+        sizes here are concrete and exact, so address/size normalization are
+        no-ops.
+        """
+        get_page = getattr(state.memory, "_get_page", None)
+        if get_page is None or page_addr % PAGE_SIZE:
+            return None
+        if (
+            "MEMORY_SYMBOLIC_BYTES_MAP" in state.options
+            or "REVERSE_MEMORY_NAME_MAP" in state.options
+            or "REVERSE_MEMORY_HASH_MAP" in state.options
+        ):
+            return None
+        page = get_page(page_addr // PAGE_SIZE, True)
+        concrete_data = getattr(page, "concrete_data", None)
+        symbolic_bitmap = getattr(page, "symbolic_bitmap", None)
+        if (
+            not isinstance(concrete_data, bytearray)
+            or len(concrete_data) != PAGE_SIZE
+            or symbolic_bitmap is None
+            or len(symbolic_bitmap) != PAGE_SIZE
+        ):
+            return None
+        return page
+
+    @staticmethod
+    def _blit_concrete_page(page, page_bytes) -> None:
+        """Copy a full concrete page straight into its UltraPage backing.
+
+        angr-gorvf.10: routing a whole page through ``state.memory.store`` is
+        quadratic. ``UltraPage.store`` walks the value byte-by-byte with
+        ``self.concrete_data[subaddr] = ival & 0xFF; ival >>= 8`` — for a
+        4096-byte page that right-shifts a 32768-bit int 4096 times, measured
+        at ~6.5ms for ONE page (311ms of the 325ms ``sc_memreplay`` bill on
+        csaw_wyvern, against only 13ms of FFI to fetch the same pages). A
+        page-aligned, page-sized concrete write is a memcpy; do it as one.
+
+        Semantics match the concrete branch of ``UltraPage.store``: the
+        symbolic bitmap is cleared over the range and ``symbolic_data`` is
+        left alone (loads consult the bitmap).
+        """
+        page.concrete_data[0:PAGE_SIZE] = page_bytes
+        page.symbolic_bitmap[0:PAGE_SIZE] = b"\0" * PAGE_SIZE
+
     def _replay_rust_dirty_pages(self, state: angr.SimState):
         """Replay Rust-side memory mutations into the cached Python SimState.
 
@@ -1918,27 +1978,16 @@ class RustStateSyncMixin:
             return
 
         for page_addr in dirty_pages:
+            _ffi_ns = 0
+            _store_ns = 0
+            _t0 = time.perf_counter_ns()
             try:
                 page_bytes = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, page_addr)
             except Exception:
                 page_bytes = None
+            _ffi_ns += time.perf_counter_ns() - _t0
 
-            if page_bytes and len(page_bytes) == PAGE_SIZE:
-                try:
-                    state.memory.store(
-                        page_addr,
-                        claripy.BVV(bytes(page_bytes), PAGE_SIZE * 8),
-                        endness="Iend_BE",
-                        inspect=False,
-                        disable_actions=True,
-                    )
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: concrete page replay failed;
-                    # cached Python state's memory page stays out of sync with
-                    # Rust until the next snapshot refresh.
-                    if _DBG:
-                        l.debug(f"dirty-page concrete replay failed at 0x{page_addr:x}: {e}")
-
+            _t0 = time.perf_counter_ns()
             try:
                 sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(
                     self._current_callback_state_id, page_addr
@@ -1948,17 +1997,66 @@ class RustStateSyncMixin:
                 # older builds; symbolic bytes fall through to the older
                 # snapshot path on the next sync.
                 sym_entries = None
+            _ffi_ns += time.perf_counter_ns() - _t0
 
-            if sym_entries:
-                for addr, ast in sym_entries:
-                    try:
+            # Acquire the target page once and drive it directly for both
+            # halves of the replay; None means fall back to memory.store.
+            page = self._acquire_ultrapage(state, page_addr)
+
+            if page_bytes and len(page_bytes) == PAGE_SIZE:
+                _t0 = time.perf_counter_ns()
+                try:
+                    if page is not None:
+                        self._blit_concrete_page(page, page_bytes)
+                    else:
                         state.memory.store(
-                            addr,
-                            ast,
-                            endness=state.arch.memory_endness,
+                            page_addr,
+                            claripy.BVV(bytes(page_bytes), PAGE_SIZE * 8),
+                            endness="Iend_BE",
                             inspect=False,
                             disable_actions=True,
                         )
+                except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: concrete page replay failed;
+                    # cached Python state's memory page stays out of sync with
+                    # Rust until the next snapshot refresh.
+                    if _DBG:
+                        l.debug(f"dirty-page concrete replay failed at 0x{page_addr:x}: {e}")
+                _store_ns += time.perf_counter_ns() - _t0
+
+            _t0 = time.perf_counter_ns()
+            if sym_entries:
+                endness = state.arch.memory_endness
+                for addr, ast in sym_entries:
+                    try:
+                        # angr-gorvf.10: one page carries ~169 symbolic objects
+                        # (csaw_wyvern) and each generic store costs ~32us of
+                        # mixin stack — 260ms of the 325ms replay bill. Store
+                        # into the already-acquired page instead; UltraPage.store
+                        # with cooperate=False runs the same decomposition the
+                        # mixin would have handed it.
+                        offset = addr - page_addr
+                        size = len(ast) // 8
+                        if page is not None and size > 0 and offset >= 0 and offset + size <= PAGE_SIZE:
+                            page.store(
+                                offset,
+                                ast,
+                                size=size,
+                                endness=endness,
+                                memory=state.memory,
+                                page_addr=page_addr,
+                                cooperate=False,
+                            )
+                        else:
+                            # Entry straddles the page boundary (or non-UltraPage
+                            # backend): the mixin owns the split.
+                            state.memory.store(
+                                addr,
+                                ast,
+                                endness=endness,
+                                inspect=False,
+                                disable_actions=True,
+                            )
                         self._register_handle(id(ast), ast)
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: symbolic store at addr
@@ -1966,6 +2064,9 @@ class RustStateSyncMixin:
                         # instead of the Rust-side symbolic AST.
                         if _DBG:
                             l.debug(f"dirty-page symbolic replay failed at 0x{addr:x}: {e}")
+            _sym_ns = time.perf_counter_ns() - _t0
+            _store_ns += _sym_ns
+            self._perf_stats.add_replay_page(_ffi_ns, _store_ns, _sym_ns, len(sym_entries) if sym_entries else 0)
 
         try:
             self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)

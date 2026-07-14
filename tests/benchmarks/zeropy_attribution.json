@@ -1091,5 +1091,86 @@
         }
       }
     }
+  },
+  "simprocedure_replay_fix": {
+    "_comment": "angr-gorvf.10 \u2014 the sc_memreplay fix. ROOT CAUSE was NOT the cumulative dirty set (Rust never clears it, but it stays tiny: csaw_wyvern replays only 48 pages across 30 crossings = 1.6/crossing). It was the per-page Python STORE: 311ms of the 325ms bill, against 13ms of FFI to fetch the same pages. Two costs, both in angr's memory-mixin stack, both fixed by talking to the UltraPage directly (RustStateSyncMixin._acquire_ultrapage / _blit_concrete_page): (1) UltraPage.store writes concrete bytes with a byte-at-a-time loop that right-shifts the whole value (`ival >>= 8`), i.e. quadratic \u2014 one 4096-byte page cost ~6.5ms; a full-page write is now a bytearray-slice memcpy. (2) The real bulk: a page carries ~169 symbolic objects (8107 entries over 48 page-replays) and each generic state.memory.store cost ~32us of mixin stack = 260ms; storing into the already-acquired page (UltraPage.store, cooperate=False) cut that to ~8us/entry. A page-content memo was tried and REVERTED \u2014 with only 1.6 pages/crossing there is nothing to dedup.",
+    "measured_at": "2026-07-14",
+    "baseline_commit": "5f8d936e4",
+    "build": "stock (libvex_ffi off)",
+    "aggregate": {
+      "memreplay_ms_before": 359.8,
+      "memreplay_ms_after": 88.2,
+      "memreplay_delta_pct": -75.5,
+      "class_total_ms_before": 1047.9,
+      "class_total_ms_after": 768.1,
+      "class_delta_pct": -26.7
+    },
+    "benches": {
+      "fauxware": {
+        "crossings": 1,
+        "memreplay_ms": [
+          1.1,
+          0.4
+        ],
+        "state_create_ms": [
+          2.9,
+          2.2
+        ],
+        "total_ms": [
+          59.9,
+          58.3
+        ]
+      },
+      "google2016_unbreakable_0": {
+        "crossings": 1,
+        "memreplay_ms": [
+          7.5,
+          0.5
+        ],
+        "state_create_ms": [
+          19.4,
+          17.8
+        ],
+        "total_ms": [
+          195.0,
+          196.1
+        ]
+      },
+      "csgames2018": {
+        "crossings": 22,
+        "memreplay_ms": [
+          28.0,
+          5.7
+        ],
+        "state_create_ms": [
+          null,
+          94.1
+        ],
+        "total_ms": [
+          null,
+          172.4
+        ]
+      },
+      "csaw_wyvern": {
+        "crossings": 30,
+        "memreplay_ms": [
+          323.0,
+          81.6
+        ],
+        "state_create_ms": [
+          397.3,
+          154.2
+        ],
+        "total_ms": [
+          587.5,
+          341.3
+        ]
+      }
+    },
+    "csaw_wyvern_per_crossing_memreplay_ms": [
+      10.8,
+      2.72
+    ],
+    "residual": "sym stores are still 66.8ms of csaw_wyvern's 81.6ms memreplay (8107 entries x ~8us). Next lever if needed: coalesce contiguous byte-granular symbolic objects into one store, or make Rust export only objects dirtied since the last crossing."
   }
 }
