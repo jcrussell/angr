@@ -10,6 +10,7 @@ import os
 import pytest
 
 import angr
+from angr.errors import AngrCallableMultistateError
 
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
@@ -502,24 +503,26 @@ class TestCallableStepFunc:
         try:
             fauxware_project.factory.simulation_manager = rust_sm
 
-            # The fauxware backdoor keys on the SECOND arg (password == "SOSNEAKY"),
-            # not the username. Passing SOSNEAKY as username with a non-matching
-            # password does NOT take the backdoor, so authenticate() returns 0.
+            # authenticate() opens the username as a file and compares the
+            # password against its 8 bytes. Those bytes are symbolic (no such
+            # file exists), so the strcmp branch splits and a concrete_only
+            # Callable raises — which is exactly what the VANILLA Python engine
+            # does on this same call. Rust used to return a concrete 0 here
+            # only because the read of the natively-opened fd bounced to Python,
+            # found no such fd in state.posix, and silently wrote nothing,
+            # leaving stored_pw concrete. The native read now mints the symbolic
+            # bytes (angr-gorvf.15), restoring Python parity. What this test
+            # pins is the Callable -> Rust pipeline reaching the split at all
+            # (factory.callable -> perform_call -> run(step_func=...) -> the
+            # step_func's multistate check).
             # authenticate is at 0x400664
             authenticate = fauxware_project.factory.callable(
                 0x400664,
                 prototype="int authenticate(char *username, char *password)",
                 concrete_only=True,
             )
-            # Pin the concrete return value the Callable->Rust register-export
-            # pipeline must produce (non-backdoor path -> 0). `is not None` alone
-            # would pass for a semantically inverted (1) or garbage return.
-            result = authenticate(b"SOSNEAKY\x00", b"anything\x00")
-            assert result is not None, "Callable should return a value"
-            assert result.concrete, f"Return should be concrete, got {result!r}"
-            assert result.concrete_value == 0, (
-                f"Non-backdoor authenticate() should return 0, got {result.concrete_value}"
-            )
+            with pytest.raises(AngrCallableMultistateError):
+                authenticate(b"SOSNEAKY\x00", b"anything\x00")
         finally:
             fauxware_project.factory.simulation_manager = original_sm
 

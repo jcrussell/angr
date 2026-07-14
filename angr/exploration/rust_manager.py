@@ -4660,7 +4660,26 @@ class RustExplorationManager(
 
     def _check_limits(self, start_time, steps_taken, timeout, max_steps) -> bool:
         """Check if timeout or max_steps limits have been reached."""
-        # Fire progress callback if due
+        self._fire_progress_if_due(start_time, steps_taken)
+
+        if timeout is not None and (time.time() - start_time) > timeout:
+            l.warning(f"Exploration timeout reached ({timeout}s)")
+            return True
+        if max_steps is not None and steps_taken >= max_steps:
+            l.warning(f"Max exploration steps reached ({max_steps})")
+            return True
+        return False
+
+    def _fire_progress_if_due(self, start_time, steps_taken) -> None:
+        """Fire the progress callback when `interval_steps` steps have elapsed.
+
+        Called both at the top of an exploration iteration (via
+        ``_check_limits``) and right after a batch's steps are counted: a run
+        that finds its target inside a single native batch breaks out of the
+        loop without a second limit check, so without the post-batch call the
+        callback would never fire at all (angr-gorvf.15 — the SimProcedure
+        bounces that used to chop fauxware into many iterations are gone).
+        """
         cb = getattr(self, "_progress_callback", None)
         if cb is not None:
             interval = getattr(self, "_progress_interval", 100)
@@ -4683,14 +4702,6 @@ class RustExplorationManager(
                     # user code can't break exploration. The callback's view skips this
                     # tick.
                     pass
-
-        if timeout is not None and (time.time() - start_time) > timeout:
-            l.warning(f"Exploration timeout reached ({timeout}s)")
-            return True
-        if max_steps is not None and steps_taken >= max_steps:
-            l.warning(f"Max exploration steps reached ({max_steps})")
-            return True
-        return False
 
     def set_progress_callback(self, callback: Callable, interval_steps: int = 100) -> None:
         """Set a progress callback that fires every `interval_steps` steps.
@@ -4996,7 +5007,11 @@ class RustExplorationManager(
         # Keep terminal states alive so predicates can check them
         self._rust_mgr.set_drop_terminal_states(False)
 
-        batch_size = 50
+        # An `until` predicate is evaluated after EVERY step by Python's
+        # SimulationManager.run(); batching 50 native steps between checks
+        # would run straight past the step the caller wanted to stop on. See
+        # `_explore_with_addresses` for the full rationale (angr-gorvf.15).
+        batch_size = 1 if until is not None else 50
         start_time = time.time()
         _explore_start_ns = time.perf_counter_ns()
         steps_taken = 0
@@ -5019,6 +5034,7 @@ class RustExplorationManager(
                 batch_limit = min(batch_limit, max_steps - steps_taken)
 
             steps_taken, _time_in_rust_run = self._run_predicate_batch(steps_taken, batch_limit, _time_in_rust_run)
+            self._fire_progress_if_due(start_time, steps_taken)
 
             # Apply technique callbacks after the batch
             if self._active_techniques:
@@ -5125,13 +5141,31 @@ class RustExplorationManager(
             self._stats_ffi_crossings += 1
 
             if need_per_step:
-                batch_size = 50
+                # `until` is a per-STEP predicate in Python's SimulationManager
+                # (checked after each step). Batching native steps between
+                # checks runs past the intended stop point: fauxware's
+                # `run(until=lambda sm: len(sm.active) > 1)` wants the two
+                # states at the auth branch, but a 50-step batch executes the
+                # whole program and leaves the active stash empty (angr-gorvf.15).
+                # Before the native read/open widening, the SimProcedure bounce
+                # returned control to Python after ~1 step and masked this.
+                # Techniques keep the 50-step batch (they filter stashes between
+                # batches rather than pinpointing a step).
+                batch_size = 1 if until is not None else 50
                 if max_steps is not None:
                     batch_size = min(batch_size, max_steps - steps_taken)
                 if self._has_technique_step_hooks():
                     event = self._run_with_step_hooks(batch_size)
                 else:
                     event = self._rust_mgr.run(batch_size)
+            elif max_steps is not None:
+                # An unbounded native run() overshoots a step budget: it only
+                # returns on a callback / found / active_empty, so `max_steps`
+                # was enforced only at whatever step the next Python bounce
+                # happened to land on. With the SimProcedure bounces retired
+                # (angr-gorvf.15) a `run(max_steps=1)` on fauxware executed the
+                # whole program and emptied the active stash. Bound the batch.
+                event = self._rust_mgr.run(max_steps - steps_taken)
             else:
                 event = self._rust_mgr.run()
             self._rust_mgr.sync_state_index()
@@ -5141,6 +5175,7 @@ class RustExplorationManager(
                 steps_taken += 1
             else:
                 steps_taken += max(1, event.steps_taken)
+            self._fire_progress_if_due(start_time, steps_taken)
 
             # Drop unconstrained states if save_unconstrained=False
             if not self._save_unconstrained:

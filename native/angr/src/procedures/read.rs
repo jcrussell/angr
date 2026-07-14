@@ -16,14 +16,15 @@
 //!     registered file serves in one call, matching Python `SimFile.read`),
 //!     never bounced — a Python fallback would split the position cursor,
 //!     since natively-minted fds are not mirrored into Python (angr-8j16).
+//!   - open fds with neither concrete nor symbolic content (angr-gorvf.15):
+//!     fresh symbolic bytes are minted, mirroring Python's fresh-`SimFile`
+//!     model for an unknown/empty file. See `read_file_symbolic`.
 //!
 //! Falls back to Python for:
 //!   - symbolic fd/buf/count
 //!   - count beyond `MAX_READ_SIZE` (stdin and concrete-content fds only)
 //!   - fds not open in the Rust `FileSystem` (which includes any fd Python
 //!     created via its symbolic-file plumbing; see fd-table invariant below).
-//!   - non-stdin open fds with neither concrete nor symbolic content
-//!     (Python's symbolic-file model owns those reads).
 //!
 //! ## Fd-table sync invariant (angr-8j16)
 //!
@@ -97,12 +98,12 @@ crate::declare_proc! {
                 "read count {count} exceeds limit"
             )));
         }
-        // Empty / no-content fds defer to Python so the symbolic-file model
-        // (cle simfs + SimFile) can produce symbolic bytes.
+        // No concrete bytes and no bounded symbolic content: the fd is backed
+        // by a file the native FS has no content for. Mint fresh symbolic
+        // bytes rather than bouncing (angr-gorvf.15) — see
+        // `read_file_symbolic`.
         if content_len == 0 {
-            return Err(ProcedureError::Other(format!(
-                "read from fd={fd} has no concrete content; falling back to Python"
-            )));
+            return read_file_symbolic(state, fd_u32, buf, count);
         }
 
         let bytes = state.file_system().read(fd_u32, count as usize);
@@ -111,6 +112,41 @@ crate::declare_proc! {
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(n as u128, bits)))
     }
+}
+
+/// Serve a read from an fd whose backing file has no content in the native
+/// `FileSystem` (no concrete bytes, no bounded `content_sym`): mint `count`
+/// fresh symbolic bytes named `file_<fd>_<id>_<i>` into `buf`, advance the
+/// fd position, and return `count`.
+///
+/// This is Python's model for an unknown/empty file: `open` drops a fresh
+/// `SimFile` with symbolic content into `state.fs`, and reading it mints
+/// symbolic bytes. Bouncing instead (the pre-angr-gorvf.15 behavior) merely
+/// moved the Python round-trip from `open` to `read`, and the natively-opened
+/// fd is not mirrored into Python anyway (angr-8j16), so the bounce had no
+/// Python-side fd to read from.
+///
+/// Reads never hit EOF here (the stream model — same as
+/// `FileDescriptor::symbolic`, which this also covers). A file with a *finite*
+/// symbolic size is the `content_sym` registry path, handled by the caller
+/// before this is reached.
+fn read_file_symbolic(
+    state: &mut RustSimState,
+    fd: u32,
+    buf: u64,
+    count: u64,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let read_id = symbol_counter("read");
+    let sym_bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..count)
+            .map(|i| RustBV::symbolic(&ctx, format!("file_{fd}_{read_id}_{i}"), 8))
+            .collect()
+    };
+    write_bv_bytes(state, buf, sym_bytes)?;
+    state.file_system().seek(fd, count as i64, 1); // SEEK_CUR
+    let bits = state.arch().bits();
+    Ok(Some(RustBV::concrete(count as u128, bits)))
 }
 
 fn read_stdin_symbolic(

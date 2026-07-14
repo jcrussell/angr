@@ -1974,8 +1974,21 @@ class TestRustInspectExtendedEvents:
         assert ret is None
 
     def test_simprocedure_fires_during_exploration(self, fauxware_project):
-        """simprocedure BP fires while running fauxware (libc procs hit)."""
+        """simprocedure BP fires while running fauxware (libc procs hit).
 
+        The BP is dispatched from the Python SimProcedure bounce, and stock
+        fauxware bounces nothing at all now that open/read are served natively
+        (angr-gorvf.15) — so a Python-only proc is hooked over ``puts`` to
+        provide the bounce this test is about.
+        """
+
+        import angr as _angr
+
+        class _PyOnlyPuts(_angr.SimProcedure):
+            def run(self, _s):  # pylint: disable=arguments-differ
+                return 0
+
+        fauxware_project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 

@@ -154,22 +154,59 @@ fn test_read_user_fd_eof_returns_zero() {
 }
 
 #[test]
-fn test_read_empty_content_fd_falls_back() {
-    // fd open but no content → defer to Python (symbolic-file model).
+fn test_read_empty_content_fd_mints_symbolic_bytes() {
+    // fd open but the native FS has no content for it (angr-gorvf.15): mint
+    // fresh symbolic bytes rather than bouncing, mirroring Python's fresh
+    // SimFile for an unknown/empty file.
     let mut state = RustSimState::new("amd64").unwrap();
-    state
+    let fd = state
         .file_system()
         .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
-    let result = NativeRead.call(
-        &mut state,
-        &[
-            RustBV::concrete(3, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(4, 64),
-        ],
-    );
-    assert!(result.is_err());
+    let result = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(4));
+    for i in 0..4u64 {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} should be symbolic");
+    }
+    // Position advanced past the served bytes.
+    let (_, pos, _, _, _) = state.file_system_ref().fd_info(fd).unwrap();
+    assert_eq!(pos, 4);
+}
+
+#[test]
+fn test_read_empty_content_fd_second_read_mints_fresh_bytes() {
+    // Stream semantics: a contentless fd never hits EOF — a second read mints
+    // more bytes (Python's SimFile grows on read) instead of returning 0.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = state
+        .file_system()
+        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
+    state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
+    for _ in 0..2 {
+        let result = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(4));
+    }
+    let (_, pos, _, _, _) = state.file_system_ref().fd_info(fd).unwrap();
+    assert_eq!(pos, 8);
 }
 
 /// Register mixed bounded symbolic content for `path` (index 1 is a

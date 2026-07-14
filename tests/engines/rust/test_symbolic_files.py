@@ -159,11 +159,17 @@ class TestSymbolicFileNativeServe:
     ):
         """A file failing the v1 scope gate (unbounded ``has_end=False``,
         ``file_exists=False``, or a little-endian load model) is skipped:
-        nothing is registered (``symfile_reads_native == 0``), the guest read
-        bounces to Python (fallback counters > 0), and exploration still
-        completes — the mismatch/return-0 path, i.e. exactly the pre-Phase-3
-        behavior for these shapes (the natively-minted fd is not mirrored into
-        Python, angr-8j16, so the Python file model cannot pin the content)."""
+        nothing is registered (``symfile_reads_native == 0``) and exploration
+        still completes down the mismatch/return-0 path.
+
+        The guest read no longer bounces for these shapes (angr-gorvf.15): the
+        native read mints fresh symbolic bytes for a contentless fd, the same
+        answer the bounce produced — the natively-opened fd is not mirrored
+        into Python (angr-8j16), so the Python file model could never pin the
+        content on this path either. What the scope gate still buys is the
+        *registry*: an eligible file's pinned bytes are served natively
+        (``symfile_reads_native > 0``, covered by the sibling tests), an
+        ineligible one falls back to unpinned symbolic content."""
         content = claripy.BVS("symfile_ineligible", 8 * 8)
         simfile = SimFile("pwfile", content=content, size=8, **ineligible_kwargs)
 
@@ -177,8 +183,9 @@ class TestSymbolicFileNativeServe:
 
         stats = mgr.stats
         assert stats["symfile_reads_native"] == 0, "ineligible file must not be served from the registry"
-        assert stats["simprocedure_python_fallback_count"] > 0, "expected the guest read to bounce to Python"
-        assert stats["simprocedure_fallback_by_name"].get("read", 0) > 0, stats["simprocedure_fallback_by_name"]
+        assert stats["simprocedure_fallback_by_name"].get("read", 0) == 0, (
+            "the contentless-fd read is served natively now (angr-gorvf.15)"
+        )
         # angr-4ref8: the scope-gate rejection is attributed to its reason
         # counter, and nothing was exported for this state.
         assert stats[f"symfile_export_skip_{skip_reason}"] >= 1, f"expected symfile_export_skip_{skip_reason} to fire"

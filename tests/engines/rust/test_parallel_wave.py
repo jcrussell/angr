@@ -635,7 +635,7 @@ class TestParallelCheckpointFrontier:
         assert overlays(resumed) == pre, "bucket-D overlays lost across the snapshot round-trip"
 
 
-def _explore_steady(project, monkeypatch, num_find=2):
+def _explore_steady(project, monkeypatch, num_find=2, **mgr_kwargs):
     """Explore fauxware under the steady-state loop (angr-nkoct).
 
     Only sets ``RUST_PARALLEL_STEADY`` + workers; the DRIVER engages the loop by
@@ -645,7 +645,7 @@ def _explore_steady(project, monkeypatch, num_find=2):
     """
     monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
     monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
-    mgr = RustExplorationManager(project, [project.factory.entry_state()])
+    mgr = RustExplorationManager(project, [project.factory.entry_state()], **mgr_kwargs)
     mgr.explore(find=FAUXWARE_ACCEPTED_ADDR, num_find=num_find)
     return mgr
 
@@ -668,6 +668,17 @@ class TestParallelSteady:
         """The steady bounce/resume protocol is exercised: both previously
         always-zero counters go positive when a Python SimProcedure bounce is
         serviced and its successors re-injected."""
+        # Stock fauxware runs with ZERO SimProcedure bounces since the native
+        # open/read widening (angr-gorvf.15), so the bounce protocol has to be
+        # provoked: a Python-only proc hooked over `puts` (not in the native
+        # registry, so it cannot be served natively) supplies the traffic.
+        import angr as _angr
+
+        class _PyOnlyPuts(_angr.SimProcedure):
+            def run(self, _s):  # pylint: disable=arguments-differ
+                return 0
+
+        fauxware_project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
         mgr = _explore_steady(fauxware_project, monkeypatch)
         stats = mgr.stats
         assert stats["parallel_real_workers"] == 2
