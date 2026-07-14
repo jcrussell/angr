@@ -263,6 +263,38 @@ on the **Rust** engine; it fails if zero `RustExplorationManager`s were built.
 - For benches outside `mma_howtouse`, expect different baselines; rerun
   N=10 once locally before picking a threshold.
 
+### Nightly valgrind leak check
+
+`.github/workflows/nightly-ci.yml::valgrind_leak_check` runs
+`tests/benchmarks/run_valgrind_leak_check.py`, a memcheck gate on the **Rust
+core** (angr-c4xcs.4). It complements the RSS gate above: RSS cannot see a
+steady small leak the allocator satisfies from arenas it already owns.
+
+It drives `native/angr/examples/leak_probe.rs` — a **pure-Rust** binary (no
+Python in the process) that churns SymContext + z3 solver, RustBV,
+SymbolicMemory and RustSimState fork, dropping everything it allocates. Running
+memcheck through CPython instead would bury real findings under interpreter
+false-positives; the Python-driven Callable path stays covered by the RSS gate.
+
+The gate is a per-iteration **slope**, not an absolute byte count — the probe
+frees everything, so a correct engine leaks a *constant* baseline (one-time z3
+globals, lazy statics) that varies by distro. The harness runs the probe at N
+and 10N and fails on growth of `definitely lost + indirectly lost`.
+`possibly lost` / `still reachable` are reported but not gated.
+
+```bash
+python tests/benchmarks/run_valgrind_leak_check.py              # gate (needs valgrind)
+python tests/benchmarks/run_valgrind_leak_check.py --json
+python tests/benchmarks/run_valgrind_leak_check.py --self-test  # prove it can fail
+```
+
+Baseline (2026-07-14, valgrind 3.22): **0 B** definite+indirect at both N=20
+and N=200 → **0.00 B/iter**; threshold 1.0 B/iter. `--self-test` injects a
+deliberate 64 B/iter leak and asserts the gate trips (it measures exactly
+64.00 B/iter). Keep that self-test running *before* the real check in CI — a
+leak gate that has never been seen to fail is indistinguishable from one that
+cannot, and this one initially could not (release LLVM elided the injector).
+
 ## Profiling Rust Benches
 
 `tests/benchmarks/profile_rust_bench.sh` wraps the criterion bench in
