@@ -339,6 +339,29 @@ pub struct PythonCallbacks {
     /// `Arc<AtomicBool>` for the same reason as `inspect_enabled`: Python sets
     /// it after the manager has already cloned this struct.
     pub memory_is_rust_proxy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The set of page addresses `fetch_page` / `batch_fetch_pages` could
+    /// actually serve, snapshotted from the Python state at setup (angr-gorvf.4.6).
+    ///
+    /// `None` means "unknown" — every fetch crosses into Python, the legacy
+    /// behaviour. When `Some`, a page outside the set is DECLINED natively and
+    /// the callback is never invoked: Python's page universe is frozen after
+    /// `RustStateSyncMixin._sync_extra_python_pages` hands Rust every page it
+    /// can serve, so a page not in the snapshot is one Python would decline
+    /// (it is symbolic, or default-fill under a non-zero-fill state) anyway.
+    /// Python installs the snapshot only when it can prove the verdict for
+    /// every page (UltraPage backend, no `ZERO_FILL_UNCONSTRAINED_MEMORY`);
+    /// otherwise it leaves this `None`.
+    ///
+    /// Declining is the conservative answer — Rust then serves the page from
+    /// its own `SymbolicMemory`, which already holds the symbolic regions
+    /// imported at setup. It must never be turned into a native zero-fill:
+    /// these pages carry symbolic stdin (see the `fetch-page-symbolic-not-concrete`
+    /// memory).
+    ///
+    /// `Arc<RwLock<..>>` for the same reason as `inspect_enabled`: Python
+    /// installs it after the manager has already cloned this struct.
+    pub python_servable_pages:
+        std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
 }
 
 #[pymethods]
@@ -385,6 +408,7 @@ impl PythonCallbacks {
             inspect_vex_lift: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            python_servable_pages: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -727,6 +751,26 @@ impl PythonCallbacks {
     pub fn py_set_memory_is_rust_proxy(&self, on: bool) {
         self.memory_is_rust_proxy
             .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Install the snapshot of pages Python's `fetch_page` can serve
+    /// (angr-gorvf.4.6). Pages outside it are declined natively, so the fetch
+    /// callback is never invoked for them. Pass an empty list to say "Python
+    /// can serve nothing" — that is the common case and drives the run-loop
+    /// `batch_fetch_pages` GIL cost to zero.
+    #[pyo3(name = "set_python_servable_pages")]
+    pub fn py_set_python_servable_pages(&self, pages: Vec<u64>) {
+        if let Ok(mut guard) = self.python_servable_pages.write() {
+            *guard = Some(pages.into_iter().collect());
+        }
+    }
+
+    /// Drop the servable-page snapshot: every fetch crosses into Python again.
+    #[pyo3(name = "clear_python_servable_pages")]
+    pub fn py_clear_python_servable_pages(&self) {
+        if let Ok(mut guard) = self.python_servable_pages.write() {
+            *guard = None;
+        }
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).

@@ -452,6 +452,21 @@ impl PythonCallbacks {
         self.fetch_page.is_some()
     }
 
+    /// Whether Python could serve `page_addr` at all (angr-gorvf.4.6).
+    ///
+    /// False means "Python would decline this page" — the caller must skip the
+    /// crossing entirely rather than pay a GIL attach to be told no. True when
+    /// no snapshot was installed (unknown → ask Python, the legacy behaviour).
+    pub fn python_can_serve_page(&self, page_addr: u64) -> bool {
+        match self.python_servable_pages.read() {
+            Ok(guard) => match &*guard {
+                Some(pages) => pages.contains(&page_addr),
+                None => true,
+            },
+            Err(_) => true,
+        }
+    }
+
     /// Call the page fetch callback to load a single 4KB page.
     ///
     /// Returns (page_data, permissions, is_mapped).

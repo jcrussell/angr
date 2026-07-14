@@ -32,6 +32,13 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(false);
         }
 
+        // angr-gorvf.4.6: Python told us at setup which pages it can serve.
+        // A page outside that set would come back declined, so skip the GIL
+        // attach and decline it here.
+        if !callbacks.python_can_serve_page(page_addr) {
+            return Ok(false);
+        }
+
         // Call Python to fetch the page
         let (data, permissions, is_mapped) = callbacks
             .call_fetch_page(page_addr)
@@ -70,9 +77,22 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(0);
         }
 
+        // angr-gorvf.4.6: drop the pages Python told us at setup it cannot
+        // serve. When nothing is left there is no crossing at all — this is
+        // what takes the run-loop `batch_fetch_pages` GIL to a literal zero on
+        // the benches whose every fetched page is a declined lazy-stack page.
+        let servable: Vec<u64> = page_addrs
+            .iter()
+            .copied()
+            .filter(|&pa| callbacks.python_can_serve_page(pa))
+            .collect();
+        if servable.is_empty() {
+            return Ok(0);
+        }
+
         // Call Python to fetch pages in batch
         let results = callbacks
-            .call_batch_fetch_pages(page_addrs)
+            .call_batch_fetch_pages(&servable)
             .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {e}")))?;
 
         let mut fetched = 0;
@@ -80,7 +100,7 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(ref mut rust_mem) = self.rust_memory {
             for (i, (data, permissions, is_mapped)) in results.into_iter().enumerate() {
                 if is_mapped {
-                    let page_addr = page_addrs[i];
+                    let page_addr = servable[i];
                     let perm = Permission::from_bits(permissions);
                     rust_mem.map_page(page_addr, data, perm);
                     fetched += 1;

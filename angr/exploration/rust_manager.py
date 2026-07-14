@@ -843,6 +843,7 @@ def _resolve_env_flag(kwarg: bool | None, env_var: str, default: bool = False) -
     return raw.lower() in ("1", "true", "yes", "on")
 
 
+from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
 from angr.exploration.rust_disk_cache import RustDiskCacheManager
 from angr.exploration.rust_state_cache import RustStateCacheMixin
@@ -1919,7 +1920,50 @@ class RustExplorationManager(
                 if state.addr != seed_addr and not getattr(self, "_phase2_reseeding", False):
                     self._preinit_seeds.append((seed_addr, seed_state, sid))
 
+        self._install_python_servable_pages()
+
         self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
+
+    def _install_python_servable_pages(self) -> None:
+        """Tell Rust which pages ``_cb_fetch_page`` could actually serve.
+
+        angr-gorvf.4.6: every page the run loop still fetches on the ZeroPy
+        FAIL benches is a lazy-stack page Python DECLINES (measured: 84/84
+        across the four benches whose whole residual GIL was this one site).
+        Rust paid a GIL attach per fetch just to be told no. Python's page
+        universe is frozen after ``_sync_extra_python_pages`` hands Rust every
+        page it can serve, so we can snapshot the servable set once here and
+        let Rust decline everything outside it natively, with no crossing.
+
+        The snapshot is skipped entirely (filter off, every fetch crosses) when
+        a seed has no page dict, or has ``ZERO_FILL_UNCONSTRAINED_MEMORY`` —
+        under which Python synthesizes a zero page for *any* address, so no
+        finite set describes what it can serve. Individual pages the fast
+        classifier cannot rule on are kept servable, so they too keep crossing.
+
+        Note the servable set is NOT empty in general: ``_sync_extra_python_pages``
+        deliberately leaves all-zero pages lazy once a state has more than
+        ``zero_eager_cap`` of them (mma_howtouse), and Python does serve those.
+        """
+        callbacks = self._callbacks
+        if callbacks is None or not hasattr(callbacks, "set_python_servable_pages"):
+            return
+        servable: set[int] = set()
+        for state in self._state_cache.values():
+            mem_pages = getattr(state.memory, "_pages", None)
+            if mem_pages is None or "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options:
+                return
+            for page_no in list(mem_pages.keys()):
+                page_addr = page_no * PAGE_SIZE
+                fast = self._fetch_page_from_ultrapage(state, page_addr)
+                # ``None`` means the fast classifier can't rule on this page
+                # (not a 4096-byte UltraPage). Call it servable: Rust keeps
+                # crossing for it and Python answers on the slow load+eval
+                # path, exactly as before. Only pages we can positively prove
+                # Python would decline are filtered out.
+                if fast is None or fast[2]:
+                    servable.add(page_addr)
+        callbacks.set_python_servable_pages(sorted(servable))
 
     def perf_report(self) -> str:
         """Return a formatted performance report."""
