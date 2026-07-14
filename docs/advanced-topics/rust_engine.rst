@@ -196,6 +196,57 @@ form returns a wrapper that exposes the same interface as the standard
 ``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
 etc.) while running the Rust engine underneath.
 
+Auto dispatch and the ``engine="rust"`` project default
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``use_rust_engine`` is tri-state. ``True`` demands the Rust engine and
+raises when the workload is one it cannot honor; ``False`` demands the
+Python engine; ``None`` means *auto* — run on Rust when the workload is
+eligible and on Python when it is not, never raising and never
+diverging. The routing decision is always readable afterwards on
+``mgr.dispatch_reason``.
+
+A workload is ineligible (and so routes to Python) when any of these
+hold: the architecture is not one of the six the Rust interpreter
+implements; a seeding state carries a raise-listed SimOption (the
+``TRACK_*_ACTIONS`` family, the eager-solve options, …); the caller
+passed a ``SimulationManager``-only kwarg the Rust manager would silently
+drop (``resilience``, ``hierarchy``, …); or a seeding state already has a
+breakpoint on an ``inspect`` event the Rust engine does not dispatch. The
+predicate lives in ``angr.exploration.rust_engine_eligible``.
+
+Auto mode is **opt-in**. There are three doors, in increasing scope:
+
+.. code-block:: python
+
+   # 1. Per-call: ask for auto on one manager (needs the global switch, below).
+   angr.exploration.set_rust_auto_dispatch(True)     # or ANGR_RUST_AUTO=1
+   mgr = proj.factory.simulation_manager(state, use_rust_engine=None)
+
+   # 2. Per-project: every simulation_manager() call that does not name an
+   #    engine routes through the predicate. No global switch needed.
+   proj = angr.Project("/path/to/binary", engine="rust")
+   mgr = proj.factory.simulation_manager(state)      # Rust if eligible
+
+   # 3. Process-wide: same as (2), for every project built while it is set.
+   #    $ ANGR_DEFAULT_ENGINE=rust python your_script.py
+
+``engine="rust"`` swaps the **manager**, not the ``SimEngine``:
+``factory.default_engine_factory`` stays ``UberEngine``, so ``block()``,
+the CFG, and every other lifting/analysis path are untouched. An explicit
+``use_rust_engine=True``/``False`` always overrides the project default,
+in both directions — including keeping ``True``'s loud raise.
+
+With every door shut (the default), ``simulation_manager()`` builds a
+plain Python ``SimulationManager``, exactly as it always has.
+
+.. note::
+
+   Timing under auto dispatch is not comparable run-to-run for the five
+   bimodal-Z3 benchmarks — the Rust engine inherits their solver-path
+   variance, which is a permanent property of the workloads, not a
+   regression. See :doc:`rust_bimodal_variance`.
+
 Lightweight proxy accessors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

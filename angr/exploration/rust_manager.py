@@ -547,6 +547,20 @@ def rust_auto_dispatch_enabled() -> bool:
     return _AUTO_DISPATCH_ENABLED
 
 
+def rust_default_engine_env() -> bool:
+    """True when ``ANGR_DEFAULT_ENGINE=rust`` asks new projects to default to the Rust engine.
+
+    The process-wide equivalent of ``Project(..., engine="rust")``: a project
+    built while this is set routes ``simulation_manager()`` calls that leave
+    ``use_rust_engine`` unset through the auto-dispatch predicate
+    (:func:`rust_engine_eligible`), the same way the explicit sentinel does.
+    Read at *project construction* time (not at import), so a test can set the
+    variable and build a project without reloading the module. Any other value
+    (including ``python``) leaves the default alone.
+    """
+    return os.environ.get("ANGR_DEFAULT_ENGINE", "").strip().lower() == "rust"
+
+
 def rust_supports_arch(arch_name) -> bool:
     """True when the Rust engine implements *arch_name*.
 
