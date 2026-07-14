@@ -9,6 +9,7 @@
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
 use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
+use super::stdin_common::mint_stdin_bytes;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -260,19 +261,18 @@ fn do_scanf(
                 .map(|j| format!("{source}_scanf_{scan_id}_s{spec_idx}_{j}"))
                 .collect();
 
-            let sym_bytes: Vec<RustBV> = {
+            // On stdin, `mint_stdin_bytes` consumes any harness-seeded fd-0
+            // bytes (binding the leaves to them) and records only the unseeded
+            // ones. sscanf/fscanf read no stdin, so they just mint (angr-ptf54).
+            let sym_bytes: Vec<RustBV> = if record_stdin {
+                mint_stdin_bytes(state, &names)
+            } else {
                 let ctx = state.solver().borrow();
                 names
                     .iter()
                     .map(|name| RustBV::symbolic(&ctx, name, 8))
                     .collect()
             };
-
-            if record_stdin {
-                for name in &names {
-                    state.record_stdin_symbol(name.clone(), 8);
-                }
-            }
 
             for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
                 state.memory_store(ptr.wrapping_add(j as u64), sym_byte)?;

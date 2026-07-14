@@ -499,3 +499,64 @@ fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
     // The content itself is untouched too (fallback, not demotion).
     assert!(state.file_system_ref().fd_content_sym(fd).is_some());
 }
+
+/// angr-ptf54: a harness-seeded stdin (bytes attached to fd 0 as bounded
+/// symbolic content) must be consumed by fgets, not ignored. The minted leaves
+/// are bound to the seed by constraint, so they solve to the seeded values, and
+/// the seeded prefix is NOT re-recorded as a stdin symbol (that would make
+/// `_inject_rust_stdin` append a duplicate copy of the harness's own chunk).
+#[test]
+fn test_fgets_consumes_seeded_stdin() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    // Seed b"AB" onto fd 0, the way _seed_stdin_to_rust does.
+    let seed: Vec<RustBV> = vec![
+        RustBV::concrete(0x41, 8),
+        RustBV::concrete(0x42, 8),
+    ];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(5, 64), // reads size-1 = 4 bytes
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .expect("stdin fgets served natively");
+
+    // The first two buffer bytes still hold plain leaf symbols, but the
+    // equality binding forces them to the seeded values.
+    for (i, want) in [0x41u128, 0x42].iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} is still a leaf symbol");
+        assert_eq!(state.eval(&byte), Some(*want), "byte {i} binds to the seed");
+    }
+    // Seed consumed: fd 0's position advanced past both bytes.
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
+    // Only the 2 unseeded bytes are recorded (4 read - 2 seeded).
+    assert_eq!(state.stdin_symbols().len(), 2);
+}
+
+/// getchar/fgetc share the same seed-consuming helper: one seeded byte per call,
+/// in read order.
+#[test]
+fn test_getchar_consumes_seeded_stdin_in_order() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    for want in [0x41u128, 0x42] {
+        let ret = NativeGetchar.call(&mut state, &[]).unwrap().unwrap();
+        assert_eq!(state.eval(&ret), Some(want));
+    }
+    // Past the seed: a fresh unconstrained symbol, recorded for posix.dumps(0).
+    let ret = NativeGetchar.call(&mut state, &[]).unwrap().unwrap();
+    assert!(ret.as_u64().is_none());
+    assert_eq!(state.stdin_symbols().len(), 1);
+}

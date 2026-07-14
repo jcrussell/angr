@@ -746,3 +746,30 @@ fn test_scanf_float_specifiers_fall_back() {
         );
     }
 }
+
+/// angr-ptf54: `%s` off stdin consumes the harness-seeded fd-0 bytes (bound by
+/// constraint), while sscanf — which reads no stdin — is untouched.
+#[test]
+fn test_scanf_percent_s_consumes_seeded_stdin() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%s\x00", Permission::RWX);
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // char buf[]
+            ],
+        )
+        .expect("scanf served natively");
+
+    for (i, want) in [0x41u128, 0x42].iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} is still a leaf symbol");
+        assert_eq!(state.eval(&byte), Some(*want), "byte {i} binds to the seed");
+    }
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
+}

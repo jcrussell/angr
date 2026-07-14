@@ -110,6 +110,7 @@ pub mod read;
 pub mod scanf;
 pub mod sleep;
 pub mod sprintf;
+pub mod stdin_common;
 pub mod stdio;
 pub mod strcat;
 pub mod strchr;

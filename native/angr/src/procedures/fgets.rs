@@ -24,6 +24,7 @@
 //!   -1 when the backing SimFileDescriptor is missing). A symbolic FILE* or
 //!   symbolic `_fileno` also falls back to Python.
 
+use super::stdin_common::mint_stdin_bytes;
 use super::{ProcedureError, symbol_counter};
 use crate::procedures::fileops::read_fileno;
 use crate::state::RustSimState;
@@ -195,18 +196,9 @@ crate::declare_proc! {
             .map(|i| format!("stdin_fgets_{read_id}_{i}"))
             .collect();
 
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            names
-                .iter()
-                .map(|name| RustBV::symbolic(&ctx, name, 8))
-                .collect()
-        };
-
-        // Record stdin symbols for posix.dumps(0) export (shared by both paths).
-        for name in &names {
-            state.record_stdin_symbol(name.clone(), 8);
-        }
+        // Mint the leaves, consuming any harness-seeded fd-0 bytes and recording
+        // the unseeded ones for posix.dumps(0) export (shared by both paths).
+        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
 
         if short_reads {
             // Variable-length / short-read model, gated behind the SHORT_READS
@@ -296,9 +288,13 @@ crate::declare_proc! {
         let read_id = symbol_counter("fgetc");
         let name = format!("stdin_fgetc_{read_id}");
         let short_reads = state.has_option("SHORT_READS");
+        // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
+        // and records it for posix.dumps(0) export when there is not.
+        let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
+            .pop()
+            .expect("mint_stdin_bytes returns one BV per name");
         let result = {
             let ctx = state.solver().borrow();
-            let sym_byte = RustBV::symbolic(&ctx, &name, 8);
             // Zero-extend to int (32-bit, matching C int type)
             let byte_ze = sym_byte.zero_extend(32, &ctx);
             if short_reads {
@@ -314,8 +310,6 @@ crate::declare_proc! {
                 byte_ze
             }
         };
-        // Record for posix.dumps(0) export
-        state.record_stdin_symbol(name, 8);
         Ok(Some(result))
     }
 }
@@ -337,9 +331,13 @@ crate::declare_proc! {
         let read_id = symbol_counter("getchar");
         let name = format!("stdin_getchar_{read_id}");
         let short_reads = state.has_option("SHORT_READS");
+        // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
+        // and records it for posix.dumps(0) export when there is not.
+        let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
+            .pop()
+            .expect("mint_stdin_bytes returns one BV per name");
         let result = {
             let ctx = state.solver().borrow();
-            let sym_byte = RustBV::symbolic(&ctx, &name, 8);
             // Zero-extend to int (32-bit, matching C int type)
             let byte_ze = sym_byte.zero_extend(32, &ctx);
             if short_reads {
@@ -353,8 +351,6 @@ crate::declare_proc! {
                 byte_ze
             }
         };
-        // Record for posix.dumps(0) export
-        state.record_stdin_symbol(name, 8);
         Ok(Some(result))
     }
 }
@@ -397,16 +393,7 @@ crate::declare_proc! {
         let names: Vec<String> = (0..read_count)
             .map(|i| format!("stdin_gets_{read_id}_{i}"))
             .collect();
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            names
-                .iter()
-                .map(|name| RustBV::symbolic(&ctx, name, 8))
-                .collect()
-        };
-        for name in &names {
-            state.record_stdin_symbol(name.clone(), 8);
-        }
+        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
 
         store_symbolic_line(state, buf, MAX_GETS_SIZE, &sym_bytes, "gets", read_id)?;
 

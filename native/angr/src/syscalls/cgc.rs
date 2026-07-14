@@ -50,6 +50,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, exit, extract_concrete_arg};
 use crate::memory::Permission;
+use crate::procedures::stdin_common::mint_stdin_bytes;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -250,24 +251,17 @@ impl NativeSyscall for NativeReceiveSyscall {
         let names: Vec<String> = (0..count)
             .map(|i| format!("cgc_receive_{read_id}_{i}"))
             .collect();
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            names
-                .iter()
-                .map(|name| RustBV::symbolic(&ctx, name, 8))
-                .collect()
-        };
+        // `mint_stdin_bytes` binds each leaf to a harness-seeded fd-0 byte when
+        // the harness pre-filled `posix.stdin.content`, and records the unseeded
+        // ones under state.stdin_symbols (in read order) so the Python-side
+        // `_inject_rust_stdin` can evaluate them via the Rust solver and feed
+        // posix.dumps(0) — same precedent as `read_stdin_symbolic` for Linux
+        // stdin, which shares the helper.
+        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
             state
                 .memory_store(buf.wrapping_add(i as u64), sym_byte)
                 .map_err(SyscallError::Memory)?;
-        }
-        // Record each fresh symbolic byte under state.stdin_symbols (in read
-        // order) so the Python-side `_inject_rust_stdin` can evaluate them via
-        // the Rust solver and feed posix.dumps(0) — same precedent as
-        // `NativeReadSyscall::read_stdin_symbolic` for Linux stdin.
-        for name in names {
-            state.record_stdin_symbol(name, 8);
         }
 
         if rx_bytes != 0 {

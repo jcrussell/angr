@@ -33,6 +33,7 @@
 //! symbolic-file model can take over. See bd memory
 //! `invariant-rust-filesystem-no-python-sync`.
 
+use super::stdin_common::mint_stdin_bytes;
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -119,47 +120,12 @@ fn read_stdin_symbolic(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let read_id = symbol_counter("read");
 
-    // Harness-seeded stdin (angr-mb09c): when the Python side filled
-    // `posix.stdin.content` before exploration, those bytes were attached to
-    // fd 0 as bounded symbolic content at seed time. Consume them here and
-    // BIND each fresh stdin byte to the seeded one with an equality
-    // constraint, rather than storing the seeded AST into the buffer
-    // directly. The buffer therefore still holds plain 8-bit leaf symbols
-    // (`stdin_N_i`), which is what the Python-bounce memory round-trip can
-    // re-import without losing identity — storing an `Extract` of the
-    // harness's wide BVS instead loses the branch constraints on a bounced
-    // path. The equality still ties the path condition back to the harness's
-    // own symbol, so an exported found state can `solver.eval` it.
-    let seeded: Vec<RustBV> = state
-        .file_system()
-        .read_sym(0, count as usize)
-        .unwrap_or_default();
-
+    // Harness-seeded stdin (angr-mb09c): mint the fresh `stdin_N_i` leaves and
+    // bind them to any bytes the harness seeded onto fd 0. See
+    // `stdin_common::mint_stdin_bytes` for why the seed is bound by constraint
+    // rather than stored into the buffer.
     let names: Vec<String> = (0..count).map(|i| format!("stdin_{read_id}_{i}")).collect();
-    let (sym_bytes, bindings): (Vec<RustBV>, Vec<RustBV>) = {
-        let ctx = state.solver().borrow();
-        let sym_bytes: Vec<RustBV> = names
-            .iter()
-            .map(|name| RustBV::symbolic(&ctx, name, 8))
-            .collect();
-        let bindings = seeded
-            .iter()
-            .zip(&sym_bytes)
-            .map(|(seed, sym)| sym.eq(seed, &ctx))
-            .collect();
-        (sym_bytes, bindings)
-    };
-    for c in bindings {
-        state.add_constraint(c);
-    }
-
-    // Only bytes with no seeded counterpart are recorded as stdin symbols:
-    // the seeded ones are already in the Python stdin stream (and now solve
-    // to the same value), so recording them would make `_inject_rust_stdin`
-    // append a duplicate copy after the harness's own chunk.
-    for name in names.iter().skip(seeded.len()) {
-        state.record_stdin_symbol(name.clone(), 8);
-    }
+    let sym_bytes = mint_stdin_bytes(state, &names);
 
     write_bv_bytes(state, buf, sym_bytes)?;
 

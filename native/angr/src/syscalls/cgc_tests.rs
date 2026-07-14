@@ -693,3 +693,32 @@ fn random_zero_count_writes_zero_and_returns() {
     let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
     assert_eq!(stored, Some(0));
 }
+
+/// angr-ptf54: CGC `receive` on fd 0 consumes the harness-seeded stdin bytes
+/// (bound by constraint) instead of minting unconstrained ones.
+#[test]
+fn receive_consumes_seeded_stdin() {
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_buf();
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    h.call(
+        &mut state,
+        &[
+            RustBV::concrete(0, 32),
+            RustBV::concrete(0x2000, 32),
+            RustBV::concrete(4, 32),
+            RustBV::concrete(0x2800, 32),
+        ],
+    )
+    .expect("ok");
+
+    for (i, want) in [0x41u128, 0x42].iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} is still a leaf symbol");
+        assert_eq!(state.eval(&byte), Some(*want), "byte {i} binds to the seed");
+    }
+    // Only the 2 bytes past the seed are recorded for posix.dumps(0).
+    assert_eq!(state.stdin_symbols().len(), 2);
+}
