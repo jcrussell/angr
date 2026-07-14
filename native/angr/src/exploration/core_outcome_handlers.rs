@@ -455,7 +455,19 @@ pub(super) fn handle_simprocedure_core(
         .iter()
         .any(|(base, data)| addr >= *base && addr < *base + data.len() as u64);
 
-    let disposition: NativeProcDisposition = if !is_in_binary {
+    // A hook that IS an address-based find/avoid target must never run natively
+    // (angr-1i5h7). Native dispatch is inline: it runs the proc and lands the
+    // state at `return_addr`, so the target address never surfaces at a step
+    // boundary and the run-loop find/avoid check never fires — execution sails
+    // straight past `explore(find=<hooked libc symbol>)`. Falling back bounces
+    // this call to Python, where `step_one`'s NeedCallback special case (and the
+    // parallel Bug-C1 route) short-circuits the SimProcedure bounce to
+    // FOUND/AVOIDED *before* any procedure body runs. `step_one`'s own inline
+    // native path needs no such guard: its pre-step find/avoid check on `pc`
+    // already runs before the hook block.
+    let is_find_or_avoid = ctx.find_addrs.contains(&addr) || ctx.avoid_addrs.contains(&addr);
+
+    let disposition: NativeProcDisposition = if !is_in_binary && !is_find_or_avoid {
         if let Some(native_proc) = native_procs.get(&name) {
             let proc_no_return = native_proc.no_return();
             match ctx.cc.extract_procedure_args(&state, num_args) {

@@ -331,3 +331,131 @@ fn drain_into_resets_step_stats_accumulator() {
     assert_eq!(second.lift_time_ns, 0);
     assert_eq!(second.cache_hit_count, 0);
 }
+
+// --- angr-1i5h7: native dispatch must not swallow a find/avoid target hook ---
+
+const HOOK_ADDR: u64 = 0x50_0000;
+const HOOK_RET: u64 = 0x40_2000;
+
+/// Stands in for any zero-arg native libc proc (getenv/time/...) hooked in the
+/// extern object, i.e. outside `binary_regions`, where native dispatch fires.
+struct FindTargetProc;
+impl crate::procedures::NativeSimProcedure for FindTargetProc {
+    fn name(&self) -> &'static str {
+        "find_target_test"
+    }
+    fn num_args(&self) -> usize {
+        0
+    }
+    fn call(
+        &self,
+        _state: &mut RustSimState,
+        _args: &[crate::symbolic::RustBV],
+    ) -> Result<Option<crate::symbolic::RustBV>, crate::procedures::ProcedureError> {
+        Ok(Some(crate::symbolic::RustBV::concrete(0, 64)))
+    }
+}
+
+/// Drive one `SimProcedure` result for a hook at [`HOOK_ADDR`] with
+/// `FindTargetProc` registered, under a manager configured by `cfg` (which
+/// seeds find/avoid addresses). Returns the raw outcome.
+fn dispatch_hook_with(cfg: impl FnOnce(&mut RustExplorationManager)) -> CoreOutcome {
+    let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+    cfg(&mut mgr);
+    let ctx = mgr.step_context();
+    let prof = ParallelProfiling::default();
+    let mut procs = NativeProcedureRegistry::new();
+    procs.register(std::sync::Arc::new(FindTargetProc));
+    let syscalls = NativeSyscallRegistry::new();
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(HOOK_ADDR);
+    let sid = state.state_id();
+
+    run_post_step_core(
+        &CoreCtx {
+            ctx: &ctx,
+            prof: &prof,
+            native_procs: &procs,
+            native_syscalls: &syscalls,
+            callbacks: None,
+        },
+        state,
+        PostStepInputs {
+            result: RunResult::SimProcedure {
+                addr: HOOK_ADDR,
+                name: "find_target_test".to_string(),
+                num_args: 0,
+                return_addr: HOOK_RET,
+            },
+            deferred_forks: Vec::new(),
+            last_condition: None,
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+        sid,
+    )
+}
+
+/// Control: with no find/avoid targets the hook still dispatches natively.
+#[test]
+fn native_hook_outside_binary_dispatches_natively() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let outcome = dispatch_hook_with(|_| {});
+        assert_eq!(outcome.counters.native_calls, 1, "native proc ran");
+        match outcome.ret {
+            CoreReturn::Continue(succ) => {
+                assert_eq!(succ.len(), 1);
+                assert_eq!(
+                    succ[0].0.pc(),
+                    HOOK_RET,
+                    "native dispatch lands at the return address"
+                );
+            }
+            _ => panic!("expected Continue"),
+        }
+    });
+}
+
+/// A hook that IS a find target must bounce to Python instead of running
+/// natively — otherwise the state lands at `return_addr` and the run loop's
+/// find check never sees the target address (angr-1i5h7).
+#[test]
+fn native_hook_at_find_addr_bounces_to_python() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let outcome = dispatch_hook_with(|mgr| mgr.set_find_addrs(vec![HOOK_ADDR]));
+        assert_eq!(
+            outcome.counters.native_calls, 0,
+            "native proc must NOT run at a find target"
+        );
+        match outcome.ret {
+            CoreReturn::NeedsPython(bounce) => match bounce.kind {
+                BounceKind::SimProcedurePython { addr, .. } => assert_eq!(addr, HOOK_ADDR),
+                other => panic!("expected SimProcedurePython bounce, got {other:?}"),
+            },
+            _ => panic!("expected NeedsPython bounce so the find check can fire"),
+        }
+    });
+}
+
+/// Same guard for avoid targets.
+#[test]
+fn native_hook_at_avoid_addr_bounces_to_python() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let outcome = dispatch_hook_with(|mgr| mgr.set_avoid_addrs(vec![HOOK_ADDR]));
+        assert_eq!(outcome.counters.native_calls, 0);
+        assert!(matches!(
+            outcome.ret,
+            CoreReturn::NeedsPython(PendingBounce {
+                kind: BounceKind::SimProcedurePython {
+                    addr: HOOK_ADDR,
+                    ..
+                },
+                ..
+            })
+        ));
+    });
+}
