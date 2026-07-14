@@ -3968,23 +3968,29 @@ for a statically-known symbol. On a dynamically-linked binary loaded with
 inside the loaded libc's ``.text``, so every one of them bounces to the Python
 SimProcedure.
 
-``prefer_native_library_hooks=True`` (or
-``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1``) lets the native registry serve
-those library hooks. Hooks inside the **main object** still go to Python, so a
-user ``proj.hook()`` override always wins. On the ``xmllint_getenv`` bench this
-moves the SimProcedure fallback count from 27 to 1 (the remaining one is the
-``explore(find=getenv)`` target, which is forced to Python so the find fires)
-and leaves the result identical: one found state, same peak memory.
+``prefer_native_library_hooks`` (**on by default**; set it to ``False``, or
+export ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``, to turn it off) lets the
+native registry serve those library hooks. Hooks inside the **main object**
+still go to Python, so a user ``proj.hook()`` override always wins. On the
+``xmllint_getenv`` bench it moves the SimProcedure fallback count from 27 to 1
+(the remaining one is the ``explore(find=getenv)`` target, which is forced to
+Python so the find fires) and leaves the result identical: one found state, same
+peak memory. On a concrete ``strcmp``/``strlen``/``memcpy`` loop against a
+dynamically-linked libc it is worth roughly 4x wall, because every one of those
+calls stays in Rust instead of bouncing across the FFI boundary.
 
-It is **off by default** because the native string procedures do not add the
-pruning constraints angr's Python ones do (``strncmp`` asserts an
-``Or(a_len == b_len, ...)`` match constraint; ``strlen`` asserts that a null
-exists inside the search window) and they scan a much wider window (4096 bytes
-vs Python's ``max_str_len``). On symbolic data those procedures are therefore
-under-constrained relative to Python, so exploration that runs *past* a find
-target through a libc-heavy dynamic binary can fork down paths Python would
-have pruned. Turn the flag on for concrete-data-heavy workloads; leave it off
-when the libc calls see symbolic input.
+The flag was off by default until the native string procedures matched Python's
+symbolic-scan bound: they used to scan up to 4096 bytes where Python stops at
+``buf_symbolic_bytes``, so on symbolic input they forked far more aggressively
+and could storm a libc-heavy dynamic binary (``xmllint_getenv`` used to time out
+at 180s / 3 GB). ``MAX_SYMBOLIC_SCAN_BYTES`` in ``procedures::strings`` now caps
+the symbolic window at Python's, and the same bench completes in 3.29s / 363 MB
+with ``found=1`` — parity with the all-Python baseline (3.89s / 276 MB). Two
+residual divergences remain, both in the *conservative* direction (Python swaps
+in a fresh BVS past a recursion depth of 3, and searches a narrower concrete
+window), so the native procs cannot wrongly kill a state that Python would keep.
+Set the env var to ``0`` if you need the old all-Python dispatch for a
+bug-for-bug comparison.
 
 Known slower benchmarks
 -----------------------

@@ -826,16 +826,21 @@ def _apply_rust_log_env() -> None:
         l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 
-def _resolve_env_flag(kwarg: bool | None, env_var: str) -> bool:
+def _resolve_env_flag(kwarg: bool | None, env_var: str, default: bool = False) -> bool:
     """Resolve a boolean gate from an explicit kwarg or an env-var fallback.
 
-    Returns ``bool(kwarg)`` when the kwarg is not ``None``; otherwise reads
-    ``env_var`` and treats ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive)
-    as truthy. Centralizes the truthy-token set so a new gate can't drift.
+    Returns ``bool(kwarg)`` when the kwarg is not ``None``. Otherwise, an unset
+    (or empty) ``env_var`` yields ``default``, and a set one is truthy only for
+    ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive) — so a default-on gate
+    is forced back off with ``<VAR>=0``. Centralizes the truthy-token set so a
+    new gate can't drift.
     """
-    if kwarg is None:
-        return os.environ.get(env_var, "").lower() in ("1", "true", "yes", "on")
-    return bool(kwarg)
+    if kwarg is not None:
+        return bool(kwarg)
+    raw = os.environ.get(env_var, "")
+    if not raw:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
 
 
 from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
@@ -1232,15 +1237,13 @@ class RustExplorationManager(
                 through boundary). When ``None`` (default), the env var
                 ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles it on;
                 otherwise off.
-            prefer_native_library_hooks: If True, let native procedures serve
-                ``use_sim_procedures`` hooks whose address lands inside a
-                *non-main* loaded object (libc &c. under ``auto_load_libs``).
-                Main-object hooks always stay on Python so ``proj.hook()``
-                overrides win. Default off: native string procedures omit the
-                pruning constraints angr's Python ones add, so on symbolic data
-                they can fork down infeasible paths (bd a8epx). When ``None``
-                (default), env var ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1``
-                toggles it on.
+            prefer_native_library_hooks: If True (default), let native
+                procedures serve ``use_sim_procedures`` hooks whose address
+                lands inside a *non-main* loaded object (libc &c. under
+                ``auto_load_libs``). Main-object hooks always stay on Python so
+                ``proj.hook()`` overrides win. When ``None`` (the default), env
+                var ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0`` forces the old
+                behavior of bouncing every in-object hook to Python.
             use_native_lift: If True (default), lift cold blocks in-process
                 through the native libVEX seam instead of the pyvex Python
                 callback. Requires a ``--features libvex-ffi`` build and an
@@ -1523,19 +1526,21 @@ class RustExplorationManager(
         )
 
         # angr-a8epx / angr-gorvf.3.2: native-dispatch gate for library hooks.
-        # Default off: native procedures fire only for hooks OUTSIDE every loaded
-        # object (the extern-object stubs). On a dynamically-linked binary loaded
-        # with ``auto_load_libs=True, use_sim_procedures=True`` every libc hook
-        # lands inside the loaded libc's .text, so the default sends all of them
-        # to Python. Turning this on lets the native registry serve those hooks
-        # (main-object hooks still go to Python, preserving ``proj.hook()``
-        # overrides). Off by default because native string procedures do not add
-        # the pruning constraints angr's Python ones do, so on symbolic data they
-        # can explore infeasible paths where Python deadends — see the residual
-        # caveat on bd a8epx. Env var
-        # ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1`` toggles default-on.
+        # Off, native procedures fire only for hooks OUTSIDE every loaded object
+        # (the extern-object stubs). On a dynamically-linked binary loaded with
+        # ``auto_load_libs=True, use_sim_procedures=True`` every libc hook lands
+        # inside the loaded libc's .text, so that would send all of them to
+        # Python. On (the default since angr-gorvf.6) the native registry serves
+        # those hooks too; main-object hooks still go to Python, preserving
+        # ``proj.hook()`` overrides. It was off while the native string procs
+        # scanned a wider symbolic window than angr's Python ones and could
+        # fork-storm on symbolic data; ``MAX_SYMBOLIC_SCAN_BYTES`` (c94941fff)
+        # closed that gap. ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0`` forces the
+        # old Python-dispatch behavior back.
         self._prefer_native_library_hooks = _resolve_env_flag(
-            prefer_native_library_hooks, "ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS"
+            prefer_native_library_hooks,
+            "ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS",
+            default=True,
         )
 
         # Performance profiling counters

@@ -118,7 +118,7 @@ fn test_scan_for_null_symbolic_caps_symbolic_bytes() {
     state.map_memory_data(0x2000, &vec![b'a'; 512], Permission::RWX);
     let ctx = state.solver().borrow();
     let syms: Vec<RustBV> = (0..512)
-        .map(|i| RustBV::symbolic(&ctx, &format!("c{i}"), 8))
+        .map(|i| RustBV::symbolic(&ctx, format!("c{i}"), 8))
         .collect();
     drop(ctx);
     for (i, sym) in syms.into_iter().enumerate() {

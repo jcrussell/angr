@@ -43,23 +43,25 @@ pub(crate) struct ExecutionEnvironment {
     /// `[start, end)` of the main object's code regions, when known. Hooks in
     /// this range are user `proj.hook()` territory and always defer to Python.
     pub(crate) main_object_range: Option<(u64, u64)>,
-    /// Opt-in (angr-a8epx / angr-gorvf.3.2): also prefer the native registry
-    /// for hooks that land inside a NON-main loaded object.
+    /// On by default (angr-gorvf.6; gate added by angr-a8epx / angr-gorvf.3.2):
+    /// also prefer the native registry for hooks that land inside a NON-main
+    /// loaded object. Python sets this explicitly on every manager.
     pub(crate) prefer_native_library_hooks: bool,
 }
 
 /// Native-dispatch gate for a hooked PC.
 ///
-/// Default: native fires only for hooks OUTSIDE every loaded object — i.e. the
-/// extern-object PLT stubs angr synthesizes for a statically-known symbol.
-/// Hooks that land inside a loaded object's code go to Python, so a user
-/// `proj.hook()` override always wins.
+/// With `prefer_library_hooks` off, native fires only for hooks OUTSIDE every
+/// loaded object — i.e. the extern-object PLT stubs angr synthesizes for a
+/// statically-known symbol. Hooks that land inside a loaded object's code go to
+/// Python.
 ///
-/// With `prefer_library_hooks` on, a hook inside a **non-main** loaded object
-/// (libc &c., installed by `use_sim_procedures=True` on a dynamically-linked
-/// binary) prefers the native registry instead of bouncing to Python. Main
-/// object hooks still go to Python. See `docs/advanced-topics/rust_engine.rst`
-/// for the residual symbolic-proc caveat behind the opt-in.
+/// With it on (the default since angr-gorvf.6), a hook inside a **non-main**
+/// loaded object (libc &c., installed by `use_sim_procedures=True` on a
+/// dynamically-linked binary) prefers the native registry instead of bouncing
+/// to Python. Main-object hooks go to Python either way, so a user
+/// `proj.hook()` override always wins. See
+/// `docs/advanced-topics/rust_engine.rst`.
 pub(crate) fn prefer_native_dispatch(
     binary_regions: &[(u64, Arc<Vec<u8>>)],
     main_object_range: Option<(u64, u64)>,
@@ -107,7 +109,7 @@ impl ExecutionEnvironment {
             little_endian,
             max_history: 1000,
             main_object_range: None,
-            prefer_native_library_hooks: false,
+            prefer_native_library_hooks: true,
         }
     }
 }
