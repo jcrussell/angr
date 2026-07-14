@@ -35,6 +35,15 @@ loggers = Loggers()
 del Loggers
 del logging
 
+# On Windows the rustylib extension carries no runpath (PE has none), so the z3
+# it links must be put on the DLL search path before anything imports
+# angr.rustylib — the extension and claripy have to resolve the SAME libz3 or
+# Z3 AST passthrough hands pointers across two contexts. No-op elsewhere.
+from .misc.z3_dll import add_z3_dll_directory
+
+add_z3_dll_directory()
+del add_z3_dll_directory
+
 # angr.state_plugins and angr.sim_state are mutually dependent: the plugin modules register themselves
 # on SimState at import time, while SimState needs the SimStatePlugin base class. Importing the
 # state_plugins package to completion here, before anything pulls in sim_state, is the one ordering

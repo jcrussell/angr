@@ -14,14 +14,15 @@
 # transitively via claripy==9.2.209 — do not widen; see the avoid-pip-install-deps
 # bd memory and the unversioned-SONAME warning in the memo).
 #
-# Windows is deliberately NOT in the matrix: PE has no RPATH equivalent, so the
-# "link, do not bundle" layout has no mechanism there — delvewheel would copy
-# z3.dll into the wheel (a second Z3_context, the exact failure this design
-# exists to prevent). Closing that needs a different approach (an os.add_dll_directory
-# shim at angr import time pointing at the z3 package). Tracked separately.
+# Windows reaches the same invariant by a different route (bd angr-c4xcs.8). PE
+# has no RPATH, and delvewheel's default behaviour — copy z3.dll into the wheel —
+# is precisely the second Z3_context this design exists to prevent. So the repair
+# step is a deliberate NO-OP and the search path is established at import time
+# instead: angr/__init__.py calls angr.misc.z3_dll.add_z3_dll_directory(), which
+# hands site-packages/z3/lib to os.add_dll_directory() before angr.rustylib loads.
 #
 # Verification (clean-venv install + AST-passthrough smoke) can only run in CI —
-# no Docker/network in the dev sandbox. NEITHER leg below has been executed yet.
+# no Docker/network in the dev sandbox. NO leg below has been executed yet.
 
 name: Wheels
 
@@ -69,6 +70,15 @@ jobs:
             runs-on: macos-14
             cibw-build: "cp310-macosx_arm64"
             cibw-archs: "arm64"
+            qemu: false
+          # Windows x86_64. The only leg with no repair step at all: PE has no
+          # runpath to rewrite, so the search path is established at import time
+          # by angr.misc.z3_dll instead. The likeliest failure here is build-time
+          # (import library / bindgen), not the shim — see CIBW_*_WINDOWS below.
+          - name: windows x86_64
+            runs-on: windows-2022
+            cibw-build: "cp310-win_amd64"
+            cibw-archs: "AMD64"
             qemu: false
 
     steps:
@@ -155,6 +165,33 @@ jobs:
               python -m wheel pack /tmp/wh/* -d {dest_dir} &&
               rm -rf /tmp/wh;
             done
+
+          # ---- Windows -------------------------------------------------------
+          # Rust and LLVM (libclang, which z3-sys' bindgen dlopens) both ship
+          # preinstalled on the GitHub windows image. What does NOT exist on
+          # Windows is a header/import-library source: the z3-solver wheel carries
+          # z3.dll and nothing else. So fetch the MATCHING official z3 release
+          # (4.13.0 — same version claripy pins, so the exports line up) purely to
+          # compile and link against. It never enters the wheel; the DLL actually
+          # loaded at runtime is still the user's site-packages z3-solver copy,
+          # found via os.add_dll_directory (angr.misc.z3_dll).
+          #
+          # z3-sys asks the linker for `z3`, i.e. z3.lib, but the official archive
+          # names its import library libz3.lib — hence the copy. That rename is
+          # the single most likely thing to break when this leg first runs.
+          CIBW_ENVIRONMENT_WINDOWS: 'Z3_SYS_Z3_HEADER="C:\\z3\\include\\z3.h" LIBCLANG_PATH="C:\\Program Files\\LLVM\\bin" LIB="C:\\z3\\bin;$LIB"'
+          CIBW_BEFORE_BUILD_WINDOWS: >
+            pip install z3-solver==4.13.0.0 &&
+            curl -sSL -o z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.13.0/z3-4.13.0-x64-win.zip &&
+            tar -xf z3.zip &&
+            move z3-4.13.0-x64-win C:\z3 &&
+            copy C:\z3\bin\libz3.lib C:\z3\bin\z3.lib
+          # Intentionally empty: repairing this wheel would mean delvewheel, and
+          # delvewheel's whole job is to vendor z3.dll into angr/ — a private,
+          # second Z3_context and the exact corruption the other legs' --exclude
+          # flags exist to prevent. There is nothing correct for a repair tool to
+          # do here, so it does not run.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
 
           # ---- Test (all platforms) ------------------------------------------
           # Verify the repaired wheel installs clean and resolves the shared libz3.

@@ -135,12 +135,19 @@ the tag trigger stays commented out until at least one leg is verified green
      - macos-14
      - ``delocate`` + ``install_name_tool``
      - ``@loader_path/../z3/lib``
+   * - ``windows x86_64``
+     - windows-2022
+     - *none (deliberate)*
+     - n/a — ``os.add_dll_directory`` at import time
 
 Common to every leg: the Rust toolchain and the Z3 **headers** are installed at
 build time only (never enter the wheel); ``z3-solver==4.13.0.0`` is installed in
-the build env so ``build.rs::find_z3_lib_dir`` resolves the library; the repair
-step **excludes** libz3 and relativizes the runpath; and ``CIBW_TEST_COMMAND``
-runs the AST-passthrough smoke test against the repaired wheel.
+the build env so ``build.rs::find_z3_lib_dir`` resolves the library; libz3 is
+never vendored into the wheel; and ``CIBW_TEST_COMMAND`` runs the AST-passthrough
+smoke test against the finished wheel. The three ELF/Mach-O legs achieve
+"never vendored" through a repair step that excludes libz3 and relativizes the
+runpath; Windows, which has no runpath, achieves it by not repairing at all (see
+below).
 
 Per-platform wrinkles worth knowing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -162,18 +169,44 @@ Per-platform wrinkles worth knowing
   via ``CIBW_ENVIRONMENT_MACOS``, not exported from the before-build hook —
   cibuildwheel runs that hook in its own shell, so the export never reaches cargo.
 
-Windows: out of scope, and not merely unfinished
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Windows: same invariant, different mechanism
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Windows is deliberately absent from the matrix. PE has **no RPATH equivalent**,
-so step 2 of the decision above — relativize the runpath to the ``z3-solver``
-package — has no mechanism on Windows. The standard tool (``delvewheel``) would
-copy ``z3.dll`` into the wheel, which is exactly the private-second-``Z3_context``
-failure this whole design exists to prevent. Supporting Windows therefore needs a
-*different* mechanism, not a matrix row: most plausibly an
-``os.add_dll_directory(<z3 package>/lib)`` call at ``angr`` import time, executed
-before the extension is loaded. That is a source change with its own correctness
-argument, filed separately.
+PE has **no RPATH equivalent**, so step 2 of the decision above — relativize the
+runpath to the ``z3-solver`` package — has no mechanism on Windows, and the
+standard repair tool (``delvewheel``) would copy ``z3.dll`` into the wheel, which
+is exactly the private-second-``Z3_context`` failure this whole design exists to
+prevent. Windows is therefore the one leg with **no repair step at all**
+(``CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""``, deliberately empty). The search path
+is established at *import* time instead:
+
+.. code-block:: python
+
+   # angr/misc/z3_dll.py, called from angr/__init__.py before anything
+   # imports angr.rustylib
+   os.add_dll_directory(<site-packages>/z3/lib)
+
+**Why that resolves the same DLL claripy loads.** Since CPython 3.8, extension
+modules are loaded with ``LoadLibraryEx`` under ``LOAD_LIBRARY_SEARCH_*``, whose
+search set is exactly the directories registered via ``os.add_dll_directory``
+(plus the DLL's own directory and the system dirs). claripy's ``z3`` bindings
+``ctypes``-load their ``z3.dll`` out of ``<site-packages>/z3/lib`` — the very
+directory registered above — so the extension's import-time resolution lands on
+that same file. One directory, one DLL, one ``Z3_context``. The shim is a no-op
+off Windows and a no-op when ``z3-solver`` is not installed (in which case the
+extension's own import failure is the more informative error).
+
+Two supporting changes fall out of this:
+
+* ``build.rs::emit_rpath`` skips the ``-Wl,-rpath`` link-arg when
+  ``CARGO_CFG_TARGET_OS == "windows"`` — MSVC's ``link.exe`` rejects the flag
+  outright, so without the guard the leg would not even link.
+* The Windows build env has no header or import-library source at all: the
+  ``z3-solver`` wheel ships ``z3.dll`` and nothing else. ``CIBW_BEFORE_BUILD_WINDOWS``
+  fetches the *matching* official z3 4.13.0 release archive for its ``include/``
+  and ``libz3.lib``, both build-time only. z3-sys asks the linker for ``z3``
+  (i.e. ``z3.lib``) while the archive names it ``libz3.lib``, hence the copy —
+  that rename is the most likely thing to break when the leg first runs.
 
 Every leg is committed **unverified** — this environment has no Docker/network to
 run ``cibuildwheel``. Verification is filed as a blocker bead (see below).

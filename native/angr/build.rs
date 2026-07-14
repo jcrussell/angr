@@ -31,8 +31,23 @@ fn main() {
     // See CLAUDE.md "Common Issues" for troubleshooting.
     if let Some(lib_dir) = find_z3_lib_dir() {
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+        emit_rpath(&lib_dir);
     }
+}
+
+/// Emit a runtime library search path for `lib_dir`.
+///
+/// ELF and Mach-O both take `-Wl,-rpath`. PE has no equivalent — link.exe
+/// rejects the flag outright — so on Windows the extension's DLL search path is
+/// established at import time instead: `angr.misc.z3_dll.add_z3_dll_directory()`
+/// hands the z3-solver package's `lib` directory to `os.add_dll_directory()`
+/// before anything imports `angr.rustylib`. Same invariant either way — the
+/// extension and claripy must resolve one libz3, not two.
+fn emit_rpath(lib_dir: &std::path::Path) {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        return;
+    }
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
 
 /// Emit the link flags for the `libvex-ffi` backend. Resolves the venv's
@@ -43,7 +58,7 @@ fn configure_pyvex_ffi() {
     if let Some(lib_dir) = find_pyvex_lib_dir() {
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
         println!("cargo:rustc-link-lib=dylib=pyvex");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+        emit_rpath(&lib_dir);
     } else {
         // Non-fatal: the feature is opt-in and the FFI decls land in a later
         // increment. Surface an actionable hint rather than a link failure.
