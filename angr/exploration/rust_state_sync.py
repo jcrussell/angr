@@ -7,8 +7,10 @@ import time
 from typing import TYPE_CHECKING
 
 import claripy
+from sortedcontainers import SortedDict
 
 from angr.rustylib.vex_engine import register_names_for_arch
+from angr.storage.memory_object import SimMemoryObject
 
 from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SIZE
 
@@ -1936,6 +1938,46 @@ class RustStateSyncMixin:
         page.concrete_data[0:PAGE_SIZE] = page_bytes
         page.symbolic_bitmap[0:PAGE_SIZE] = b"\0" * PAGE_SIZE
 
+    @staticmethod
+    def _blit_symbolic_page(page, page_addr: int, sym_entries, endness) -> bool:
+        """Rebuild an UltraPage's symbolic half from Rust's object list in one pass.
+
+        angr-gorvf.11: the page carries ~169 symbolic objects on csaw_wyvern
+        (8107 over 48 page-replays, 6399 of them a single byte wide), and even
+        the direct ``page.store`` of angr-gorvf.10 costs ~8us each: the
+        cooperation generator wraps every entry in a ``SimMemoryObject``, then
+        the store re-derives the range it must clear with two ``SortedDict``
+        ``irange`` walks.
+
+        That clear is dead work here. The caller has just blitted the concrete
+        page, which zeroes ``symbolic_bitmap`` across all 4096 bytes, so no
+        pre-existing ``symbolic_data`` entry is reachable by a load; and Rust's
+        object list is the page's complete symbolic state. So the whole
+        ``SortedDict`` can be rebuilt from the list directly.
+
+        ONLY valid when ``_blit_concrete_page`` ran for this page — that is what
+        makes the stale ``symbolic_data`` unreachable.
+
+        Returns False (caller falls back to the per-entry ``page.store``) when
+        an entry straddles the page boundary or has a bad width. The scan runs
+        before anything is mutated, so a False leaves the page untouched.
+        """
+        decomposed = []
+        for addr, ast in sym_entries:
+            offset = addr - page_addr
+            size = len(ast) // 8
+            if size <= 0 or offset < 0 or offset + size > PAGE_SIZE:
+                return False
+            decomposed.append((offset, size, SimMemoryObject(ast, addr, endness)))
+
+        bitmap = page.symbolic_bitmap
+        symbolic_data = {}
+        for offset, size, mo in decomposed:
+            bitmap[offset : offset + size] = b"\1" * size
+            symbolic_data[offset] = mo
+        page.symbolic_data = SortedDict(symbolic_data)
+        return True
+
     def _replay_rust_dirty_pages(self, state: angr.SimState):
         """Replay Rust-side memory mutations into the cached Python SimState.
 
@@ -2002,12 +2044,14 @@ class RustStateSyncMixin:
             # Acquire the target page once and drive it directly for both
             # halves of the replay; None means fall back to memory.store.
             page = self._acquire_ultrapage(state, page_addr)
+            blitted = False
 
             if page_bytes and len(page_bytes) == PAGE_SIZE:
                 _t0 = time.perf_counter_ns()
                 try:
                     if page is not None:
                         self._blit_concrete_page(page, page_bytes)
+                        blitted = True
                     else:
                         state.memory.store(
                             page_addr,
@@ -2025,8 +2069,27 @@ class RustStateSyncMixin:
                 _store_ns += time.perf_counter_ns() - _t0
 
             _t0 = time.perf_counter_ns()
+            n_sym = len(sym_entries) if sym_entries else 0
             if sym_entries:
                 endness = state.arch.memory_endness
+                # angr-gorvf.11: rebuild the whole symbolic half in one pass when
+                # the concrete blit ran (it is what makes the page's stale
+                # symbolic_data unreachable). Falls through to the per-entry loop
+                # below for a straddling entry or a page the blit skipped.
+                fast = False
+                if page is not None and blitted:
+                    try:
+                        fast = self._blit_symbolic_page(page, page_addr, sym_entries, endness)
+                    except Exception as e:
+                        # cat-(a) EXPECTED CONTROL FLOW: unexpected page shape;
+                        # the per-entry loop below is the general path.
+                        if _DBG:
+                            l.debug(f"dirty-page symbolic blit failed at 0x{page_addr:x}: {e}")
+                        fast = False
+                    if fast:
+                        for _addr, ast in sym_entries:
+                            self._register_handle(id(ast), ast)
+                        sym_entries = ()
                 for addr, ast in sym_entries:
                     try:
                         # angr-gorvf.10: one page carries ~169 symbolic objects
@@ -2066,7 +2129,7 @@ class RustStateSyncMixin:
                             l.debug(f"dirty-page symbolic replay failed at 0x{addr:x}: {e}")
             _sym_ns = time.perf_counter_ns() - _t0
             _store_ns += _sym_ns
-            self._perf_stats.add_replay_page(_ffi_ns, _store_ns, _sym_ns, len(sym_entries) if sym_entries else 0)
+            self._perf_stats.add_replay_page(_ffi_ns, _store_ns, _sym_ns, n_sym)
 
         try:
             self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)

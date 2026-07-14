@@ -1172,5 +1172,72 @@
       2.72
     ],
     "residual": "sym stores are still 66.8ms of csaw_wyvern's 81.6ms memreplay (8107 entries x ~8us). Next lever if needed: coalesce contiguous byte-granular symbolic objects into one store, or make Rust export only objects dirtied since the last crossing."
+  },
+  "simprocedure_replay_coalesce": {
+    "_comment": "angr-gorvf.11 \u2014 the residual symbolic half of sc_memreplay. MEASURED, not assumed: the objects Rust hands back are NOT already wide (csaw_wyvern: 8107 entries, 6399 of width 1 byte, 1708 of width 8; they form 1316 contiguous runs), so the bead's 'lever is empty' escape did not apply. But the winning fix was NOT the AST coalesce the bead proposed \u2014 no Concat is built at all. The per-entry cost was never the AST: it was UltraPage.store re-deriving the range to clear with two SortedDict irange walks plus a SimMemoryObject wrap, ~8us/entry. That clear is DEAD WORK during a replay: _blit_concrete_page has just zeroed symbolic_bitmap across all 4096 bytes, so no pre-existing symbolic_data entry is reachable by a load, and Rust's object list IS the page's complete symbolic state. RustStateSyncMixin._blit_symbolic_page rebuilds the page's SortedDict from that list in one pass (guarded on blitted=True, declines straddlers before mutating anything). CAVEAT on csgames2018: its sym counter reads bimodal 0.65 / 7.1 / 7.7ms across identical runs. That is a GC pause being attributed to the SortedDict rebuild line, not work \u2014 its bounce TOTAL is flat at 167-170ms vs 165-171ms baseline. Rank sub-counters on this bench by the bounce total, not by sym_ns alone.",
+    "measured_at": "2026-07-14",
+    "baseline_commit": "e6f28e7c8",
+    "build": "stock (libvex_ffi off)",
+    "object_widths_csaw_wyvern": {
+      "width_1_byte": 6399,
+      "width_8_byte": 1708,
+      "total_entries": 8107,
+      "contiguous_runs": 1316,
+      "pages": 48
+    },
+    "benches": {
+      "csaw_wyvern": {
+        "crossings": 30,
+        "entries": 8107,
+        "sym_ms": [
+          66.8,
+          8.6
+        ],
+        "memreplay_ms": [
+          81.6,
+          22.6
+        ],
+        "bounce_total_ms": [
+          341.3,
+          286.2
+        ]
+      },
+      "csgames2018": {
+        "crossings": 22,
+        "entries": 370,
+        "sym_ms": [
+          3.2,
+          "0.65-7.7 (GC-bimodal)"
+        ],
+        "bounce_total_ms": [
+          168.7,
+          169.0
+        ]
+      },
+      "fauxware": {
+        "crossings": 1,
+        "entries": 17,
+        "sym_ms": [
+          0.1,
+          0.0
+        ],
+        "memreplay_ms": [
+          0.4,
+          0.2
+        ]
+      },
+      "google2016_unbreakable_0": {
+        "crossings": 1,
+        "entries": 67,
+        "sym_ms": [
+          0.4,
+          0.1
+        ],
+        "memreplay_ms": [
+          0.5,
+          0.1
+        ]
+      }
+    }
   }
 }
