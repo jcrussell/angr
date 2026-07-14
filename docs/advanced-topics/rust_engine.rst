@@ -1737,15 +1737,33 @@ vs. Python.
    **Followup (angr-xghv, 2026-05-16):** The user-opted
    ``TRACK_*_ACTIONS`` family (``TRACK_MEMORY_ACTIONS``,
    ``TRACK_REGISTER_ACTIONS``, ``TRACK_TMP_ACTIONS``,
-   ``TRACK_JMP_ACTIONS``, ``TRACK_OP_ACTIONS``,
-   ``TRACK_ACTION_HISTORY``) was promoted from warn-once to **raise
-   ``NotImplementedError`` at manager construction** via
-   ``_RAISE_OPTION_NAMES``. Rust never emits ``SimAction`` records, so
-   any analysis driven off ``state.history.actions`` gets silently
-   empty data — loud failure beats silent divergence. Note
-   ``TRACK_OP_ACTIONS`` ships in the ``fastpath`` mode bundle
-   (``sim_options.py:412``); fastpath users must drop to the Python
-   engine.
+   ``TRACK_JMP_ACTIONS``, ``TRACK_OP_ACTIONS``) was promoted from
+   warn-once to **raise ``NotImplementedError`` at manager
+   construction** via ``_RAISE_OPTION_NAMES``. Rust never emits
+   ``SimAction`` records, so any analysis driven off
+   ``state.history.actions`` gets silently empty data — loud failure
+   beats silent divergence. Note ``TRACK_OP_ACTIONS`` ships in the
+   ``fastpath`` mode bundle (``sim_options.py:412``); fastpath users
+   must drop to the Python engine. ``TRACK_ACTION_HISTORY`` was later
+   **demoted back** out of the raise set (angr-fkvt, 2026-06-06): it
+   does not gate action recording, and its only consumer
+   (``state_plugins/preconstrainer.py``) uses it as a metadata flag
+   whose clear/restore is a vacuous no-op under Rust.
+
+   **Followup (angr-op0dn.14.3, 2026-07-14):** Rust will not grow
+   native ``SimAction`` recording — ``SimAction``\ s wrap claripy
+   objects Python-side, and no mode bundle in the default ``symbolic``
+   set turns action tracking on, so the default-engine flip does not
+   need them. Instead the raise is a **routing signal**: under the auto
+   dispatcher (:func:`angr.exploration.rust_engine_eligible`, reached
+   via ``simulation_manager(use_rust_engine=None)``), a seeding state
+   carrying any of the five options transparently gets a Python
+   ``SimulationManager``, and ``state.history.actions`` is populated
+   exactly as it is today. Explicit ``use_rust_engine=True`` keeps the
+   loud ``NotImplementedError``. The read surface Rust *does* provide
+   (``RustHistoryProxy``: ``bbl_addrs`` / ``recent_bbl_addrs`` /
+   ``block_count`` / ``jumpkind``) is the parity floor for
+   history-driven workloads on the Rust engine.
 
    **Followup (angr-gmrc, 2026-05-16):** ``CONCRETIZE`` was promoted
    from warn-once to **raise ``NotImplementedError``** via the same

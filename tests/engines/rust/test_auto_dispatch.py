@@ -33,6 +33,18 @@ pytestmark = pytest.mark.skipif(
     reason="Rust exploration not available",
 )
 
+# The options that actually gate SimAction recording (angr/engines/vex/heavy/actions.py).
+# TRACK_ACTION_HISTORY is deliberately not one of them — see TestActionTrackingRoutes.
+ACTION_TRACKING_OPTIONS = frozenset(
+    {
+        "TRACK_MEMORY_ACTIONS",
+        "TRACK_REGISTER_ACTIONS",
+        "TRACK_TMP_ACTIONS",
+        "TRACK_JMP_ACTIONS",
+        "TRACK_OP_ACTIONS",
+    }
+)
+
 
 @pytest.fixture
 def auto_on():
@@ -178,3 +190,58 @@ class TestFactoryDispatch:
     def test_simgr_alias_honors_auto(self, fauxware_project, auto_on):
         mgr = fauxware_project.factory.simgr(fauxware_project.factory.entry_state(), use_rust_engine=None)
         assert isinstance(mgr, RustExplorationManager)
+
+
+class TestActionTrackingRoutes:
+    """Action-tracking workloads run on Python, transparently (angr-op0dn.14.3).
+
+    The Rust engine deliberately records no ``SimAction``s: they wrap claripy
+    objects Python-side, so emitting them natively would violate the
+    Rust/Python boundary, and no mode bundle sets a ``TRACK_*_ACTIONS`` option
+    by default. The dispatcher — not a native implementation — is the answer:
+    every one of the five options is raise-listed, so an action-tracking state
+    is ineligible and gets a plain Python ``SimulationManager``, with
+    ``state.history.actions`` populated exactly as it is today.
+    """
+
+    def test_family_is_raise_listed(self):
+        """The five options that actually gate action recording, and only those."""
+        raise_listed = {n for n in _RAISE_OPTION_NAMES if n.startswith("TRACK_") and n.endswith("_ACTIONS")}
+        assert raise_listed == ACTION_TRACKING_OPTIONS
+
+    @pytest.mark.parametrize("option", sorted(ACTION_TRACKING_OPTIONS))
+    def test_auto_routes_each_action_option_to_python(self, fauxware_project, auto_on, option):
+        state = fauxware_project.factory.entry_state(add_options={option})
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=None)
+        assert type(mgr) is SimulationManager
+        assert option in mgr.dispatch_reason
+
+    @pytest.mark.parametrize("option", sorted(ACTION_TRACKING_OPTIONS))
+    def test_explicit_rust_still_raises_on_each_action_option(self, fauxware_project, auto_on, option):
+        """Loudness preserved: opting in explicitly still refuses the workload."""
+        state = fauxware_project.factory.entry_state(add_options={option})
+        with pytest.raises(NotImplementedError, match=option):
+            fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+    def test_track_action_history_alone_stays_on_rust(self, fauxware_project, auto_on):
+        """TRACK_ACTION_HISTORY does not gate action recording (demoted, angr-fkvt)."""
+        state = fauxware_project.factory.entry_state(add_options={"TRACK_ACTION_HISTORY"})
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=None)
+        assert isinstance(mgr, RustExplorationManager)
+
+    def test_routed_manager_records_actions_like_python(self, fauxware_project, auto_on):
+        """The parity that matters: the routed run's actions match an explicit Python run."""
+        options = {"TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS"}
+
+        def _action_kinds(use_rust_engine):
+            state = fauxware_project.factory.entry_state(add_options=options)
+            mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=use_rust_engine)
+            mgr.run(n=5)
+            stepped = mgr.active + mgr.deadended
+            assert stepped
+            return [sorted(a.type for a in s.history.actions) for s in stepped]
+
+        routed = _action_kinds(None)
+        baseline = _action_kinds(False)
+        assert routed == baseline
+        assert any(kinds for kinds in routed), "action tracking recorded nothing at all"
