@@ -18,6 +18,16 @@ uninteresting reason.  Those are reported ``UNMEASURED``, never ``PASS`` — rea
 a missing key as 0 is exactly the trap that made a stale ``baseline_counters.json``
 look like it had 7 passing benches when it had none.
 
+Every corpus bench lands in exactly one bucket — PASS / FAIL / UNMEASURED /
+ERROR — and the summary prints the four counts, so a bench that cannot be
+measured is visibly excluded from the denominator rather than silently missing
+from it.  Two corpus keys need care (bd angr-gorvf.4.4): ``defcamp_r100__dfs``
+is a *baseline-key* spelling, not an example name — it is run as example
+``defcamp_r100`` with ``--strategy dfs`` (see ``split_baseline_key``); and
+``CADET_00001`` carries ``rust_time: null``, i.e. the Rust engine has never
+completed it (bd angr-027h), so it is reported UNMEASURED without burning the
+timeout (see ``no_rust_baseline``).
+
 Residual-bounce attribution.  For every non-passing bench the gate prints the
 ``callback_<class>_count`` breakdown, which names the Python surface still being
 crossed.  The classes and what retires them:
@@ -54,6 +64,7 @@ RUN_SINGLE = HERE / "run_single.py"
 BASELINE_TIMINGS = HERE / "baseline_timings.json"
 
 OK_RE = re.compile(r"^OK rust \S+ ([0-9.]+)s", re.MULTILINE)
+TIMEOUT_RE = re.compile(r"^TIMEOUT rust ", re.MULTILINE)
 
 # Bounce classes, in the order they are reported. Anything not listed here still
 # shows up in the attribution dict — the list only pins the column order for the
@@ -78,9 +89,38 @@ CLASS_ORDER = [
 GIL_CLASSES = ["callback", "claripy_export", "claripy_import", "fork_metadata"]
 
 
-def corpus() -> list[str]:
+def _baselines() -> dict[str, dict]:
     with BASELINE_TIMINGS.open() as fh:
-        return sorted(json.load(fh))
+        return json.load(fh)
+
+
+def corpus() -> list[str]:
+    return sorted(_baselines())
+
+
+def split_baseline_key(bench: str) -> tuple[str, str]:
+    """Invert a baseline_timings key back into the (example, strategy) run_single takes.
+
+    ``run_regression._baseline_key_for`` is the forward map: a dfs entry keys on
+    ``<example>__dfs`` so one example can carry two independent snapshots. The
+    suffix is a *baseline-key* convention only — run_single knows nothing about
+    it and takes the bare example name plus ``--strategy``.
+    """
+    if bench.endswith("__dfs"):
+        return bench[: -len("__dfs")], "dfs"
+    return bench, "bfs"
+
+
+def no_rust_baseline(bench: str) -> bool:
+    """True when the Rust engine has never completed this bench (``rust_time: null``).
+
+    Such a bench cannot produce counters by construction, so measuring it just
+    burns the full timeout and lands in ERROR. Report it UNMEASURED instead.
+    The check reads baseline_timings, so a bench that later starts completing
+    under Rust rejoins the measured set as soon as its ``rust_time`` is filled in.
+    """
+    entry = _baselines().get(bench) or {}
+    return "rust_time" in entry and entry["rust_time"] is None
 
 
 def _trailing_json(out: str) -> dict | None:
@@ -125,25 +165,45 @@ def attribution(stats: dict) -> dict[str, dict[str, int]]:
 
 
 def run_one(bench: str, timeout: int) -> dict:
+    if no_rust_baseline(bench):
+        return {
+            "bench": bench,
+            "status": "UNMEASURED",
+            "reason": "no rust baseline (rust_time=null) — the Rust engine has never completed this bench",
+            "gil_work_time_ns": None,
+            "gil_by_class": {},
+            "gil_by_site": {},
+            "attribution": {},
+        }
+    example, strategy = split_baseline_key(bench)
     env = dict(os.environ)
     env.setdefault("ANGR_EXAMPLES_DIR", os.path.expanduser("~/repos/angr-examples/examples"))
     cmd = [
         sys.executable,
         str(RUN_SINGLE),
-        bench,
+        example,
         "--engine",
         "rust",
         "--counters-json",
         "--timeout",
         str(timeout),
+        "--strategy",
+        strategy,
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 60, env=env)
     except subprocess.TimeoutExpired:
-        return {"bench": bench, "status": "ERROR", "reason": "timeout"}
+        return {"bench": bench, "status": "ERROR", "reason": f"timeout (harness, >{timeout + 60}s)"}
     stats = _trailing_json(proc.stdout)
     if stats is None or OK_RE.search(proc.stdout) is None:
-        return {"bench": bench, "status": "ERROR", "reason": "run failed or emitted no counters"}
+        # run_single traps its own timeout and exits cleanly without JSON, so a
+        # divergent bench reaches here rather than the TimeoutExpired branch.
+        reason = (
+            f"timeout (run_single, >{timeout}s)"
+            if TIMEOUT_RE.search(proc.stdout)
+            else "run failed or emitted no counters"
+        )
+        return {"bench": bench, "status": "ERROR", "reason": reason}
 
     # A missing key is NOT a zero: it means the profiled run loop never ran on
     # the thread stats() was read from. Distinguish that from a real zero.
@@ -194,7 +254,8 @@ def render(rows: list[dict], min_pass: int) -> bool:
         gil = r["gil_work_time_ns"] or 0
         frac = f"{r.get('gil_fraction', 0):.1%}" if r["status"] != "UNMEASURED" else "-"
         split = ", ".join(f"{k}={v / 1e6:.0f}ms" for k, v in sorted(r["gil_by_class"].items(), key=lambda kv: -kv[1]))
-        print(f"{r['bench']:<32} {r['status']:<11} {gil:>13,} {frac:>7}  {split or '(none)'}")
+        note = split or r.get("reason") or "(none)"
+        print(f"{r['bench']:<32} {r['status']:<11} {gil:>13,} {frac:>7}  {note}")
 
     passes = [r for r in rows if r["status"] == "PASS"]
 
@@ -260,6 +321,11 @@ def render(rows: list[dict], min_pass: int) -> bool:
         print(f"  {cls:<18} count={count:<5} {ns / 1e6:>9.0f}ms")
 
     ok = len(passes) >= min_pass
+    # Spell the buckets out: every corpus bench lands in exactly one, so a bench
+    # that cannot be measured is visibly excluded rather than silently missing
+    # from the denominator (bd angr-gorvf.4.4).
+    buckets = ", ".join(f"{s}={sum(1 for r in rows if r['status'] == s)}" for s in order)
+    print(f"\nbuckets: {buckets} (of {len(rows)} corpus benches)")
     print(f"\nZeroPy gate: {len(passes)}/{len(rows)} benches at gil_work_time_ns == 0 (need >= {min_pass})")
     print("PASS" if ok else "FAIL")
     return ok
