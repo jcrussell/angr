@@ -225,7 +225,7 @@ fn error_fatal_kind_routes_to_errored() {
 }
 
 #[test]
-fn symbolic_branch_bounces_to_python() {
+fn symbolic_branch_forks_both_targets_natively() {
     pyo3::Python::initialize();
     pyo3::Python::attach(|_py| {
         let ctx = fresh_ctx();
@@ -257,13 +257,15 @@ fn symbolic_branch_bounces_to_python() {
             inputs,
             0,
         );
-        assert!(matches!(
-            outcome.ret,
-            CoreReturn::NeedsPython(PendingBounce {
-                kind: BounceKind::SymbolicBranch { .. },
-                ..
-            })
-        ));
+        // angr-gorvf.14: eager-mode symbolic branches resolve in Rust — both
+        // children come back as successors instead of parking for Python.
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("symbolic branch did not resolve natively");
+        };
+        let mut pcs: Vec<u64> = succ.iter().map(|(s, _)| s.pc()).collect();
+        pcs.sort_unstable();
+        assert_eq!(pcs, vec![0x40_5000, 0x40_6000]);
+        assert!(outcome.pruned.is_empty());
     });
 }
 

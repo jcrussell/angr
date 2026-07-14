@@ -407,7 +407,6 @@ fn parallel_process_state(
                 kind,
                 state: mut bstate,
                 deferred_forks,
-                last_condition: _,
                 stored_conditions,
                 fork_snapshots,
             } = bounce;
@@ -977,7 +976,6 @@ impl RustExplorationManager {
                 kind,
                 state,
                 deferred_forks: Vec::new(),
-                last_condition: None,
                 stored_conditions: FxHashMap::default(),
                 fork_snapshots: FxHashMap::default(),
             };

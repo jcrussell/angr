@@ -426,7 +426,6 @@ impl RustExplorationManager {
             kind,
             mut state,
             deferred_forks,
-            last_condition,
             stored_conditions,
             fork_snapshots,
         } = bounce;
@@ -512,32 +511,6 @@ impl RustExplorationManager {
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,
-                        fork_snapshots,
-                    },
-                )))
-            }
-            BounceKind::SymbolicBranch {
-                condition_id,
-                true_target,
-                false_target,
-            } => {
-                let mut branch_conditions = stored_conditions;
-                if let Some(cond) = last_condition {
-                    branch_conditions.insert(condition_id, cond);
-                }
-                Err(StepError::NeedCallback(PendingCallback::with_context(
-                    state,
-                    None,
-                    CallbackReason::SymbolicBranch {
-                        condition_id,
-                        true_target,
-                        false_target,
-                    },
-                    "Ijk_Boring",
-                    None,
-                    ForkBundle {
-                        deferred_forks,
-                        stored_conditions: branch_conditions,
                         fork_snapshots,
                     },
                 )))

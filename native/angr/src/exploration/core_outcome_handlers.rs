@@ -20,16 +20,15 @@ pub(super) fn bounce(
 ) -> CoreOutcome {
     let ForkPayload {
         deferred_forks,
-        last_condition,
         stored_conditions,
         fork_snapshots,
+        ..
     } = payload;
     CoreOutcome {
         ret: CoreReturn::NeedsPython(PendingBounce {
             kind,
             state,
             deferred_forks,
-            last_condition,
             stored_conditions,
             fork_snapshots,
         }),
@@ -275,6 +274,97 @@ pub(crate) fn materialize_bounce_forks(
         pruned_out,
         fork_ids_out,
     )
+}
+
+/// Resolve an eager-mode symbolic branch natively (angr-gorvf.14).
+///
+/// The interpreter only emits `RunResult::SymbolicBranch` when deferred forks
+/// are off (`ExecutionConfig::use_deferred_forks == false` — the angr-027h
+/// phase-2 eager retry), where a symbolic guard forks *both* directions at
+/// once instead of deferring one. This used to park the state and bounce to
+/// Python, but the Python handler did no work the core cannot do: it re-derived
+/// the guard as a claripy AST only to hand back constraints that
+/// `resume_after_symbolic_branch` explicitly ignored (the guard is sourced from
+/// `stored_conditions`). So we fork here and stay in Rust.
+///
+/// Both children need a real sat check: the non-deferred `IRStmt::Exit` path in
+/// `statements.rs` returns `SymbolicBranch` *without* calling
+/// `check_branch_feasibility`, so only the guard's symbolic-ness is established
+/// — neither direction is known feasible (angr-3ag1l).
+pub(super) fn handle_symbolic_branch_core(
+    cc: &CoreCtx,
+    state: RustSimState,
+    branch: SymBranch,
+    mut payload: ForkPayload,
+    counters: CoreCounters,
+    root_hint: u64,
+) -> CoreOutcome {
+    let SymBranch {
+        condition_id,
+        true_target,
+        false_target,
+    } = branch;
+    // The interpreter stores the guard under `condition_id`; `last_condition` is
+    // the same value carried out-of-band, so only fill the gap.
+    if let Some(cond) = payload.last_condition.take() {
+        payload
+            .stored_conditions
+            .entry(condition_id)
+            .or_insert(cond);
+    }
+    let branch_condition = payload.stored_conditions.get(&condition_id).cloned();
+
+    // Materialize the deferred forks accumulated earlier in this step FIRST, so
+    // they fork off the state as it was *before* the branch guard is asserted
+    // (their own guards are applied to `state` as we go, which both children
+    // then inherit).
+    let mut forks_out = Vec::new();
+    let mut pruned = Vec::new();
+    let mut fork_ids = Vec::new();
+    process_deferred_forks_into_core(
+        cc,
+        &state,
+        payload,
+        root_hint,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
+    );
+
+    let mut true_state = state.fork();
+    true_state.set_pc(true_target);
+    let mut false_state = state;
+    false_state.set_pc(false_target);
+    if let Some(ref cond) = branch_condition {
+        true_state.solver().borrow().assume_true(cond);
+        false_state.solver().borrow().assume_false(cond);
+    }
+
+    let mut succ = Vec::with_capacity(forks_out.len() + 2);
+    // The false child keeps the stepped state's id (it is the fallthrough), so
+    // it routes as the main successor; the true child is a freshly minted fork.
+    for (child, tag) in [
+        (false_state, RoutingTag::main()),
+        (true_state, RoutingTag::fork(root_hint)),
+    ] {
+        if cc.ctx.lazy_solves || child.satisfiable() {
+            succ.push((child, tag));
+        } else {
+            pruned.push(child);
+        }
+    }
+    succ.extend(forks_out);
+
+    CoreOutcome {
+        ret: CoreReturn::Continue(succ),
+        pruned,
+        fork_ids,
+        terminal_pushes: Vec::new(),
+        counters,
+        root_hint,
+    }
 }
 
 /// Mirror of `handle_symbolic_jump_target`.

@@ -72,8 +72,8 @@ pub(crate) use cc::CcSnapshot;
 mod handlers;
 pub(crate) use handlers::materialize_bounce_forks;
 use handlers::{
-    bounce, handle_simprocedure_core, handle_symbolic_jump_target_core, handle_syscall_core,
-    materialize_deferred_forks_core,
+    bounce, handle_simprocedure_core, handle_symbolic_branch_core,
+    handle_symbolic_jump_target_core, handle_syscall_core, materialize_deferred_forks_core,
 };
 
 /// `Send + Sync` atomic mirror of the `accumulated_stats` solver-timing fields
@@ -255,12 +255,6 @@ pub(crate) enum BounceKind {
     },
     /// Native syscall declined / errored / symbolic-num: Python syscall.
     SyscallPython { num: Option<u64> },
-    /// Deferred symbolic branch needing Python state forking.
-    SymbolicBranch {
-        condition_id: u64,
-        true_target: u64,
-        false_target: u64,
-    },
     /// Unhooked CALL needing Python `resolve_function` (mutates hooks/simprocs).
     UnmodeledCall {
         addr: u64,
@@ -271,13 +265,20 @@ pub(crate) enum BounceKind {
     PythonVEXFallback { addr: u64, reason: String },
 }
 
+/// The eager-mode symbolic branch [`handle_symbolic_branch_core`] resolves:
+/// the guard's id in `stored_conditions` plus the two concrete targets.
+pub(crate) struct SymBranch {
+    pub(crate) condition_id: u64,
+    pub(crate) true_target: u64,
+    pub(crate) false_target: u64,
+}
+
 /// Everything the coordinator's bounce handler needs to reproduce the legacy
 /// arm. `state` is owned (handed back); the deferred-fork data rides along.
 pub(crate) struct PendingBounce {
     pub(crate) kind: BounceKind,
     pub(crate) state: RustSimState,
     pub(crate) deferred_forks: Vec<DeferredFork>,
-    pub(crate) last_condition: Option<RustBV>,
     pub(crate) stored_conditions: FxHashMap<u64, RustBV>,
     pub(crate) fork_snapshots: FxHashMap<u64, BranchSnapshot>,
 }
@@ -473,21 +474,18 @@ pub(crate) fn run_post_step_core(
             condition_id,
             true_target,
             false_target,
-        } => {
-            // last_condition is folded into stored_conditions by the bounce
-            // handler (it needs branch_conditions). Carry it along.
-            bounce(
-                BounceKind::SymbolicBranch {
-                    condition_id,
-                    true_target,
-                    false_target,
-                },
-                state,
-                payload,
-                counters,
-                root_hint,
-            )
-        }
+        } => handle_symbolic_branch_core(
+            cc,
+            state,
+            SymBranch {
+                condition_id,
+                true_target,
+                false_target,
+            },
+            payload,
+            counters,
+            root_hint,
+        ),
 
         RunResult::Error {
             message,
