@@ -1,0 +1,171 @@
+{
+  "benches": [
+    {
+      "bench": "cmu_binary_bomb_partial",
+      "bounce_count": 3,
+      "native_proc_calls": 0,
+      "reason": "",
+      "simprocedure_callback_count": 2,
+      "simprocedure_total_ns": 5513971,
+      "sites": [
+        {
+          "addr": "0x401338",
+          "bucket": "B",
+          "cls": "strcmp",
+          "count": 1,
+          "module": "angr.procedures.libc.strcmp",
+          "name": "strcmp",
+          "reason": "native proc exists; hook path bypassed the native registry"
+        },
+        {
+          "addr": "0x40149e",
+          "bucket": "C",
+          "cls": "readline_hook",
+          "count": 1,
+          "module": "cmu_binary_bomb_upstream",
+          "name": "readline_hook",
+          "reason": "user Python hook defined in cmu_binary_bomb_upstream"
+        },
+        {
+          "addr": "0x400bd0",
+          "bucket": "C",
+          "cls": "strtol_hook",
+          "count": 1,
+          "module": "cmu_binary_bomb_upstream",
+          "name": "strtol_hook",
+          "reason": "user Python hook defined in cmu_binary_bomb_upstream"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "defcon2016quals_baby-re",
+      "bounce_count": 13,
+      "native_proc_calls": 40,
+      "reason": "",
+      "simprocedure_callback_count": 13,
+      "simprocedure_total_ns": 46048030,
+      "sites": [
+        {
+          "addr": "0x700030",
+          "bucket": "C",
+          "cls": "my_scanf",
+          "count": 13,
+          "module": "__main__",
+          "name": "my_scanf",
+          "reason": "user Python hook defined in __main__"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "ekopartyctf2016_rev250",
+      "bounce_count": 1,
+      "native_proc_calls": 7,
+      "reason": "",
+      "simprocedure_callback_count": 1,
+      "simprocedure_total_ns": 30228131,
+      "sites": [
+        {
+          "addr": "0x700028",
+          "bucket": "A",
+          "cls": "ReturnUnconstrained",
+          "count": 1,
+          "module": "angr.procedures.stubs.ReturnUnconstrained",
+          "name": "get_flag",
+          "reason": "angr stub (ReturnUnconstrained) \u2014 needs a native stub handler, not a real proc"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "fauxware",
+      "bounce_count": 1,
+      "native_proc_calls": 7,
+      "reason": "",
+      "simprocedure_callback_count": 1,
+      "simprocedure_total_ns": 58778176,
+      "sites": [
+        {
+          "addr": "0x700028",
+          "bucket": "B",
+          "cls": "open",
+          "count": 1,
+          "module": "angr.procedures.posix.open",
+          "name": "open",
+          "reason": "native proc exists; declined at runtime (symbolic args x1)"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "google2016_unbreakable_0",
+      "bounce_count": 1,
+      "native_proc_calls": 0,
+      "reason": "",
+      "simprocedure_callback_count": 1,
+      "simprocedure_total_ns": 192515514,
+      "sites": [
+        {
+          "addr": "0x700000",
+          "bucket": "B",
+          "cls": "strncpy",
+          "count": 1,
+          "module": "angr.procedures.libc.strncpy",
+          "name": "strncpy",
+          "reason": "native proc exists; declined at runtime (symbolic args x1)"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "securityfest_fairlight",
+      "bounce_count": 1,
+      "native_proc_calls": 57,
+      "reason": "",
+      "simprocedure_callback_count": 1,
+      "simprocedure_total_ns": 140613214,
+      "sites": [
+        {
+          "addr": "0x700000",
+          "bucket": "B",
+          "cls": "strncpy",
+          "count": 1,
+          "module": "angr.procedures.libc.strncpy",
+          "name": "strncpy",
+          "reason": "native proc exists; declined at runtime (symbolic args x1)"
+        }
+      ],
+      "status": "OK"
+    },
+    {
+      "bench": "unmapped_analysis",
+      "bounce_count": 2,
+      "native_proc_calls": 20,
+      "reason": "",
+      "simprocedure_callback_count": 2,
+      "simprocedure_total_ns": 19095572,
+      "sites": [
+        {
+          "addr": "0x700008",
+          "bucket": "B",
+          "cls": "strncmp",
+          "count": 1,
+          "module": "angr.procedures.libc.strncmp",
+          "name": "strncmp",
+          "reason": "native proc exists; declined at runtime (other x1)"
+        },
+        {
+          "addr": "0x700000",
+          "bucket": "B",
+          "cls": "strncpy",
+          "count": 1,
+          "module": "angr.procedures.libc.strncpy",
+          "name": "strncpy",
+          "reason": "native proc exists; declined at runtime (other x1)"
+        }
+      ],
+      "status": "OK"
+    }
+  ]
+}

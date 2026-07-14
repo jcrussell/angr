@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -35,6 +37,26 @@ def _simproc_dispatch_name(proc) -> str:
     if name:
         return str(name)
     return proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+
+
+#: Set ``ANGR_BOUNCE_TRACE=1`` to have every SimProcedure park-and-bounce into
+#: Python emit one ``[bounce] ...`` line on stderr. Off by default; the check is
+#: a module-level bool so the hot path pays a single load. Consumed by
+#: ``tests/benchmarks/zeropy_bounce_census.py`` (angr-gorvf.12) to attribute each
+#: bounce to a proc name + PC + defining module without guessing from the binary.
+_BOUNCE_TRACE = bool(os.environ.get("ANGR_BOUNCE_TRACE"))
+
+
+def _emit_bounce_trace(name, addr, proc) -> None:
+    """Emit one machine-parseable line per SimProcedure bounce into Python."""
+    cls = type(proc).__name__ if proc is not None else "<unresolved>"
+    module = type(proc).__module__ if proc is not None else "-"
+    addr_s = f"0x{int(addr):x}" if addr is not None else "-"
+    print(
+        f"[bounce] name={name} addr={addr_s} cls={cls} module={module}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class RustCallbackDispatchMixin:
@@ -544,6 +566,8 @@ class RustCallbackDispatchMixin:
 
         # Handle internal passthrough - this is internal binary code, just continue execution
         if name == "__internal_passthrough__":
+            if _BOUNCE_TRACE:
+                _emit_bounce_trace(name, addr, None)
             if _DBG:
                 l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
             # Resume execution at this address, no SimProcedure to run
@@ -553,6 +577,8 @@ class RustCallbackDispatchMixin:
 
         # Find the SimProcedure
         proc = self._find_simprocedure(addr, name)
+        if _BOUNCE_TRACE:
+            _emit_bounce_trace(_simproc_dispatch_name(proc) if proc is not None else name, addr, proc)
         if proc is None:
             # Stale/unknown hook fired (e.g. proj.unhook raced the Rust hook
             # table, or a hook addr with no backing proc). Resuming at addr+1
