@@ -4530,6 +4530,27 @@ test_dump_load_fauxware_round_trip_preserves_stash_shape`` exercises
 the structural contract on fauxware; the
 ``test_load_from_disk_*`` cases exercise the v1.0 classmethod.
 
+Snapshots written by **another process** are supported (angr-euw28).
+Symbol ids are process-global, so a foreign envelope's ids were
+minted by an allocator that also started at 0 and would alias ids the
+loading process already handed to its own states. The envelope header
+therefore carries a process token; on a token mismatch ``load_snapshot``
+shifts the whole envelope's ids above the local watermark before
+deserializing. Names — and so Z3 identity — are untouched, so replayed
+constraints still bind to the same variables.
+
+When inspecting a restored state, read its constraints through
+``mgr._rust_mgr.export_state_constraints(state_id)`` (or a
+:class:`RustStateProxy`), **not** through the claripy list on an
+exported ``SimState`` mirror. A mirror materialized via the
+full-export path is built from ``project.factory.blank_state()`` and
+never receives a claripy copy of the Rust constraint set: eval / min /
+max / satisfiable are routed into the Rust solver by
+``_attach_rust_solver_fallback`` instead, because re-importing the
+constraints into claripy is expensive and identity-lossy. So an empty
+``mirror.solver.constraints`` after a load is the design, not a lost
+constraint set (angr-wuyo9).
+
 State snapshot / serialization (spike report)
 ---------------------------------------------
 

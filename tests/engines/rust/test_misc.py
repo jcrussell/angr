@@ -2361,3 +2361,114 @@ class TestRustSimOptionMatrixConsistency:
                 f"_REJECTED_OPTION_NAMES nor in the default symbolic bundle — "
                 f"the matrix has drifted from the code"
             )
+
+
+# Dumper body for :class:`TestForeignProcessSnapshot` — runs in a subprocess so
+# the snapshot it writes carries a FOREIGN symbol-id space (angr-euw28).
+_FOREIGN_SNAPSHOT_DUMPER = r"""
+import resource
+import sys
+
+resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
+
+import angr
+from angr.exploration.rust_manager import RustExplorationManager
+
+proj = angr.Project(sys.argv[1], auto_load_libs=False)
+mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+mgr.step(n=10)
+mgr.dump_snapshot(sys.argv[2])
+"""
+
+
+class TestForeignProcessSnapshot:
+    """angr-euw28 / angr-wuyo9: a snapshot written by a DIFFERENT process
+    carries symbol ids minted by that process's allocator, which also started
+    at 0 — so without the id rebase its restored leaves alias ids this process
+    already handed to its own seed state, and every id-keyed lookup (claripy
+    export registry, stored_conditions, symbol table) resolves a restored leaf
+    to a stranger's symbol. The Rust-level guard is
+    ``stash_tests.rs::test_foreign_envelope_rebases_symbol_ids``; this is the
+    end-to-end Python half.
+
+    NOTE on what is asserted. The authoritative constraint set of a restored
+    state lives in Rust and is read through
+    ``_rust_mgr.export_state_constraints(state_id)``. It is NOT the claripy
+    list on the exported ``SimState`` mirror: mirrors materialized through the
+    full-export path start from ``project.factory.blank_state()`` and never
+    receive a claripy copy of the Rust constraints — by design, since
+    ``_attach_rust_solver_fallback`` routes eval/min/max/satisfiable into the
+    Rust solver and a claripy re-import would be expensive and identity-lossy
+    (see ``pre-pinning-dangerous``). An earlier version of this test asserted
+    on ``mirror.solver.constraints``, read the empty list as a snapshot bug,
+    and was pulled; assert on the Rust export instead.
+    """
+
+    def test_foreign_snapshot_restores_constraints_over_a_seeded_manager(self, fauxware_project, tmp_path):
+        """Load a subprocess-written snapshot into a manager that has already
+        stepped (so its own allocator has handed out ids in the same low range
+        the foreign envelope uses) and assert the restored states still carry
+        their full, correctly-named constraint set."""
+        import subprocess
+        import sys
+
+        snapshot_path = tmp_path / "foreign.snap"
+        subprocess.run(
+            [sys.executable, "-c", _FOREIGN_SNAPSHOT_DUMPER, fauxware_project.filename, str(snapshot_path)],
+            check=True,
+            timeout=300,
+        )
+        assert snapshot_path.stat().st_size > 0, "subprocess wrote an empty snapshot"
+
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.step(n=3)
+        seed_ids = set(mgr._rust_mgr.get_state_ids("active"))
+        assert seed_ids, "seed manager must have active states before the load"
+
+        mgr.load_snapshot(str(snapshot_path))
+
+        restored_ids = mgr._rust_mgr.get_state_ids("active")
+        assert restored_ids, "load_snapshot produced no active states"
+
+        exported = 0
+        variables = set()
+        for sid in restored_ids:
+            constraints = mgr._rust_mgr.export_state_constraints(sid)
+            exported += len(constraints)
+            for c in constraints:
+                variables |= set(c.variables)
+
+        assert exported > 0, (
+            f"restored states {restored_ids} exported zero constraints — the foreign "
+            f"envelope's symbol ids likely aliased the seed manager's ({sorted(seed_ids)})"
+        )
+        # The rebase shifts ids, never names: the restored leaves must still be
+        # the stdin symbols fauxware's `read()` minted in the other process.
+        assert any(v.startswith("stdin_") for v in variables), (
+            f"restored constraints reference no stdin symbol: {sorted(variables)}"
+        )
+
+    def test_foreign_snapshot_resumes_to_the_find_address(self, fauxware_project, tmp_path):
+        """Exploration continues normally on top of a foreign envelope loaded
+        over a seeded manager — the restored lineage still reaches the
+        authenticated branch, and its stdin model is non-trivial."""
+        import subprocess
+        import sys
+
+        snapshot_path = tmp_path / "foreign.snap"
+        subprocess.run(
+            [sys.executable, "-c", _FOREIGN_SNAPSHOT_DUMPER, fauxware_project.filename, str(snapshot_path)],
+            check=True,
+            timeout=300,
+        )
+
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.step(n=3)
+        mgr.load_snapshot(str(snapshot_path))
+
+        mgr.explore(find=0x4006ED, num_find=1)
+        assert len(mgr.found) > 0, "resumed foreign-snapshot manager never reached the find address"
+        # Matches the same-process round-trip assertion above: 0x4006ed is
+        # reachable with either the backdoor or a matching password, so the
+        # contract is a non-empty model, not a specific one.
+        assert len(bytes(mgr.found[0].posix.dumps(0))) > 0, "restored lineage solved to an empty stdin model"
