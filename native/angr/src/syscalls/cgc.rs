@@ -278,10 +278,11 @@ impl NativeSyscall for NativeReceiveSyscall {
 // Stubbed to the `CGC_NON_BLOCKING_FDS` behavior: every queried fd is
 // reported ready in both the read and write masks. `timeout` is
 // ignored (no per-state CGC time accounting in RustSimState). The
-// total-ready count written at `*readyfds` is `min(nfds, 32) * 2`
-// when both mask pointers are non-zero, else half that — matching the
-// Python proc's "1 bit per fd per mask" counting under
-// `CGC_NON_BLOCKING_FDS`. States without that option defer to Python.
+// total-ready count written at `*readyfds` is always `min(nfds, 32) * 2`,
+// independent of whether the mask pointers are null — matching the
+// Python proc, which accumulates its count across both fd loops
+// unconditionally and guards only the mask *stores* on a non-null
+// pointer. States without the option defer to Python.
 pub struct NativeFdwaitSyscall;
 
 impl NativeSyscall for NativeFdwaitSyscall {
@@ -343,14 +344,19 @@ impl NativeSyscall for NativeFdwaitSyscall {
             (1u32 << queried) - 1
         };
 
-        let mut total_ready: u32 = 0;
+        // `total_ready` counts each queried fd once per mask -- and does so
+        // whether or not the mask pointer is null. That looks wrong, but it
+        // is exactly what `procedures/cgc/fdwait.py` does: it accumulates
+        // `total_ready` across both fd loops unconditionally and only the
+        // *stores* are guarded by `condition=readfds != 0`. Counting only
+        // the non-null masks here would under-report by `min(nfds, 32)` per
+        // null pointer and diverge from Python (angr-cslvl).
+        let total_ready: u32 = queried * 2;
         if readfds != 0 {
             store_u32_le(state, readfds, mask)?;
-            total_ready += queried;
         }
         if writefds != 0 {
             store_u32_le(state, writefds, mask)?;
-            total_ready += queried;
         }
         if readyfds != 0 {
             store_u32_le(state, readyfds, total_ready)?;

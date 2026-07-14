@@ -321,8 +321,60 @@ fn fdwait_clamps_to_32_fds() {
     assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
     let rd = state.memory_load(0x2000, 4).expect("load").as_u64();
     assert_eq!(rd, Some(u32::MAX as u64));
+    // 32 fds counted once per mask loop; the null `writefds` suppresses the
+    // *store*, not the count -- see the Python proc (angr-cslvl).
     let total = state.memory_load(0x2200, 4).expect("load").as_u64();
-    assert_eq!(total, Some(32));
+    assert_eq!(total, Some(64));
+}
+
+/// `procedures/cgc/fdwait.py` accumulates `total_ready` over both the read
+/// and the write fd loop unconditionally, and only guards the mask stores on
+/// a non-null pointer. So a null `readfds` must still contribute its
+/// `min(nfds, 32)` to the count -- the native stub used to skip it, which
+/// under-reported readiness by half (angr-cslvl).
+#[test]
+fn fdwait_counts_null_masks_like_python() {
+    let h = NativeFdwaitSyscall;
+    let mut state = nonblocking_state();
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(4, 32),      // nfds
+                RustBV::concrete(0, 32),      // readfds (null)
+                RustBV::concrete(0x2100, 32), // writefds
+                RustBV::concrete(0, 32),      // timeout (null)
+                RustBV::concrete(0x2200, 32), // readyfds
+            ],
+        )
+        .expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    let wr = state.memory_load(0x2100, 4).expect("load").as_u64();
+    assert_eq!(wr, Some(0b1111));
+    let total = state.memory_load(0x2200, 4).expect("load").as_u64();
+    assert_eq!(total, Some(8));
+}
+
+/// Both masks null: nothing is stored, but the count is still `nfds * 2`.
+#[test]
+fn fdwait_both_masks_null_still_counts() {
+    let h = NativeFdwaitSyscall;
+    let mut state = nonblocking_state();
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2200, 32),
+            ],
+        )
+        .expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    let total = state.memory_load(0x2200, 4).expect("load").as_u64();
+    assert_eq!(total, Some(6));
 }
 
 #[test]
