@@ -269,6 +269,52 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+  valgrind_leak_check:
+    name: Valgrind Leak Check (Rust core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      # No angr/binaries or angr-examples checkout and no uv sync: the probe is
+      # a pure-Rust binary (native/angr/examples/leak_probe.rs) with no Python
+      # in the process, and the harness is stdlib-only. libz3-dev supplies the
+      # z3.h that z3-sys bindgen needs for a bare `cargo build`.
+      - name: Install valgrind + Z3 headers
+        run: sudo apt-get update && sudo apt-get install -y valgrind libz3-dev pkg-config
+      - name: Self-test the gate (injected 64 B/iter leak must trip it)
+        # A leak gate that has never been observed to fail is indistinguishable
+        # from one that CANNOT fail -- and this one silently could not, at first:
+        # release-mode LLVM elided the `forget(Box::new(..))` the injector
+        # originally used. Run the self-test BEFORE the real gate so a green
+        # "no leak" result below is trustworthy.
+        run: python3 tests/benchmarks/run_valgrind_leak_check.py --self-test
+        timeout-minutes: 15
+      - name: Run valgrind memcheck leak gate
+        # Gates the per-iteration leak SLOPE (definitely+indirectly lost bytes at
+        # 10N vs N iterations), not an absolute byte count: the probe drops
+        # everything it allocates, so a correct engine leaks a constant baseline
+        # of one-time z3/lazy-static bytes that varies by distro. Growth is the
+        # defect. Measured 0.00 B/iter on this branch; threshold 1.0 B/iter.
+        run: |
+          python3 tests/benchmarks/run_valgrind_leak_check.py \
+            --no-build --max-bytes-per-iter 1.0 \
+            --json > valgrind_leak_report.json
+        timeout-minutes: 15
+      - name: Print valgrind leak summary
+        if: always()
+        run: |
+          if [ -f valgrind_leak_report.json ]; then
+            cat valgrind_leak_report.json
+          fi
+      - name: Upload valgrind leak report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: valgrind-leak-report
+          path: valgrind_leak_report.json
+          if-no-files-found: warn
+          retention-days: 90
+
   repeat_run_equality:
     name: Repeat-Run Result Equality (M2 determinism)
     runs-on: ubuntu-latest
