@@ -9,9 +9,63 @@
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
 use super::ProcedureError;
-use super::strings::scan_concrete_until_null;
+use super::strings::{
+    ScanOutcome, null_exists_constraint, scan_concrete_bounded, scan_concrete_until_null,
+    scan_for_null_symbolic,
+};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
+
+/// Longest pathname `open` will read out of memory.
+const MAX_PATH: u64 = 256;
+
+/// Read the NUL-terminated pathname at `addr`, concretizing symbolic bytes the
+/// way angr's Python `open` does (`procedures/posix/open.py`): it inline-calls
+/// `strlen` and then `solver.eval`s the loaded path expression — the path is
+/// *concretized*, not constrained, so the symbolic bytes keep every value they
+/// could have had. Only the terminator assertion `strlen` itself contributes
+/// (see [`null_exists_constraint`]) lands on the state.
+///
+/// Without this, one symbolic byte anywhere in the pathname bounced the whole
+/// call to Python — it was fauxware's sole Python crossing, since fauxware
+/// opens the *username* buffer it just read from stdin (angr-gorvf.13).
+fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
+    let bytes = match scan_for_null_symbolic(state, addr, MAX_PATH)? {
+        ScanOutcome::AllConcrete { length } => {
+            let (buf, _) = scan_concrete_bounded(state, addr, length as usize, "pathname")?;
+            return Ok(buf);
+        }
+        ScanOutcome::Symbolic { bytes } => bytes,
+    };
+
+    // Bytes before the first symbolic one were all concrete and non-NUL.
+    let prefix_len = bytes[0].0 as usize;
+    let (mut name, _) = scan_concrete_bounded(state, addr, prefix_len, "pathname")?;
+
+    // The inline strlen Python performs asserts a terminator exists in the
+    // window; mirror it so the two engines constrain the buffer identically.
+    let pruning = {
+        let ctx = state.solver().borrow();
+        null_exists_constraint(&bytes, &ctx)
+    };
+    if let Some(c) = pruning {
+        state.add_constraint(c);
+    }
+
+    let ctx = state.solver().borrow();
+    for (_, byte) in &bytes {
+        match ctx.eval(byte) {
+            Some(0) => break,
+            Some(v) => name.push(v as u8),
+            None => {
+                return Err(ProcedureError::SymbolicArgument(
+                    "unsatisfiable pathname".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(name)
+}
 
 /// `_IO_FILE` size and fd offset per arch, mirroring
 /// `cle.backends.externs.simdata.io_file.io_file_data_for_arch`.
@@ -98,25 +152,9 @@ crate::declare_proc! {
     struct = NativeOpen,
     args = [pathname_addr: concrete, flags: concrete],
     call |state| {
-        // Read pathname string from memory (max 256 bytes)
-        let mut name = Vec::new();
-        for i in 0..256u64 {
-            match state.memory_load(pathname_addr.wrapping_add(i), 1) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u64() {
-                        if val == 0 {
-                            break;
-                        }
-                        name.push(val as u8);
-                    } else {
-                        return Err(ProcedureError::SymbolicArgument(
-                            "symbolic byte in pathname".to_string(),
-                        ));
-                    }
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        // Read the pathname (max 256 bytes), concretizing symbolic bytes as
+        // Python's open does.
+        let name = read_pathname(state, pathname_addr)?;
 
         let pathname = String::from_utf8_lossy(&name).to_string();
         let fd_flags = FdFlags::from_posix(flags as u32);

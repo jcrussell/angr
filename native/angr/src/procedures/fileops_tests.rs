@@ -743,3 +743,35 @@ fn test_fdopen_negative_fd_returns_null() {
         .unwrap();
     assert_eq!(fp.as_u64(), Some(0));
 }
+
+#[test]
+fn test_open_symbolic_pathname_is_concretized() {
+    // A symbolic byte in the pathname used to bounce the call to Python
+    // (angr-gorvf.13). Python's open concretizes the path with solver.eval;
+    // so do we — the call must be served, and the resulting name must be a
+    // model of the symbolic buffer, not a decline.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a\x00c.txt\x00", Permission::RWX);
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "path_1", 8)
+    };
+    state.memory_store(0x1001, sym.clone()).unwrap();
+    // Pin the symbolic byte so the eval'd path is deterministic.
+    let eq = {
+        let ctx = state.solver().borrow();
+        sym.eq(&RustBV::concrete(b'b' as u128, 8), &ctx)
+    };
+    state.add_constraint(eq);
+
+    let result = NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .expect("symbolic pathname byte must be concretized, not bounced");
+
+    assert_eq!(result.unwrap().as_u64(), Some(3));
+    let info = state.file_system_ref().fd_info(3).unwrap();
+    assert_eq!(info.0, "abc.txt");
+}
