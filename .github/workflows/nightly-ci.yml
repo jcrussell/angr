@@ -316,6 +316,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+  default_engine_parity:
+    name: Default Engine Parity (ANGR_DEFAULT_ENGINE=rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      # The other half of angr-op0dn.14.6's acceptance (angr-op0dn.14.10). The
+      # in-repo half — tests/engines/rust/test_default_engine_flag.py — pins the
+      # flag from a stock process. This job pins the whole-process regime: with
+      # ANGR_DEFAULT_ENGINE=rust set, EVERY project in the subset below defaults
+      # to the Rust manager, and the STOCK tests must still pass with zero test
+      # edits. That is the real claim of the auto-dispatcher: raising the default
+      # cannot weaken the eligibility gate, so an ineligible workload (the
+      # action-tracking ones in test_actions.py above all) has to route back to
+      # Python transparently rather than raise or diverge.
+      #
+      # These modules need the angr/binaries checkout, which is why this could
+      # not be validated on the dev box and lives here instead.
+      - name: Run the stock parity subset with the Rust default engine ON
+        env:
+          ANGR_DEFAULT_ENGINE: rust
+        run: uv run pytest tests/factory/ tests/engines/test_actions.py --tb=short
+        timeout-minutes: 20
+      # Makes the fallback *observable* rather than merely non-fatal: asserts a
+      # TRACK_MEMORY_ACTIONS state lands on a plain SimulationManager and says so
+      # via mgr.dispatch_reason. This module self-skips when the env var is unset,
+      # so it is inert in every other job and in a plain local pytest run.
+      - name: Assert ineligible workloads observably route to Python
+        env:
+          ANGR_DEFAULT_ENGINE: rust
+        run: uv run pytest tests/engines/rust/test_default_engine_env_parity.py -v --tb=short
+        timeout-minutes: 5
+      # Guards the inverse: with the env var UNSET the suite must be byte-for-byte
+      # the same as before the flag existed (the "flag off = zero diff" invariant).
+      - name: Re-run the flag suite with the default engine OFF
+        run: uv run pytest tests/engines/rust/test_default_engine_flag.py --tb=short
+        timeout-minutes: 5
+
   property_fuzzer:
     name: Differential Property Fuzzer
     runs-on: ubuntu-latest
