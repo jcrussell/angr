@@ -808,6 +808,20 @@ fn rustbv_to_claripy_memo(
             if let Some(k) = memo_key {
                 memo.insert(k, ast.clone_ref(py));
             }
+            // Cross-call memoization (angr-gorvf.7): also park the built AST in
+            // EXPRESSION_BY_OPERANDS_PTR, so a *later* export that reaches this
+            // same Expression node (shared `Arc` operands) returns it from the
+            // lookup at the top of this fn instead of rebuilding the subtree.
+            // The per-call `memo` above only dedups within one export; a bench
+            // that exports many overlapping trees (flareon2015_5 stores ~40
+            // base64-encoder bytes, each a deep DAG over the same input) paid
+            // the full rebuild every time. Keyed and pinned exactly like the
+            // import-side store: the held `RustBV` keeps the operands `Arc`
+            // alive so the raw-pointer key cannot be recycled (see cache.rs).
+            if let RustBV::Expression { operands, .. } = bv {
+                let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+                store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone_ref(py));
+            }
             Ok(ast)
         }
         Err(e) => Err(e),
