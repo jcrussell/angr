@@ -1,0 +1,361 @@
+//! POSIX fd operations that mutate the [`FileSystem`]: the `open` family,
+//! `close`, concrete `read`/`write` (+ their positioned twins), `seek`,
+//! `dup`/`dup2`/`pipe`, and the path/symlink/cwd registration setters.
+//!
+//! The bounded-symbolic-content half of the model lives in
+//! [`super::symbolic`]; read-only accessors live in [`super::query`].
+
+use super::*;
+
+impl FileSystem {
+    /// Open a new file descriptor. Returns the allocated fd number.
+    ///
+    /// Also registers `name` in `known_paths` so that a subsequent
+    /// `NativeAccessSyscall` against the same path returns 0
+    /// (file-exists). Mirrors the way Python `procedures/posix/open.py`
+    /// drops a fresh `SimFile` into `state.fs` on creation — our model
+    /// treats any successfully-opened path as "existing" from that
+    /// point forward.
+    ///
+    /// When the (cwd-normalized) path has registered symbolic content
+    /// (see [`register_file_content`](Self::register_file_content)), the
+    /// new fd shares that content via `content_sym` (refcount bump, no
+    /// deep clone). Paths without a registry entry behave exactly as
+    /// before (`content_sym: None`).
+    pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        // known_paths keys on normalized paths; normalizing at insertion
+        // freezes cwd-at-open, which is POSIX-correct for relative paths.
+        let norm = self.normalize_path(&name);
+        let content_sym = self.file_contents.get(&norm).cloned();
+        let mut desc = FileDescriptor::new(name, flags);
+        if content_sym.is_some() {
+            // Freeze the registry key on the descriptor so demotion can
+            // find the entry (and every sibling fd) without re-normalizing
+            // against a possibly-changed cwd. See `registry_key`.
+            desc.registry_key = Some(norm.clone());
+        }
+        desc.content_sym = content_sym;
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        fd
+    }
+
+    /// Open a file descriptor with pre-loaded content (for file-backed
+    /// SimFiles). Intentionally bypasses the `file_contents` registry — the
+    /// caller supplies explicit concrete content (test-seeding API).
+    pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::with_content(name, flags, content));
+        fd
+    }
+
+    /// Adopt a file descriptor that was opened *outside* the native engine,
+    /// at a caller-chosen number: a bounced Python SimProcedure's
+    /// `open`/`fopen`/`dup` allocates the fd in `state.posix`, and without
+    /// this the native side never learns of it (a later native read/write on
+    /// that fd hits a closed fd — angr-op0dn.14.1.5). Unlike
+    /// [`open`](Self::open) the number is dictated by Python rather than
+    /// drawn from `next_fd`, so `next_fd` is bumped past it to keep later
+    /// native opens from colliding.
+    ///
+    /// Returns false — changing nothing — when `fd` is already known, which
+    /// is what keeps the caller's diff-against-[`all_fds`](Self::all_fds)
+    /// idempotent across the repeated callbacks that share one cached state.
+    ///
+    /// Content is the explicit concrete buffer the caller extracted from the
+    /// Python `SimFile`; like [`open_with_content`](Self::open_with_content)
+    /// this intentionally bypasses the `file_contents` symbolic registry.
+    pub fn register_fd_at(
+        &mut self,
+        fd: u32,
+        name: String,
+        flags: FdFlags,
+        content: Vec<u8>,
+        position: u64,
+    ) -> bool {
+        if self.fds.contains_key(&fd) {
+            return false;
+        }
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        let mut desc = FileDescriptor::with_content(name, flags, content);
+        desc.position = position;
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        self.next_fd = self.next_fd.max(fd.saturating_add(1));
+        true
+    }
+
+    /// Open a symbolic-stream file descriptor: empty content, flagged so
+    /// that reads mint fresh symbolic bytes natively (the stdin model)
+    /// rather than falling back to Python. Returns the allocated fd number.
+    ///
+    /// Like `open` / `open_with_content`, this is a seeding API with no
+    /// production Python caller yet (tests + future state-export wiring) —
+    /// the open/openat syscall path still uses the content-less `open`, so
+    /// a real binary's `open()` is unaffected. See
+    /// `FileDescriptor::symbolic` for the stream-vs-bounded-file distinction.
+    ///
+    /// Unlike `open`, registered bounded content (`file_contents`) is NOT
+    /// attached: the two models conflict rather than compose — a bounded
+    /// file returns 0 at EOF forever, while the stream model mints fresh
+    /// bytes forever. The stream model wins for `open_symbolic`; bounded
+    /// symbolic files come via `open()` on a registered path.
+    pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new_symbolic(name, flags));
+        fd
+    }
+
+    /// Register an existing-file path without allocating an fd. Used by
+    /// the Python state-export path to seed `state.fs._files` entries
+    /// (`register_known_path` PyO3 setter) and by tests.
+    pub fn register_known_path(&mut self, name: String) {
+        // Normalized at insertion (freezes cwd-at-registration) — see `open`.
+        let norm = self.normalize_path(&name);
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+    }
+
+    /// Register a symlink: `link` resolves to `target` (raw bytes, as
+    /// `readlink(2)` returns — NOT NUL-terminated). Overwrites any
+    /// existing entry. Used by tests and the state-export path,
+    /// mirroring the `register_known_path` precedent (Python `state.fs`
+    /// symlinks are NOT auto-mirrored). Drives
+    /// `NativeReadlinkSyscall` / `NativeReadlinkatSyscall`.
+    pub fn add_symlink(&mut self, link: String, target: Vec<u8>) {
+        Arc::make_mut(&mut self.symlinks).insert(link, target);
+    }
+
+    /// Close a file descriptor. Returns true if it was open.
+    pub fn close(&mut self, fd: u32) -> bool {
+        // Read-first to avoid CoW clone if the fd is missing or already closed.
+        if !self.fds.get(&fd).is_some_and(|d| d.is_open) {
+            return false;
+        }
+        if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
+            desc.is_open = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// True when `fd` has bounded symbolic content or a live registry link
+    /// — the write choke point must refuse to mutate it. O(1), no
+    /// allocation: one hash lookup and two `Option` flag checks, so plain
+    /// concrete fds (all production fds today) pay nothing.
+    #[inline]
+    fn write_refused(&self, fd: u32) -> bool {
+        self.fds
+            .get(&fd)
+            .is_some_and(|d| d.content_sym.is_some() || d.registry_key.is_some())
+    }
+
+    /// Write data to a file descriptor at its current position, advancing the
+    /// position by `data.len()` (POSIX `write(2)` semantics).
+    ///
+    /// For the common sequential case (a write-only fd that is only ever
+    /// written, so `position` starts at 0 and tracks the content length) this
+    /// is byte-identical to a plain append. The position-aware path matters
+    /// only after a `seek` or an interleaved `read` moved the offset away from
+    /// EOF: there, append-only would corrupt the buffer relative to Python's
+    /// position-aware `simfd.write`. Zero-fills any gap when `position` is at or
+    /// past EOF (a sparse seek-then-write), mirroring [`write_at`].
+    ///
+    /// **Choke point (angr-0xyq2 Phase 2):** an fd carrying bounded
+    /// symbolic content (`content_sym` / a live `registry_key`) is never
+    /// mutated here. Instead the content is demoted
+    /// ([`demote_symbolic_content`](Self::demote_symbolic_content)) and
+    /// `false` is returned — the caller must bounce the write to Python
+    /// (a fallback, NOT a state-killing error), which owns the file from
+    /// then on. Zero-length writes are a POSIX no-op: they return `true`
+    /// without demoting (and without creating a missing fd entry).
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if self.write_refused(fd) {
+            self.demote_symbolic_content(fd);
+            return false;
+        }
+        let desc = Arc::make_mut(&mut self.fds)
+            .entry(fd)
+            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
+        let start = desc.position as usize;
+        let end = start + data.len();
+        if end > desc.content.len() {
+            desc.content.resize(end, 0);
+        }
+        desc.content[start..end].copy_from_slice(data);
+        desc.position = end as u64;
+        true
+    }
+
+    /// Read up to `count` bytes from a file descriptor at its current position.
+    /// Advances the position. Returns bytes read.
+    pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
+        // Peek to compute byte count without forcing CoW when nothing is readable.
+        let n = match self.fds.get(&fd) {
+            Some(desc) => {
+                let pos = desc.position as usize;
+                let available = desc.content.len().saturating_sub(pos);
+                count.min(available)
+            }
+            None => return Vec::new(),
+        };
+        if n == 0 {
+            return Vec::new();
+        }
+        let desc = Arc::make_mut(&mut self.fds)
+            .get_mut(&fd)
+            .expect("fd existed above");
+        let pos = desc.position as usize;
+        let data = desc.content[pos..pos + n].to_vec();
+        desc.position += n as u64;
+        data
+    }
+
+    /// Seek a file descriptor. Returns the new position.
+    ///
+    /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
+    pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
+        // Compute new position without CoW first; only mutate if the fd exists
+        // and the whence value is valid.
+        let desc = self.fds.get(&fd)?;
+        let new_pos = match whence {
+            0 => offset.max(0) as u64,                                 // SEEK_SET
+            1 => (desc.position as i64 + offset).max(0) as u64,        // SEEK_CUR
+            2 => (desc.effective_len() as i64 + offset).max(0) as u64, // SEEK_END
+            _ => return None,
+        };
+        Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
+        Some(new_pos)
+    }
+
+    /// Positioned read: read up to `count` bytes starting at absolute
+    /// `offset`, WITHOUT touching the fd's current position. Mirrors POSIX
+    /// `pread` (the file offset is unaffected). Returns the bytes read
+    /// (empty if `offset` is past EOF or the fd is absent).
+    pub fn read_at(&self, fd: u32, offset: u64, count: usize) -> Vec<u8> {
+        match self.fds.get(&fd) {
+            Some(desc) => {
+                let pos = offset as usize;
+                if pos >= desc.content.len() {
+                    return Vec::new();
+                }
+                let n = count.min(desc.content.len() - pos);
+                desc.content[pos..pos + n].to_vec()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Positioned write: overwrite `data` at absolute `offset`, WITHOUT
+    /// touching the fd's current position. Mirrors POSIX `pwrite` (the file
+    /// offset is unaffected). Extends the content buffer (zero-filling any
+    /// gap) when `offset` is at or past EOF, so it is not append-only like
+    /// `write`. Creates the fd entry if missing, matching `write`.
+    ///
+    /// Same choke-point contract as [`write`](Self::write): symbolic-content
+    /// fds are demoted and refused (`false`), zero-length writes are a
+    /// no-demotion no-op (`true`).
+    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if self.write_refused(fd) {
+            self.demote_symbolic_content(fd);
+            return false;
+        }
+        let desc = Arc::make_mut(&mut self.fds)
+            .entry(fd)
+            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
+        let start = offset as usize;
+        let end = start + data.len();
+        if end > desc.content.len() {
+            desc.content.resize(end, 0);
+        }
+        desc.content[start..end].copy_from_slice(data);
+        true
+    }
+
+    /// Replace the current working directory bytes. `chdir(2)` semantics —
+    /// the raw concrete path is stored verbatim (no `_normalize_path`
+    /// applied, matching `procedures/linux_kernel/cwd.py::chdir`).
+    pub fn set_cwd(&mut self, cwd: Vec<u8>) {
+        self.cwd = cwd;
+    }
+
+    /// Duplicate an open file descriptor, allocating the lowest unused fd.
+    /// Returns the new fd, or None if `oldfd` is not open.
+    ///
+    /// Like POSIX `dup(2)`: the new fd refers to the same underlying state.
+    /// We model this by cloning the `FileDescriptor` (name/position/flags/content).
+    pub fn dup(&mut self, oldfd: u32) -> Option<u32> {
+        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+            return None;
+        }
+        let cloned = self.fds.get(&oldfd).cloned()?;
+        let newfd = self.next_fd;
+        self.next_fd += 1;
+        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        Some(newfd)
+    }
+
+    /// Duplicate `oldfd` to `newfd`. If `newfd` was open, it is closed first.
+    /// If `oldfd == newfd` and `oldfd` is open, returns `newfd` unchanged.
+    /// Returns the new fd on success, or None if `oldfd` is not open.
+    ///
+    /// Like POSIX `dup2(2)`. Bumps `next_fd` past `newfd` if necessary so future
+    /// allocations don't collide.
+    pub fn dup2(&mut self, oldfd: u32, newfd: u32) -> Option<u32> {
+        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+            return None;
+        }
+        if oldfd == newfd {
+            return Some(newfd);
+        }
+        let cloned = self.fds.get(&oldfd).cloned()?;
+        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        if newfd >= self.next_fd {
+            self.next_fd = newfd + 1;
+        }
+        Some(newfd)
+    }
+
+    /// Create a pipe: returns `(read_fd, write_fd)`, allocated as two
+    /// consecutive fds.
+    ///
+    /// Like POSIX `pipe(2)`. The read end is opened ReadOnly and the write end
+    /// WriteOnly. We do NOT model write→read data flow (each end has its own
+    /// content buffer); this matches angr's existing SimPacketsStream-light
+    /// modeling — the procedure exists so binaries that allocate fds via pipe()
+    /// don't fall through to Python on every fd op.
+    pub fn pipe(&mut self) -> (u32, u32) {
+        let read_fd = self.next_fd;
+        let write_fd = self.next_fd + 1;
+        self.next_fd += 2;
+        let map = Arc::make_mut(&mut self.fds);
+        map.insert(
+            read_fd,
+            FileDescriptor::new("<pipe:r>".to_string(), FdFlags::ReadOnly),
+        );
+        map.insert(
+            write_fd,
+            FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly),
+        );
+        (read_fd, write_fd)
+    }
+}
