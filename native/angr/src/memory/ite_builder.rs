@@ -67,6 +67,17 @@ fn loads_match(a: &RustBV, b: &RustBV) -> bool {
     }
 }
 
+/// The shape of a strided access — fixed for the whole ITE-tree recursion,
+/// so it travels as one immutable bundle rather than three repeated params.
+struct StridedPattern {
+    /// Base address of the strided pattern.
+    base: u64,
+    /// Stride between consecutive addresses.
+    stride: u64,
+    /// Number of bytes loaded at each address.
+    size: u32,
+}
+
 impl SymbolicMemory {
     /// Load from strided addresses using a balanced ITE tree.
     ///
@@ -101,30 +112,28 @@ impl SymbolicMemory {
         }
 
         // Build the balanced tree recursively
-        self.build_strided_ite_tree(addr_expr, base, stride, 0, count - 1, size, ctx)
+        let pattern = StridedPattern { base, stride, size };
+        self.build_strided_ite_tree(addr_expr, &pattern, 0, count - 1, ctx)
     }
 
     /// Recursive helper to build a balanced ITE tree for strided access.
     ///
     /// # Arguments
     /// * `addr_expr` - The symbolic address expression
-    /// * `base` - Base address of the strided pattern
-    /// * `stride` - Stride between consecutive addresses
+    /// * `pattern` - Base/stride/size of the strided access (fixed across the recursion)
     /// * `lo` - Lowest index in the current subtree
     /// * `hi` - Highest index in the current subtree
-    /// * `size` - Number of bytes to load
     /// * `ctx` - Solver context
-    #[allow(clippy::too_many_arguments)]
     fn build_strided_ite_tree(
         &self,
         addr_expr: &RustBV,
-        base: u64,
-        stride: u64,
+        pattern: &StridedPattern,
         lo: u64,
         hi: u64,
-        size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let StridedPattern { base, stride, size } = *pattern;
+
         // Base case: single element
         if lo == hi {
             let addr = base + lo * stride;
@@ -140,8 +149,8 @@ impl SymbolicMemory {
         let cond = addr_expr.ule(&mid_const, ctx);
 
         // Recursively build left subtree (lo..mid) and right subtree (mid+1..hi)
-        let left = self.build_strided_ite_tree(addr_expr, base, stride, lo, mid, size, ctx)?;
-        let right = self.build_strided_ite_tree(addr_expr, base, stride, mid + 1, hi, size, ctx)?;
+        let left = self.build_strided_ite_tree(addr_expr, pattern, lo, mid, ctx)?;
+        let right = self.build_strided_ite_tree(addr_expr, pattern, mid + 1, hi, ctx)?;
 
         // angr-269l: collapse `ite(c, v, v) -> v` so identical-content
         // strided regions fold to a single leaf instead of an N-deep tree.

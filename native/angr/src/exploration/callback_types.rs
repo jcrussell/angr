@@ -45,6 +45,40 @@ pub enum CallbackReason {
     PythonVEXFallback { addr: u64, reason: String },
 }
 
+/// The SimProcedure-hook descriptor: the payload of a
+/// [`CallbackReason::SimProcedure`], bundled so the post-step handler and the
+/// `need_simprocedure` event constructor both stay under the argument
+/// threshold instead of passing the four fields positionally.
+pub(crate) struct SimProcCall {
+    pub(crate) addr: u64,
+    pub(crate) name: String,
+    pub(crate) num_args: usize,
+    pub(crate) return_addr: u64,
+}
+
+/// The deferred-fork bookkeeping a bounce carries from the interpreter to the
+/// Python callback. The three pieces always travel together, so they move as
+/// one bundle rather than three positional params.
+pub(crate) struct ForkBundle {
+    /// Deferred forks accumulated before the callback.
+    pub(crate) deferred_forks: Vec<DeferredFork>,
+    /// Stored conditions for deferred fork handling, keyed by condition_id.
+    pub(crate) stored_conditions: FxHashMap<u64, RustBV>,
+    /// Pre-constraint state snapshots, keyed by condition_id.
+    pub(crate) fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
+}
+
+impl ForkBundle {
+    /// No deferred forks — the run-loop bounce path, which never defers.
+    pub(crate) fn empty() -> Self {
+        ForkBundle {
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        }
+    }
+}
+
 /// State held during a Python callback.
 pub(crate) struct PendingCallback {
     pub(crate) state: RustSimState,
@@ -85,17 +119,19 @@ impl PendingCallback {
 
     /// Create a callback with full interpreter context (deferred forks, conditions, snapshots).
     /// Used for SimProcedure, syscall, and symbolic branch callbacks after interpreter execution.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_context(
         state: RustSimState,
         pre_callback_snapshot: Option<RustSimState>,
         reason: CallbackReason,
         jumpkind: &str,
         solver_ctx: Option<RustSolverContext>,
-        deferred_forks: Vec<DeferredFork>,
-        stored_conditions: FxHashMap<u64, RustBV>,
-        fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
+        forks: ForkBundle,
     ) -> Self {
+        let ForkBundle {
+            deferred_forks,
+            stored_conditions,
+            fork_snapshots,
+        } = forks;
         PendingCallback {
             state,
             pre_callback_snapshot,

@@ -1,5 +1,16 @@
 use super::helpers::bv_to_bytes;
+use super::statements_cas::CasArgs;
 use super::*;
+
+/// The `IRStmt::LoadG` operands, bundled so the handler takes one borrow of the
+/// statement's fields instead of five positional params.
+pub(super) struct LoadGArgs<'s> {
+    pub(super) dst: &'s u32,
+    pub(super) guard: &'s IRExpr,
+    pub(super) addr: &'s IRExpr,
+    pub(super) alt: &'s IRExpr,
+    pub(super) cvt: &'s IRLoadGOp,
+}
 
 impl<'a> VEXInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
@@ -341,7 +352,17 @@ impl<'a> VEXInterpreter<'a> {
                 alt,
                 cvt,
                 ..
-            } => self.handle_loadg(callbacks, dst, guard, addr, alt, cvt, irsb),
+            } => self.handle_loadg(
+                callbacks,
+                LoadGArgs {
+                    dst,
+                    guard,
+                    addr,
+                    alt,
+                    cvt,
+                },
+                irsb,
+            ),
 
             IRStmt::CAS {
                 old_hi,
@@ -354,14 +375,16 @@ impl<'a> VEXInterpreter<'a> {
                 endness,
             } => self.execute_cas_stmt(
                 callbacks,
-                *old_hi,
-                *old_lo,
-                addr,
-                expdHi.as_deref(),
-                expdLo,
-                dataHi.as_deref(),
-                dataLo,
-                *endness,
+                &CasArgs {
+                    old_hi: *old_hi,
+                    old_lo: *old_lo,
+                    addr,
+                    expd_hi: expdHi.as_deref(),
+                    expd_lo: expdLo,
+                    data_hi: dataHi.as_deref(),
+                    data_lo: dataLo,
+                    endness: *endness,
+                },
                 irsb,
             ),
 
@@ -636,18 +659,20 @@ impl<'a> VEXInterpreter<'a> {
     /// (symbolic always-true/always-false/both via ITE, plus concrete guard),
     /// with cvt-based widening conversions. Extracted verbatim from
     /// `execute_stmt_with_callbacks` (cudgw.18).
-    #[allow(clippy::too_many_arguments)]
     fn handle_loadg(
         &mut self,
         callbacks: &PythonCallbacks,
-        dst: &u32,
-        guard: &IRExpr,
-        addr: &IRExpr,
-        alt: &IRExpr,
-        cvt: &IRLoadGOp,
+        args: LoadGArgs<'_>,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
         {
+            let LoadGArgs {
+                dst,
+                guard,
+                addr,
+                alt,
+                cvt,
+            } = args;
             // Evaluate guard condition
             let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 

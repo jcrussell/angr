@@ -465,9 +465,11 @@ impl RustExplorationManager {
                     },
                     "Ijk_Boring",
                     Some(shared_ctx),
-                    deferred_forks,
-                    stored_conditions,
-                    fork_snapshots,
+                    ForkBundle {
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
+                    },
                 )))
             }
             BounceKind::SimProcedurePython {
@@ -491,9 +493,11 @@ impl RustExplorationManager {
                     },
                     "Ijk_Call",
                     Some(shared_ctx),
-                    deferred_forks,
-                    stored_conditions,
-                    fork_snapshots,
+                    ForkBundle {
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
+                    },
                 )))
             }
             BounceKind::SyscallPython { num } => {
@@ -505,9 +509,11 @@ impl RustExplorationManager {
                     CallbackReason::Syscall { num },
                     "Ijk_Sys_syscall",
                     Some(shared_ctx),
-                    deferred_forks,
-                    stored_conditions,
-                    fork_snapshots,
+                    ForkBundle {
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
+                    },
                 )))
             }
             BounceKind::SymbolicBranch {
@@ -529,9 +535,11 @@ impl RustExplorationManager {
                     },
                     "Ijk_Boring",
                     None,
-                    deferred_forks,
-                    branch_conditions,
-                    fork_snapshots,
+                    ForkBundle {
+                        deferred_forks,
+                        stored_conditions: branch_conditions,
+                        fork_snapshots,
+                    },
                 )))
             }
             BounceKind::UnmodeledCall {
@@ -544,9 +552,11 @@ impl RustExplorationManager {
                 addr,
                 return_addr,
                 symbol_name,
-                deferred_forks,
-                stored_conditions,
-                fork_snapshots,
+                ForkBundle {
+                    deferred_forks,
+                    stored_conditions,
+                    fork_snapshots,
+                },
             ),
             BounceKind::PythonVEXFallback { addr, reason } => {
                 // state.set_pc(addr) was applied by the core before bouncing.
@@ -556,9 +566,11 @@ impl RustExplorationManager {
                     CallbackReason::PythonVEXFallback { addr, reason },
                     "Ijk_Boring",
                     None,
-                    deferred_forks,
-                    stored_conditions,
-                    fork_snapshots,
+                    ForkBundle {
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
+                    },
                 )))
             }
         }
@@ -750,7 +762,6 @@ impl RustExplorationManager {
     /// functions are registered as SimProcedures and dispatched via callback;
     /// unresolved calls use P21 generic skip (set return register to 0,
     /// continue at return address) instead of deadending.
-    #[allow(clippy::too_many_arguments)]
     fn handle_unmodeled_call(
         &mut self,
         callbacks: &PythonCallbacks,
@@ -758,10 +769,14 @@ impl RustExplorationManager {
         addr: u64,
         return_addr: u64,
         symbol_name: Option<String>,
-        deferred_forks: Vec<DeferredFork>,
-        stored_conditions: FxHashMap<u64, RustBV>,
-        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
+        forks: ForkBundle,
     ) -> Result<Vec<RustSimState>, StepError> {
+        let ForkBundle {
+            deferred_forks,
+            stored_conditions,
+            fork_snapshots,
+        } = forks;
+
         // Unhooked CALL target - try to resolve via Python callback
         state.set_pc(addr);
         // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
@@ -796,9 +811,11 @@ impl RustExplorationManager {
                         },
                         "Ijk_Call",
                         Some(shared_ctx),
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
+                        ForkBundle {
+                            deferred_forks,
+                            stored_conditions,
+                            fork_snapshots,
+                        },
                     )))
                 }
                 Ok(None) => {

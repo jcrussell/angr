@@ -125,7 +125,7 @@ impl<'a> VEXInterpreter<'a> {
                 arg2,
                 arg3,
                 arg4,
-            } => self.eval_qop(callbacks, *op, arg1, arg2, arg3, arg4, tyenv),
+            } => self.eval_qop(callbacks, *op, [arg1, arg2, arg3, arg4], tyenv),
 
             IRExpr::CCall { cee, retty, args } => {
                 self.eval_ccall(callbacks, cee, *retty, args, tyenv)
@@ -594,25 +594,22 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `args` is the Qop's four operands in IR order (`arg1..arg4`).
     fn eval_qop(
         &mut self,
         callbacks: &PythonCallbacks,
         op: IROp,
-        arg1: &IRExpr,
-        arg2: &IRExpr,
-        arg3: &IRExpr,
-        arg4: &IRExpr,
+        args: [&IRExpr; 4],
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         record_vex_qop(iropclass(&op));
         // VEX Qops are typically fused multiply-add/sub with a
         // rounding mode: (rm, a, b, c). Drop rm for the same reason
         // as Triop above.
-        let _rm = self.eval_expr_with_callbacks(callbacks, arg1, tyenv)?;
-        let v2 = self.eval_expr_with_callbacks(callbacks, arg2, tyenv)?;
-        let v3 = self.eval_expr_with_callbacks(callbacks, arg3, tyenv)?;
-        let v4 = self.eval_expr_with_callbacks(callbacks, arg4, tyenv)?;
+        let _rm = self.eval_expr_with_callbacks(callbacks, args[0], tyenv)?;
+        let v2 = self.eval_expr_with_callbacks(callbacks, args[1], tyenv)?;
+        let v3 = self.eval_expr_with_callbacks(callbacks, args[2], tyenv)?;
+        let v4 = self.eval_expr_with_callbacks(callbacks, args[3], tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
         match VEXOps::qop(op, v2, v3, v4, self.ctx) {

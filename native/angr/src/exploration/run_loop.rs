@@ -2090,9 +2090,7 @@ impl RustExplorationManager {
                     },
                     "Ijk_Call",
                     Some(shared_ctx),
-                    Vec::new(),
-                    FxHashMap::default(),
-                    FxHashMap::default(),
+                    ForkBundle::empty(),
                 );
 
                 return Ok(StepOutcome::NeedCallback(pending));
@@ -2293,10 +2291,12 @@ impl RustExplorationManager {
                 return_addr,
             } => ExplorationEvent::need_simprocedure(
                 state_id,
-                *addr,
-                name.clone(),
-                *num_args,
-                *return_addr,
+                SimProcCall {
+                    addr: *addr,
+                    name: name.clone(),
+                    num_args: *num_args,
+                    return_addr: *return_addr,
+                },
                 self.found_count(),
                 self.active_count(),
                 self.steps,

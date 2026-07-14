@@ -5,6 +5,7 @@
 //! constructor helpers live here; `register_exploration` in `mod.rs` still owns
 //! the `m.add_class::<ExplorationEvent>()` registration line.
 
+use super::callback_types::SimProcCall;
 use crate::stash::{STASH_ERRORED, STASH_FOUND};
 use pyo3::prelude::*;
 
@@ -100,17 +101,19 @@ impl ExplorationEvent {
         Self::base("step_complete", found_count, active_count, steps)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn need_simprocedure(
         state_id: u64,
-        addr: u64,
-        name: String,
-        num_args: usize,
-        return_addr: u64,
+        call: SimProcCall,
         found_count: usize,
         active_count: usize,
         steps: u64,
     ) -> Self {
+        let SimProcCall {
+            addr,
+            name,
+            num_args,
+            return_addr,
+        } = call;
         ExplorationEvent {
             callback_state_id: Some(state_id),
             callback_reason: Some("simprocedure".to_string()),

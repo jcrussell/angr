@@ -13,6 +13,31 @@ pub(super) struct DcasState<'a> {
     old_hi_idx: u32,
 }
 
+/// The `IRStmt::CAS` operands, bundled so the CAS handlers can thread the whole
+/// statement instead of eight positional params. The `*_hi` fields are `Some`
+/// exactly on the DCAS path.
+pub(super) struct CasArgs<'s> {
+    pub(super) old_hi: Option<u32>,
+    pub(super) old_lo: u32,
+    pub(super) addr: &'s IRExpr,
+    pub(super) expd_hi: Option<&'s IRExpr>,
+    pub(super) expd_lo: &'s IRExpr,
+    pub(super) data_hi: Option<&'s IRExpr>,
+    pub(super) data_lo: &'s IRExpr,
+    pub(super) endness: Endness,
+}
+
+/// The evaluated low-half values `cas_writeback` compares and stores, plus the
+/// DCAS sidecar. Derived from a [`CasArgs`]; kept separate because these are
+/// `RustBV`s the caller already evaluated, not IR.
+pub(super) struct CasWriteback<'s> {
+    /// Result of `(current_lo == expd_lo) [& (current_hi == expd_hi)]`.
+    cmp: &'s RustBV,
+    data_lo_val: &'s RustBV,
+    current_lo: &'s RustBV,
+    dcas: Option<&'s DcasState<'s>>,
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// CAS handler — supports both single CAS and DCAS (double compare-and-swap,
     /// e.g. x86-64 cmpxchg16b). DCAS = oldHi/expdHi/dataHi all Some, single = all None.
@@ -22,20 +47,23 @@ impl<'a> VEXInterpreter<'a> {
     /// `addr + sizeof(expd_ty)`; compare both vs `(expd_hi, expd_lo)`; on match,
     /// write `(data_hi, data_lo)` back. Only little-endian is supported — the
     /// only real DCAS users (x86-64, ARM64) are LE; BE is rejected explicitly.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_cas_stmt(
         &mut self,
         callbacks: &PythonCallbacks,
-        old_hi: Option<u32>,
-        old_lo: u32,
-        addr: &IRExpr,
-        expd_hi: Option<&IRExpr>,
-        expd_lo: &IRExpr,
-        data_hi: Option<&IRExpr>,
-        data_lo: &IRExpr,
-        endness: Endness,
+        cas: &CasArgs<'_>,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
+        let &CasArgs {
+            old_hi,
+            old_lo,
+            addr,
+            expd_hi,
+            expd_lo,
+            data_hi,
+            data_lo,
+            endness,
+        } = cas;
+
         let is_dcas = match (old_hi, expd_hi, data_hi) {
             (Some(_), Some(_), Some(_)) => true,
             (None, None, None) => false,
@@ -74,15 +102,8 @@ impl<'a> VEXInterpreter<'a> {
         // For DCAS, also load the high half at addr + sizeof(half).
         let dcas = if is_dcas {
             let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
-            let (current_hi, expd_hi_val, data_hi_val) = self.cas_load_dcas_high(
-                callbacks,
-                &addr_hi_expr,
-                expd_hi.unwrap(),
-                data_hi.unwrap(),
-                half_ty,
-                endness,
-                irsb,
-            )?;
+            let (current_hi, expd_hi_val, data_hi_val) =
+                self.cas_load_dcas_high(callbacks, &addr_hi_expr, cas, half_ty, irsb)?;
             Some(DcasState {
                 addr_hi_expr,
                 data_hi_expr: data_hi.unwrap(),
@@ -106,13 +127,13 @@ impl<'a> VEXInterpreter<'a> {
 
         self.cas_writeback(
             callbacks,
-            &cmp,
-            addr,
-            data_lo,
-            &data_lo_val,
-            &current_lo,
-            dcas.as_ref(),
-            endness,
+            cas,
+            &CasWriteback {
+                cmp: &cmp,
+                data_lo_val: &data_lo_val,
+                current_lo: &current_lo,
+                dcas: dcas.as_ref(),
+            },
             irsb,
         )?;
 
@@ -161,21 +182,25 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Load and evaluate the DCAS high half. Returns
     /// `(current_hi, expd_hi_val, data_hi_val)`.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_load_dcas_high(
         &mut self,
         callbacks: &PythonCallbacks,
         addr_hi_expr: &IRExpr,
-        expd_hi: &IRExpr,
-        data_hi: &IRExpr,
+        cas: &CasArgs<'_>,
         half_ty: IRType,
-        endness: Endness,
         irsb: &IRSB,
     ) -> Result<(RustBV, RustBV, RustBV), CbExecutionError> {
+        // DCAS-only path: the all-Some/all-None gate in `execute_cas_stmt` has
+        // already established that expdHi/dataHi are present.
+        let (Some(expd_hi), Some(data_hi)) = (cas.expd_hi, cas.data_hi) else {
+            return Err(CbExecutionError::InvalidIR(
+                "CAS: DCAS high half needs expdHi/dataHi".to_string(),
+            ));
+        };
         let load_hi_expr = IRExpr::Load {
             addr: Box::new(addr_hi_expr.clone()),
             ty: half_ty,
-            endness,
+            endness: cas.endness,
         };
         let current_hi = self.eval_expr_with_callbacks(callbacks, &load_hi_expr, &irsb.tyenv)?;
         let expd_hi_val = self.eval_expr_with_callbacks(callbacks, expd_hi, &irsb.tyenv)?;
@@ -189,19 +214,21 @@ impl<'a> VEXInterpreter<'a> {
     ///   - symbolic:       store `ITE(cmp, data, current)` — the deferred-fork
     ///     branch, where both outcomes are encoded into a single
     ///     state via ITE rather than splitting into two states.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn cas_writeback(
         &mut self,
         callbacks: &PythonCallbacks,
-        cmp: &RustBV,
-        addr: &IRExpr,
-        data_lo_expr: &IRExpr,
-        data_lo_val: &RustBV,
-        current_lo: &RustBV,
-        dcas: Option<&DcasState>,
-        endness: Endness,
+        cas: &CasArgs<'_>,
+        wb: &CasWriteback<'_>,
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
+        let &CasWriteback {
+            cmp,
+            data_lo_val,
+            current_lo,
+            dcas,
+        } = wb;
+        let (addr, data_lo_expr, endness) = (cas.addr, cas.data_lo, cas.endness);
+
         match cmp.as_u64() {
             Some(0) => Ok(()),
             Some(_) => {

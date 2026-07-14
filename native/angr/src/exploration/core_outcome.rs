@@ -60,6 +60,7 @@ use crate::state::{NativeResumeFrame, RustSimState};
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 
+use super::callback_types::SimProcCall;
 use super::step_core::StepContext;
 use super::stepping::SubcallSetupError;
 
@@ -365,15 +366,6 @@ pub(crate) struct NativeSubcall {
     pub(crate) target: u64,
     pub(crate) sub_args: Vec<RustBV>,
     pub(crate) resume_tag: u32,
-}
-
-/// The `RunResult::SimProcedure` descriptor fields (bundled to keep
-/// `handle_simprocedure_core` under the argument threshold).
-struct SimProcCall {
-    addr: u64,
-    name: String,
-    num_args: usize,
-    return_addr: u64,
 }
 
 /// Post-interpreter inputs the arms consume (the already-drained pieces of the
