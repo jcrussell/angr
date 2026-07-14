@@ -1035,6 +1035,34 @@ class TestErrorRecovery:
             "callback; every real block of this blob is concrete in the binary-region store"
         )
 
+    def test_cb_fetch_page_classifies_without_loading(self):
+        """angr-gorvf.4.5: an UltraPage-backed page is classified off the page
+        side tables, so neither fetch-page callback may call `memory.load` —
+        that call built a 32768-bit AST for the whole page just to discover the
+        page was symbolic and decline it."""
+        import claripy
+
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise AssertionError("fetch-page callback fell back to memory.load")
+
+        # A page with an explicit symbolic store must be DECLINED (Rust keeps
+        # serving it through memory_load, which preserves the AST); a fully
+        # concrete page is handed over as-is.
+        state.memory.store(0x2000, claripy.BVS("sym", 64), inspect=False, disable_actions=True)
+        state.memory.store(0x3000, b"\xaa" * 4096, inspect=False, disable_actions=True)
+        state.memory.load = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        assert mgr._cb_fetch_page(0x2000) == (bytes(4096), 0, False)
+        concrete, perms, is_mapped = mgr._cb_fetch_page(0x3000)
+        assert (concrete, perms, is_mapped) == (b"\xaa" * 4096, 7, True)
+        assert mgr._cb_batch_fetch_pages([0x2000, 0x3000]) == [
+            (bytes(4096), 0, False),
+            (b"\xaa" * 4096, 7, True),
+        ]
+
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""
         from angr.errors import SimMemoryError
@@ -1044,6 +1072,11 @@ class TestErrorRecovery:
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped page")
 
+        # angr-gorvf.4.5: the callbacks classify UltraPage-backed pages off the
+        # page side tables and never reach `state.memory.load`. Disable that fast
+        # path so this test still exercises the load-based fallback whose error
+        # handling it is asserting on.
+        mgr._fetch_page_from_ultrapage = lambda *a, **kw: None
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -1057,6 +1090,11 @@ class TestErrorRecovery:
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected fetch bug")
 
+        # angr-gorvf.4.5: the callbacks classify UltraPage-backed pages off the
+        # page side tables and never reach `state.memory.load`. Disable that fast
+        # path so this test still exercises the load-based fallback whose error
+        # handling it is asserting on.
+        mgr._fetch_page_from_ultrapage = lambda *a, **kw: None
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -1160,6 +1198,11 @@ class TestErrorRecovery:
         def boom(*args, **kwargs):
             raise SimMemoryError("simulated unmapped batch page")
 
+        # angr-gorvf.4.5: the callbacks classify UltraPage-backed pages off the
+        # page side tables and never reach `state.memory.load`. Disable that fast
+        # path so this test still exercises the load-based fallback whose error
+        # handling it is asserting on.
+        mgr._fetch_page_from_ultrapage = lambda *a, **kw: None
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
@@ -1173,6 +1216,11 @@ class TestErrorRecovery:
         def boom(*args, **kwargs):
             raise RuntimeError("unexpected batch page bug")
 
+        # angr-gorvf.4.5: the callbacks classify UltraPage-backed pages off the
+        # page side tables and never reach `state.memory.load`. Disable that fast
+        # path so this test still exercises the load-based fallback whose error
+        # handling it is asserting on.
+        mgr._fetch_page_from_ultrapage = lambda *a, **kw: None
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 

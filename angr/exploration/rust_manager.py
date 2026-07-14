@@ -2305,6 +2305,11 @@ class RustExplorationManager(
             if _is_rust_memory_proxy(state.memory):
                 return (bytes(4096), 0, False)
             try:
+                # angr-gorvf.4.5: UltraPage side tables answer this without
+                # materializing a page-wide AST. See _fetch_page_from_ultrapage.
+                fast = self._fetch_page_from_ultrapage(state, page_addr)
+                if fast is not None:
+                    return fast
                 data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
                 is_symbolic = getattr(data, "symbolic", False)
                 if is_symbolic:
@@ -2577,6 +2582,49 @@ class RustExplorationManager(
                 results.append((bytes(size), False, None))
         return results
 
+    def _fetch_page_from_ultrapage(self, state, page_addr: int) -> tuple | None:
+        """Serve one page fetch straight off the UltraPage side tables.
+
+        Returns the ``(data, perms, is_mapped)`` triple Rust expects, or None
+        when this state's memory backend isn't an UltraPage and the caller must
+        fall back to ``memory.load`` + ``solver.eval``.
+
+        angr-gorvf.4.5: the load-based path builds a 32768-bit AST for the whole
+        page just to answer "is it symbolic?". Every page the ZeroPy FAIL benches
+        still fetch is a lazy-stack page that IS symbolic (measured: 7/7 on
+        google2016_unbreakable_1) and therefore gets DECLINED right after — so
+        the AST was pure GIL cost. Classify off ``symbolic_data`` /
+        ``symbolic_bitmap`` / ``concrete_data`` instead, the same fast path
+        ``RustStateSyncMixin._sync_extra_python_pages`` uses at setup:
+
+        * page not materialized, or any byte still default-fill (bitmap bit set)
+          → whatever Python would synthesize on read. Under
+          ZERO_FILL_UNCONSTRAINED_MEMORY that is zeros, so serve a zero page;
+          otherwise it is an unconstrained symbol, so DECLINE and let the
+          per-load ``memory_load`` callback preserve the AST — exactly what the
+          load-based path did, minus the AST.
+        * explicit symbolic store on the page (``symbolic_data``) → DECLINE.
+        * fully concrete → hand Rust ``concrete_data`` with no solver call.
+        """
+        mem_pages = getattr(state.memory, "_pages", None)
+        if mem_pages is None:
+            return None
+        # Option constants are plain strings (see the module header note).
+        zero_fill = "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options
+        page_obj = mem_pages.get(page_addr // 4096)
+        if page_obj is None:
+            return (bytes(4096), 7, True) if zero_fill else (bytes(4096), 0, False)
+        concrete_data = getattr(page_obj, "concrete_data", None)
+        symbolic_bitmap = getattr(page_obj, "symbolic_bitmap", None)
+        if not isinstance(concrete_data, bytearray) or len(concrete_data) != 4096:
+            return None  # non-UltraPage backend — caller uses the slow path
+        if getattr(page_obj, "symbolic_data", None):
+            return (bytes(4096), 0, False)
+        if not zero_fill and (symbolic_bitmap is None or any(symbolic_bitmap)):
+            # Uninitialized bytes on the page would default-fill symbolic.
+            return (bytes(4096), 0, False)
+        return (bytes(concrete_data), 7, True)
+
     def _cb_batch_fetch_pages(self, page_addrs: list) -> list:
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
@@ -2590,6 +2638,10 @@ class RustExplorationManager(
         results = []
         for page_addr in page_addrs:
             try:
+                fast = self._fetch_page_from_ultrapage(state, page_addr)
+                if fast is not None:
+                    results.append(fast)
+                    continue
                 data = state.memory.load(page_addr, 4096, endness="Iend_LE")
                 if getattr(data, "symbolic", False):
                     # angr-gorvf.4.3: a symbolic page is DECLINED (is_mapped=False)
