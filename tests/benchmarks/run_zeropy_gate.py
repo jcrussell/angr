@@ -11,6 +11,17 @@ hook installation) happens outside that window and is *by construction* excluded
 so "post-setup" needs no extra bookkeeping — ``gil_work_time_ns == 0`` **is** the
 zero-bounce condition.
 
+That equivalence used to be *false* for the park-and-bounce path (bd angr-gorvf.8).
+A Python SimProcedure / syscall / hook / symbolic-branch handler does not run
+inside a ``GilWorkGuard``: the run loop **exits**, Python executes the handler,
+and Rust is re-entered through ``resume_after_*``.  Both accumulators are stopped
+across that excursion, so fauxware could execute a 59.6ms Python ``open``
+SimProcedure and still report ``gil_work_time_ns == 0`` — a fake PASS.  The fix
+is the ``GilClass::Bounce`` class: ``run()`` arms a park clock whenever it hands
+back an event with a callback pending, and the matching ``resume_after_*`` banks
+the excursion into *both* the numerator and the denominator.  No bench can now
+PASS while executing a Python SimProcedure, and the gate needs no special case.
+
 **A zero is only a pass when the run loop was actually measured.**  A bench whose
 counter dict has no ``run_wall_time_ns`` (or reports 0) never entered a profiled
 run loop on the stats-reading thread, so its ``gil_work_time_ns`` reads 0 for the
@@ -86,7 +97,7 @@ CLASS_ORDER = [
 # gil_profile::GilClass, spelled out rather than prefix-matched: the per-site
 # keys (`gil_work_ns_callback_*`) share the `gil_work_ns_` prefix, and folding
 # them into the class split would double-count the callback class.
-GIL_CLASSES = ["callback", "claripy_export", "claripy_import", "fork_metadata"]
+GIL_CLASSES = ["callback", "claripy_export", "claripy_import", "fork_metadata", "bounce"]
 
 
 def _baselines() -> dict[str, dict]:

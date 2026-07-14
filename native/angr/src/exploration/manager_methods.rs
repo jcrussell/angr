@@ -2311,7 +2311,17 @@ impl RustExplorationManager {
     /// - Max steps reached
     #[pyo3(signature = (n=None))]
     pub fn run(&mut self, py: Python<'_>, n: Option<u32>) -> PyResult<ExplorationEvent> {
-        self.run_loop(py, n)
+        // Python re-entered the loop without resuming a parked callback: that
+        // gap is driver overhead, not a bounce excursion. Drop the clock.
+        crate::gil_profile::park_cancel();
+        let event = self.run_loop(py, n)?;
+        // Handing control back to Python with a callback outstanding starts a
+        // park-and-bounce excursion; the matching `resume_after_*` banks it as
+        // `GilClass::Bounce` (bd angr-gorvf.8).
+        crate::gil_profile::park_start(
+            self.profiling.profiling_enabled && !self.pending_callbacks.is_empty(),
+        );
+        Ok(event)
     }
 
     // =========================================================================

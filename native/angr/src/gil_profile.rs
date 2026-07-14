@@ -63,6 +63,9 @@ thread_local! {
     /// Per-site split of the `Callback` class, indexed by `CallbackSite as usize`.
     static SITE_ACCUM_NS: Cell<[u64; CallbackSite::COUNT]> =
         const { Cell::new([0; CallbackSite::COUNT]) };
+    /// Start instant of an in-flight park-and-bounce excursion (`Some` between
+    /// [`park_start`] and the matching [`park_end`] / [`park_cancel`]).
+    static PARK_START: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// Why the run loop is holding the GIL. Attributing the *outermost* region is
@@ -91,10 +94,25 @@ pub enum GilClass {
     /// *proving* that — a regression that reintroduces a GIL attach on the fork
     /// path shows up here as a nonzero `gil_work_ns_fork_metadata`.
     ForkMetadata,
+    /// A **park-and-bounce excursion**: the run loop returned an
+    /// `ExplorationEvent` with a pending callback, Python ran the handler (a
+    /// SimProcedure / syscall / hook / symbolic-branch resolution), and then
+    /// re-entered Rust through a `resume_after_*` method.
+    ///
+    /// This class exists because a bounce is *not* a [`GilWorkGuard`] region:
+    /// no Rust frame is live while it runs, so the run loop's
+    /// [`RunLoopWallGuard`] has already dropped and neither the numerator nor
+    /// the denominator would otherwise see the excursion (bd angr-gorvf.8 —
+    /// fauxware banked a 59.6ms Python `open` SimProcedure while reporting
+    /// `gil_work_time_ns == 0`). [`park_start`] / [`park_end`] bracket the
+    /// excursion at the pymethod boundary and bank it into *both* accumulators,
+    /// so `gil_work_time_ns == 0` really does mean "no Python ran during
+    /// exploration" and `gil_work_ns() <= run_wall_ns()` still holds.
+    Bounce,
 }
 
 impl GilClass {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     /// Stable counter suffix, used to name the `gil_work_ns_*` stats keys.
     pub fn name(self) -> &'static str {
@@ -103,6 +121,7 @@ impl GilClass {
             GilClass::ClaripyExport => "claripy_export",
             GilClass::ClaripyImport => "claripy_import",
             GilClass::ForkMetadata => "fork_metadata",
+            GilClass::Bounce => "bounce",
         }
     }
 
@@ -112,6 +131,7 @@ impl GilClass {
             GilClass::ClaripyExport,
             GilClass::ClaripyImport,
             GilClass::ForkMetadata,
+            GilClass::Bounce,
         ]
     }
 }
@@ -236,6 +256,45 @@ pub fn reset() {
     CLASS_ACCUM_NS.with(|c| c.set([0; GilClass::COUNT]));
     REGION_SITE.with(|s| s.set(CallbackSite::Other));
     SITE_ACCUM_NS.with(|s| s.set([0; CallbackSite::COUNT]));
+    PARK_START.with(|p| p.set(None));
+}
+
+/// Arm the park clock: the run loop is about to hand control back to Python
+/// with a callback pending. A no-op when `enabled` is false.
+///
+/// The excursion is banked only if Python comes back through [`park_end`]
+/// (a `resume_after_*` / `deadend_pending_callback`). If Python instead re-runs
+/// the loop without resuming, [`park_cancel`] discards the clock — driver-loop
+/// overhead between `run()` calls is not exploration-time Python work.
+#[inline]
+pub fn park_start(enabled: bool) {
+    if enabled {
+        PARK_START.with(|p| p.set(Some(Instant::now())));
+    }
+}
+
+/// Bank an in-flight park excursion as [`GilClass::Bounce`] work. Called on
+/// re-entry from the Python callback handler. A no-op when no park is armed.
+#[inline]
+pub fn park_end() {
+    if let Some(start) = PARK_START.with(std::cell::Cell::take) {
+        let elapsed = start.elapsed().as_nanos() as u64;
+        GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
+        CLASS_ACCUM_NS.with(|c| {
+            let mut split = c.get();
+            split[GilClass::Bounce as usize] += elapsed;
+            c.set(split);
+        });
+        // The excursion happens with the run loop's wall guard dropped, so the
+        // denominator must grow with the numerator or `gil <= wall` breaks.
+        WALL_ACCUM_NS.with(|w| w.set(w.get() + elapsed));
+    }
+}
+
+/// Discard an in-flight park excursion without banking it.
+#[inline]
+pub fn park_cancel() {
+    PARK_START.with(|p| p.set(None));
 }
 
 /// Cumulative GIL-work nanoseconds on this thread (the Amdahl numerator).
@@ -459,6 +518,56 @@ mod tests {
             0,
             "no unattributed callback GIL time"
         );
+    }
+
+    #[test]
+    fn park_excursion_banks_into_gil_and_wall() {
+        // The bounce runs with the run loop's wall guard dropped (Python owns
+        // the thread), so it must grow both accumulators (bd angr-gorvf.8).
+        reset();
+        {
+            let _w = RunLoopWallGuard::new(true);
+            busy_ns(50_000);
+        }
+        let (gil_before, wall_before) = (gil_work_ns(), run_wall_ns());
+        park_start(true);
+        busy_ns(200_000);
+        park_end();
+        let banked = gil_work_ns() - gil_before;
+        assert!(banked >= 150_000, "bounce undercounted: {banked} ns");
+        assert_eq!(gil_class_ns(GilClass::Bounce), banked);
+        assert_eq!(
+            run_wall_ns() - wall_before,
+            banked,
+            "wall must track bounce"
+        );
+        assert!(
+            gil_work_ns() <= run_wall_ns(),
+            "gil <= wall must still hold"
+        );
+        let total: u64 = GilClass::all().iter().map(|c| gil_class_ns(*c)).sum();
+        assert_eq!(
+            total,
+            gil_work_ns(),
+            "classes must still partition the total"
+        );
+    }
+
+    #[test]
+    fn park_cancel_and_disabled_park_bank_nothing() {
+        reset();
+        // A cancelled park (Python re-ran the loop instead of resuming).
+        park_start(true);
+        busy_ns(50_000);
+        park_cancel();
+        park_end();
+        assert_eq!(gil_work_ns(), 0, "cancelled park must not bank");
+        // Profiling off: park_start is a no-op, so park_end has nothing to bank.
+        park_start(false);
+        busy_ns(50_000);
+        park_end();
+        assert_eq!(gil_work_ns(), 0, "disabled park must not bank");
+        assert_eq!(run_wall_ns(), 0);
     }
 
     #[test]

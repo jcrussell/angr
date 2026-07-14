@@ -27,6 +27,7 @@ impl RustExplorationManager {
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
+        crate::gil_profile::park_end();
         let pending = self
             .pending_callbacks
             .remove(&StateId::new(state_id))
@@ -271,6 +272,7 @@ impl RustExplorationManager {
 
     /// Inner body of the pymethods-exposed `deadend_pending_callback`.
     pub(crate) fn _deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        crate::gil_profile::park_end();
         let pending = self
             .pending_callbacks
             .remove(&StateId::new(state_id))
@@ -313,6 +315,7 @@ impl RustExplorationManager {
 
     /// Inner body of the pymethods-exposed `resume_after_error`.
     pub(crate) fn _resume_after_error(&mut self, state_id: u64, error_msg: &str) -> PyResult<()> {
+        crate::gil_profile::park_end();
         let pending = self
             .pending_callbacks
             .remove(&StateId::new(state_id))
@@ -350,6 +353,7 @@ impl RustExplorationManager {
         true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
         false_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
+        crate::gil_profile::park_end();
         // true_constraints and false_constraints are accepted for API compatibility but
         // the branch condition is sourced from stored_conditions (set by interpreter).
         let _ = (true_constraints, false_constraints);
