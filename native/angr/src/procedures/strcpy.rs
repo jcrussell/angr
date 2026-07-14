@@ -3,16 +3,65 @@
 //! # Behavior
 //!
 //! - If any address is symbolic, falls back to Python
-//! - If any source byte is symbolic, falls back to Python
+//! - `strcpy` / `stpcpy`: a symbolic source byte falls back to Python
+//! - `strncpy`: a symbolic source byte is served natively (see
+//!   [`strncpy_symbolic`])
 //! - Maximum string length is 4096 bytes
 
+use super::mem_common::symbolic_size_conditional_store;
 use super::strings::{
-    scan_concrete_bounded, scan_concrete_until_null, write_concrete_bytes, write_cstr,
+    ScanOutcome, build_strlen_chain, scan_concrete_bounded, scan_concrete_until_null,
+    scan_for_null_symbolic, write_concrete_bytes, write_cstr,
 };
 use super::{ProcedureError, extract_concrete_arg};
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_STRLEN: usize = 4096;
+
+/// Serve `strncpy(dest, src, n)` when the source window holds a symbolic byte,
+/// mirroring angr's Python `strncpy` (`procedures/libc/strncpy.py`):
+///
+/// ```text
+/// cpy_size = ITE(ULT(n, strlen(src) + 1), n, strlen(src) + 1)
+/// memcpy(dest, src, cpy_size)
+/// ```
+///
+/// i.e. the copy length is the symbolic string length (plus its terminator),
+/// clamped to `n`; bytes of `dest` past that length keep their prior contents
+/// (Python does not zero-pad the tail, so neither do we here — unlike the
+/// all-concrete path above, which preserves its long-standing POSIX padding).
+///
+/// The conditional store itself reuses [`symbolic_size_conditional_store`],
+/// the same primitive memcpy/memset use for a symbolic length.
+fn strncpy_symbolic(
+    state: &mut RustSimState,
+    dest: u64,
+    src: u64,
+    n: u64,
+    bytes: &[(u64, RustBV)],
+) -> Result<(), ProcedureError> {
+    let arch_bits = state.arch().bits();
+
+    // strlen chain over the scanned window. `default_len = n` means "no null
+    // in the first n bytes" saturates the length at n, which makes
+    // `len + 1 > n` and clamps `cpy_size` back to n — copy the whole window.
+    let cpy_size = {
+        let ctx = state.solver().borrow();
+        let str_len = build_strlen_chain(bytes, arch_bits, n, &ctx);
+        let len_plus_1 = str_len.add(&RustBV::concrete(1u128, arch_bits), &ctx);
+        let n_bv = RustBV::concrete(n as u128, arch_bits);
+        n_bv.ult(&len_plus_1, &ctx).ite(&n_bv, &len_plus_1, &ctx)
+    };
+
+    // Pre-snapshot the source window before any store lands (dest may alias src).
+    let mut values = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        values.push(state.memory_load(src.wrapping_add(i), 1)?);
+    }
+
+    symbolic_size_conditional_store(state, dest, &cpy_size, n, &values)
+}
 
 crate::declare_proc! {
     /// Native strcpy implementation.
@@ -61,12 +110,32 @@ crate::declare_proc! {
         // Read up to n bytes from source, stopping early at null. Pre-null
         // bytes go in `buf` (null itself excluded); when null is found we
         // pad the rest of the n-byte window with zeros.
-        let (mut buf, null_found) = scan_concrete_bounded(state, src, n as usize, "src")?;
-        if null_found {
-            buf.resize(n as usize, 0);
+        //
+        // A symbolic byte in the window is served natively too: only then is
+        // the scan redone symbolically (the all-concrete path keeps its single
+        // pass) and the copy length becomes an ITE chain (angr-gorvf.13 —
+        // strncpy on a symbolic input buffer was the sole Python bounce on
+        // google2016_unbreakable_0 / securityfest_fairlight).
+        match scan_concrete_bounded(state, src, n as usize, "src") {
+            Ok((mut buf, null_found)) => {
+                if null_found {
+                    buf.resize(n as usize, 0);
+                }
+                write_concrete_bytes(state, dest, &buf)?;
+            }
+            Err(ProcedureError::SymbolicArgument(_)) => {
+                match scan_for_null_symbolic(state, src, n)? {
+                    ScanOutcome::Symbolic { bytes } => {
+                        strncpy_symbolic(state, dest, src, n, &bytes)?;
+                    }
+                    // Unreachable: the concrete scan just hit a symbolic byte.
+                    ScanOutcome::AllConcrete { .. } => {
+                        return Err(ProcedureError::SymbolicArgument("src".to_string()));
+                    }
+                }
+            }
+            Err(e) => return Err(e),
         }
-
-        write_concrete_bytes(state, dest, &buf)?;
 
         Ok(Some(dest_bv))
     }

@@ -349,3 +349,100 @@ fn test_strndup_registered() {
     let registry = crate::procedures::NativeProcedureRegistry::new();
     assert!(registry.has_native("strndup"));
 }
+
+// ---------- Symbolic-source strncpy (angr-gorvf.13) ----------
+
+/// Insert a fully-symbolic byte at `addr` on an already-mapped page.
+fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
+    let ctx = state.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, name, 8);
+    drop(ctx);
+    state.memory_store(addr, sym.clone()).unwrap();
+    sym
+}
+
+#[test]
+fn test_strncpy_symbolic_source_serves_natively() {
+    // src = ['a', ?, 'c', 0]; the symbolic byte used to bounce to Python.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a\x00c\x00", Permission::RWX);
+    let sym = place_symbolic_byte(&mut state, 0x1001, "src_1");
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    NativeStrncpy
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .expect("symbolic source byte must be served, not bounced");
+
+    // Position 0 is always inside the copy window, so it is 'a' under every
+    // model — though it stays an (unfolded) ITE, hence min==max rather than
+    // as_u64().
+    let b0 = state.memory_load(0x2000, 1).unwrap();
+    {
+        let ctx = state.solver().borrow();
+        assert_eq!(ctx.min(&b0, false), Some(b'a' as u128));
+        assert_eq!(ctx.max(&b0, false), Some(b'a' as u128));
+    }
+    // Position 1 carries the symbolic byte through.
+    let b1 = state.memory_load(0x2001, 1).unwrap();
+    assert!(b1.as_u64().is_none(), "expected symbolic byte at dest[1]");
+
+    // Constraining the symbolic byte to 'b' makes the whole 4-byte window
+    // resolve to "abc\0" — i.e. the ITE copy length picked strlen+1 == 4.
+    let eq = {
+        let ctx = state.solver().borrow();
+        sym.eq(&RustBV::concrete(b'b' as u128, 8), &ctx)
+    };
+    state.add_constraint(eq);
+    let ctx = state.solver().borrow();
+    for (i, &expected) in b"abc\x00".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(
+            ctx.eval(&byte),
+            Some(expected as u128),
+            "dest[{i}] under sym=='b'"
+        );
+    }
+}
+
+#[test]
+fn test_strncpy_symbolic_source_null_truncates_copy() {
+    // Same buffer, but constrain the symbolic byte to NUL: the copy length
+    // becomes strlen+1 == 2, so dest[2..] keeps its prior contents (0xFF).
+    // This mirrors Python strncpy = memcpy(dst, src, min(n, strlen+1)), which
+    // does not zero-pad the tail.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a\x00c\x00", Permission::RWX);
+    let sym = place_symbolic_byte(&mut state, 0x1001, "src_1");
+    state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
+
+    NativeStrncpy
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap();
+
+    let eq = {
+        let ctx = state.solver().borrow();
+        sym.eq(&RustBV::concrete(0u128, 8), &ctx)
+    };
+    state.add_constraint(eq);
+    let ctx = state.solver().borrow();
+    let b1 = state.memory_load(0x2001, 1).unwrap();
+    assert_eq!(ctx.eval(&b1), Some(0));
+    for i in 2..4u64 {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert_eq!(ctx.eval(&byte), Some(0xFF), "dest[{i}] must be untouched");
+    }
+}
