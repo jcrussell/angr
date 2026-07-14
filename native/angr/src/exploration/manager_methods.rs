@@ -2059,6 +2059,21 @@ impl RustExplorationManager {
         self._set_state_memory_concrete(state_id, addr, data)
     }
 
+    /// Like `set_state_memory_concrete`, but widens the state's lazy region to
+    /// cover the target page so a store to an otherwise-unmapped address
+    /// auto-maps instead of erroring `Unmapped` (angr-ijwp0). Used by
+    /// `RustMemoryProxy.store` to mirror angr's map-on-write memory when
+    /// STRICT_PAGE_ACCESS is off.
+    /// See `state_api::_set_state_memory_concrete_automap` for the body.
+    pub fn set_state_memory_concrete_automap(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self._set_state_memory_concrete_automap(state_id, addr, data)
+    }
+
     /// Set memory on a state from a claripy AST (angr-j28e write-through).
     /// Used when the value is symbolic (e.g., a BVS or expression). The
     /// address is concrete; symbolic addresses are not supported on the

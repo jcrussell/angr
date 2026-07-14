@@ -785,6 +785,30 @@ impl RustExplorationManager {
         })
     }
 
+    /// Like `_set_state_memory_concrete`, but first registers the target
+    /// page(s) as a lazy region so a store to an address outside every
+    /// pre-existing lazy region auto-maps instead of erroring `Unmapped`
+    /// (angr-ijwp0). The AST counterpart is `_set_state_memory_ast_automap`;
+    /// the same rationale applies — angr's `DefaultMemory` maps a page on
+    /// demand for any write when STRICT_PAGE_ACCESS is off, so the
+    /// callback-memory proxy must be able to do the same or the write is
+    /// silently lost.
+    pub(crate) fn _set_state_memory_concrete_automap(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.add_memory_lazy_region(addr, (data.len() as u64).max(1));
+            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+                state
+                    .memory_store(chunk_addr, bv)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+        })
+    }
+
     /// Concrete-address symbolic-value memory store on `state_id`
     /// (angr-j28e write-through). The value is supplied as a claripy AST;
     /// routes through `claripy_to_rustbv` so the symbol is registered in

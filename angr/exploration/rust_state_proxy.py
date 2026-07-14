@@ -1509,7 +1509,7 @@ class RustMemoryProxy:
                 payload = value.to_bytes(nbytes, byteorder)
                 if self._python_mgr is not None:
                     self._python_mgr._stats_proxy_mem_concrete_writes += 1
-                self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+                self._store_concrete(addr, payload)
                 return
             # Symbolic AST — route through the AST FFI so the symbol is
             # registered in the shared cache. Endianness on a symbolic AST
@@ -1517,7 +1517,7 @@ class RustMemoryProxy:
             # endianness flag); we forward verbatim.
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_ast_writes += 1
-            self._mgr.set_state_memory_ast(self._state_id, addr, data)
+            self._store_ast(addr, data)
             return
 
         if isinstance(data, (bytes, bytearray)):
@@ -1526,7 +1526,7 @@ class RustMemoryProxy:
                 payload = payload[::-1]
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_concrete_writes += 1
-            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+            self._store_concrete(addr, payload)
             return
 
         if isinstance(data, int):
@@ -1541,10 +1541,59 @@ class RustMemoryProxy:
             payload = data.to_bytes(size, byteorder)
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_concrete_writes += 1
-            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+            self._store_concrete(addr, payload)
             return
 
         raise TypeError(f"memory store expects claripy AST, int, or bytes; got {type(data).__name__}")
+
+    def _store_concrete(self, addr, payload):
+        """``set_state_memory_concrete`` with angr's unmapped-write semantics."""
+        try:
+            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+        except ValueError as exc:
+            if not self._is_unmapped_store(addr, exc):
+                raise
+            self._mgr.set_state_memory_concrete_automap(self._state_id, addr, payload)
+
+    def _store_ast(self, addr, ast):
+        """``set_state_memory_ast`` with angr's unmapped-write semantics."""
+        try:
+            self._mgr.set_state_memory_ast(self._state_id, addr, ast)
+        except ValueError as exc:
+            if not self._is_unmapped_store(addr, exc):
+                raise
+            self._mgr.set_state_memory_ast_automap(self._state_id, addr, ast)
+
+    def _is_unmapped_store(self, addr, exc):
+        """Classify a failed Rust store; True means "retry with auto-map".
+
+        Rust's ``memory_store`` errors ``Unmapped`` for a page outside every
+        lazy region, which under the callback-memory-proxy gate is the *only*
+        memory a SimProcedure sees — so the bare ``ValueError`` escaped into
+        ``proc.execute()`` and errored the state (angr-ijwp0: it timed out
+        ``unmapped_analysis``, whose whole point is a strncpy through a garbage
+        pointer). Reproduce what angr's ``DefaultMemory`` would have done:
+
+        * STRICT_PAGE_ACCESS set → raise ``SimSegfaultException`` so the state
+          lands in ``errored`` with the segfault angr users match on, not an
+          opaque FFI ``ValueError``.
+        * otherwise → the page maps on demand, so tell the caller to retry
+          through the auto-map setter.
+        """
+        if "unmapped memory" not in str(exc):
+            return False
+        from angr import sim_options
+        from angr.errors import SimSegfaultException
+
+        if sim_options.STRICT_PAGE_ACCESS in self._state_options():
+            raise SimSegfaultException(addr, "write-miss") from exc
+        return True
+
+    def _state_options(self):
+        """State options for this state_id (empty when there is no manager)."""
+        if self._python_mgr is not None:
+            return self._python_mgr.get_state_options_py(self._state_id)
+        return set()
 
     def _data_to_ast(self, data, size, endness):
         """Coerce ``data`` to a claripy AST, applying endness for concrete
