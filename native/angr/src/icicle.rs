@@ -1,5 +1,3 @@
-#![allow(clippy::declare_interior_mutable_const)] // FIXME: https://github.com/PyO3/pyo3/issues/5768
-
 /// Icicle bindings
 ///
 /// This module provides Python bindings for the Icicle emulator, allowing
