@@ -103,7 +103,7 @@ use crossbeam_deque::{Injector, Steal};
 use lru::LruCache;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -312,6 +312,14 @@ pub(crate) struct SchedulerCounters {
     width_hist: [AtomicUsize; 5],
     /// Peak `pending` observed at dispatch — the parallel `max_active_width`.
     max_width: AtomicUsize,
+    /// Nanoseconds all workers spent inside Z3 migration serde — every
+    /// `detach_for_migration` and every `reattach` on the steal path. Paired with
+    /// [`Self::step_ns`] to form the serde budget that gates Trigger A offloads
+    /// (`worker::offload_is_affordable`, angr-8shhe).
+    pub(crate) serde_ns: AtomicU64,
+    /// Nanoseconds all workers spent inside the step function itself — the useful
+    /// work the serde is a tax on.
+    pub(crate) step_ns: AtomicU64,
 }
 
 /// Per-worker dispatch slots tracked by [`SchedulerCounters::worker_dispatches`].
@@ -379,6 +387,13 @@ impl SchedulerCounters {
 pub struct SchedulerStats {
     /// Initial payloads handed to [`ParallelScheduler::run_instrumented`].
     pub seeds: usize,
+    /// Nanoseconds all workers spent in Z3 migration serde (detach + reattach),
+    /// and in the step function itself. The pair is the serde budget that gates
+    /// Trigger A offloads (`worker::offload_is_affordable`); surfaced here so a
+    /// migration-dominated frontier is diagnosable from the wave log rather than
+    /// from a flamegraph (angr-faorh/8shhe).
+    pub serde_ns: u64,
+    pub step_ns: u64,
     /// Tasks dispatched from a worker's local live queue (zero serde).
     pub local_dispatches: usize,
     /// Tasks pulled from the injector (each paid one `reattach`). Includes the
@@ -456,6 +471,8 @@ impl SchedulerStats {
 fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats {
     SchedulerStats {
         seeds,
+        serde_ns: counters.serde_ns.load(Ordering::SeqCst),
+        step_ns: counters.step_ns.load(Ordering::SeqCst),
         local_dispatches: counters.local_dispatches.load(Ordering::SeqCst),
         injector_dispatches: counters.injector_dispatches.load(Ordering::SeqCst),
         surplus_offloaded: counters.surplus_offloaded.load(Ordering::SeqCst),

@@ -807,6 +807,15 @@ impl RustExplorationManager {
             self.parallel_resume_reinjects += stats.resume_reinjects as u64;
             self.parallel_post_cancel_steps += stats.post_cancel_steps as u64;
             self.parallel_residual_drains += stats.residual_drains as u64;
+            log::debug!(
+                "wave: seeds={} dispatches={} offloaded={} terminals={} serde_ms={:.1} step_ms={:.1}",
+                stats.seeds,
+                stats.dispatches(),
+                stats.surplus_offloaded,
+                stats.materialized_terminals,
+                stats.serde_ns as f64 / 1e6,
+                stats.step_ns as f64 / 1e6,
+            );
             self.fold_scheduler_dispatch_stats(&stats);
             dispatched_total += stats.dispatches() as u64;
             self.apply_uniqueness_filter();

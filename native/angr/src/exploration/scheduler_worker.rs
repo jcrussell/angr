@@ -12,6 +12,7 @@
 //! module for the transport invariant and panic-policy rationale.
 
 use super::*;
+use std::time::Instant;
 
 /// The per-worker loop: dispatch a live local state (or steal+reattach one),
 /// process it, push live successors locally, shed surplus on imbalance, and
@@ -64,7 +65,11 @@ pub(super) fn worker_loop(
             None => return,
         };
 
+        let step_start = Instant::now();
         let outcome = (job.process)(state, &t.cancel, block_cache);
+        t.counters
+            .step_ns
+            .fetch_add(step_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
         // `worker_session_loop`. The step's products are drained back on the next
@@ -81,7 +86,7 @@ pub(super) fn worker_loop(
         if !outcome.terminal_states.is_empty() {
             let mut guard = job.results.lock().expect("results mutex poisoned");
             for terminal in outcome.terminal_states {
-                guard.push(terminal.detach_for_migration());
+                guard.push(detach_timed(terminal, &t.counters));
                 t.counters
                     .materialized_terminals
                     .fetch_add(1, Ordering::SeqCst);
@@ -175,7 +180,11 @@ pub(super) fn worker_session_loop(
             }
         };
 
+        let step_start = Instant::now();
         let outcome = (session.process)(state, &t.cancel, block_cache);
+        t.counters
+            .step_ns
+            .fetch_add(step_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // Post-find speculative-waste accounting (angr-1ilq.8): the top-of-loop
         // guard means we only reach here with `cancel` unset at dispatch time,
@@ -194,7 +203,7 @@ pub(super) fn worker_session_loop(
         // being stepped. Detached HERE (correct context), exactly like the wave
         // loop's results push.
         for terminal in outcome.terminal_states {
-            let payload = terminal.detach_for_migration();
+            let payload = detach_timed(terminal, &t.counters);
             t.counters
                 .materialized_terminals
                 .fetch_add(1, Ordering::SeqCst);
@@ -233,7 +242,7 @@ fn drain_local_with(
     let n = local.len();
     for state in local.drain(..) {
         t.counters.residual_drains.fetch_add(1, Ordering::SeqCst);
-        sink(state.detach_for_migration());
+        sink(detach_timed(state, &t.counters));
     }
     t.pending.fetch_sub(n, Ordering::SeqCst);
 }
@@ -289,8 +298,15 @@ pub(super) fn dispatch_next(
                             .fetch_add(1, Ordering::SeqCst);
                         // Rebuild the state in THIS worker's context. The ptr-eq
                         // guard inside `reattach` holds because `ctx` is exactly this
-                        // thread's thread-local.
-                        match payload.reattach(ctx) {
+                        // thread's thread-local. Charged to the serde budget: it is
+                        // the other half of the migration `detach_timed` opened.
+                        let reattach_start = Instant::now();
+                        let reattached = payload.reattach(ctx);
+                        t.counters.serde_ns.fetch_add(
+                            reattach_start.elapsed().as_nanos() as u64,
+                            Ordering::Relaxed,
+                        );
+                        match reattached {
                             Ok(state) => {
                                 // Observability only (angr-vh834 Phase 1): count every
                                 // injector-steal reattach. No routing change.
@@ -339,11 +355,20 @@ pub(super) fn absorb_continues(
 /// each into a `Send` payload. Two triggers:
 ///
 /// * **A — idle-gated (primary):** if any sibling is currently starving
-///   (`idle_workers > 0`) and we hold a backlog (`len >= 2`), offload up to half
-///   the backlog (hysteresis, never below one local state) so the starving
-///   sibling has work to steal. This mirrors the `record_migration_sample`
-///   imbalance model (helpers.rs) so the measured steal fraction lines up with
-///   the gate's `f_model`.
+///   (`idle_workers > 0`) and we hold a backlog (`len >= 2`), offload ONE state
+///   per starving sibling (never below one local state) so each starving sibling
+///   has work to steal. This mirrors the `record_migration_sample` imbalance
+///   model (helpers.rs), which likewise counts ONE steal per dispatch event, so
+///   the measured steal fraction lines up with the gate's `f_model`.
+///
+///   It used to shed HALF the backlog per production event, which is what made
+///   CADET_00001_partial collapse ~19x at `W=2` (angr-faorh): a chronically
+///   imbalanced divergent frontier round-tripped a large fraction of the growing
+///   frontier through full Z3 detach/reattach serde, and serde swamped compute.
+///   One-per-idle-sibling is the smallest offload that still un-starves everyone
+///   — a woken sibling immediately forks its own children into its own local
+///   queue and becomes self-sufficient, so the extra states the halving shed were
+///   pure serde cost (angr-8shhe).
 /// * **B — high-water cap (safety):** if the local queue exceeds [`LOCAL_HWM`],
 ///   shed down to `HWM/2` regardless of idle siblings, bounding per-worker
 ///   memory. Rarely fires on a narrow frontier.
@@ -357,31 +382,79 @@ pub(super) fn offload_surplus(
     counters: &SchedulerCounters,
 ) {
     // Trigger A: idle-gated load sharing. Offload the COLDEST states (front),
-    // keeping our hot tail; at most half per production event for hysteresis.
-    if idle_workers.load(Ordering::SeqCst) > 0 && local.len() >= 2 {
-        let to_offload = local.len() / 2;
+    // keeping our hot tail; at most one state per starving sibling, so the volume
+    // of Z3 serde is bounded by the idle count and not by the frontier width.
+    let idle = idle_workers.load(Ordering::SeqCst);
+    if idle > 0 && local.len() >= 2 && offload_is_affordable(counters) {
+        let to_offload = idle.min(local.len() - 1);
         for _ in 0..to_offload {
             if local.len() <= 1 {
                 break;
             }
             if let Some(state) = local.pop_front() {
-                injector.push(state.detach_for_migration());
+                injector.push(detach_timed(state, counters));
                 counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
 
-    // Trigger B: hard memory cap.
+    // Trigger B: hard memory cap. NOT budget-gated — it bounds per-worker memory,
+    // so it must fire even when serde has blown its budget.
     if local.len() > LOCAL_HWM {
         while local.len() > LOCAL_HWM / 2 {
             if let Some(state) = local.pop_front() {
-                injector.push(state.detach_for_migration());
+                injector.push(detach_timed(state, counters));
                 counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
             } else {
                 break;
             }
         }
     }
+}
+
+/// Serde budget: migration serde may consume at most `1 / SERDE_BUDGET_DIVISOR`
+/// of the useful stepping time all workers have logged so far.
+///
+/// Both halves of a migration (`detach_for_migration` + `reattach`) are a full Z3
+/// AST round-trip through SMT-LIB2, whose cost scales with the state's constraint
+/// set — while a step's cost does not. So there is no fixed offload rate that is
+/// right for every workload: on a solve-heavy frontier (`fork_solve_trap`) a
+/// migration is cheap next to the solve it unblocks, and on a fat-constraint
+/// divergent frontier (`CADET_00001_partial`, angr-faorh) it costs an order of
+/// magnitude MORE than the step it hands off. Measuring the two and shutting
+/// Trigger A off once serde stops paying for itself is what makes one policy fit
+/// both, and it is self-tuning — no per-bench constant to hand-fit (angr-8shhe).
+const SERDE_BUDGET_DIVISOR: u64 = 4;
+
+/// Whether a Trigger A offload is still worth its Z3 serde cost — i.e. whether
+/// accumulated serde is still within [`SERDE_BUDGET_DIVISOR`] of accumulated step
+/// time. Both counters start at 0, so the first migrations are always allowed:
+/// the budget can only be judged once there is something to measure.
+///
+/// This is deliberately a POOL-WIDE, monotone check, not a per-state estimate. A
+/// worker cannot know what a migration will cost before paying for it, and once a
+/// frontier is established as migration-dominated it stays that way — so the
+/// cheap, sticky answer is the right one. Trigger B (the memory cap) ignores it.
+fn offload_is_affordable(counters: &SchedulerCounters) -> bool {
+    let serde = counters.serde_ns.load(Ordering::Relaxed);
+    let step = counters.step_ns.load(Ordering::Relaxed);
+    serde.saturating_mul(SERDE_BUDGET_DIVISOR) <= step
+}
+
+/// `detach_for_migration`, with the Z3-serde cost charged to the pool's serde
+/// budget. Every continue-path detach goes through here so the budget sees the
+/// whole tax (terminal detaches are unavoidable — they must cross the join — so
+/// they are charged but never gated).
+pub(super) fn detach_timed(
+    state: RustSimState,
+    counters: &SchedulerCounters,
+) -> StateMigrationPayload {
+    let t0 = Instant::now();
+    let payload = state.detach_for_migration();
+    counters
+        .serde_ns
+        .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    payload
 }
 
 /// Pull one payload from the shared injector, blocking (cooperative yield) while
