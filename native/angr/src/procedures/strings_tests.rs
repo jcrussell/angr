@@ -120,3 +120,43 @@ fn test_build_strlen_chain_concrete() {
     let result = build_strlen_chain(&bytes, 64, 4096, &ctx);
     assert_eq!(result.as_u64(), Some(1));
 }
+
+#[test]
+fn test_null_exists_constraint_trivially_true_with_concrete_null() {
+    let state = RustSimState::new("amd64").unwrap();
+    let ctx = state.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "b0", 8);
+    let bytes = vec![(0u64, sym), (1u64, RustBV::concrete(0u128, 8))];
+    // A concrete null in the window already proves termination.
+    assert!(null_exists_constraint(&bytes, &ctx).is_none());
+}
+
+#[test]
+fn test_null_exists_constraint_none_when_all_concrete_nonnull() {
+    let state = RustSimState::new("amd64").unwrap();
+    let ctx = state.solver().borrow();
+    let bytes = vec![
+        (0u64, RustBV::concrete(b'a' as u128, 8)),
+        (1u64, RustBV::concrete(b'b' as u128, 8)),
+    ];
+    // No symbolic byte can be null -> the assertion would be trivially false
+    // and would wrongly kill the state; the helper declines instead.
+    assert!(null_exists_constraint(&bytes, &ctx).is_none());
+}
+
+#[test]
+fn test_null_exists_constraint_prunes_unterminated_symbolic_window() {
+    let state = RustSimState::new("amd64").unwrap();
+    let ctx = state.solver().borrow();
+    let b0 = RustBV::symbolic(&ctx, "s0", 8);
+    let b1 = RustBV::symbolic(&ctx, "s1", 8);
+    let bytes = vec![(0u64, b0.clone()), (1u64, b1.clone())];
+    let cons = null_exists_constraint(&bytes, &ctx).expect("expected a constraint");
+    ctx.assume_true(&cons);
+    assert!(ctx.is_sat());
+    // With both bytes forced non-null the window has no terminator: unsat.
+    let nonnull = RustBV::concrete(b'x' as u128, 8);
+    ctx.assume_true(&b0.eq(&nonnull, &ctx));
+    ctx.assume_true(&b1.eq(&nonnull, &ctx));
+    assert!(!ctx.is_sat());
+}

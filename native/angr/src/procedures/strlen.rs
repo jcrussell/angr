@@ -17,7 +17,9 @@
 //! - Maximum string length is 4096 bytes (configurable).
 
 use super::ProcedureError;
-use super::strings::{ScanOutcome, build_strlen_chain, scan_for_null_symbolic};
+use super::strings::{
+    ScanOutcome, build_strlen_chain, null_exists_constraint, scan_for_null_symbolic,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -26,11 +28,14 @@ const MAX_STRLEN: usize = 4096;
 
 /// Shared scan for strlen / strnlen. `max_scan` is the upper bound on the
 /// number of positions inspected (MAX_STRLEN for strlen, min(maxlen, MAX) for
-/// strnlen). Returns Ok(Some(length_bv)) on success.
+/// strnlen). `require_null` asserts a terminator exists in the window (strlen
+/// only — strnlen legitimately saturates at `maxlen`). Returns
+/// Ok(Some(length_bv)) on success.
 fn scan_for_null(
     state: &mut RustSimState,
     addr: u64,
     max_scan: u64,
+    require_null: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let arch_bits = state.arch().bits();
     if max_scan == 0 {
@@ -49,8 +54,20 @@ fn scan_for_null(
             Ok(Some(RustBV::concrete(length as u128, arch_bits)))
         }
         ScanOutcome::Symbolic { bytes } => {
-            let ctx = state.solver().borrow();
-            Ok(Some(build_strlen_chain(&bytes, arch_bits, max_scan, &ctx)))
+            let (chain, pruning) = {
+                let ctx = state.solver().borrow();
+                let chain = build_strlen_chain(&bytes, arch_bits, max_scan, &ctx);
+                let pruning = if require_null {
+                    null_exists_constraint(&bytes, &ctx)
+                } else {
+                    None
+                };
+                (chain, pruning)
+            };
+            if let Some(c) = pruning {
+                state.add_constraint(c);
+            }
+            Ok(Some(chain))
         }
     }
 }
@@ -63,7 +80,7 @@ crate::declare_proc! {
     struct = NativeStrlen,
     args = [addr: concrete],
     call |state| {
-        scan_for_null(state, addr, MAX_STRLEN as u64)
+        scan_for_null(state, addr, MAX_STRLEN as u64, /*require_null=*/true)
     }
 }
 
@@ -78,7 +95,7 @@ crate::declare_proc! {
         if maxlen > MAX_STRLEN as u64 {
             return Err(ProcedureError::MaxIterations(maxlen as usize));
         }
-        scan_for_null(state, s, maxlen)
+        scan_for_null(state, s, maxlen, /*require_null=*/false)
     }
 }
 

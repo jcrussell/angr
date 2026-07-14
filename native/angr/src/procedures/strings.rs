@@ -302,6 +302,48 @@ pub fn build_strlen_chain(
     result
 }
 
+/// Constraint asserting that a null terminator exists somewhere in the
+/// scanned window, given the `(position, byte)` pairs collected by
+/// [`scan_for_null_symbolic`] (or the s1 side of a strcmp scan).
+///
+/// This is the pruning step angr's Python string procedures get for free from
+/// `state.memory.find`, which asserts that the searched-for byte is actually
+/// present within `max_str_len` (`procedures/libc/strlen.py`). Without it the
+/// native ITE chains leave "the string has no terminator in the window"
+/// satisfiable, so a fully-symbolic buffer keeps every downstream comparison
+/// branch feasible and exploration fork-storms where Python deadends
+/// (angr-sgcye).
+///
+/// Returns `None` — i.e. no constraint needed — when the window already
+/// contains a concretely-null byte (the assertion would be trivially true) or
+/// when no collected byte is symbolic (the assertion would be trivially false
+/// and would wrongly kill the state).
+///
+/// **Only sound when the window is the procedure's own MAX bound**, not a
+/// caller-supplied one: `strncmp(a, b, 4)` may legitimately compare four
+/// non-null bytes, so bounded variants (strnlen/strncmp with `n < MAX`) must
+/// not apply this.
+pub fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {
+    let zero_byte = RustBV::concrete(0u128, 8);
+    let mut disjunction: Option<RustBV> = None;
+    for (_, byte) in bytes {
+        match byte.as_u64() {
+            // Concrete null in the window: a terminator provably exists.
+            Some(0) => return None,
+            // Concrete non-null: a false disjunct, contributes nothing.
+            Some(_) => continue,
+            None => {
+                let is_null = byte.eq(&zero_byte, ctx);
+                disjunction = Some(match disjunction {
+                    Some(d) => d.or(&is_null, ctx),
+                    None => is_null,
+                });
+            }
+        }
+    }
+    disjunction
+}
+
 #[cfg(test)]
 #[path = "strings_tests.rs"]
 mod tests;

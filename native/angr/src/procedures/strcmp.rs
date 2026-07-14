@@ -18,7 +18,9 @@
 //! - Maximum compare length is 4096 bytes (configurable).
 
 use super::ProcedureError;
-use super::strings::{ConcreteStep, ScanResult, scan_concrete_then_collect};
+use super::strings::{
+    ConcreteStep, ScanResult, null_exists_constraint, scan_concrete_then_collect,
+};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -135,10 +137,31 @@ pub(super) fn compare_bytes(
             RustBV::zero(32)
         }
         ScanResult::Collected(collected) => {
+            // Only the unbounded compares (strcmp/strcasecmp, or strncmp with
+            // n >= MAX) may assert that s1 is terminated inside the window: a
+            // caller-bounded strncmp(a, b, 4) can legitimately compare four
+            // non-null bytes. See strings::null_exists_constraint (angr-sgcye).
+            let require_null = stop_at_null && max_len >= MAX_STRCMP_LEN as u64;
+            let s1_bytes: Vec<(u64, RustBV)> = collected
+                .iter()
+                .map(|(i, (c1, _))| (*i, c1.clone()))
+                .collect();
             let pairs: Vec<(RustBV, RustBV)> =
                 collected.into_iter().map(|(_, pair)| pair).collect();
-            let ctx = state.solver().borrow();
-            build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx)
+            let (chain, pruning) = {
+                let ctx = state.solver().borrow();
+                let chain = build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx);
+                let pruning = if require_null {
+                    null_exists_constraint(&s1_bytes, &ctx)
+                } else {
+                    None
+                };
+                (chain, pruning)
+            };
+            if let Some(c) = pruning {
+                state.add_constraint(c);
+            }
+            chain
         }
     }))
 }
