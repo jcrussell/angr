@@ -2592,8 +2592,15 @@ class RustExplorationManager(
             try:
                 data = state.memory.load(page_addr, 4096, endness="Iend_LE")
                 if getattr(data, "symbolic", False):
-                    concrete = state.solver.eval(data).to_bytes(4096, "little")
-                    results.append((concrete, 7, False))
+                    # angr-gorvf.4.3: a symbolic page is DECLINED (is_mapped=False)
+                    # — Rust keeps serving it through the per-load memory_load
+                    # callback, which preserves the AST. Concretizing it here was
+                    # pure waste: a `solver.eval` of a 32768-bit symbolic AST (a
+                    # full Z3 solve; 745ms of the 788ms callback GIL on
+                    # google2016_unbreakable_1) whose result was then thrown away
+                    # by `fetch_pages_batch`, which skips every !is_mapped entry.
+                    # `_cb_fetch_page` already declined without evaluating.
+                    results.append((bytes(4096), 0, False))
                 else:
                     concrete = state.solver.eval(data).to_bytes(4096, "little")
                     results.append((concrete, 7, True))
