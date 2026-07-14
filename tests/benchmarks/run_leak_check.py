@@ -40,6 +40,12 @@ DEFAULT_ITERS = 10
 # share Z3+claripy caches and grow only modestly. 1.5x leaves comfortable
 # headroom for normal cache warmup while still flagging a >=2x regression
 # with margin. Tune via --threshold when adding new Callable-heavy benches.
+#
+# Re-measured on the *Rust* engine once the engine swap was actually installed
+# (angr-pm8ha; before that this gate silently measured Python): mma_howtouse
+# N=10 grows 285 MB -> 301 MB, ratio 1.054 (~1.7 MB/iter, 450 Callable-built
+# RustExplorationManagers). Same order as the Python-engine number the 1.5x was
+# tuned on, so the threshold carries over unchanged.
 DEFAULT_THRESHOLD = 1.5
 DEFAULT_MEM_LIMIT_MB = 4096
 DEFAULT_TIMEOUT_SEC = 600
@@ -47,7 +53,7 @@ DEFAULT_TIMEOUT_SEC = 600
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
 
-def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir):
+def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine):
     """Run ``solve.main()`` for ``example_name`` ``iters`` times in this
     process; return ``{"ok": bool, "per_iter_rss_kb": [...], "per_iter_wall_s": [...]}``.
 
@@ -80,6 +86,27 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir):
         sys.path.insert(0, example_dir)
 
     import angr  # noqa: F401 — make sure the editable install is reachable
+
+    # The bench builds its managers through project.factory.simulation_manager,
+    # which yields a *Python* SimulationManager. Without the engine swap this
+    # gate would measure the Python engine's RSS growth, not the Rust engine's
+    # (angr-pm8ha) — the Callable/cache leaks it exists to catch are Rust-side.
+    bench_dir = os.path.dirname(os.path.abspath(__file__))
+    if bench_dir not in sys.path:
+        sys.path.insert(0, bench_dir)
+
+    managers_built = 0
+    if engine == "rust":
+        from engine_patch import install_rust_engine_patch
+
+        from angr.exploration import RustExplorationManager
+
+        def _make_rust_manager(project, states):
+            nonlocal managers_built
+            managers_built += 1
+            return RustExplorationManager(project, states)
+
+        install_rust_engine_patch(_make_rust_manager)
 
     spec = importlib.util.spec_from_file_location("solve_mod", solve_script)
     module = importlib.util.module_from_spec(spec)
@@ -117,10 +144,23 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir):
         # which is exactly the signal we want for "did peak grow?".
         per_iter_rss_kb.append(_res.getrusage(_res.RUSAGE_SELF).ru_maxrss)
 
+    if engine == "rust" and managers_built == 0:
+        # Guards the whole point of the gate: a bench whose managers never
+        # reach Rust (e.g. an exclusion in engine_patch swallows them) would
+        # otherwise report a healthy Python-engine RSS series.
+        return {
+            "ok": False,
+            "error": "no RustExplorationManager was built — the bench ran on the Python engine",
+            "per_iter_rss_kb": per_iter_rss_kb,
+            "per_iter_wall_s": per_iter_wall_s,
+            "managers_built": 0,
+        }
+
     return {
         "ok": True,
         "per_iter_rss_kb": per_iter_rss_kb,
         "per_iter_wall_s": per_iter_wall_s,
+        "managers_built": managers_built,
     }
 
 
@@ -131,6 +171,7 @@ def run_leak_check(
     mem_limit_mb: int,
     timeout_sec: int,
     examples_dir: str,
+    engine: str = "rust",
 ):
     """Drive the leak check in an isolated subprocess. Returns a result dict."""
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
@@ -146,7 +187,7 @@ def run_leak_check(
     try:
         async_result = pool.apply_async(
             _run_iters_in_child,
-            (example_name, iters, mem_limit_mb, examples_dir),
+            (example_name, iters, mem_limit_mb, examples_dir, engine),
         )
         child_result = async_result.get(timeout=timeout_sec)
     except multiprocessing.TimeoutError:
@@ -172,6 +213,7 @@ def run_leak_check(
             **child_result,
             "exit_code": 1,
             "example": example_name,
+            "engine": engine,
             "iters": iters,
             "threshold": threshold,
         }
@@ -187,6 +229,8 @@ def run_leak_check(
         "ok": not leaked,
         "exit_code": 1 if leaked else 0,
         "example": example_name,
+        "engine": engine,
+        "managers_built": child_result.get("managers_built"),
         "iters": iters,
         "threshold": threshold,
         "ratio": ratio,
@@ -205,7 +249,11 @@ def _print_human(result: dict) -> None:
                 print(f"  iter {i:>2}: peak_rss_kb={kb}", file=sys.stderr)
         return
 
-    print(f"example={result['example']} iters={result['iters']} threshold={result['threshold']:.2f}x")
+    print(
+        f"example={result['example']} engine={result.get('engine')} "
+        f"managers_built={result.get('managers_built')} "
+        f"iters={result['iters']} threshold={result['threshold']:.2f}x"
+    )
     for i, (kb, sec) in enumerate(zip(result["per_iter_rss_kb"], result["per_iter_wall_s"]), start=1):
         print(f"  iter {i:>2}: peak_rss_kb={kb:>10} wall={sec:.2f}s")
     print(
@@ -227,6 +275,12 @@ def main() -> int:
         "--example",
         default=DEFAULT_EXAMPLE,
         help=f"example name under ANGR_EXAMPLES_DIR (default: {DEFAULT_EXAMPLE})",
+    )
+    parser.add_argument(
+        "--engine",
+        default="rust",
+        choices=("rust", "python"),
+        help="engine to measure (default: rust — the engine this gate exists for)",
     )
     parser.add_argument(
         "--iters",
@@ -271,6 +325,7 @@ def main() -> int:
         mem_limit_mb=args.mem_limit,
         timeout_sec=args.timeout,
         examples_dir=args.examples_dir,
+        engine=args.engine,
     )
 
     if args.json:

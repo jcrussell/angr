@@ -259,6 +259,7 @@ def _run_in_child(
     snapshots: list = []
     original_sm = None
     original_simgr = None
+    restore_engine_patch = None
 
     # Import shared utility from the benchmarks directory (early so diff_state is available)
     _bench_dir = os.path.dirname(os.path.abspath(__file__))
@@ -270,49 +271,14 @@ def _run_in_child(
         from diff_state import install_snapshotter
 
     if engine == "rust":
+        from engine_patch import install_rust_engine_patch
+
         from angr.exploration import RustExplorationManager
 
-        original_sm = angr.factory.AngrObjectFactory.simulation_manager
-        original_simgr = angr.factory.AngrObjectFactory.simgr
-
-        def patched_simulation_manager(factory_self, thing=None, **kwargs):
+        def _make_rust_manager(project, states):
             nonlocal rust_mgr_instance
-            # Don't intercept calls from angr internals (CFG, analyses, etc.)
-            import traceback
-
-            caller_frames = traceback.extract_stack()
-            for frame in caller_frames[:-1]:
-                # simos: angr resolves IFUNC / IRELATIVE relocations at load
-                # time by *executing* the resolver through a Callable, which
-                # builds an internal simulation manager. Those resolver states
-                # carry SimOptions (including SYMBOL_FILL_UNCONSTRAINED_REGISTERS)
-                # that the Rust manager rejects — so a static glibc binary
-                # (busybox) would fail to even load. The exclusion is scoped to
-                # /angr/simos/ rather than /angr/callable.py so that a Callable
-                # a *bench* builds (mma_howtouse, flareon2015_10) still runs on
-                # the Rust engine — otherwise those benches measure the Python
-                # engine under --engine rust (angr-zbpw0).
-                if (
-                    "/angr/analyses/" in frame.filename
-                    or "/angr/exploration_techniques/" in frame.filename
-                    or "/angr/simos/" in frame.filename
-                ):
-                    return original_sm(factory_self, thing, **kwargs)
-            # Callable.perform_call() passes techniques=[]; RustExplorationManager
-            # does not accept it. A non-empty list has no Rust equivalent, so fall
-            # back to Python rather than silently dropping the techniques.
-            techniques = kwargs.pop("techniques", None)
-            if techniques:
-                kwargs["techniques"] = techniques
-                return original_sm(factory_self, thing, **kwargs)
-            if thing is None:
-                states = [factory_self.entry_state()]
-            elif isinstance(thing, (list, tuple)):
-                states = list(thing)
-            else:
-                states = [thing]
             rust_mgr_instance = RustExplorationManager(
-                factory_self.project,
+                project,
                 states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
                 deterministic=deterministic,
@@ -331,8 +297,7 @@ def _run_in_child(
                 )
             return rust_mgr_instance
 
-        angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
-        angr.factory.AngrObjectFactory.simgr = patched_simulation_manager
+        restore_engine_patch = install_rust_engine_patch(_make_rust_manager)
     elif diff_state:
         # For the python engine we still need to install the snapshotter on
         # the SimulationManager that solve.py builds.
@@ -536,7 +501,9 @@ def _run_in_child(
         }
 
     finally:
-        if original_sm is not None:
+        if restore_engine_patch is not None:
+            restore_engine_patch()
+        elif original_sm is not None:
             angr.factory.AngrObjectFactory.simulation_manager = original_sm
             angr.factory.AngrObjectFactory.simgr = original_simgr
 

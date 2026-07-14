@@ -246,9 +246,14 @@ python tests/benchmarks/run_leak_check.py --iters 3 --threshold 1.3
 python tests/benchmarks/run_leak_check.py --example flareon2015_10 --json
 ```
 
+The harness installs the same engine-swap monkeypatch `run_single.py` uses
+(shared in `tests/benchmarks/engine_patch.py`), so the bench's Callables run
+on the **Rust** engine; it fails if zero `RustExplorationManager`s were built.
+`--engine python` measures the Python engine for comparison.
+
 **Threshold tuning notes:**
 - Healthy ratio is ~1.00-1.05x (Z3+claripy caches warm up but don't grow
-  unboundedly).
+  unboundedly). Measured on Rust, mma_howtouse N=10: **1.054** (285 -> 301 MB).
 - 1.5x is the recommended default: large enough to avoid false-positives
   from cache warmup, small enough to catch a ~2x regression on the first
   nightly after it lands.
