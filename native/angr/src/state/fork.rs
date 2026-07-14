@@ -3,53 +3,30 @@
 use super::*;
 
 impl RustSimState {
-    /// Clone the three Python-AST metadata maps. Each PyObject ref-count is
-    /// incremented under the GIL so the parent and fork share strong refs.
+    /// Clone the three Python-AST metadata maps so the parent and the fork hold
+    /// independent maps over shared AST handles.
+    ///
+    /// **GIL-free by construction** (angr-gorvf.4.2). The values are
+    /// [`SharedPyAst`] (`Arc<Py<PyAny>>`), so this is a map copy plus an atomic
+    /// refcount bump per entry — no `Python::attach`, hence no `GilWorkGuard`
+    /// here and `gil_work_ns_fork_metadata` stays 0. Storing bare `Py` handles
+    /// instead would force a `clone_ref` pass (which needs a `Python` token) on
+    /// every fork of a state carrying any overlay, which measured as the sole
+    /// GIL holder on four otherwise Python-free corpus benches. Do not "simplify"
+    /// the `Arc` away.
     #[allow(clippy::type_complexity)] // single-use private fn; aliases would obscure intent
     fn clone_py_metadata(
         &self,
     ) -> (
-        HashMap<u64, Py<PyAny>>,
-        HashMap<u64, (Py<PyAny>, u32)>,
-        HashMap<u64, (Py<PyAny>, u32)>,
+        HashMap<u64, SharedPyAst>,
+        HashMap<u64, (SharedPyAst, u32)>,
+        HashMap<u64, (SharedPyAst, u32)>,
     ) {
-        // Common case for binaries with no symbolic pages or hooks: all three
-        // maps are empty, so there is nothing to clone_ref. Skip the GIL
-        // acquire entirely (Python::attach is not free on the exploration
-        // worker thread, where the GIL is not already held). Guard MUST check
-        // all three maps — any non-empty map needs the clone_ref pass.
-        if self.symbolic_pages.is_empty()
-            && self.hook_symbolic_memory.is_empty()
-            && self.addr_to_ast.is_empty()
-        {
-            return (HashMap::default(), HashMap::default(), HashMap::default());
-        }
-        Python::attach(|py| {
-            // GIL-work timing (angr-1ilq.7): the per-fork metadata clone_ref
-            // pass is a Python-touch point not routed through PythonCallbacks or
-            // the claripy bridge, so it needs its own guard. Only reached when a
-            // state carries symbolic pages/hooks (the early-return above skips
-            // the common empty case).
-            let _gil = crate::gil_profile::GilWorkGuard::enter_as(
-                crate::gil_profile::GilClass::ForkMetadata,
-            );
-            let pages = self
-                .symbolic_pages
-                .iter()
-                .map(|(k, v)| (*k, v.clone_ref(py)))
-                .collect();
-            let hook = self
-                .hook_symbolic_memory
-                .iter()
-                .map(|(k, (v, sz))| (*k, (v.clone_ref(py), *sz)))
-                .collect();
-            let addr_map = self
-                .addr_to_ast
-                .iter()
-                .map(|(k, (v, sz))| (*k, (v.clone_ref(py), *sz)))
-                .collect();
-            (pages, hook, addr_map)
-        })
+        (
+            self.symbolic_pages.clone(),
+            self.hook_symbolic_memory.clone(),
+            self.addr_to_ast.clone(),
+        )
     }
     // =========================================================================
     // Forking

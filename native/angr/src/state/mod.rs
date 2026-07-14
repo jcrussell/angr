@@ -309,6 +309,19 @@ impl NativeResumeFrame {
     }
 }
 
+/// A claripy AST held in per-state metadata, shared by `Arc` rather than stored
+/// as a bare `Py<PyAny>`.
+///
+/// The `Arc` exists purely to keep state forking off the GIL (angr-gorvf.4.2).
+/// `Py::clone_ref` needs a `Python` token, so cloning a map of bare `Py` handles
+/// on an exploration worker forces a `Python::attach` on **every fork** of any
+/// state that carries a non-empty overlay — measured as the *sole* GIL holder on
+/// four otherwise Python-free corpus benches. `Arc::clone` is an atomic bump and
+/// needs no token, so the fork path never touches Python. Dropping the last
+/// `Arc` still decrements the Py-refcount correctly: pyo3 defers the decref when
+/// the GIL is not held.
+pub type SharedPyAst = Arc<Py<PyAny>>;
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -436,25 +449,25 @@ pub struct RustSimState {
     /// Per-state symbolic page metadata: `addr -> claripy AST`. Holds whole-page
     /// symbolic ASTs preserved across Python fallback so Rust can re-establish
     /// symbolic memory. Migrated out of Python `_state_metadata` so storage is
-    /// owned alongside the rest of the state. Each PyObject is a strong ref to
-    /// a claripy AST; cleared automatically when the state is dropped.
-    /// Cloned on fork (Py refcounts incremented; cheap for a few entries).
+    /// owned alongside the rest of the state. Each entry is a strong ref to a
+    /// claripy AST; cleared automatically when the state is dropped.
+    /// Cloned on fork — see [`SharedPyAst`] for why the `Arc` is load-bearing.
     ///
     /// See module-level `state-metadata-dataclass`: the Python side keeps a
     /// parallel `StateMetadata` dataclass; Rust drops decrement Py-refcounts.
-    symbolic_pages: HashMap<u64, Py<PyAny>>,
+    symbolic_pages: HashMap<u64, SharedPyAst>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
     ///
     /// See module-level `state-metadata-dataclass`.
-    hook_symbolic_memory: HashMap<u64, (Py<PyAny>, u32)>,
+    hook_symbolic_memory: HashMap<u64, (SharedPyAst, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     ///
     /// See module-level `state-metadata-dataclass`.
-    addr_to_ast: HashMap<u64, (Py<PyAny>, u32)>,
+    addr_to_ast: HashMap<u64, (SharedPyAst, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
     /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls
