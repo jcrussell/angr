@@ -810,6 +810,70 @@ the lock-acquisition overhead, with no upside on
 set).
 
 
+Distributed (cross-machine) migration — measured KILL
+----------------------------------------------------
+
+Probed under bead ``angr-op0dn.13.7`` (M5-B17b, cost probe, no code landed).
+The question was whether a state could profitably be migrated over a *network*
+rather than between threads in one process. It cannot, on the find-all
+workloads that motivated parallelism in the first place.
+
+Per-state envelope measured with the shipped ``dump_snapshot`` /
+``load_snapshot`` codec (the same ``StashManager`` per-state encoding a
+``StateMigrationPayload`` carries) at the exhaustive frontier of each M5-P2
+bench; ``work ms/state`` is the single-threaded wall time divided by the
+``parallel_tasks`` dispatch count measured at ``workers=2``:
+
+.. list-table::
+   :header-rows: 1
+
+   * - bench
+     - bytes/state
+     - serialize
+     - deserialize
+     - transfer @1/10 Gbps
+     - network migration
+     - work/state
+   * - ``fork_solve_trap_W5_S8_M12`` (32 leaves)
+     - 1.57 MB
+     - 10.2 ms
+     - 15.2 ms
+     - 12.6 / 1.3 ms
+     - 37.9 / 26.6 ms
+     - 182 ms
+   * - ``fork_solve_pbounce_W6_S8_M12_B2`` (74 states)
+     - 0.91 MB
+     - 4.6 ms
+     - 10.3 ms
+     - 7.3 / 0.7 ms
+     - 22.1 / 15.5 ms
+     - 145 ms
+
+Read against the *break-even steal fraction* frame (bd
+``migration-count-is-the-lever``: a 14.5 ms in-process transport buys
+``f* ~= 10.5-13.3%``, i.e. at most ~1 state in 9 may migrate), a network
+migration costing 15.5–37.9 ms shrinks that budget to **f\* ~= 4–12%**. The
+steal fraction actually observed on these same benches is **76% (pbounce) /
+87.6% (trap)** — 6–20x over even the most generous 10 Gbps budget. The
+literal gate ("network cost < work-per-state") passes only because per-state
+*work* here is large (145–182 ms); the binding constraint is the migration
+*count*, and it is already violated in-process.
+
+Two further costs are excluded from the table and both point the same way:
+
+* The ``Py<PyAny>`` overlays a ``StateMigrationPayload`` carries
+  (``symbolic_pages``, ``hook_symbolic_memory``, ``addr_to_ast``) are *not*
+  in the snapshot envelope, so bytes/state above is a **lower bound** for a
+  distributed transport, which would additionally have to pickle them.
+* Python SimProcedure bounces are driver-local. A remote worker would have to
+  round-trip to the driver on every hook — the trap benches bounce the whole
+  frontier ``T=4`` times per leaf by construction.
+
+**Verdict: KILL.** Distributed migration is strictly worse than the
+in-process case that already loses. Do not file a distributed follow-on
+without a human decision.
+
+
 Open questions
 --------------
 
