@@ -101,6 +101,25 @@ def _resolve_pyvex_libdir() -> None:
 
 _resolve_pyvex_libdir()
 
+
+def _rust_features() -> list[str]:
+    # `libvex-ffi` (native cold-block lifting through libpyvex.so) is opt-in at
+    # build time: set ANGR_LIBVEX_FFI=1 before `pip install -e .`. It is not on
+    # by default because the resulting .so carries an rpath into the venv's
+    # pyvex/lib, which a wheel repair step would vendor -- giving the process a
+    # second copy of libVEX with its own vex_control/arena globals. See the
+    # "Shipping status" section of docs/advanced-topics/rust_libvex_ffi.rst.
+    if os.environ.get("ANGR_LIBVEX_FFI", "").strip().lower() not in ("1", "true", "on", "yes"):
+        return []
+    if not os.environ.get("PYVEX_FFI_LIB_DIR"):
+        sys.stderr.write(
+            "warning: ANGR_LIBVEX_FFI is set but no libpyvex.so was found next to the "
+            "installed pyvex; building without the libvex-ffi feature.\n"
+        )
+        return []
+    return ["libvex-ffi"]
+
+
 if sys.platform == "darwin":
     library_file = "unicornlib.dylib"
 elif sys.platform in ("win32", "cygwin"):
@@ -185,6 +204,26 @@ cmdclass = {
     "clean_unicornlib": clean,
     "develop": develop,
 }
+
+
+try:
+    from setuptools_rust.build import build_rust as st_build_rust
+
+    class build_rust(st_build_rust):
+        # The extension itself is declared by the [[tool.setuptools-rust.ext-modules]]
+        # table in pyproject.toml, which has no way to express a conditional cargo
+        # feature. Append the opt-in ones here instead, leaving the default build
+        # byte-identical to the table.
+        def run(self):
+            features = _rust_features()
+            if features:
+                for ext in getattr(self.distribution, "rust_extensions", None) or []:
+                    ext.features = [*ext.features, *features]
+            super().run()
+
+    cmdclass["build_rust"] = build_rust
+except ModuleNotFoundError:
+    pass
 
 
 try:

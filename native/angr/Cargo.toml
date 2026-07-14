@@ -17,7 +17,8 @@ automaton = ["indexmap", "fixedbitset"]
 # Non-default: native cold-block lifting via direct libVEX FFI against the
 # venv's pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Kept off
 # the default set so the bench-regression gate takes on no libpyvex.so rpath
-# dependency. See docs/advanced-topics/rust_libvex_ffi.rst.
+# dependency. Opt in with `ANGR_LIBVEX_FFI=1 pip install -e .` (setup.py
+# appends it). See docs/advanced-topics/rust_libvex_ffi.rst.
 libvex-ffi = ["dep:bindgen"]
 
 [dependencies]

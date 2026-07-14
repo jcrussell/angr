@@ -107,6 +107,8 @@ angr = ["py.typed", "unicornlib.*", "rustylib.*", "*.json"]
 [tool.setuptools.dynamic]
 version = { attr = "angr.__version__" }
 
+# This table cannot express a conditional cargo feature; the opt-in `libvex-ffi`
+# feature is appended at build time by setup.py::build_rust (see _rust_features).
 [[tool.setuptools-rust.ext-modules]]
 target = "angr.rustylib"
 path = "native/angr/Cargo.toml"

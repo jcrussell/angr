@@ -224,3 +224,46 @@ are return-to-``0x0`` deadend probes — the native path is serving **21 of 21**
 real blocks. ``rust_native_lift_deadend_probe_count`` splits those out; the
 genuinely-lost misses are ``fallback_count - deadend_probe_count``, and that is
 0 across the fast-tier corpus.
+
+Shipping status: an opt-in build feature
+----------------------------------------
+
+``libvex-ffi`` is **not** in the cargo ``default`` feature set, so a stock
+``pip install angr`` / ``pip install -e .`` — and therefore the CI
+bench-regression gate, the released wheels, and every dev tree — links **no**
+native lifter. ``use_native_lift`` defaults to True but is double-guarded on
+``libvex_ffi_enabled()``, so on a stock ``.so`` it is inert and cold blocks still
+go out through the pyvex Python callback. The wins measured above are only
+reachable on a build that opts in:
+
+.. code-block:: bash
+
+   ANGR_LIBVEX_FFI=1 pip install -e . --no-build-isolation --no-deps
+
+``setup.py::_rust_features`` reads that env var and appends the cargo feature to
+the extension declared by ``[[tool.setuptools-rust.ext-modules]]`` (the static
+table cannot express a conditional feature, so the append happens in the
+``build_rust`` subclass in ``setup.py``). It degrades gracefully: if
+``_resolve_pyvex_libdir`` found no ``libpyvex.so`` next to the installed pyvex,
+the feature is dropped with a warning rather than failing the build.
+
+Why it is not on by default (bd ``angr-x5kmr``). Three hazards, all of which a
+default-flip must answer:
+
+1. **Wheels would double-vendor libVEX.** ``build.rs`` emits
+   ``-Wl,-rpath,<venv>/site-packages/pyvex/lib``. Under ``cibuildwheel``,
+   auditwheel repairs that dependency by copying ``libpyvex.so`` into
+   ``angr.libs`` — the process then holds *two* copies of libVEX with
+   independent ``vex_control`` and arena globals. The byte-for-byte lifting
+   parity argument rests on it being the *same* ``.so`` as the one pyvex loads,
+   so this is not a packaging nit. Flipping the default means either excluding
+   ``libpyvex`` from repair (as ``wheels.yml`` already does for ``libz3``) and
+   relying on the runtime pyvex dependency, or keeping the feature off for wheel
+   builds specifically.
+2. **The bench baselines were measured on the callback lift path.**
+   ``baseline_timings.json`` would need a refresh in the same commit, or the
+   fast-tier gate reads the (favourable) shift as drift.
+3. **New build-time dependency.** The feature pulls ``dep:bindgen``, i.e.
+   libclang, on anyone building from source.
+
+Until those are resolved, opt-in is the recorded decision.
