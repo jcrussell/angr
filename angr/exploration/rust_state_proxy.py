@@ -1351,7 +1351,7 @@ class RustMemoryProxy:
             fallback = self._load_from_fallback(addr, orig_addr, size, endness)
             if fallback is not None:
                 return fallback
-            return claripy.BVV(0, size * 8)
+            return self._unmapped_read(addr, size)
 
         # The Rust AST is laid out LSB-first (byte i of memory at bits
         # [i*8+7 : i*8]) — matches what ``set_state_memory_concrete`` /
@@ -1404,6 +1404,43 @@ class RustMemoryProxy:
         if self._python_mgr is not None:
             self._python_mgr._stats_proxy_mem_fallback_python_load += 1
         return result
+
+    def _unmapped_read(self, addr, size):
+        """angr's ``DefaultMemory`` semantics for a read no backing store can
+        satisfy — neither the Rust state nor the pre-swap Python memory has the
+        page (angr-s0x0v).
+
+        Returning zeros here (the prior behaviour) is a silent divergence: under
+        the gate the Rust state *is* the memory a SimProcedure sees, so a libc
+        proc dereferencing a garbage pointer reads zeros and sails on where the
+        Python engine would have segfaulted. ``unmapped_analysis`` never
+        terminates because of it — its ``strncmp`` walks a pointer chain from a
+        bogus 0x1337 and the fault is what ends the walk.
+        """
+        from angr import sim_options
+
+        if sim_options.STRICT_PAGE_ACCESS in self._state_options():
+            raise self._segfault_unmapped(addr)
+        # STRICT_PAGE_ACCESS off: angr maps the page on demand and reads back
+        # the fill value, which for an untouched page is zero.
+        return claripy.BVV(0, size * 8)
+
+    #: Page size of angr's ``DefaultMemory``. A segfault raised by
+    #: ``PrivilegedPagingMixin._initialize_page`` reports the *page base*, not
+    #: the faulting address, so the proxy must round the same way to produce a
+    #: byte-identical ``SimSegfaultException`` under the gate.
+    PAGE_SIZE = 0x1000
+
+    def _segfault_unmapped(self, addr):
+        """Build the ``SimSegfaultException`` angr's paged memory raises when it
+        would have to create a page under STRICT_PAGE_ACCESS.
+
+        Returned (not raised) so callers can ``raise ... from exc`` and keep the
+        underlying FFI error as context.
+        """
+        from angr.errors import SimSegfaultException
+
+        return SimSegfaultException(addr - (addr % self.PAGE_SIZE), "unmapped")
 
     def store(self, addr, data, endness=None, **kwargs):
         """Write-through memory store to the Rust state (angr-j28e, angr-4scu).
@@ -1583,10 +1620,9 @@ class RustMemoryProxy:
         if "unmapped memory" not in str(exc):
             return False
         from angr import sim_options
-        from angr.errors import SimSegfaultException
 
         if sim_options.STRICT_PAGE_ACCESS in self._state_options():
-            raise SimSegfaultException(addr, "write-miss") from exc
+            raise self._segfault_unmapped(addr) from exc
         return True
 
     def _state_options(self):

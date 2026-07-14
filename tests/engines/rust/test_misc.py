@@ -2042,6 +2042,48 @@ class TestProxyWriteCounters:
         assert after - before == 2, f"expected 2 concrete-memory writes, got delta {after - before}"
         assert mgr.stats["proxy_mem_concrete_writes"] == after
 
+    def _memory_proxy_on(self, project, state):
+        """Build a ``RustMemoryProxy`` bound to the first active state."""
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        mgr = RustExplorationManager(project, [state])
+        mgr.run(max_steps=1)
+        state_ids = list(mgr._rust_mgr.get_state_ids("active"))
+        assert state_ids, "expected at least one active state after one step"
+        return RustMemoryProxy(mgr._rust_mgr, state_ids[0], project.arch, python_mgr=mgr)
+
+    def test_memory_proxy_unmapped_access_segfaults_under_strict(self, fauxware_project):
+        """Under STRICT_PAGE_ACCESS, a proxy load *or* store to a page nothing
+        has mapped raises the same ``SimSegfaultException`` angr's paged memory
+        raises — page-base address, reason ``unmapped`` (angr-s0x0v).
+
+        The read half is the regression guard: it used to return zeros, so a
+        libc SimProcedure running under the callback-memory-proxy gate would
+        dereference a garbage pointer, read zeros and sail on where the Python
+        engine segfaults. ``unmapped_analysis`` never terminated because of it.
+        """
+        from angr.errors import SimSegfaultException
+
+        state = fauxware_project.factory.entry_state(add_options={angr.options.STRICT_PAGE_ACCESS})
+        proxy = self._memory_proxy_on(fauxware_project, state)
+
+        for op in (lambda: proxy.load(0x44444444, 4), lambda: proxy.store(0x44444444, b"abcd")):
+            with pytest.raises(SimSegfaultException) as exc:
+                op()
+            assert exc.value.addr == 0x44444000
+            assert exc.value.reason == "unmapped"
+
+    def test_memory_proxy_unmapped_load_zero_fills_without_strict(self, fauxware_project):
+        """Without STRICT_PAGE_ACCESS the page maps on demand, so an unmapped
+        proxy load reads back the untouched fill value rather than segfaulting.
+        """
+        state = fauxware_project.factory.entry_state()
+        proxy = self._memory_proxy_on(fauxware_project, state)
+
+        value = proxy.load(0x44444444, 4)
+        assert value.concrete
+        assert value.concrete_value == 0
+
     def test_solver_proxy_add_bumps_counter(self, fauxware_project):
         """``RustSolverProxyPlugin.add`` increments ``_stats_proxy_solver_adds``
         by the number of (non-tautology) constraints accepted. Tautologies
