@@ -1768,6 +1768,31 @@ impl RustExplorationManager {
         Arc::make_mut(&mut self.native_procedures).register(proc);
     }
 
+    /// Register native `ReturnUnconstrained` stubs: `(display_name, ret_bits)`.
+    ///
+    /// A `SimLibrary` hands out `ReturnUnconstrained` for every symbol it has
+    /// no model for, so those hooks are keyed on the *binary's* symbol name
+    /// rather than a libc one and cannot live in the static registry. Python
+    /// (`RustExplorationManager._register_simprocedures`) filters
+    /// `project._sim_procedures` down to the plain stubs — no `return_val=`
+    /// kwarg, prototype return size known — and passes them here.
+    ///
+    /// Names that already have a real native procedure, or that carry a zero
+    /// return width, are skipped: a genuine implementation always outranks a
+    /// "return a fresh symbol" stub.
+    pub fn register_unconstrained_stubs(&mut self, stubs: Vec<(String, u32)>) {
+        self.steady_config_guard();
+        let registry = Arc::make_mut(&mut self.native_procedures);
+        for (name, ret_bits) in stubs {
+            if ret_bits == 0 || registry.has_native(&name) {
+                continue;
+            }
+            registry.register(Arc::new(
+                crate::procedures::stub::NativeReturnUnconstrained::new(&name, ret_bits),
+            ));
+        }
+    }
+
     // =========================================================================
     // Native Uniqueness Filter
     // =========================================================================

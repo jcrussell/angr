@@ -39,6 +39,45 @@ def _simproc_dispatch_name(proc) -> str:
     return proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
 
 
+def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
+    """``(dispatch_name, ret_bits)`` if ``proc`` is a plain ``ReturnUnconstrained``, else None.
+
+    ``SimLibrary`` hands out ``ReturnUnconstrained`` for every symbol it has no
+    model for (unresolved imports, declared-but-unimplemented libc entries). All
+    it does is mint a fresh unconstrained symbol of the prototype's return
+    width, so the Rust side can serve it natively
+    (``procedures/stub.rs::NativeReturnUnconstrained``) instead of bouncing into
+    Python for one BVS.
+
+    Two shapes stay on Python: a stub carrying an explicit ``return_val=`` kwarg
+    (it returns that value, not a symbol), and one whose prototype has no return
+    size (void — Python writes no return register at all).
+
+    ``arch`` is the project's arch: an unbound ``SimType`` cannot report its size
+    (``ValueError: Can't tell my size without an arch!``), and at registration
+    time the stub's prototype has not been bound yet — Python only binds it when
+    the procedure executes.
+    """
+    from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+    if type(proc) is not ReturnUnconstrained:
+        return None
+    if getattr(proc, "kwargs", None) and proc.kwargs.get("return_val") is not None:
+        return None
+    try:
+        returnty = proc.prototype.returnty
+        if returnty is None:
+            return None
+        if returnty._arch is None:
+            returnty = returnty.with_arch(arch)
+        size = returnty.size
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not size:
+        return None
+    return _simproc_dispatch_name(proc), int(size)
+
+
 #: Set ``ANGR_BOUNCE_TRACE=1`` to have every SimProcedure park-and-bounce into
 #: Python emit one ``[bounce] ...`` line on stderr. Off by default; the check is
 #: a module-level bool so the hot path pays a single load. Consumed by

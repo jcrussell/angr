@@ -844,7 +844,11 @@ def _resolve_env_flag(kwarg: bool | None, env_var: str, default: bool = False) -
 
 
 from angr.exploration._constants import PAGE_SIZE
-from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _simproc_dispatch_name
+from angr.exploration.rust_callback_dispatch import (
+    RustCallbackDispatchMixin,
+    _simproc_dispatch_name,
+    _unconstrained_stub_spec,
+)
 from angr.exploration.rust_disk_cache import RustDiskCacheManager
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
@@ -3602,6 +3606,9 @@ class RustExplorationManager(
     def _register_simprocedures(self):
         """Register SimProcedures with the Rust manager."""
         procs = []
+        # display_name -> return width, for the ReturnUnconstrained stubs the
+        # native registry serves itself (see _unconstrained_stub_spec).
+        stubs: dict[str, int] = {}
 
         # Get hooked addresses from project
         if hasattr(self._project, "_sim_procedures"):
@@ -3612,9 +3619,14 @@ class RustExplorationManager(
                 procs.append((addr, name, num_args, no_return))
                 # Track this hook as registered
                 self._registered_hooks.add(addr)
+                spec = _unconstrained_stub_spec(proc, self._project.arch)
+                if spec is not None:
+                    stubs.setdefault(*spec)
 
         if procs:
             self._rust_mgr.register_simprocedures(procs)
+        if stubs:
+            self._rust_mgr.register_unconstrained_stubs(list(stubs.items()))
 
     # =========================================================================
     # Persistent disk cache for Python init results

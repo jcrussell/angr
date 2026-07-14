@@ -122,6 +122,7 @@ pub mod strset;
 pub mod strstr;
 pub mod strtod;
 pub mod strtol;
+pub mod stub;
 pub mod syslog;
 pub mod system;
 pub mod time;

@@ -2914,3 +2914,55 @@ class TestNativePthreadOnce:
         # (the self-loop), not stranded at the sentinel or in func.
         pc = s.solver.eval(s.regs.pc)
         assert main_addr <= pc < self.LOAD + len(blob), f"control must resume in main after the sub-call; pc={pc:#x}"
+
+
+class TestReturnUnconstrainedStub:
+    """The native ReturnUnconstrained stub (angr-gorvf.13).
+
+    ``SimLibrary`` hands out ``ReturnUnconstrained`` for any symbol it has no
+    model for. The stub only mints a fresh unconstrained symbol, so the Rust
+    side serves it natively — see ``procedures/stub.rs`` and
+    ``rust_callback_dispatch._unconstrained_stub_spec``.
+    """
+
+    def test_spec_accepts_plain_stub(self, fauxware_project):  # noqa: F811
+        from angr.exploration.rust_callback_dispatch import _unconstrained_stub_spec
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+        proj = fauxware_project
+        addr = proj.loader.extern_object.allocate()
+        proj.hook(addr, ReturnUnconstrained(display_name="zz_stub_plain"))
+        spec = _unconstrained_stub_spec(proj._sim_procedures[addr], proj.arch)
+        assert spec is not None
+        name, bits = spec
+        assert name == "zz_stub_plain"
+        assert bits > 0
+        proj.unhook(addr)
+
+    def test_spec_declines_explicit_return_val_and_real_procs(self, fauxware_project):  # noqa: F811
+        from angr.exploration.rust_callback_dispatch import _unconstrained_stub_spec
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+        proj = fauxware_project
+        # A stub with return_val= returns that value, not a fresh symbol: Python keeps it.
+        addr = proj.loader.extern_object.allocate()
+        proj.hook(addr, ReturnUnconstrained(display_name="zz_stub_retval", return_val=7))
+        assert _unconstrained_stub_spec(proj._sim_procedures[addr], proj.arch) is None
+        proj.unhook(addr)
+        # A real SimProcedure is not a stub.
+        assert _unconstrained_stub_spec(angr.SIM_PROCEDURES["libc"]["strlen"](), proj.arch) is None
+
+    def test_stub_registered_natively_on_manager_init(self, fauxware_project):  # noqa: F811
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+        proj = fauxware_project
+        addr = proj.loader.extern_object.allocate()
+        proj.hook(addr, ReturnUnconstrained(display_name="zz_stub_native"))
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            assert mgr._rust_mgr.has_native_procedure("zz_stub_native"), (
+                "a plain ReturnUnconstrained hook must be served by the native registry"
+            )
+        finally:
+            proj.unhook(addr)
