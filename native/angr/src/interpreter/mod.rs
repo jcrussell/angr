@@ -912,6 +912,61 @@ impl<'a> VEXInterpreter<'a> {
         Ok(())
     }
 
+    /// Serve a load neither side can back with real bytes, without crossing
+    /// the GIL (angr-gorvf.4.7).
+    ///
+    /// A load only reaches `load_from_callback` once Rust's own memory has
+    /// declined it. If Python *also* has no page there, the only answer it
+    /// could give is an unconstrained filler (angr's `filler_mixin` default) —
+    /// so Rust mints that filler itself and skips the crossing. Measured: this
+    /// is 100% of the `memory_load` crossings on the five ZeroPy benches whose
+    /// sole residual GIL was this site — all of them the `fs:[0x28]` stack
+    /// canary or another unmapped low address.
+    ///
+    /// The oracle is `python_has_page`, NOT the `python_can_serve_page` set
+    /// from angr-gorvf.4.6 — those answer different questions, and using the
+    /// latter here is a silent-corruption bug (it briefly was one). A page
+    /// holding symbolic bytes is *declined* for a whole-page concrete fetch
+    /// yet serves a load fine, so gating on fetch-servability synthesizes
+    /// fillers over real data.
+    ///
+    /// `python_has_page` fails *open* in exactly the cases that would make the
+    /// filler wrong: `_install_python_servable_pages` declines to install a
+    /// snapshot at all under `ZERO_FILL_UNCONSTRAINED_MEMORY`, where Python
+    /// answers with zeros rather than a symbol. With no snapshot every load
+    /// crosses, as before.
+    ///
+    /// The symbol name is the address-derived `mem_{addr}_{size}` already used
+    /// by the fresh-symbol fallback below, so repeated loads of the same
+    /// address mint the *same* Z3 constant. The canary depends on this: it is
+    /// read twice (store, then compare), and two distinct symbols would make
+    /// the `__stack_chk_fail` branch spuriously feasible.
+    fn synthesize_unservable_load(
+        &self,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Option<RustBV> {
+        let page_addr = addr_concrete & !(crate::memory::PAGE_SIZE - 1);
+        if callbacks.python_has_page(page_addr) {
+            return None;
+        }
+        // Rust having the page mapped means the bytes are real and the decline
+        // came from elsewhere in the load path — don't paper over that with a
+        // filler.
+        if let Some(rust_mem) = self.rust_memory.as_ref()
+            && rust_mem.is_mapped(page_addr)
+        {
+            return None;
+        }
+
+        let name = format!("mem_{addr_concrete:x}_{size}");
+        let bits = (size * 8) as u32;
+        let bv = RustBV::symbolic(self.ctx, &name, bits);
+        self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &bv);
+        Some(bv)
+    }
+
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
     fn load_from_callback(
@@ -920,6 +975,10 @@ impl<'a> VEXInterpreter<'a> {
         addr_concrete: u64,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
+        if let Some(bv) = self.synthesize_unservable_load(callbacks, addr_concrete, size) {
+            return Ok(bv);
+        }
+
         let (data, is_symbolic, symbolic_ast) = callbacks
             .call_memory_load(addr_concrete, size as u32)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;

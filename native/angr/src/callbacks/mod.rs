@@ -362,6 +362,19 @@ pub struct PythonCallbacks {
     /// installs it after the manager has already cloned this struct.
     pub python_servable_pages:
         std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
+
+    /// Every page Python holds a page object for (angr-gorvf.4.7) — a strict
+    /// superset of `python_servable_pages`.
+    ///
+    /// The two answer different questions and must not be conflated.
+    /// `python_servable_pages` is "could `fetch_page` hand back concrete bytes
+    /// for this whole page", so a page carrying symbolic data is *declined*
+    /// there even though Python can answer a `memory_load` from it perfectly
+    /// well. This set is the load-side oracle: a page absent from it is one
+    /// Python has no data for at all, so a load can only produce an
+    /// unconstrained filler — which Rust can mint itself.
+    pub python_page_universe:
+        std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
 }
 
 #[pymethods]
@@ -409,6 +422,7 @@ impl PythonCallbacks {
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             python_servable_pages: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            python_page_universe: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -769,6 +783,24 @@ impl PythonCallbacks {
     #[pyo3(name = "clear_python_servable_pages")]
     pub fn py_clear_python_servable_pages(&self) {
         if let Ok(mut guard) = self.python_servable_pages.write() {
+            *guard = None;
+        }
+    }
+
+    /// Install the snapshot of every page Python holds a page object for
+    /// (angr-gorvf.4.7). Loads that miss both this set and Rust's own memory
+    /// are served natively with an unconstrained filler instead of crossing.
+    #[pyo3(name = "set_python_page_universe")]
+    pub fn py_set_python_page_universe(&self, pages: Vec<u64>) {
+        if let Ok(mut guard) = self.python_page_universe.write() {
+            *guard = Some(pages.into_iter().collect());
+        }
+    }
+
+    /// Drop the page-universe snapshot: every unbacked load crosses again.
+    #[pyo3(name = "clear_python_page_universe")]
+    pub fn py_clear_python_page_universe(&self) {
+        if let Ok(mut guard) = self.python_page_universe.write() {
             *guard = None;
         }
     }

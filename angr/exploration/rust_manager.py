@@ -1949,12 +1949,14 @@ class RustExplorationManager(
         if callbacks is None or not hasattr(callbacks, "set_python_servable_pages"):
             return
         servable: set[int] = set()
+        universe: set[int] = set()
         for state in self._state_cache.values():
             mem_pages = getattr(state.memory, "_pages", None)
             if mem_pages is None or "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options:
                 return
             for page_no in list(mem_pages.keys()):
                 page_addr = page_no * PAGE_SIZE
+                universe.add(page_addr)
                 fast = self._fetch_page_from_ultrapage(state, page_addr)
                 # ``None`` means the fast classifier can't rule on this page
                 # (not a 4096-byte UltraPage). Call it servable: Rust keeps
@@ -1964,6 +1966,26 @@ class RustExplorationManager(
                 if fast is None or fast[2]:
                     servable.add(page_addr)
         callbacks.set_python_servable_pages(sorted(servable))
+        # angr-gorvf.4.7: the load-side oracle. Deliberately the *unfiltered*
+        # page set — a page Python declines to serve as a concrete fetch (it
+        # holds symbolic bytes) still answers a ``memory_load`` from that
+        # symbolic data, so it must stay crossable. Only a page Python has no
+        # object for at all can be served natively with a filler.
+        #
+        # The loader regions must be folded in too, and that is not optional:
+        # angr's memory serves a loader-backed address straight from the CLE
+        # backer, materializing the page on first touch. Such a page is absent
+        # from ``_pages`` until something reads it, so a universe built from
+        # ``_pages`` alone would let Rust synthesize a filler over real binary
+        # bytes. (Measured when it did: csgames2018 lost 27% — the fabricated
+        # symbols turned concrete loads symbolic and dragged in solver work and
+        # SimProcedure bounces.)
+        if hasattr(callbacks, "set_python_page_universe"):
+            for region_start, region_size in self._get_loader_pages_cache(PAGE_SIZE)["lazy_regions"]:
+                base = region_start - (region_start % PAGE_SIZE)
+                for page_addr in range(base, region_start + region_size, PAGE_SIZE):
+                    universe.add(page_addr)
+            callbacks.set_python_page_universe(sorted(universe))
 
     def perf_report(self) -> str:
         """Return a formatted performance report."""

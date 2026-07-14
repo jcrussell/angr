@@ -467,6 +467,22 @@ impl PythonCallbacks {
         }
     }
 
+    /// Whether Python holds any page object at `page_addr` (angr-gorvf.4.7).
+    ///
+    /// Distinct from `python_can_serve_page`: this asks whether Python has
+    /// *data* there at all, not whether the whole page can be fetched as
+    /// concrete bytes. Fails open (assume Python has it) when no snapshot is
+    /// installed, so an unknown page keeps crossing exactly as before.
+    pub fn python_has_page(&self, page_addr: u64) -> bool {
+        match self.python_page_universe.read() {
+            Ok(guard) => match &*guard {
+                Some(pages) => pages.contains(&page_addr),
+                None => true,
+            },
+            Err(_) => true,
+        }
+    }
+
     /// Call the page fetch callback to load a single 4KB page.
     ///
     /// Returns (page_data, permissions, is_mapped).
