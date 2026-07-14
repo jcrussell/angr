@@ -450,10 +450,12 @@ pub(super) fn handle_simprocedure_core(
         return handle_native_resume_core(cc, state, payload, std::mem::take(counters), root_hint);
     }
 
-    let is_in_binary = ctx
-        .binary_regions
-        .iter()
-        .any(|(base, data)| addr >= *base && addr < *base + data.len() as u64);
+    let prefer_native = crate::exploration::execution_env::prefer_native_dispatch(
+        &ctx.binary_regions,
+        ctx.main_object_range,
+        ctx.prefer_native_library_hooks,
+        addr,
+    );
 
     // A hook that IS an address-based find/avoid target must never run natively
     // (angr-1i5h7). Native dispatch is inline: it runs the proc and lands the
@@ -467,7 +469,7 @@ pub(super) fn handle_simprocedure_core(
     // already runs before the hook block.
     let is_find_or_avoid = ctx.find_addrs.contains(&addr) || ctx.avoid_addrs.contains(&addr);
 
-    let disposition: NativeProcDisposition = if !is_in_binary && !is_find_or_avoid {
+    let disposition: NativeProcDisposition = if prefer_native && !is_find_or_avoid {
         if let Some(native_proc) = native_procs.get(&name) {
             let proc_no_return = native_proc.no_return();
             match ctx.cc.extract_procedure_args(&state, num_args) {

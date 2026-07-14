@@ -1101,6 +1101,7 @@ class RustExplorationManager(
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         use_simproc_fork_via_rust: bool | None = None,
+        prefer_native_library_hooks: bool | None = None,
         use_native_lift: bool = True,
         symlinks: dict | None = None,
         **kwargs,
@@ -1217,6 +1218,15 @@ class RustExplorationManager(
                 through boundary). When ``None`` (default), the env var
                 ``ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST=1`` toggles it on;
                 otherwise off.
+            prefer_native_library_hooks: If True, let native procedures serve
+                ``use_sim_procedures`` hooks whose address lands inside a
+                *non-main* loaded object (libc &c. under ``auto_load_libs``).
+                Main-object hooks always stay on Python so ``proj.hook()``
+                overrides win. Default off: native string procedures omit the
+                pruning constraints angr's Python ones add, so on symbolic data
+                they can fork down infeasible paths (bd a8epx). When ``None``
+                (default), env var ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1``
+                toggles it on.
             use_native_lift: If True (default), lift cold blocks in-process
                 through the native libVEX seam instead of the pyvex Python
                 callback. Requires a ``--features libvex-ffi`` build and an
@@ -1264,6 +1274,7 @@ class RustExplorationManager(
             use_export_callstack_proxy,
             use_export_memory_proxy,
             use_simproc_fork_via_rust,
+            prefer_native_library_hooks,
         )
         # Pre-existing symlinks to seed into the Rust FileSystem at
         # state-creation time (angr-m7s7y). Mirrors readlink(2): each value is
@@ -1388,6 +1399,7 @@ class RustExplorationManager(
         use_export_callstack_proxy,
         use_export_memory_proxy,
         use_simproc_fork_via_rust,
+        prefer_native_library_hooks,
     ):
         """Phase 2 (config): gate flags, counters/caches, callbacks + simprocedures."""
         # angr-3ms1 step 1b: opt-in flag for fork-time
@@ -1494,6 +1506,22 @@ class RustExplorationManager(
         # the kwarg is left at its default ``None``.
         self._use_simproc_fork_via_rust = _resolve_env_flag(
             use_simproc_fork_via_rust, "ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST"
+        )
+
+        # angr-a8epx / angr-gorvf.3.2: native-dispatch gate for library hooks.
+        # Default off: native procedures fire only for hooks OUTSIDE every loaded
+        # object (the extern-object stubs). On a dynamically-linked binary loaded
+        # with ``auto_load_libs=True, use_sim_procedures=True`` every libc hook
+        # lands inside the loaded libc's .text, so the default sends all of them
+        # to Python. Turning this on lets the native registry serve those hooks
+        # (main-object hooks still go to Python, preserving ``proj.hook()``
+        # overrides). Off by default because native string procedures do not add
+        # the pruning constraints angr's Python ones do, so on symbolic data they
+        # can explore infeasible paths where Python deadends — see the residual
+        # caveat on bd a8epx. Env var
+        # ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1`` toggles default-on.
+        self._prefer_native_library_hooks = _resolve_env_flag(
+            prefer_native_library_hooks, "ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS"
         )
 
         # Performance profiling counters
@@ -3415,6 +3443,17 @@ class RustExplorationManager(
                     l.debug(f"Could not load region {name}: {e}")
 
         self._rust_mgr.load_binary_regions(regions)
+
+        # Main-object span for the native-dispatch gate: hooks landing inside the
+        # main object are user `proj.hook()` territory and always defer to Python,
+        # while `use_sim_procedures` hooks inside a *loaded library* may prefer the
+        # native registry when `prefer_native_library_hooks` is on (angr-a8epx).
+        # cle's max_addr is inclusive; the Rust side wants a half-open range.
+        try:
+            self._rust_mgr.set_main_object_range(main_object.min_addr, main_object.max_addr + 1)
+        except AttributeError:
+            l.debug("Main object exposes no min_addr/max_addr; native-dispatch gate stays default")
+        self._rust_mgr.set_prefer_native_library_hooks(self._prefer_native_library_hooks)
 
     def _register_simprocedures(self):
         """Register SimProcedures with the Rust manager."""

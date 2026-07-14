@@ -56,6 +56,10 @@ pub(crate) struct StepContext {
     pub(crate) pointer_size: u32,
     /// Concrete code regions for native lifting (O(1) `Arc` clones per region).
     pub(crate) binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
+    /// `[start, end)` of the main object's code regions (native-dispatch gate).
+    pub(crate) main_object_range: Option<(u64, u64)>,
+    /// Prefer native procs for non-main-object library hooks (native-dispatch gate).
+    pub(crate) prefer_native_library_hooks: bool,
     /// Deferred-fork / branch-policy execution config.
     pub(crate) exec_config: ExecutionConfig,
     /// LAZY_SOLVES: skip Z3 feasibility checks on forks.
@@ -124,6 +128,8 @@ impl RustExplorationManager {
             vex_arch: self.environment.vex_arch,
             pointer_size: self.environment.calling_convention.pointer_size(),
             binary_regions: self.environment.binary_regions.clone(),
+            main_object_range: self.environment.main_object_range,
+            prefer_native_library_hooks: self.environment.prefer_native_library_hooks,
             exec_config: self.exec_config.clone(),
             lazy_solves: self.constraint_solver.lazy_solves,
             profiling_enabled: self.profiling.profiling_enabled,

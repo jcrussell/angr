@@ -761,6 +761,19 @@ impl RustExplorationManager {
             .collect();
     }
 
+    /// Record the main object's `[start, end)` code span. Hooks inside it always
+    /// dispatch to Python (user `proj.hook()` overrides); see
+    /// `execution_env::prefer_native_dispatch`.
+    pub fn set_main_object_range(&mut self, start: u64, end: u64) {
+        self.environment.main_object_range = Some((start, end));
+    }
+
+    /// Opt-in: prefer native procedures for `use_sim_procedures` library hooks
+    /// that land inside a non-main loaded object (angr-a8epx / angr-gorvf.3.2).
+    pub fn set_prefer_native_library_hooks(&mut self, enabled: bool) {
+        self.environment.prefer_native_library_hooks = enabled;
+    }
+
     /// Create a new RustSimState and add it to a stash.
     /// See `state_lifecycle::_create_state` for the body.
     #[pyo3(signature = (stash="active"))]

@@ -3889,6 +3889,34 @@ root cause); B=4 deferred as a Z3 floor; C=18 already faster; D=0; E=8
 excluded by construction. The actionable engine-overhead surface is
 empty. Campaign ``angr-9w6ad`` closes here.
 
+Native procedures for library hooks (opt-in)
+--------------------------------------------
+
+By default the native SimProcedure registry only serves hooks whose address
+lies **outside every loaded object** — the extern-object stubs angr synthesizes
+for a statically-known symbol. On a dynamically-linked binary loaded with
+``auto_load_libs=True, use_sim_procedures=True``, each libc hook instead lands
+inside the loaded libc's ``.text``, so every one of them bounces to the Python
+SimProcedure.
+
+``prefer_native_library_hooks=True`` (or
+``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=1``) lets the native registry serve
+those library hooks. Hooks inside the **main object** still go to Python, so a
+user ``proj.hook()`` override always wins. On the ``xmllint_getenv`` bench this
+moves the SimProcedure fallback count from 27 to 1 (the remaining one is the
+``explore(find=getenv)`` target, which is forced to Python so the find fires)
+and leaves the result identical: one found state, same peak memory.
+
+It is **off by default** because the native string procedures do not add the
+pruning constraints angr's Python ones do (``strncmp`` asserts an
+``Or(a_len == b_len, ...)`` match constraint; ``strlen`` asserts that a null
+exists inside the search window) and they scan a much wider window (4096 bytes
+vs Python's ``max_str_len``). On symbolic data those procedures are therefore
+under-constrained relative to Python, so exploration that runs *past* a find
+target through a libc-heavy dynamic binary can fork down paths Python would
+have pruned. Turn the flag on for concrete-data-heavy workloads; leave it off
+when the libc calls see symbolic input.
+
 Known slower benchmarks
 -----------------------
 

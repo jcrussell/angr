@@ -1867,14 +1867,11 @@ impl RustExplorationManager {
         if self.hooks.contains(&pc) && !should_skip_hook {
             // Check if this is a registered SimProcedure
             if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
-                // Skip native for addresses inside the binary (user-placed hooks)
-                let is_in_binary = self
-                    .environment
-                    .binary_regions
-                    .iter()
-                    .any(|(base, data)| pc >= *base && pc < *base + data.len() as u64);
+                // Skip native for main-object hooks (user-placed `proj.hook()`
+                // overrides); see `execution_env::prefer_native_dispatch`.
+                let prefer_native = self.environment.prefer_native_dispatch(pc);
                 // Try native procedure first (only for external/library hooks)
-                if !is_in_binary && let Some(native_proc) = self.native_procedures.get(&name) {
+                if prefer_native && let Some(native_proc) = self.native_procedures.get(&name) {
                     // Extract arguments from state registers (and stack
                     // when num_args exceeds the register count). On
                     // failure (symbolic SP, unmapped stack slot) skip
@@ -2066,7 +2063,7 @@ impl RustExplorationManager {
                             }
                         },
                     }
-                } // if !is_in_binary
+                } // if prefer_native
 
                 // Fall back to Python for SimProcedure execution
                 self.simprocedure_python_fallback_count += 1;

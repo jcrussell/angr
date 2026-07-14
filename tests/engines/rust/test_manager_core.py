@@ -399,6 +399,51 @@ class TestRustExplorationManagerUnit:
         assert stats["parallel_shadow_migration_ns"] > 0, "no migration time recorded"
         assert stats["parallel_shadow_migration_bytes"] > 0, "no serialized bytes recorded"
 
+    @pytest.mark.parametrize("prefer_library_hooks", [False, True])
+    def test_library_hook_dispatch_gate(self, prefer_library_hooks):
+        """`set_prefer_native_library_hooks` gates native dispatch for a hook
+        inside a NON-main loaded object (angr-a8epx / angr-gorvf.3.2).
+
+        Loads two code regions — a main object at 0x400000 and a "library" at
+        0x500000 holding the hook — and declares the main object's span. With
+        the gate off (default) the in-binary hook bounces to Python, so the
+        native procedure never runs; with it on the native registry serves it.
+        """
+        mgr = _RustExplorationManager("amd64")
+        invocations = []
+
+        def echo_args(args):
+            invocations.append(tuple(args))
+            return 0xDEADBEEF
+
+        HOOK = 0x500500  # inside the "library" region
+        EXIT_HOOK = 0x600500  # outside every region (extern-style stub)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        state = self._setup_amd64_python_proc_test(
+            mgr,
+            HOOK,
+            "echo_proc",
+            num_args=2,
+            no_return=False,
+            callable_=echo_args,
+            arg_values=(0x1111, 0x2222),
+            return_addr=EXIT_HOOK,
+        )
+        mgr.load_binary_regions([(0x400000, bytes(0x1000)), (0x500000, bytes(0x1000))])
+        mgr.set_main_object_range(0x400000, 0x401000)
+        mgr.set_prefer_native_library_hooks(prefer_library_hooks)
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        native_calls = mgr.native_procedure_stats()["native_calls"]
+        if prefer_library_hooks:
+            assert invocations == [(0x1111, 0x2222)], f"library hook did not dispatch native; got {invocations}"
+            assert native_calls >= 1, f"expected a native call with the gate on, got {native_calls}"
+        else:
+            assert invocations == [], "library hook dispatched native with the gate off"
+            assert native_calls == 0, f"expected no native calls with the gate off, got {native_calls}"
+
     def test_register_python_procedure_appears_in_listing(self):
         """register_python_procedure adds the procedure to the registry."""
         mgr = _RustExplorationManager("amd64")
