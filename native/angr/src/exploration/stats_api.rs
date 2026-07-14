@@ -257,6 +257,19 @@ impl RustExplorationManager {
                 crate::gil_profile::gil_class_ns(class),
             )?;
         }
+        // angr-gorvf.4.1: the `Callback` class again, split by *which* dispatch
+        // entry point took the GIL. The Python-side `callback_*_total_ns`
+        // counters are process-wide and tick outside the profiled run loop, so
+        // they cannot attribute the residual; these sites are thread-local,
+        // run-loop-gated, and sum exactly to `gil_work_ns_callback`. A nonzero
+        // `..._other` means a Python-touching callback was added without naming
+        // its site.
+        for site in crate::gil_profile::CallbackSite::all() {
+            dict.set_item(
+                format!("gil_work_ns_callback_{}", site.name()),
+                crate::gil_profile::callback_site_ns(site),
+            )?;
+        }
         Ok(dict)
     }
 

@@ -72,6 +72,12 @@ CLASS_ORDER = [
 ]
 
 
+# gil_profile::GilClass, spelled out rather than prefix-matched: the per-site
+# keys (`gil_work_ns_callback_*`) share the `gil_work_ns_` prefix, and folding
+# them into the class split would double-count the callback class.
+GIL_CLASSES = ["callback", "claripy_export", "claripy_import", "fork_metadata"]
+
+
 def corpus() -> list[str]:
     with BASELINE_TIMINGS.open() as fh:
         return sorted(json.load(fh))
@@ -150,9 +156,18 @@ def run_one(bench: str, timeout: int) -> dict:
         "gil_work_time_ns": gil_ns,
         "run_wall_time_ns": wall_ns,
         # The partition of `gil_work_time_ns` by *why* the GIL was taken
-        # (gil_profile::GilClass). This is the lever ranking; `attribution`
-        # below only refines the `callback` slice.
-        "gil_by_class": {k[len("gil_work_ns_") :]: v for k, v in stats.items() if k.startswith("gil_work_ns_") and v},
+        # (gil_profile::GilClass). This is the lever ranking; `gil_by_site`
+        # below sub-partitions the `callback` class.
+        "gil_by_class": {c: stats[f"gil_work_ns_{c}"] for c in GIL_CLASSES if stats.get(f"gil_work_ns_{c}")},
+        # The `callback` class again, split by which dispatch entry point took
+        # the GIL (gil_profile::CallbackSite). Sums exactly to the `callback`
+        # class, so a residual here is a real unattributed site, not a counter
+        # artifact — unlike `attribution`.
+        "gil_by_site": {
+            k[len("gil_work_ns_callback_") :]: v
+            for k, v in stats.items()
+            if k.startswith("gil_work_ns_callback_") and v
+        },
         "attribution": attribution(stats),
     }
     if not wall_ns:
@@ -200,6 +215,34 @@ def render(rows: list[dict], min_pass: int) -> bool:
     print("\nGIL classes holding the loop (FAIL benches), ranked by GIL ns — the lever ranking:")
     for cls, (sole, appears, ns) in sorted(levers.items(), key=lambda kv: -kv[1][2]):
         print(f"  {cls:<18} sole={sole:<3} appears={appears:<3} {ns / 1e6:>9.0f}ms")
+
+    # Sub-partition of the `callback` class by dispatch site (angr-gorvf.4.1).
+    # These are thread-local and run-loop-gated, so they sum to the class and a
+    # nonzero `other` is a genuinely unattributed Python-touching callback.
+    sites: dict[str, list[int]] = {}
+    unexplained: list[tuple[str, float]] = []
+    for r in rows:
+        if r["status"] != "FAIL":
+            continue
+        cb = r["gil_by_class"].get("callback", 0)
+        if not cb:
+            continue
+        for site, ns in r["gil_by_site"].items():
+            acc = sites.setdefault(site, [0, 0])
+            acc[0] += 1
+            acc[1] += ns
+        named = sum(ns for s, ns in r["gil_by_site"].items() if s != "other")
+        if named < 0.95 * cb:
+            unexplained.append((r["bench"], 1 - named / cb))
+    print("\ncallback GIL by dispatch site (FAIL benches) — sums to the callback class:")
+    for site, (appears, ns) in sorted(sites.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {site:<28} appears={appears:<3} {ns / 1e6:>9.0f}ms")
+    if unexplained:
+        print("\n  UNEXPLAINED callback residual (>5% in `other`):")
+        for bench, frac in sorted(unexplained, key=lambda kv: -kv[1]):
+            print(f"    {bench:<32} {frac:.1%} unattributed")
+    else:
+        print("\n  every FAIL bench's callback class is >=95% attributed to a named site.")
 
     # Refinement of the `callback` slice only: which callback surfaces were
     # crossed. Counts here include out-of-loop calls (see `attribution`), so they

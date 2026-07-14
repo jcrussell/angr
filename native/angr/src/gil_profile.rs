@@ -57,6 +57,12 @@ thread_local! {
     static REGION_CLASS: Cell<GilClass> = const { Cell::new(GilClass::Callback) };
     /// Per-class split of `GIL_ACCUM_NS`, indexed by `GilClass as usize`.
     static CLASS_ACCUM_NS: Cell<[u64; GilClass::COUNT]> = const { Cell::new([0; GilClass::COUNT]) };
+    /// Dispatch site of the current outermost GIL region (meaningful while the
+    /// region's class is [`GilClass::Callback`] and depth > 0).
+    static REGION_SITE: Cell<CallbackSite> = const { Cell::new(CallbackSite::Other) };
+    /// Per-site split of the `Callback` class, indexed by `CallbackSite as usize`.
+    static SITE_ACCUM_NS: Cell<[u64; CallbackSite::COUNT]> =
+        const { Cell::new([0; CallbackSite::COUNT]) };
 }
 
 /// Why the run loop is holding the GIL. Attributing the *outermost* region is
@@ -110,10 +116,113 @@ impl GilClass {
     }
 }
 
+/// Which `PythonCallbacks` entry point took the GIL. One variant per
+/// `GilWorkGuard` site in `callbacks/dispatch.rs`, plus a bucket for the
+/// `state.inspect` dispatch family (`callbacks/inspect.rs`) and an `Other`
+/// catch-all.
+///
+/// This is a *sub*-partition of [`GilClass::Callback`]: a site is recorded only
+/// when the outermost region on the thread is a `Callback` region, so the sites
+/// sum exactly to `gil_class_ns(GilClass::Callback)`.
+///
+/// It exists because the Python-side `callback_*_total_ns` counters do not
+/// explain the residual `Callback` GIL on the zero-bounce path (bd
+/// angr-gorvf.4.1): `google2016_unbreakable_1` banks 723ms of `Callback` (74% of
+/// the run-loop wall) while its only counted surface is two `posix` calls at
+/// 0ms. Those counters are process-wide and also tick outside the profiled run
+/// loop; these are thread-local, run-loop-gated, and complete by construction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallbackSite {
+    MemoryLoad,
+    MemoryStore,
+    MemoryStoreBatch,
+    MemoryLoadBatch,
+    MemoryLoadSymbolic,
+    MemoryStoreSymbolic,
+    MemoryStoreSymbolicValue,
+    MemoryStoreSymbolicFull,
+    MemoryLoadSymbolicFull,
+    OnHook,
+    OnSyscall,
+    LiftBlock,
+    GetRegister,
+    PutRegister,
+    DirtyCall,
+    FetchPage,
+    BatchFetchPages,
+    ResolveFunction,
+    Inspect,
+    /// A `GilWorkGuard::enter()` with no site attached. Expected to stay 0 —
+    /// a nonzero value means a new Python-touching callback was added without
+    /// naming its site, and the sub-partition has an unexplained residual.
+    Other,
+}
+
+impl CallbackSite {
+    const COUNT: usize = 20;
+
+    /// Stable counter suffix, used to name the `gil_work_ns_callback_*` keys.
+    pub fn name(self) -> &'static str {
+        match self {
+            CallbackSite::MemoryLoad => "memory_load",
+            CallbackSite::MemoryStore => "memory_store",
+            CallbackSite::MemoryStoreBatch => "memory_store_batch",
+            CallbackSite::MemoryLoadBatch => "memory_load_batch",
+            CallbackSite::MemoryLoadSymbolic => "memory_load_symbolic",
+            CallbackSite::MemoryStoreSymbolic => "memory_store_symbolic",
+            CallbackSite::MemoryStoreSymbolicValue => "memory_store_symbolic_value",
+            CallbackSite::MemoryStoreSymbolicFull => "memory_store_symbolic_full",
+            CallbackSite::MemoryLoadSymbolicFull => "memory_load_symbolic_full",
+            CallbackSite::OnHook => "on_hook",
+            CallbackSite::OnSyscall => "on_syscall",
+            CallbackSite::LiftBlock => "lift_block",
+            CallbackSite::GetRegister => "get_register",
+            CallbackSite::PutRegister => "put_register",
+            CallbackSite::DirtyCall => "dirty_call",
+            CallbackSite::FetchPage => "fetch_page",
+            CallbackSite::BatchFetchPages => "batch_fetch_pages",
+            CallbackSite::ResolveFunction => "resolve_function",
+            CallbackSite::Inspect => "inspect",
+            CallbackSite::Other => "other",
+        }
+    }
+
+    pub fn all() -> [CallbackSite; CallbackSite::COUNT] {
+        [
+            CallbackSite::MemoryLoad,
+            CallbackSite::MemoryStore,
+            CallbackSite::MemoryStoreBatch,
+            CallbackSite::MemoryLoadBatch,
+            CallbackSite::MemoryLoadSymbolic,
+            CallbackSite::MemoryStoreSymbolic,
+            CallbackSite::MemoryStoreSymbolicValue,
+            CallbackSite::MemoryStoreSymbolicFull,
+            CallbackSite::MemoryLoadSymbolicFull,
+            CallbackSite::OnHook,
+            CallbackSite::OnSyscall,
+            CallbackSite::LiftBlock,
+            CallbackSite::GetRegister,
+            CallbackSite::PutRegister,
+            CallbackSite::DirtyCall,
+            CallbackSite::FetchPage,
+            CallbackSite::BatchFetchPages,
+            CallbackSite::ResolveFunction,
+            CallbackSite::Inspect,
+            CallbackSite::Other,
+        ]
+    }
+}
+
 /// Cumulative GIL-work nanoseconds attributed to `class` on this thread.
 #[inline]
 pub fn gil_class_ns(class: GilClass) -> u64 {
     CLASS_ACCUM_NS.with(|c| c.get()[class as usize])
+}
+
+/// Cumulative `Callback`-class nanoseconds attributed to `site` on this thread.
+#[inline]
+pub fn callback_site_ns(site: CallbackSite) -> u64 {
+    SITE_ACCUM_NS.with(|s| s.get()[site as usize])
 }
 
 /// Reset both accumulators and the depth/region state. Call when (re)enabling
@@ -125,6 +234,8 @@ pub fn reset() {
     GIL_ACCUM_NS.with(|a| a.set(0));
     WALL_ACCUM_NS.with(|w| w.set(0));
     CLASS_ACCUM_NS.with(|c| c.set([0; GilClass::COUNT]));
+    REGION_SITE.with(|s| s.set(CallbackSite::Other));
+    SITE_ACCUM_NS.with(|s| s.set([0; CallbackSite::COUNT]));
 }
 
 /// Cumulative GIL-work nanoseconds on this thread (the Amdahl numerator).
@@ -149,11 +260,18 @@ pub struct GilWorkGuard {
 }
 
 impl GilWorkGuard {
-    /// Enter a [`GilClass::Callback`] region — the default, since the
-    /// `PythonCallbacks` dispatch sites are the bulk of the Python surface.
+    /// Enter an unattributed [`GilClass::Callback`] region. Prefer
+    /// [`GilWorkGuard::enter_site`]: time banked here lands in
+    /// [`CallbackSite::Other`], which is the sub-partition's residual bucket.
     #[inline]
     pub fn enter() -> Self {
-        Self::enter_as(GilClass::Callback)
+        Self::enter_site(CallbackSite::Other)
+    }
+
+    /// Enter a [`GilClass::Callback`] region attributed to `site`.
+    #[inline]
+    pub fn enter_site(site: CallbackSite) -> Self {
+        Self::enter_inner(GilClass::Callback, site)
     }
 
     /// Enter a region attributed to `class`. Only the outermost live guard on
@@ -161,6 +279,11 @@ impl GilWorkGuard {
     /// taken*, not whichever nested site happens to be innermost.
     #[inline]
     pub fn enter_as(class: GilClass) -> Self {
+        Self::enter_inner(class, CallbackSite::Other)
+    }
+
+    #[inline]
+    fn enter_inner(class: GilClass, site: CallbackSite) -> Self {
         if !ACTIVE.with(std::cell::Cell::get) {
             return GilWorkGuard { active: false };
         }
@@ -172,6 +295,7 @@ impl GilWorkGuard {
         if prev == 0 {
             REGION_START.with(|s| s.set(Some(Instant::now())));
             REGION_CLASS.with(|c| c.set(class));
+            REGION_SITE.with(|s| s.set(site));
         }
         GilWorkGuard { active: true }
     }
@@ -199,6 +323,16 @@ impl Drop for GilWorkGuard {
                 split[class as usize] += elapsed;
                 c.set(split);
             });
+            // The site split is a sub-partition of the `Callback` class only;
+            // a claripy-bridge or fork-metadata region has no dispatch site.
+            if class == GilClass::Callback {
+                let site = REGION_SITE.with(std::cell::Cell::get);
+                SITE_ACCUM_NS.with(|s| {
+                    let mut split = s.get();
+                    split[site as usize] += elapsed;
+                    s.set(split);
+                });
+            }
         }
     }
 }
@@ -281,6 +415,50 @@ mod tests {
             "a nested guard must not be attributed"
         );
         assert_eq!(gil_class_ns(GilClass::Callback), 0);
+    }
+
+    #[test]
+    fn sites_partition_the_callback_class() {
+        reset();
+        {
+            let _w = RunLoopWallGuard::new(true);
+            {
+                let _g = GilWorkGuard::enter_site(CallbackSite::LiftBlock);
+                busy_ns(50_000);
+            }
+            {
+                // A nested site must not steal the region from the outermost one.
+                let _outer = GilWorkGuard::enter_site(CallbackSite::MemoryLoad);
+                let _inner = GilWorkGuard::enter_site(CallbackSite::GetRegister);
+                busy_ns(50_000);
+            }
+            {
+                // A non-Callback outermost region contributes no site time.
+                let _g = GilWorkGuard::enter_as(GilClass::ClaripyExport);
+                busy_ns(50_000);
+            }
+        }
+        let sites: u64 = CallbackSite::all()
+            .iter()
+            .map(|s| callback_site_ns(*s))
+            .sum();
+        assert_eq!(
+            sites,
+            gil_class_ns(GilClass::Callback),
+            "sites must partition the Callback class"
+        );
+        assert!(callback_site_ns(CallbackSite::LiftBlock) > 0);
+        assert!(callback_site_ns(CallbackSite::MemoryLoad) > 0);
+        assert_eq!(
+            callback_site_ns(CallbackSite::GetRegister),
+            0,
+            "a nested site must not be attributed"
+        );
+        assert_eq!(
+            callback_site_ns(CallbackSite::Other),
+            0,
+            "no unattributed callback GIL time"
+        );
     }
 
     #[test]
