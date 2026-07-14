@@ -49,6 +49,13 @@ class PerformanceTracker:
         "callback_simprocedure_sc_sympage_ns",
         "callback_simprocedure_sc_meminstall_ns",
         "callback_simprocedure_sc_memreplay_ns",
+        # angr-gorvf.9: the same four phases, restricted to the process's FIRST
+        # SimProcedure crossing (one-time warmup). Subtract these from the
+        # totals above to get steady-state per-crossing cost.
+        "callback_simprocedure_first_state_create_ns",
+        "callback_simprocedure_first_execute_ns",
+        "callback_simprocedure_first_sync_back_ns",
+        "callback_simprocedure_first_state_copy_ns",
         "callback_memory_load_count",
         "callback_memory_load_total_ns",
         "callback_fetch_page_count",
@@ -98,8 +105,19 @@ class PerformanceTracker:
         self._stats["callback_simprocedure_count"] += 1
 
     def add_simprocedure_phase(self, phase: str, ns: int) -> None:
-        """phase: state_create, execute, sync_back, state_copy."""
+        """phase: state_create, execute, sync_back, state_copy.
+
+        Each phase is also banked into a ``first_``-prefixed twin while the
+        crossing counter is still zero, i.e. during the process's *first*
+        SimProcedure bounce (angr-gorvf.9). That crossing pays one-time warmup
+        (lazy angr/claripy imports, SimProcedure machinery, page-cache fill)
+        that steady-state crossings do not; without the split, a bench with a
+        single crossing reports its warmup as if it were per-crossing cost and
+        wildly overstates the value of porting that one procedure natively.
+        """
         self._stats[f"callback_simprocedure_{phase}_ns"] += ns
+        if self._stats["callback_simprocedure_count"] == 0:
+            self._stats[f"callback_simprocedure_first_{phase}_ns"] += ns
 
     def add_state_create_subphase(self, subphase: str, ns: int) -> None:
         """subphase: copy, bundle, memory, sympage (angr-gorvf.2 measure-first).
