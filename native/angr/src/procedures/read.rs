@@ -98,6 +98,15 @@ crate::declare_proc! {
                 "read count {count} exceeds limit"
             )));
         }
+        // A write-demoted file (angr-0xyq2 Phase 2) is Python-owned: the
+        // write bounced, so Python's `SimFile` holds bytes this FileSystem
+        // never saw. Minting fresh symbolic bytes here would discard them —
+        // keep bouncing (angr-8kk32).
+        if state.file_system_ref().is_demoted_fd(fd_u32) {
+            return Err(ProcedureError::Other(format!(
+                "read from fd={fd} on a write-demoted file falls back to Python"
+            )));
+        }
         // No concrete bytes and no bounded symbolic content: the fd is backed
         // by a file the native FS has no content for. Mint fresh symbolic
         // bytes rather than bouncing (angr-gorvf.15) — see

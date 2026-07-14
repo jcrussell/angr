@@ -237,6 +237,22 @@ impl FileSystem {
         true
     }
 
+    /// Whether `fd`'s backing path was demoted by a native write
+    /// (angr-8kk32). Demotion hands the file to Python for good — the write
+    /// itself bounced, so Python's `SimFile` holds bytes the native
+    /// `FileSystem` never saw. Native reads must therefore keep bouncing on
+    /// such an fd rather than minting fresh symbolic bytes for it
+    /// (`read_file_symbolic`, angr-gorvf.15), which would silently discard
+    /// the Python-side write.
+    pub fn is_demoted_fd(&self, fd: u32) -> bool {
+        if self.demoted_paths.is_empty() {
+            return false;
+        }
+        self.fds
+            .get(&fd)
+            .is_some_and(|d| self.demoted_paths.contains(&self.normalize_path(&d.name)))
+    }
+
     /// The cwd-normalized paths this lineage has demoted (angr-qluof).
     /// Sorted for a deterministic FFI order. Consumed by the Python
     /// re-add path to skip re-registering an ancestor's demoted content.

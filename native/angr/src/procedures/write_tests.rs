@@ -186,8 +186,10 @@ fn test_write_content_sym_demotes_and_falls_back() {
         assert_eq!(fs.fd_content(fd1), b"", "nothing written natively");
     }
 
-    // Subsequent read on the demoted fd is back to the old gap behavior:
-    // no content of either kind → Python fallback.
+    // Subsequent read on the demoted fd stays a Python fallback: the file is
+    // Python-owned from here on, so the contentless-fd mint of angr-gorvf.15
+    // must NOT kick in and invent bytes over Python's written content
+    // (angr-8kk32).
     let read_result = crate::procedures::read::NativeRead.call(
         &mut state,
         &[
