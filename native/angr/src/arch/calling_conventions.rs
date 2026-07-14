@@ -92,6 +92,21 @@ pub trait CallingConvention: Send + Sync {
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
 
+    /// Byte offset of the register slot carrying a scalar `double` return
+    /// value, or `None` when this ABI has no single-register FP-return slot we
+    /// model (x86 returns in the x87 `st0` stack; ARM EABI soft-float returns
+    /// a double in the `r0:r1` integer pair; MIPS O32/N64 use `$f0`, which our
+    /// register files do not expose yet).
+    ///
+    /// The value is written as the 64-bit IEEE-754 bit pattern into the low 64
+    /// bits of that offset (both AMD64 `xmm0` and AArch64 `v0` are 128-bit
+    /// little-endian vector registers whose low half holds the scalar).
+    /// Consumers must suppress the dispatcher's default integer-return store
+    /// (return `Ok(None)`) when they use this slot. See `procedures/strtod.rs`.
+    fn fp_return_register(&self) -> Option<u32> {
+        None
+    }
+
     /// The Linux syscall error register and its errno threshold, if this ABI
     /// carries a *separate* success/failure flag alongside the return value.
     ///
@@ -263,6 +278,10 @@ impl CallingConvention for SystemVAMD64 {
     fn return_register(&self) -> u32 {
         16 // RAX
     }
+
+    fn fp_return_register(&self) -> Option<u32> {
+        Some(224) // XMM0 (low 64 bits carry the scalar double)
+    }
 }
 
 /// x86 cdecl calling convention.
@@ -432,6 +451,10 @@ impl CallingConvention for AArch64CC {
 
     fn return_register(&self) -> u32 {
         16 // X0
+    }
+
+    fn fp_return_register(&self) -> Option<u32> {
+        Some(320) // Q0/V0 (low 64 bits carry the scalar double)
     }
 
     /// On AArch64, BL stores the return address in X30 (LR), not on the stack.
@@ -614,27 +637,40 @@ impl CallingConvention for MipsN64 {
 /// return-register bug (commit 5329d8222) for the failure mode this
 /// guards against.
 pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
-    let lower = arch_name.to_lowercase();
-    let lower_str = lower.as_str();
-
-    if SystemVAMD64::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(SystemVAMD64)
-    } else if Cdecl::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(Cdecl)
-    } else if ARMEABI::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(ARMEABI)
-    } else if AArch64CC::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(AArch64CC)
-    } else if MipsO32::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(MipsO32)
-    } else if MipsN64::ARCH_ALIASES.contains(&lower_str) {
-        Box::new(MipsN64)
-    } else {
+    cc_for_arch(arch_name).unwrap_or_else(|| {
         panic!(
             "default_cc_for_arch: no calling convention registered for arch {arch_name:?}. \
              Register it in ARCH_ALIASES on the relevant CC, or add a new CallingConvention impl. \
              Silent fallback to SystemV_AMD64 would mis-route argument extraction."
         )
+    })
+}
+
+/// Non-panicking variant of [`default_cc_for_arch`]: resolve the default
+/// calling convention for `arch_name`, or `None` when no CC is registered.
+///
+/// Callers that can degrade gracefully (e.g. a native SimProcedure that defers
+/// to Python on an unmodelled ABI) use this; the interpreter's argument
+/// extraction path — where a wrong CC silently yields wrong-but-plausible
+/// arguments — keeps the panicking wrapper.
+pub fn cc_for_arch(arch_name: &str) -> Option<Box<dyn CallingConvention>> {
+    let lower = arch_name.to_lowercase();
+    let lower_str = lower.as_str();
+
+    if SystemVAMD64::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(SystemVAMD64))
+    } else if Cdecl::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(Cdecl))
+    } else if ARMEABI::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(ARMEABI))
+    } else if AArch64CC::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(AArch64CC))
+    } else if MipsO32::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(MipsO32))
+    } else if MipsN64::ARCH_ALIASES.contains(&lower_str) {
+        Some(Box::new(MipsN64))
+    } else {
+        None
     }
 }
 

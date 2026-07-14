@@ -109,7 +109,8 @@ String → numeric conversion
        ``atoi``, ``atol``
      - Native — concrete buffer, base 0/8/10/16.
    * - ``strtod``
-     - Native (amd64 only; xmm0 return register).
+     - Native (amd64 ``xmm0`` / AArch64 ``v0`` FP-return slot; other
+       arches defer to Python).
 
 Heap
 ~~~~

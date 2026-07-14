@@ -878,7 +878,7 @@ the string-to-numeric family, env mutation, and extended string ops.
      - ``atol``, ``strtoul``, ``strtoll``, ``strtoull``, ``strtod``
      - 5 / 5
      - angr-f16h.3 (closed) — ``strtol.rs``, ``strtod.rs``
-       (``strtod`` amd64-only, xmm0 return)
+       (``strtod``: amd64 xmm0 / AArch64 v0 FP-return)
    * - Env mutation (angr-f16h.4)
      - ``setenv`` ✓, ``putenv`` ✓, ``unsetenv`` ✓, ``clearenv`` ✓
      - 4 / 4

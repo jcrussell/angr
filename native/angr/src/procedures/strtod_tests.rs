@@ -11,8 +11,13 @@ fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
     state.map_memory_data(addr, &data, Permission::RWX);
 }
 
+/// XMM0 (amd64) / Q0 (aarch64) byte offsets — the FP-return slots the
+/// procedure resolves through `CallingConvention::fp_return_register()`.
+const XMM0_OFFSET: u32 = 224;
+const AARCH64_Q0_OFFSET: u32 = 320;
+
 fn read_xmm0_low64(state: &RustSimState) -> u64 {
-    let bv = state.get_register_by_offset(AMD64_XMM0_OFFSET, 8);
+    let bv = state.get_register_by_offset(XMM0_OFFSET, 8);
     bv.as_u64().expect("xmm0 low64 concrete")
 }
 
@@ -130,7 +135,49 @@ fn test_strtod_inf_and_nan_parsed() {
 }
 
 #[test]
-fn test_strtod_non_amd64_falls_back() {
+fn test_strtod_aarch64_returns_in_v0() {
+    // AArch64 (AAPCS64) returns a scalar double in the low 64 bits of v0/q0.
+    let mut state = RustSimState::new("aarch64").unwrap();
+    setup_string(&mut state, 0x1000, b"42.5");
+    let p = NativeStrtod;
+    let ret = p
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+    assert!(ret.is_none(), "strtod must suppress integer-return store");
+    let v0 = state
+        .get_register_by_offset(AARCH64_Q0_OFFSET, 8)
+        .as_u64()
+        .expect("v0 low64 concrete");
+    assert_eq!(v0, 42.5f64.to_bits());
+    // X0 (the integer return register) must be left alone.
+    assert_eq!(state.get_register_by_offset(16, 8).as_u64(), Some(0));
+}
+
+#[test]
+fn test_strtod_aarch64_writes_endptr() {
+    let mut state = RustSimState::new("aarch64").unwrap();
+    setup_string(&mut state, 0x1000, b"-1.5e-3rest");
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+    let p = NativeStrtod;
+    p.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+    )
+    .unwrap();
+    let v0 = state
+        .get_register_by_offset(AARCH64_Q0_OFFSET, 8)
+        .as_u64()
+        .expect("v0 low64 concrete");
+    assert_eq!(v0, (-1.5e-3f64).to_bits());
+    let end = state.memory_load(0x2000, 8).unwrap().as_u64().unwrap();
+    assert_eq!(end, 0x1000 + 7);
+}
+
+#[test]
+fn test_strtod_non_fp_return_arch_falls_back() {
     // x86 has FP returns in st0, not xmm0 — we punt to Python.
     let mut state = RustSimState::new("x86").unwrap();
     state.map_memory_data(0x1000, b"1.0\x00", Permission::RWX);

@@ -8,28 +8,24 @@
 //! null terminator, leading whitespace + sign + optional digits-dot-digits
 //! + optional exponent, and feed the slice through Rust's `f64::from_str`.
 //!
-//! Symbolic bytes anywhere in the parsed region — or a non-amd64 target —
-//! fall back to Python. amd64 is the only architecture for which we know
-//! the FP-return calling-convention slot (`xmm0`); on other targets the
-//! caller's expectations don't fit our integer-return-register dispatch.
+//! Symbolic bytes anywhere in the parsed region — or a target whose calling
+//! convention has no modelled FP-return slot — fall back to Python. The slot
+//! comes from `CallingConvention::fp_return_register()`: amd64 (`xmm0`) and
+//! AArch64 (`v0`) provide one; x86 (x87 `st0`), ARM EABI soft-float (`r0:r1`)
+//! and MIPS (`$f0`) do not, so those still defer.
 //!
 //! Return value is the 64-bit IEEE-754 bit-pattern of the parsed double,
-//! written to the low 64 bits of `xmm0`. The dispatcher's default
+//! written to the low 64 bits of that register. The dispatcher's default
 //! integer-return store is suppressed by returning `Ok(None)`.
 
 use super::strings::scan_concrete_bounded;
 use super::{ProcedureError, extract_concrete_arg};
+use crate::arch::cc_for_arch;
 use crate::symbolic::RustBV;
 
 /// Maximum byte scan length when reading the numeric literal. Real strings
 /// rarely need more than ~64 bytes; cap the work even for hostile inputs.
 const MAX_LEN: usize = 256;
-
-/// XMM0 register byte-offset in the amd64 register file.
-/// Mirrors `crate::arch::amd64::offsets::XMM0`. Hard-coded here so we don't
-/// reach across modules for a single constant; if it ever moves, the
-/// `state.arch().name() == "amd64"` guard and unit tests will catch the drift.
-const AMD64_XMM0_OFFSET: u32 = 224;
 
 /// Walk `bytes` from the front and return the byte index immediately past
 /// the longest prefix that looks like a C99 floating-point literal. Returns
@@ -140,18 +136,19 @@ fn floating_prefix_len(bytes: &[u8]) -> usize {
 crate::declare_proc! {
     /// Native `strtod` SimProcedure.
     ///
-    /// Declared with `bv` arg modes (not `concrete`) so the amd64 calling-
+    /// Declared with `bv` arg modes (not `concrete`) so the FP-return calling-
     /// convention guard runs *before* the concrete-arg extraction; the macro's
     /// eager `concrete` extraction would otherwise reorder the symbolic-arg
-    /// Python fallback ahead of the non-amd64 `NotImplemented` path.
+    /// Python fallback ahead of the unsupported-ABI `NotImplemented` path.
     name = "strtod",
     struct = NativeStrtod,
     args = [nptr: bv, endptr: bv],
     call |state| {
-        // Only amd64 has a known FP-return register slot in our dispatcher.
-        if state.arch().name() != "AMD64" {
-            return Err(ProcedureError::NotImplemented);
-        }
+        // Without a modelled FP-return register (x86 st0, ARM soft-float
+        // r0:r1, MIPS $f0) we have nowhere to put the double — defer to Python.
+        let fp_ret = cc_for_arch(state.arch().name())
+            .and_then(|cc| cc.fp_return_register())
+            .ok_or(ProcedureError::NotImplemented)?;
 
         let nptr = extract_concrete_arg(&nptr, "nptr")?;
         let endptr = extract_concrete_arg(&endptr, "endptr")?;
@@ -190,16 +187,16 @@ crate::declare_proc! {
             state.memory_store(endptr, RustBV::concrete(end_addr as u128, bits))?;
         }
 
-        // Write the f64 bit pattern to xmm0 (low 64 bits). Leave the upper
-        // 64 bits untouched — the SysV ABI says only the low slot carries
-        // the scalar double return value.
+        // Write the f64 bit pattern to the low 64 bits of the FP-return
+        // register (xmm0 on amd64, v0 on AArch64). Leave the upper 64 bits
+        // untouched — both ABIs carry the scalar double in the low slot only.
         let bits = value.to_bits();
         let ret_bv = RustBV::concrete(bits as u128, 64);
-        state.set_register_by_offset(AMD64_XMM0_OFFSET, ret_bv);
+        state.set_register_by_offset(fp_ret, ret_bv);
 
         // Suppress the dispatcher's default integer-return-register store —
-        // we've placed the value in xmm0 already, and writing rax would
-        // pollute an unrelated register.
+        // we've placed the value in the FP register already, and writing the
+        // integer return register would pollute an unrelated slot.
         Ok(None)
     }
 }
