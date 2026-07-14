@@ -248,6 +248,37 @@ class TestApplyStateMetadataAllowList:
         mgr._apply_state_metadata(src2, dst2)
         assert o.LAZY_SOLVES not in dst2.options
 
+    def test_fill_policy_options_mirrored(self, fauxware_project):
+        """The unconstrained-fill options survive the init-cache copy (angr-z21g0).
+
+        The destination is a blank_state, whose defaults lack ZERO_FILL_*. If
+        the fill policy is dropped here, every Python-side load of an unmapped
+        byte during a SimProcedure callback mints a fresh ``mem_*`` BVS instead
+        of a zero; those symbolic bytes flow back into Rust and fork-storm the
+        exploration (xmllint/libxml2 went 1 active -> 60+ at step 27).
+        """
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        fill_opts = {
+            o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            o.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+            o.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
+        }
+        src = proj.factory.entry_state(add_options=fill_opts)
+        dst = proj.factory.blank_state(remove_options=fill_opts)
+        mgr._apply_state_metadata(src, dst)
+        for opt in fill_opts:
+            assert opt in dst.options
+
+        # Mirror contract: a source without the fill policy strips it from dst.
+        src2 = proj.factory.blank_state(remove_options=fill_opts)
+        dst2 = proj.factory.blank_state(add_options=fill_opts)
+        mgr._apply_state_metadata(src2, dst2)
+        for opt in fill_opts:
+            assert opt not in dst2.options
+
     def test_non_allowlisted_option_not_copied(self, fauxware_project):
         """An option outside the allow-list (TRACK_MEMORY_ACTIONS) on the
         source is NOT propagated to the destination — proves the copy is a

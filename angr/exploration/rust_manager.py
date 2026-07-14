@@ -3577,7 +3577,8 @@ class RustExplorationManager(
     def _apply_state_metadata(self, src_state: angr.SimState, dst_state: angr.SimState) -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
         ENABLE_NX / NO_IP_CONCRETIZATION / NO_SYMBOLIC_JUMP_RESOLUTION /
-        KEEP_IP_SYMBOLIC / TRACK_ACTION_HISTORY options from src to dst.
+        KEEP_IP_SYMBOLIC / TRACK_ACTION_HISTORY / ZERO_FILL_UNCONSTRAINED_* /
+        SYMBOL_FILL_UNCONSTRAINED_* options from src to dst.
 
         Options are mirrored — added when src has them, removed when src
         doesn't. The remove half matters for the in-memory init cache: a
@@ -3610,6 +3611,17 @@ class RustExplorationManager(
                 o.NO_SYMBOLIC_JUMP_RESOLUTION,
                 o.KEEP_IP_SYMBOLIC,
                 o.TRACK_ACTION_HISTORY,
+                # angr-z21g0: the unconstrained-fill policy. The init-cache
+                # dst_state is a blank_state, whose default options do NOT
+                # include these. Without the mirror, every Python-side load of
+                # an unmapped byte during a SimProcedure callback mints a fresh
+                # `mem_*` BVS instead of a zero — those symbolic bytes flow back
+                # into Rust and fork-storm the exploration (xmllint/libxml2:
+                # 1 state -> 60+ actives at step 27).
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                o.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+                o.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
                 # angr-kzjv6: symex-relevant options that native SimProcedures
                 # consult via RustSimState.has_option (e.g. SHORT_READS). Without
                 # this they get stripped here before `_add_rust_state` mirrors
