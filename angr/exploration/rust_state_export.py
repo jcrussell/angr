@@ -463,6 +463,33 @@ class RustStateExportMixin:
             if scratch is not None and getattr(scratch, "rust_fully_synced", False):
                 scratch.rust_fully_synced = False
 
+    def _cache_state_mirror(self, state_id: int, state) -> None:
+        """Cache a mid-run Python mirror of Rust state ``state_id`` (angr-ibx8j).
+
+        The callback-dispatch paths cache the SimState frame they just handed to
+        a SimProcedure — and the *same* frame object often lands under several
+        Rust ids (successive callbacks on a lineage reuse one Python frame, and
+        the symbolic-branch fork path caches the parent frame under each child
+        id). Rust resumes stepping the moment the callback returns, so the mirror
+        is stale by the time the user reads a stash.
+
+        Two sentinels keep the read side honest:
+
+        * ``rust_fully_synced = False`` sends ``_materialize_single_state`` down
+          ``_sync_cached_state``, which rebinds the state's ``RustRegisterProxy``
+          to ``state_id`` and drops its stale per-name read cache.
+        * ``rust_mirror_id`` records which Rust id this frame is a mirror *of*.
+          A materialization for any other id must de-alias (copy) first —
+          otherwise syncing the shared object for one id silently rewrites what
+          every other id sees, which is how ``mgr.active[i].addr`` came to report
+          a sibling's pc.
+        """
+        scratch = getattr(state, "scratch", None)
+        if scratch is not None:
+            scratch.rust_fully_synced = False
+            scratch.rust_mirror_id = state_id
+        self._state_cache[state_id] = state
+
     def _get_stash_states(self, stash: str) -> list:
         """Return lazy SimState references for the given stash.
 
@@ -515,6 +542,15 @@ class RustStateExportMixin:
         """
         state = self._state_cache.get(state_id)
         if state is not None:
+            # De-alias (angr-ibx8j): the cached frame may be shared with other
+            # Rust ids (see `_cache_state_mirror`). Syncing a shared object in
+            # place rebinds its register proxy to `state_id`, so every sibling
+            # id reading the same object would report THIS state's pc.
+            if getattr(state.scratch, "rust_mirror_id", state_id) != state_id:
+                state = state.copy()
+                state.scratch.rust_fully_synced = False
+                state.scratch.rust_mirror_id = state_id
+                self._state_cache[state_id] = state
             if not getattr(state.scratch, "rust_fully_synced", False):
                 self._sync_cached_state(state, state_id)
             self._finalize_materialized_state(state)
@@ -566,6 +602,7 @@ class RustStateExportMixin:
             self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
             self._sync_rust_heap_brk_to_state(angr_state, snapshot.state_id)
             angr_state.scratch.rust_fully_synced = True
+            angr_state.scratch.rust_mirror_id = snapshot.state_id
             self._state_cache[snapshot.state_id] = angr_state
             self._finalize_materialized_state(angr_state)
             return angr_state
@@ -597,6 +634,7 @@ class RustStateExportMixin:
         self._sync_rust_posix_brk_to_state(state, state_id)
         self._sync_rust_heap_brk_to_state(state, state_id)
         state.scratch.rust_fully_synced = True
+        state.scratch.rust_mirror_id = state_id
 
     def _finalize_materialized_state(self, state) -> None:
         """Per-state stdin restore + posix weakref fix.

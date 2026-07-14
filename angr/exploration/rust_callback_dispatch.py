@@ -1339,7 +1339,7 @@ class RustCallbackDispatchMixin:
         # Update cache for future callbacks
         state_id = event.callback_state_id
         if state_id is not None:
-            self._state_cache[state_id] = succ_state
+            self._cache_state_mirror(state_id, succ_state)
 
     def _resume_with_skip_hook(
         self,
@@ -1471,7 +1471,7 @@ class RustCallbackDispatchMixin:
 
         # Update cache with modified state for future callbacks
         if state_id is not None:
-            self._state_cache[state_id] = state
+            self._cache_state_mirror(state_id, state)
 
     def _extract_new_constraints(
         self,
@@ -1803,7 +1803,7 @@ class RustCallbackDispatchMixin:
                 # Update cache
                 state_id = event.callback_state_id
                 if state_id is not None:
-                    self._state_cache[state_id] = succ_state
+                    self._cache_state_mirror(state_id, succ_state)
 
                 # Handle additional successors
                 for succ in all_succs[1:]:
@@ -2045,7 +2045,7 @@ class RustCallbackDispatchMixin:
                 parent_state = self._state_cache[state_id]
                 for new_id in new_ids:
                     forked_state = parent_state.copy()
-                    self._state_cache[new_id] = forked_state
+                    self._cache_state_mirror(new_id, forked_state)
                     # Track lineage for plugin restoration
                     root = self._state_roots.get(state_id, state_id)
                     self._state_roots[new_id] = root

@@ -343,6 +343,26 @@ def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
     return mgr, target.rebased_addr
 
 
+class TestActiveProxyAddrMatchesRust:
+    """angr-ibx8j: ``mgr.active[i].addr`` must agree with the Rust-authoritative pc.
+
+    A mid-run callback caches ONE Python frame under several Rust state ids
+    (successive callbacks on a lineage reuse the frame; the symbolic-branch fork
+    path caches the parent frame under each child id). Before the fix, the first
+    materialization synced that shared object in place — binding its
+    ``RustRegisterProxy`` to its own id — so every sibling id read back the same,
+    wrong pc. A ``num_find`` early-exit leaves exactly such a frontier behind.
+    """
+
+    def test_active_addrs_match_rust_pcs(self, pbounce_project, monkeypatch):
+        mgr, _ = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=3)
+        active_ids = list(mgr._rust_mgr.get_state_ids("active"))
+        assert active_ids, "num_find=3 should leave an un-explored active frontier"
+        rust_pcs = sorted(hex(mgr._rust_mgr.get_state_pc_by_id(sid)) for sid in active_ids)
+        proxy_pcs = sorted(hex(s.addr) for s in mgr.active)
+        assert proxy_pcs == rust_pcs, f"proxy addrs {proxy_pcs} diverge from Rust pcs {rust_pcs}"
+
+
 class TestParallelCancelFrontier:
     """angr-op0dn.13.8 (Bug M1): a ``num_find`` early-exit must NOT eat the
     un-explored frontier.
