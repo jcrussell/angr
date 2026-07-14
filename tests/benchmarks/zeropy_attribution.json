@@ -1,0 +1,938 @@
+{
+ "_comment": "ZeroPy milestone (bd angr-gorvf.4) acceptance run \u2014 per-bench residual-bounce attribution. Measured 2026-07-14 (iter131) on a libvex-ffi FEATURE build (cargo build --release --features libvex-ffi), which is the build angr-3trr7 would make default. Regenerate: python tests/benchmarks/run_zeropy_gate.py --json <path> --min-pass 8",
+ "measured_at": "2026-07-14",
+ "commit": "33830be3c",
+ "build": "libvex-ffi feature build (libvex_ffi_enabled=True)",
+ "gate": {
+  "pass": 6,
+  "fail": 29,
+  "unmeasured": 1,
+  "error": 0,
+  "total": 36,
+  "min_pass_required": 8,
+  "result": "FAIL"
+ },
+ "benches": [
+  {
+   "bench": "CADET_00001",
+   "status": "UNMEASURED",
+   "reason": "no rust baseline (rust_time=null) \u2014 the Rust engine has never completed this bench",
+   "gil_work_time_ns": null,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {}
+  },
+  {
+   "bench": "CADET_00001_partial",
+   "wall_s": 7.01,
+   "found": 1,
+   "gil_work_time_ns": 13999743,
+   "run_wall_time_ns": 557430024,
+   "gil_by_class": {
+    "callback": 13999743
+   },
+   "gil_by_site": {
+    "lift_block": 13355214,
+    "memory_load": 644529
+   },
+   "attribution": {
+    "symbolic_branch": {
+     "count": 44,
+     "ns": 766196237
+    },
+    "lift_block": {
+     "count": 35,
+     "ns": 5661990
+    },
+    "memory_load": {
+     "count": 3,
+     "ns": 616226
+    },
+    "posix": {
+     "count": 2,
+     "ns": 290525
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.02511479898327113
+  },
+  {
+   "bench": "aarch64_le_branch",
+   "wall_s": 0.36,
+   "found": 1,
+   "gil_work_time_ns": 274495,
+   "run_wall_time_ns": 14075568,
+   "gil_by_class": {
+    "callback": 274495
+   },
+   "gil_by_site": {
+    "lift_block": 274495
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 2,
+     "ns": 263895
+    },
+    "posix": {
+     "count": 2,
+     "ns": 10129
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.01950152207001522
+  },
+  {
+   "bench": "ais3_crackme",
+   "wall_s": 0.82,
+   "found": 1,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 528062607,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "posix": {
+     "count": 2,
+     "ns": 77575
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "android_arm_license_validation",
+   "wall_s": 0.25,
+   "found": 1,
+   "gil_work_time_ns": 3381310,
+   "run_wall_time_ns": 64027621,
+   "gil_by_class": {
+    "callback": 3381310
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 77426,
+    "lift_block": 3303884
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 17,
+     "ns": 3253810
+    },
+    "posix": {
+     "count": 2,
+     "ns": 7835
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.05281017703281526
+  },
+  {
+   "bench": "arm_le_branch",
+   "wall_s": 0.23,
+   "found": 1,
+   "gil_work_time_ns": 252824,
+   "run_wall_time_ns": 13468068,
+   "gil_by_class": {
+    "callback": 252824
+   },
+   "gil_by_site": {
+    "lift_block": 252824
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 2,
+     "ns": 245140
+    },
+    "posix": {
+     "count": 2,
+     "ns": 6312
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.018772105991742838
+  },
+  {
+   "bench": "cli_ctype_fprintf",
+   "wall_s": 0.32,
+   "found": 1,
+   "gil_work_time_ns": 1474596,
+   "run_wall_time_ns": 171762723,
+   "gil_by_class": {
+    "callback": 1467745,
+    "claripy_import": 6851
+   },
+   "gil_by_site": {
+    "memory_load": 1405277,
+    "resolve_function": 62468
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 5,
+     "ns": 42382146
+    },
+    "memory_load": {
+     "count": 8,
+     "ns": 1367705
+    },
+    "posix": {
+     "count": 5,
+     "ns": 9818
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.008585075819972882
+  },
+  {
+   "bench": "cmu_binary_bomb_partial",
+   "wall_s": 1.03,
+   "found": 1,
+   "gil_work_time_ns": 166733,
+   "run_wall_time_ns": 355635499,
+   "gil_by_class": {
+    "callback": 166733
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 166733
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 2,
+     "ns": 6288234
+    },
+    "posix": {
+     "count": 4,
+     "ns": 9406
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.00046883115006469023
+  },
+  {
+   "bench": "codegate_2017-angrybird",
+   "wall_s": 3.26,
+   "found": 1,
+   "gil_work_time_ns": 111829441,
+   "run_wall_time_ns": 3016677071,
+   "gil_by_class": {
+    "callback": 111713364,
+    "claripy_import": 116077
+   },
+   "gil_by_site": {
+    "memory_load": 111713364
+   },
+   "attribution": {
+    "memory_load": {
+     "count": 11,
+     "ns": 111591364
+    },
+    "posix": {
+     "count": 2,
+     "ns": 24127059
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.03707040507419297
+  },
+  {
+   "bench": "cow_fork_scaling",
+   "wall_s": 2.49,
+   "found": 0,
+   "gil_work_time_ns": 25350897,
+   "run_wall_time_ns": 2350064690,
+   "gil_by_class": {
+    "callback": 25350897
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 54912,
+    "lift_block": 16062734,
+    "resolve_function": 9233251
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 256,
+     "ns": 15532966
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.01078731879504134
+  },
+  {
+   "bench": "csaw_wyvern",
+   "wall_s": 2.85,
+   "found": 0,
+   "gil_work_time_ns": 784830,
+   "run_wall_time_ns": 503320820,
+   "gil_by_class": {
+    "callback": 784830
+   },
+   "gil_by_site": {
+    "lift_block": 286837,
+    "memory_store": 417843,
+    "resolve_function": 80150
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 30,
+     "ns": 2101542199
+    },
+    "posix": {
+     "count": 32,
+     "ns": 421198
+    },
+    "lift_block": {
+     "count": 1,
+     "ns": 283172
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.0015593036663971104
+  },
+  {
+   "bench": "csgames2018",
+   "wall_s": 0.77,
+   "found": 1,
+   "gil_work_time_ns": 15630011,
+   "run_wall_time_ns": 326960679,
+   "gil_by_class": {
+    "callback": 15630011
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 649747,
+    "lift_block": 13388398,
+    "memory_load": 1591866
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 47,
+     "ns": 13222348
+    },
+    "simprocedure": {
+     "count": 1,
+     "ns": 9990267
+    },
+    "memory_load": {
+     "count": 1,
+     "ns": 1586876
+    },
+    "find_predicate": {
+     "count": 185,
+     "ns": 1097761
+    },
+    "posix": {
+     "count": 11,
+     "ns": 64750
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.04780394709175411
+  },
+  {
+   "bench": "defcamp_r100",
+   "wall_s": 0.31,
+   "found": 1,
+   "gil_work_time_ns": 12427407,
+   "run_wall_time_ns": 174327754,
+   "gil_by_class": {
+    "callback": 12387041,
+    "claripy_import": 40366
+   },
+   "gil_by_site": {
+    "memory_load": 12387041
+   },
+   "attribution": {
+    "memory_load": {
+     "count": 1,
+     "ns": 12382002
+    },
+    "posix": {
+     "count": 2,
+     "ns": 343956
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.07128759887539192
+  },
+  {
+   "bench": "defcamp_r100__dfs",
+   "wall_s": 0.32,
+   "found": 1,
+   "gil_work_time_ns": 12719325,
+   "run_wall_time_ns": 175925189,
+   "gil_by_class": {
+    "callback": 12675813,
+    "claripy_import": 43512
+   },
+   "gil_by_site": {
+    "memory_load": 12675813
+   },
+   "attribution": {
+    "memory_load": {
+     "count": 1,
+     "ns": 12670574
+    },
+    "posix": {
+     "count": 2,
+     "ns": 349816
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.07229962390434039
+  },
+  {
+   "bench": "defcon2016quals_baby-re",
+   "wall_s": 0.39,
+   "found": 1,
+   "gil_work_time_ns": 25183857,
+   "run_wall_time_ns": 170567222,
+   "gil_by_class": {
+    "callback": 25136838,
+    "claripy_import": 47019
+   },
+   "gil_by_site": {
+    "memory_load": 25136838
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 13,
+     "ns": 50456819
+    },
+    "memory_load": {
+     "count": 16,
+     "ns": 25056714
+    },
+    "posix": {
+     "count": 17,
+     "ns": 367787
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.14764769399832284
+  },
+  {
+   "bench": "ekopartyctf2016_rev250",
+   "wall_s": 2.0,
+   "found": 1,
+   "gil_work_time_ns": 49463,
+   "run_wall_time_ns": 1692446766,
+   "gil_by_class": {
+    "callback": 49463
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 49463
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 1,
+     "ns": 47571117
+    },
+    "posix": {
+     "count": 9,
+     "ns": 2337726
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 2.9225734595424196e-05
+  },
+  {
+   "bench": "ekopartyctf2016_sokohashv2",
+   "wall_s": 2.03,
+   "found": 1,
+   "gil_work_time_ns": 7497559,
+   "run_wall_time_ns": 11961193,
+   "gil_by_class": {
+    "callback": 7497559
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 20278,
+    "lift_block": 7477281
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 9,
+     "ns": 203749013
+    },
+    "lift_block": {
+     "count": 16,
+     "ns": 7429374
+    },
+    "posix": {
+     "count": 11,
+     "ns": 18004
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.6268236788755102
+  },
+  {
+   "bench": "fauxware",
+   "wall_s": 0.21,
+   "found": 0,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 7507240,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "simprocedure": {
+     "count": 1,
+     "ns": 58833088
+    },
+    "posix": {
+     "count": 5,
+     "ns": 228460
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "flareon2015_10",
+   "wall_s": 2.51,
+   "found": 0,
+   "gil_work_time_ns": 557717719,
+   "run_wall_time_ns": 633790716,
+   "gil_by_class": {
+    "callback": 557717719
+   },
+   "gil_by_site": {
+    "lift_block": 557717719
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 290,
+     "ns": 556144547
+    },
+    "simprocedure": {
+     "count": 2,
+     "ns": 19316457
+    },
+    "posix": {
+     "count": 4,
+     "ns": 8016
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.87997142419486
+  },
+  {
+   "bench": "flareon2015_2",
+   "wall_s": 3.23,
+   "found": 1,
+   "gil_work_time_ns": 3856294,
+   "run_wall_time_ns": 2843025465,
+   "gil_by_class": {
+    "callback": 3856294
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 47489,
+    "lift_block": 3808805
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 5,
+     "ns": 3780820
+    },
+    "posix": {
+     "count": 2,
+     "ns": 7855
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.0013564050155280617
+  },
+  {
+   "bench": "flareon2015_5",
+   "wall_s": 3.1,
+   "found": 1,
+   "gil_work_time_ns": 675332484,
+   "run_wall_time_ns": 1602374040,
+   "gil_by_class": {
+    "callback": 675317316,
+    "claripy_import": 15168
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 17122,
+    "lift_block": 9716587,
+    "memory_load": 1463885,
+    "memory_store": 146095,
+    "memory_store_symbolic_value": 663973627
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 3,
+     "ns": 117364031
+    },
+    "lift_block": {
+     "count": 35,
+     "ns": 9612062
+    },
+    "memory_load": {
+     "count": 32,
+     "ns": 1402367
+    },
+    "posix": {
+     "count": 5,
+     "ns": 13544
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.4214574544655004
+  },
+  {
+   "bench": "fork_solve_W6_S8",
+   "wall_s": 58.82,
+   "found": 1,
+   "gil_work_time_ns": 961539,
+   "run_wall_time_ns": 58684639511,
+   "gil_by_class": {
+    "callback": 961539
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 57479,
+    "lift_block": 388409,
+    "resolve_function": 515651
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 1,
+     "ns": 376266
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 1.638484973260791e-05
+  },
+  {
+   "bench": "google2016_unbreakable_0",
+   "wall_s": 0.89,
+   "found": 1,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 270016995,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "simprocedure": {
+     "count": 1,
+     "ns": 202725191
+    },
+    "posix": {
+     "count": 3,
+     "ns": 11201
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "google2016_unbreakable_1",
+   "wall_s": 2.69,
+   "found": 1,
+   "gil_work_time_ns": 33763,
+   "run_wall_time_ns": 263523937,
+   "gil_by_class": {
+    "callback": 33763
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 33763
+   },
+   "attribution": {
+    "posix": {
+     "count": 2,
+     "ns": 8665
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.00012812118847480637
+  },
+  {
+   "bench": "hackcon2016_angry-reverser",
+   "wall_s": 23.05,
+   "found": 1,
+   "gil_work_time_ns": 33271,
+   "run_wall_time_ns": 130702807,
+   "gil_by_class": {
+    "callback": 33271
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 33271
+   },
+   "attribution": {
+    "posix": {
+     "count": 2,
+     "ns": 7244
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.00025455459422535587
+  },
+  {
+   "bench": "mips32_le_branch",
+   "wall_s": 0.22,
+   "found": 1,
+   "gil_work_time_ns": 231334,
+   "run_wall_time_ns": 13787528,
+   "gil_by_class": {
+    "callback": 231334
+   },
+   "gil_by_site": {
+    "lift_block": 231334
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 2,
+     "ns": 223359
+    },
+    "posix": {
+     "count": 2,
+     "ns": 6722
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.016778497204139858
+  },
+  {
+   "bench": "mips64_be_branch",
+   "wall_s": 0.39,
+   "found": 1,
+   "gil_work_time_ns": 278423,
+   "run_wall_time_ns": 15098866,
+   "gil_by_class": {
+    "callback": 278423
+   },
+   "gil_by_site": {
+    "lift_block": 278423
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 2,
+     "ns": 270026
+    },
+    "posix": {
+     "count": 2,
+     "ns": 6594
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.01843999410286839
+  },
+  {
+   "bench": "mips64_le_branch",
+   "wall_s": 0.38,
+   "found": 1,
+   "gil_work_time_ns": 258365,
+   "run_wall_time_ns": 13943691,
+   "gil_by_class": {
+    "callback": 258365
+   },
+   "gil_by_site": {
+    "lift_block": 258365
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 2,
+     "ns": 249878
+    },
+    "posix": {
+     "count": 2,
+     "ns": 6372
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.0185291684963472
+  },
+  {
+   "bench": "mma_howtouse",
+   "wall_s": 6.1,
+   "found": 0,
+   "gil_work_time_ns": 43511340,
+   "run_wall_time_ns": 58594878,
+   "gil_by_class": {
+    "callback": 43511340
+   },
+   "gil_by_site": {
+    "lift_block": 43511340
+   },
+   "attribution": {
+    "simprocedure": {
+     "count": 1,
+     "ns": 8006326
+    },
+    "lift_block": {
+     "count": 3,
+     "ns": 974658
+    },
+    "posix": {
+     "count": 3,
+     "ns": 5091
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.7425792404585261
+  },
+  {
+   "bench": "securityfest_fairlight",
+   "wall_s": 5.72,
+   "found": 1,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 5184650776,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "simprocedure": {
+     "count": 1,
+     "ns": 141070742
+    },
+    "posix": {
+     "count": 3,
+     "ns": 117840
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "sharif7_rev50",
+   "wall_s": 0.16,
+   "found": 1,
+   "gil_work_time_ns": 13179076,
+   "run_wall_time_ns": 25629056,
+   "gil_by_class": {
+    "callback": 13143109,
+    "claripy_import": 35967
+   },
+   "gil_by_site": {
+    "memory_load": 13143109
+   },
+   "attribution": {
+    "memory_load": {
+     "count": 1,
+     "ns": 13137278
+    },
+    "posix": {
+     "count": 2,
+     "ns": 5891
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.5142240119963841
+  },
+  {
+   "bench": "strcpy_find",
+   "wall_s": 0.39,
+   "found": 1,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 33354427,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "find_predicate": {
+     "count": 97,
+     "ns": 1926512
+    },
+    "posix": {
+     "count": 8,
+     "ns": 13404
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "sym-write",
+   "wall_s": 0.57,
+   "found": 1,
+   "gil_work_time_ns": 2976202,
+   "run_wall_time_ns": 58996238,
+   "gil_by_class": {
+    "callback": 2976202
+   },
+   "gil_by_site": {
+    "lift_block": 2976202
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 11,
+     "ns": 2942979
+    },
+    "find_predicate": {
+     "count": 20,
+     "ns": 227585
+    },
+    "posix": {
+     "count": 4,
+     "ns": 89808
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.05044731835273971
+  },
+  {
+   "bench": "unmapped_analysis",
+   "wall_s": 0.79,
+   "found": 0,
+   "gil_work_time_ns": 0,
+   "run_wall_time_ns": 193662785,
+   "gil_by_class": {},
+   "gil_by_site": {},
+   "attribution": {
+    "simprocedure": {
+     "count": 2,
+     "ns": 23933506
+    },
+    "posix": {
+     "count": 12,
+     "ns": 3513201
+    }
+   },
+   "status": "PASS",
+   "gil_fraction": 0.0
+  },
+  {
+   "bench": "whitehatvn2015_re400",
+   "wall_s": 1.21,
+   "found": 1,
+   "gil_work_time_ns": 20803714,
+   "run_wall_time_ns": 879041202,
+   "gil_by_class": {
+    "callback": 20803714
+   },
+   "gil_by_site": {
+    "lift_block": 20803714
+   },
+   "attribution": {
+    "lift_block": {
+     "count": 66,
+     "ns": 20504138
+    },
+    "simprocedure": {
+     "count": 2,
+     "ns": 17153691
+    },
+    "posix": {
+     "count": 4,
+     "ns": 11570
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.023666369622569752
+  },
+  {
+   "bench": "xmllint_getenv",
+   "wall_s": 3.32,
+   "found": 1,
+   "gil_work_time_ns": 528170,
+   "run_wall_time_ns": 9723265,
+   "gil_by_class": {
+    "callback": 528170
+   },
+   "gil_by_site": {
+    "batch_fetch_pages": 15289,
+    "memory_load": 512881
+   },
+   "attribution": {
+    "memory_load": {
+     "count": 10,
+     "ns": 492385
+    }
+   },
+   "status": "FAIL",
+   "gil_fraction": 0.05432023091009039
+  }
+ ]
+}
