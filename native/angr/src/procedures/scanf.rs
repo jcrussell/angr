@@ -9,7 +9,7 @@
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
 use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
-use super::stdin_common::mint_stdin_bytes;
+use super::stdin_common::{mint_stdin_bytes, stdin_seed_unconsumed};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -41,6 +41,10 @@ struct ScanfSpec {
     bits: u32,
     /// Whether this is a string specifier (%s).
     is_string: bool,
+    /// Whether this is the single-character specifier (%c). Unlike the numeric
+    /// conversions it maps one input byte to one stored byte, so it can consume
+    /// a harness-seeded stdin byte directly (angr-ggb66).
+    is_char: bool,
     /// Max width for %s (from field width, e.g. %10s), or MAX_SCANF_STR_LEN.
     max_str_len: u64,
     /// Whether to suppress assignment (*).
@@ -137,6 +141,7 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 specs.push(ScanfSpec {
                     bits,
                     is_string: false,
+                    is_char: false,
                     max_str_len: 0,
                     suppress,
                 });
@@ -145,6 +150,7 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 specs.push(ScanfSpec {
                     bits: 8,
                     is_string: false,
+                    is_char: true,
                     max_str_len: 0,
                     suppress,
                 });
@@ -158,6 +164,7 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 specs.push(ScanfSpec {
                     bits: 8,
                     is_string: true,
+                    is_char: false,
                     max_str_len: max_len,
                     suppress,
                 });
@@ -181,6 +188,7 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 specs.push(ScanfSpec {
                     bits: 8,
                     is_string: true,
+                    is_char: false,
                     max_str_len: max_len,
                     suppress,
                 });
@@ -236,6 +244,25 @@ fn do_scanf(
     let fmt = read_format_string(state, fmt_addr)?;
     let specs = parse_scanf_format(&fmt)?;
 
+    // A numeric conversion models a decimal/hex *parse*: Python's
+    // format_parser.py::FormatString.interpret reads `max_digits` bytes off the
+    // stream and constrains each one to the ASCII rendering of the stored value.
+    // Natively we only mint one free BVS of the value's width, which neither
+    // constrains it to nor consumes the harness-seeded bytes — so a seeded run
+    // would get an unconstrained value AND leave the seed for the next
+    // conversion to re-read from offset 0. Defer the whole call to Python while
+    // fd 0 still has unread seed; unseeded runs keep the native fast path
+    // (angr-ggb66). Checked before any store so the fallback sees a pristine
+    // state.
+    if record_stdin
+        && specs.iter().any(|s| !s.is_string && !s.is_char)
+        && stdin_seed_unconsumed(state)
+    {
+        return Err(ProcedureError::Other(
+            "scanf: numeric conversion over harness-seeded stdin".to_string(),
+        ));
+    }
+
     let scan_id = symbol_counter("scanf");
     let mut arg_idx: usize = 0;
     let mut conversions: u64 = 0;
@@ -280,6 +307,15 @@ fn do_scanf(
 
             // NUL terminator
             state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
+        } else if spec.is_char && record_stdin {
+            // %c reads exactly one byte off the stream — a byte-for-byte
+            // mapping, so it consumes the harness seed like %s does (angr-ggb66).
+            let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
+            let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
+                .into_iter()
+                .next()
+                .expect("mint_stdin_bytes returns one BV per name");
+            state.memory_store(ptr, sym_byte)?;
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
             let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
@@ -385,8 +421,12 @@ impl NativeSimProcedure for NativeSscanf {
         let _src_addr = extract_concrete_arg(&args[0], "str")?;
         let fmt_addr = extract_concrete_arg(&args[1], "format")?;
         // For sscanf, we create symbolic values just like scanf
-        // (the parsed values are unconstrained in symbolic execution)
-        do_scanf(state, fmt_addr, &args[2..], "stdin", true)
+        // (the parsed values are unconstrained in symbolic execution), but the
+        // input is a memory buffer: sscanf never touches fd 0, so it neither
+        // consumes the harness-seeded stdin bytes nor records its symbols into
+        // the stdin reconstruction. Python agrees — `sscanf` calls
+        // `FormatString.interpret(addr=...)` with no `simfd` (angr-ggb66).
+        do_scanf(state, fmt_addr, &args[2..], "sscanf", false)
     }
 }
 

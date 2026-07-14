@@ -62,3 +62,19 @@ pub fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Vec<RustB
 
     sym_bytes
 }
+
+/// True while fd 0 still holds harness-seeded bytes the guest has not read.
+///
+/// Position-vs-length peek only — no read, no CoW. A native stdin reader that
+/// cannot map the seed byte-for-byte onto what it mints must defer to Python
+/// rather than mint an unconstrained value and leave the seed unconsumed: the
+/// only such reader is `scanf`'s numeric conversion, which models a decimal/hex
+/// parse of a digit run instead of copying bytes (angr-ggb66).
+pub fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
+    let fs = state.file_system_ref();
+    let Some(content) = fs.fd_content_sym(0) else {
+        return false;
+    };
+    let pos = fs.fd_info(0).map_or(0, |info| info.1);
+    (pos as usize) < content.len()
+}

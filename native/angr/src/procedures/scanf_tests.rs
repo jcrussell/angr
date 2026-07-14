@@ -773,3 +773,112 @@ fn test_scanf_percent_s_consumes_seeded_stdin() {
     }
     assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
 }
+
+/// angr-ggb66: `%c` reads one byte off the stream, so it consumes one seeded
+/// fd-0 byte per conversion, in order — same byte-for-byte mapping as `%s`.
+#[test]
+fn test_scanf_percent_c_consumes_seeded_stdin() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%c%c\x00", Permission::RWX);
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // char c1
+                RustBV::concrete(0x2001, 64), // char c2
+            ],
+        )
+        .expect("scanf served natively");
+
+    for (i, want) in [0x41u128, 0x42].iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} is still a leaf symbol");
+        assert_eq!(state.eval(&byte), Some(*want), "byte {i} binds to the seed");
+    }
+    // Both seeded bytes consumed, and neither is re-recorded as a stdin symbol.
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
+    assert_eq!(state.stdin_symbols().len(), 0);
+}
+
+/// angr-ggb66: a numeric conversion cannot map the seed byte-for-byte (it models
+/// a digit parse), so while fd 0 has unread seed the whole call defers to Python
+/// — and it defers *before* any store, so the earlier `%s` in the format has not
+/// consumed the seed either.
+#[test]
+fn test_scanf_numeric_over_seeded_stdin_falls_back() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%s %d\x00", Permission::RWX);
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
+    state.file_system().set_fd_content_sym(0, seed);
+
+    let result = NativeScanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64), // format
+            RustBV::concrete(0x2000, 64), // char buf[]
+            RustBV::concrete(0x2100, 64), // &int_var
+        ],
+    );
+
+    assert!(
+        result.is_err(),
+        "numeric conversion over seeded stdin should fall back to Python"
+    );
+    // Pristine state for the Python SimProcedure: seed unconsumed, no stores.
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 0);
+    assert_eq!(state.stdin_symbols().len(), 0);
+    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64(), Some(0));
+}
+
+/// The fallback is scoped to *unread* seed on stdin: `sscanf` reads a memory
+/// buffer (never fd 0) and an unseeded `scanf` has nothing to mismatch, so both
+/// keep the native `%d` fast path.
+#[test]
+fn test_scanf_numeric_native_without_unread_seed() {
+    // sscanf with a seeded (but irrelevant) fd 0.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    state.map_memory_data(0x1100, b"42\x00", Permission::RWX);
+    state
+        .file_system()
+        .set_fd_content_sym(0, vec![RustBV::concrete(0x41, 8)]);
+
+    NativeSscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1100, 64), // input string
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // &int_var
+            ],
+        )
+        .expect("sscanf reads no stdin, so it stays native");
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 0);
+
+    // scanf("%d") once an earlier reader drained the seed: native again.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);
+    state.map_memory_data(0x1100, b"%d\x00", Permission::RWX);
+    state
+        .file_system()
+        .set_fd_content_sym(0, vec![RustBV::concrete(0x41, 8)]);
+
+    NativeScanf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .expect("%c drains the one seeded byte");
+    NativeScanf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1100, 64), RustBV::concrete(0x2100, 64)],
+        )
+        .expect("nothing left to mismatch, so %d stays native");
+    let val = state.memory_load(0x2100, 4).unwrap();
+    assert!(val.as_u64().is_none(), "%d still mints a symbolic value");
+}
