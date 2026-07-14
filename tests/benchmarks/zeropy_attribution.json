@@ -1,1243 +1,872 @@
-{
-  "_comment": "ZeroPy milestone (bd angr-gorvf.4) acceptance run \u2014 per-bench residual-bounce attribution. Re-measured 2026-07-14 (iter136) on a libvex-ffi FEATURE build (cargo build --release --features libvex-ffi), which is the build angr-3trr7 would make default. This supersedes the iter131 run (commit 33830be3c, PASS=6): that run predated angr-gorvf.8, whose GilClass::Bounce now accounts the park-and-bounce excursion (Python SimProcedure / syscall / hook / symbolic-branch handler) that ran with BOTH gil_work_time_ns and run_wall_time_ns stopped. Four benches PASSed there while executing a Python SimProcedure \u2014 fauxware (46.7ms bounce), google2016_unbreakable_0 (196.7ms), securityfest_fairlight (141.1ms), unmapped_analysis (23.9ms) \u2014 and are now correctly FAIL. CAVEAT on the two benches that newly PASS here (google2016_unbreakable_1, hackcon2016_angry-reverser): both banked only ~33us of callback GIL in the iter131 run, i.e. they sit on the noise floor and their PASS/FAIL flips run-to-run. Only ais3_crackme and strcpy_find are durably Python-free. Regenerate: python tests/benchmarks/run_zeropy_gate.py --json <path> --min-pass 8",
-  "measured_at": "2026-07-14",
-  "commit": "ab0ed7459",
-  "build": "libvex-ffi feature build (libvex_ffi_enabled=True)",
-  "supersedes": {
-    "commit": "33830be3c",
-    "gate": {
-      "pass": 6,
-      "fail": 29,
-      "unmeasured": 1,
-      "error": 0,
-      "total": 36,
-      "min_pass_required": 8,
-      "result": "FAIL"
-    }
+[
+  {
+    "bench": "CADET_00001",
+    "status": "UNMEASURED",
+    "reason": "no rust baseline (rust_time=null) \u2014 the Rust engine has never completed this bench",
+    "gil_work_time_ns": null,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {}
   },
-  "gate": {
-    "pass": 4,
-    "fail": 31,
-    "unmeasured": 1,
-    "error": 0,
-    "total": 36,
-    "min_pass_required": 8,
-    "result": "FAIL"
-  },
-  "benches": [
-    {
-      "bench": "CADET_00001",
-      "status": "UNMEASURED",
-      "reason": "no rust baseline (rust_time=null) \u2014 the Rust engine has never completed this bench",
-      "gil_work_time_ns": null,
-      "gil_by_class": {},
-      "gil_by_site": {},
-      "attribution": {}
+  {
+    "bench": "CADET_00001_partial",
+    "wall_s": 6.98,
+    "found": 1,
+    "gil_work_time_ns": 33673976,
+    "run_wall_time_ns": 565339846,
+    "gil_by_class": {
+      "callback": 13099918,
+      "bounce": 20574058
     },
-    {
-      "bench": "CADET_00001_partial",
-      "wall_s": 7.01,
-      "found": 1,
-      "gil_work_time_ns": 33359773,
-      "run_wall_time_ns": 582700004,
-      "gil_by_class": {
-        "callback": 13066375,
-        "bounce": 20293398
-      },
-      "gil_by_site": {
-        "lift_block": 12493891,
-        "memory_load": 572484
-      },
-      "attribution": {
-        "symbolic_branch": {
-          "count": 44,
-          "ns": 744491552
-        },
-        "lift_block": {
-          "count": 35,
-          "ns": 5441296
-        },
-        "memory_load": {
-          "count": 3,
-          "ns": 551353
-        },
-        "posix": {
-          "count": 2,
-          "ns": 313539
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.05725033940449398
+    "gil_by_site": {
+      "lift_block": 12501314,
+      "memory_load": 598604
     },
-    {
-      "bench": "aarch64_le_branch",
-      "wall_s": 0.36,
-      "found": 1,
-      "gil_work_time_ns": 299410,
-      "run_wall_time_ns": 14848318,
-      "gil_by_class": {
-        "callback": 299410
-      },
-      "gil_by_site": {
-        "lift_block": 299410
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 2,
-          "ns": 288041
-        },
-        "posix": {
-          "count": 2,
-          "ns": 6512
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.0201645735227384
-    },
-    {
-      "bench": "ais3_crackme",
-      "wall_s": 0.81,
-      "found": 1,
-      "gil_work_time_ns": 0,
-      "run_wall_time_ns": 513378257,
-      "gil_by_class": {},
-      "gil_by_site": {},
-      "attribution": {
-        "posix": {
-          "count": 2,
-          "ns": 80169
-        }
-      },
-      "status": "PASS",
-      "gil_fraction": 0.0
-    },
-    {
-      "bench": "android_arm_license_validation",
-      "wall_s": 0.24,
-      "found": 1,
-      "gil_work_time_ns": 3351218,
-      "run_wall_time_ns": 65680952,
-      "gil_by_class": {
-        "callback": 3351218
-      },
-      "gil_by_site": {
-        "lift_block": 3351218
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 17,
-          "ns": 3286665
-        },
-        "posix": {
-          "count": 2,
-          "ns": 8276
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.05102267701600915
-    },
-    {
-      "bench": "arm_le_branch",
-      "wall_s": 0.23,
-      "found": 1,
-      "gil_work_time_ns": 246593,
-      "run_wall_time_ns": 13831961,
-      "gil_by_class": {
-        "callback": 246593
-      },
-      "gil_by_site": {
-        "lift_block": 246593
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 2,
-          "ns": 238387
-        },
-        "posix": {
-          "count": 2,
-          "ns": 6543
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.017827768600562132
-    },
-    {
-      "bench": "cli_ctype_fprintf",
-      "wall_s": 0.32,
-      "found": 1,
-      "gil_work_time_ns": 36647611,
-      "run_wall_time_ns": 212601846,
-      "gil_by_class": {
-        "callback": 1415756,
-        "claripy_import": 7052,
-        "bounce": 35224803
-      },
-      "gil_by_site": {
-        "memory_load": 1354180,
-        "resolve_function": 61576
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 5,
-          "ns": 43653218
-        },
-        "memory_load": {
-          "count": 8,
-          "ns": 1311309
-        },
-        "posix": {
-          "count": 5,
-          "ns": 10531
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.17237672997439543
-    },
-    {
-      "bench": "cmu_binary_bomb_partial",
-      "wall_s": 1.06,
-      "found": 1,
-      "gil_work_time_ns": 140118746,
-      "run_wall_time_ns": 503008850,
-      "gil_by_class": {
-        "bounce": 140118746
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 2,
-          "ns": 6130298
-        },
-        "posix": {
-          "count": 4,
-          "ns": 7896
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.2785611943010545
-    },
-    {
-      "bench": "codegate_2017-angrybird",
-      "wall_s": 3.32,
-      "found": 1,
-      "gil_work_time_ns": 115273542,
-      "run_wall_time_ns": 3078107751,
-      "gil_by_class": {
-        "callback": 115162282,
-        "claripy_import": 111260
-      },
-      "gil_by_site": {
-        "memory_load": 115162282
-      },
-      "attribution": {
-        "memory_load": {
-          "count": 11,
-          "ns": 115043837
-        },
-        "posix": {
-          "count": 2,
-          "ns": 25472233
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.037449482384932925
-    },
-    {
-      "bench": "cow_fork_scaling",
-      "wall_s": 2.54,
-      "found": 0,
-      "gil_work_time_ns": 25887071,
-      "run_wall_time_ns": 2407451737,
-      "gil_by_class": {
-        "callback": 25887071
-      },
-      "gil_by_site": {
-        "lift_block": 16031762,
-        "resolve_function": 9855309
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 256,
-          "ns": 15497104
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.01075289302881672
-    },
-    {
-      "bench": "csaw_wyvern",
-      "wall_s": 1.36,
-      "found": 0,
-      "gil_work_time_ns": 589509997,
-      "run_wall_time_ns": 1107917365,
-      "gil_by_class": {
-        "callback": 817724,
-        "bounce": 588692273
-      },
-      "gil_by_site": {
-        "lift_block": 296306,
-        "memory_store": 454503,
-        "resolve_function": 66915
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 30,
-          "ns": 588912754
-        },
-        "posix": {
-          "count": 32,
-          "ns": 418843
-        },
-        "lift_block": {
-          "count": 1,
-          "ns": 292429
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.5320884170815393
-    },
-    {
-      "bench": "csgames2018",
-      "wall_s": 0.97,
-      "found": 1,
-      "gil_work_time_ns": 211165667,
-      "run_wall_time_ns": 520176518,
-      "gil_by_class": {
-        "callback": 17566198,
-        "bounce": 193599469
-      },
-      "gil_by_site": {
-        "lift_block": 13836315,
-        "memory_load": 3729883
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 22,
-          "ns": 193663016
-        },
-        "lift_block": {
-          "count": 47,
-          "ns": 13646609
-        },
-        "memory_load": {
-          "count": 22,
-          "ns": 3601693
-        },
-        "find_predicate": {
-          "count": 185,
-          "ns": 1092044
-        },
-        "posix": {
-          "count": 54,
-          "ns": 131297
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.40595001829744265
-    },
-    {
-      "bench": "defcamp_r100",
-      "wall_s": 0.32,
-      "found": 1,
-      "gil_work_time_ns": 13277962,
-      "run_wall_time_ns": 182343588,
-      "gil_by_class": {
-        "callback": 13248627,
-        "claripy_import": 29335
-      },
-      "gil_by_site": {
-        "memory_load": 13248627
-      },
-      "attribution": {
-        "memory_load": {
-          "count": 1,
-          "ns": 13243457
-        },
-        "posix": {
-          "count": 2,
-          "ns": 355546
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.07281836529398555
-    },
-    {
-      "bench": "defcamp_r100__dfs",
-      "wall_s": 0.31,
-      "found": 1,
-      "gil_work_time_ns": 12780379,
-      "run_wall_time_ns": 175497648,
-      "gil_by_class": {
-        "callback": 12748389,
-        "claripy_import": 31990
-      },
-      "gil_by_site": {
-        "memory_load": 12748389
-      },
-      "attribution": {
-        "memory_load": {
-          "count": 1,
-          "ns": 12742878
-        },
-        "posix": {
-          "count": 2,
-          "ns": 338645
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.07282364832604481
-    },
-    {
-      "bench": "defcon2016quals_baby-re",
-      "wall_s": 0.39,
-      "found": 1,
-      "gil_work_time_ns": 74935250,
-      "run_wall_time_ns": 220690337,
-      "gil_by_class": {
-        "callback": 24567452,
-        "claripy_import": 46884,
-        "bounce": 50320914
-      },
-      "gil_by_site": {
-        "memory_load": 24567452
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 13,
-          "ns": 50393152
-        },
-        "memory_load": {
-          "count": 16,
-          "ns": 24505148
-        },
-        "posix": {
-          "count": 17,
-          "ns": 367378
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.339549302514319
-    },
-    {
-      "bench": "ekopartyctf2016_rev250",
-      "wall_s": 1.98,
-      "found": 1,
-      "gil_work_time_ns": 28232729,
-      "run_wall_time_ns": 1694985868,
-      "gil_by_class": {
-        "bounce": 28232729
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 1,
-          "ns": 47639555
-        },
-        "posix": {
-          "count": 9,
-          "ns": 2314998
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.016656616160058747
-    },
-    {
-      "bench": "ekopartyctf2016_sokohashv2",
-      "wall_s": 1.96,
-      "found": 1,
-      "gil_work_time_ns": 130816951,
-      "run_wall_time_ns": 135246447,
-      "gil_by_class": {
-        "callback": 7331250,
-        "bounce": 123485701
-      },
-      "gil_by_site": {
-        "lift_block": 7331250
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 9,
-          "ns": 123534563
-        },
-        "lift_block": {
-          "count": 16,
-          "ns": 7282368
-        },
-        "posix": {
-          "count": 11,
-          "ns": 17313
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.9672487070954255
-    },
-    {
-      "bench": "fauxware",
-      "wall_s": 0.21,
-      "found": 0,
-      "gil_work_time_ns": 46707248,
-      "run_wall_time_ns": 54225238,
-      "gil_by_class": {
-        "bounce": 46707248
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 1,
-          "ns": 60040663
-        },
-        "posix": {
-          "count": 5,
-          "ns": 241704
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.8613562562878931
-    },
-    {
-      "bench": "flareon2015_10",
-      "wall_s": 2.54,
-      "found": 0,
-      "gil_work_time_ns": 584297590,
-      "run_wall_time_ns": 661783814,
-      "gil_by_class": {
-        "callback": 565409867,
-        "bounce": 18887723
-      },
-      "gil_by_site": {
-        "lift_block": 565409867
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 290,
-          "ns": 563793657
-        },
-        "simprocedure": {
-          "count": 2,
-          "ns": 18890217
-        },
-        "posix": {
-          "count": 4,
-          "ns": 9128
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.8829130867803303
-    },
-    {
-      "bench": "flareon2015_2",
-      "wall_s": 3.37,
-      "found": 1,
-      "gil_work_time_ns": 3673701,
-      "run_wall_time_ns": 2933488744,
-      "gil_by_class": {
-        "callback": 3673701
-      },
-      "gil_by_site": {
-        "lift_block": 3673701
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 5,
-          "ns": 3646429
-        },
-        "posix": {
-          "count": 2,
-          "ns": 7875
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.0012523317185088882
-    },
-    {
-      "bench": "flareon2015_5",
-      "wall_s": 3.01,
-      "found": 1,
-      "gil_work_time_ns": 642029294,
-      "run_wall_time_ns": 1571805580,
-      "gil_by_class": {
-        "callback": 523713124,
-        "claripy_import": 14360,
-        "bounce": 118301810
-      },
-      "gil_by_site": {
-        "lift_block": 9497674,
-        "memory_load": 1368226,
-        "memory_store": 135566,
-        "memory_store_symbolic_value": 512711658
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 3,
-          "ns": 118695527
-        },
-        "lift_block": {
-          "count": 35,
-          "ns": 9390555
-        },
-        "memory_load": {
-          "count": 32,
-          "ns": 1303132
-        },
-        "posix": {
-          "count": 5,
-          "ns": 13194
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.4084660992232894
-    },
-    {
-      "bench": "fork_solve_W6_S8",
-      "wall_s": 45.0,
-      "found": 1,
-      "gil_work_time_ns": 926867,
-      "run_wall_time_ns": 44861769378,
-      "gil_by_class": {
-        "callback": 926867
-      },
-      "gil_by_site": {
-        "lift_block": 382297,
-        "resolve_function": 544570
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 1,
-          "ns": 369533
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 2.066050922312777e-05
-    },
-    {
-      "bench": "google2016_unbreakable_0",
-      "wall_s": 0.9,
-      "found": 1,
-      "gil_work_time_ns": 196694281,
-      "run_wall_time_ns": 477974848,
-      "gil_by_class": {
-        "bounce": 196694281
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 1,
-          "ns": 196850574
-        },
-        "posix": {
-          "count": 3,
-          "ns": 9669
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.4115159653756509
-    },
-    {
-      "bench": "google2016_unbreakable_1",
-      "wall_s": 2.43,
-      "found": 1,
-      "gil_work_time_ns": 0,
-      "run_wall_time_ns": 267311260,
-      "gil_by_class": {},
-      "gil_by_site": {},
-      "attribution": {
-        "posix": {
-          "count": 2,
-          "ns": 7394
-        }
-      },
-      "status": "PASS",
-      "gil_fraction": 0.0
-    },
-    {
-      "bench": "hackcon2016_angry-reverser",
-      "wall_s": 15.75,
-      "found": 1,
-      "gil_work_time_ns": 0,
-      "run_wall_time_ns": 129372282,
-      "gil_by_class": {},
-      "gil_by_site": {},
-      "attribution": {
-        "posix": {
-          "count": 2,
-          "ns": 7615
-        }
-      },
-      "status": "PASS",
-      "gil_fraction": 0.0
-    },
-    {
-      "bench": "mips32_le_branch",
-      "wall_s": 0.22,
-      "found": 1,
-      "gil_work_time_ns": 243356,
-      "run_wall_time_ns": 13273544,
-      "gil_by_class": {
-        "callback": 243356
-      },
-      "gil_by_site": {
-        "lift_block": 243356
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 2,
-          "ns": 234691
-        },
-        "posix": {
-          "count": 2,
-          "ns": 7194
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.01833391293237134
-    },
-    {
-      "bench": "mips64_be_branch",
-      "wall_s": 0.39,
-      "found": 1,
-      "gil_work_time_ns": 284633,
-      "run_wall_time_ns": 15600277,
-      "gil_by_class": {
-        "callback": 284633
-      },
-      "gil_by_site": {
-        "lift_block": 284633
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 2,
-          "ns": 275786
-        },
-        "posix": {
-          "count": 2,
-          "ns": 6983
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.018245381155732043
-    },
-    {
-      "bench": "mips64_le_branch",
-      "wall_s": 0.39,
-      "found": 1,
-      "gil_work_time_ns": 264255,
-      "run_wall_time_ns": 15183295,
-      "gil_by_class": {
-        "callback": 264255
-      },
-      "gil_by_site": {
-        "lift_block": 264255
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 2,
-          "ns": 255310
-        },
-        "posix": {
-          "count": 2,
-          "ns": 6472
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.017404324950545978
-    },
-    {
-      "bench": "mma_howtouse",
-      "wall_s": 6.18,
-      "found": 0,
-      "gil_work_time_ns": 92764955,
-      "run_wall_time_ns": 108064507,
-      "gil_by_class": {
-        "callback": 42474878,
-        "bounce": 50290077
-      },
-      "gil_by_site": {
-        "lift_block": 42474878
-      },
-      "attribution": {
-        "simprocedure": {
-          "count": 1,
-          "ns": 8307080
-        },
-        "lift_block": {
-          "count": 3,
-          "ns": 1007479
-        },
-        "posix": {
-          "count": 3,
-          "ns": 5340
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.8584220441592354
-    },
-    {
-      "bench": "securityfest_fairlight",
-      "wall_s": 7.92,
-      "found": 1,
-      "gil_work_time_ns": 141110316,
-      "run_wall_time_ns": 7515230392,
-      "gil_by_class": {
-        "bounce": 141110316
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 1,
-          "ns": 141237294
-        },
-        "posix": {
-          "count": 3,
-          "ns": 120907
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.018776578845834536
-    },
-    {
-      "bench": "sharif7_rev50",
-      "wall_s": 0.16,
-      "found": 1,
-      "gil_work_time_ns": 12413951,
-      "run_wall_time_ns": 24177093,
-      "gil_by_class": {
-        "callback": 12384927,
-        "claripy_import": 29024
-      },
-      "gil_by_site": {
-        "memory_load": 12384927
-      },
-      "attribution": {
-        "memory_load": {
-          "count": 1,
-          "ns": 12380369
-        },
-        "posix": {
-          "count": 2,
-          "ns": 6000
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.5134592070270814
-    },
-    {
-      "bench": "strcpy_find",
-      "wall_s": 0.39,
-      "found": 1,
-      "gil_work_time_ns": 0,
-      "run_wall_time_ns": 34190053,
-      "gil_by_class": {},
-      "gil_by_site": {},
-      "attribution": {
-        "find_predicate": {
-          "count": 97,
-          "ns": 1955064
-        },
-        "posix": {
-          "count": 8,
-          "ns": 14106
-        }
-      },
-      "status": "PASS",
-      "gil_fraction": 0.0
-    },
-    {
-      "bench": "sym-write",
-      "wall_s": 0.55,
-      "found": 1,
-      "gil_work_time_ns": 3052575,
-      "run_wall_time_ns": 46790379,
-      "gil_by_class": {
-        "callback": 3052575
-      },
-      "gil_by_site": {
-        "lift_block": 3052575
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 11,
-          "ns": 3016879
-        },
-        "find_predicate": {
-          "count": 20,
-          "ns": 213302
-        },
-        "posix": {
-          "count": 4,
-          "ns": 93084
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.06523937324807734
-    },
-    {
-      "bench": "unmapped_analysis",
-      "wall_s": 0.79,
-      "found": 0,
-      "gil_work_time_ns": 23930060,
-      "run_wall_time_ns": 213612991,
-      "gil_by_class": {
-        "bounce": 23930060
-      },
-      "gil_by_site": {},
-      "attribution": {
-        "simprocedure": {
-          "count": 2,
-          "ns": 23901977
-        },
-        "posix": {
-          "count": 12,
-          "ns": 3535631
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.11202530280567065
-    },
-    {
-      "bench": "whitehatvn2015_re400",
-      "wall_s": 1.26,
-      "found": 1,
-      "gil_work_time_ns": 38935495,
-      "run_wall_time_ns": 936047403,
-      "gil_by_class": {
-        "callback": 21442769,
-        "bounce": 17492726
-      },
-      "gil_by_site": {
-        "lift_block": 21442769
-      },
-      "attribution": {
-        "lift_block": {
-          "count": 66,
-          "ns": 21140703
-        },
-        "simprocedure": {
-          "count": 2,
-          "ns": 17499228
-        },
-        "posix": {
-          "count": 4,
-          "ns": 11652
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.04159564448895758
-    },
-    {
-      "bench": "xmllint_getenv",
-      "wall_s": 3.32,
-      "found": 1,
-      "gil_work_time_ns": 545231,
-      "run_wall_time_ns": 10253631,
-      "gil_by_class": {
-        "callback": 545231
-      },
-      "gil_by_site": {
-        "batch_fetch_pages": 16531,
-        "memory_load": 528700
-      },
-      "attribution": {
-        "memory_load": {
-          "count": 10,
-          "ns": 503236
-        }
-      },
-      "status": "FAIL",
-      "gil_fraction": 0.053174431574531986
-    }
-  ],
-  "simprocedure_bounce_split": {
-    "_comment": "angr-gorvf.9 \u2014 three-way split of the simprocedure bounce class (export/state_create | Python proc body/execute | resume re-sync/sync_back). Measured on HEAD 5f8d936e4, stock build, --counters-json, 2026-07-14. VERDICT: in steady state (49 non-first crossings across these 4 benches) state_create is 65.6% and execute only 29.5% \u2014 the BOUNCE SERVICE dominates the proc bodies 2.2:1. Inside state_create, _replay_rust_dirty_pages (sc_memreplay) is the single largest component (360ms of 542ms). The eye-catching 168ms/197ms 'strncpy costs 197ms' figure is a FIRST-CROSSING artifact: on the two multi-crossing benches the first crossing's execute is only ~2ms, so the proc bodies are cheap and porting more native procedures does NOT buy back the 1639ms class. CAVEAT: for the ZeroPy PASS/FAIL gate (gil_work_time_ns == 0) even one cheap crossing is fatal, so native ports remain the GATE lever for 1-crossing benches (fauxware `open`, unbreakable_0 `strncpy`) while the bounce path is the TIME lever. Do not conflate the two.",
-    "measured_at": "2026-07-14",
-    "commit": "5f8d936e4",
-    "build": "stock (libvex_ffi off)",
-    "aggregate": {
-      "crossings": 54,
-      "total_ms": 1047.9,
-      "warmup_first_crossing_ms": 269.6,
-      "steady_ms": 778.3,
-      "steady_share_pct": {
-        "state_create": 65.6,
-        "execute": 29.5,
-        "sync_back": 4.7,
-        "state_copy": 0.2
+    "attribution": {
+      "symbolic_branch": {
+        "count": 44,
+        "ns": 740059070
+      },
+      "lift_block": {
+        "count": 35,
+        "ns": 5429484
+      },
+      "memory_load": {
+        "count": 3,
+        "ns": 571803
+      },
+      "posix": {
+        "count": 2,
+        "ns": 312977
       }
     },
-    "benches": {
-      "fauxware": {
-        "crossings": 1,
-        "total_ms": 59.9,
-        "fallback_by_name": {
-          "open": 1
-        },
-        "phases_ms": {
-          "state_create": 2.9,
-          "state_copy": 0.0,
-          "execute": 42.9,
-          "sync_back": 14.1
-        },
-        "first_crossing_ms": {
-          "state_create": 2.9,
-          "state_copy": 0.0,
-          "execute": 42.9,
-          "sync_back": 14.1
-        },
-        "state_create_subphases_ms": {
-          "bundle": 0.7,
-          "meminstall": 1.0,
-          "memory": 2.1,
-          "memreplay": 1.1,
-          "sympage": 0.0
-        }
-      },
-      "google2016_unbreakable_0": {
-        "crossings": 1,
-        "total_ms": 195.0,
-        "fallback_by_name": {
-          "strncpy": 1
-        },
-        "phases_ms": {
-          "state_create": 19.4,
-          "state_copy": 0.9,
-          "execute": 167.9,
-          "sync_back": 6.7
-        },
-        "first_crossing_ms": {
-          "state_create": 19.4,
-          "state_copy": 0.9,
-          "execute": 167.9,
-          "sync_back": 6.7
-        },
-        "state_create_subphases_ms": {
-          "bundle": 0.6,
-          "meminstall": 0.7,
-          "memory": 8.2,
-          "memreplay": 7.5,
-          "sympage": 10.5
-        }
-      },
-      "csgames2018": {
-        "crossings": 22,
-        "total_ms": 193.6,
-        "fallback_by_name": {
-          "fwrite": 22
-        },
-        "phases_ms": {
-          "state_create": 114.4,
-          "state_copy": 0.1,
-          "execute": 66.8,
-          "sync_back": 11.8
-        },
-        "first_crossing_ms": {
-          "state_create": 6.6,
-          "state_copy": 0.0,
-          "execute": 2.5,
-          "sync_back": 0.6
-        },
-        "state_create_subphases_ms": {
-          "bundle": 12.7,
-          "copy": 29.8,
-          "meminstall": 33.2,
-          "memory": 60.3,
-          "memreplay": 27.1,
-          "sympage": 10.9
-        },
-        "steady_ms_per_crossing": {
-          "state_create": 5.14,
-          "state_copy": 0.01,
-          "execute": 3.06,
-          "sync_back": 0.53
-        }
-      },
-      "csaw_wyvern": {
-        "crossings": 30,
-        "total_ms": 600.7,
-        "fallback_by_name": {
-          "memmove": 5,
-          "operator delete(void*)": 5,
-          "operator new(unsigned long)": 6,
-          "std::allocator<char>::allocator()": 1,
-          "std::allocator<char>::~allocator()": 1,
-          "std::basic_ostream<char, std::char_traits<char>>& std::operator<<<std::char_traits<char>>(std::basic_ostream<char, std::char_traits<char>>&, char const*)": 7,
-          "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::basic_string(char const*, std::allocator<char> const&)": 1,
-          "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::basic_string(std::string const&)": 1,
-          "std::basic_string<char, std::char_traits<char>, std::allocator<char>>::~basic_string()": 2,
-          "std::string::length() const": 1
-        },
-        "phases_ms": {
-          "state_create": 405.1,
-          "state_copy": 1.8,
-          "execute": 166.9,
-          "sync_back": 26.1
-        },
-        "first_crossing_ms": {
-          "state_create": 2.4,
-          "state_copy": 0.0,
-          "execute": 1.9,
-          "sync_back": 0.8
-        },
-        "state_create_subphases_ms": {
-          "bundle": 36.1,
-          "meminstall": 38.9,
-          "memory": 368.0,
-          "memreplay": 329.0,
-          "sympage": 0.0
-        },
-        "steady_ms_per_crossing": {
-          "state_create": 13.88,
-          "state_copy": 0.06,
-          "execute": 5.69,
-          "sync_back": 0.87
-        }
-      }
-    }
+    "status": "FAIL",
+    "gil_fraction": 0.059564129856150276
   },
-  "simprocedure_replay_fix": {
-    "_comment": "angr-gorvf.10 \u2014 the sc_memreplay fix. ROOT CAUSE was NOT the cumulative dirty set (Rust never clears it, but it stays tiny: csaw_wyvern replays only 48 pages across 30 crossings = 1.6/crossing). It was the per-page Python STORE: 311ms of the 325ms bill, against 13ms of FFI to fetch the same pages. Two costs, both in angr's memory-mixin stack, both fixed by talking to the UltraPage directly (RustStateSyncMixin._acquire_ultrapage / _blit_concrete_page): (1) UltraPage.store writes concrete bytes with a byte-at-a-time loop that right-shifts the whole value (`ival >>= 8`), i.e. quadratic \u2014 one 4096-byte page cost ~6.5ms; a full-page write is now a bytearray-slice memcpy. (2) The real bulk: a page carries ~169 symbolic objects (8107 entries over 48 page-replays) and each generic state.memory.store cost ~32us of mixin stack = 260ms; storing into the already-acquired page (UltraPage.store, cooperate=False) cut that to ~8us/entry. A page-content memo was tried and REVERTED \u2014 with only 1.6 pages/crossing there is nothing to dedup.",
-    "measured_at": "2026-07-14",
-    "baseline_commit": "5f8d936e4",
-    "build": "stock (libvex_ffi off)",
-    "aggregate": {
-      "memreplay_ms_before": 359.8,
-      "memreplay_ms_after": 88.2,
-      "memreplay_delta_pct": -75.5,
-      "class_total_ms_before": 1047.9,
-      "class_total_ms_after": 768.1,
-      "class_delta_pct": -26.7
+  {
+    "bench": "aarch64_le_branch",
+    "wall_s": 0.36,
+    "found": 1,
+    "gil_work_time_ns": 299212,
+    "run_wall_time_ns": 14362847,
+    "gil_by_class": {
+      "callback": 299212
     },
-    "benches": {
-      "fauxware": {
-        "crossings": 1,
-        "memreplay_ms": [
-          1.1,
-          0.4
-        ],
-        "state_create_ms": [
-          2.9,
-          2.2
-        ],
-        "total_ms": [
-          59.9,
-          58.3
-        ]
+    "gil_by_site": {
+      "lift_block": 299212
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 2,
+        "ns": 287620
       },
-      "google2016_unbreakable_0": {
-        "crossings": 1,
-        "memreplay_ms": [
-          7.5,
-          0.5
-        ],
-        "state_create_ms": [
-          19.4,
-          17.8
-        ],
-        "total_ms": [
-          195.0,
-          196.1
-        ]
-      },
-      "csgames2018": {
-        "crossings": 22,
-        "memreplay_ms": [
-          28.0,
-          5.7
-        ],
-        "state_create_ms": [
-          null,
-          94.1
-        ],
-        "total_ms": [
-          null,
-          172.4
-        ]
-      },
-      "csaw_wyvern": {
-        "crossings": 30,
-        "memreplay_ms": [
-          323.0,
-          81.6
-        ],
-        "state_create_ms": [
-          397.3,
-          154.2
-        ],
-        "total_ms": [
-          587.5,
-          341.3
-        ]
+      "posix": {
+        "count": 2,
+        "ns": 7985
       }
     },
-    "csaw_wyvern_per_crossing_memreplay_ms": [
-      10.8,
-      2.72
-    ],
-    "residual": "sym stores are still 66.8ms of csaw_wyvern's 81.6ms memreplay (8107 entries x ~8us). Next lever if needed: coalesce contiguous byte-granular symbolic objects into one store, or make Rust export only objects dirtied since the last crossing."
+    "status": "FAIL",
+    "gil_fraction": 0.020832360046723328
   },
-  "simprocedure_replay_coalesce": {
-    "_comment": "angr-gorvf.11 \u2014 the residual symbolic half of sc_memreplay. MEASURED, not assumed: the objects Rust hands back are NOT already wide (csaw_wyvern: 8107 entries, 6399 of width 1 byte, 1708 of width 8; they form 1316 contiguous runs), so the bead's 'lever is empty' escape did not apply. But the winning fix was NOT the AST coalesce the bead proposed \u2014 no Concat is built at all. The per-entry cost was never the AST: it was UltraPage.store re-deriving the range to clear with two SortedDict irange walks plus a SimMemoryObject wrap, ~8us/entry. That clear is DEAD WORK during a replay: _blit_concrete_page has just zeroed symbolic_bitmap across all 4096 bytes, so no pre-existing symbolic_data entry is reachable by a load, and Rust's object list IS the page's complete symbolic state. RustStateSyncMixin._blit_symbolic_page rebuilds the page's SortedDict from that list in one pass (guarded on blitted=True, declines straddlers before mutating anything). CAVEAT on csgames2018: its sym counter reads bimodal 0.65 / 7.1 / 7.7ms across identical runs. That is a GC pause being attributed to the SortedDict rebuild line, not work \u2014 its bounce TOTAL is flat at 167-170ms vs 165-171ms baseline. Rank sub-counters on this bench by the bounce total, not by sym_ns alone.",
-    "measured_at": "2026-07-14",
-    "baseline_commit": "e6f28e7c8",
-    "build": "stock (libvex_ffi off)",
-    "object_widths_csaw_wyvern": {
-      "width_1_byte": 6399,
-      "width_8_byte": 1708,
-      "total_entries": 8107,
-      "contiguous_runs": 1316,
-      "pages": 48
-    },
-    "benches": {
-      "csaw_wyvern": {
-        "crossings": 30,
-        "entries": 8107,
-        "sym_ms": [
-          66.8,
-          8.6
-        ],
-        "memreplay_ms": [
-          81.6,
-          22.6
-        ],
-        "bounce_total_ms": [
-          341.3,
-          286.2
-        ]
-      },
-      "csgames2018": {
-        "crossings": 22,
-        "entries": 370,
-        "sym_ms": [
-          3.2,
-          "0.65-7.7 (GC-bimodal)"
-        ],
-        "bounce_total_ms": [
-          168.7,
-          169.0
-        ]
-      },
-      "fauxware": {
-        "crossings": 1,
-        "entries": 17,
-        "sym_ms": [
-          0.1,
-          0.0
-        ],
-        "memreplay_ms": [
-          0.4,
-          0.2
-        ]
-      },
-      "google2016_unbreakable_0": {
-        "crossings": 1,
-        "entries": 67,
-        "sym_ms": [
-          0.4,
-          0.1
-        ],
-        "memreplay_ms": [
-          0.5,
-          0.1
-        ]
+  {
+    "bench": "ais3_crackme",
+    "wall_s": 0.83,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 535407762,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 81894
       }
-    }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "android_arm_license_validation",
+    "wall_s": 0.24,
+    "found": 1,
+    "gil_work_time_ns": 3408361,
+    "run_wall_time_ns": 66024757,
+    "gil_by_class": {
+      "callback": 3408361
+    },
+    "gil_by_site": {
+      "lift_block": 3408361
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 17,
+        "ns": 3354361
+      },
+      "posix": {
+        "count": 2,
+        "ns": 8066
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.05162246943218587
+  },
+  {
+    "bench": "arm_le_branch",
+    "wall_s": 0.23,
+    "found": 1,
+    "gil_work_time_ns": 241152,
+    "run_wall_time_ns": 13577313,
+    "gil_by_class": {
+      "callback": 241152
+    },
+    "gil_by_site": {
+      "lift_block": 241152
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 2,
+        "ns": 233487
+      },
+      "posix": {
+        "count": 2,
+        "ns": 7713
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.017761393583546316
+  },
+  {
+    "bench": "cli_ctype_fprintf",
+    "wall_s": 0.27,
+    "found": 1,
+    "gil_work_time_ns": 33311605,
+    "run_wall_time_ns": 160159902,
+    "gil_by_class": {
+      "callback": 60393,
+      "bounce": 33251212
+    },
+    "gil_by_site": {
+      "resolve_function": 60393
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 5,
+        "ns": 42202859
+      },
+      "posix": {
+        "count": 5,
+        "ns": 10630
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.20798966897469756
+  },
+  {
+    "bench": "cmu_binary_bomb_partial",
+    "wall_s": 1.04,
+    "found": 1,
+    "gil_work_time_ns": 133995873,
+    "run_wall_time_ns": 492061128,
+    "gil_by_class": {
+      "bounce": 133995873
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 2,
+        "ns": 5617155
+      },
+      "posix": {
+        "count": 4,
+        "ns": 8918
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.27231550182521225
+  },
+  {
+    "bench": "codegate_2017-angrybird",
+    "wall_s": 3.07,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 2822587244,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 23517296
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "cow_fork_scaling",
+    "wall_s": 2.48,
+    "found": 0,
+    "gil_work_time_ns": 26802049,
+    "run_wall_time_ns": 2339110896,
+    "gil_by_class": {
+      "callback": 26802049
+    },
+    "gil_by_site": {
+      "lift_block": 16551996,
+      "resolve_function": 10250053
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 256,
+        "ns": 16007918
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.011458220747820415
+  },
+  {
+    "bench": "csaw_wyvern",
+    "wall_s": 1.04,
+    "found": 0,
+    "gil_work_time_ns": 282197307,
+    "run_wall_time_ns": 789994088,
+    "gil_by_class": {
+      "callback": 776336,
+      "bounce": 281420971
+    },
+    "gil_by_site": {
+      "lift_block": 285626,
+      "memory_store": 423664,
+      "resolve_function": 67046
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 30,
+        "ns": 281648796
+      },
+      "posix": {
+        "count": 32,
+        "ns": 376012
+      },
+      "lift_block": {
+        "count": 1,
+        "ns": 282149
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.35721445424285253
+  },
+  {
+    "bench": "csgames2018",
+    "wall_s": 0.94,
+    "found": 1,
+    "gil_work_time_ns": 188726163,
+    "run_wall_time_ns": 501639908,
+    "gil_by_class": {
+      "callback": 17461263,
+      "bounce": 171264900
+    },
+    "gil_by_site": {
+      "lift_block": 13675388,
+      "memory_load": 3785875
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 22,
+        "ns": 171307559
+      },
+      "lift_block": {
+        "count": 47,
+        "ns": 13478094
+      },
+      "memory_load": {
+        "count": 22,
+        "ns": 3661084
+      },
+      "find_predicate": {
+        "count": 185,
+        "ns": 1046514
+      },
+      "posix": {
+        "count": 54,
+        "ns": 128523
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.37621839887587255
+  },
+  {
+    "bench": "defcamp_r100",
+    "wall_s": 0.3,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 163717184,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 348112
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "defcamp_r100__dfs",
+    "wall_s": 0.31,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 168953745,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 349186
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "defcon2016quals_baby-re",
+    "wall_s": 0.36,
+    "found": 1,
+    "gil_work_time_ns": 45581827,
+    "run_wall_time_ns": 187227767,
+    "gil_by_class": {
+      "bounce": 45581827
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 13,
+        "ns": 45660745
+      },
+      "posix": {
+        "count": 17,
+        "ns": 345487
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.24345655417660353
+  },
+  {
+    "bench": "ekopartyctf2016_rev250",
+    "wall_s": 1.99,
+    "found": 1,
+    "gil_work_time_ns": 11543199,
+    "run_wall_time_ns": 1707508794,
+    "gil_by_class": {
+      "bounce": 11543199
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 1,
+        "ns": 30360189
+      },
+      "posix": {
+        "count": 9,
+        "ns": 2432873
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.006760257423306717
+  },
+  {
+    "bench": "ekopartyctf2016_sokohashv2",
+    "wall_s": 1.88,
+    "found": 1,
+    "gil_work_time_ns": 80841356,
+    "run_wall_time_ns": 85303504,
+    "gil_by_class": {
+      "callback": 7550341,
+      "bounce": 73291015
+    },
+    "gil_by_site": {
+      "lift_block": 7550341
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 9,
+        "ns": 73343180
+      },
+      "lift_block": {
+        "count": 16,
+        "ns": 7490135
+      },
+      "posix": {
+        "count": 11,
+        "ns": 18002
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.9476909178314644
+  },
+  {
+    "bench": "fauxware",
+    "wall_s": 0.22,
+    "found": 0,
+    "gil_work_time_ns": 45768096,
+    "run_wall_time_ns": 53769873,
+    "gil_by_class": {
+      "bounce": 45768096
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 1,
+        "ns": 59441710
+      },
+      "posix": {
+        "count": 5,
+        "ns": 249017
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.8511847517289096
+  },
+  {
+    "bench": "flareon2015_10",
+    "wall_s": 2.51,
+    "found": 0,
+    "gil_work_time_ns": 574404568,
+    "run_wall_time_ns": 651890241,
+    "gil_by_class": {
+      "callback": 559372005,
+      "bounce": 15032563
+    },
+    "gil_by_site": {
+      "lift_block": 559372005
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 290,
+        "ns": 557805616
+      },
+      "simprocedure": {
+        "count": 2,
+        "ns": 15036781
+      },
+      "posix": {
+        "count": 4,
+        "ns": 9519
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.8811369336022933
+  },
+  {
+    "bench": "flareon2015_2",
+    "wall_s": 3.25,
+    "found": 1,
+    "gil_work_time_ns": 3679329,
+    "run_wall_time_ns": 2826419371,
+    "gil_by_class": {
+      "callback": 3679329
+    },
+    "gil_by_site": {
+      "lift_block": 3679329
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 5,
+        "ns": 3641300
+      },
+      "posix": {
+        "count": 2,
+        "ns": 7905
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.0013017632973192639
+  },
+  {
+    "bench": "flareon2015_5",
+    "wall_s": 3.0,
+    "found": 1,
+    "gil_work_time_ns": 640402850,
+    "run_wall_time_ns": 1570283956,
+    "gil_by_class": {
+      "callback": 531652267,
+      "claripy_import": 14613,
+      "bounce": 108735970
+    },
+    "gil_by_site": {
+      "lift_block": 9530357,
+      "memory_load": 1461437,
+      "memory_store": 132489,
+      "memory_store_symbolic_value": 520527984
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 3,
+        "ns": 109121303
+      },
+      "lift_block": {
+        "count": 35,
+        "ns": 9430277
+      },
+      "memory_load": {
+        "count": 32,
+        "ns": 1402611
+      },
+      "posix": {
+        "count": 5,
+        "ns": 12873
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.4078261435156636
+  },
+  {
+    "bench": "fork_solve_W6_S8",
+    "wall_s": 60.13,
+    "found": 1,
+    "gil_work_time_ns": 910166,
+    "run_wall_time_ns": 59992501046,
+    "gil_by_class": {
+      "callback": 910166
+    },
+    "gil_by_site": {
+      "lift_block": 393178,
+      "resolve_function": 516988
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 1,
+        "ns": 371276
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 1.5171329485032119e-05
+  },
+  {
+    "bench": "google2016_unbreakable_0",
+    "wall_s": 0.89,
+    "found": 1,
+    "gil_work_time_ns": 193497877,
+    "run_wall_time_ns": 465266126,
+    "gil_by_class": {
+      "bounce": 193497877
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 1,
+        "ns": 193657716
+      },
+      "posix": {
+        "count": 3,
+        "ns": 10279
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.4158864490384155
+  },
+  {
+    "bench": "google2016_unbreakable_1",
+    "wall_s": 1.34,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 260608589,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 7283
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "hackcon2016_angry-reverser",
+    "wall_s": 15.61,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 132577663,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 7084
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "mips32_le_branch",
+    "wall_s": 0.22,
+    "found": 1,
+    "gil_work_time_ns": 229400,
+    "run_wall_time_ns": 13917231,
+    "gil_by_class": {
+      "callback": 229400
+    },
+    "gil_by_site": {
+      "lift_block": 229400
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 2,
+        "ns": 220123
+      },
+      "posix": {
+        "count": 2,
+        "ns": 7184
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.016483163928226813
+  },
+  {
+    "bench": "mips64_be_branch",
+    "wall_s": 0.38,
+    "found": 1,
+    "gil_work_time_ns": 259287,
+    "run_wall_time_ns": 14280002,
+    "gil_by_class": {
+      "callback": 259287
+    },
+    "gil_by_site": {
+      "lift_block": 259287
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 2,
+        "ns": 250359
+      },
+      "posix": {
+        "count": 2,
+        "ns": 6802
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.018157350398130195
+  },
+  {
+    "bench": "mips64_le_branch",
+    "wall_s": 0.38,
+    "found": 1,
+    "gil_work_time_ns": 255039,
+    "run_wall_time_ns": 14466461,
+    "gil_by_class": {
+      "callback": 255039
+    },
+    "gil_by_site": {
+      "lift_block": 255039
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 2,
+        "ns": 246583
+      },
+      "posix": {
+        "count": 2,
+        "ns": 6543
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.01762967459698678
+  },
+  {
+    "bench": "mma_howtouse",
+    "wall_s": 6.2,
+    "found": 0,
+    "gil_work_time_ns": 76956684,
+    "run_wall_time_ns": 92413482,
+    "gil_by_class": {
+      "callback": 42577471,
+      "bounce": 34379213
+    },
+    "gil_by_site": {
+      "lift_block": 42577471
+    },
+    "attribution": {
+      "simprocedure": {
+        "count": 1,
+        "ns": 7518671
+      },
+      "lift_block": {
+        "count": 3,
+        "ns": 962865
+      },
+      "posix": {
+        "count": 3,
+        "ns": 5310
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.8327430406745198
+  },
+  {
+    "bench": "securityfest_fairlight",
+    "wall_s": 17.24,
+    "found": 1,
+    "gil_work_time_ns": 140449427,
+    "run_wall_time_ns": 16861513502,
+    "gil_by_class": {
+      "bounce": 140449427
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 1,
+        "ns": 140574741
+      },
+      "posix": {
+        "count": 3,
+        "ns": 139823
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.008329586011560636
+  },
+  {
+    "bench": "sharif7_rev50",
+    "wall_s": 0.15,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 13050536,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 5561
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "strcpy_find",
+    "wall_s": 0.39,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 33845735,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "find_predicate": {
+        "count": 97,
+        "ns": 1928010
+      },
+      "posix": {
+        "count": 8,
+        "ns": 14836
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "sym-write",
+    "wall_s": 0.56,
+    "found": 1,
+    "gil_work_time_ns": 3069455,
+    "run_wall_time_ns": 46524147,
+    "gil_by_class": {
+      "callback": 3069455
+    },
+    "gil_by_site": {
+      "lift_block": 3069455
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 11,
+        "ns": 3034964
+      },
+      "find_predicate": {
+        "count": 20,
+        "ns": 210636
+      },
+      "posix": {
+        "count": 4,
+        "ns": 88737
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.0659755244948392
+  },
+  {
+    "bench": "unmapped_analysis",
+    "wall_s": 0.79,
+    "found": 0,
+    "gil_work_time_ns": 18714097,
+    "run_wall_time_ns": 208037675,
+    "gil_by_class": {
+      "bounce": 18714097
+    },
+    "gil_by_site": {},
+    "attribution": {
+      "simprocedure": {
+        "count": 2,
+        "ns": 18684131
+      },
+      "posix": {
+        "count": 12,
+        "ns": 3563303
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.0899553266012995
+  },
+  {
+    "bench": "whitehatvn2015_re400",
+    "wall_s": 1.22,
+    "found": 1,
+    "gil_work_time_ns": 34972497,
+    "run_wall_time_ns": 896796441,
+    "gil_by_class": {
+      "callback": 20679752,
+      "bounce": 14292745
+    },
+    "gil_by_site": {
+      "lift_block": 20679752
+    },
+    "attribution": {
+      "lift_block": {
+        "count": 66,
+        "ns": 20380653
+      },
+      "simprocedure": {
+        "count": 2,
+        "ns": 14297373
+      },
+      "posix": {
+        "count": 4,
+        "ns": 11692
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.038997140712336974
+  },
+  {
+    "bench": "xmllint_getenv",
+    "wall_s": 3.3,
+    "found": 1,
+    "gil_work_time_ns": 523924,
+    "run_wall_time_ns": 9817372,
+    "gil_by_class": {
+      "callback": 523924
+    },
+    "gil_by_site": {
+      "batch_fetch_pages": 15910,
+      "memory_load": 508014
+    },
+    "attribution": {
+      "memory_load": {
+        "count": 10,
+        "ns": 486782
+      }
+    },
+    "status": "FAIL",
+    "gil_fraction": 0.05336703142144354
   }
-}
+]
