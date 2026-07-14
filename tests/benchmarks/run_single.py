@@ -59,7 +59,11 @@ EXAMPLE_CATALOG = {
     },
     "securityfest_fairlight": {"tier": "medium", "rust_ok": True, "notes": "Heavy VEX interpretation"},
     "flareon2015_5": {"tier": "medium", "rust_ok": True, "notes": "Complex symbolic memory"},
-    "flareon2015_10": {"tier": "medium", "rust_ok": True, "notes": "Callable step_func, pruning"},
+    "flareon2015_10": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "Callable step_func, pruning. angr-zbpw0 (2026-07-14): now genuinely runs on Rust (the monkeypatch used to route every Callable to Python) — Rust ~2.7s vs Py 7.3s (~2.7x), replacing the mis-attributed 5.4s Python-engine number.",
+    },
     "ekopartyctf2016_rev250": {
         "tier": "fast",
         "rust_ok": True,
@@ -114,7 +118,11 @@ EXAMPLE_CATALOG = {
         "rust_ok": True,
         "notes": "2026-06-06 refresh (angr-zult): ~2.07x speedup (baseline_timings Py 3.145s Rust 1.52s), partial output divergence (leading zeros). Catalog previously claimed 2.7x — drift from intervening churn.",
     },
-    "mma_howtouse": {"tier": "medium", "rust_ok": True, "notes": "Callable DLL, 45 calls, Py 4.3s Rust 6.6s (0.65x)"},
+    "mma_howtouse": {
+        "tier": "medium",
+        "rust_ok": True,
+        "notes": "Callable DLL, 45 calls. angr-zbpw0 (2026-07-14): this bench only became a *real* Rust measurement once the run_single monkeypatch exclusion was narrowed from /angr/callable.py to /angr/simos/ — before that the whole workload ran on the Python engine. Genuine Rust time is ~6.6-7.0s vs Py 4.3s (~0.62x, Rust slower — per-Callable manager construction dominates), which happens to match the old (mis-attributed) 6.5s number.",
+    },
     "defcamp_r200": {"tier": "medium", "rust_ok": None, "notes": "BROKEN: Python fails too (ManualMergepoint)"},
     "CADET_00001": {
         "tier": "medium",
@@ -129,7 +137,7 @@ EXAMPLE_CATALOG = {
     "busybox_static": {
         "tier": "fast",
         "rust_ok": True,
-        "notes": "angr-4n26m.1 showcase: real-world x86-64 static software (system /usr/bin/busybox, GPLv2 distro artifact, not vendored). Bounded 60-step run from entry_state(args=['busybox','echo',<sym>]). Exercises the Rust VEX interpreter on a large stripped static-glibc binary rather than a CTF crackme. Static IFUNC/IRELATIVE relocs are resolved at load time via angr.callable.Callable -> simulation_manager; run_single's engine-swap monkeypatch excludes /angr/callable.py so those internal resolver states use the Python engine (else the Rust manager rejects their default SimOptions and the binary fails to load). Short run is init-tax-dominated: Rust ~1.4s vs Py ~0.4s (Rust loses on this length; breadth/realism demo, not a raw-speed win — that's angr-4n26m.5's longer workload).",
+        "notes": "angr-4n26m.1 showcase: real-world x86-64 static software (system /usr/bin/busybox, GPLv2 distro artifact, not vendored). Bounded 60-step run from entry_state(args=['busybox','echo',<sym>]). Exercises the Rust VEX interpreter on a large stripped static-glibc binary rather than a CTF crackme. Static IFUNC/IRELATIVE relocs are resolved at load time by angr/simos/ executing a Callable; run_single's engine-swap monkeypatch excludes /angr/simos/ frames so those internal resolver states use the Python engine (else the Rust manager rejects their default SimOptions and the binary fails to load). The exclusion is scoped to simos, not all of callable.py, so a bench-built Callable still runs on Rust (angr-zbpw0). Short run is init-tax-dominated: Rust ~1.4s vs Py ~0.4s (Rust loses on this length; breadth/realism demo, not a raw-speed win — that's angr-4n26m.5's longer workload).",
     },
     "fork_solve_W6_S8": {
         "tier": "slow",
@@ -274,20 +282,29 @@ def _run_in_child(
 
             caller_frames = traceback.extract_stack()
             for frame in caller_frames[:-1]:
-                # callable.py: angr resolves IFUNC / IRELATIVE relocations at
-                # load time by *executing* the resolver through a Callable,
-                # which builds an internal simulation manager. Those internal
-                # resolver states carry the default SimOptions (including
-                # SYMBOL_FILL_UNCONSTRAINED_REGISTERS), which the Rust manager
-                # rejects — so a static glibc binary (busybox) would fail to
-                # even load. Route every angr-internal Callable through the
-                # Python engine, same as analyses/exploration_techniques.
+                # simos: angr resolves IFUNC / IRELATIVE relocations at load
+                # time by *executing* the resolver through a Callable, which
+                # builds an internal simulation manager. Those resolver states
+                # carry SimOptions (including SYMBOL_FILL_UNCONSTRAINED_REGISTERS)
+                # that the Rust manager rejects — so a static glibc binary
+                # (busybox) would fail to even load. The exclusion is scoped to
+                # /angr/simos/ rather than /angr/callable.py so that a Callable
+                # a *bench* builds (mma_howtouse, flareon2015_10) still runs on
+                # the Rust engine — otherwise those benches measure the Python
+                # engine under --engine rust (angr-zbpw0).
                 if (
                     "/angr/analyses/" in frame.filename
                     or "/angr/exploration_techniques/" in frame.filename
-                    or "/angr/callable.py" in frame.filename
+                    or "/angr/simos/" in frame.filename
                 ):
                     return original_sm(factory_self, thing, **kwargs)
+            # Callable.perform_call() passes techniques=[]; RustExplorationManager
+            # does not accept it. A non-empty list has no Rust equivalent, so fall
+            # back to Python rather than silently dropping the techniques.
+            techniques = kwargs.pop("techniques", None)
+            if techniques:
+                kwargs["techniques"] = techniques
+                return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
             elif isinstance(thing, (list, tuple)):
@@ -681,13 +698,13 @@ def _dump_counters_json(stats):
 # Sentinel emitted when a ``--engine rust`` bench produced NO RustExplorationManager
 # (``stats is None``). A real Rust run always populates timing counters
 # (``time_in_*``), so ``stats is None`` unambiguously means the manager was never
-# built — the workload ran entirely on the Python engine. Today that happens for
-# Callable-only benches (mma_howtouse, flareon2015_10): solve.py only calls
-# ``p.factory.callable(...)``, whose internal simulation_manager is routed to the
-# Python engine by the ``/angr/callable.py`` frame check in the run_single
-# monkeypatch (added for busybox load-time IFUNC resolution, commit b9b56bcef).
-# Emitting a parseable sentinel instead of silent empty output makes the
-# attribution gap visible to bench_diff / run_regression (angr-dva9j.7).
+# built — the workload ran entirely on the Python engine. Emitting a parseable
+# sentinel instead of silent empty output makes the attribution gap visible to
+# bench_diff / run_regression (angr-dva9j.7). The Callable-only benches
+# (mma_howtouse, flareon2015_10) used to trip this because the monkeypatch
+# excluded every ``/angr/callable.py`` frame; the exclusion is now scoped to the
+# load-time IFUNC resolver in ``/angr/simos/`` so bench Callables reach Rust
+# (angr-zbpw0). The sentinel stays as a guard against the next such gap.
 _NO_RUST_MANAGER_SENTINEL = {
     "_no_rust_manager": True,
     "_note": (
@@ -792,10 +809,10 @@ def run_example(
     if engine == "rust" and stats is None:
         # angr-dva9j.7: distinguish "Rust ran with no counters" (impossible —
         # a real run always populates time_in_*) from "no Rust manager was ever
-        # built". The latter means the workload ran on the Python engine (e.g.
-        # Callable-only benches routed via the /angr/callable.py monkeypatch
-        # exception). Flag it so the attribution gap is visible, not silent.
-        print("  [no Rust manager: workload ran on the Python engine (Callable-routed); attribution-blind]")
+        # built". The latter means the workload ran on the Python engine, i.e.
+        # every simulation_manager call hit a monkeypatch exclusion. Flag it so
+        # the attribution gap is visible, not silent.
+        print("  [no Rust manager: workload ran on the Python engine; attribution-blind]")
     if output.strip():
         lines = output.strip().split("\n")
         for line in lines[:3]:

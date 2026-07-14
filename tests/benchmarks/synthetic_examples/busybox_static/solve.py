@@ -78,8 +78,9 @@ def solve():
     # Callable, which builds an internal simulation manager. Under
     # run_single.py the engine-swap monkeypatch now routes those internal
     # Callables through the Python engine (its caller-frame guard excludes
-    # /angr/callable.py); without that, the Rust manager would reject the
-    # resolver state's default SimOptions and the binary would fail to load.
+    # /angr/simos/, where the resolver is invoked); without that, the Rust
+    # manager would reject the resolver state's default SimOptions and the
+    # binary would fail to load.
     proj = angr.Project(binpath, auto_load_libs=False)
     assert proj.arch.name == "AMD64", proj.arch.name
 
