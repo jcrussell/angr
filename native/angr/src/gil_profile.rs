@@ -53,6 +53,63 @@ thread_local! {
     static GIL_ACCUM_NS: Cell<u64> = const { Cell::new(0) };
     /// Cumulative run-loop wall-clock nanoseconds (denominator).
     static WALL_ACCUM_NS: Cell<u64> = const { Cell::new(0) };
+    /// Class of the current outermost GIL region (meaningful while depth > 0).
+    static REGION_CLASS: Cell<GilClass> = const { Cell::new(GilClass::Callback) };
+    /// Per-class split of `GIL_ACCUM_NS`, indexed by `GilClass as usize`.
+    static CLASS_ACCUM_NS: Cell<[u64; GilClass::COUNT]> = const { Cell::new([0; GilClass::COUNT]) };
+}
+
+/// Why the run loop is holding the GIL. Attributing the *outermost* region is
+/// what makes this a partition: nested guards do not time (see [`GilWorkGuard`]),
+/// so every banked nanosecond belongs to exactly one class and the classes sum
+/// to [`gil_work_ns`].
+///
+/// The split exists because callback counters alone cannot explain the residual
+/// GIL on the zero-bounce path (bd angr-gorvf.4): benches with two cheap `posix`
+/// callbacks and nothing else were still spending 74% of the run loop under the
+/// GIL — all of it in the claripy AST bridge and the fork-metadata attach, which
+/// are Python touches that no `callback_*` counter tracks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GilClass {
+    /// A `PythonCallbacks` dispatch (lift_block, posix, simprocedure, ...). The
+    /// per-class detail lives in the `callback_*_total_ns` counters.
+    Callback,
+    /// `rustbv_to_claripy` — exporting a Rust AST into claripy.
+    ClaripyExport,
+    /// `claripy_to_rustbv` — importing a claripy AST into Rust.
+    ClaripyImport,
+    /// `clone_py_metadata` — the `Python::attach` a state fork pays to clone its
+    /// Python-side overlays.
+    ForkMetadata,
+}
+
+impl GilClass {
+    const COUNT: usize = 4;
+
+    /// Stable counter suffix, used to name the `gil_work_ns_*` stats keys.
+    pub fn name(self) -> &'static str {
+        match self {
+            GilClass::Callback => "callback",
+            GilClass::ClaripyExport => "claripy_export",
+            GilClass::ClaripyImport => "claripy_import",
+            GilClass::ForkMetadata => "fork_metadata",
+        }
+    }
+
+    pub fn all() -> [GilClass; GilClass::COUNT] {
+        [
+            GilClass::Callback,
+            GilClass::ClaripyExport,
+            GilClass::ClaripyImport,
+            GilClass::ForkMetadata,
+        ]
+    }
+}
+
+/// Cumulative GIL-work nanoseconds attributed to `class` on this thread.
+#[inline]
+pub fn gil_class_ns(class: GilClass) -> u64 {
+    CLASS_ACCUM_NS.with(|c| c.get()[class as usize])
 }
 
 /// Reset both accumulators and the depth/region state. Call when (re)enabling
@@ -63,6 +120,7 @@ pub fn reset() {
     REGION_START.with(|s| s.set(None));
     GIL_ACCUM_NS.with(|a| a.set(0));
     WALL_ACCUM_NS.with(|w| w.set(0));
+    CLASS_ACCUM_NS.with(|c| c.set([0; GilClass::COUNT]));
 }
 
 /// Cumulative GIL-work nanoseconds on this thread (the Amdahl numerator).
@@ -87,8 +145,18 @@ pub struct GilWorkGuard {
 }
 
 impl GilWorkGuard {
+    /// Enter a [`GilClass::Callback`] region — the default, since the
+    /// `PythonCallbacks` dispatch sites are the bulk of the Python surface.
     #[inline]
     pub fn enter() -> Self {
+        Self::enter_as(GilClass::Callback)
+    }
+
+    /// Enter a region attributed to `class`. Only the outermost live guard on
+    /// the thread times, so the class recorded is the *reason the GIL was first
+    /// taken*, not whichever nested site happens to be innermost.
+    #[inline]
+    pub fn enter_as(class: GilClass) -> Self {
         if !ACTIVE.with(std::cell::Cell::get) {
             return GilWorkGuard { active: false };
         }
@@ -99,6 +167,7 @@ impl GilWorkGuard {
         });
         if prev == 0 {
             REGION_START.with(|s| s.set(Some(Instant::now())));
+            REGION_CLASS.with(|c| c.set(class));
         }
         GilWorkGuard { active: true }
     }
@@ -120,6 +189,12 @@ impl Drop for GilWorkGuard {
         {
             let elapsed = start.elapsed().as_nanos() as u64;
             GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
+            let class = REGION_CLASS.with(std::cell::Cell::get);
+            CLASS_ACCUM_NS.with(|c| {
+                let mut split = c.get();
+                split[class as usize] += elapsed;
+                c.set(split);
+            });
         }
     }
 }
@@ -173,6 +248,35 @@ mod tests {
         while (start.elapsed().as_nanos() as u64) < min_ns {
             std::hint::spin_loop();
         }
+    }
+
+    #[test]
+    fn class_split_partitions_the_total() {
+        reset();
+        {
+            let _w = RunLoopWallGuard::new(true);
+            {
+                let _g = GilWorkGuard::enter_as(GilClass::ClaripyExport);
+                busy_ns(50_000);
+            }
+            {
+                // A nested guard of a *different* class must not steal the
+                // region: the outermost entry is what took the GIL.
+                let _outer = GilWorkGuard::enter_as(GilClass::ForkMetadata);
+                let _inner = GilWorkGuard::enter_as(GilClass::ClaripyImport);
+                busy_ns(50_000);
+            }
+        }
+        let total: u64 = GilClass::all().iter().map(|c| gil_class_ns(*c)).sum();
+        assert_eq!(total, gil_work_ns(), "classes must partition the GIL total");
+        assert!(gil_class_ns(GilClass::ClaripyExport) > 0);
+        assert!(gil_class_ns(GilClass::ForkMetadata) > 0);
+        assert_eq!(
+            gil_class_ns(GilClass::ClaripyImport),
+            0,
+            "a nested guard must not be attributed"
+        );
+        assert_eq!(gil_class_ns(GilClass::Callback), 0);
     }
 
     #[test]

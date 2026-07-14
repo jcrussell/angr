@@ -30,7 +30,9 @@ impl RustSimState {
             // the claripy bridge, so it needs its own guard. Only reached when a
             // state carries symbolic pages/hooks (the early-return above skips
             // the common empty case).
-            let _gil = crate::gil_profile::GilWorkGuard::enter();
+            let _gil = crate::gil_profile::GilWorkGuard::enter_as(
+                crate::gil_profile::GilClass::ForkMetadata,
+            );
             let pages = self
                 .symbolic_pages
                 .iter()

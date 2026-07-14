@@ -246,6 +246,17 @@ impl RustExplorationManager {
         // and per-fork metadata clone_ref.
         dict.set_item("gil_work_time_ns", crate::gil_profile::gil_work_ns())?;
         dict.set_item("run_wall_time_ns", crate::gil_profile::run_wall_ns())?;
+        // angr-gorvf.4: the same total, split by *why* the GIL was taken. The
+        // `callback_*_total_ns` counters cover only the `Callback` slice; the
+        // claripy-bridge and fork-metadata slices are Python touches no callback
+        // counter sees, and on several benches they are the entire residual.
+        // The classes partition `gil_work_time_ns` (only outermost regions time).
+        for class in crate::gil_profile::GilClass::all() {
+            dict.set_item(
+                format!("gil_work_ns_{}", class.name()),
+                crate::gil_profile::gil_class_ns(class),
+            )?;
+        }
         Ok(dict)
     }
 
