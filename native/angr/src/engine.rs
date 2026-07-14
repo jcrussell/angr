@@ -198,10 +198,18 @@ fn get_z3_global_param(key: &str) -> PyResult<Option<String>> {
         pyo3::exceptions::PyValueError::new_err(format!("invalid Z3 param key: {e}"))
     })?;
     let mut out: z3_sys::Z3_string = std::ptr::null();
+    // SAFETY: `c_key` is a live NUL-terminated CString for the whole call, and
+    // `out` is a valid writable slot for the out-pointer. Z3_global_param_get
+    // is context-free (it reads the process-global param table), so no Z3
+    // context needs to be alive here.
     let found = unsafe { z3_sys::Z3_global_param_get(c_key.as_ptr(), &mut out) };
     if !found || out.is_null() {
         return Ok(None);
     }
+    // SAFETY: Z3 returned true and a non-null `out` (both checked above), so it
+    // points at a NUL-terminated string in Z3's thread-local buffer. That buffer
+    // stays valid until the next Z3_global_param_get on this thread, and we copy
+    // it into an owned String before returning — so the borrow never escapes.
     let value = unsafe { CStr::from_ptr(out) }
         .to_string_lossy()
         .into_owned();
