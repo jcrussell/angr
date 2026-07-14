@@ -1651,6 +1651,14 @@ class RustExplorationManager(
         # Using regular dict with periodic cleanup to prevent memory leaks
         self._state_cache: dict[int, angr.SimState] = {}
 
+        # Concrete byte strings this manager has spliced into posix.stdin as a
+        # Rust-read packet (angr-psrxs). A materialized child state is built by
+        # copying its parent's cached SimState, so it inherits the parent's
+        # injected packet; the child's own Rust symbol list is cumulative and
+        # already covers those bytes, so the inherited packet must be dropped
+        # before the fresh one is appended. See `_inject_rust_stdin_inner`.
+        self._rust_stdin_packets: set[bytes] = set()
+
         # angr-lyvf2: seeds the Python init skip fast-forwarded past their own
         # PC, as (pre-init addr, un-advanced SimState, rust id of the advanced
         # state). `explore()` consumes this once, then drops the refs.

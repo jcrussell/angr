@@ -539,6 +539,39 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
 
+    @staticmethod
+    def _packet_bytes(packet):
+        """Concrete bytes of a ``SimPackets`` content entry, or None if symbolic."""
+        try:
+            data = packet[0]
+            if data.symbolic:
+                return None
+            return data.concrete_value.to_bytes(len(data) // 8, "big")
+        except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: an entry whose bytes we cannot read
+            # is by definition not one we injected; leave it in place.
+            return None
+
+    def _drop_stale_rust_stdin_packets(self, stdin_stream):
+        """Remove packets a previous Rust stdin injection put on this stream.
+
+        A materialized child SimState is a ``.copy()`` of its parent's cached
+        state (see the parent-root path in ``_materialize_state``), so it starts
+        out carrying whatever packet Rust injected for the parent. Rust's
+        per-state stdin symbol list is cumulative — it already includes every
+        byte the parent read — so re-appending would double-count them and
+        ``posix.dumps(0)`` would grow a junk prefix (angr-psrxs).
+
+        Packets Python appended itself (a bounced SimProcedure reading stdin)
+        are never in ``_rust_stdin_packets`` and are left alone.
+        """
+        content = stdin_stream.content
+        if not content or not self._rust_stdin_packets:
+            return
+        kept = [pkt for pkt in content if self._packet_bytes(pkt) not in self._rust_stdin_packets]
+        if len(kept) != len(content):
+            content[:] = kept
+
     def _inject_rust_stdin_inner(self, state, state_id):
         try:
             if not self._rust_mgr.has_state_stdin_symbols(state_id):
@@ -561,9 +594,12 @@ class RustCallbackDispatchMixin:
                 else:
                     concrete_bytes.append(0)
             if concrete_bytes:
-                data = claripy.BVV(bytes(concrete_bytes))
-                size = claripy.BVV(len(concrete_bytes), state.arch.bits)
+                packet = bytes(concrete_bytes)
+                self._drop_stale_rust_stdin_packets(stdin_stream)
+                data = claripy.BVV(packet)
+                size = claripy.BVV(len(packet), state.arch.bits)
                 stdin_stream.content.append((data, size))
+                self._rust_stdin_packets.add(packet)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust stdin injection raised; posix.
             # dumps(0) will not show the symbolic-stdin bytes that Rust read.
