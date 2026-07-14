@@ -2478,3 +2478,75 @@ class TestSeedAtFindAddress:
 
         assert len(mgr.found) == 0
         assert len(mgr.active) > 0, "seed must remain explorable"
+
+
+class TestFindInsideInitPrefix:
+    """angr-bdeqa: a find address strictly INSIDE the Python init prefix.
+
+    ``_run_python_init_if_needed`` steps the entry seed to ``main`` in Python
+    (or restores a cached state without stepping at all), so addresses the
+    prefix traverses — ``__libc_csu_init``, ``frame_dummy``, ``.init_array``
+    ctors — are never PCs the Rust engine sees. Vanilla angr's ``Explorer``
+    matches them during those first steps, so ``explore()`` must too.
+    """
+
+    @staticmethod
+    def _init_prefix_addr(proj):
+        """An address the entry->main prefix traverses, but ``main`` does not."""
+        sym = proj.loader.find_symbol("__libc_csu_init")
+        if sym is None:
+            pytest.skip("binary has no __libc_csu_init")
+        return sym.rebased_addr
+
+    def test_find_inside_init_prefix_is_found(self, fauxware_project):
+        proj = fauxware_project
+        target = self._init_prefix_addr(proj)
+
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.explore(find=target, num_find=1, max_steps=30)
+
+        assert len(mgr.found) == 1, f"init-prefix find missed: {mgr.stash_counts()}"
+        assert mgr.found[0].addr == target
+
+    def test_matches_python_engine(self, fauxware_project):
+        proj = fauxware_project
+        target = self._init_prefix_addr(proj)
+
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.explore(find=target, num_find=1, max_steps=30)
+
+        sm = proj.factory.simulation_manager(proj.factory.entry_state())
+        sm.explore(find=target, num_find=1)
+
+        assert len(sm.found) == 1, "vanilla angr must find the init-prefix address"
+        assert len(mgr.found) == len(sm.found)
+        assert mgr.found[0].addr == sm.found[0].addr == target
+
+    def test_unreachable_addr_still_not_found(self, fauxware_project):
+        """The replay must not manufacture a find for an address nothing executes."""
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.explore(find=proj.entry + 1, num_find=1, max_steps=5)
+
+        assert len(mgr.found) == 0
+
+    def test_avoid_inside_init_prefix_does_not_match(self, fauxware_project):
+        """Pinned divergence: an avoid address inside the prefix does NOT kill the seed.
+
+        Rust receives the state already past ``main``, so it explores on and
+        finds its target where vanilla angr would have moved the seed to
+        ``avoided`` during init. Documented in
+        docs/advanced-topics/rust_engine.rst (init-prefix section); change this
+        test only alongside that doc.
+        """
+        proj = fauxware_project
+        avoid = self._init_prefix_addr(proj)
+        main_addr = proj.loader.find_symbol("main").rebased_addr
+
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.explore(find=main_addr, avoid=avoid, num_find=1, max_steps=30)
+        assert len(mgr.found) == 1, "Rust does not see the in-prefix avoid address"
+
+        sm = proj.factory.simulation_manager(proj.factory.entry_state())
+        sm.explore(find=main_addr, avoid=avoid, num_find=1)
+        assert len(sm.found) == 0, "vanilla angr avoids the seed inside the init prefix"

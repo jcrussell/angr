@@ -4429,6 +4429,52 @@ the stash-name footgun landed under angr-630x. The trust-model audit
 itself was closed under angr-9l9j with no remaining production-blocking
 gaps.
 
+.. _rust-engine-init-prefix:
+
+The Python init prefix and ``find`` / ``avoid``
+-----------------------------------------------
+
+A state constructed at the entry point (``entry_state()``,
+``full_init_state()``) is stepped to ``main`` **in Python** before Rust
+ever sees it — ``rust_manager.py::_run_python_init_if_needed``. The
+loader stubs, ``__libc_csu_init``, ``_init``, ``frame_dummy`` and the
+``.init_array`` constructors are too much for the Rust engine to execute
+faithfully, so they run on the Python engine and only the resulting
+state at ``main`` is handed over (usually straight out of the in-memory
+or on-disk init cache, without stepping at all).
+
+The consequence for exploration: **no address the init prefix traverses
+is ever a PC that Rust's pre-step ``find_addrs`` / ``avoid_addrs`` check
+sees.** Vanilla angr's ``Explorer`` matches those addresses during the
+first handful of steps. Two mechanisms restore that behavior for
+``find``:
+
+* The un-advanced seed is parked, so ``explore(find=proj.entry)`` reports
+  it as FOUND unstepped and drops its fast-forwarded counterpart from
+  ``active`` — exactly what ``Explorer.filter()`` does (angr-lyvf2).
+* A find address strictly *inside* the prefix (e.g. inside
+  ``__libc_csu_init``) is handled by
+  ``rust_manager.py::_replay_preinit_prefix_for_find`` (angr-bdeqa): if
+  the Rust exploration finishes with an empty found stash, the prefix is
+  replayed in Python from the parked seed and the real mid-init state at
+  the target address is pushed to FOUND. The replay is lazy — it costs
+  nothing on the (overwhelmingly common) explorations that find their
+  target past ``main``, and its budget is the same 500 steps the init
+  skip itself uses.
+
+**Known divergence — ``avoid`` inside the init prefix.** An ``avoid``
+address that only the init prefix executes does not kill the seed. Rust
+receives a state that is already past ``main``, so the exploration
+proceeds and may report a find that vanilla angr would not (vanilla
+would move the state to ``avoided`` during init and end with nothing
+active). ``avoid`` *is* honored inside the ``find`` replay above — a
+prefix path that hits an avoid address before the find address does not
+match — but it is not applied retroactively to states Rust already
+explored. Checking it eagerly would mean replaying the init prefix on
+every ``explore()`` call, paying the init cost twice for a case that has
+never shown up in practice. If you need it, avoid on a **callable**
+predicate over ``state.history`` instead, or run the Python engine.
+
 .. _rust-engine-state-serialization:
 
 State serialization (save / restore to disk)

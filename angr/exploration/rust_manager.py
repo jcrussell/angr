@@ -1866,7 +1866,10 @@ class RustExplorationManager(
                 # Park the un-advanced seed so `explore()` can route it to FOUND
                 # if the caller's find targets that address (vanilla angr's
                 # Explorer matches it at filter() time, before any step).
-                if state.addr != seed_addr:
+                # The angr-027h phase-2 retry re-activates copies of the same
+                # seeds mid-explore; parking them again would double-report the
+                # find (angr-bdeqa), so only the original activation parks.
+                if state.addr != seed_addr and not getattr(self, "_phase2_reseeding", False):
                     self._preinit_seeds.append((seed_addr, seed_state, sid))
 
         self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
@@ -4582,14 +4585,18 @@ class RustExplorationManager(
         fast-forwarded counterpart from active, exactly as ``filter()`` moves
         the state out of active.
 
-        Consumes ``_preinit_seeds`` — one address-based ``explore()`` decides
-        the question for every parked seed, and the refs are released either way.
+        Seeds whose own PC is not a target stay parked: the find address may
+        still lie strictly *inside* the init prefix, which
+        :meth:`_replay_preinit_prefix_for_find` checks once the exploration
+        proper has come up empty (angr-bdeqa). ``explore()`` releases the refs
+        when it returns.
         """
         seeds, self._preinit_seeds = self._preinit_seeds, []
         targets = set(find_addrs)
         routed = False
         for seed_addr, seed_state, sid in seeds:
             if seed_addr not in targets:
+                self._preinit_seeds.append((seed_addr, seed_state, sid))
                 continue
             if sid is not None:
                 try:
@@ -4602,6 +4609,64 @@ class RustExplorationManager(
                     l.debug("preinit seed drop(sid=%d) failed: %s: %s", sid, type(e).__name__, e)
             self._add_rust_state("found", seed_state)
             routed = True
+        if routed:
+            self._invalidate_state_export_cache()
+
+    def _replay_preinit_prefix_for_find(self, find_addrs: list[int], avoid_addrs: list[int]) -> None:
+        """Re-run the skipped Python init prefix, matching find addresses inside it.
+
+        ``_run_python_init_if_needed`` fast-forwards an entry-point seed to
+        ``main`` in Python (often straight out of a cache, without stepping at
+        all), so an address the prefix traverses — inside ``__libc_csu_init``,
+        ``frame_dummy``, a ``.init_array`` ctor — is never a PC Rust sees, and
+        ``explore(find=<that addr>)`` would run to exhaustion (angr-bdeqa).
+        Vanilla angr's ``Explorer`` matches it during those first steps.
+
+        Rather than pay the prefix replay on every address-based ``explore()``,
+        it runs lazily: only once the Rust exploration has finished with an
+        empty found stash, which is exactly the buggy case. The state pushed to
+        FOUND is the real mid-init state at the target address, produced by the
+        same Python stepping the init skip does — not a stand-in.
+
+        ``avoid_addrs`` is honored *within the replay* (a prefix path that hits
+        an avoid address before the find address does not match), but an avoid
+        address inside the prefix does not retroactively kill the states Rust
+        already explored from ``main``. See the state-serialization/init notes
+        in ``docs/advanced-topics/rust_engine.rst``.
+        """
+        if not self._preinit_seeds:
+            return
+        from angr import SimulationManager
+
+        targets = set(find_addrs)
+        avoid = set(avoid_addrs)
+        main_addr = self._resolve_main_address()
+        routed = False
+
+        for _seed_addr, seed_state, _sid in self._preinit_seeds:
+            sm = SimulationManager(project=self._project, active_states=[seed_state.copy()])
+            hit = None
+            for _ in range(500):
+                if not sm.active:
+                    break
+                hit = next((s for s in sm.active if s.addr in targets), None)
+                if hit is not None:
+                    break
+                # Past the prefix (or avoided): Rust already owns the rest.
+                # NB: assigning ``sm.active`` would shadow the dynamic stash
+                # attribute with a frozen list — move states out instead.
+                sm.move(
+                    from_stash="active",
+                    to_stash="stashed",
+                    filter_func=lambda s: s.addr == main_addr or s.addr in avoid,
+                )
+                if not sm.active:
+                    break
+                sm.step()
+            if hit is not None:
+                l.info("preinit replay: find address 0x%x lies inside the Python init prefix", hit.addr)
+                self._add_rust_state("found", hit)
+                routed = True
         if routed:
             self._invalidate_state_export_cache()
 
@@ -4652,6 +4717,7 @@ class RustExplorationManager(
                 self._route_preinit_seed_finds(find_addrs)
 
         # Set avoid addresses
+        avoid_addrs: list[int] = []
         if avoid is not None:
             avoid_addrs = self._extract_addrs(avoid)
             self._rust_mgr.set_avoid_addrs(avoid_addrs)
@@ -4691,8 +4757,18 @@ class RustExplorationManager(
         # Route to appropriate exploration strategy
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
         if has_predicates or bool(self._active_techniques):
-            return self._explore_with_predicates(num_find, until, timeout, max_steps)
-        return self._explore_with_addresses(num_find, until, timeout, max_steps)
+            result = self._explore_with_predicates(num_find, until, timeout, max_steps)
+        else:
+            result = self._explore_with_addresses(num_find, until, timeout, max_steps)
+
+        # angr-bdeqa: an address-based find that came up empty may be targeting
+        # an address strictly inside the Python init prefix, which Rust never
+        # steps through. Replay the prefix once, then release the parked seeds.
+        if find is not None and not callable(find):
+            if self._preinit_seeds and self._found_count() == 0:
+                self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
+            self._preinit_seeds = []
+        return result
 
     def _explore_with_predicates(self, num_find, until, timeout, max_steps):
         """Exploration loop for callable predicates or active techniques.
