@@ -198,13 +198,29 @@ pub enum ScanResult<R, B> {
     Collected(Vec<(u64, B)>),
 }
 
+/// Number of *symbolic* positions a scan may collect before it stops looking.
+///
+/// Mirrors `state.libc.buf_symbolic_bytes` (`angr/state_plugins/libc.py`),
+/// which angr's Python string procedures pass to `memory.find` as
+/// `max_symbolic_bytes`: `smart_find_mixin._find_iter_items` stops generating
+/// cases once that many symbolic characters have been seen. Without the cap a
+/// fully-symbolic buffer yields an ITE chain (and a `null_exists_constraint`
+/// disjunction) thousands of terms wide, and every one of those terms keeps a
+/// downstream branch feasible — the fork-storm the Python bound exists to
+/// prevent (angr-gorvf.5).
+///
+/// Concrete positions are free, exactly as in Python: only symbolic ones draw
+/// down the budget.
+pub const MAX_SYMBOLIC_SCAN_BYTES: usize = 60;
+
 /// Generic skeleton shared by the symbolic-aware string scans
 /// (strlen/strchr/strrchr/strcmp/memchr/memcmp). It walks positions `0..max`,
 /// loading per-position data of type `B` via `load`. While still in the
 /// concrete fast path it consults `concrete` for each load; once a symbolic
 /// byte forces [`ConcreteStep::BeginCollect`] it collects every subsequent
 /// load (plus the triggering one) into a vec, stopping after the first load
-/// for which `collect_stop` returns true.
+/// for which `collect_stop` returns true — or once
+/// [`MAX_SYMBOLIC_SCAN_BYTES`] symbolic positions have been collected.
 ///
 /// Centralizing the loop keeps the null-boundary edge cases — the most
 /// soundness-sensitive part of these procedures — in one tested place.
@@ -217,13 +233,26 @@ pub fn scan_concrete_then_collect<B, R>(
 ) -> Result<ScanResult<R, B>, ProcedureError> {
     let mut collected: Vec<(u64, B)> = Vec::new();
     let mut symbolic_seen = false;
+    let mut symbolic_budget = MAX_SYMBOLIC_SCAN_BYTES;
     for i in 0..max {
         let loaded = load(state, i)?;
+        // `concrete` doubles as the symbolic predicate: it answers
+        // `BeginCollect` exactly for the loads this scan considers symbolic.
+        let step = concrete(&loaded, i);
+        let is_symbolic = matches!(step, ConcreteStep::BeginCollect);
         if !symbolic_seen {
-            match concrete(&loaded, i) {
+            match step {
                 ConcreteStep::Continue => continue,
                 ConcreteStep::Stop(r) => return Ok(ScanResult::Stopped(r)),
                 ConcreteStep::BeginCollect => symbolic_seen = true,
+            }
+        }
+        if is_symbolic {
+            match symbolic_budget.checked_sub(1) {
+                Some(rest) => symbolic_budget = rest,
+                // Budget spent: stop before collecting this position, matching
+                // `_find_iter_items`' early `return`.
+                None => break,
             }
         }
         let stop = collect_stop(&loaded);

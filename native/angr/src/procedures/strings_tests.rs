@@ -109,6 +109,53 @@ fn test_scan_for_null_symbolic_with_sym_byte() {
 }
 
 #[test]
+fn test_scan_for_null_symbolic_caps_symbolic_bytes() {
+    // A fully-symbolic, unterminated buffer must not collect more than
+    // MAX_SYMBOLIC_SCAN_BYTES positions, even with a far larger `max` window —
+    // that cap is what keeps the ITE chain and the null_exists_constraint
+    // disjunction Python-sized instead of thousands of terms wide.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x2000, &vec![b'a'; 512], Permission::RWX);
+    let ctx = state.solver().borrow();
+    let syms: Vec<RustBV> = (0..512)
+        .map(|i| RustBV::symbolic(&ctx, &format!("c{i}"), 8))
+        .collect();
+    drop(ctx);
+    for (i, sym) in syms.into_iter().enumerate() {
+        state.memory_store(0x2000 + i as u64, sym).unwrap();
+    }
+    match scan_for_null_symbolic(&mut state, 0x2000, 4096).unwrap() {
+        ScanOutcome::Symbolic { bytes } => {
+            assert_eq!(bytes.len(), MAX_SYMBOLIC_SCAN_BYTES);
+            assert_eq!(bytes.last().unwrap().0, MAX_SYMBOLIC_SCAN_BYTES as u64 - 1);
+        }
+        ScanOutcome::AllConcrete { .. } => panic!("expected symbolic"),
+    }
+}
+
+#[test]
+fn test_scan_for_null_symbolic_concrete_bytes_do_not_draw_down_budget() {
+    // Python charges only *symbolic* characters against buf_symbolic_bytes, so
+    // a buffer with one symbolic byte followed by concrete filler must still
+    // scan all the way to its terminator.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut data = vec![b'a'; 200];
+    data.push(0);
+    state.map_memory_data(0x3000, &data, Permission::RWX);
+    let ctx = state.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "head", 8);
+    drop(ctx);
+    state.memory_store(0x3000, sym).unwrap();
+    match scan_for_null_symbolic(&mut state, 0x3000, 4096).unwrap() {
+        ScanOutcome::Symbolic { bytes } => {
+            assert_eq!(bytes.len(), 201);
+            assert_eq!(bytes.last().unwrap().0, 200);
+        }
+        ScanOutcome::AllConcrete { .. } => panic!("expected symbolic"),
+    }
+}
+
+#[test]
 fn test_build_strlen_chain_concrete() {
     let state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
