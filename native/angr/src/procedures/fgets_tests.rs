@@ -513,10 +513,7 @@ fn test_fgets_consumes_seeded_stdin() {
     setup_file_struct(&mut state, stdin, 0);
 
     // Seed b"AB" onto fd 0, the way _seed_stdin_to_rust does.
-    let seed: Vec<RustBV> = vec![
-        RustBV::concrete(0x41, 8),
-        RustBV::concrete(0x42, 8),
-    ];
+    let seed: Vec<RustBV> = vec![RustBV::concrete(0x41, 8), RustBV::concrete(0x42, 8)];
     state.file_system().set_fd_content_sym(0, seed);
 
     NativeFgets

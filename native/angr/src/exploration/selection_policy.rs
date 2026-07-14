@@ -16,6 +16,46 @@
 //! (BFS, the default) selects the front; `Lifo` (DFS) selects the back.
 //! Both append new forks at the tail — matching the historical `push_back`
 //! at every fork site — so step traces are byte-identical under either.
+//!
+//! # Order-determinism contract (angr-op0dn.10.5)
+//!
+//! Single-worker exploration is *order-deterministic*: the same binary, the
+//! same seed states and the same policy must dispatch states in the same
+//! sequence on every run. Two chokepoints decide that sequence, and both are
+//! in this module's seam:
+//!
+//!   * **The select chokepoint** — `policy.select` is the only place the run
+//!     loop (`run_loop.rs`) removes a state from `active`. Every built-in below
+//!     picks an index into the `VecDeque` and calls `remove(idx)`, which
+//!     preserves the relative order of the survivors. Where a policy ranks
+//!     states it must terminate its key with the *front index* `i` so ties are
+//!     broken by insertion order (`Fifo`/`Lifo` are trivially positional;
+//!     `CoverageGuided`/`FindDirected`/`LoopHeadRoundRobin` front-scan;
+//!     `DirectedCfgDistance` sorts by `(distance, i)`; `RandomState` draws from
+//!     a seeded SplitMix64). No policy may leave a tie unresolved.
+//!   * **The fork-insertion chokepoint** — `policy.on_fork` is the only place
+//!     forks enter `active` (`helpers.rs::push_to_active_or_drop` →
+//!     `StashManager::push_active` in `stash.rs`). Successors arrive in
+//!     `forks_out` `Vec` order from `core_outcome_handlers.rs`, and every
+//!     built-in appends with `push_back`, so the deque order is a pure function
+//!     of the emission order.
+//!
+//! **No hash-order may enter selection.** The per-policy `HashMap`/`HashSet`
+//! fields (`CoverageGuided::seen`, `FindDirected::seen`,
+//! `LoopHeadRoundRobin::dispatched`, `DirectedCfgDistance::{distances,
+//! dispatched}`) are *only ever indexed* (`get`/`contains`/`entry`) — never
+//! iterated. Rust's `HashMap` seeds a fresh `RandomState` hasher per instance,
+//! so a single `for (k, v) in map` in a `select` path would make the dispatch
+//! order vary between runs *within the same process*. The
+//! `test_<policy>_selection_trace_deterministic` guards below drive a scripted
+//! fork program through each policy three times over freshly-built maps and
+//! assert an identical dispatch trace, which is what makes such a refactor fail
+//! loudly. (`LoopHeadRoundRobin::bucket_key` does build a local `HashMap` of
+//! history-address counts, but it iterates the history *slice*, not the map.)
+//!
+//! This contract is single-worker only. Parallel steal order is
+//! design-nondeterministic; there the contract is set-equality of results, not
+//! sequence equality (see `docs/advanced-topics/rust_parallel_design.rst`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -508,8 +548,8 @@ impl SelectionPolicy for FindDirected {
 #[cfg(test)]
 mod tests {
     use super::{
-        CoverageGuided, DirectedCfgDistance, FindDirected, LoopHeadRoundRobin, RandomState,
-        SelectionPolicy,
+        CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,
+        RandomState, SelectionPolicy,
     };
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
@@ -974,5 +1014,152 @@ mod tests {
     #[test]
     fn test_find_directed_policy_name() {
         assert_eq!(FindDirected::new(HashMap::new()).name(), "find_directed");
+    }
+
+    // ---- Order-determinism regression guards (angr-op0dn.10.5) ----
+
+    /// The built-in policies, by `name()`. A new policy added to this module
+    /// belongs here too, so it inherits the determinism guard below.
+    const BUILT_IN_POLICIES: [&str; 7] = [
+        "fifo",
+        "lifo",
+        "random",
+        "coverage",
+        "loop_head",
+        "directed",
+        "find_directed",
+    ];
+
+    fn build_policy(name: &str, distances: &HashMap<u64, u64>) -> Box<dyn SelectionPolicy> {
+        match name {
+            "fifo" => Box::new(Fifo),
+            "lifo" => Box::new(Lifo),
+            "random" => Box::new(RandomState::new(0x0D15_EA5E)),
+            "coverage" => Box::new(CoverageGuided::new()),
+            "loop_head" => Box::new(LoopHeadRoundRobin::new()),
+            "directed" => Box::new(DirectedCfgDistance::new(distances.clone(), 2)),
+            "find_directed" => Box::new(FindDirected::new(distances.clone())),
+            other => panic!("unknown policy {other}"),
+        }
+    }
+
+    /// A CFG-distance snapshot covering the blocks the scripted fork program
+    /// below reaches. Blocks it omits fall through to `u64::MAX` (unmapped),
+    /// which is itself part of the ordering contract.
+    fn scripted_distances() -> HashMap<u64, u64> {
+        [
+            (0x1000, 8),
+            (0x1010, 4),
+            (0x1020, 2),
+            (0x2000, 6),
+            (0x2010, 3),
+            (0x3000, 6),
+            (0x3010, 0),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Drive a scripted exploration through both seam hooks and return the
+    /// dispatch trace as *insertion labels* (`0, 1, 2, …` in the order states
+    /// entered the deque). Absolute `state_id`s differ between runs, so labels —
+    /// not ids — are what two runs are compared on: an identical label trace
+    /// means both runs selected and forked in exactly the same sequence.
+    ///
+    /// The fork program is a deterministic function of the dispatched state: a
+    /// state shallower than `DEPTH` emits two successors, one at a fresh block
+    /// (`pc + 0x10`) and one re-treading `0x1000`, so the novelty seen-sets and
+    /// the loop-head buckets both observe repeats. Each successor inherits the
+    /// parent's history plus the parent's `pc`.
+    fn scripted_trace(policy: &dyn SelectionPolicy) -> Vec<usize> {
+        const DEPTH: usize = 2;
+        const MAX_DISPATCH: usize = 64;
+        let _ctx = Context::thread_local();
+
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let mut label_of: HashMap<u64, usize> = HashMap::new();
+        let mut next_label = 0usize;
+
+        for &pc in &[0x1000u64, 0x1000, 0x2000, 0x3000] {
+            let st = state_at(pc);
+            label_of.insert(st.state_id(), next_label);
+            next_label += 1;
+            active.push_back(st);
+        }
+
+        let mut trace = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            trace.push(label_of[&st.state_id()]);
+            assert!(
+                trace.len() <= MAX_DISPATCH,
+                "scripted fork program diverged"
+            );
+            let mut child_history = st.history().to_vec();
+            if child_history.len() >= DEPTH {
+                continue;
+            }
+            child_history.push(st.pc());
+            for &child_pc in &[st.pc() + 0x10, 0x1000] {
+                let child = state_with_history(child_pc, &child_history);
+                label_of.insert(child.state_id(), next_label);
+                next_label += 1;
+                policy.on_fork(&mut active, child);
+            }
+        }
+        trace
+    }
+
+    /// Every built-in policy must dispatch the scripted fork program in the same
+    /// order on every run. Each repeat rebuilds the policy, so its `seen` /
+    /// `dispatched` maps get a fresh per-instance hasher seed: if any `select`
+    /// path ever started *iterating* one of those maps instead of indexing it,
+    /// hash order would leak into selection and the repeats would diverge here.
+    #[test]
+    fn test_selection_trace_deterministic_across_runs() {
+        let distances = scripted_distances();
+        for name in BUILT_IN_POLICIES {
+            let baseline = scripted_trace(build_policy(name, &distances).as_ref());
+            // 4 seeds + 8 children + 16 grandchildren, all dispatched, none dropped.
+            assert_eq!(baseline.len(), 28, "policy {name} must drain every state");
+            let mut labels = baseline.clone();
+            labels.sort_unstable();
+            assert_eq!(
+                labels,
+                (0..28).collect::<Vec<_>>(),
+                "policy {name} dispatch trace must be a permutation of the insertion set",
+            );
+            for repeat in 1..3 {
+                assert_eq!(
+                    scripted_trace(build_policy(name, &distances).as_ref()),
+                    baseline,
+                    "policy {name} changed its dispatch order on repeat {repeat}",
+                );
+            }
+        }
+    }
+
+    /// The guard above is only meaningful if the policies actually disagree —
+    /// otherwise an all-FIFO regression would pass it unnoticed.
+    #[test]
+    fn test_selection_traces_differ_across_policies() {
+        let distances = scripted_distances();
+        let fifo = scripted_trace(build_policy("fifo", &distances).as_ref());
+        for name in BUILT_IN_POLICIES.iter().filter(|n| **n != "fifo") {
+            assert_ne!(
+                scripted_trace(build_policy(name, &distances).as_ref()),
+                fifo,
+                "policy {name} degenerated to the FIFO dispatch order",
+            );
+        }
+    }
+
+    /// The policy list the guards iterate must stay in sync with what each
+    /// policy reports as its own name.
+    #[test]
+    fn test_built_in_policy_names_match() {
+        let distances = scripted_distances();
+        for name in BUILT_IN_POLICIES {
+            assert_eq!(build_policy(name, &distances).name(), name);
+        }
     }
 }
