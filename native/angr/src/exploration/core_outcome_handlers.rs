@@ -7,6 +7,7 @@
 //! / `ForkSink` / `SimProcCall` helper structs (visible to this descendant).
 
 use super::*;
+use crate::memory::MemoryError;
 
 /// Package a Python-bouncing outcome (no fork materialization here — the
 /// deferred forks ride into the `PendingCallback` the coordinator builds).
@@ -425,6 +426,31 @@ enum NativeProcDisposition {
         resume_tag: u32,
     },
     Fallback,
+    /// The native proc touched an unmapped page while STRICT_PAGE_ACCESS is on:
+    /// Python's `PrivilegedPagingMixin._initialize_page` would raise
+    /// `SimSegfaultException`, so the state is terminal-errored natively instead
+    /// of bouncing to Python just to raise. Carries the message Python formats
+    /// (`"{page_addr:#x} (unmapped)"`).
+    Segfault(String),
+}
+
+/// Map a native procedure error onto the `SimSegfaultException` Python would
+/// raise for the same access, or `None` when Python would service it (and we
+/// must therefore fall back).
+///
+/// Only the unmapped-page case is mirrored: with STRICT_PAGE_ACCESS off Python
+/// lazily initializes the page and keeps going, so the state must still bounce.
+pub(super) fn segfault_message(state: &RustSimState, err: &ProcedureError) -> Option<String> {
+    if !state.enforce_permissions() {
+        return None;
+    }
+    match err {
+        ProcedureError::Memory(MemoryError::Unmapped { addr, .. }) => {
+            let page_addr = addr & !(crate::memory::PAGE_SIZE - 1);
+            Some(format!("{page_addr:#x} (unmapped)"))
+        }
+        _ => None,
+    }
 }
 
 /// Mirror of `handle_simprocedure` (native fast path + native resume; Python
@@ -505,21 +531,28 @@ pub(super) fn handle_simprocedure_core(
                         }
                     }
                     Err(e) => {
-                        log::debug!(
-                            "Native procedure {name} returned error, falling back to Python: {e:?}"
-                        );
-                        counters.native_python_fallbacks += 1;
-                        let bucket = match e {
-                            ProcedureError::SymbolicArgument(_) => {
-                                &mut counters.symbolic_fallbacks_by_name
-                            }
-                            ProcedureError::NotImplemented => {
-                                &mut counters.not_implemented_fallbacks_by_name
-                            }
-                            _ => &mut counters.other_fallbacks_by_name,
-                        };
-                        *bucket.entry(name.clone()).or_insert(0) += 1;
-                        NativeProcDisposition::Fallback
+                        if let Some(msg) = segfault_message(&state, &e) {
+                            log::debug!("Native procedure {name} segfaulted: {msg}");
+                            counters.native_calls += 1;
+                            *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
+                            NativeProcDisposition::Segfault(msg)
+                        } else {
+                            log::debug!(
+                                "Native procedure {name} returned error, falling back to Python: {e:?}"
+                            );
+                            counters.native_python_fallbacks += 1;
+                            let bucket = match e {
+                                ProcedureError::SymbolicArgument(_) => {
+                                    &mut counters.symbolic_fallbacks_by_name
+                                }
+                                ProcedureError::NotImplemented => {
+                                    &mut counters.not_implemented_fallbacks_by_name
+                                }
+                                _ => &mut counters.other_fallbacks_by_name,
+                            };
+                            *bucket.entry(name.clone()).or_insert(0) += 1;
+                            NativeProcDisposition::Fallback
+                        }
                     }
                 },
             }
@@ -572,6 +605,21 @@ pub(super) fn handle_simprocedure_core(
             }
         },
         NativeProcDisposition::Fallback => None,
+        NativeProcDisposition::Segfault(msg) => {
+            // Python would have re-run the proc only to raise SimSegfaultException
+            // out of it; land the state at the proc address like the Python bounce
+            // does and terminal-error it here. Pending forks are dropped, matching
+            // the interpreter's own `RunResult::Error` arm.
+            state.set_pc(addr);
+            return CoreOutcome {
+                ret: CoreReturn::Errored(state, msg),
+                pruned: Vec::new(),
+                fork_ids: Vec::new(),
+                terminal_pushes: Vec::new(),
+                counters: std::mem::take(counters),
+                root_hint,
+            };
+        }
     };
 
     if let Some(no_return) = fall_back_to_python {

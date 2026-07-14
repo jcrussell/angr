@@ -459,3 +459,38 @@ fn native_hook_at_avoid_addr_bounces_to_python() {
         ));
     });
 }
+
+/// A native proc's unmapped-page error becomes a Python-identical
+/// SimSegfaultException message — but only with STRICT_PAGE_ACCESS on, since
+/// Python otherwise lazily initializes the page and keeps going (angr-gorvf.13).
+#[test]
+fn segfault_message_mirrors_python_strict_page_access() {
+    use super::handlers::segfault_message;
+    use crate::memory::MemoryError;
+    use crate::procedures::ProcedureError;
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    let unmapped = ProcedureError::Memory(MemoryError::Unmapped {
+        addr: 0x1234,
+        size: 4096,
+    });
+
+    // STRICT_PAGE_ACCESS off: Python services the read, so we must bounce.
+    assert_eq!(segfault_message(&state, &unmapped), None);
+
+    state.set_enforce_permissions(true);
+    // Page-aligned, matching PrivilegedPagingMixin's `pageno * page_size`.
+    assert_eq!(
+        segfault_message(&state, &unmapped),
+        Some("0x1000 (unmapped)".to_string())
+    );
+
+    // Every other decline still falls back to Python.
+    for err in [
+        ProcedureError::SymbolicArgument("n".into()),
+        ProcedureError::NotImplemented,
+        ProcedureError::Memory(MemoryError::UnmappedPageInRegion { page_addr: 0x1000 }),
+    ] {
+        assert_eq!(segfault_message(&state, &err), None);
+    }
+}
