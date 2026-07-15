@@ -517,29 +517,28 @@ class TestEdgeCases:
         assert "CALLLESS" in msg, f"error must name the option: {msg!r}"
         assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
 
-    def test_efficient_state_merging_option_raises_at_construction(
+    def test_efficient_state_merging_option_does_not_raise(
         self,
         fauxware_project,
     ):
-        """EFFICIENT_STATE_MERGING must raise NotImplementedError at manager
-        construction. The Python engine uses this option to retain strong
-        refs on SimStateHistory ancestors so state.merge() can find a
-        common ancestor for plugin merging; the Rust engine does not drive
-        SimStateHistory's strongref path, so the option is silently
-        ignored. Veritesting auto-adds the option and requires real plugin
-        merging to work — silent acceptance under Rust would let
-        Veritesting attempts run without ancestor refs and produce
-        weak-ref merges. Acceptance for angr-n129.
+        """EFFICIENT_STATE_MERGING must NOT raise (demoted angr-op0dn.11.6).
+
+        It was raise-listed (angr-n129) while merge went through the Python
+        export path, which needs the SimStateHistory common-ancestor walk the
+        option feeds. Merge is now native — RustExplorationManager.merge()
+        runs the M3-4 fast path (merge_states, no export) and the M3-5 native
+        ManualMergepoint technique forks-and-merges in Rust — so the option's
+        Python rationale is moot and it is honored by not raising. Veritesting
+        auto-adds it; honoring it lets such a state explore under the native
+        merge machinery instead of hard-failing at the manager boundary.
         """
 
         state = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.EFFICIENT_STATE_MERGING},
         )
-        with pytest.raises(NotImplementedError) as exc:
-            RustExplorationManager(fauxware_project, [state])
-        msg = str(exc.value)
-        assert "EFFICIENT_STATE_MERGING" in msg, f"error must name the option: {msg!r}"
-        assert "Python engine" in msg, f"error must point users to the Python engine: {msg!r}"
+        # Must construct without raising.
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr is not None
 
     def test_symbol_fill_unconstrained_registers_option_raises_at_construction(
         self,
@@ -660,8 +659,8 @@ class TestEdgeCases:
 
     def test_bypass_veritesting_exceptions_warns(self, fauxware_project):
         """BYPASS_VERITESTING_EXCEPTIONS is consulted only by
-        analyses/veritesting.py; Veritesting under Rust already raises
-        via the EFFICIENT_STATE_MERGING option it auto-adds. Outside
+        analyses/veritesting.py; the Rust manager does not yet drive the
+        Veritesting technique (angr-op0dn.11.7 is still open). Outside
         Veritesting the option is a no-op. It travels with the
         ``angr.options.resilience`` bundle, so reject-with-warn (not
         raise) keeps resilience-bundle users alive while still signaling

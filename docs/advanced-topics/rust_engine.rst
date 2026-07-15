@@ -2106,14 +2106,17 @@ vs. Python.
      - Retains strong refs on ``SimStateHistory`` ancestors so
        ``state.merge()`` can find a common ancestor for plugin
        merging.
-     - **(c) raise NotImplementedError** at manager construction (see
-       ``_RAISE_OPTION_NAMES``). Rust does not drive
-       ``SimStateHistory``'s strongref path; silent ignore would let
-       Veritesting (which auto-adds the option) run without ancestor
-       refs and produce weak-ref merges. The paired
+     - **(a) honored** (demoted from raise, angr-op0dn.11.6). Merge is
+       now native: ``RustExplorationManager.merge()`` runs the M3-4
+       fast path (``merge_states``, no export, no ``SimStateHistory``
+       walk) and the M3-5 native ``ManualMergepoint`` technique
+       forks-and-merges in Rust, so the option's Python common-ancestor
+       rationale is moot. It is honored by not raising — a state
+       carrying it (including Veritesting's auto-added copy) explores
+       under the native merge machinery. The paired
        ``SIMPLIFY_MERGED_CONSTRAINTS`` is honored implicitly through
-       the Python ``state.merge()`` fallback inside
-       ``RustExplorationManager.merge()``.
+       the Python ``state.merge()`` fallback that still backs custom
+       ``merge_func``/``merge_key``.
    * - ``SUPER_FASTPATH``, ``FAST_MEMORY``, ``FAST_REGISTERS``,
        ``UNDER_CONSTRAINED_SYMEXEC``
      - Select alternate Python engines / memory plugins.

@@ -1429,3 +1429,82 @@ class TestManualMergepointNative:
 
         assert "ManualMergepoint" in _NATIVE_STEP_TECH_NAMES
         assert _has_dispatched_step_hook(ManualMergepoint(0x400000)) is False
+
+
+class TestEfficientStateMergingHonored:
+    """M3-6 (angr-op0dn.11.6): EFFICIENT_STATE_MERGING is honored, not raised.
+
+    The raise was demoted once merge went native (M3-4 fast path + M3-5
+    ManualMergepoint technique). These tests pin both the boundary behavior
+    (no raise) and the end-to-end payoff (directed explore + native MergePoint
+    reaches the find target while collapsing the active frontier).
+    """
+
+    # fauxware: 0x4006ED is the "accepted" print; 0x40073E is a main block on
+    # the common prefix every path traverses before the auth branch, so it is
+    # a valid reconvergence point for the ManualMergepoint.
+    ACCEPTED = 0x4006ED
+    RECONVERGE = 0x40073E
+
+    def test_option_does_not_raise_at_construction(self, fauxware_project):
+        """A state carrying EFFICIENT_STATE_MERGING builds the Rust manager
+        without raising (the demoted angr-n129 boundary)."""
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.EFFICIENT_STATE_MERGING},
+        )
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr is not None
+
+    def test_option_dropped_from_raise_list(self):
+        """The parity gate: EFFICIENT_STATE_MERGING is no longer raise-listed."""
+        from angr.exploration.rust_manager import _RAISE_OPTION_NAMES
+
+        assert "EFFICIENT_STATE_MERGING" not in _RAISE_OPTION_NAMES
+
+    def _run(self, project, distances, with_merge):
+        """Directed explore of four EFFICIENT_STATE_MERGING seeds to ACCEPTED.
+
+        Returns (found_count, peak_active_width, states_merged_native). With
+        ``with_merge`` a ManualMergepoint parks and collapses the four
+        divergent frontiers at RECONVERGE before they fan out to the target.
+        """
+        from angr.exploration.rust_manager import RustExplorationManager as _Mgr
+        from angr.exploration_techniques import ManualMergepoint
+
+        seeds = [project.factory.entry_state(add_options={angr.sim_options.EFFICIENT_STATE_MERGING}) for _ in range(4)]
+        mgr = _Mgr(project, seeds)
+        mgr.set_exploration_strategy("directed", distances=distances)
+        if with_merge:
+            mgr.use_technique(ManualMergepoint(self.RECONVERGE, wait_counter=3))
+
+        peak = {"v": 0}
+
+        def sample_peak(m):
+            peak["v"] = max(peak["v"], len(m.active))
+            return False
+
+        mgr.explore(find=self.ACCEPTED, until=sample_peak, max_steps=2000)
+        return len(mgr.found), peak["v"], mgr.stats.get("states_merged_native", 0)
+
+    def test_directed_mergepoint_reaches_target_and_narrows_frontier(self, fauxware_project):
+        """Real-binary integration (angr-op0dn.11.6 acceptance): a directed
+        explore under a native MergePoint reaches the find address, merges at
+        least one group of states natively, and keeps the peak active frontier
+        strictly below the no-merge directed run."""
+        from angr.exploration.rust_manager import cfg_distance_map
+
+        cfg = fauxware_project.analyses.CFGFast(normalize=True)
+        distances = cfg_distance_map(cfg, self.ACCEPTED)
+        assert self.ACCEPTED in distances, "find address must be in the CFG distance map"
+
+        base_found, base_peak, base_merged = self._run(fauxware_project, distances, with_merge=False)
+        merge_found, merge_peak, merge_merged = self._run(fauxware_project, distances, with_merge=True)
+
+        # Both runs reach the target.
+        assert base_found >= 1, "no-merge directed run must reach the find address"
+        assert merge_found >= 1, "merge directed run must reach the find address"
+        # The no-merge run never merges natively; the merge run does.
+        assert base_merged == 0, "baseline must not merge natively"
+        assert merge_merged >= 1, f"native MergePoint must fire (states_merged_native={merge_merged})"
+        # Merging strictly narrows the peak active frontier.
+        assert merge_peak < base_peak, f"merge peak ({merge_peak}) must be strictly below no-merge peak ({base_peak})"

@@ -315,16 +315,23 @@ _REJECTED_OPTION_NAMES = frozenset(
 # EFFICIENT_STATE_MERGING asks SimStateHistory to retain a strong
 # reference to each ancestor state so state.merge() can find a common
 # ancestor for plugin merging (Python: state_plugins/history.py
-# set_strongref_state). The Rust engine does not drive SimStateHistory's
-# strongref path, so the option is silently ignored. Auto-added by
-# Veritesting (exploration_techniques/veritesting.py), which requires
-# real per-plugin merging to work — Veritesting under Rust would
-# silently lose ancestor refs and then fall back to weak-ref merging
-# inside the export path. Promoted to raise (angr-n129, 2026-05-16).
-# The paired SIMPLIFY_MERGED_CONSTRAINTS is NOT promoted because it
-# ships in the default `symbolic` mode bundle (simplification set);
-# it is honored implicitly through the Python state.merge() fallback
-# inside RustExplorationManager.merge().
+# set_strongref_state). It was raise-listed (angr-n129, 2026-05-16)
+# while the Rust engine merged only through the Python export path,
+# which needs that common-ancestor walk. DEMOTED (angr-op0dn.11.6):
+# merge is now native. RustExplorationManager.merge() runs the M3-4
+# fast path (_merge_native -> _rust_mgr.merge_states, no export, no
+# SimStateHistory walk), and the M3-5 native MergePoint technique
+# (ManualMergepoint -> register_merge_point) forks-and-merges entirely
+# in Rust. Neither path consults SimStateHistory's strongref, so the
+# option's Python rationale is moot: it is honored by NOT raising, which
+# lets a state carrying it (including Veritesting's auto-added copy)
+# explore under the native merge machinery instead of hard-failing at
+# the manager boundary. The paired SIMPLIFY_MERGED_CONSTRAINTS was never
+# promoted because it ships in the default `symbolic` mode bundle
+# (simplification set); it is honored implicitly through the Python
+# state.merge() fallback that still backs custom merge_func/merge_key.
+# NOTE for M6 coordination: this option is M3-owned — the M6 dispatcher
+# routes it to Python meanwhile and must not double-count it.
 #
 # SYMBOL_FILL_UNCONSTRAINED_REGISTERS asks the Python filler to create
 # a fresh symbolic BVS on every read of an uninitialized register, and
@@ -416,7 +423,6 @@ _RAISE_OPTION_NAMES = frozenset(
         "CONSERVATIVE_WRITE_STRATEGY",
         "DO_RET_EMULATION",
         "CALLLESS",
-        "EFFICIENT_STATE_MERGING",
         "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
         "BYPASS_ERRORED_IROP",
         "BYPASS_ERRORED_IRCCALL",
