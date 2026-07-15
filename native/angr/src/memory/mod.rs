@@ -1007,6 +1007,18 @@ impl SymbolicMemory {
 
             match (self_page, other_page) {
                 (Some(sp), Some(op)) => {
+                    // CoW fast path (angr-op0dn.11.2.1, productionizes S5a): a
+                    // structurally-shared page with no symbolic/Multi overlay is
+                    // provably byte-identical, so it contributes nothing to the
+                    // merge. Skip it without materializing PAGE_SIZE bytes,
+                    // making merge cost proportional to divergent pages rather
+                    // than all shared pages. This is a strict subset of the
+                    // value-equality early-out below, so it is semantics-neutral.
+                    if sp.is_shared_identical(op) {
+                        continue;
+                    }
+                    #[cfg(test)]
+                    tests::merge_instrument::note_page_walked();
                     // Both have this page — compare concrete data
                     let s_data = sp.load_concrete(0, PAGE_SIZE as u16);
                     let o_data = op.load_concrete(0, PAGE_SIZE as u16);

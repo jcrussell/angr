@@ -223,6 +223,34 @@ impl MemoryPage {
             && self.multi_bitmap == other.multi_bitmap
     }
 
+    /// Production merge skip predicate (angr-op0dn.11.2.1, productionizes S5a).
+    ///
+    /// Returns `true` when the two pages are provably byte-for-byte identical
+    /// with no symbolic/Multi overlay on *either* side, established WITHOUT
+    /// materializing any bytes: `data` is the same `Arc` allocation (untouched
+    /// since a common fork — [`store_concrete`] is the only thing that breaks
+    /// sharing, via `Arc::make_mut`) and neither page carries a symbolic or Multi
+    /// bitmap. `SymbolicMemory::merge` skips such pages, making merge cost
+    /// proportional to *divergent* pages instead of *all shared* pages.
+    ///
+    /// This is intentionally narrower than [`shares_data_with`]: it does NOT
+    /// admit ptr-shared pages whose symbolic bitmaps merely *match*. A symbolic
+    /// store touches only the bitmap + `SymbolicMemory::symbolic_objects` and
+    /// leaves `data` ptr-shared (see `store` in `store.rs`), so two arms can
+    /// share `data` and have equal symbolic bitmaps yet hold *different*
+    /// `symbolic_objects` values at an already-symbolic byte — a divergence merge
+    /// must still ITE. Requiring no symbolic overlay makes the skip a strict
+    /// subset of the existing value-equality early-out (`s_data == o_data &&
+    /// !has_symbolic`), so it is provably semantics-preserving.
+    #[inline]
+    pub(crate) fn is_shared_identical(&self, other: &MemoryPage) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+            && self.symbolic_bitmap.is_none()
+            && other.symbolic_bitmap.is_none()
+            && self.multi_bitmap.is_none()
+            && other.multi_bitmap.is_none()
+    }
+
     /// Get the symbolic byte offsets.
     pub fn symbolic_offsets(&self) -> Vec<u16> {
         let bitmap = match &self.symbolic_bitmap {
