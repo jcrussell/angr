@@ -935,6 +935,50 @@ impl SymContext {
             .collect();
         let mut all_z3_conditions = Vec::new();
 
+        // angr-op0dn.11.3: shared-prefix-aware merge. `fork()` freezes self's
+        // local constraints into `z3_assertions_shared` and hands the SAME Arc
+        // to the child (`freeze_into_shared`), so sibling diamond arms hold a
+        // POINTER-EQUAL frozen prefix all the way to this merge point. When
+        // every input context shares that one Arc, the prefix holds on EVERY
+        // path reaching the merge (all arms descend from the fork point), so we
+        // assert it ONCE, UNGUARDED, and guard only each arm's divergent local
+        // suffix — the guarded-`Or` count becomes proportional to the
+        // DIVERGENCE (Σ local) instead of the TOTAL (Σ shared+local).
+        //
+        // Soundness: the pre-11.3 shape already forces the prefix on every
+        // model — `Or(conds)` makes some `cond_i` true, whose guard then
+        // requires that arm's (identical) shared prefix — so lifting the prefix
+        // out of the guards removes no models and adds none. The rewrite fires
+        // only when the Arcs are ptr-equal (byte-identical content), so there
+        // is no shadowing: `local` is strictly additive to the frozen prefix
+        // (`freeze_into_shared` only appends; an arm never retracts a shared
+        // constraint — the S5b spike's `test_local_never_shadows_shared` checks
+        // this). If the prefixes are NOT all ptr-equal (arms with no common
+        // frozen ancestor), fall back to guarding every constraint of every arm.
+        let common_prefix = Arc::clone(&all_contexts[0].z3_assertions_shared.lock());
+        let prefix_shared_by_all = all_contexts[1..]
+            .iter()
+            .all(|ctx| Arc::ptr_eq(&ctx.z3_assertions_shared.lock(), &common_prefix));
+        let use_prefix_fast_path = prefix_shared_by_all && !common_prefix.is_empty();
+
+        if use_prefix_fast_path {
+            // Assert the common frozen prefix exactly once, unguarded. Record
+            // each in the residual log so the `to_snapshot` self-invariant
+            // (z3_count <= assumed + non_bv) holds regardless of how the prefix
+            // constraint originated; the merged context is dumped full-solver on
+            // snapshot anyway (`assume_class_reconstructible = false` below).
+            {
+                let mut ml = merged.local_constraints.lock();
+                for assertion in common_prefix.iter() {
+                    ml.push_assertion(assertion.clone());
+                    ml.non_bv_assertions.push(assertion.clone());
+                }
+            }
+            for assertion in common_prefix.iter() {
+                merged.add_constraint(assertion.clone());
+            }
+        }
+
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
             // Compute NOT(cond) up front so cond_bool can be moved into
             // all_z3_conditions without cloning the Z3 AST.
@@ -947,10 +991,22 @@ impl SymContext {
             let assumed_shared = Arc::clone(&ctx.assumed_constraints_shared.lock());
             let ctx_local = ctx.local_constraints.lock();
 
-            // For each constraint c_j in context i:
+            // On the shared-prefix fast path guard ONLY the divergent local
+            // suffix (the prefix was asserted unguarded above); otherwise guard
+            // every assertion of the arm (shared prefix + local suffix).
+            let to_guard: Vec<&z3::ast::Bool> = if use_prefix_fast_path {
+                ctx_local.z3_assertions.iter().collect()
+            } else {
+                shared
+                    .iter()
+                    .chain(ctx_local.z3_assertions.iter())
+                    .collect()
+            };
+
+            // For each constraint c_j guarded for context i:
             //   assert (NOT merge_cond_i OR c_j)
             // This means: if this merge path is active, all its constraints hold
-            for assertion in shared.iter().chain(ctx_local.z3_assertions.iter()) {
+            for assertion in to_guard {
                 let guarded = z3::ast::Bool::or(&[&not_cond, assertion]);
                 {
                     // angr-t3l5o Phase 1: residual sink #3 (merge guard). The
@@ -961,6 +1017,8 @@ impl SymContext {
                     ml.non_bv_assertions.push(guarded.clone());
                 }
                 merged.add_constraint(guarded);
+                #[cfg(test)]
+                super::context::merge_instrument::note_guarded();
             }
 
             // Also merge assumed_constraints for Python export
@@ -983,6 +1041,8 @@ impl SymContext {
             ml.non_bv_assertions.push(or_conds.clone());
         }
         merged.add_constraint(or_conds);
+        #[cfg(test)]
+        super::context::merge_instrument::note_guarded();
 
         // angr-t3l5o Phase 1: a merged context's `assumed` pairs are
         // export-only — the solver holds the guarded `Or`s above, not the
