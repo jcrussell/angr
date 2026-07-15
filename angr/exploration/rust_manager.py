@@ -1180,8 +1180,9 @@ class RustExplorationManager(
                 / stores route directly into Rust instead of going through
                 the cached state's claripy SimMemory + ``CallbackMemoryTracker``
                 diff-and-push (angr-4scu step 3). When ``None`` (default), the
-                env var ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles it
-                on; otherwise off. Off keeps the existing tracker path live.
+                proxy is ON (angr-grji4 human-GO flip 2026-07-15); the env var
+                ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
+                hatch that forces the existing tracker path back on.
             use_callback_register_proxy: If True, install ``RustRegisterProxy``
                 as ``state.registers`` on SimProcedure callback states so
                 ``state.regs.<name>`` reads/writes route directly into Rust
@@ -1438,12 +1439,14 @@ class RustExplorationManager(
         # on, ``_create_state_for_callback`` swaps ``state.memory`` with a
         # ``RustMemoryProxy``, so loads/stores during the SimProc route
         # directly into Rust and the post-callback tracked-writes replay is
-        # skipped (writes already landed in Rust). Env var
-        # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=1`` toggles default-on when
-        # the kwarg is left at its default ``None``. Multi-session epic
+        # skipped (writes already landed in Rust). Default ON as of the
+        # angr-grji4 human-GO flip (2026-07-15); env var
+        # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
+        # hatch that forces the legacy CallbackMemoryTracker path back on
+        # when the kwarg is left at its default ``None``. Multi-session epic
         # (see bd memory boundary-4scu-simmem-spike).
         self._use_callback_memory_proxy = _resolve_env_flag(
-            use_callback_memory_proxy, "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY"
+            use_callback_memory_proxy, "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", default=True
         )
 
         # angr-qj30 (write-through .2): gate for installing

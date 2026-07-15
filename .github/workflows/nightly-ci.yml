@@ -213,6 +213,10 @@ jobs:
         # 982/982 rust suite green + fauxware fast-tier bench clean, so they
         # join the soak. Closes the angr-sluuj.3 coverage gap where the
         # export-pipeline proxies had only precedence-contract tests.
+        #
+        # CALLBACK_MEMORY_PROXY was flipped default-ON (angr-grji4 human-GO
+        # 2026-07-15); the explicit "1" below is now redundant but kept for
+        # symmetry with the other soaked gates. Its opt-OUT is =0.
         env:
           ANGR_RUST_USE_CALLBACK_MEMORY_PROXY: "1"
           ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"

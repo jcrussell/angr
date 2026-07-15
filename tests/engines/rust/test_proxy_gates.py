@@ -417,8 +417,11 @@ class TestProxyMemoryFind:
 # default off, kwarg on, env var on, explicit kwarg beats env var. Adding a
 # gate is a one-line entry here; per-gate behavioral tests live in the
 # matching Test*Gate class below.
+# NOTE: ``use_callback_memory_proxy`` is intentionally absent — it was flipped
+# default-ON (angr-grji4 human-GO 2026-07-15), so it no longer follows the
+# default-off contract. Its 4-way precedence (default on, ``=0`` opt-out,
+# kwarg beats env) lives in ``TestCallbackMemoryProxyGate`` below.
 _GATE_TOGGLES = [
-    ("use_callback_memory_proxy", "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "_use_callback_memory_proxy"),
     ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
     ("use_callback_callstack_proxy", "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "_use_callback_callstack_proxy"),
     ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
@@ -483,9 +486,32 @@ class TestProxyGateToggles:
 class TestCallbackMemoryProxyGate:
     """angr-4scu step 3: ``use_callback_memory_proxy`` gate controls whether
     ``RustMemoryProxy`` is installed as ``state.memory`` on SimProcedure
-    callback states. Default off keeps the ``CallbackMemoryTracker``
-    diff-and-push path live; on routes loads/stores directly to Rust.
+    callback states. Default ON as of the angr-grji4 human-GO flip
+    (2026-07-15): the proxy routes loads/stores directly to Rust; the
+    ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` env var is the opt-OUT escape
+    hatch that restores the legacy ``CallbackMemoryTracker`` diff-and-push path.
     """
+
+    def test_gate_default_on(self, fauxware_project, monkeypatch):
+        """Without the kwarg or env var, the gate is ON (angr-grji4 flip)."""
+        monkeypatch.delenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", raising=False)
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_memory_proxy is True
+
+    def test_gate_env_var_zero_opts_out(self, fauxware_project, monkeypatch):
+        """``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape hatch."""
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "0")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._use_callback_memory_proxy is False
+
+    def test_gate_kwarg_false_beats_env_var(self, fauxware_project, monkeypatch):
+        """An explicit ``kwarg=False`` beats the (default-on) env var."""
+        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=False)
+        assert mgr._use_callback_memory_proxy is False
 
     def test_proxy_install_swaps_state_memory(self, fauxware_project):
         """When the gate is on, ``_install_callback_memory_proxy`` replaces
