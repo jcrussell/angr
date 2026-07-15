@@ -203,6 +203,26 @@ impl MemoryPage {
         self.symbolic_bitmap.is_some()
     }
 
+    /// CoW structural-sharing skip predicate (angr-op0dn.11.1.1, S5a).
+    ///
+    /// Returns `true` when this page is provably byte-for-byte identical to
+    /// `other` *without walking any bytes*: the concrete `data` buffers are the
+    /// same `Arc` allocation (ptr-equal — untouched since a common fork, because
+    /// [`store_concrete`] breaks sharing via `Arc::make_mut`) and both symbolic
+    /// overlay bitmaps match. A merge can skip such a page entirely, making merge
+    /// cost proportional to *divergent* pages instead of *all shared* pages.
+    ///
+    /// Bitmap comparison is a fixed 512-byte `[u64; BITMAP_WORDS]` check (O(1) per
+    /// page), independent of PAGE_SIZE; it is only reached when `data` already
+    /// ptr-matches, so it is off the hot path for divergent pages.
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn shares_data_with(&self, other: &MemoryPage) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+            && self.symbolic_bitmap == other.symbolic_bitmap
+            && self.multi_bitmap == other.multi_bitmap
+    }
+
     /// Get the symbolic byte offsets.
     pub fn symbolic_offsets(&self) -> Vec<u16> {
         let bitmap = match &self.symbolic_bitmap {
