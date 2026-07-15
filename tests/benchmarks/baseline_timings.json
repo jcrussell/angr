@@ -80,12 +80,12 @@
     "steps": 3
   },
   "csgames2018": {
-    "callback_count": 185,
-    "peak_memory_mb": 292.3,
+    "callback_count": 207,
+    "peak_memory_mb": 348.0,
     "python_time": 1.567,
-    "rust_time": 0.958,
-    "state_creations": 0,
-    "steps": 185
+    "rust_time": 1.16,
+    "state_creations": 22,
+    "steps": 163
   },
   "defcamp_r100": {
     "callback_count": 0,
