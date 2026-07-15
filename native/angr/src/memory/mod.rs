@@ -1000,6 +1000,12 @@ impl SymbolicMemory {
         // Collect merge operations first to avoid borrow conflicts
         let mut merge_ops: Vec<(u64, Address, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
         let mut pages_to_add: Vec<(u64, MemoryPage)> = Vec::new();
+        // Multi-cell unions (M3-2b, angr-op0dn.11.2.2): a byte that is Multi
+        // on *both* arms merges to a single lazy Multi cell whose alternatives
+        // union the arms under merge-condition guards, staying lazy rather
+        // than collapsing to a `symbolic_objects` ITE. Collected here and
+        // installed after the borrow of `self.pages` is released.
+        let mut multi_ops: Vec<(Address, crate::memory::multi::MultiPayload)> = Vec::new();
 
         for &page_num in &all_pages {
             let self_page = self.pages.get(&page_num);
@@ -1019,11 +1025,21 @@ impl SymbolicMemory {
                     }
                     #[cfg(test)]
                     tests::merge_instrument::note_page_walked();
-                    // Both have this page — compare concrete data
+                    // Both have this page — compare concrete data. The Multi
+                    // guards mirror the plain-symbolic ones: a page carrying
+                    // Multi cells can never take the concrete-equality
+                    // early-out because Multi divergence lives in
+                    // `multi_objects`, invisible to a `data[]` compare
+                    // (angr-op0dn.11.2.2).
                     let s_data = sp.load_concrete(0, PAGE_SIZE as u16);
                     let o_data = op.load_concrete(0, PAGE_SIZE as u16);
 
-                    if s_data == o_data && !sp.has_symbolic() && !op.has_symbolic() {
+                    if s_data == o_data
+                        && !sp.has_symbolic()
+                        && !op.has_symbolic()
+                        && !sp.has_multi()
+                        && !op.has_multi()
+                    {
                         continue;
                     }
 
@@ -1034,30 +1050,73 @@ impl SymbolicMemory {
 
                         let s_sym = sp.has_symbolic() && sp.is_symbolic(i as u16);
                         let o_sym = op.has_symbolic() && op.is_symbolic(i as u16);
+                        let s_multi = sp.has_multi() && sp.is_multi(i as u16);
+                        let o_multi = op.has_multi() && op.is_multi(i as u16);
 
-                        if !s_sym && !o_sym && s_byte == o_byte {
+                        // A byte contributes nothing only when it is plain
+                        // concrete on both arms AND the bytes are equal.
+                        if !s_sym && !o_sym && !s_multi && !o_multi && s_byte == o_byte {
                             continue;
                         }
 
                         let addr = base_addr + i as u64;
-                        let self_val = if s_sym {
-                            self.symbolic_objects
-                                .get(&addr)
-                                .cloned()
-                                .unwrap_or_else(|| RustBV::concrete(s_byte as u128, 8))
-                        } else {
-                            RustBV::concrete(s_byte as u128, 8)
-                        };
 
-                        let other_val = if o_sym {
-                            other
-                                .symbolic_objects
+                        // Both-Multi lazy union (design-doc merge rule): keep
+                        // the result a Multi cell, guarding each arm's
+                        // alternatives so exactly one arm's chain is live per
+                        // model. The page's concrete byte is a don't-care
+                        // default (each arm's `exactly-one-cond-true`
+                        // invariant means the else-leaf is never selected).
+                        if s_multi && o_multi {
+                            let not_cond = merge_cond_other.not(ctx);
+                            let sp_pl = self
+                                .multi_objects
                                 .get(&addr)
-                                .cloned()
-                                .unwrap_or_else(|| RustBV::concrete(o_byte as u128, 8))
-                        } else {
-                            RustBV::concrete(o_byte as u128, 8)
-                        };
+                                .expect("s_multi implies a payload");
+                            let op_pl = other
+                                .multi_objects
+                                .get(&addr)
+                                .expect("o_multi implies a payload");
+                            let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len());
+                            for alt in sp_pl.alternatives() {
+                                alts.push(crate::memory::multi::MultiAlternative::new(
+                                    not_cond.and(&alt.cond, ctx),
+                                    alt.value.clone(),
+                                ));
+                            }
+                            for alt in op_pl.alternatives() {
+                                alts.push(crate::memory::multi::MultiAlternative::new(
+                                    merge_cond_other.and(&alt.cond, ctx),
+                                    alt.value.clone(),
+                                ));
+                            }
+                            multi_ops.push((
+                                addr,
+                                crate::memory::multi::MultiPayload::from_alternatives(alts),
+                            ));
+                            continue;
+                        }
+
+                        // Otherwise collapse any Multi side to a BV and ITE it
+                        // against the other side (concrete / plain-symbolic).
+                        let self_val = Self::merge_byte_value(
+                            &self.symbolic_objects,
+                            &self.multi_objects,
+                            addr,
+                            s_byte,
+                            s_sym,
+                            s_multi,
+                            ctx,
+                        );
+                        let other_val = Self::merge_byte_value(
+                            &other.symbolic_objects,
+                            &other.multi_objects,
+                            addr,
+                            o_byte,
+                            o_sym,
+                            o_multi,
+                            ctx,
+                        );
 
                         let ite_val = merge_cond_other.ite(&other_val, &self_val, ctx);
                         merge_ops.push((page_num, addr, ite_val));
@@ -1087,6 +1146,16 @@ impl SymbolicMemory {
             merged = true;
         }
 
+        // Install both-Multi unions. `set_multi_alternatives` clears any
+        // conflicting plain-Symbolic state at the byte and marks the page
+        // Multi, keeping the bitmaps and sidecars in sync. Applied before the
+        // symbolic-object merge below so a stray `other` entry can't shadow a
+        // freshly-installed Multi cell.
+        for (addr, payload) in multi_ops {
+            self.set_multi_alternatives(addr, payload);
+            merged = true;
+        }
+
         // Merge symbolic objects from other that aren't page-based
         for (&addr, other_obj) in &other.symbolic_objects {
             if let std::collections::hash_map::Entry::Vacant(e) = self.symbolic_objects.entry(addr)
@@ -1097,13 +1166,88 @@ impl SymbolicMemory {
             }
         }
 
-        // Merge pending writes
+        // Merge pending writes with merge-condition guards (M3-2b,
+        // angr-op0dn.11.2.2). A deferred symbolic store is arm-specific, so a
+        // blind `extend` would let `other`'s writes fire on `self`'s paths (and
+        // leaves `self`'s own writes firing on `other`'s paths). Guard each
+        // arm's writes so a write only materializes on the path that issued it:
+        // `self`'s writes under `!merge_cond_other`, `other`'s under
+        // `merge_cond_other`. Guarding composes with any pre-existing
+        // conditional-store condition via `And`.
+        if !self.pending_writes.is_empty() {
+            let not_cond = merge_cond_other.not(ctx);
+            let guarded: Vec<PendingWrite> = self
+                .pending_writes
+                .iter()
+                .map(|pw| Self::guard_pending_write(pw, &not_cond, ctx))
+                .collect();
+            self.pending_writes = guarded;
+            merged = true;
+        }
         if !other.pending_writes.is_empty() {
-            self.pending_writes.extend(other.pending_writes.clone());
+            self.pending_writes.extend(
+                other
+                    .pending_writes
+                    .iter()
+                    .map(|pw| Self::guard_pending_write(pw, merge_cond_other, ctx)),
+            );
             merged = true;
         }
 
         merged
+    }
+
+    /// Extract a single byte's merge value: collapse a Multi cell to its ITE
+    /// BV, read a plain-Symbolic byte from `symbolic_objects`, or fall back to
+    /// the concrete page byte. Shared by the two arms of the byte-merge loop so
+    /// Multi and plain-symbolic bytes both feed the same `ITE(cond, other,
+    /// self)` (angr-op0dn.11.2.2). Takes the two side tables by reference so it
+    /// can serve either `self` or `other` without a borrow conflict.
+    fn merge_byte_value(
+        symbolic_objects: &FxHashMap<Address, RustBV>,
+        multi_objects: &FxHashMap<Address, crate::memory::multi::MultiPayload>,
+        addr: Address,
+        concrete_byte: u8,
+        is_sym: bool,
+        is_multi: bool,
+        ctx: &crate::symbolic::SymContext,
+    ) -> RustBV {
+        if is_multi {
+            multi_objects
+                .get(&addr)
+                .map(|p| p.collapse(concrete_byte, ctx))
+                .unwrap_or_else(|| RustBV::concrete(concrete_byte as u128, 8))
+        } else if is_sym {
+            symbolic_objects
+                .get(&addr)
+                .cloned()
+                .unwrap_or_else(|| RustBV::concrete(concrete_byte as u128, 8))
+        } else {
+            RustBV::concrete(concrete_byte as u128, 8)
+        }
+    }
+
+    /// Guard a deferred symbolic store with a merge condition, composing with
+    /// any pre-existing conditional-store condition via `And`
+    /// (angr-op0dn.11.2.2). The returned write only materializes when `guard`
+    /// holds, so an arm-specific pending write stays scoped to its own path
+    /// after a merge.
+    fn guard_pending_write(
+        pw: &PendingWrite,
+        guard: &RustBV,
+        ctx: &crate::symbolic::SymContext,
+    ) -> PendingWrite {
+        let condition = Some(match &pw.condition {
+            Some(c) => guard.and(c, ctx),
+            None => guard.clone(),
+        });
+        PendingWrite {
+            addr: pw.addr.clone(),
+            value: pw.value.clone(),
+            size: pw.size,
+            condition,
+            page_hint: pw.page_hint,
+        }
     }
 }
 

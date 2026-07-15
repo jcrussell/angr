@@ -15,6 +15,7 @@ mod basic;
 mod ite_dedup;
 mod merge_cost_shape;
 mod merge_divergence;
+mod merge_multi;
 mod merge_prefetch;
 mod multi;
 mod symbolic;

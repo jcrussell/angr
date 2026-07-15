@@ -364,6 +364,17 @@ impl MemoryPage {
         bitmap[word_idx] |= 1u64 << bit_idx;
     }
 
+    /// Check if this page has any Multi bytes.
+    ///
+    /// Parallel to [`has_symbolic`]: `merge` uses it to decide whether the
+    /// page can take the concrete-equality early-out. A page carrying Multi
+    /// cells must always walk its bytes because Multi divergence lives in
+    /// `SymbolicMemory::multi_objects`, invisible to a `data[]` compare.
+    #[inline]
+    pub fn has_multi(&self) -> bool {
+        self.multi_bitmap.is_some()
+    }
+
     /// Check if a byte carries lazy Multi alternatives.
     #[inline]
     pub fn is_multi(&self, offset: u16) -> bool {
