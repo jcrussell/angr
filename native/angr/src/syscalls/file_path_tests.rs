@@ -2001,7 +2001,11 @@ fn newfstatat_unsupported_arch_falls_back() {
             .call(
                 &mut state,
                 &[
-                    RustBV::concrete((TEST_AT_FDCWD_NFA & ((1u64 << bits) - 1)) as u128, bits),
+                    // bits == 64 here (mips64); the value already fits in 64
+                    // bits, so no masking is needed. `(1u64 << 64) - 1` would
+                    // panic on shift-overflow in a debug build (angr-yojqz),
+                    // matching the unmasked usage in the sibling arch tests.
+                    RustBV::concrete(TEST_AT_FDCWD_NFA as u128, bits),
                     RustBV::concrete(0x2000, bits),
                     RustBV::concrete(0x4000, bits),
                     RustBV::concrete(0, bits),
