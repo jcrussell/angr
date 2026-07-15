@@ -419,3 +419,115 @@ fn multi_pending_entries_resume_independently() {
         .collect();
     assert!(ids.contains(&sid_a) && ids.contains(&sid_b));
 }
+
+// --- MergePoint native technique (helpers.rs::apply_merge_point) ----------
+// ManualMergepoint parity (angr-op0dn.11.5). These drive apply_native_techniques
+// directly, constructing states at the merge address (with per-state callstacks
+// via push_call_frame) so the group/merge/release logic is asserted without a
+// full binary.
+
+/// Push a fresh amd64 state at `pc` with a synthetic single-frame callstack
+/// whose return address is `ret` (the merge grouping key), then park it active.
+fn push_active_at(mgr: &mut RustExplorationManager, pc: u64, ret: u64) -> u64 {
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_pc(pc);
+    // return_addr is the field merge_waiters_by_callstack keys on.
+    s.push_call(0xdead, 0xbeef, ret, 0x7fff_0000);
+    let sid = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+    sid
+}
+
+/// Three same-callstack states at the merge address (active otherwise empty)
+/// collapse to one merged state; states_merged_native counts all three.
+#[test]
+fn merge_point_merges_same_callstack_when_active_drains() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    for _ in 0..3 {
+        push_active_at(&mut mgr, 0x1000, 0xAAAA);
+    }
+    mgr.register_merge_point(0x1000, 10);
+    assert_eq!(mgr.native_technique_count(), 1);
+
+    mgr.apply_native_techniques();
+
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active");
+    assert_eq!(active.len(), 1, "3 same-callstack waiters merge to 1");
+    assert_eq!(active[0].pc(), 0x1000, "merged state sits at the merge pc");
+    let wait = mgr.sm.get("merge_waiting_0x1000").expect("wait stash");
+    assert!(wait.is_empty(), "waiters consumed by the merge");
+    assert_eq!(mgr.states_merged_native, 3);
+}
+
+/// Waiters with two distinct callstacks form two groups -> two merged states.
+#[test]
+fn merge_point_groups_by_callstack() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    // Two per callstack so each group actually merges (>=2).
+    push_active_at(&mut mgr, 0x2000, 0xA);
+    push_active_at(&mut mgr, 0x2000, 0xA);
+    push_active_at(&mut mgr, 0x2000, 0xB);
+    push_active_at(&mut mgr, 0x2000, 0xB);
+    mgr.register_merge_point(0x2000, 10);
+
+    mgr.apply_native_techniques();
+
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active");
+    assert_eq!(active.len(), 2, "two callstack groups -> two merged states");
+    assert!(mgr.sm.get("merge_waiting_0x2000").unwrap().is_empty());
+    assert_eq!(mgr.states_merged_native, 4);
+}
+
+/// A lone waiter is released back to active unmerged: count preserved, counter
+/// untouched.
+#[test]
+fn merge_point_single_waiter_released_unmerged() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let sid = push_active_at(&mut mgr, 0x3000, 0xC);
+    mgr.register_merge_point(0x3000, 10);
+
+    mgr.apply_native_techniques();
+
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active");
+    assert_eq!(active.len(), 1, "lone waiter released back to active");
+    assert_eq!(active[0].state_id(), sid, "same state, not a merge product");
+    assert!(mgr.sm.get("merge_waiting_0x3000").unwrap().is_empty());
+    assert_eq!(mgr.states_merged_native, 0, "nothing merged");
+}
+
+/// While the active frontier is non-empty and under the round limit the merge
+/// is deferred; once `wait_counter_limit` post-step rounds elapse it fires even
+/// with a live non-merge state still active.
+#[test]
+fn merge_point_defers_then_fires_on_counter() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    push_active_at(&mut mgr, 0x4000, 0xD);
+    push_active_at(&mut mgr, 0x4000, 0xD);
+    // A live non-merge state keeps the frontier non-empty across rounds.
+    let live = push_active_at(&mut mgr, 0x5000, 0xE);
+    mgr.register_merge_point(0x4000, 2);
+
+    // Round 1: two waiters parked, but active still holds the live state and
+    // counter (1) < limit (2) -> no merge yet.
+    mgr.apply_native_techniques();
+    assert_eq!(mgr.sm.get("merge_waiting_0x4000").unwrap().len(), 2);
+    assert_eq!(mgr.states_merged_native, 0, "merge deferred round 1");
+    assert_eq!(
+        mgr.sm.get(STASH_ACTIVE).unwrap().len(),
+        1,
+        "live state stays"
+    );
+
+    // Round 2: nothing new arrives, counter (2) reaches the limit -> merge
+    // fires even though the live state is still active.
+    mgr.apply_native_techniques();
+    assert_eq!(mgr.states_merged_native, 2, "counter forced the merge");
+    assert!(mgr.sm.get("merge_waiting_0x4000").unwrap().is_empty());
+    let active_ids = mgr.sm.state_ids(STASH_ACTIVE);
+    assert!(active_ids.contains(&live), "live state untouched");
+    assert_eq!(active_ids.len(), 2, "live state + merged product");
+}

@@ -441,6 +441,22 @@ impl RustExplorationManager {
         let mut complete = false;
 
         for tech_idx in 0..self.native_techniques.len() {
+            // MergePoint is handled out-of-band because merging calls
+            // `_merge_states` (needs `&mut self`), which conflicts with the
+            // `&mut self.native_techniques[tech_idx]` the match would hold.
+            if let NativeTechnique::MergePoint {
+                address,
+                wait_counter_limit,
+                wait_stash,
+                ..
+            } = &self.native_techniques[tech_idx]
+            {
+                let address = *address;
+                let limit = *wait_counter_limit;
+                let wait_stash = wait_stash.clone();
+                self.apply_merge_point(tech_idx, address, limit, &wait_stash);
+                continue;
+            }
             match &mut self.native_techniques[tech_idx] {
                 NativeTechnique::Timeout {
                     timeout_secs,
@@ -554,10 +570,172 @@ impl RustExplorationManager {
                         }
                     }
                 }
+                // Handled out-of-band above the match.
+                NativeTechnique::MergePoint { .. } => {}
             }
         }
 
         complete
+    }
+
+    /// One post-step round of the native MergePoint technique
+    /// (angr-op0dn.11.5). Mirrors `ManualMergepoint.step`: park active states
+    /// sitting at `address` into `wait_stash`, then — once the active frontier
+    /// drains or `limit` rounds elapse since the last arrival — group the
+    /// waiters by callstack and merge each ≥2 group via `_merge_states`.
+    ///
+    /// Kept as a dedicated `&mut self` method (not a match arm) because
+    /// `_merge_states` reborrows all of `self`; the caller copies the immutable
+    /// technique fields out first and this method writes `counter` back through
+    /// short-lived reborrows keyed by `tech_idx`.
+    fn apply_merge_point(&mut self, tech_idx: usize, address: u64, limit: usize, wait_stash: &str) {
+        // 1. Park active states at the merge address; a fresh arrival resets
+        //    the wait counter (ManualMergepoint: `self.wait_counter = 0`).
+        let parked = self.park_states_at_address(STASH_ACTIVE, wait_stash, address);
+        if parked > 0
+            && let NativeTechnique::MergePoint { counter, .. } =
+                &mut self.native_techniques[tech_idx]
+        {
+            *counter = 0;
+        }
+
+        let wait_len = self.sm.get(wait_stash).map_or(0, VecDeque::len);
+        if wait_len == 0 {
+            return;
+        }
+
+        // 2. Tick the round counter (once per post-step apply).
+        let counter_now = match &mut self.native_techniques[tech_idx] {
+            NativeTechnique::MergePoint { counter, .. } => {
+                *counter += 1;
+                *counter
+            }
+            _ => return,
+        };
+
+        // 3. Keep waiting while the frontier is non-empty and we are under the
+        //    round limit — more paths may still reconverge here.
+        let active_empty = self.sm.get(STASH_ACTIVE).is_none_or(VecDeque::is_empty);
+        if !active_empty && counter_now < limit {
+            return;
+        }
+
+        // 4. A single waiter has nothing to merge with: release it unmerged so
+        //    the path count is preserved and exploration does not stall.
+        if wait_len == 1 {
+            let _ = self._move_states(wait_stash, STASH_ACTIVE, None);
+            return;
+        }
+
+        // 5. Group waiters by callstack (return-address chain — the same signal
+        //    the reconvergence sampler reads) and merge each ≥2 group.
+        self.merge_waiters_by_callstack(wait_stash);
+    }
+
+    /// Move every state in `from` whose pc equals `address` into `to`,
+    /// updating the state index. Returns the number of states moved.
+    fn park_states_at_address(&mut self, from: &str, to: &str, address: u64) -> usize {
+        let moved: Vec<RustSimState> = {
+            let stash = match self.sm.get_mut(from) {
+                Some(s) => s,
+                None => return 0,
+            };
+            let mut kept = VecDeque::with_capacity(stash.len());
+            let mut moved = Vec::new();
+            for state in stash.drain(..) {
+                if state.pc() == address {
+                    moved.push(state);
+                } else {
+                    kept.push_back(state);
+                }
+            }
+            *stash = kept;
+            moved
+        };
+        let count = moved.len();
+        if count == 0 {
+            return 0;
+        }
+        for state in moved {
+            let sid = state.state_id();
+            self.sm.ensure_stash(to).push_back(state);
+            self.sm.index(sid, to);
+        }
+        count
+    }
+
+    /// Group the states currently in `wait_stash` by callstack return-address
+    /// chain (first-appearance order for determinism) and merge each group of
+    /// ≥2 into the active stash via `_merge_states`, dropping the consumed
+    /// sources. Lone-callstack waiters are released back to active unmerged.
+    fn merge_waiters_by_callstack(&mut self, wait_stash: &str) {
+        // Build callstack-keyed groups in first-seen order (HashMap iteration
+        // is unordered; ManualMergepoint parity requires deterministic merges).
+        let groups: Vec<Vec<u64>> = {
+            let stash = match self.sm.get(wait_stash) {
+                Some(s) if !s.is_empty() => s,
+                _ => return,
+            };
+            let mut order: Vec<Vec<u64>> = Vec::new();
+            let mut by_key: HashMap<Vec<u64>, Vec<u64>> = HashMap::new();
+            for state in stash.iter() {
+                let key: Vec<u64> = state.call_stack().iter().map(|e| e.return_addr).collect();
+                if !by_key.contains_key(&key) {
+                    order.push(key.clone());
+                }
+                by_key.entry(key).or_default().push(state.state_id());
+            }
+            order
+                .into_iter()
+                .map(|k| by_key.remove(&k).expect("key inserted above"))
+                .collect()
+        };
+
+        for ids in groups {
+            if ids.len() < 2 {
+                // Lone callstack: release the single waiter back to active.
+                self.move_state_by_id(wait_stash, STASH_ACTIVE, ids[0]);
+                continue;
+            }
+            // `_merge_states` forks the sources and pushes the merged state to
+            // active (bumping `states_merged_native`); it does NOT consume the
+            // originals, so drop them from the wait stash afterwards.
+            match self._merge_states(ids.clone(), STASH_ACTIVE) {
+                Ok(_) => self.drop_states_by_id(wait_stash, &ids),
+                Err(e) => {
+                    log::warn!("MergePoint merge failed, leaving waiters parked: {e}");
+                }
+            }
+        }
+    }
+
+    /// Move a single state (by id) from `from` to `to`, updating the index.
+    fn move_state_by_id(&mut self, from: &str, to: &str, sid: u64) {
+        let state = {
+            let stash = match self.sm.get_mut(from) {
+                Some(s) => s,
+                None => return,
+            };
+            match stash.iter().position(|s| s.state_id() == sid) {
+                Some(pos) => stash.remove(pos),
+                None => None,
+            }
+        };
+        if let Some(state) = state {
+            self.sm.ensure_stash(to).push_back(state);
+            self.sm.index(sid, to);
+        }
+    }
+
+    /// Drop the given state ids from `stash`, removing their index entries.
+    fn drop_states_by_id(&mut self, stash: &str, ids: &[u64]) {
+        let drop: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        if let Some(s) = self.sm.get_mut(stash) {
+            s.retain(|state| !drop.contains(&state.state_id()));
+        }
+        for &sid in ids {
+            self.sm.unindex(sid);
+        }
     }
 
     /// Check if any address in the history exceeds the loop bound.

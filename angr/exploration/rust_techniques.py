@@ -29,6 +29,7 @@ _NATIVE_STEP_TECH_NAMES = {
     "LengthLimiter",
     "Timeout",
     "CheckUniqueness",
+    "ManualMergepoint",
 }
 
 
@@ -329,6 +330,35 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
                 l.debug(f"Timeout native registration failed: {e}, using Python fallback")
         else:
             l.debug("Timeout technique registered (no timeout value)")
+
+    # ManualMergepoint: merge reconverging paths at an address — native Rust
+    # implementation (angr-op0dn.11.5). The native MergePoint technique parks
+    # states reaching `address`, then groups waiters by callstack and merges
+    # each ≥2 group via the in-Rust merge path. Its Python step() hook is
+    # suppressed (ManualMergepoint is in _NATIVE_STEP_TECH_NAMES) so the two
+    # implementations do not both run.
+    elif tech_name == "ManualMergepoint":
+        address = getattr(technique, "address", None)
+        wait_counter = getattr(technique, "wait_counter_limit", 10)
+        if isinstance(address, int):
+            try:
+                mgr._rust_mgr.register_merge_point(address, int(wait_counter))
+                technique._native_merge_point = True
+                l.debug(f"ManualMergepoint registered natively (address={address:#x}, wait_counter={wait_counter})")
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: native registration failed. Unlike
+                # LengthLimiter/Timeout there is no Python filter fallback, and
+                # the step() hook is suppressed, so the merge would silently
+                # no-op. Warn loudly.
+                l.warning(
+                    f"ManualMergepoint native registration failed: {e}; merging will not occur under the Rust engine"
+                )
+        else:
+            l.warning(
+                "ManualMergepoint has a non-integer address (%r); the Rust "
+                "engine only supports a concrete merge address.",
+                address,
+            )
 
     # Other techniques
     else:

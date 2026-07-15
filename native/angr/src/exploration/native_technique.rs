@@ -21,4 +21,16 @@ pub(crate) enum NativeTechnique {
     /// Basic loop bounding: limits how many times a single address can appear
     /// in a state's history. States exceeding the bound are moved to `discard_stash`.
     LoopBound { bound: usize, discard_stash: String },
+    /// Native `ManualMergepoint` parity (angr-op0dn.11.5). States whose pc
+    /// reaches `address` are parked in `wait_stash`; once the active stash
+    /// drains (or `wait_counter_limit` post-step rounds elapse since the last
+    /// arrival), the waiters are grouped by callstack and every group with ≥2
+    /// members is merged in-Rust via `_merge_states`. `counter` is the live
+    /// post-step round counter — reset to 0 whenever a fresh waiter arrives.
+    MergePoint {
+        address: u64,
+        wait_counter_limit: usize,
+        counter: usize,
+        wait_stash: String,
+    },
 }

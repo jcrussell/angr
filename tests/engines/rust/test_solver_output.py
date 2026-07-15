@@ -1396,3 +1396,36 @@ class TestNativeMergeFastPath:
         assert exports, "custom merge_func must take the exporting Python path"
         assert mgr.stats["states_merged_native"] == 0
         assert len(mgr._rust_mgr.get_state_ids("active")) == 1
+
+
+class TestManualMergepointNative:
+    """M3-5 (angr-op0dn.11.5): ManualMergepoint routes to the native
+    ``register_merge_point`` technique, and its Python ``step()`` hook is
+    suppressed so the native and Python implementations do not both run.
+    """
+
+    def test_manual_mergepoint_registers_native(self, fauxware_project):
+        """ManualMergepoint(addr) registers exactly one native technique and
+        flags itself as natively handled."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import ManualMergepoint
+
+        tech = ManualMergepoint(0x400000, wait_counter=5)
+        mgr.use_technique(tech)
+
+        assert mgr._rust_mgr.native_technique_count() == 1
+        assert getattr(tech, "_native_merge_point", False) is True
+
+    def test_manual_mergepoint_step_hook_suppressed(self):
+        """The native MergePoint replaces the Python step() hook, so
+        _has_dispatched_step_hook must return False for ManualMergepoint."""
+        from angr.exploration.rust_techniques import (
+            _NATIVE_STEP_TECH_NAMES,
+            _has_dispatched_step_hook,
+        )
+        from angr.exploration_techniques import ManualMergepoint
+
+        assert "ManualMergepoint" in _NATIVE_STEP_TECH_NAMES
+        assert _has_dispatched_step_hook(ManualMergepoint(0x400000)) is False

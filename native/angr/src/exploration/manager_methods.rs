@@ -1879,6 +1879,26 @@ impl RustExplorationManager {
             .or_default();
     }
 
+    /// Register a native MergePoint technique (ManualMergepoint parity,
+    /// angr-op0dn.11.5).
+    ///
+    /// States reaching `address` are parked in a per-address wait stash; once
+    /// the active stash drains (or `wait_counter` post-step rounds elapse
+    /// without a fresh arrival) the waiters are grouped by callstack and each
+    /// ≥2 group is merged in-Rust via `_merge_states`. A lone waiter is
+    /// released back to active unmerged (count preserved, no stall).
+    #[pyo3(signature = (address, wait_counter=10))]
+    pub fn register_merge_point(&mut self, address: u64, wait_counter: usize) {
+        let wait_stash = format!("merge_waiting_{address:#x}");
+        self.native_techniques.push(NativeTechnique::MergePoint {
+            address,
+            wait_counter_limit: wait_counter,
+            counter: 0,
+            wait_stash: wait_stash.clone(),
+        });
+        self.sm.stashes_mut().entry(wait_stash).or_default();
+    }
+
     /// Get the number of registered native techniques.
     pub fn native_technique_count(&self) -> usize {
         self.native_techniques.len()
