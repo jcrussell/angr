@@ -836,6 +836,9 @@ mod context_tests_constraints;
 #[path = "context_tests/lineage.rs"]
 mod context_tests_lineage;
 #[cfg(test)]
+#[path = "context_tests/merge_shape_spike.rs"]
+mod context_tests_merge_shape_spike;
+#[cfg(test)]
 #[path = "context_tests/smtlib2_snapshot.rs"]
 mod context_tests_smtlib2_snapshot;
 #[cfg(test)]
