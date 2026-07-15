@@ -1335,3 +1335,64 @@ class TestStateMerging:
         # Default dest_stash is "active"
         active_ids = mgr.get_state_ids("active")
         assert merged_id in active_ids
+
+
+class TestNativeMergeFastPath:
+    """M3-4 (angr-op0dn.11.4): RustExplorationManager.merge() native fast path.
+
+    When ``merge_func`` and ``merge_key`` are both None, same-pc native states
+    are merged in-Rust via ``merge_states`` with NO export -> Python
+    ``state.merge()`` -> re-import round trip. ``stats()['states_merged_native']``
+    counts the states consumed by that path; a custom ``merge_func`` still
+    exports and leaves the counter at 0.
+    """
+
+    def test_native_merge_same_pc_no_export(self, fauxware_project):
+        """Two same-pc states merge to 1 with states_merged_native == 2 and
+        zero exports (get_state_by_id never called on the native path)."""
+        s1 = fauxware_project.factory.entry_state()
+        s2 = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [s1, s2])
+        assert len(mgr._rust_mgr.get_state_ids("active")) == 2
+
+        exports = []
+        orig_get = mgr.get_state_by_id
+        mgr.get_state_by_id = lambda sid: (exports.append(sid), orig_get(sid))[1]
+
+        mgr.merge()
+
+        assert exports == [], "native path must not export states"
+        assert len(mgr._rust_mgr.get_state_ids("active")) == 1
+        assert mgr.stats["states_merged_native"] == 2
+
+    def test_native_merge_singletons_untouched(self, fauxware_project):
+        """A single active state is a no-op (nothing to merge) and does not
+        increment the native counter."""
+        s1 = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [s1])
+        mgr.merge()
+        assert len(mgr._rust_mgr.get_state_ids("active")) == 1
+        assert mgr.stats["states_merged_native"] == 0
+
+    def test_custom_merge_func_takes_python_path(self, fauxware_project):
+        """A custom merge_func exports states (Python path) and leaves
+        states_merged_native at 0."""
+        s1 = fauxware_project.factory.entry_state()
+        s2 = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [s1, s2])
+
+        exports = []
+        orig_get = mgr.get_state_by_id
+        mgr.get_state_by_id = lambda sid: (exports.append(sid), orig_get(sid))[1]
+
+        # Return one arm directly; the point is only that the exporting Python
+        # path is taken (built-in merge of freshly-exported entry states hits an
+        # unrelated history-plugin-class mismatch), not the merge result itself.
+        def _merge_func(base, *others):
+            return base
+
+        mgr.merge(merge_func=_merge_func)
+
+        assert exports, "custom merge_func must take the exporting Python path"
+        assert mgr.stats["states_merged_native"] == 0
+        assert len(mgr._rust_mgr.get_state_ids("active")) == 1

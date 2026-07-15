@@ -6446,6 +6446,66 @@ class RustExplorationManager(
         """
         return self
 
+    def _merge_native(self, stash: str, state_ids: list[int]) -> bool:
+        """Merge same-pc native states in-Rust, no export round trip (M3-4).
+
+        Groups ``state_ids`` by program counter (the default ``merge_key``,
+        ``s.addr``) using the lightweight ``get_state_pc_by_id`` accessor, then
+        calls ``merge_states`` per multi-member group. The Rust ``merge_states``
+        forks + merges the source states and pushes the result to ``stash`` but
+        does NOT remove the sources, so we drop them afterwards (matching the
+        Python path's ``_merge_drop`` dance).
+
+        The native path never exports state, so the angr-qluof re-demotion dance
+        is unnecessary: the merged state inherits its base's demoted
+        symbolic-file paths directly (no ``_export_fs_files_to_rust`` re-arms
+        them). ``states_merged_native`` is surfaced Rust-side by ``merge_states``.
+
+        Returns:
+            True if the native path handled the merge (caller returns), False if
+            a pc lookup failed and the caller should fall back to the Python
+            export path.
+        """
+        # Group by pc; a missing pc means we cannot group natively -> fall back.
+        groups: dict[int, list[int]] = {}
+        for sid in state_ids:
+            pc = self._rust_mgr.get_state_pc_by_id(sid)
+            if pc is None:
+                return False
+            groups.setdefault(pc, []).append(sid)
+
+        # Nothing reconverges -> no merge needed, but we still handled it.
+        if all(len(g) <= 1 for g in groups.values()):
+            return True
+
+        merged_any = False
+        for group in groups.values():
+            if len(group) <= 1:
+                # Singleton stays in the stash untouched.
+                continue
+            try:
+                self._rust_mgr.merge_states(group, stash)
+            except (RuntimeError, ValueError) as e:
+                # cat-(b) FALLBACK WITH LOSS: native merge failed for this group;
+                # leave its states unmerged and continue with other groups.
+                l.warning("native merge_states failed for group %s: %s", group, e)
+                continue
+            merged_any = True
+            # Drop the now-merged source states from the stash.
+            for sid in group:
+                try:
+                    self._rust_mgr.move_state(sid, stash, "_merge_drop")
+                except (RuntimeError, KeyError):
+                    # cat-(a) EXPECTED CONTROL FLOW: source already moved.
+                    pass
+        if merged_any:
+            try:
+                self._rust_mgr.clear_stash("_merge_drop")
+            except (RuntimeError, KeyError):
+                # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
+                pass
+        return True
+
     def merge(
         self, stash: str = "active", merge_func=None, merge_key=None, prune=True, **kwargs
     ) -> RustExplorationManager:
@@ -6458,6 +6518,16 @@ class RustExplorationManager(
         state_ids = list(self._rust_mgr.get_state_ids(stash))
         if len(state_ids) <= 1:
             return self
+
+        # M3-4 (angr-op0dn.11.4): native fast path. When there is no custom
+        # merge_func and grouping uses the default key (s.addr == pc), every
+        # group member is a Rust-native state, so we can merge in-Rust via
+        # merge_states() and skip the export -> Python state.merge() ->
+        # re-import round trip entirely. A custom merge_func or merge_key needs
+        # exported SimStates, so those fall through to the Python path below.
+        if merge_func is None and merge_key is None:
+            if self._merge_native(stash, state_ids):
+                return self
 
         # Export all states to Python SimStates for merging
         try:

@@ -144,6 +144,9 @@ impl RustExplorationManager {
             0.0
         };
         dict.set_item("reconvergence_rate", reconvergence_rate)?;
+        // M3-4 (angr-op0dn.11.4): states consumed by the native merge_states
+        // fast path (summed group sizes merged in-Rust, no export round trip).
+        dict.set_item("states_merged_native", self.states_merged_native)?;
         // angr-panhl.1 (Phase 0 kill-gate): work-stealing migration model.
         // `parallel_migrations` is the count of modelled cross-worker steals;
         // `parallel_tasks` the number of dispatched tasks (≈ steps); the

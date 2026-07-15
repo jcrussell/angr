@@ -209,6 +209,11 @@ impl RustExplorationManager {
         self.index_state(merged_id, dest_stash);
         self.sm.ensure_stash(dest_stash).push_back(merged);
 
+        // M3-4 (angr-op0dn.11.4): count the states this native merge consumed,
+        // so the Python fast path's `states_merged_native` stat reflects how
+        // many states were merged in-Rust without an export round trip.
+        self.states_merged_native += state_ids.len() as u64;
+
         Ok(merged_id)
     }
 

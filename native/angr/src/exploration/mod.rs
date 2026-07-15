@@ -297,6 +297,12 @@ pub struct RustExplorationManager {
     pub(crate) reconvergence_samples: u64,
     /// Largest `(pc, callstack)`-sharing group size observed in a single step.
     pub(crate) reconvergence_max_group: u64,
+    /// M3-4 (angr-op0dn.11.4): number of states consumed by the native
+    /// `merge_states` fast path — i.e. summed group sizes merged in-Rust
+    /// without the export -> Python `state.merge()` -> re-import round trip.
+    /// Incremented in `state_lifecycle::_merge_states` by the group size.
+    /// Surfaced via `stats()`.
+    pub(crate) states_merged_native: u64,
     /// angr-panhl.1 (Phase 0 kill-gate): number of hypothetical workers used by
     /// the work-stealing migration model. Read once from `ANGR_PARALLEL_WORKERS`
     /// at construction (default 4). See `record_migration_sample`.

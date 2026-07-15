@@ -71,6 +71,7 @@ impl RustExplorationManager {
             reconvergence_active_observed: 0,
             reconvergence_samples: 0,
             reconvergence_max_group: 0,
+            states_merged_native: 0,
             parallel_num_workers: std::env::var("ANGR_PARALLEL_WORKERS")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
