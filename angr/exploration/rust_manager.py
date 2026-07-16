@@ -1633,6 +1633,13 @@ class RustExplorationManager(
         # re-add path (lineage-aware demotion), a measurement surface for the
         # write-demotion re-arm.
         self._stats_symfile_redemotions = 0
+        # angr-op0dn.11.7: Veritesting (step_state hook) dispatch observability.
+        # `dispatches` counts step_state batches that routed through
+        # dispatch_step_state_with_hooks(); `applied` counts states a step_state
+        # hook actually rewrote (Veritesting's nested-analysis merge fired) as
+        # opposed to declining to the native fallback.
+        self._stats_veritesting_dispatches = 0
+        self._stats_veritesting_applied = 0
         self._init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -5094,7 +5101,9 @@ class RustExplorationManager(
             self._stats_ffi_crossings += 1
             remaining = batch_limit - (steps_taken - batch_steps_start)
             _t1 = time.perf_counter_ns()
-            if self._has_technique_step_hooks():
+            if self._has_technique_step_state_hooks():
+                event = self._run_with_step_state_hooks(remaining)
+            elif self._has_technique_step_hooks():
                 event = self._run_with_step_hooks(remaining)
             else:
                 event = self._rust_mgr.run(remaining)
@@ -5163,7 +5172,9 @@ class RustExplorationManager(
                 batch_size = 1 if until is not None else 50
                 if max_steps is not None:
                     batch_size = min(batch_size, max_steps - steps_taken)
-                if self._has_technique_step_hooks():
+                if self._has_technique_step_state_hooks():
+                    event = self._run_with_step_state_hooks(batch_size)
+                elif self._has_technique_step_hooks():
                     event = self._run_with_step_hooks(batch_size)
                 else:
                     event = self._rust_mgr.run(batch_size)
@@ -5676,7 +5687,9 @@ class RustExplorationManager(
         while steps_taken < n:
             self._sync_hooks_before_step()
             self._stats_ffi_crossings += 1
-            if self._has_technique_step_hooks():
+            if self._has_technique_step_state_hooks():
+                event = self._run_with_step_state_hooks(1)
+            elif self._has_technique_step_hooks():
                 event = self._run_with_step_hooks(1)
             else:
                 event = self._rust_mgr.run(1)
@@ -5980,6 +5993,9 @@ class RustExplorationManager(
         for reason, count in self._stats_symfile_export_skips.items():
             result[f"symfile_export_skip_{reason}"] = count
         result["symfile_redemotions"] = self._stats_symfile_redemotions
+        # angr-op0dn.11.7: Veritesting step_state() dispatch counters.
+        result["veritesting_dispatches"] = self._stats_veritesting_dispatches
+        result["veritesting_applied"] = self._stats_veritesting_applied
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, "_time_in_rust_run_ns"):
             result["time_in_rust_run"] = self._time_in_rust_run_ns / 1e9
@@ -6095,6 +6111,34 @@ class RustExplorationManager(
         event = dispatch_step_with_hooks(self, batch_size)
         if event is None:
             event = self._rust_mgr.run(batch_size)
+        return event
+
+    def _has_technique_step_state_hooks(self) -> bool:
+        """True iff an active technique has a step_state() hook to dispatch.
+
+        Veritesting (angr-op0dn.11.7) is the canonical case: it overrides
+        step_state() to drive the CMU merging analysis. Checked ahead of the
+        step() hook path in the run loops because a step_state hook needs the
+        per-state export/re-import dispatch, not the batch step() proxy.
+        """
+        if not self._active_techniques:
+            return False
+        from angr.exploration.rust_techniques import manager_has_step_state_hooks
+
+        return manager_has_step_state_hooks(self)
+
+    def _run_with_step_state_hooks(self, batch_size):
+        """Run one batch under ExplorationTechnique step_state() hook composition.
+
+        Returns the ExplorationEvent (real, over the natively-advanced declined
+        states, or a synthetic step_complete when every state was merged).
+        Bumps the Veritesting dispatch/applied counters (angr-op0dn.11.7).
+        """
+        from angr.exploration.rust_techniques import dispatch_step_state_with_hooks
+
+        self._stats_veritesting_dispatches += 1
+        event, applied = dispatch_step_state_with_hooks(self, batch_size)
+        self._stats_veritesting_applied += applied
         return event
 
     def run(self, **kwargs) -> RustExplorationManager:

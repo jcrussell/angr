@@ -1508,3 +1508,130 @@ class TestEfficientStateMergingHonored:
         assert merge_merged >= 1, f"native MergePoint must fire (states_merged_native={merge_merged})"
         # Merging strictly narrows the peak active frontier.
         assert merge_peak < base_peak, f"merge peak ({merge_peak}) must be strictly below no-merge peak ({base_peak})"
+
+
+def _locate_veritesting_a():
+    """Return the path to the angr/binaries ``veritesting_a`` x86_64 test binary,
+    or None when the binaries repo isn't checked out (local dev without
+    ../binaries). CI checks out angr/binaries so the merge assertion runs there.
+    """
+    candidates = [
+        os.path.join(TEST_BINARIES_DIR, "..", "..", "..", "binaries", "tests", "x86_64", "veritesting_a"),
+        os.path.expanduser("~/repos/binaries/tests/x86_64/veritesting_a"),
+        os.path.expanduser("~/binaries/tests/x86_64/veritesting_a"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+class TestVeritestingNativeDispatch:
+    """M3-7 (angr-op0dn.11.7): the Veritesting technique routes step_state()
+    through the E1 proxy under the Rust manager.
+
+    Veritesting overrides ``step_state()`` (not ``step()``); before this wiring
+    it silently no-oped under Rust. The dispatch exports each active state, runs
+    the nested CMU analysis in Python, and re-imports the merged successors into
+    the Rust stashes. The `veritesting_dispatches` / `veritesting_applied`
+    counters make the routing observable.
+    """
+
+    # fauxware: 0x4006ED is the "accepted" print reached only by the backdoor.
+    FAUXWARE_ACCEPTED = 0x4006ED
+
+    def test_manager_recognizes_step_state_hook(self, fauxware_project):
+        """A registered Veritesting is reported as a step_state-hook technique,
+        so the run loop routes it to the per-state dispatch (not the batch
+        step() path)."""
+        from angr.exploration_techniques import Veritesting
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert not mgr._has_technique_step_state_hooks()
+        mgr.use_technique(Veritesting())
+        assert mgr._has_technique_step_state_hooks()
+        # setup() must have handed the technique the project for its nested
+        # analysis; without it the first dispatch would AttributeError.
+        assert mgr._active_techniques[-1].project is fauxware_project
+
+    def test_dispatch_fires_and_reaches_target(self, fauxware_project):
+        """End-to-end on fauxware: the step_state dispatch fires and the run
+        still reaches the find address with the correct (backdoor) input —
+        parity with the Python-engine Veritesting run. Veritesting declines on
+        fauxware's SimProcedure-heavy blocks, so no merge is expected here; the
+        merge itself is pinned by test_merges_on_veritesting_a."""
+        from angr.exploration_techniques import Veritesting
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.use_technique(Veritesting())
+        mgr.explore(find=self.FAUXWARE_ACCEPTED, max_steps=2000)
+
+        assert len(mgr.found) >= 1, "Veritesting dispatch must still reach the find address"
+        assert mgr.stats.get("veritesting_dispatches", 0) >= 1, "step_state dispatch must have fired"
+        # The accepted branch is only reachable with the SOSNEAKY backdoor.
+        assert b"SOSNEAKY" in mgr.found[0].posix.dumps(0)
+
+    def test_merges_on_veritesting_a(self):
+        """Canonical Veritesting target (angr-op0dn.11.7 acceptance): the nested
+        analysis applies and merges on the veritesting_a loop, reaching the find
+        address with the expected 10-'B' input. Skipped when the angr/binaries
+        repo isn't checked out (local dev)."""
+        from angr.exploration_techniques import Veritesting
+
+        binary = _locate_veritesting_a()
+        if binary is None:
+            pytest.skip("veritesting_a binary not found (angr/binaries not checked out)")
+
+        proj = angr.Project(binary, load_options={"auto_load_libs": False}, use_sim_procedures=True)
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        mgr.use_technique(Veritesting())
+        mgr.explore(find=0x400674, max_steps=4000)
+
+        assert len(mgr.found) >= 1, "Veritesting must reach the find address on veritesting_a"
+        assert mgr.stats.get("veritesting_applied", 0) >= 1, (
+            f"the nested Veritesting analysis must merge at least once "
+            f"(veritesting_applied={mgr.stats.get('veritesting_applied', 0)})"
+        )
+        # The find is guarded by an input with exactly ten 'B' bytes.
+        assert mgr.found[0].posix.dumps(0).count(b"B") == 10
+
+    def test_applied_path_reimports_successors(self, fauxware_project):
+        """Exercise the APPLIED branch (re-import of a step_state hook's
+        successors) without needing veritesting_a: a synthetic technique that,
+        for the first few dispatches, re-imports its input state identically
+        (the poor-man's "merge" that drives the _vt_hold parking +
+        _add_rust_state re-import path), then declines so the native engine
+        finishes. The identically re-imported entry state must still reach the
+        find target with the backdoor input — proving the round-trip is faithful
+        enough for exploration to continue."""
+        from angr.exploration_techniques.base import ExplorationTechnique
+
+        class _IdentityThenDecline(ExplorationTechnique):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def step_state(self, simgr, state, **kwargs):
+                if self.n < 2:
+                    self.n += 1
+                    # "Merge" that re-imports the state unchanged: routes through
+                    # the applied/_vt_hold/_add_rust_state path.
+                    return {"active": [state]}
+                # Decline: the dispatch's declined-base raises the sentinel and
+                # the source is advanced by the native run.
+                return simgr.step_state(state, **kwargs)
+
+        tech = _IdentityThenDecline()
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.use_technique(tech)
+        assert mgr._has_technique_step_state_hooks()
+        mgr.explore(find=self.FAUXWARE_ACCEPTED, max_steps=2000)
+
+        assert tech.n >= 1, "the synthetic technique must have applied at least once"
+        assert mgr.stats.get("veritesting_applied", 0) >= 1, "the applied re-import path must have run"
+        assert len(mgr.found) >= 1, "after the identity re-import the native run must reach the find address"
+        assert b"SOSNEAKY" in mgr.found[0].posix.dumps(0)

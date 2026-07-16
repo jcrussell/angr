@@ -2774,15 +2774,32 @@ hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
   compose LIFO using ``HookSet`` from ``angr/misc/hookset.py``, matching
   the standard ``SimulationManager``. The base ``simgr.step()`` call
   inside the chain advances the Rust engine by exactly one batch.
-* ``step_state`` and ``successors`` — **not dispatched.** These hooks
-  expect a ``SimSuccessors`` object built by Python execution, which
-  the Rust engine deliberately bypasses. ``RustSimulationManagerProxy``
-  raises ``NotImplementedError`` from both methods so technique bugs
-  surface loudly instead of silently no-op'ing. Registration is still
-  permitted (no exception at ``use_technique`` time), but the
-  per-state hook never fires; ``use_technique()`` emits a
-  ``logging.WARNING`` flagging the overridden hook. Drop to
-  ``use_rust_engine=False`` if your workflow needs them.
+* ``step_state`` — dispatched per active state via
+  ``dispatch_step_state_with_hooks`` (``angr-op0dn.11.7``), the wiring
+  that makes ``Veritesting`` work under the Rust manager. Each active
+  state is exported and run through the ``HookSet``-composed
+  ``step_state`` chain. A technique either **applies** — driving a
+  nested Python analysis (the CMU merging algorithm for Veritesting)
+  and returning a successor-dict of angr ``SimState`` objects, which are
+  re-imported into the Rust stashes via ``_add_rust_state`` — or
+  **declines** to ``simgr.step_state(state)``, in which case the source
+  is advanced by a normal native ``run()`` (which, unlike the E1 proxy
+  ``step_state``, drives SimProcedure/syscall callback bounces). The
+  ``veritesting_dispatches`` / ``veritesting_applied`` stats counters
+  make the routing observable. Note that when a technique declines on a
+  block, no Python-side merging happens; and because Veritesting's
+  merges occur inside its *own* nested Python ``SimulationManager``,
+  ``states_merged_native`` stays 0 (use ``veritesting_applied`` to
+  confirm a merge fired).
+* ``successors`` — **not dispatched.** This hook expects a
+  ``SimSuccessors`` object built by Python execution, which the Rust
+  engine deliberately bypasses. ``RustSimulationManagerProxy`` raises
+  ``NotImplementedError`` so technique bugs surface loudly instead of
+  silently no-op'ing. Registration is still permitted (no exception at
+  ``use_technique`` time), but the per-successor hook never fires;
+  ``use_technique()`` emits a ``logging.WARNING`` flagging the
+  overridden hook. Drop to ``use_rust_engine=False`` if your workflow
+  needs it.
 
 Caveats specific to ``step()`` dispatch:
 

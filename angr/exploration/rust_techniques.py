@@ -123,6 +123,169 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
     return captured_event[0] if captured_event else None
 
 
+class _StepStateDeclined(Exception):
+    """Raised by the proxy's base step_state() during step_state-hook dispatch.
+
+    A technique like Veritesting (angr-op0dn.11.7) overrides step_state(): when
+    its nested analysis applies it returns a merged successor-dict directly, but
+    when it declines it falls back to ``simgr.step_state(state)``. We swap the
+    proxy's base step_state() for one that raises this sentinel so the dispatch
+    loop can tell APPLIED (re-import the Python successors) from DECLINED (leave
+    the source in ``active`` and advance it via a normal native run, which — unlike
+    the E1 proxy step_state — drives SimProcedure/syscall callback bounces).
+    """
+
+
+def _has_dispatched_step_state_hook(tech) -> bool:
+    """Return True iff `tech` overrides step_state() AND isn't natively handled."""
+    if type(tech).__name__ in _NATIVE_STEP_TECH_NAMES:
+        return False
+    return tech._is_overridden("step_state")
+
+
+def manager_has_step_state_hooks(mgr: RustExplorationManager) -> bool:
+    """True iff any active technique has a step_state() hook to dispatch."""
+    return any(_has_dispatched_step_state_hook(t) for t in mgr._active_techniques)
+
+
+class _SyntheticStepEvent:
+    """Duck-typed stand-in for the Rust ExplorationEvent.
+
+    ExplorationEvent is ``#[non_exhaustive]`` with no Python constructor, so a
+    step_state batch that steps zero states natively (every active state was
+    Veritesting-merged) can't return a real one. The predicate/step loops only
+    read ``event_type`` (and, for ``need_callback``, the callback fields), so a
+    ``step_complete`` stand-in is sufficient here.
+    """
+
+    def __init__(self, found_count, active_count, steps_taken=1):
+        self.event_type = "step_complete"
+        self.found_count = found_count
+        self.active_count = active_count
+        self.steps_taken = steps_taken
+
+
+_VT_HOLD_STASH = "_vt_hold"
+_VT_DROP_STASH = "_vt_drop"
+
+
+def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stash="active"):
+    """Run one step batch under ExplorationTechnique step_state() hook composition.
+
+    Mirrors ``SimulationManager.step()`` over the E1 proxy (angr-op0dn.11.7).
+    For each state in ``stash`` we export it (``get_state_by_id``, which stamps
+    ``scratch.rust_state_id``) and run it through the HookSet-composed
+    step_state() chain. A step_state technique (Veritesting) either:
+
+    * APPLIES — drives a nested Python SimulationManager (the CMU merging
+      algorithm) and returns a successor-dict of fresh angr SimStates. Those
+      carry no Rust id, so they are re-imported via ``_add_rust_state``; the
+      live (``active``/``None``) ones are parked in ``_vt_hold`` so the native
+      run below does not double-step them, and the source state is dropped.
+    * DECLINES — falls back to ``simgr.step_state(state)``, which we've swapped
+      for a ``_StepStateDeclined``-raising base. The source is left in ``active``
+      and advanced by a normal native ``run()`` (which, unlike the proxy's
+      step_state, drives SimProcedure/syscall callback bounces).
+
+    Returns ``(event, applied)`` where ``event`` is the ExplorationEvent from the
+    native run over the declined states (or a ``_SyntheticStepEvent`` when every
+    state was merged) and ``applied`` counts the states a step_state hook rewrote.
+    """
+    import types
+
+    from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+    proxy = RustSimulationManagerProxy(
+        mgr._rust_mgr,
+        project=mgr._project,
+        stdin_vars=getattr(mgr, "_stdin_vars", None),
+        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
+        python_mgr=mgr,
+    )
+
+    # Swap the proxy's base step_state() for a declined-sentinel before hooks
+    # are installed, so HookedMethod captures it as the bottom of the stack.
+    def _declined_base(_self, state, successor_func=None, **kwargs):
+        raise _StepStateDeclined
+
+    proxy.step_state = types.MethodType(_declined_base, proxy)
+
+    for tech in mgr._active_techniques:
+        if _has_dispatched_step_state_hook(tech):
+            try:
+                HookSet.install_hooks(proxy, step_state=tech.step_state)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: hook install failed; that
+                # technique's step_state() won't fire this batch.
+                l.warning(
+                    "Failed to install step_state() hook for %s: %s",
+                    type(tech).__name__,
+                    e,
+                )
+
+    source_ids = list(mgr._rust_mgr.get_state_ids(stash))
+    applied = 0
+    hold_live = []  # angr SimStates that should re-enter `stash` after the native run
+
+    for sid in source_ids:
+        py_state = mgr.get_state_by_id(sid)
+        if py_state is None:
+            continue
+        try:
+            successors = proxy.step_state(py_state)
+        except _StepStateDeclined:
+            # Boring block: leave the source in `stash` for the native run.
+            continue
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: the technique's step_state() raised;
+            # leave the source in place so the native run still advances it.
+            l.warning("step_state() hook raised for state %s: %s; leaving it in place", sid, e)
+            continue
+
+        applied += 1
+        # Non-live successors go straight to their terminal stash (they are
+        # never native-stepped). Live ones (None / "active") are held out of
+        # `active` until after the native run so they aren't double-stepped.
+        for key, states in successors.items():
+            if not states or key == "unsat":
+                continue
+            if key in (None, "active"):
+                hold_live.extend(states)
+            else:
+                for st in states:
+                    try:
+                        mgr._add_rust_state(key, st)
+                    except Exception as e:
+                        l.warning("Failed to re-import step_state successor into %r: %s", key, e)
+        # Drop the (still-present) source state now that it's been replaced.
+        try:
+            mgr._rust_mgr.move_state(sid, stash, _VT_DROP_STASH)
+        except (RuntimeError, KeyError):
+            # cat-(a) EXPECTED CONTROL FLOW: source already consumed.
+            pass
+
+    try:
+        mgr._rust_mgr.clear_stash(_VT_DROP_STASH)
+    except (RuntimeError, KeyError):
+        pass
+
+    # Advance the states that every step_state hook declined, natively.
+    if mgr._rust_mgr.get_state_ids(stash):
+        event = mgr._rust_mgr.run(batch_size)
+    else:
+        counts = mgr._rust_mgr.stash_counts()
+        event = _SyntheticStepEvent(counts.get("found", 0), counts.get(stash, 0))
+
+    # Re-admit the held (merged) live successors into `stash` for the next batch.
+    for st in hold_live:
+        try:
+            mgr._add_rust_state(stash, st)
+        except Exception as e:
+            l.warning("Failed to re-import merged step_state successor into %r: %s", stash, e)
+
+    return event, applied
+
+
 def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     """Apply an exploration technique to the Rust manager.
 
@@ -140,6 +303,15 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
 
     # Track the technique
     mgr._active_techniques.append(technique)
+
+    # Mirror SimulationManager.use_technique: hand the technique the project
+    # BEFORE setup(). step_state techniques (Veritesting) reach for
+    # ``self.project.analyses`` to drive their nested analysis, so a missing
+    # project would AttributeError on the first dispatch (angr-op0dn.11.7).
+    try:
+        technique.project = mgr._project
+    except Exception as e:  # pragma: no cover - defensive
+        l.debug("Could not set project on technique %s: %s", tech_name, e)
 
     # Call setup if available
     try:
@@ -368,7 +540,8 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     #   step()       — now dispatched per-batch via dispatch_step_with_hooks()
     #   successors() — still no-op (would require Python-side re-run; see
     #                  RustSimulationManagerProxy.successors() docstring)
-    #   step_state() — still no-op (ditto)
+    #   step_state() — now dispatched per-state via dispatch_step_state_with_hooks()
+    #                  (Veritesting; angr-op0dn.11.7)
     if tech_name not in _NATIVE_STEP_TECH_NAMES:
         if technique._is_overridden("step"):
             l.debug(
@@ -383,10 +556,10 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
                 tech_name,
             )
         if technique._is_overridden("step_state"):
-            l.warning(
-                "Technique %s overrides step_state(), which is not dispatched by "
-                "the Rust manager. The per-state hook will silently no-op. "
-                "Drop to use_rust_engine=False if you need it.",
+            l.debug(
+                "Technique %s overrides step_state() — will be dispatched per-state "
+                "via dispatch_step_state_with_hooks() each batch (nested-analysis "
+                "results are re-imported into the Rust stashes).",
                 tech_name,
             )
 
