@@ -160,6 +160,7 @@ _SEED_STDIN_KEY = -1
 
 if TYPE_CHECKING:
     import angr
+    from angr.state_plugins import SimStateEdgeHitmap
 
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
@@ -4790,6 +4791,67 @@ class RustExplorationManager(
                 f"Unknown exploration strategy: {strategy!r}. "
                 "Use 'bfs', 'dfs', 'random', 'coverage', 'loop_head', 'directed', or 'find_directed'."
             )
+
+    def coverage_blocks(self, stashes: tuple[str, ...] = ("found",)) -> list[int]:
+        """Sorted set of distinct block addresses covered by the solution states
+        of a find-all / exhaustive run (angr-op0dn.13.3.1, M5-B14 sub-goal c).
+
+        The set is the union of the full basic-block histories of every state in
+        ``stashes`` (default: ``found``). It is derived from the *solution*
+        states rather than the scheduling policy's ``seen``-set on purpose: the
+        found-set is proven worker-count invariant (bd
+        ``findall-parallel-slower-than-serial``), whereas the coverage-guided
+        policy's ``seen``-set is a selection-order artifact — the parallel wave
+        loop hands seed states to workers WITHOUT going through
+        ``policy.select``, so a block like the entry ``main`` would be missing
+        under >1 worker. Use ``set_exploration_strategy('coverage')`` to guide
+        exploration toward new blocks; this report reads out the result.
+
+        Note: histories are capped by the state's ``max_history``; on a very
+        long-running real binary the report reflects the retained tail.
+        """
+        blocks: set[int] = set()
+        for stash in stashes:
+            for sid in self._rust_mgr.get_state_ids(stash):
+                hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
+                if hist:
+                    blocks.update(hist)
+        return sorted(blocks)
+
+    def coverage_report(self, stashes: tuple[str, ...] = ("found",)) -> SimStateEdgeHitmap:
+        """Edge-coverage report over a find-all / exhaustive run, in the existing
+        :class:`~angr.state_plugins.SimStateEdgeHitmap` (64KB AFL) format.
+
+        Reuses that plugin's container rather than adding a new coverage store
+        (angr-op0dn.13.3.1): the report OR-folds the ``(prev_block, cur_block)``
+        edges of every solution state's basic-block history into the hitmap. The
+        fold is order-independent and computed over the worker-invariant found
+        set, so the report bytes — and the edge/block counts derived from them —
+        are identical across worker counts for an exhaustive run.
+
+        ``stashes`` selects which terminal stashes contribute (default:
+        ``found``). Only ``found`` is guaranteed worker-invariant; the parallel
+        wave loop does not retain ``deadended`` / ``pruned`` states, so widening
+        ``stashes`` trades that guarantee for a fuller picture on serial runs.
+        """
+        from angr.state_plugins import SimStateEdgeHitmap
+
+        size = SimStateEdgeHitmap.HITMAP_SIZE
+        hitmap = bytearray(size)
+        for stash in stashes:
+            for sid in self._rust_mgr.get_state_ids(stash):
+                hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
+                if not hist:
+                    continue
+                for prev, cur in zip(hist, hist[1:]):
+                    # AFL indexes an edge by the two block ids; we have no
+                    # instrumentation ids, so hash the block addresses
+                    # deterministically. Shifting off the low 4 bits collapses
+                    # within-block offsets; the prev-shift keeps A->B and B->A
+                    # distinct. OR the bit in — a set folded into a bitmap.
+                    idx = ((prev >> 4) ^ ((cur >> 4) << 1)) % size
+                    hitmap[idx] = 0xFF
+        return SimStateEdgeHitmap(edge_hitmap=bytes(hitmap))
 
     def register_uniqueness_filter(self, register_names: list[str]):
         """Enable the native uniqueness filter keyed on the given registers.
