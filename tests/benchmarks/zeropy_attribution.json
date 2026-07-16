@@ -10,76 +10,66 @@
   },
   {
     "bench": "CADET_00001_partial",
-    "wall_s": 6.98,
+    "wall_s": 6.88,
     "found": 1,
-    "gil_work_time_ns": 33673976,
-    "run_wall_time_ns": 565339846,
+    "gil_work_time_ns": 13254632,
+    "run_wall_time_ns": 1249748697,
     "gil_by_class": {
-      "callback": 13099918,
-      "bounce": 20574058
+      "callback": 13254632
     },
     "gil_by_site": {
-      "lift_block": 12501314,
-      "memory_load": 598604
+      "lift_block": 13254632
     },
     "attribution": {
-      "symbolic_branch": {
-        "count": 44,
-        "ns": 740059070
-      },
       "lift_block": {
         "count": 35,
-        "ns": 5429484
-      },
-      "memory_load": {
-        "count": 3,
-        "ns": 571803
+        "ns": 5704739
       },
       "posix": {
         "count": 2,
-        "ns": 312977
+        "ns": 307035
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.059564129856150276
+    "gil_fraction": 0.010605837823089964
   },
   {
     "bench": "aarch64_le_branch",
-    "wall_s": 0.36,
+    "wall_s": 0.34,
     "found": 1,
-    "gil_work_time_ns": 299212,
-    "run_wall_time_ns": 14362847,
+    "gil_work_time_ns": 267192,
+    "run_wall_time_ns": 13217059,
     "gil_by_class": {
-      "callback": 299212
+      "callback": 267192
     },
     "gil_by_site": {
-      "lift_block": 299212
+      "lift_block": 267192
     },
     "attribution": {
       "lift_block": {
         "count": 2,
-        "ns": 287620
+        "ns": 257392
       },
       "posix": {
         "count": 2,
-        "ns": 7985
+        "ns": 6522
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.020832360046723328
+    "gil_fraction": 0.020215692462294373
   },
   {
     "bench": "ais3_crackme",
-    "wall_s": 0.83,
+    "wall_s": 0.82,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 535407762,
+    "run_wall_time_ns": 541919495,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 81894
+        "ns": 79840
       }
     },
     "status": "PASS",
@@ -87,115 +77,115 @@
   },
   {
     "bench": "android_arm_license_validation",
-    "wall_s": 0.24,
+    "wall_s": 0.23,
     "found": 1,
-    "gil_work_time_ns": 3408361,
-    "run_wall_time_ns": 66024757,
+    "gil_work_time_ns": 3416346,
+    "run_wall_time_ns": 66172634,
     "gil_by_class": {
-      "callback": 3408361
+      "callback": 3416346
     },
     "gil_by_site": {
-      "lift_block": 3408361
+      "lift_block": 3416346
     },
     "attribution": {
       "lift_block": {
         "count": 17,
-        "ns": 3354361
+        "ns": 3350293
       },
       "posix": {
         "count": 2,
-        "ns": 8066
+        "ns": 7445
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.05162246943218587
+    "gil_fraction": 0.051627777126115305
   },
   {
     "bench": "arm_le_branch",
-    "wall_s": 0.23,
+    "wall_s": 0.22,
     "found": 1,
-    "gil_work_time_ns": 241152,
-    "run_wall_time_ns": 13577313,
+    "gil_work_time_ns": 254968,
+    "run_wall_time_ns": 13109917,
     "gil_by_class": {
-      "callback": 241152
+      "callback": 254968
     },
     "gil_by_site": {
-      "lift_block": 241152
+      "lift_block": 254968
     },
     "attribution": {
       "lift_block": {
         "count": 2,
-        "ns": 233487
+        "ns": 245451
       },
       "posix": {
         "count": 2,
-        "ns": 7713
+        "ns": 6481
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.017761393583546316
+    "gil_fraction": 0.0194484831597332
   },
   {
     "bench": "cli_ctype_fprintf",
     "wall_s": 0.27,
     "found": 1,
-    "gil_work_time_ns": 33311605,
-    "run_wall_time_ns": 160159902,
+    "gil_work_time_ns": 29176549,
+    "run_wall_time_ns": 159875210,
     "gil_by_class": {
-      "callback": 60393,
-      "bounce": 33251212
+      "callback": 63909,
+      "bounce": 29112640
     },
     "gil_by_site": {
-      "resolve_function": 60393
+      "resolve_function": 63909
     },
     "attribution": {
       "simprocedure": {
         "count": 5,
-        "ns": 42202859
+        "ns": 37896494
       },
       "posix": {
         "count": 5,
-        "ns": 10630
+        "ns": 11211
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.20798966897469756
+    "gil_fraction": 0.1824957665419173
   },
   {
     "bench": "cmu_binary_bomb_partial",
-    "wall_s": 1.04,
+    "wall_s": 0.9,
     "found": 1,
-    "gil_work_time_ns": 133995873,
-    "run_wall_time_ns": 492061128,
+    "gil_work_time_ns": 91310369,
+    "run_wall_time_ns": 460210315,
     "gil_by_class": {
-      "bounce": 133995873
+      "bounce": 91310369
     },
     "gil_by_site": {},
     "attribution": {
       "simprocedure": {
         "count": 2,
-        "ns": 5617155
+        "ns": 7029725
       },
       "posix": {
         "count": 4,
-        "ns": 8918
+        "ns": 8977
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.27231550182521225
+    "gil_fraction": 0.19841008778779762
   },
   {
     "bench": "codegate_2017-angrybird",
-    "wall_s": 3.07,
+    "wall_s": 2.96,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 2822587244,
+    "run_wall_time_ns": 2750661551,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 23517296
+        "ns": 23761855
       }
     },
     "status": "PASS",
@@ -203,109 +193,110 @@
   },
   {
     "bench": "cow_fork_scaling",
-    "wall_s": 2.48,
+    "wall_s": 2.5,
     "found": 0,
-    "gil_work_time_ns": 26802049,
-    "run_wall_time_ns": 2339110896,
+    "gil_work_time_ns": 24842905,
+    "run_wall_time_ns": 2362969742,
     "gil_by_class": {
-      "callback": 26802049
+      "callback": 24842905
     },
     "gil_by_site": {
-      "lift_block": 16551996,
-      "resolve_function": 10250053
+      "lift_block": 15823357,
+      "resolve_function": 9019548
     },
     "attribution": {
       "lift_block": {
         "count": 256,
-        "ns": 16007918
+        "ns": 15254696
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.011458220747820415
+    "gil_fraction": 0.010513424932379011
   },
   {
     "bench": "csaw_wyvern",
-    "wall_s": 1.04,
+    "wall_s": 3.05,
     "found": 0,
-    "gil_work_time_ns": 282197307,
-    "run_wall_time_ns": 789994088,
+    "gil_work_time_ns": 491238263,
+    "run_wall_time_ns": 2883216259,
     "gil_by_class": {
-      "callback": 776336,
-      "bounce": 281420971
+      "callback": 685345,
+      "bounce": 490552918
     },
     "gil_by_site": {
-      "lift_block": 285626,
-      "memory_store": 423664,
-      "resolve_function": 67046
+      "lift_block": 292719,
+      "memory_store": 322385,
+      "resolve_function": 70241
     },
     "attribution": {
       "simprocedure": {
-        "count": 30,
-        "ns": 281648796
+        "count": 12,
+        "ns": 490463845
       },
       "posix": {
-        "count": 32,
-        "ns": 376012
+        "count": 14,
+        "ns": 347708
       },
       "lift_block": {
         "count": 1,
-        "ns": 282149
+        "ns": 277621
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.35721445424285253
+    "gil_fraction": 0.17037856992745268
   },
   {
     "bench": "csgames2018",
-    "wall_s": 0.94,
+    "wall_s": 1.09,
     "found": 1,
-    "gil_work_time_ns": 188726163,
-    "run_wall_time_ns": 501639908,
+    "gil_work_time_ns": 334932147,
+    "run_wall_time_ns": 640493654,
     "gil_by_class": {
-      "callback": 17461263,
-      "bounce": 171264900
+      "callback": 16588247,
+      "claripy_import": 232016,
+      "bounce": 318111884
     },
     "gil_by_site": {
-      "lift_block": 13675388,
-      "memory_load": 3785875
+      "lift_block": 13949281,
+      "memory_load": 2638966
     },
     "attribution": {
       "simprocedure": {
         "count": 22,
-        "ns": 171307559
+        "ns": 318220306
       },
       "lift_block": {
         "count": 47,
-        "ns": 13478094
+        "ns": 13758699
       },
       "memory_load": {
         "count": 22,
-        "ns": 3661084
+        "ns": 2541678
       },
       "find_predicate": {
         "count": 185,
-        "ns": 1046514
+        "ns": 1133365
       },
       "posix": {
         "count": 54,
-        "ns": 128523
+        "ns": 142399
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.37621839887587255
+    "gil_fraction": 0.5229281272472998
   },
   {
     "bench": "defcamp_r100",
-    "wall_s": 0.3,
+    "wall_s": 0.29,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 163717184,
+    "run_wall_time_ns": 163136525,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 348112
+        "ns": 383128
       }
     },
     "status": "PASS",
@@ -313,16 +304,16 @@
   },
   {
     "bench": "defcamp_r100__dfs",
-    "wall_s": 0.31,
+    "wall_s": 0.3,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 168953745,
+    "run_wall_time_ns": 164726777,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 349186
+        "ns": 371888
       }
     },
     "status": "PASS",
@@ -330,253 +321,203 @@
   },
   {
     "bench": "defcon2016quals_baby-re",
-    "wall_s": 0.36,
+    "wall_s": 0.34,
     "found": 1,
-    "gil_work_time_ns": 45581827,
-    "run_wall_time_ns": 187227767,
+    "gil_work_time_ns": 41173400,
+    "run_wall_time_ns": 186879885,
     "gil_by_class": {
-      "bounce": 45581827
+      "bounce": 41173400
     },
     "gil_by_site": {},
     "attribution": {
       "simprocedure": {
         "count": 13,
-        "ns": 45660745
+        "ns": 41168850
       },
       "posix": {
         "count": 17,
-        "ns": 345487
+        "ns": 355785
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.24345655417660353
+    "gil_fraction": 0.2203201270163453
   },
   {
     "bench": "ekopartyctf2016_rev250",
-    "wall_s": 1.99,
+    "wall_s": 1.93,
     "found": 1,
-    "gil_work_time_ns": 11543199,
-    "run_wall_time_ns": 1707508794,
-    "gil_by_class": {
-      "bounce": 11543199
-    },
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 1682719123,
+    "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
-      "simprocedure": {
-        "count": 1,
-        "ns": 30360189
-      },
       "posix": {
-        "count": 9,
-        "ns": 2432873
+        "count": 6,
+        "ns": 1983618
       }
     },
-    "status": "FAIL",
-    "gil_fraction": 0.006760257423306717
+    "status": "PASS",
+    "gil_fraction": 0.0
   },
   {
     "bench": "ekopartyctf2016_sokohashv2",
-    "wall_s": 1.88,
-    "found": 1,
-    "gil_work_time_ns": 80841356,
-    "run_wall_time_ns": 85303504,
-    "gil_by_class": {
-      "callback": 7550341,
-      "bounce": 73291015
-    },
-    "gil_by_site": {
-      "lift_block": 7550341
-    },
-    "attribution": {
-      "simprocedure": {
-        "count": 9,
-        "ns": 73343180
-      },
-      "lift_block": {
-        "count": 16,
-        "ns": 7490135
-      },
-      "posix": {
-        "count": 11,
-        "ns": 18002
-      }
-    },
-    "status": "FAIL",
-    "gil_fraction": 0.9476909178314644
+    "status": "ERROR",
+    "reason": "run failed or emitted no counters"
   },
   {
     "bench": "fauxware",
-    "wall_s": 0.22,
+    "wall_s": 0.17,
     "found": 0,
-    "gil_work_time_ns": 45768096,
-    "run_wall_time_ns": 53769873,
-    "gil_by_class": {
-      "bounce": 45768096
-    },
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 21678748,
+    "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
-      "simprocedure": {
-        "count": 1,
-        "ns": 59441710
-      },
       "posix": {
-        "count": 5,
-        "ns": 249017
+        "count": 4,
+        "ns": 257914
       }
     },
-    "status": "FAIL",
-    "gil_fraction": 0.8511847517289096
+    "status": "PASS",
+    "gil_fraction": 0.0
   },
   {
     "bench": "flareon2015_10",
-    "wall_s": 2.51,
+    "wall_s": 0.88,
     "found": 0,
-    "gil_work_time_ns": 574404568,
-    "run_wall_time_ns": 651890241,
+    "gil_work_time_ns": 562604788,
+    "run_wall_time_ns": 639924118,
     "gil_by_class": {
-      "callback": 559372005,
-      "bounce": 15032563
+      "callback": 547266502,
+      "bounce": 15338286
     },
     "gil_by_site": {
-      "lift_block": 559372005
+      "lift_block": 547266502
     },
     "attribution": {
       "lift_block": {
         "count": 290,
-        "ns": 557805616
+        "ns": 545487899
       },
       "simprocedure": {
         "count": 2,
-        "ns": 15036781
+        "ns": 15340881
       },
       "posix": {
         "count": 4,
-        "ns": 9519
+        "ns": 8356
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.8811369336022933
+    "gil_fraction": 0.8791742210910075
   },
   {
     "bench": "flareon2015_2",
-    "wall_s": 3.25,
+    "wall_s": 3.21,
     "found": 1,
-    "gil_work_time_ns": 3679329,
-    "run_wall_time_ns": 2826419371,
+    "gil_work_time_ns": 3713716,
+    "run_wall_time_ns": 2881128987,
     "gil_by_class": {
-      "callback": 3679329
+      "callback": 3713716
     },
     "gil_by_site": {
-      "lift_block": 3679329
+      "lift_block": 3713716
     },
     "attribution": {
       "lift_block": {
         "count": 5,
-        "ns": 3641300
+        "ns": 3676385
       },
       "posix": {
         "count": 2,
-        "ns": 7905
+        "ns": 8466
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.0013017632973192639
+    "gil_fraction": 0.0012889794302014012
   },
   {
     "bench": "flareon2015_5",
-    "wall_s": 3.0,
+    "wall_s": 2.93,
     "found": 1,
-    "gil_work_time_ns": 640402850,
-    "run_wall_time_ns": 1570283956,
+    "gil_work_time_ns": 33027720,
+    "run_wall_time_ns": 942176838,
     "gil_by_class": {
-      "callback": 531652267,
-      "claripy_import": 14613,
-      "bounce": 108735970
+      "callback": 14685791,
+      "bounce": 18341929
     },
     "gil_by_site": {
-      "lift_block": 9530357,
-      "memory_load": 1461437,
-      "memory_store": 132489,
-      "memory_store_symbolic_value": 520527984
+      "lift_block": 9534129,
+      "memory_store_symbolic_value": 5151662
     },
     "attribution": {
       "simprocedure": {
         "count": 3,
-        "ns": 109121303
+        "ns": 18340917
       },
       "lift_block": {
         "count": 35,
-        "ns": 9430277
-      },
-      "memory_load": {
-        "count": 32,
-        "ns": 1402611
+        "ns": 9410981
       },
       "posix": {
         "count": 5,
-        "ns": 12873
+        "ns": 12184
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.4078261435156636
+    "gil_fraction": 0.035054693203994895
   },
   {
     "bench": "fork_solve_W6_S8",
-    "wall_s": 60.13,
+    "wall_s": 53.79,
     "found": 1,
-    "gil_work_time_ns": 910166,
-    "run_wall_time_ns": 59992501046,
+    "gil_work_time_ns": 913473,
+    "run_wall_time_ns": 53645869508,
     "gil_by_class": {
-      "callback": 910166
+      "callback": 913473
     },
     "gil_by_site": {
-      "lift_block": 393178,
-      "resolve_function": 516988
+      "lift_block": 395031,
+      "resolve_function": 518442
     },
     "attribution": {
       "lift_block": {
         "count": 1,
-        "ns": 371276
+        "ns": 381846
       }
     },
     "status": "FAIL",
-    "gil_fraction": 1.5171329485032119e-05
+    "gil_fraction": 1.702783473131659e-05
   },
   {
     "bench": "google2016_unbreakable_0",
-    "wall_s": 0.89,
-    "found": 1,
-    "gil_work_time_ns": 193497877,
-    "run_wall_time_ns": 465266126,
-    "gil_by_class": {
-      "bounce": 193497877
-    },
-    "gil_by_site": {},
-    "attribution": {
-      "simprocedure": {
-        "count": 1,
-        "ns": 193657716
-      },
-      "posix": {
-        "count": 3,
-        "ns": 10279
-      }
-    },
-    "status": "FAIL",
-    "gil_fraction": 0.4158864490384155
-  },
-  {
-    "bench": "google2016_unbreakable_1",
-    "wall_s": 1.34,
+    "wall_s": 0.77,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 260608589,
+    "run_wall_time_ns": 294024690,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 7283
+        "ns": 7714
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "google2016_unbreakable_1",
+    "wall_s": 2.41,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 252438106,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 6864
       }
     },
     "status": "PASS",
@@ -584,16 +525,16 @@
   },
   {
     "bench": "hackcon2016_angry-reverser",
-    "wall_s": 15.61,
+    "wall_s": 16.95,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 132577663,
+    "run_wall_time_ns": 130172353,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 7084
+        "ns": 6401
       }
     },
     "status": "PASS",
@@ -601,144 +542,138 @@
   },
   {
     "bench": "mips32_le_branch",
-    "wall_s": 0.22,
+    "wall_s": 0.21,
     "found": 1,
-    "gil_work_time_ns": 229400,
-    "run_wall_time_ns": 13917231,
+    "gil_work_time_ns": 237314,
+    "run_wall_time_ns": 14167610,
     "gil_by_class": {
-      "callback": 229400
+      "callback": 237314
     },
     "gil_by_site": {
-      "lift_block": 229400
+      "lift_block": 237314
     },
     "attribution": {
       "lift_block": {
         "count": 2,
-        "ns": 220123
+        "ns": 229692
       },
       "posix": {
         "count": 2,
-        "ns": 7184
+        "ns": 6232
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.016483163928226813
+    "gil_fraction": 0.016750461086944092
   },
   {
     "bench": "mips64_be_branch",
-    "wall_s": 0.38,
+    "wall_s": 0.37,
     "found": 1,
-    "gil_work_time_ns": 259287,
-    "run_wall_time_ns": 14280002,
+    "gil_work_time_ns": 239820,
+    "run_wall_time_ns": 13755237,
     "gil_by_class": {
-      "callback": 259287
+      "callback": 239820
     },
     "gil_by_site": {
-      "lift_block": 259287
+      "lift_block": 239820
     },
     "attribution": {
       "lift_block": {
         "count": 2,
-        "ns": 250359
+        "ns": 231975
       },
       "posix": {
         "count": 2,
-        "ns": 6802
+        "ns": 6623
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.018157350398130195
+    "gil_fraction": 0.017434814100258687
   },
   {
     "bench": "mips64_le_branch",
-    "wall_s": 0.38,
+    "wall_s": 0.37,
     "found": 1,
-    "gil_work_time_ns": 255039,
-    "run_wall_time_ns": 14466461,
+    "gil_work_time_ns": 249077,
+    "run_wall_time_ns": 13694814,
     "gil_by_class": {
-      "callback": 255039
+      "callback": 249077
     },
     "gil_by_site": {
-      "lift_block": 255039
+      "lift_block": 249077
     },
     "attribution": {
       "lift_block": {
         "count": 2,
-        "ns": 246583
+        "ns": 239989
       },
       "posix": {
         "count": 2,
-        "ns": 6543
+        "ns": 6662
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.01762967459698678
+    "gil_fraction": 0.01818768768966121
   },
   {
     "bench": "mma_howtouse",
-    "wall_s": 6.2,
+    "wall_s": 6.23,
     "found": 0,
-    "gil_work_time_ns": 76956684,
-    "run_wall_time_ns": 92413482,
+    "gil_work_time_ns": 119308476,
+    "run_wall_time_ns": 134745367,
     "gil_by_class": {
-      "callback": 42577471,
-      "bounce": 34379213
+      "callback": 43056479,
+      "bounce": 76251997
     },
     "gil_by_site": {
-      "lift_block": 42577471
+      "lift_block": 43056479
     },
     "attribution": {
       "simprocedure": {
         "count": 1,
-        "ns": 7518671
+        "ns": 9048761
       },
       "lift_block": {
         "count": 3,
-        "ns": 962865
+        "ns": 972865
       },
       "posix": {
         "count": 3,
-        "ns": 5310
+        "ns": 9008
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.8327430406745198
+    "gil_fraction": 0.8854365731179462
   },
   {
     "bench": "securityfest_fairlight",
-    "wall_s": 17.24,
-    "found": 1,
-    "gil_work_time_ns": 140449427,
-    "run_wall_time_ns": 16861513502,
-    "gil_by_class": {
-      "bounce": 140449427
-    },
-    "gil_by_site": {},
-    "attribution": {
-      "simprocedure": {
-        "count": 1,
-        "ns": 140574741
-      },
-      "posix": {
-        "count": 3,
-        "ns": 139823
-      }
-    },
-    "status": "FAIL",
-    "gil_fraction": 0.008329586011560636
-  },
-  {
-    "bench": "sharif7_rev50",
-    "wall_s": 0.15,
+    "wall_s": 7.3,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 13050536,
+    "run_wall_time_ns": 6995212272,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "posix": {
         "count": 2,
-        "ns": 5561
+        "ns": 85561
+      }
+    },
+    "status": "PASS",
+    "gil_fraction": 0.0
+  },
+  {
+    "bench": "sharif7_rev50",
+    "wall_s": 0.14,
+    "found": 1,
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 12495975,
+    "gil_by_class": {},
+    "gil_by_site": {},
+    "attribution": {
+      "posix": {
+        "count": 2,
+        "ns": 5119
       }
     },
     "status": "PASS",
@@ -746,20 +681,20 @@
   },
   {
     "bench": "strcpy_find",
-    "wall_s": 0.39,
+    "wall_s": 0.38,
     "found": 1,
     "gil_work_time_ns": 0,
-    "run_wall_time_ns": 33845735,
+    "run_wall_time_ns": 38186610,
     "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
       "find_predicate": {
         "count": 97,
-        "ns": 1928010
+        "ns": 2056675
       },
       "posix": {
         "count": 8,
-        "ns": 14836
+        "ns": 13758
       }
     },
     "status": "PASS",
@@ -769,104 +704,98 @@
     "bench": "sym-write",
     "wall_s": 0.56,
     "found": 1,
-    "gil_work_time_ns": 3069455,
-    "run_wall_time_ns": 46524147,
+    "gil_work_time_ns": 3048497,
+    "run_wall_time_ns": 57754855,
     "gil_by_class": {
-      "callback": 3069455
+      "callback": 3048497
     },
     "gil_by_site": {
-      "lift_block": 3069455
+      "lift_block": 3048497
     },
     "attribution": {
       "lift_block": {
         "count": 11,
-        "ns": 3034964
+        "ns": 3017648
       },
       "find_predicate": {
         "count": 20,
-        "ns": 210636
+        "ns": 208699
       },
       "posix": {
         "count": 4,
-        "ns": 88737
+        "ns": 90790
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.0659755244948392
+    "gil_fraction": 0.052783389379126654
   },
   {
     "bench": "unmapped_analysis",
-    "wall_s": 0.79,
+    "wall_s": 0.63,
     "found": 0,
-    "gil_work_time_ns": 18714097,
-    "run_wall_time_ns": 208037675,
-    "gil_by_class": {
-      "bounce": 18714097
-    },
+    "gil_work_time_ns": 0,
+    "run_wall_time_ns": 186740353,
+    "gil_by_class": {},
     "gil_by_site": {},
     "attribution": {
-      "simprocedure": {
-        "count": 2,
-        "ns": 18684131
-      },
       "posix": {
-        "count": 12,
-        "ns": 3563303
+        "count": 10,
+        "ns": 3885628
       }
     },
-    "status": "FAIL",
-    "gil_fraction": 0.0899553266012995
+    "status": "PASS",
+    "gil_fraction": 0.0
   },
   {
     "bench": "whitehatvn2015_re400",
-    "wall_s": 1.22,
+    "wall_s": 1.12,
     "found": 1,
-    "gil_work_time_ns": 34972497,
-    "run_wall_time_ns": 896796441,
+    "gil_work_time_ns": 31844080,
+    "run_wall_time_ns": 879201181,
     "gil_by_class": {
-      "callback": 20679752,
-      "bounce": 14292745
+      "callback": 20217926,
+      "bounce": 11626154
     },
     "gil_by_site": {
-      "lift_block": 20679752
+      "lift_block": 20217926
     },
     "attribution": {
       "lift_block": {
         "count": 66,
-        "ns": 20380653
+        "ns": 19920064
       },
       "simprocedure": {
         "count": 2,
-        "ns": 14297373
+        "ns": 11625173
       },
       "posix": {
         "count": 4,
-        "ns": 11692
+        "ns": 10681
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.038997140712336974
+    "gil_fraction": 0.03621933260346701
   },
   {
     "bench": "xmllint_getenv",
-    "wall_s": 3.3,
+    "wall_s": 3.27,
     "found": 1,
-    "gil_work_time_ns": 523924,
-    "run_wall_time_ns": 9817372,
+    "gil_work_time_ns": 551253,
+    "run_wall_time_ns": 10044067,
     "gil_by_class": {
-      "callback": 523924
+      "callback": 551253
     },
     "gil_by_site": {
-      "batch_fetch_pages": 15910,
-      "memory_load": 508014
+      "batch_fetch_pages": 15970,
+      "memory_load": 535283
     },
     "attribution": {
       "memory_load": {
         "count": 10,
-        "ns": 486782
+        "ns": 513831
       }
     },
     "status": "FAIL",
-    "gil_fraction": 0.05336703142144354
+    "gil_fraction": 0.054883445122379214
   }
 ]
