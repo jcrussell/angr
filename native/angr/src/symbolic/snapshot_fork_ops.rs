@@ -653,8 +653,22 @@ impl SymContext {
             ),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(None),
-            sat_cache: Cell::new(None),
-            model_cache: RefCell::new(None),
+            // angr-gorvf.16: carry the parent's SAT/model witness into the
+            // child. The child's frozen constraint set is exactly the parent's
+            // full set at fork time (freeze_into_shared moved every local
+            // constraint into `frozen_shared`/`frozen_assumed`), so any model
+            // that satisfies the parent satisfies the child. Keeping it warm
+            // means the child's first `eval()` — e.g. the Rust-redirected
+            // `state.solver.eval` a Python callback SimProcedure runs on a
+            // freshly materialized state — hits `model.eval()` instead of
+            // paying a fresh `solver.check()` (CheckSite::Eval). Any constraint
+            // the child later adds runs `invalidate_model_if_inconsistent`,
+            // which drops a now-stale model, so this stays sound. In
+            // deterministic mode `eval` ignores the cache (uses `min`), so this
+            // only changes the non-deterministic witness — from an arbitrary
+            // fresh model to the parent's equally-valid one.
+            sat_cache: Cell::new(self.sat_cache.get()),
+            model_cache: RefCell::new(self.model_cache.borrow().clone()),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
             // angr-op0dn.10.2: a whole lineage stays in one witness-selection

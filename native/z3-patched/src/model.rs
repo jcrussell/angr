@@ -129,6 +129,23 @@ impl fmt::Debug for Model {
     }
 }
 
+impl Clone for Model {
+    /// Shares the same underlying `Z3_model`, bumping its refcount so the
+    /// clone and the original each own one `Z3_model_dec_ref` at drop. Mirrors
+    /// `wrap`'s inc_ref discipline — a cloned handle is a legitimate second
+    /// owner, not a raw pointer copy. Used by `SymContext::fork` to carry a
+    /// parent's cached witness model into the child (angr-gorvf.16).
+    fn clone(&self) -> Model {
+        unsafe {
+            Z3_model_inc_ref(self.ctx.z3_ctx.0, self.z3_mdl);
+        }
+        Model {
+            ctx: self.ctx.clone(),
+            z3_mdl: self.z3_mdl,
+        }
+    }
+}
+
 impl Drop for Model {
     fn drop(&mut self) {
         unsafe { Z3_model_dec_ref(self.ctx.z3_ctx.0, self.z3_mdl) };

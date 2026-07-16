@@ -89,9 +89,9 @@
   },
   "csgames2018": {
     "callback_count": 207,
-    "peak_memory_mb": 340.6,
+    "peak_memory_mb": 350.0,
     "python_time": 1.567,
-    "rust_time": 1.177,
+    "rust_time": 1.08,
     "state_creations": 22,
     "steps": 163
   },
