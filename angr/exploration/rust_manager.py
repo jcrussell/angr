@@ -133,6 +133,7 @@ import logging
 import os
 import pickle
 import struct
+import sys
 import time
 import warnings
 import weakref
@@ -4916,7 +4917,7 @@ class RustExplorationManager(
         self,
         find: int | list | Callable | None = None,
         avoid: int | list | Callable | None = None,
-        num_find: int = 1,
+        num_find: int | None = 1,
         until: Callable | None = None,
         timeout: float | None = None,
         max_steps: int | None = None,
@@ -4927,7 +4928,13 @@ class RustExplorationManager(
         Args:
             find: Address(es) or callable predicate for finding solutions.
             avoid: Address(es) or callable predicate for avoiding states.
-            num_find: Number of solutions to find before stopping.
+            num_find: Number of solutions to find before stopping. Pass ``None``
+                to request find-all / run-to-exhaustion: every reachable
+                solution is collected and the run terminates when the active
+                frontier drains (``active_empty``) rather than at a fixed count.
+                Exhaustive find-all does not raise ``max_active_states``; a
+                genuine fork explosion still prunes to that backstop, so a
+                non-empty ``pruned`` stash means the run was not exhaustive.
             until: Callable predicate that receives `self` and returns True to stop.
             timeout: Wall-clock timeout in seconds.
             max_steps: Maximum exploration steps before stopping.
@@ -4936,6 +4943,18 @@ class RustExplorationManager(
         Returns:
             Self, for chaining.
         """
+        # num_find=None requests find-all / run-to-exhaustion: collect every
+        # reachable solution and stop when the frontier drains. The Rust run
+        # loop returns active_empty (never a partial-count 'found') once active
+        # empties with found_count < num_find — see the
+        # invariant-active-empty-not-partial-found memory — so a large sentinel
+        # makes the ">= num_find" early-stop never fire and lets the loop run to
+        # exhaustion. sys.maxsize fits usize on 64-bit and never realistically
+        # collides with an actual found_count. Kept out of the num_find==1
+        # find-directed opt-in path, so find-all stays breadth-first.
+        if num_find is None:
+            num_find = sys.maxsize
+
         # Re-entry into Rust execution invalidates the state-export cache:
         # any previously-cached Python mirrors are about to go stale.
         self._invalidate_state_export_cache()
