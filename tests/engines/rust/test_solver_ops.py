@@ -760,13 +760,18 @@ class TestExplorationIntegration:
         `python_callback_dispatch_us` that sum across all per-kind callback
         buckets in PerformanceTracker. Both must be non-zero after a real
         exploration (driven by lift_block / memory_load / simprocedure
-        callbacks, which always fire on fauxware) and dispatch_us must be
-        bounded by the exploration's wall-clock time.
+        callbacks) and dispatch_us must be bounded by the exploration's
+        wall-clock time.
+
+        Forces `use_native_lift=False` so the pyvex lift_block callback fires:
+        with libvex-ffi default-ON (angr-3trr7) cold blocks lift natively and
+        fauxware otherwise drives *zero* python callbacks, which would make this
+        aggregate-counter assertion build-dependent.
         """
         import time
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr = RustExplorationManager(fauxware_project, [state], use_native_lift=False)
 
         _start = time.perf_counter()
         mgr.explore(find=0x4006ED, avoid=0x4006FD, max_steps=50000)

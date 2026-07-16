@@ -118,13 +118,18 @@ jobs:
             (yum install -y epel-release || true) &&
             yum install -y z3-devel &&
             (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after z3-devel install; enable EPEL or vendor z3.h and re-point Z3_SYS_Z3_HEADER" >&2; exit 1; })
-          # DO NOT vendor libz3: exclude it, then point RUNPATH at the
-          # z3-solver wheel's lib dir (sibling of angr/ in site-packages).
+          # DO NOT vendor libz3 or libpyvex: exclude both, then point RUNPATH at
+          # the z3-solver and pyvex wheel lib dirs (both siblings of angr/ in
+          # site-packages). libpyvex is excluded for the SAME reason as libz3 --
+          # vendoring it would give the process a second copy of libVEX with its
+          # own vex_control/arena globals, voiding the same-.so byte-parity of
+          # the native lifter (libvex-ffi is default-ON as of angr-3trr7).
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
-            auditwheel repair --exclude libz3.so --exclude libz3.so.* -w {dest_dir} {wheel} &&
+            auditwheel repair --exclude libz3.so --exclude libz3.so.*
+            --exclude libpyvex.so --exclude libpyvex.so.* -w {dest_dir} {wheel} &&
             for w in {dest_dir}/*.whl; do
               python -m wheel unpack "$w" -d /tmp/wh &&
-              patchelf --set-rpath '$ORIGIN/../z3/lib' /tmp/wh/*/angr/rustylib*.so &&
+              patchelf --set-rpath '$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib' /tmp/wh/*/angr/rustylib*.so &&
               python -m wheel pack /tmp/wh/* -d {dest_dir} &&
               rm -rf /tmp/wh;
             done
@@ -145,15 +150,19 @@ jobs:
             (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after brew install z3" >&2; exit 1; })
           # Mach-O analogue of the Linux repair. Three differences:
           #  1. delocate (not auditwheel) is the vendoring tool; --exclude libz3
-          #     keeps it from copying libz3.dylib into angr/.dylibs/.
-          #  2. build.rs recorded the BUILD machine's absolute libz3 path as the
-          #     dependent install name. Rewrite it to @rpath/libz3.dylib and add
-          #     @loader_path/../z3/lib (the macOS spelling of $ORIGIN/../z3/lib),
-          #     so the installed extension resolves the USER's z3-solver dylib.
+          #     and --exclude libpyvex keep it from copying libz3.dylib /
+          #     libpyvex.dylib into angr/.dylibs/ (libpyvex is default-ON as of
+          #     angr-3trr7; excluding it preserves the same-.so libVEX parity,
+          #     the Mach-O analogue of the Linux libpyvex exclusion above).
+          #  2. build.rs recorded the BUILD machine's absolute libz3/libpyvex
+          #     paths as dependent install names. Rewrite each to @rpath/<name>
+          #     and add @loader_path/../z3/lib + @loader_path/../pyvex/lib (the
+          #     macOS spelling of $ORIGIN/../z3/lib and $ORIGIN/../pyvex/lib), so
+          #     the installed extension resolves the USER's z3-solver / pyvex dylibs.
           #  3. install_name_tool invalidates the ad-hoc arm64 signature — re-sign,
           #     or the .so will not load at all on Apple silicon.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >
-            delocate-wheel --exclude libz3 --require-archs {delocate_archs} -w {dest_dir} -v {wheel} &&
+            delocate-wheel --exclude libz3 --exclude libpyvex --require-archs {delocate_archs} -w {dest_dir} -v {wheel} &&
             for w in {dest_dir}/*.whl; do
               python -m wheel unpack "$w" -d /tmp/wh &&
               so=$(ls /tmp/wh/*/angr/rustylib*.so) &&
@@ -161,6 +170,11 @@ jobs:
               test -n "$dep" &&
               install_name_tool -change "$dep" '@rpath/libz3.dylib' "$so" &&
               install_name_tool -add_rpath '@loader_path/../z3/lib' "$so" &&
+              pdep=$(otool -L "$so" | awk '/libpyvex/ {print $1; exit}') &&
+              if [ -n "$pdep" ]; then
+                install_name_tool -change "$pdep" '@rpath/libpyvex.dylib' "$so" &&
+                install_name_tool -add_rpath '@loader_path/../pyvex/lib' "$so";
+              fi &&
               codesign --force --sign - "$so" &&
               python -m wheel pack /tmp/wh/* -d {dest_dir} &&
               rm -rf /tmp/wh;

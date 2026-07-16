@@ -103,18 +103,25 @@ _resolve_pyvex_libdir()
 
 
 def _rust_features() -> list[str]:
-    # `libvex-ffi` (native cold-block lifting through libpyvex.so) is opt-in at
-    # build time: set ANGR_LIBVEX_FFI=1 before `pip install -e .`. It is not on
-    # by default because the resulting .so carries an rpath into the venv's
-    # pyvex/lib, which a wheel repair step would vendor -- giving the process a
+    # `libvex-ffi` (native cold-block lifting through libpyvex.so) is ON by
+    # default as of the human GO 2026-07-15 (bd angr-3trr7): a stock
+    # `pip install -e .` builds WITH the native libVEX lifter. Set
+    # ANGR_LIBVEX_FFI=0 (or false/off/no) to opt OUT -- the escape hatch.
+    #
+    # The resulting .so carries an rpath into the venv's pyvex/lib; wheel builds
+    # MUST exclude libpyvex.so from the repair step (see .github/workflows/
+    # wheels.yml -- mirrors the libz3 exclusion) so the wheel does not vendor a
     # second copy of libVEX with its own vex_control/arena globals. See the
     # "Shipping status" section of docs/advanced-topics/rust_libvex_ffi.rst.
-    if os.environ.get("ANGR_LIBVEX_FFI", "").strip().lower() not in ("1", "true", "on", "yes"):
+    if os.environ.get("ANGR_LIBVEX_FFI", "").strip().lower() in ("0", "false", "off", "no"):
         return []
     if not os.environ.get("PYVEX_FFI_LIB_DIR"):
+        # No libpyvex.so next to the installed pyvex (e.g. Windows, where pyvex
+        # ships no shared object) -- degrade gracefully to the pyvex-callback
+        # lift path rather than failing the build.
         sys.stderr.write(
-            "warning: ANGR_LIBVEX_FFI is set but no libpyvex.so was found next to the "
-            "installed pyvex; building without the libvex-ffi feature.\n"
+            "note: no libpyvex.so was found next to the installed pyvex; building "
+            "without the libvex-ffi feature (set ANGR_LIBVEX_FFI=0 to silence).\n"
         )
         return []
     return ["libvex-ffi"]

@@ -103,6 +103,7 @@ This project uses **setuptools-rust** (not maturin) to build the Rust native ext
 - Rust toolchain (rustup) at `~/.cargo/bin/` — pinned via `rust-toolchain.toml`
 - Z3 development headers — `apt install libz3-dev` on Debian/Ubuntu, `dnf install z3-devel` on Fedora, `brew install z3` on macOS. The PyPI `z3-solver` wheel ships `libz3.so` but **not** the C headers; `z3-sys` needs the headers to generate bindings.
 - `pkg-config` (used by `z3-sys` to locate the system Z3)
+- `libclang` — `bindgen` (used by both `z3-sys` and, since libVEX FFI is default-ON per angr-3trr7, the `libvex-ffi` feature) generates bindings via libclang. `apt install libclang-dev` / `dnf install clang-devel` / `brew install llvm`. Set `LIBCLANG_PATH` if it lives outside the default search path. Building with `ANGR_LIBVEX_FFI=0` still needs it for `z3-sys`.
 - A `.venv/` virtualenv populated with the angr ecosystem deps (`claripy`, `pyvex`, `archinfo`, `cle`, etc.)
 
 ### Bootstrap from a clean state
