@@ -113,9 +113,9 @@
   },
   "defcon2016quals_baby-re": {
     "callback_count": 13,
-    "peak_memory_mb": 274.7,
+    "peak_memory_mb": 277.0,
     "python_time": 1.455,
-    "rust_time": 0.33,
+    "rust_time": 0.42,
     "state_creations": 13,
     "steps": 40
   },
