@@ -1314,18 +1314,22 @@ class RustCallbackDispatchMixin:
         # landed in Rust via ``RustRegisterProxy.__setattr__`` →
         # ``set_state_register_symbolic_ast``. Skip the diff so we don't
         # double-write through ``resume_after_simprocedure``.
+        _sb_regdiff_start = time.perf_counter_ns()
         if getattr(self, "_use_callback_register_proxy", False):
             reg_changes = []
         else:
             reg_changes = self._extract_register_changes(orig_state, succ_state)
+        self._perf_stats.add_sync_back_subphase("regdiff", time.perf_counter_ns() - _sb_regdiff_start)
 
         # Skip memory extraction when orig_state is a register snapshot
         # (non-memory-writing extern SimProcedures don't modify memory)
+        _sb_memdiff_start = time.perf_counter_ns()
         if is_snapshot:
             mem_changes = []
             symbolic_imports = []
         else:
             mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
+        self._perf_stats.add_sync_back_subphase("memdiff", time.perf_counter_ns() - _sb_memdiff_start)
 
         # Merge tracked writes with extracted memory changes
         if tracked_writes:
@@ -1412,9 +1416,11 @@ class RustCallbackDispatchMixin:
         # IMPORTANT: This must happen BEFORE symbolic imports, because
         # apply_changes writes concrete data which clears symbolic page markers.
         # Importing symbolic values after resume re-sets the markers correctly.
+        _sb_resume_start = time.perf_counter_ns()
         self._rust_mgr.resume_after_simprocedure(
             event.callback_state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
         )
+        self._perf_stats.add_sync_back_subphase("resume", time.perf_counter_ns() - _sb_resume_start)
 
         # Import symbolic memory to Rust AFTER resume.
         # The resume's apply_changes writes concrete witnesses which clear

@@ -1294,8 +1294,39 @@ class RustStateSyncMixin:
         if reg_map is None:
             return []
 
+        # angr-gorvf.19: per-state register-page cache for the concrete fast
+        # path below (keyed by page number; almost always just page 0).
+        new_reg_pages: dict = {}
+        old_reg_pages: dict = {}
         for reg_name, (offset, size) in reg_map.items():
             try:
+                # ---- gorvf.19 concrete fast path ----
+                # When the new register value is fully concrete, diff it
+                # straight off the UltraPage — no getattr / claripy AST for
+                # either the new or the old value (the common case: only the
+                # return register tends to be symbolic after a callback).
+                new_read = self._reg_concrete_from_page(new_state, new_reg_pages, offset, size)
+                if new_read is not None and new_read[0] == "concrete":
+                    fast_ok = True
+                    if is_snapshot:
+                        entry = old_state.get(reg_name)
+                        if entry is None:
+                            continue
+                        old_is_symbolic, old_concrete = entry[0], entry[1]
+                    else:
+                        old_read = self._reg_concrete_from_page(old_state, old_reg_pages, offset, size)
+                        if old_read is None:
+                            fast_ok = False
+                        else:
+                            old_is_symbolic = old_read[0] == "symbolic"
+                            old_concrete = None if old_is_symbolic else old_read[1]
+                    if fast_ok:
+                        new_concrete = new_read[1]
+                        if old_is_symbolic or old_concrete != new_concrete:
+                            changes.append((offset, size, new_concrete.to_bytes(size, "little")))
+                        continue
+
+                # ---- generic path (symbolic new, or page fast path off) ----
                 new_val = getattr(new_state.regs, reg_name)
 
                 # Get old value from snapshot or state
@@ -1972,6 +2003,51 @@ class RustStateSyncMixin:
             page.concrete_data[sub : sub + size] = masked.to_bytes(size, byteorder)
             page.symbolic_bitmap[sub : sub + size] = b"\0" * size
         return symbolic
+
+    @staticmethod
+    def _reg_concrete_from_page(state, reg_pages: dict, offset: int, size: int):
+        """Read a register value straight from its UltraPage, no claripy.
+
+        angr-gorvf.19: ``_extract_register_changes`` called
+        ``getattr(state.regs, name)`` for every register (old and new state),
+        each a memory-mixin load that builds a claripy AST — ~34 loads/crossing
+        that were 75% of the sync_back phase. When a register's byte range is
+        fully concrete this reads the int directly from ``concrete_data``.
+
+        Returns ``("concrete", int)`` when the whole range is concrete,
+        ``("symbolic", None)`` when any byte is symbolic, or ``None`` when the
+        page fast path is unavailable (caller falls back to the getattr path).
+        ``reg_pages`` caches the resolved page per state across the loop.
+        """
+        pageno = offset // PAGE_SIZE
+        sub = offset % PAGE_SIZE
+        if sub + size > PAGE_SIZE:
+            return None
+        if pageno in reg_pages:
+            page = reg_pages[pageno]
+        else:
+            page = None
+            get_page = getattr(state.registers, "_get_page", None)
+            if get_page is not None and not (
+                "MEMORY_SYMBOLIC_BYTES_MAP" in state.options
+                or "REVERSE_MEMORY_NAME_MAP" in state.options
+                or "REVERSE_MEMORY_HASH_MAP" in state.options
+            ):
+                try:
+                    p = get_page(pageno, False)  # read-only, no copy-on-write
+                    cd = getattr(p, "concrete_data", None)
+                    bm = getattr(p, "symbolic_bitmap", None)
+                    if isinstance(cd, bytearray) and len(cd) == PAGE_SIZE and bm is not None and len(bm) == PAGE_SIZE:
+                        page = p
+                except Exception:
+                    page = None
+            reg_pages[pageno] = page
+        if page is None:
+            return None
+        if any(page.symbolic_bitmap[sub : sub + size]):
+            return ("symbolic", None)
+        byteorder = "little" if state.arch.register_endness == "Iend_LE" else "big"
+        return ("concrete", int.from_bytes(page.concrete_data[sub : sub + size], byteorder))
 
     @staticmethod
     def _blit_concrete_page(page, page_bytes) -> None:

@@ -55,6 +55,12 @@ class PerformanceTracker:
         # optimizing (the gorvf.10 "acquire-once" lever only helps the apply).
         "callback_simprocedure_sc_bundle_ffi_ns",
         "callback_simprocedure_sc_bundle_apply_ns",
+        # angr-gorvf.19 (measure-first): split the sync_back phase into the
+        # register-change diff extraction vs the memory-change diff vs the
+        # resume_after_simprocedure FFI, to locate the reducible residual.
+        "callback_simprocedure_sb_regdiff_ns",
+        "callback_simprocedure_sb_memdiff_ns",
+        "callback_simprocedure_sb_resume_ns",
         # angr-gorvf.10: inside sc_memreplay — how many pages were replayed
         # across all crossings, and the FFI-fetch vs Python-store split of the
         # per-page cost. pages/crossing tells us whether the cumulative dirty
@@ -141,6 +147,14 @@ class PerformanceTracker:
         into its internal components inside ``_create_state_for_callback``.
         """
         self._stats[f"callback_simprocedure_sc_{subphase}_ns"] += ns
+
+    def add_sync_back_subphase(self, subphase: str, ns: int) -> None:
+        """subphase: regdiff, memdiff, resume (angr-gorvf.19 measure-first).
+
+        Sub-attributes the ``sync_back`` phase of a SimProcedure callback into
+        its internal components inside ``_handle_callback_with_successors``.
+        """
+        self._stats[f"callback_simprocedure_sb_{subphase}_ns"] += ns
 
     def add_replay_page(self, ffi_ns: int, store_ns: int, sym_ns: int, sym_entries: int) -> None:
         """One dirty page replayed into the callback SimState (angr-gorvf.10).
