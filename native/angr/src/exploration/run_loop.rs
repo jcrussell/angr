@@ -541,6 +541,13 @@ impl RustExplorationManager {
     /// reads the active stash between `run()` calls); and no callable
     /// find/avoid predicates (the wave/single-threaded skip-state tracking has
     /// no steady analogue). Otherwise fall through to the wave loop.
+    ///
+    /// Stays env-gated (`parallel_steady_env`), NOT auto-armed by the
+    /// `parallel_workers=` kwarg: the found over-collection is fixed
+    /// (`push_found_capped` makes the found set worker-invariant, angr-op0dn.13.17)
+    /// but steady is still net-negative on the CTF corpus, so enabling it by
+    /// default would regress `num_find=1` first-find benches (bd memory
+    /// `steady-state-loop-opt-in-net-negative-corpus`).
     fn steady_state_eligible(&self) -> bool {
         self.parallel_steady_env
             && self.parallel_frontier_residency
@@ -879,11 +886,7 @@ impl RustExplorationManager {
         match kind {
             Some(MatKind::Found) => {
                 self.sm.set_root(id, root);
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_FOUND.to_string())
-                    .or_default()
-                    .push_back(state);
+                self.push_found_capped(state);
             }
             Some(MatKind::Unconstrained) => {
                 self.sm.set_root(id, root);
@@ -906,11 +909,7 @@ impl RustExplorationManager {
                         state.add_to_history(addr);
                         self.sm.set_root(id, root);
                         if self.constraint_solver.lazy_solves || state.satisfiable() {
-                            self.sm
-                                .stashes_mut()
-                                .entry(STASH_FOUND.to_string())
-                                .or_default()
-                                .push_back(state);
+                            self.push_found_capped(state);
                         } else {
                             log::debug!(
                                 "parallel: bounce at find addr 0x{addr:x} is UNSAT, pruning"
@@ -936,9 +935,19 @@ impl RustExplorationManager {
                 // is a bare active successor — one the single-threaded loop
                 // would have left sitting in `STASH_ACTIVE` — so route it as
                 // one, honoring find/avoid addresses exactly as `route_successor`
-                // does for a fresh successor.
+                // does for a fresh successor. The one deviation is the find gate:
+                // a residual sitting at a find pc is capped at `num_find`
+                // (angr-op0dn.13.17) so the parallel drain does not over-collect
+                // past the serial baseline; surplus stays active + re-findable.
                 self.sm.set_root(id, root);
-                self.route_successor(state, true);
+                let spc = state.pc();
+                if self.find_addrs.contains(&spc)
+                    && (self.constraint_solver.lazy_solves || state.satisfiable())
+                {
+                    self.push_found_capped(state);
+                } else {
+                    self.route_successor(state, true);
+                }
             }
         }
     }

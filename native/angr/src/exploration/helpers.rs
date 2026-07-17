@@ -300,6 +300,32 @@ impl RustExplorationManager {
         }
     }
 
+    /// Push a parallel-path found terminal into `STASH_FOUND`, but respect
+    /// `num_find`: once the found stash already holds `num_find` states, the
+    /// surplus is routed to `STASH_ACTIVE` instead of collected.
+    ///
+    /// The parallel loops (wave + steady) can over-produce found terminals
+    /// relative to the serial baseline: several workers reach a find address
+    /// (or drain a resident frontier state that sits at one) before the
+    /// `num_find` cancel propagates, and the steady finalize drain re-routes
+    /// residual frontier states through the find gate. Capping here at the
+    /// single point where a parallel found terminal lands makes the found-set
+    /// *count* worker-invariant and equal to the serial loop, which stops at
+    /// `num_find` (angr-op0dn.13.17). The surplus stays in `STASH_ACTIVE` — an
+    /// un-collected frontier state at the find pc — so a later resume explore
+    /// with a larger `num_find` re-finds it exactly as the serial loop would.
+    pub(crate) fn push_found_capped(&mut self, state: RustSimState) {
+        if self.found_count() >= self.num_find {
+            self.push_to_active_or_drop(state);
+        } else {
+            self.sm
+                .stashes_mut()
+                .entry(STASH_FOUND.to_string())
+                .or_default()
+                .push_back(state);
+        }
+    }
+
     /// Track a state in the state_index.
     #[inline]
     pub(crate) fn index_state(&mut self, state_id: impl Into<StateId>, stash: &str) {

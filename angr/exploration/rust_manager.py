@@ -5150,10 +5150,18 @@ class RustExplorationManager(
           Python predicates, so a correct found-set requires the serial loop.
 
         Steady-state auto-engagement (``RUST_PARALLEL_STEADY``) is intentionally
-        NOT armed here: the steady loop over-collects the found stash relative to
-        the serial/wave baseline (12 vs 8 feasible leaves on the M5 synthetic),
-        so it stays an explicit env opt-in until that accounting is fixed. The
-        kwarg engages the wave loop only. See angr-op0dn.13.5's follow-up bead.
+        NOT armed here. The found-accounting over-collection that once blocked it
+        (steady=12 vs serial=8 on the M5 synthetic) is FIXED — ``push_found_capped``
+        in the Rust routing helper now caps the parallel found set at ``num_find``,
+        so steady is worker-invariant and count-equal to serial (angr-op0dn.13.17).
+        What keeps steady opt-in is *performance*, not correctness: it is
+        net-negative on the CTF corpus and actively hurts ``num_find=1`` first-find
+        explores (barrier-free speculative waste), reaching only parity on the
+        exhaustive partial-bounce workloads it targets (bd memory
+        ``steady-state-loop-opt-in-net-negative-corpus``). Auto-arming it for every
+        eligible address-based explore would regress those benches, so the kwarg
+        engages the wave loop only; steady stays an explicit ``RUST_PARALLEL_STEADY``
+        opt-in for the exhaustive workloads that benefit.
 
         Older Rust builds without the ``set_parallel_workers`` pymethod degrade
         to a no-op (the env gate remains the only opt-in there).

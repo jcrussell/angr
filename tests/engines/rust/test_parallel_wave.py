@@ -343,6 +343,48 @@ def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
     return mgr, target.rebased_addr
 
 
+def _explore_pbounce_steady(project, workers, monkeypatch, num_find):
+    """``_explore_pbounce_find_k`` under the steady-state loop (RUST_PARALLEL_STEADY=1)."""
+    monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
+    monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
+    target = project.loader.find_symbol("reach_target")
+    mgr = RustExplorationManager(project, [_pbounce_state(project)])
+    assert mgr.stats["parallel_real_workers"] == workers
+    mgr.explore(find=target.rebased_addr, num_find=num_find, n=4096)
+    return mgr, target.rebased_addr
+
+
+class TestParallelSteadyFoundCap:
+    """angr-op0dn.13.17: the steady-state loop must not over-collect the found
+    stash past ``num_find``.
+
+    Several resident workers can reach a find address (or the finalize drain can
+    re-route a residual frontier state sitting at one) before the ``num_find``
+    cancel propagates, so pre-fix the steady found set ran to 12 on the 8-leaf
+    synthetic at ``num_find=8`` and to 3-4 at ``num_find=1`` — both worker- and
+    timing-dependent. ``push_found_capped`` caps the parallel found set at
+    ``num_find`` (surplus routed to ``STASH_ACTIVE``, re-findable on resume), so
+    the count is now worker-invariant and equal to the serial baseline.
+    """
+
+    @pytest.mark.parametrize("num_find", [1, 8])
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_steady_found_count_matches_serial(self, pbounce_project, workers, num_find, monkeypatch):
+        serial, _ = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=num_find)
+        serial_found = len(list(serial.found))
+        assert serial_found == num_find, (
+            f"serial baseline collected {serial_found} for num_find={num_find}, expected {num_find}"
+        )
+
+        mgr, target_addr = _explore_pbounce_steady(pbounce_project, workers, monkeypatch, num_find)
+        found = list(mgr.found)
+        assert len(found) == serial_found, (
+            f"workers={workers} num_find={num_find}: steady collected {len(found)} found states, "
+            f"serial collected {serial_found} — the found cap is not holding"
+        )
+        assert {s.addr for s in found} == {target_addr}
+
+
 class TestActiveProxyAddrMatchesRust:
     """angr-ibx8j: ``mgr.active[i].addr`` must agree with the Rust-authoritative pc.
 
