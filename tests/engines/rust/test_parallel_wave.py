@@ -775,3 +775,80 @@ class TestSecondExplorationInAProcessDiverges:
             f"a warm-process serial drain collected {warm} dead paths, but the Python engine "
             f"and a cold-process Rust drain both collect {_SYNTH_TERMINALS}"
         )
+
+
+class TestProgrammaticParallelWorkers:
+    """angr-op0dn.13.5 (M5-B16): the ``parallel_workers=`` constructor kwarg.
+
+    The programmatic non-env twin of ``RUST_PARALLEL_WORKERS``. Engages the real
+    work-stealing pool without an env var on an *eligible* (address-based)
+    explore, falls back to single-threaded when the explore has callable
+    predicates, and yields to the env var when it is set (benches).
+    """
+
+    def test_kwarg_engages_on_eligible_explore(self, pbounce_project, monkeypatch):
+        """parallel_workers=2 + address-based find → real workers + tasks, no env."""
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        target = pbounce_project.loader.find_symbol("reach_target")
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=2)
+        # Not yet engaged at construction: the kwarg arms at explore() time once
+        # eligibility (address-based) is known.
+        assert mgr.stats["parallel_real_workers"] == 1
+        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        assert mgr.stats["parallel_real_workers"] == 2
+        # `parallel_worker_dispatch` is empty on the serial path and populated
+        # only by the real pool — the unambiguous "parallel ran" signal
+        # (`parallel_tasks` is also bumped by the single-threaded migration model).
+        assert sum(mgr.stats["parallel_worker_dispatch"]) > 0, "real worker pool did not dispatch"
+        found = list(mgr.found)
+        assert len(found) == _SYNTH_LEAVES, (
+            f"programmatic parallel drained {len(found)} leaves, expected {_SYNTH_LEAVES}"
+        )
+        assert {s.addr for s in found} == {target.rebased_addr}
+
+    def test_kwarg_found_set_matches_single_threaded(self, pbounce_project, monkeypatch):
+        """The kwarg-engaged found multiset equals the serial baseline."""
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        target = pbounce_project.loader.find_symbol("reach_target")
+
+        serial = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
+        serial.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        base = sorted(s.addr for s in serial.found)
+
+        par = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=2)
+        par.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        assert sorted(s.addr for s in par.found) == base
+
+    def test_callable_find_falls_back_single_threaded(self, pbounce_project, monkeypatch):
+        """parallel_workers=2 + callable find → single-threaded, no parallel tasks."""
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        target = pbounce_project.loader.find_symbol("reach_target").rebased_addr
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=2)
+        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        # Ineligible: the setter was forced back to 1 and the real pool never ran
+        # (worker-dispatch stays empty; only the migration MODEL bumps
+        # parallel_tasks on the serial path).
+        assert mgr.stats["parallel_real_workers"] == 1
+        assert sum(mgr.stats["parallel_worker_dispatch"]) == 0
+        assert any(s.addr == target for s in mgr.found)
+
+    def test_env_var_overrides_kwarg(self, pbounce_project, monkeypatch):
+        """RUST_PARALLEL_WORKERS set → the kwarg is ignored (benches keep control)."""
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        target = pbounce_project.loader.find_symbol("reach_target")
+        # kwarg asks for 1, env asks for 2 → env wins (read once in Rust new()).
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
+        assert mgr.stats["parallel_real_workers"] == 2
+        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        assert mgr.stats["parallel_real_workers"] == 2
+
+    def test_deterministic_plus_parallel_raises(self, pbounce_project, monkeypatch):
+        """deterministic=True + parallel_workers>1 is rejected at construction."""
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        with pytest.raises(ValueError, match="deterministic"):
+            RustExplorationManager(
+                pbounce_project,
+                [_pbounce_state(pbounce_project)],
+                deterministic=True,
+                parallel_workers=2,
+            )

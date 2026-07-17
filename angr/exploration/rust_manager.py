@@ -1135,6 +1135,7 @@ class RustExplorationManager(
         use_simproc_fork_via_rust: bool | None = None,
         prefer_native_library_hooks: bool | None = None,
         use_native_lift: bool = True,
+        parallel_workers: int = 1,
         symlinks: dict | None = None,
         **kwargs,
     ):
@@ -1278,7 +1279,40 @@ class RustExplorationManager(
                 these seeds, so this flag *narrows* but does not
                 *close* run-to-run model variation. Default False
                 preserves the current non-deterministic behavior.
+            parallel_workers: Number of real work-stealing scheduler
+                workers to engage (angr-op0dn.13.5). Default 1
+                (single-threaded, zero-regression). Values >1 request
+                the parallel coordinator; it engages only on an
+                *eligible* explore — address-based ``find``/``avoid``
+                (no callable predicates), where worker-local frontiers
+                are safe. Ineligible explores (callable ``find``/``avoid``)
+                fall back to single-threaded with a logged reason so the
+                found-set stays correct. Engages the wave coordinator (the
+                worker-invariant parallel path); the steady-state loop stays an
+                explicit ``RUST_PARALLEL_STEADY`` opt-in.
+                The ``RUST_PARALLEL_WORKERS`` env var, when set, overrides
+                this kwarg (benches set it explicitly). Passing >1 together
+                with ``deterministic=True`` raises ``ValueError`` — the
+                work-stealing steal order is nondeterministic by design.
         """
+        # angr-op0dn.13.5 (M5-B16): the work-stealing steal order is
+        # nondeterministic by design, so a reproducible (deterministic) run and
+        # multiple workers are mutually exclusive. Reject early, before any Rust
+        # construction, so the caller gets a clear error rather than a silently
+        # non-reproducible run. M2 owns the same guard for its own paths; this
+        # only rejects the constructor combination.
+        if deterministic and int(parallel_workers) > 1:
+            raise ValueError(
+                "deterministic=True is incompatible with parallel_workers>1: the "
+                "work-stealing scheduler's steal order is nondeterministic by design, "
+                "so a reproducible run must be single-threaded. Set parallel_workers=1 "
+                "(or RUST_PARALLEL_WORKERS=1) for a deterministic run."
+            )
+        # Requested worker count for the programmatic (non-env) path; the env var
+        # RUST_PARALLEL_WORKERS (read once in Rust new()) wins when set, so record
+        # whether it is present to skip the programmatic setter in that case.
+        self._requested_parallel_workers = max(1, int(parallel_workers))
+        self._parallel_workers_env_set = "RUST_PARALLEL_WORKERS" in os.environ
         # Init pipeline sequenced into four named phases (angr-wqao.4).
         # boot:       construct the Rust manager + apply basic config.
         # config:     resolve gate flags, init counters/caches, register
@@ -5079,6 +5113,12 @@ class RustExplorationManager(
 
         # Route to appropriate exploration strategy
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
+        # Parallel engages only on the pure address-based full-batch path — the
+        # same conditions the Rust steady loop requires (no callable predicates,
+        # no `until`, no techniques). Everything else runs single-threaded so the
+        # found-set stays correct (angr-op0dn.13.5).
+        parallel_eligible = not has_predicates and until is None and not self._active_techniques
+        self._engage_parallel_workers(parallel_eligible)
         if has_predicates or bool(self._active_techniques):
             result = self._explore_with_predicates(num_find, until, timeout, max_steps)
         else:
@@ -5092,6 +5132,49 @@ class RustExplorationManager(
                 self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
             self._preinit_seeds = []
         return result
+
+    def _engage_parallel_workers(self, eligible: bool) -> None:
+        """Apply the programmatic ``parallel_workers=`` request for this explore.
+
+        angr-op0dn.13.5 (M5-B16). Precedence and eligibility, in order:
+
+        * ``RUST_PARALLEL_WORKERS`` env set — the env value was already applied
+          once in Rust ``new()`` and always wins (benches set it explicitly);
+          this method is a no-op.
+        * ``parallel_workers <= 1`` requested — nothing to engage; no-op.
+        * eligible explore (address-based find/avoid, no ``until``/techniques) —
+          engage the requested worker count on the wave coordinator (the
+          13.3-validated, worker-invariant parallel path).
+        * ineligible explore (callable find/avoid) — fall back to single-threaded
+          and log the reason; there is no worker-local skip-state analogue for
+          Python predicates, so a correct found-set requires the serial loop.
+
+        Steady-state auto-engagement (``RUST_PARALLEL_STEADY``) is intentionally
+        NOT armed here: the steady loop over-collects the found stash relative to
+        the serial/wave baseline (12 vs 8 feasible leaves on the M5 synthetic),
+        so it stays an explicit env opt-in until that accounting is fixed. The
+        kwarg engages the wave loop only. See angr-op0dn.13.5's follow-up bead.
+
+        Older Rust builds without the ``set_parallel_workers`` pymethod degrade
+        to a no-op (the env gate remains the only opt-in there).
+        """
+        if self._parallel_workers_env_set:
+            return
+        if self._requested_parallel_workers <= 1:
+            return
+        setter = getattr(self._rust_mgr, "set_parallel_workers", None)
+        if setter is None:
+            l.debug("set_parallel_workers unavailable on this Rust build; parallel_workers= inert")
+            return
+        if eligible:
+            setter(self._requested_parallel_workers)
+        else:
+            setter(1)
+            l.info(
+                "parallel_workers=%d requested but this explore has callable find/avoid "
+                "predicates (no worker-local skip-state analogue); running single-threaded",
+                self._requested_parallel_workers,
+            )
 
     def _explore_with_predicates(self, num_find, until, timeout, max_steps):
         """Exploration loop for callable predicates or active techniques.

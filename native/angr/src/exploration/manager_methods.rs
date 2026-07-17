@@ -324,6 +324,27 @@ impl RustExplorationManager {
         self.num_find = n;
     }
 
+    /// angr-op0dn.13.5 (M5-B16): programmatic parallel-workers setter, the
+    /// non-env twin of the `RUST_PARALLEL_WORKERS` gate read once in `new()`.
+    /// `rust_manager.py` calls this from the `parallel_workers=` constructor
+    /// kwarg so a caller can request real parallel workers without setting an
+    /// env var. `n < 1` clamps to 1 (single-threaded). The env var, when set,
+    /// wins: `_engage_parallel_workers` on the Python side skips this call so
+    /// benches keep their env override. Honors `steady_config_guard` like every
+    /// other exploration-config mutation.
+    pub fn set_parallel_workers(&mut self, n: usize) {
+        self.steady_config_guard();
+        self.parallel_real_workers = n.max(1);
+    }
+
+    /// Read-back of the effective real-worker count (env override or the
+    /// programmatic `set_parallel_workers` value). Lets the Python driver
+    /// observe the engaged worker count without duplicating the env-precedence
+    /// logic.
+    pub fn parallel_workers(&self) -> usize {
+        self.parallel_real_workers
+    }
+
     /// Set maximum steps per run iteration.
     pub fn set_max_steps_per_run(&mut self, n: u32) {
         self.steady_config_guard();

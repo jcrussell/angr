@@ -910,6 +910,49 @@ Residual nondeterminism the engine still carries:
 * Two fresh ``RustSolverContext`` instances with identical constraints
   may eval the same underconstrained variable to different witnesses.
 
+Parallel workers (``parallel_workers=``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RustExplorationManager(project, parallel_workers=N)`` (angr-op0dn.13.5)
+is the programmatic, non-env way to engage the work-stealing scheduler
+pool — the twin of the ``RUST_PARALLEL_WORKERS`` environment variable
+that benches use. Default ``1`` (single-threaded, zero-regression).
+
+Usage::
+
+    from angr.exploration import RustExplorationManager
+
+    state = proj.factory.entry_state()
+    mgr = RustExplorationManager(proj, [state], parallel_workers=4)
+    mgr.explore(find=target_addr, num_find=8)
+    assert mgr.stats["parallel_real_workers"] == 4
+
+Semantics:
+
+* **Engages on an eligible explore only.** Parallel workers spin up when
+  the explore is *address-based* — concrete ``find`` / ``avoid``
+  addresses, no ``until`` predicate, no active techniques — which is
+  where worker-local frontiers are correct (the 13.3-validated wave
+  coordinator). The kwarg is applied at ``explore()`` time, once
+  eligibility is known, so ``stats()["parallel_real_workers"]`` reads
+  ``1`` between construction and the first eligible ``explore()``.
+* **Ineligible explores fall back to single-threaded.** A callable
+  ``find`` / ``avoid`` predicate has no worker-local skip-state analogue,
+  so the manager logs the fallback and runs the serial loop
+  (``sum(stats()["parallel_worker_dispatch"]) == 0``; note
+  ``parallel_tasks`` is *not* a parallelism signal — the panhl.1
+  migration model bumps it on the serial path too).
+* **The environment variable wins.** When ``RUST_PARALLEL_WORKERS`` is
+  set it is read once at construction and overrides the kwarg, so benches
+  keep explicit control.
+* **Incompatible with** ``deterministic=True``: passing both with
+  ``parallel_workers > 1`` raises ``ValueError`` at construction — the
+  steal order is nondeterministic by design (see below).
+* The steady-state loop (``RUST_PARALLEL_STEADY``) is **not** auto-armed
+  by this kwarg; it over-collects the found stash relative to the serial
+  baseline for ``num_find > 1`` and stays an explicit env opt-in until
+  that accounting is fixed. The kwarg engages the wave loop only.
+
 Deterministic mode (``deterministic=True``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
