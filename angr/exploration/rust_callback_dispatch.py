@@ -2372,7 +2372,10 @@ class RustCallbackDispatchMixin:
             try:
                 arch = self._project.arch
                 reg_names = self._get_arch_register_names(arch)
+                _bundle_ffi_start = time.perf_counter_ns()
                 bundle = self._rust_mgr.export_callback_bundle(state_id, reg_names)
+                self._perf_stats.add_state_create_subphase("bundle_ffi", time.perf_counter_ns() - _bundle_ffi_start)
+                _bundle_apply_start = time.perf_counter_ns()
 
                 # Apply solver from bundle
                 forked_solver = bundle["solver"]
@@ -2393,9 +2396,21 @@ class RustCallbackDispatchMixin:
                 if not getattr(self, "_use_callback_register_proxy", False):
                     self._last_bundle_registers = registers
                     reg_map = self._get_register_offset_map(arch)
-                    for reg_name, val in registers.items():
+                    # angr-gorvf.19: try the acquire-once fast path first — it
+                    # blits concrete registers straight into the register
+                    # UltraPage instead of ~17 full memory-mixin stores. It
+                    # returns the symbolic-register names to apply below, or
+                    # None when unavailable (then run the full generic loop).
+                    symbolic_regs = self._apply_bundle_registers(state, registers, reg_map)
+                    if symbolic_regs is None:
+                        # Fast path unavailable — fall back to the generic
+                        # per-register loop over every register.
+                        symbolic_regs = list(registers.keys())
+                    for reg_name in symbolic_regs:
+                        val = registers[reg_name]
                         try:
                             if val is not None:
+                                # Only reached on the generic (non-fast) path.
                                 offset_size = reg_map.get(reg_name)
                                 if offset_size is not None:
                                     offset, size = offset_size
@@ -2429,6 +2444,7 @@ class RustCallbackDispatchMixin:
                 # Cache history and jumpkind from bundle for later use
                 state.scratch._rust_bundle_history = bundle.get("history", [])
                 state.scratch._rust_bundle_jumpkind = bundle.get("jumpkind", "Ijk_Boring")
+                self._perf_stats.add_state_create_subphase("bundle_apply", time.perf_counter_ns() - _bundle_apply_start)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: callback bundle API failed; falls
                 # back to the slower individual-call path below. Debug-logs.

@@ -49,6 +49,12 @@ class PerformanceTracker:
         "callback_simprocedure_sc_sympage_ns",
         "callback_simprocedure_sc_meminstall_ns",
         "callback_simprocedure_sc_memreplay_ns",
+        # angr-gorvf.19 (measure-first): split the sc_bundle phase into the
+        # export_callback_bundle FFI call vs the Python-side register-apply
+        # loop, to confirm which half carries the reducible cost before
+        # optimizing (the gorvf.10 "acquire-once" lever only helps the apply).
+        "callback_simprocedure_sc_bundle_ffi_ns",
+        "callback_simprocedure_sc_bundle_apply_ns",
         # angr-gorvf.10: inside sc_memreplay — how many pages were replayed
         # across all crossings, and the FFI-fetch vs Python-store split of the
         # per-page cost. pages/crossing tells us whether the cumulative dirty

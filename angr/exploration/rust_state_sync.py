@@ -1880,13 +1880,17 @@ class RustStateSyncMixin:
             pass
 
     @staticmethod
-    def _acquire_ultrapage(state: angr.SimState, page_addr: int):
+    def _acquire_ultrapage(state: angr.SimState, page_addr: int, memory=None):
         """Get the writable UltraPage backing `page_addr`, or None.
 
-        Used by the two dirty-page replay fast paths below to talk to the page
-        directly instead of through the memory-mixin stack. ``writing=True``
-        routes through ``acquire_unique()``, so a page shared with another
-        state is copy-on-written rather than mutated in place.
+        Used by the dirty-page replay and register-apply fast paths to talk to
+        the page directly instead of through the memory-mixin stack.
+        ``writing=True`` routes through ``acquire_unique()``, so a page shared
+        with another state is copy-on-written rather than mutated in place.
+
+        ``memory`` selects which SimMemory to acquire from (default
+        ``state.memory``); pass ``state.registers`` for the register file
+        (angr-gorvf.19).
 
         Returns None — meaning "caller must use the generic ``memory.store``" —
         when this is not a 4096-byte UltraPage, or when any of the mixins the
@@ -1898,7 +1902,8 @@ class RustStateSyncMixin:
         sizes here are concrete and exact, so address/size normalization are
         no-ops.
         """
-        get_page = getattr(state.memory, "_get_page", None)
+        mem = memory if memory is not None else state.memory
+        get_page = getattr(mem, "_get_page", None)
         if get_page is None or page_addr % PAGE_SIZE:
             return None
         if (
@@ -1918,6 +1923,55 @@ class RustStateSyncMixin:
         ):
             return None
         return page
+
+    def _apply_bundle_registers(self, state, registers: dict, reg_map: dict):
+        """Fast-apply the callback bundle's concrete register values.
+
+        angr-gorvf.19: the export_callback_bundle register-apply loop was
+        ~98% of the ``sc_bundle`` phase — each concrete register went through
+        ``state.registers.store()``, a full memory-mixin traversal (~37us x
+        17 AMD64 registers = ~0.63ms/crossing). This applies the gorvf.10
+        acquire-once lever to the register file: acquire the backing
+        UltraPage(s) once and blit each concrete register straight into
+        ``concrete_data`` (clearing ``symbolic_bitmap`` over the range, exactly
+        as ``UltraPage.store``'s concrete branch does). ``writing=True`` in
+        ``_acquire_ultrapage`` keeps copy-on-write intact.
+
+        Returns the list of register names whose bundle value is symbolic
+        (``val is None``) — the caller must still fetch+apply those ASTs
+        individually. Returns ``None`` when the fast path is unavailable (a
+        register outside ``reg_map``, a straddled page, or a non-UltraPage
+        register memory); the caller then runs the generic per-register loop.
+        """
+        byteorder = "little" if state.arch.register_endness == "Iend_LE" else "big"
+        symbolic: list = []
+        concrete: list = []
+        for reg_name, val in registers.items():
+            if val is None:
+                symbolic.append(reg_name)
+                continue
+            offset_size = reg_map.get(reg_name)
+            if offset_size is None:
+                # Unknown register — cannot fast-path safely; let the caller
+                # run the full generic loop (which has a setattr fallback).
+                return None
+            concrete.append((offset_size[0], offset_size[1], val))
+        pages: dict = {}
+        for offset, size, val in concrete:
+            pageno = offset // PAGE_SIZE
+            sub = offset % PAGE_SIZE
+            if sub + size > PAGE_SIZE:
+                return None  # register straddles a page boundary
+            page = pages.get(pageno)
+            if page is None:
+                page = self._acquire_ultrapage(state, pageno * PAGE_SIZE, memory=state.registers)
+                if page is None:
+                    return None
+                pages[pageno] = page
+            masked = val & ((1 << (size * 8)) - 1)
+            page.concrete_data[sub : sub + size] = masked.to_bytes(size, byteorder)
+            page.symbolic_bitmap[sub : sub + size] = b"\0" * size
+        return symbolic
 
     @staticmethod
     def _blit_concrete_page(page, page_bytes) -> None:
