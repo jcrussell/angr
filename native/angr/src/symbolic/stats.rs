@@ -210,6 +210,15 @@ pub(crate) static EXPORT_UNCONSTRAINED_FP_COUNT: AtomicU64 = AtomicU64::new(0);
 // Bumped from `value.rs::canonicalize_commutative`.
 pub(crate) static RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static RUSTBV_COMMUTATIVE_SWAP_COUNT: AtomicU64 = AtomicU64::new(0);
+// claripy→Rust conversion cache (AST_CACHE) hit/miss counters. Bumped from
+// `claripy_bridge::import::claripy_to_rustbv` on the `use_cache` path. A hit is
+// a hash lookup whose cached width matches; a miss is a cold lookup or a stale
+// width-mismatch that forces a reconvert. Surfaces the worker-thread cache
+// effectiveness the parallel path depends on (each worker owns a cold
+// thread-local AST_CACHE) — see bd angr-op0dn.13.4. These are process-global
+// AtomicU64 so parallel workers aggregate into one hit/miss ratio.
+pub(crate) static CLARIPY_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CLARIPY_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 // (b) branch-condition simplify-skip: sampled across assume_true /
 // assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
 // increments only when Z3 simplify() returns a STRUCTURALLY-DIFFERENT AST
@@ -542,6 +551,14 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         RUSTBV_COMMUTATIVE_SWAP_COUNT.load(Ordering::Relaxed),
     );
     stats.insert(
+        "claripy_ast_cache_hit_count".into(),
+        CLARIPY_AST_CACHE_HIT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "claripy_ast_cache_miss_count".into(),
+        CLARIPY_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
         "add_constraint_raw_total".into(),
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.load(Ordering::Relaxed),
     );
@@ -713,6 +730,8 @@ pub fn reset_solver_stats() {
     // angr-1joc constraint-dedup measurement counters.
     RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.store(0, Ordering::Relaxed);
     RUSTBV_COMMUTATIVE_SWAP_COUNT.store(0, Ordering::Relaxed);
+    CLARIPY_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
+    CLARIPY_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
     ADD_CONSTRAINT_RAW_TOTAL_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_REDUCED_COUNT.store(0, Ordering::Relaxed);
@@ -991,6 +1010,18 @@ pub fn record_commutative_canonicalize(swapped: bool) {
     RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
     if swapped {
         RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// angr-op0dn.13.4: record a claripy→Rust conversion-cache (AST_CACHE) probe.
+/// `hit` is true when a hash lookup returned a width-matching cached BV, false
+/// on a cold miss or a stale width-mismatch that forces a reconvert.
+#[inline]
+pub fn record_claripy_ast_cache(hit: bool) {
+    if hit {
+        CLARIPY_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        CLARIPY_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 

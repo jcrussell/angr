@@ -164,6 +164,46 @@ class TestRustExplorationManagerUnit:
         assert "simprocedure_fallback_by_name" in fb
         assert fb["simprocedure_fallback_by_name"] == {}
 
+    def test_claripy_ast_cache_counters_exposed(self):
+        """angr-op0dn.13.4: the claripy->Rust conversion-cache (AST_CACHE)
+        hit/miss counters are wired through get_solver_stats() (alongside the
+        other bridge-side counters like rustbv_commutative_canonicalize_count).
+        They surface the worker-thread cache effectiveness the parallel bridge
+        path depends on (each worker owns a cold thread-local AST_CACHE).
+        Bumped from `claripy_bridge::import::claripy_to_rustbv`.
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        stats = mgr.get_solver_stats()
+        assert "claripy_ast_cache_hit_count" in stats
+        assert "claripy_ast_cache_miss_count" in stats
+
+    def test_claripy_ast_cache_counters_accumulate(self):
+        """Converting the same claripy AST twice through the bridge exercises
+        the AST_CACHE: the first import cold-converts the tree (misses on each
+        distinct node), the second returns the top node from cache (a hit). A
+        nonzero hit count proves the cache is actually reused, not just
+        populated.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        ctx.reset_solver_stats()
+
+        x = claripy.BVS("x", 32)
+        constraint = (x + 1) >= 10
+        ctx.add_constraint_ast(constraint)
+        ctx.add_constraint_ast(constraint)  # same AST -> top-node cache hit
+
+        stats = ctx.get_solver_stats()
+        assert stats["claripy_ast_cache_miss_count"] > 0, (
+            f"expected cold-conversion misses, got {stats['claripy_ast_cache_miss_count']}"
+        )
+        assert stats["claripy_ast_cache_hit_count"] > 0, (
+            f"expected cache reuse hits, got {stats['claripy_ast_cache_hit_count']}"
+        )
+
     def test_add_rust_state(self):
         """Test adding an existing RustSimState."""
         mgr = _RustExplorationManager("amd64")

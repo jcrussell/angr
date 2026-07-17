@@ -150,11 +150,15 @@ pub fn claripy_to_rustbv(
                 .and_then(|l| l.extract::<u32>().ok())
                 .unwrap_or(1);
             if cached_bv.width() == expected_width {
+                crate::symbolic::record_claripy_ast_cache(true);
                 return Ok(cached_bv);
             }
             // Width mismatch: evict the stale entry and fall through to
             // reconvert. The recomputed BV will be re-cached below.
             tl_cache!(AST_CACHE, pop(&ast_hash));
+            crate::symbolic::record_claripy_ast_cache(false);
+        } else {
+            crate::symbolic::record_claripy_ast_cache(false);
         }
     }
 
