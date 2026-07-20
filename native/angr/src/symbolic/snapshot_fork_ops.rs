@@ -554,7 +554,6 @@ impl SymContext {
             );
             (frozen_shared, frozen_assumed, frozen_non_bv)
         };
-        let assumed_total_len = frozen_assumed.len();
 
         // angr-3ms1 step 1c: fork-time SharedLineageSolver materialization
         // gate. When BOTH (a) the parent opted in via
@@ -637,7 +636,19 @@ impl SymContext {
         };
 
         SymContext {
-            constraint_count: AtomicUsize::new(assumed_total_len),
+            // angr-ph300.47: seed the child count from the parent's live
+            // `num_constraints()`, NOT `assumed_total_len` (frozen_assumed.len()).
+            // The child inherits the parent's FULL constraint set via
+            // frozen_shared/frozen_non_bv, which includes entries with no
+            // `assumed` pair — `add_constraint_raw` residuals and
+            // `add_bv_constraint` (address concretization) both bump
+            // `constraint_count` but push no assumed pair. Seeding from the
+            // assumed length alone erased those from the child's count, so a
+            // concretize-then-fork shrank `num_constraints()` below the parent's
+            // for an identical effective set. This mirrors the angr-kenpr
+            // snapshot-restore pin (`create_snapshot` pins to `num_constraints()`),
+            // keeping the `state_constraint_count` round-trip contract intact.
+            constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),

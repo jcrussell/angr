@@ -828,3 +828,52 @@ fn test_fork_after_bare_pop_drops_popped_constraint() {
         "parent must also be free of the popped z == 20"
     );
 }
+
+/// angr-ph300.47: `add_bv_constraint` (address concretization) bumps
+/// `constraint_count` but pushes NO `assumed` pair — it lands only in
+/// `z3_assertions`/`non_bv_assertions`. Fork previously seeded the child count
+/// from `frozen_assumed.len()`, so a concretize-then-fork shrank the child's
+/// `num_constraints()` below the parent's for the identical carried set. The
+/// fix seeds from the parent's live `num_constraints()`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
+    let ctx = SymContext::new();
+    let addr = RustBV::symbolic(&ctx, "test_fork_bv_count_addr", 32);
+    ctx.add_bv_constraint(&addr, 0x4000); // concretize: no assumed pair
+    let parent_count = ctx.num_constraints();
+    assert_eq!(
+        parent_count, 1,
+        "add_bv_constraint must bump the parent constraint count"
+    );
+
+    let child = ctx.fork();
+    assert_eq!(
+        child.num_constraints(),
+        parent_count,
+        "fork must preserve num_constraints across an assumed-pair-less \
+         (address-concretization) constraint"
+    );
+}
+
+/// angr-ph300.47: the residual `add_constraint_raw`-without-pair path also
+/// bumps `constraint_count` with no `assumed` entry. Fork must carry that count
+/// to the child exactly.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_preserves_num_constraints_after_raw_constraint() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_fork_raw_count_x", 8);
+    let five = RustBV::concrete(5, 8);
+    ctx.add_constraint_raw(raw_entry(&x.eq(&five, &ctx)));
+    let parent_count = ctx.num_constraints();
+    assert_eq!(parent_count, 1);
+
+    let child = ctx.fork();
+    assert_eq!(
+        child.num_constraints(),
+        parent_count,
+        "fork must preserve num_constraints across a raw (no assumed pair) \
+         constraint"
+    );
+}
