@@ -129,17 +129,20 @@ pub(super) fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
 
 /// Parse a decimal string to bytes (big-endian).
 pub(super) fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
-    // For small values, parse and convert
+    // For small values (<= 128 bits), parse and convert.
     if let Ok(v) = s.parse::<u128>() {
         let byte_len = width.div_ceil(8) as usize;
         let mut result = vec![0u8; byte_len];
-        let bytes = v.to_be_bytes();
-        let offset = byte_len.saturating_sub(16);
-        for (i, &b) in bytes.iter().enumerate() {
-            if offset + i < byte_len {
-                result[offset + i] = b;
-            }
-        }
+        let src = v.to_be_bytes(); // 16-byte big-endian repr of `v`
+        // Right-align: the LSB of `v` must land in the last byte of `result`.
+        // Copy the low `min(byte_len, 16)` bytes of `src` into the tail of
+        // `result`. When byte_len > 16 the higher bytes stay zero (v is only
+        // 128 bits); when byte_len < 16 the high `src` bytes are dropped
+        // (truncation to width, matching the hex/binary decoders). The old
+        // code copied the *leading* (high, zero) bytes of `src` for
+        // byte_len < 16, silently zeroing every real value (angr-ph300.35).
+        let copy = byte_len.min(16);
+        result[byte_len - copy..].copy_from_slice(&src[16 - copy..]);
         return Some(result);
     }
 

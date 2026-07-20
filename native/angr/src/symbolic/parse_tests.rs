@@ -144,6 +144,29 @@ fn test_parse_decimal_to_bytes_wide_right_aligned() {
 }
 
 #[test]
+fn test_parse_decimal_to_bytes_narrow_right_aligned() {
+    // Regression for angr-ph300.35: width < 128 (byte_len < 16) must copy the
+    // LOW bytes of the 16-byte BE repr, not the leading zero bytes. "300" in a
+    // 32-bit field is 0x0000_012c -> [0, 0, 1, 44].
+    assert_eq!(parse_decimal_to_bytes("300", 32), Some(vec![0, 0, 1, 44]));
+    // Single byte: low byte survives.
+    assert_eq!(parse_decimal_to_bytes("255", 8), Some(vec![0xff]));
+    // Truncation to width matches the hex/binary decoders: 300 & 0xff = 44.
+    assert_eq!(parse_decimal_to_bytes("300", 8), Some(vec![44]));
+}
+
+#[test]
+fn test_parse_decimal_to_bytes_width_200_right_aligned() {
+    // width 200 -> 25 bytes; value right-aligned, high bytes zero.
+    let out = parse_decimal_to_bytes("300", 200).unwrap();
+    assert_eq!(out.len(), 25);
+    let mut expected = vec![0u8; 25];
+    expected[23] = 1;
+    expected[24] = 44;
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn test_parse_decimal_to_bytes_exactly_128_bits() {
     let out = parse_decimal_to_bytes("255", 128).unwrap();
     assert_eq!(out.len(), 16);
