@@ -321,31 +321,33 @@ fn test_isoc99_scanf() {
 }
 
 #[test]
-fn test_sscanf_basic() {
+fn test_sscanf_defers_to_python() {
+    // sscanf must PARSE its concrete source to constrain the output; native
+    // free-BVS minting would make impossible paths feasible. NativeSscanf::call
+    // therefore always returns an error so dispatch bounces to Python, which
+    // parses the source faithfully (angr-8onrp).
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"42\x00", Permission::RWX); // source string
     state.map_memory_data(0x1100, b"%d\x00", Permission::RWX); // format
 
-    let result = NativeSscanf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1000, 64), // str
-                RustBV::concrete(0x1100, 64), // format
-                RustBV::concrete(0x2000, 64), // &int_var
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
+    let result = NativeSscanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64), // str
+            RustBV::concrete(0x1100, 64), // format
+            RustBV::concrete(0x2000, 64), // &int_var
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
 
-    assert_eq!(result.unwrap().as_u64(), Some(1));
-    // Value should be symbolic (we don't actually parse the source)
+    assert!(result.is_err(), "sscanf must defer to Python");
+    // Nothing was written — the output slot stays untouched.
     let val = state.memory_load(0x2000, 4).unwrap();
-    assert!(val.as_u64().is_none());
+    assert_eq!(val.as_u64(), Some(0));
 }
 
 #[test]
@@ -834,31 +836,13 @@ fn test_scanf_numeric_over_seeded_stdin_falls_back() {
     assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64(), Some(0));
 }
 
-/// The fallback is scoped to *unread* seed on stdin: `sscanf` reads a memory
-/// buffer (never fd 0) and an unseeded `scanf` has nothing to mismatch, so both
-/// keep the native `%d` fast path.
+/// The seeded-stdin fallback is scoped to *unread* seed on stdin: an unseeded
+/// `scanf("%d")` has nothing to mismatch, so it keeps the native `%d` fast path.
+/// (`sscanf` reads a memory buffer, never fd 0, and now defers to Python
+/// unconditionally — see `test_sscanf_defers_to_python` — so it does not touch
+/// the seeded-stdin logic at all.)
 #[test]
 fn test_scanf_numeric_native_without_unread_seed() {
-    // sscanf with a seeded (but irrelevant) fd 0.
-    let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
-    state.map_memory_data(0x1100, b"42\x00", Permission::RWX);
-    state
-        .file_system()
-        .set_fd_content_sym(0, vec![RustBV::concrete(0x41, 8)]);
-
-    NativeSscanf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1100, 64), // input string
-                RustBV::concrete(0x1000, 64), // format
-                RustBV::concrete(0x2000, 64), // &int_var
-            ],
-        )
-        .expect("sscanf reads no stdin, so it stays native");
-    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 0);
-
     // scanf("%d") once an earlier reader drained the seed: native again.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);

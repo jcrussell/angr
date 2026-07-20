@@ -396,11 +396,15 @@ impl NativeSimProcedure for NativeIsoc99Scanf {
 /// int sscanf(const char *str, const char *format, ...);
 /// ```
 ///
-/// Unlike scanf, sscanf reads from a string buffer instead of stdin.
-/// For symbolic execution, if the source string contains symbolic bytes,
-/// we fall back to Python. For concrete source strings, we still create
-/// symbolic values for the output pointers (treating parsed values as
-/// unconstrained), matching angr's behavior.
+/// Unlike scanf, sscanf reads from a concrete in-memory buffer whose contents
+/// must be *parsed* to constrain the stored values: Python's
+/// `format_parser.py::FormatString.interpret` (addr path) reads the source
+/// region and stores the CONSTRAINED value (e.g. `sscanf("42","%d",&x)` binds
+/// `x==42`). Minting fresh unconstrained BVs — as `do_scanf` does for the
+/// stream sources — would make impossible paths feasible (`x==1337` reachable
+/// after parsing `"42"`) and copy garbage for `%s`. Rather than reimplement
+/// scanf's full matching engine natively, we defer the whole call to Python,
+/// which parses the source faithfully. See angr-8onrp.
 pub struct NativeSscanf;
 
 impl NativeSimProcedure for NativeSscanf {
@@ -414,19 +418,15 @@ impl NativeSimProcedure for NativeSscanf {
 
     fn call(
         &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
+        _state: &mut RustSimState,
+        _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // args[0] = source string (we don't actually parse it — just check it's concrete)
-        let _src_addr = extract_concrete_arg(&args[0], "str")?;
-        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
-        // For sscanf, we create symbolic values just like scanf
-        // (the parsed values are unconstrained in symbolic execution), but the
-        // input is a memory buffer: sscanf never touches fd 0, so it neither
-        // consumes the harness-seeded stdin bytes nor records its symbols into
-        // the stdin reconstruction. Python agrees — `sscanf` calls
-        // `FormatString.interpret(addr=...)` with no `simfd` (angr-ggb66).
-        do_scanf(state, fmt_addr, &args[2..], "sscanf", false)
+        // Defer to Python: only it parses the concrete source region and
+        // constrains the outputs. A native free-BVS mint would explore
+        // impossible paths. (angr-8onrp)
+        Err(ProcedureError::Other(
+            "sscanf: concrete-source parse deferred to Python".to_string(),
+        ))
     }
 }
 
@@ -434,9 +434,11 @@ impl NativeSimProcedure for NativeSscanf {
 ///
 /// The stream variant of [`NativeScanf`]: resolves `stream->_fileno` and routes
 /// through the shared [`do_scanf`] core, mirroring how `NativeFprintf` extends
-/// `NativePrintf`. Like the existing scanf/sscanf procs, the parsed values are
-/// minted as fresh unconstrained symbolic BVs (the file *content* is not parsed
-/// — same simplification `NativeSscanf` documents). A closed/negative fd
+/// `NativePrintf`. Like the stdin `scanf` proc, the parsed values are minted as
+/// fresh unconstrained symbolic BVs — the file *content* is not parsed. (This
+/// is faithful for a stream source whose bytes are symbolic; the concrete
+/// in-memory buffer case is `sscanf`, which defers to Python — see
+/// [`NativeSscanf`].) A closed/negative fd
 /// returns -1, matching Python `fscanf` (`simfd is None`). Symbols are recorded
 /// for `posix.dumps(0)` only when the FILE wraps fd 0 (e.g. `fscanf(stdin,...)`).
 fn do_fscanf(

@@ -385,6 +385,48 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_scanf_stdin_writes_symbolic_output(self, fauxware_project):
+        """scanf("%d", &x) must write a *symbolic* value to &x that can equal
+        any int (e.g. 1337). The Python-num_args arg truncation made native
+        scanf a silent no-op end-to-end — &x stayed concrete 0 and Rust missed
+        every feasible path the Python engine found (angr-8onrp)."""
+        proj = fauxware_project
+        xaddr = self.BUF_ADDR + 0x80
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["scanf"]())
+            state.memory.store(self.BUF_ADDR, b"%d\x00")  # format
+            state.regs.rdi = self.BUF_ADDR  # format ptr
+            state.regs.rsi = xaddr  # &x (first variadic pointer)
+            s = self._run_one_step(proj, state)
+            xval = s.memory.load(xaddr, 4, endness=proj.arch.memory_endness)
+            # A no-op leaves the ZERO_FILL concrete 0; a working scanf mints a
+            # symbolic value that can satisfy the win condition.
+            assert xval.symbolic
+            assert s.solver.satisfiable(extra_constraints=[xval == 1337])
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_sscanf_concrete_source_constrains_output(self, fauxware_project):
+        """sscanf("42", "%d", &x) must constrain &x to 42 (min==max==42). Native
+        sscanf defers to Python, which parses the concrete source region; a
+        native free-BVS mint would leave x unconstrained and make impossible
+        paths feasible (angr-8onrp secondary defect)."""
+        proj = fauxware_project
+        xaddr = self.BUF_ADDR + 0x80
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["sscanf"]())
+            state.memory.store(self.BUF_ADDR, b"42\x00")  # source string
+            state.memory.store(self.BUF_ADDR + 0x10, b"%d\x00")  # format
+            state.regs.rdi = self.BUF_ADDR  # source "42"
+            state.regs.rsi = self.BUF_ADDR + 0x10  # format
+            state.regs.rdx = xaddr  # &x
+            s = self._run_one_step(proj, state)
+            xval = s.memory.load(xaddr, 4, endness=proj.arch.memory_endness)
+            assert s.solver.min(xval) == 42
+            assert s.solver.max(xval) == 42
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
     def test_snprintf_returns_untruncated_length(self, fauxware_project):
         """snprintf(dest, 2, "%d", 999) must return the would-have-been length
         3 (not the truncated 1), the defining snprintf return contract."""

@@ -1918,7 +1918,15 @@ impl RustExplorationManager {
                     // SimProcedure callback below handle it — handing
                     // the native handler fabricated zeros would mask
                     // the underlying stack-setup bug.
-                    match self.extract_procedure_args(&state, num_args) {
+                    //
+                    // `num_args` is the Python SimProcedure's FIXED-arg count
+                    // (variadics excluded). Native procs that consume variadic
+                    // pointers (scanf family) declare a larger `num_args()`; use
+                    // the max so `extract_procedure_args` reads the full window.
+                    // Truncating to the Python count made the scanf family a
+                    // silent no-op end-to-end (angr-8onrp).
+                    let native_num_args = num_args.max(native_proc.num_args());
+                    match self.extract_procedure_args(&state, native_num_args) {
                         Err(e) => {
                             log::debug!(
                                 "Skipping native procedure {name} (arg extraction failed: {e:?})"

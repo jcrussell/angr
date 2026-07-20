@@ -588,7 +588,12 @@ pub(super) fn handle_simprocedure_core(
     let disposition: NativeProcDisposition = if prefer_native && !is_find_or_avoid {
         if let Some(native_proc) = native_procs.get(&name) {
             let proc_no_return = native_proc.no_return();
-            match ctx.cc.extract_procedure_args(&state, num_args) {
+            // `num_args` is the Python SimProcedure's FIXED-arg count (variadics
+            // excluded). Native procs consuming variadic pointers (scanf family)
+            // declare a larger `num_args()`; use the max so the full arg window
+            // is read. Truncating made the scanf family a no-op (angr-8onrp).
+            let native_num_args = num_args.max(native_proc.num_args());
+            match ctx.cc.extract_procedure_args(&state, native_num_args) {
                 Err(e) => {
                     log::debug!("Skipping native procedure {name} (arg extraction failed: {e:?})");
                     counters.native_python_fallbacks += 1;
