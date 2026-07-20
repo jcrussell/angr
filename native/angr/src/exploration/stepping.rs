@@ -315,8 +315,10 @@ impl RustExplorationManager {
     /// `active`/`deadended`/... behind the caller's back.
     ///
     /// A step that needs a Python callback bounce (SimProcedure, hook, syscall)
-    /// raises `NotImplementedError` and consumes the state — driving the
-    /// callback protocol from this entry point is E1.b's job.
+    /// raises `NotImplementedError` — driving the callback protocol from this
+    /// entry point is E1.b's job — but the state is first parked in
+    /// [`STASH_STEP_OUT`] (not dropped) so the caller can still find, re-place,
+    /// or export it after the error (angr-ph300.22).
     pub(crate) fn _step_state(
         &mut self,
         state_id: u64,
@@ -355,9 +357,19 @@ impl RustExplorationManager {
                 out
             }
             Err(StepError::NeedCallback(pending)) => {
+                // Recover the state instead of dropping it: park it in
+                // STASH_STEP_OUT before raising so the caller can find,
+                // re-place, or export it (angr-ph300.22). Every other outcome
+                // parks its results below; this error path must not silently
+                // free the frontier state.
+                let reason_desc = format!("{:?}", pending.reason);
+                let state = pending.state;
+                let id = state.state_id();
+                self.index_state(id, STASH_STEP_OUT);
+                self.sm.ensure_stash(STASH_STEP_OUT).push_back(state);
                 return Err(PyNotImplementedError::new_err(format!(
-                    "step_state() cannot drive Python callback bounces yet (reason: {:?})",
-                    pending.reason
+                    "step_state() cannot drive Python callback bounces yet \
+                     (reason: {reason_desc}); state {id} parked in {STASH_STEP_OUT}"
                 )));
             }
         };

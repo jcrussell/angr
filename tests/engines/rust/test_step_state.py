@@ -122,6 +122,22 @@ class TestStepState:
         with pytest.raises(NotImplementedError, match="callback"):
             rust_mgr.step_state(state_id, None)
 
+    def test_callback_bounce_parks_state_not_dropped(self, fauxware_project):
+        # angr-ph300.22: the NeedCallback error path used to free the state,
+        # leaving it in no stash and not in pending_callbacks — a silent
+        # frontier loss. The state must survive the error, parked in _step_out
+        # so the caller can re-place or export it.
+        _mgr, rust_mgr, state_id = _rust_mgr_at(fauxware_project, MAIN_NEXT)
+
+        with pytest.raises(NotImplementedError, match="parked"):
+            rust_mgr.step_state(state_id, None)
+
+        assert rust_mgr.stash_counts().get("_step_out", 0) == 1
+        # ...and the parked state is findable/movable after the error.
+        parked = rust_mgr.get_state_ids("_step_out")
+        assert len(parked) == 1
+        assert rust_mgr.move_state(parked[0], "_step_out", "active")
+
 
 class TestProxyStepState:
     """E1.b — the SimulationManager successor-dict contract on the proxy."""
