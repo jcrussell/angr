@@ -836,6 +836,53 @@ class TestRustExplorationManagerUnit:
             f"other={stats['other_fallbacks']} total={stats['python_fallbacks']}"
         )
 
+    def test_load_snapshot_clears_parked_pending_callback(self):
+        """angr-ph300.21: ``load_snapshot_bytes`` must drop pre-restore pending
+        state so the restored frontier does not merge with the discarded world.
+
+        Parks a manager on a ``need_callback`` (symbolic SimProcedure arg →
+        Python fallback), so ``pending_callback_ids()`` is non-empty. A snapshot
+        captured from a separate fresh manager is then loaded into the parked
+        one. Pre-fix, ``self.sm`` was replaced wholesale while
+        ``pending_callbacks`` / ``current_stepping_state_id`` /
+        ``pending_parallel_bounces`` kept referencing states from the old world
+        — a surviving pending callback could resume a discarded state, and the
+        next ``run()`` would finalize the stale steady session into the restored
+        stashes. The fix mirrors the dump-side finalize contract
+        (``steady_config_guard`` + clear pending), so after load the pending
+        callback set is empty.
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+        HOOK = 0x500000
+        state = self._setup_amd64_python_proc_test(
+            mgr,
+            HOOK,
+            "sym_proc_snap",
+            num_args=1,
+            no_return=False,
+            callable_=lambda args: 0,
+        )
+        sym = claripy.BVS("sym_arg_snap", 64)
+        ast_ptr = claripy.backends.z3.convert(sym).as_ast().value
+        state.set_register_symbolic("rdi", ast_ptr, 64)
+        mgr.add_state("active", state)
+        event = mgr.run(5)
+        assert event.event_type == "need_callback", f"expected parked need_callback; got {event.event_type}"
+        assert mgr.pending_callback_ids(), "precondition: a pending callback must be parked before load"
+
+        # A valid snapshot from an independent fresh manager.
+        donor = _RustExplorationManager("amd64")
+        donor.add_state("active", RustSimState("amd64"))
+        snap = donor.dump_snapshot_bytes()
+        assert len(snap) > 0
+
+        mgr.load_snapshot_bytes(snap)
+        assert not mgr.pending_callback_ids(), (
+            f"load_snapshot_bytes must clear pre-restore pending callbacks; still parked: {mgr.pending_callback_ids()}"
+        )
+
     def test_python_procedure_num_args_truncates_at_registered_count(self):
         """The dispatcher extracts exactly `num_args` values from the calling
         convention. Extra args sitting in unused registers (e.g. RDX when

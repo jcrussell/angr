@@ -2596,9 +2596,25 @@ impl RustExplorationManager {
     /// (find/avoid addrs, hooks, simprocedures, solver/memory config) is
     /// preserved. An empty envelope or stale version byte raises
     /// `ValueError`.
+    ///
+    /// angr-ph300.21: mirrors the dump-side finalize contract before the
+    /// swap. A manager parked on `need_callback`, or with a live steady
+    /// session (`RUST_PARALLEL_STEADY=1`), carries worker-resident states and
+    /// pending callback/bounce entries that belong to the PRE-restore world.
+    /// Without a teardown, the next `run()` would finalize the OLD steady
+    /// session — draining those states into the freshly restored stashes (two
+    /// explorations merged) — and a surviving pending callback could resume a
+    /// state from the discarded world. We therefore `steady_config_guard()`
+    /// first (drains any live session into the soon-to-be-discarded `self.sm`)
+    /// and clear all pending single-step / callback / parked-bounce state, so
+    /// the restored frontier starts from a clean manager.
     pub fn load_snapshot_bytes(&mut self, bytes: &[u8]) -> PyResult<()> {
         let restored = StashManager::load_snapshot(bytes)
             .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {e}")))?;
+        self.steady_config_guard();
+        self.pending_callbacks.clear();
+        self.pending_parallel_bounces.clear();
+        self.current_stepping_state_id = None;
         self.sm = restored;
         Ok(())
     }
