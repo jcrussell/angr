@@ -722,10 +722,11 @@ impl RustBV {
     /// Equality comparison, consuming both arguments.
     #[inline]
     pub fn eq_into(self, other: Self, ctx: &SymContext) -> Self {
-        // Width mismatch guard — return concrete 0 instead of panicking
-        if self.width() != other.width() {
-            return Self::concrete(0, 1);
-        }
+        // Equal width is an invariant here, matching `ne_into` and the arith/cmp
+        // siblings. The Python boundary (`RustSymbolTable::op_eq` via the
+        // `op_binary!` macro) rejects a width mismatch with a `PyValueError`
+        // before this is reached; internal callers are well-typed (angr-ph300.32).
+        debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(u128::from(a == b), 1),
             _ => {

@@ -54,7 +54,7 @@ pub use stats::{
     record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop, record_zext_cmp_collapse,
     record_zext_cmp_trivial_decide, reset_solver_stats,
 };
-pub use table::RustSymbolTable;
+pub use table::{BinaryOpError, RustSymbolTable};
 pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV};
 #[cfg(feature = "vex-engine-z3")]
 pub use z3_ast_ptr::Z3AstPtr;

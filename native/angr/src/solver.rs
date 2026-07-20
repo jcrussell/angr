@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
-use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
+use crate::symbolic::{BinaryOpError, RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Extract a typed [`Z3AstPtr`] from a claripy AST's z3 backend.
 ///
@@ -103,6 +103,21 @@ pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
     match ids {
         [id] => PyValueError::new_err(format!("invalid handle id: {id}")),
         _ => PyValueError::new_err(format!("invalid handle id (one of {ids:?})")),
+    }
+}
+
+/// Map a two-operand table failure to a `PyValueError`. Owns the pyo3
+/// conversion so `symbolic::table` stays Python-agnostic (angr-ph300.32).
+/// Reuses [`invalid_handle_id`] for the missing-handle case so its message
+/// stays identical to the single-operand ops.
+impl From<BinaryOpError> for PyErr {
+    fn from(err: BinaryOpError) -> Self {
+        match err {
+            BinaryOpError::MissingHandle { a_id, b_id } => invalid_handle_id(&[a_id, b_id]),
+            BinaryOpError::WidthMismatch { lhs, rhs } => PyValueError::new_err(format!(
+                "binary op width mismatch: {lhs}-bit vs {rhs}-bit operands"
+            )),
+        }
     }
 }
 
@@ -937,7 +952,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_add(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Subtract two handles and return a new handle.
@@ -946,7 +961,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_sub(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Multiply two handles and return a new handle.
@@ -955,7 +970,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_mul(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned division of two handles.
@@ -964,7 +979,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_udiv(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed division of two handles.
@@ -973,7 +988,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_sdiv(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned remainder of two handles.
@@ -982,7 +997,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_urem(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed remainder of two handles.
@@ -991,7 +1006,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_srem(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Negation of a handle.
@@ -1013,7 +1028,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_and(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Bitwise OR of two handles.
@@ -1022,7 +1037,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_or(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Bitwise XOR of two handles.
@@ -1031,7 +1046,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_xor(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Bitwise NOT of a handle.
@@ -1053,7 +1068,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_shl(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Logical right shift.
@@ -1062,7 +1077,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_lshr(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Arithmetic right shift.
@@ -1071,7 +1086,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_ashr(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Rotate left.
@@ -1080,7 +1095,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_rotl(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Rotate right.
@@ -1089,7 +1104,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_rotr(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     // =========================================================================
@@ -1102,7 +1117,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_eq(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Inequality comparison (returns 1-bit handle).
@@ -1111,7 +1126,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_ne(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned less than.
@@ -1120,7 +1135,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_ult(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned less than or equal.
@@ -1129,7 +1144,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_ule(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned greater than.
@@ -1138,7 +1153,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_ugt(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Unsigned greater than or equal.
@@ -1147,7 +1162,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_uge(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed less than.
@@ -1156,7 +1171,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_slt(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed less than or equal.
@@ -1165,7 +1180,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_sle(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed greater than.
@@ -1174,7 +1189,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_sgt(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     /// Signed greater than or equal.
@@ -1183,7 +1198,7 @@ impl RustSolverContext {
         self.i()
             .symbol_table
             .op_sge(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+            .map_err(PyErr::from)
     }
 
     // =========================================================================

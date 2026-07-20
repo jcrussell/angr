@@ -233,6 +233,39 @@ class TestSolverOperations:
         assert ctx.op_zero_extend(h64.id, 96).width == 96
         assert ctx.op_sign_extend(h64.id, 96).width == 96
 
+    def test_binary_op_width_mismatch_raises_valueerror(self):
+        """Binary ops reject mismatched operand widths at the Python boundary.
+
+        Regression for angr-ph300.32: op_eq used to silently fold a width
+        mismatch to constant False (where claripy raises), while op_ne and the
+        arith/shift/cmp siblings only ``debug_assert`` equal width — so a
+        release build handed mismatched sorts to Z3 and aborted the process.
+        The op_binary! layer now rejects the mismatch with a ValueError for
+        every binary op, uniformly.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        h32 = ctx.create_symbolic("a", 32)
+        h64 = ctx.create_symbolic("b", 64)
+
+        # Comparisons: previously silent-False (eq) or Z3 abort (ne, ordering).
+        for op in ("op_eq", "op_ne", "op_ult", "op_ule", "op_sgt", "op_sge"):
+            with pytest.raises(ValueError):
+                getattr(ctx, op)(h32.id, h64.id)
+            with pytest.raises(ValueError):
+                getattr(ctx, op)(h64.id, h32.id)
+
+        # Arithmetic / bitwise / shift ops share the same guard.
+        for op in ("op_add", "op_sub", "op_and", "op_xor", "op_shl", "op_lshr"):
+            with pytest.raises(ValueError):
+                getattr(ctx, op)(h32.id, h64.id)
+
+        # Equal-width operands are unaffected.
+        h32b = ctx.create_symbolic("c", 32)
+        assert ctx.op_eq(h32.id, h32b.id).width == 1
+        assert ctx.op_add(h32.id, h32b.id).width == 32
+
     def test_eval_fp_comparison_bool_no_panic(self):
         """eval()/eval_upto() of a Bool-sorted AST that claripy_to_rustbv
         cannot lower (an fpEQ float comparison) must return a 0/1 value,

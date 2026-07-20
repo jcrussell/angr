@@ -16,6 +16,23 @@ use parking_lot::RwLock;
 use super::handle::RustBVHandle;
 use super::{RustBV, SymContext};
 
+/// Failure modes for a two-operand op on the symbol table.
+///
+/// Python-agnostic on purpose: this layer must stay pyo3-free (see the module
+/// docs). `solver.rs` owns the `From<BinaryOpError> for PyErr` conversion that
+/// turns each variant into a `PyValueError` at the Python boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOpError {
+    /// One or both handle ids are absent from the table.
+    MissingHandle { a_id: u64, b_id: u64 },
+    /// Operands have different bit-widths. Every binary op (arith, bitwise,
+    /// shift, comparison) requires equal widths — the shift amount is resized
+    /// to the value width before it reaches this layer, so shifts are no
+    /// exception. Rejecting here prevents handing mismatched sorts to Z3 (a
+    /// process abort under `panic=abort`) or silently folding to a constant.
+    WidthMismatch { lhs: u32, rhs: u32 },
+}
+
 /// Generate `op_$name(a_id, b_id, ctx)` methods that delegate to
 /// `RustBV::$method(b, ctx)` after a single read-lock fetch.
 ///
@@ -25,13 +42,29 @@ macro_rules! op_binary {
     ( $( ($name:ident, $method:ident, $doc:expr) ),+ $(,)? ) => {
         $(
             #[doc = $doc]
-            pub fn $name(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
+            pub fn $name(
+                &self,
+                a_id: u64,
+                b_id: u64,
+                ctx: &SymContext,
+            ) -> Result<RustBVHandle, BinaryOpError> {
                 let symbols = self.symbols.read();
-                let a = symbols.get(&a_id)?;
-                let b = symbols.get(&b_id)?;
+                let (a, b) = match (symbols.get(&a_id), symbols.get(&b_id)) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => return Err(BinaryOpError::MissingHandle { a_id, b_id }),
+                };
+                // Reject mismatched widths at the Python boundary; the RustBV
+                // method only `debug_assert`s equal width, so a release build
+                // would otherwise hand mismatched sorts to Z3.
+                if a.width() != b.width() {
+                    return Err(BinaryOpError::WidthMismatch {
+                        lhs: a.width(),
+                        rhs: b.width(),
+                    });
+                }
                 let result = a.$method(b, ctx);
                 drop(symbols); // Release read lock before acquiring write lock
-                Some(self.insert(result))
+                Ok(self.insert(result))
             }
         )+
     };
