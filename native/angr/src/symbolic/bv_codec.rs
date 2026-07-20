@@ -17,8 +17,8 @@
 //! min / max solving paths). Crate-visible surface is `pub(super)`.
 
 use super::parse::{
-    parse_binary_to_bytes, parse_decimal_to_bytes, parse_hex_to_bytes, parse_wide_binary_low128,
-    parse_wide_hex_low128,
+    Z3Numeral, parse_binary_to_bytes, parse_decimal_to_bytes, parse_hex_to_bytes,
+    parse_wide_binary_low128, parse_wide_hex_low128,
 };
 
 /// Extract a u128 value from a Z3 BV result.
@@ -37,16 +37,11 @@ pub(super) fn extract_bv_value(bv: &z3::ast::BV) -> Option<u128> {
 /// Handles arbitrarily large values, returns low 128 bits.
 pub(super) fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
     let s = format!("{bv}");
-    // Z3 uses formats: #xHEXDIGITS, #bBINARY, or decimal
-    if let Some(hex_str) = s.strip_prefix("#x") {
-        // Parse as hex, taking low 128 bits
-        parse_wide_hex_low128(hex_str)
-    } else if let Some(bin_str) = s.strip_prefix("#b") {
-        // Parse as binary, taking low 128 bits
-        parse_wide_binary_low128(bin_str)
-    } else {
-        // Try decimal
-        s.parse::<u128>().ok()
+    // Z3 uses formats: #xHEXDIGITS, #bBINARY, or decimal (see Z3Numeral).
+    match Z3Numeral::classify(&s) {
+        Z3Numeral::Hex(hex_str) => parse_wide_hex_low128(hex_str),
+        Z3Numeral::Bin(bin_str) => parse_wide_binary_low128(bin_str),
+        Z3Numeral::Dec(dec_str) => dec_str.parse::<u128>().ok(),
     }
 }
 
@@ -54,15 +49,10 @@ pub(super) fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
 /// Used for values > 128 bits where we need the full value.
 pub(super) fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<u8>> {
     let s = format!("{bv}");
-    if let Some(hex_str) = s.strip_prefix("#x") {
-        // Parse full hex value to bytes
-        parse_hex_to_bytes(hex_str, width)
-    } else if let Some(bin_str) = s.strip_prefix("#b") {
-        // Parse full binary value to bytes
-        parse_binary_to_bytes(bin_str, width)
-    } else {
-        // Decimal - parse and convert
-        parse_decimal_to_bytes(&s, width)
+    match Z3Numeral::classify(&s) {
+        Z3Numeral::Hex(hex_str) => parse_hex_to_bytes(hex_str, width),
+        Z3Numeral::Bin(bin_str) => parse_binary_to_bytes(bin_str, width),
+        Z3Numeral::Dec(dec_str) => parse_decimal_to_bytes(dec_str, width),
     }
 }
 

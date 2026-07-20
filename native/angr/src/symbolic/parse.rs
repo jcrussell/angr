@@ -11,6 +11,36 @@
 //! [`parse_wide_binary_low128`], [`parse_hex_to_bytes`],
 //! [`parse_binary_to_bytes`], [`parse_decimal_to_bytes`].
 
+/// Classification of a Z3 BV numeral string by its format prefix.
+///
+/// `z3::ast::BV`'s `Display` emits a concrete constant in one of three
+/// forms: `#x<hex>`, `#b<binary>`, or a bare decimal. This enum captures
+/// that three-way `strip_prefix` dispatch in a single place so both the
+/// low-128 decoder ([`super::bv_codec::extract_bv_value_from_string`]) and
+/// the full-width decoder ([`super::bv_codec::extract_bv_value_wide`]) share
+/// one copy of the format knowledge instead of open-coding it twice. Each
+/// variant carries the payload slice with the prefix already stripped.
+pub(super) enum Z3Numeral<'a> {
+    Hex(&'a str),
+    Bin(&'a str),
+    Dec(&'a str),
+}
+
+impl<'a> Z3Numeral<'a> {
+    /// Classify a Z3 numeral string by its prefix. A `#x` / `#b` prefix
+    /// selects hex / binary and is stripped; anything else is treated as a
+    /// decimal numeral and returned verbatim.
+    pub(super) fn classify(s: &'a str) -> Self {
+        if let Some(hex) = s.strip_prefix("#x") {
+            Z3Numeral::Hex(hex)
+        } else if let Some(bin) = s.strip_prefix("#b") {
+            Z3Numeral::Bin(bin)
+        } else {
+            Z3Numeral::Dec(s)
+        }
+    }
+}
+
 /// Parse a hex string to u128, taking low 128 bits if larger.
 pub(super) fn parse_wide_hex_low128(s: &str) -> Option<u128> {
     // For values > 128 bits (> 32 hex chars), take low 32 chars
@@ -117,3 +147,7 @@ pub(super) fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     // This is rare in practice as Z3 typically uses hex format
     None
 }
+
+#[cfg(test)]
+#[path = "parse_tests.rs"]
+mod tests;
