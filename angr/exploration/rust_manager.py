@@ -1313,6 +1313,16 @@ class RustExplorationManager(
         # whether it is present to skip the programmatic setter in that case.
         self._requested_parallel_workers = max(1, int(parallel_workers))
         self._parallel_workers_env_set = "RUST_PARALLEL_WORKERS" in os.environ
+        # Parsed env worker count, recorded so an ineligible explore (callable
+        # predicates or `until`) can downgrade to serial for that explore and a
+        # later eligible explore can restore the env-configured count
+        # (angr-ph300.77). Malformed values degrade to 1.
+        self._parallel_workers_env_value = 1
+        if self._parallel_workers_env_set:
+            try:
+                self._parallel_workers_env_value = max(1, int(os.environ["RUST_PARALLEL_WORKERS"]))
+            except (ValueError, TypeError):
+                self._parallel_workers_env_value = 1
         # Init pipeline sequenced into four named phases (angr-wqao.4).
         # boot:       construct the Rust manager + apply basic config.
         # config:     resolve gate flags, init counters/caches, register
@@ -5139,8 +5149,11 @@ class RustExplorationManager(
         angr-op0dn.13.5 (M5-B16). Precedence and eligibility, in order:
 
         * ``RUST_PARALLEL_WORKERS`` env set — the env value was already applied
-          once in Rust ``new()`` and always wins (benches set it explicitly);
-          this method is a no-op.
+          once in Rust ``new()`` and wins for eligible explores (benches set it
+          explicitly). An *ineligible* explore (callable predicates or ``until``)
+          still downgrades to serial for that explore and restores the env count
+          when the next explore is eligible (angr-ph300.77); older Rust builds
+          without the setter cannot downgrade and leave the env value active.
         * ``parallel_workers <= 1`` requested — nothing to engage; no-op.
         * eligible explore (address-based find/avoid, no ``until``/techniques) —
           engage the requested worker count on the wave coordinator (the
@@ -5166,11 +5179,32 @@ class RustExplorationManager(
         Older Rust builds without the ``set_parallel_workers`` pymethod degrade
         to a no-op (the env gate remains the only opt-in there).
         """
+        setter = getattr(self._rust_mgr, "set_parallel_workers", None)
         if self._parallel_workers_env_set:
+            # The env value was applied once in Rust new() and wins for eligible
+            # explores. But an ineligible explore (callable predicates or
+            # `until`) must run serial: a parallel wave runs its frontier to
+            # quiescence with the GIL released, ignoring the per-batch
+            # run(n)/until budget and hanging a non-terminating frontier
+            # (angr-ph300.77). Downgrade to 1 for this explore, and restore the
+            # env-configured count when a later explore is eligible. Older Rust
+            # builds without the setter cannot downgrade — leave the env value
+            # active (the pre-fix behaviour).
+            if setter is None or self._parallel_workers_env_value <= 1:
+                return
+            if eligible:
+                setter(self._parallel_workers_env_value)
+            else:
+                setter(1)
+                l.info(
+                    "RUST_PARALLEL_WORKERS=%d set but this explore has callable find/avoid "
+                    "predicates or an `until` (no worker-local skip-state analogue, and the "
+                    "wave ignores the per-batch budget); running single-threaded",
+                    self._parallel_workers_env_value,
+                )
             return
         if self._requested_parallel_workers <= 1:
             return
-        setter = getattr(self._rust_mgr, "set_parallel_workers", None)
         if setter is None:
             l.debug("set_parallel_workers unavailable on this Rust build; parallel_workers= inert")
             return

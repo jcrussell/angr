@@ -894,3 +894,42 @@ class TestProgrammaticParallelWorkers:
                 deterministic=True,
                 parallel_workers=2,
             )
+
+
+class TestEnvParallelIneligibleDowngrade:
+    """angr-ph300.77: the env-path residual of the angr-ph300.6 fix.
+
+    ``RUST_PARALLEL_WORKERS`` is applied once in Rust ``new()`` and wins for
+    eligible (address-based) explores. But an *ineligible* explore — callable
+    predicates or an ``until`` — must run serial: a parallel wave runs its
+    frontier to quiescence with the GIL released, ignoring the per-batch
+    run(n)/until budget. ``_engage_parallel_workers`` now downgrades the env
+    count to 1 for that explore and restores it when a later explore is eligible.
+    """
+
+    def test_env_var_callable_find_downgrades_to_serial(self, pbounce_project, monkeypatch):
+        """RUST_PARALLEL_WORKERS=2 + callable find → serial, real pool never runs."""
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        target = pbounce_project.loader.find_symbol("reach_target").rebased_addr
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
+        # Env applied at construction.
+        assert mgr.stats["parallel_real_workers"] == 2
+        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        # Downgraded to serial for the ineligible explore; the real pool never dispatched.
+        assert mgr.stats["parallel_real_workers"] == 1
+        assert sum(mgr.stats["parallel_worker_dispatch"]) == 0
+        assert any(s.addr == target for s in mgr.found)
+
+    def test_env_var_restores_after_ineligible_explore(self, pbounce_project, monkeypatch):
+        """On one manager, a callable-find downgrade is restored by a later address explore."""
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        target = pbounce_project.loader.find_symbol("reach_target").rebased_addr
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
+        assert mgr.stats["parallel_real_workers"] == 2
+        # Ineligible explore downgrades the same manager to serial for that run.
+        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        assert mgr.stats["parallel_real_workers"] == 1
+        # A subsequent eligible (address-based) explore on the SAME manager
+        # restores the env-configured worker count.
+        mgr.explore(find=target, num_find=_SYNTH_LEAVES, n=4096)
+        assert mgr.stats["parallel_real_workers"] == 2
