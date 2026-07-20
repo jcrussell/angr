@@ -45,6 +45,14 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 
 - Never push to remote (no network to github)
 - Never skip pre-commit hooks (`--no-verify` is forbidden)
+- **Never end your turn waiting on a background task.** This loop runs the
+  agent headless (`claude -p`): the process exits the moment your turn ends,
+  so a background build/test "completion notification" will never arrive —
+  the iteration just dies with the tree dirty, and the next iteration re-does
+  the work (iters 39–41 on 2026-07-20 were lost exactly this way). Run builds
+  and tests in the foreground and wait for the output before committing. If a
+  suite is too slow to wait for, run the relevant subset in the foreground,
+  commit, and note the deferred full run in `session.md`.
 - Run tests after every change
 - If a build fails, fix it before moving on
 - If tests fail, investigate and fix before closing the task
