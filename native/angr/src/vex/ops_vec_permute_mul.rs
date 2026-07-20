@@ -1,15 +1,14 @@
-//! Vector sub-unit reversal and low-half packed multiply VEX op helpers.
+//! Vector sub-unit reversal VEX op helpers.
 //!
 //! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
 //! VEXOps god-file. Declared as a child module of `ops` (via `#[path]` in
 //! ops.rs), so these `pub(super)` methods stay callable from the unop/binop
 //! dispatch in `ops`, and the shared siblings they reference
-//! (`Self::concat_le_elements`, `Self::sign_extend_low_to_u64`, which stay in
-//! ops.rs) stay visible via super/the descendant rule.
+//! (`Self::concat_le_elements`, which stays in ops.rs) stay visible via
+//! super/the descendant rule.
 //!
 //! Covers the ARM REV*/RBIT sub-unit reversal family
-//! (Iop_Reverse{n}sIn{m}_x{k}) and the low-half packed multiply (PMULLD,
-//! Iop_Mul{N}x{M}).
+//! (Iop_Reverse{n}sIn{m}_x{k}).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
@@ -82,67 +81,6 @@ impl VEXOps {
                 elements.push(arg.extract(src_hi, src_lo, ctx));
             }
         }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
-    /// Vector multiply keeping low half (PMULLD).
-    /// Performs signed widening multiply on each element pair, keeping only the low bits.
-    pub(super) fn vec_mul_lo(
-        left: RustBV,
-        right: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
-
-        // For concrete values, compute directly
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let mut result: u128 = 0;
-            let mask = Self::low_bit_mask_u128(elem_width);
-
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-
-                let l_elem = (l >> lo) & mask;
-                let r_elem = (r >> lo) & mask;
-
-                // Sign-extend each lane to 64 bits, then multiply at u64 and
-                // mask to the lane width — high bits beyond `2 * elem_width`
-                // are discarded by the mask, so any 64-bit representation
-                // matching the lane's signed value in the low bits suffices.
-                let l_signed = Self::sign_extend_low_to_u64(l_elem, elem_width);
-                let r_signed = Self::sign_extend_low_to_u64(r_elem, elem_width);
-
-                // Multiply and keep low bits
-                let product = l_signed.wrapping_mul(r_signed);
-                let res_elem = (product as u128) & mask;
-
-                result |= res_elem << lo;
-            }
-
-            return Ok(RustBV::concrete(result, total_width));
-        }
-
-        // For symbolic values, fall back to element-wise
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-
-            let l_elem = left.extract(hi, lo, ctx);
-            let r_elem = right.extract(hi, lo, ctx);
-
-            // For symbolic, just do regular multiply (low bits are the same for signed/unsigned)
-            let res_elem = l_elem.mul_into(r_elem, ctx);
-            elements.push(res_elem);
-        }
-
         Ok(Self::concat_le_elements(elements, ctx))
     }
 }

@@ -480,7 +480,6 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VAdd { .. }
         | IROp::VSub { .. }
         | IROp::VMul { .. }
-        | IROp::VMulLo { .. }
         | IROp::VAnd(_)
         | IROp::VOr(_)
         | IROp::VXor(_)
@@ -818,7 +817,6 @@ impl VEXOps {
             | IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
-            | IROp::VMulLo { .. }
             | IROp::VQAdd { .. }
             | IROp::VQSub { .. }
             | IROp::VQShlSat { .. }
@@ -1034,7 +1032,6 @@ impl VEXOps {
             IROp::VMul { elem, count } => {
                 Self::vec_int_lane_op(&[left, right], elem, count, &IMul, ctx)
             }
-            IROp::VMulLo { elem, count } => Self::vec_mul_lo(left, right, elem, count, ctx),
 
             // NEON saturating integer add/sub.
             IROp::VQAdd {
@@ -1508,34 +1505,13 @@ impl VEXOps {
         ((value as i128) << shift) >> shift
     }
 
-    /// Sign-extend the low `width` bits of `value` to 64 bits, returning the
-    /// resulting bit pattern as `u64`. Used by concrete-fast-path vector ops
-    /// that perform signed multiplication via `wrapping_mul` at u64 — only the
-    /// low `2 * width` bits of the product are kept by the caller, so any
-    /// higher-bit representation works.
-    #[inline]
-    fn sign_extend_low_to_u64(value: u128, width: u32) -> u64 {
-        if width == 0 || width >= 64 {
-            return value as u64;
-        }
-        let mask = (1u64 << width) - 1;
-        let masked = (value as u64) & mask;
-        let sign_bit = 1u64 << (width - 1);
-        if masked & sign_bit != 0 {
-            masked | !mask
-        } else {
-            masked
-        }
-    }
-
     // Vector element-wise binary op (vec_binop, the add/sub/mul packed-integer
     // family) lives in the `vec_binop` child module
     // (#[path = "ops_vec_binop.rs"] at the bottom of this file).
 
-    // Vector sub-unit reversal (vec_reverse, Iop_Reverse*) and low-half
-    // packed multiply (vec_mul_lo, PMULLD) live in the `vec_permute_mul`
-    // child module (#[path = "ops_vec_permute_mul.rs"] at the bottom of this
-    // file).
+    // Vector sub-unit reversal (vec_reverse, Iop_Reverse*) lives in the
+    // `vec_permute_mul` child module (#[path = "ops_vec_permute_mul.rs"] at the
+    // bottom of this file).
 
     // Vector element-wise compare (vec_cmp) and low/high interleave
     // (vec_interleave_lo/hi) live in the `vec_compare` child module
@@ -1727,12 +1703,11 @@ mod vec_float_scalar;
 #[path = "ops_vec_compare.rs"]
 mod vec_compare;
 
-/// Vector sub-unit reversal (Iop_Reverse*) and low-half packed multiply
-/// (PMULLD) ops, split out of this file (angr-cudgw.18). Declared as a child
-/// module so its `pub(super)` methods remain callable from the unop/binop
-/// dispatch above, and the shared siblings they reference
-/// (`Self::concat_le_elements`, `Self::sign_extend_low_to_u64`, which stay in
-/// this file) stay visible via the descendant rule.
+/// Vector sub-unit reversal (Iop_Reverse*) ops, split out of this file
+/// (angr-cudgw.18). Declared as a child module so its `pub(super)` methods
+/// remain callable from the unop/binop dispatch above, and the shared siblings
+/// they reference (`Self::concat_le_elements`, which stays in this file) stay
+/// visible via the descendant rule.
 #[path = "ops_vec_permute_mul.rs"]
 mod vec_permute_mul;
 

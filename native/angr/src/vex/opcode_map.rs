@@ -789,8 +789,12 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "16x4" => (I16, 4), "16x8" => (I16, 8),
         "32x2" => (I32, 2), "32x4" => (I32, 4),
     });
-    // Vector multiply keeping low half (PMULLD - SSE4.1)
-    vec_arms!(op_str; "Iop_MullS" => VMulLo { "32x4" => (I32, 4) });
+    // Widening vector multiply — Iop_Mull{8,16,32}{S,U}x* and
+    // Iop_MullEven{8,16,32}{S,U}x* (PMULDQ/PMULUDQ, NEON VMULL) — are not yet
+    // mapped; they fall through to IROp::Unmapped (UnsupportedVexOp -> Python).
+    // See angr-ph300.58: no even/full-lane widening-multiply IROp exists yet,
+    // and the former "Iop_MullS32x4" -> VMulLo arm was a phantom opcode libVEX
+    // never emits (real names put S/U after the size, e.g. Iop_Mull32Sx2).
 
     // NEON lane extract / insert — Iop_{Get,Set}Elem{N}x{M}: (vec, idx[, val]).
     vec_arms!(op_str; "Iop_GetElem" => VGetElem {

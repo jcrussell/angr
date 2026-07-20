@@ -102,6 +102,38 @@ fn test_unmapped_opcode() {
 }
 
 #[test]
+fn test_widening_vector_multiply_is_unmapped() {
+    // angr-ph300.58: the widening vector-multiply families are not yet
+    // implemented — they route to IROp::Unmapped (UnsupportedVexOp -> Python)
+    // rather than silently producing a wrong result. This CHARACTERIZES the
+    // gap: when a future increment lands even/full-lane widening multiply,
+    // flip the failing entries here to positive routing assertions.
+    //
+    // Real libVEX names put S/U AFTER the size (e.g. Iop_Mull32Sx2); the old
+    // opcode_map had a phantom "Iop_MullS32x4" -> VMulLo arm that libVEX never
+    // emits. That arm (and the dead VMulLo IROp / vec_mul_lo impl) is gone.
+    for op in [
+        "Iop_MullS32x4", // phantom — never emitted by libVEX
+        "Iop_Mull8Sx8",  // NEON VMULL (widening, full lanes)
+        "Iop_Mull16Ux4",
+        "Iop_Mull32Sx2",
+        "Iop_MullEven8Ux16", // PMULUDQ/PMULDQ (widening, even lanes)
+        "Iop_MullEven16Sx8",
+        "Iop_MullEven32Ux4",
+    ] {
+        match parse_opcode(op) {
+            IROp::Unmapped(name) => assert_eq!(name, op, "{op}: interned name"),
+            other => panic!("{op}: expected Unmapped (unimplemented), got {other:?}"),
+        }
+    }
+    // Guard the regression: the scalar widening multiplies with the SAME
+    // "Iop_MullS"/"Iop_MullU" prefix must still map (they share the prefix the
+    // phantom arm keyed on, so a careless re-add could shadow them).
+    assert_eq!(parse_opcode("Iop_MullS32"), IROp::MullS(IRType::I32));
+    assert_eq!(parse_opcode("Iop_MullU16"), IROp::MullU(IRType::I16));
+}
+
+#[test]
 fn test_neon_unimplemented_scaffold_is_empty() {
     // The NeonUnimplemented scaffold (parse_neon_unimplemented) routes
     // claimed-but-unimplemented NEON opcodes through
