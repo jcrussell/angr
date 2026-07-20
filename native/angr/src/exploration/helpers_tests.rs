@@ -324,6 +324,72 @@ fn resume_after_error_no_pending_state_raises() {
     });
 }
 
+/// _deadend_pending_callback must not silently drop a deferred fork whose
+/// condition is absent from `stored_conditions` and which carries no
+/// `condition_ast` (angr-ph300.7). Before the P11/P15 fallback was ported to
+/// the deadend path, such a fork vanished — its unexplored branch was never
+/// routed, so a find target behind it was unreachable when the parking
+/// callback was an exit/abort SimProcedure. Here the fork has no condition
+/// source at all, so the P15 conservative-fork arm must materialize an
+/// unconstrained successor at `unexplored_target`.
+#[test]
+fn deadend_pending_callback_conservative_fork_not_dropped() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let sid = state.state_id();
+
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason: CallbackReason::Error {
+                message: "exit".to_string(),
+            },
+            jumpkind: None,
+            solver_ctx: None,
+            // condition_id 999 is absent from stored_conditions and there is no
+            // condition_ast -> neither the direct lookup nor P11 can supply a
+            // condition, so the P15 conservative arm is the only path that
+            // keeps this fork alive.
+            deferred_forks: vec![crate::callbacks::DeferredFork {
+                branch_addr: 0x40_0500,
+                path_taken: true,
+                unexplored_target: 0x40_2000,
+                condition_id: 999,
+                push_level: 0,
+                condition_ast: None,
+            }],
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    mgr._deadend_pending_callback(sid).expect("ok");
+
+    // The parking state itself deadended.
+    let deadended = mgr
+        .sm
+        .get(crate::stash::STASH_DEADENDED)
+        .expect("deadended stash");
+    assert_eq!(deadended.len(), 1);
+    assert_eq!(deadended[0].state_id(), sid);
+
+    // The conservative fork was routed to active at the unexplored target,
+    // not dropped.
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert_eq!(
+        active.len(),
+        1,
+        "conservative fork must be routed, not dropped"
+    );
+    assert_eq!(active[0].pc(), 0x40_2000);
+
+    assert!(mgr.pending_callbacks.is_empty());
+}
+
 // --- pending_callbacks keying (angr-1ilq.4) ------------------------------
 // The single-slot `pending_callback: Option<_>` became a `state_id`-keyed
 // `FxHashMap<StateId, PendingCallback>`. These assert the keying is genuine:

@@ -289,7 +289,31 @@ impl RustExplorationManager {
             let mut snapshots = pending.fork_snapshots;
             for fork in pending.deferred_forks {
                 let condition = pending.stored_conditions.get(&fork.condition_id);
-                if let Some(cond) = condition {
+
+                // P11: reconstruct the branch condition from the stored claripy
+                // AST when it is absent from stored_conditions, mirroring
+                // `_resume_after_simprocedure`. Without this, an AST-only
+                // deferred fork parked behind a no-return SimProcedure
+                // (exit/abort) was silently dropped and its unexplored branch
+                // never reached (angr-ph300.7).
+                let reconstructed_condition = if condition.is_none() {
+                    if let Some(ref py_ast) = fork.condition_ast {
+                        Python::attach(|py| {
+                            let ast = py_ast.bind(py);
+                            let solver_ref = fork_base.solver();
+                            let ctx: &SymContext = &solver_ref.borrow();
+                            crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let effective_condition = condition.or(reconstructed_condition.as_ref());
+
+                if let Some(cond) = effective_condition {
                     if fork.path_taken {
                         pending.state.solver().borrow().assume_true(cond);
                     } else {
@@ -301,6 +325,23 @@ impl RustExplorationManager {
                         cond,
                         &mut snapshots,
                     );
+                    self.sm.set_root(forked.state_id(), root_state_id);
+                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
+                        self.route_successor(forked, false);
+                    }
+                } else {
+                    // P15: no condition available from either source — build a
+                    // conservative unconstrained fork so the unexplored branch
+                    // is still routed rather than dropped.
+                    log::warn!(
+                        "P15: Missing condition for deferred fork at 0x{:x} \
+                         (condition_id={}) in deadend path. Creating conservative \
+                         fork to explore the path.",
+                        fork.branch_addr,
+                        fork.condition_id
+                    );
+                    let mut forked = fork_base.fork();
+                    forked.set_pc(fork.unexplored_target);
                     self.sm.set_root(forked.state_id(), root_state_id);
                     if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         self.route_successor(forked, false);
