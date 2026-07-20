@@ -2387,6 +2387,72 @@ class TestNativeReadCacheSync:
             f"get_pending_memory truncated/garbled the 32-byte load: {bytes(got)!r} != {pattern!r}"
         )
 
+    def test_add_constraints_to_pending_accepts_constraint_in_live_callback(self):
+        """`add_constraints_to_pending` must drive its constraint through the
+        pending state's solver without raising, inside a live callback
+        (angr-ph300.20).
+
+        Regression guard for the fast-path port: the prior body wrapped the
+        *entire* assume block in ``#[cfg(feature = "vex-engine-z3")]`` (a full
+        no-op on non-z3 builds) and had no raw-Z3-pointer path, so an AST the
+        claripy->RustBV bridge cannot convert silently vanished from the pending
+        solver. The fix ports the raw-pointer fast path from
+        ``_add_constraints_to_state`` verbatim and un-gates the slow path. This
+        test asserts the call path executes cleanly and the manager keeps
+        stepping afterward.
+
+        NOTE: full soundness (an unconvertible AST actually *binds* to the
+        pending solver, or a contradiction turning it UNSAT) is NOT observable
+        from this bare fixture — it wires no shared claripy<->Rust z3 context, so
+        every raw-pointer assert lands in a context disconnected from the manager
+        and ``satisfiable()`` / ``export_pending_constraints`` never reflect it
+        (a concrete ``1 != 1`` reads SAT here). That verification is blocked on
+        the shared-context fixture scoped by angr-ph300.3.1; the fix's soundness
+        rests on mirroring the production-tested ``_add_constraints_to_state``.
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+
+        HOOK = 0x500000
+        STACK_BASE = 0x7FFF0000
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
+
+        def proc(args):
+            return 0
+
+        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+
+        state = RustSimState("amd64")
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STACK_BASE, (0xDEADC0DE).to_bytes(8, "little"))
+        state.set_register("rsp", STACK_BASE)
+        state.pc = HOOK
+
+        sym_arg = claripy.BVS("sym_arg0", 64)
+        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+
+        mgr.add_state("active", state)
+        assert mgr.get_state_ids("active")[0] is not None
+
+        event = mgr.run(5)
+        assert event.callback_reason == "simprocedure", (
+            f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
+        )
+        cid = event.callback_state_id
+
+        # A convertible constraint exercises the fast path's Ok arm
+        # (add_constraint_raw_assumed + assumed_constraints_push). It must not
+        # raise and the pending state must remain queryable.
+        mgr.add_constraints_to_pending(cid, [sym_arg == 0x1234])
+        assert mgr.borrow_pending_solver(cid) is not None
+
 
 class TestNativeExtendedStringProcedures:
     """Integration tests for NativeStrrchr / NativeStrpbrk / NativeStrspn /
