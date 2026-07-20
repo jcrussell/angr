@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use backtrace::Backtrace;
 use libafl::{
@@ -10,6 +10,29 @@ use libafl_bolts::{AsSliceMut, tuples::RefIndexable};
 use pyo3::prelude::*;
 
 use crate::fuzzer::{EM, I, OT, S, Z};
+
+/// Enforce the executor's wall-clock timeout on a completed `run_target`
+/// outcome. `timeout` is the executor's configured budget (`None` or
+/// `Duration::ZERO` both mean "no timeout") and `elapsed` is how long the
+/// Python emulator run actually took.
+///
+/// Only a clean `Ok(ExitKind::Ok)` is reclassified to `Ok(ExitKind::Timeout)`
+/// when the budget is exceeded: a crash found during a slow run is still a
+/// crash worth reporting, and an executor `Error` must propagate unchanged.
+/// Split out as a pure fn so the timeout semantics can be unit-tested without
+/// standing up a full libafl state + Python emulator.
+fn apply_wall_clock_timeout(
+    result: Result<ExitKind, libafl::Error>,
+    timeout: Option<Duration>,
+    elapsed: Duration,
+) -> Result<ExitKind, libafl::Error> {
+    match (timeout, &result) {
+        (Some(budget), Ok(ExitKind::Ok)) if !budget.is_zero() && elapsed >= budget => {
+            Ok(ExitKind::Timeout)
+        }
+        _ => result,
+    }
+}
 
 pub struct PyExecutorInner<S> {
     base_state: Py<PyAny>,
@@ -52,6 +75,11 @@ impl Executor<EM, I, S, Z> for PyExecutorInner<S> {
         input: &I,
     ) -> Result<ExitKind, libafl::Error> {
         *state.executions_mut() += 1;
+
+        // Wall-clock budget starts before the (blocking) Python emulator run.
+        // We cannot preempt the run mid-flight, so enforcement is post-hoc: a
+        // clean exit that overran the budget is reclassified as a timeout.
+        let start = Instant::now();
 
         let (emulator, exit) =
             Python::attach(|py| {
@@ -163,6 +191,9 @@ impl Executor<EM, I, S, Z> for PyExecutorInner<S> {
             )),
         };
 
+        // Enforce the configured wall-clock timeout on the clean-exit outcome.
+        let result = apply_wall_clock_timeout(result, self.timeout, start.elapsed());
+
         // Step 4: Copy the edge map from edge_hitmap plugin to the observer to provide feedback
         let py_hitmap: Vec<u8> = Python::attach(|py| {
             emulator
@@ -215,3 +246,7 @@ impl<S> HasTimeout for PyExecutorInner<S> {
         self.timeout = Some(timeout);
     }
 }
+
+#[cfg(test)]
+#[path = "executor_tests.rs"]
+mod tests;

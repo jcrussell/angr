@@ -153,7 +153,10 @@ impl Fuzzer {
             base_state,
             apply_fn,
             tuple_list!(observer),
-            Some(Duration::from_millis(timeout.unwrap_or(0))),
+            // None -> no timeout; Some(n) -> an n-millisecond wall-clock budget
+            // enforced in PyExecutorInner::run_target. (Previously coerced to
+            // Some(0ms) and never read — angr-ph300.69.)
+            timeout.map(Duration::from_millis),
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
