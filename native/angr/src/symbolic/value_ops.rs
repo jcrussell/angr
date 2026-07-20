@@ -1416,3 +1416,10 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
         }
     }
 }
+
+// angr-ph300.1: quickcheck property tests for the concrete-folding ops above
+// and for `bv_codec`'s concrete<->Z3 round-trips. Child of `value_ops` so
+// `use super::*` reaches the private `sign_extend`/`sign_extend_to` helpers.
+#[cfg(test)]
+#[path = "value_ops_property_tests.rs"]
+mod value_ops_property_tests;
