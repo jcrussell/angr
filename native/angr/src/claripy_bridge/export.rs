@@ -14,8 +14,8 @@ use pyo3::types::{PyBytes, PyInt};
 use crate::symbolic::RustBV;
 
 use super::cache::{
-    get_claripy_ast, get_expression_ast_by_operands, store_claripy_ast_with_info,
-    store_expression_ast_by_operands,
+    evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
+    store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 
 /// Ensure a Py<PyAny> is a claripy AST, wrapping ints/bools if needed.
@@ -246,9 +246,25 @@ fn rustbv_to_claripy_memo(
     if let RustBV::Symbolic { id, width, .. } = bv
         && let Some(cached) = get_claripy_ast(*id)
     {
-        // Validate cached value is a claripy AST, not an int
-        let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
-        return Ok(cached_valid);
+        // C5 mirror (import.rs cache-hit guard): validate the cached AST's
+        // width matches the requested symbol width before returning it. An
+        // id-level aliasing bug (e.g. id:0 collisions, angr-owr37) could
+        // otherwise hand back a wrong-width AST silently. Bool ASTs have
+        // length=None and are represented as width-1, matching import.
+        let cached_width: u32 = cached
+            .bind(py)
+            .getattr("length")
+            .ok()
+            .and_then(|l| l.extract::<u32>().ok())
+            .unwrap_or(1);
+        if cached_width == *width {
+            // Validate cached value is a claripy AST, not an int
+            let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
+            return Ok(cached_valid);
+        }
+        // Width mismatch: evict the stale registration and fall through to
+        // re-mint + re-register under the correct width (mirrors C5 eviction).
+        evict_claripy_ast(*id);
     }
 
     // For Expression variants imported via claripy_to_rustbv, look up the

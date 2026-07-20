@@ -90,3 +90,38 @@ fn test_expression_by_operands_miss_returns_none() {
         assert!(miss.is_none(), "unstored operands ptr must miss");
     });
 }
+
+// angr-ph300.54: `evict_claripy_ast` drops a symbol-id registration from BOTH
+// the global registry and the thread-local CLARIPY_AST_CACHE, preserving the
+// `CLARIPY_AST_CACHE ⊆ global_registry` invariant. This backs the export-side
+// C5 width-mismatch guard, which evicts a stale (aliased) AST before re-minting
+// under the correct width.
+#[test]
+fn test_evict_claripy_ast_clears_both_stores() {
+    const SYMBOL_ID: u64 = 0x54AB_CDEF_0123;
+
+    Python::initialize();
+    Python::attach(|py| {
+        store_claripy_ast_with_info(0x54AA, SYMBOL_ID, "evict_sym", 32, py.None());
+        assert!(
+            global_registry().has_original(SYMBOL_ID),
+            "setup: registry must hold the symbol after store",
+        );
+        assert!(
+            get_claripy_ast(SYMBOL_ID).is_some(),
+            "setup: symbol must resolve before eviction",
+        );
+
+        evict_claripy_ast(SYMBOL_ID);
+
+        assert!(
+            !global_registry().has_original(SYMBOL_ID),
+            "evict must remove the global-registry entry",
+        );
+        assert!(
+            get_claripy_ast(SYMBOL_ID).is_none(),
+            "evict must remove the thread-local CLARIPY_AST_CACHE entry too \
+             (no C2 orphan left behind)",
+        );
+    });
+}

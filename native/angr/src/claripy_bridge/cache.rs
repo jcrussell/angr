@@ -227,6 +227,19 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
     local
 }
 
+/// Evict a stale claripy AST registration for a symbol id from both the
+/// global registry and the thread-local `CLARIPY_AST_CACHE`.
+///
+/// Mirrors the import-side C5 width-mismatch guard on the export path: if a
+/// cache hit hands back an AST whose width disagrees with the requested
+/// symbol width (an id-level aliasing bug — see angr-owr37), the caller drops
+/// the stale entry and re-mints. Clearing both stores together preserves the
+/// `CLARIPY_AST_CACHE ⊆ global_registry` invariant (C2/C3).
+pub fn evict_claripy_ast(symbol_id: u64) {
+    global_registry().remove(symbol_id);
+    tl_cache!(CLARIPY_AST_CACHE, remove(&symbol_id));
+}
+
 /// Look up a symbol by its Python hash.
 ///
 /// This is used during import to check if we've already imported this symbol.
