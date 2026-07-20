@@ -5,10 +5,21 @@ import os.path
 import struct
 import tempfile
 
+import pytest
+
 import angr
 from angr.procedures.glibc.__libc_start_main import (
     __libc_start_main as _libc_start_main,
 )
+
+# The `fuzzer` cargo feature is not built by a stock `pip install -e .`
+# (setup.py::_rust_features only ever adds `libvex-ffi`), so
+# `angr.rustylib.fuzzer` is absent from a default build. Skip the whole module
+# at collection time rather than dying with a ModuleNotFoundError -- rebuild
+# with the fuzzer feature (e.g. ANGR_FUZZER=1, once wired) to exercise these
+# tests. See bd angr-ph300.65.
+pytest.importorskip("angr.rustylib.fuzzer")
+
 from angr.rustylib.fuzzer import (
     DeterministicMutator,
     Fuzzer,
