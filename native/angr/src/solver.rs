@@ -1192,6 +1192,7 @@ impl RustSolverContext {
 
     /// Zero-extend to a wider width.
     pub fn op_zero_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        self.reject_extend_narrowing("op_zero_extend", a_id, to_width)?;
         let ctx = self.i().ctx();
         self.i()
             .symbol_table
@@ -1201,6 +1202,7 @@ impl RustSolverContext {
 
     /// Sign-extend to a wider width.
     pub fn op_sign_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        self.reject_extend_narrowing("op_sign_extend", a_id, to_width)?;
         let ctx = self.i().ctx();
         self.i()
             .symbol_table
@@ -1281,6 +1283,25 @@ impl RustSolverContext {
         self.inner
             .as_ref()
             .expect("RustSolverContext used after close()")
+    }
+
+    /// Reject a narrowing width passed to an extend op at the Python boundary.
+    ///
+    /// `op_zero_extend`/`op_sign_extend` with `to_width < source_width` would
+    /// otherwise return a handle wider than the caller asked for, which only
+    /// surfaces much later as a Z3 sort error (abort under `panic=abort`) or a
+    /// silent `eq_into`-False — far from the misuse site (angr-ph300.38). A
+    /// missing handle is left to the op's own `invalid_handle_id` path.
+    fn reject_extend_narrowing(&self, op: &str, a_id: u64, to_width: u32) -> PyResult<()> {
+        if let Some(width) = self.i().symbol_table.with_value(a_id, |bv| bv.width())
+            && to_width < width
+        {
+            return Err(PyValueError::new_err(format!(
+                "{op}: to_width {to_width} < source width {width}; \
+                 use op_truncate/op_extract to narrow"
+            )));
+        }
+        Ok(())
     }
 
     /// Lower a claripy AST to a `RustBV` usable for evaluation, mirroring the

@@ -843,8 +843,13 @@ impl RustBV {
     /// Zero-extend to a wider width, consuming the argument.
     #[inline]
     pub fn zero_extend_into(self, to_width: u32, _ctx: &SymContext) -> Self {
-        if to_width <= self.width() {
-            // No extension needed (or truncation — just return self)
+        // Narrowing is a caller bug: it silently returns a wider BV than
+        // requested, which later trips a distant Z3 sort error. Guard it the
+        // same way sign_extend_into does; the Python boundary (op_zero_extend)
+        // rejects it with a PyValueError before it can reach here (angr-ph300.38).
+        debug_assert!(to_width >= self.width());
+        // No extension needed
+        if to_width == self.width() {
             return self;
         }
         let extend_bits = to_width - self.width();

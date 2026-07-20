@@ -205,6 +205,34 @@ class TestSolverOperations:
         val = ctx1.eval(x)
         assert 0 <= val <= 100
 
+    def test_extend_narrowing_raises_valueerror(self):
+        """op_zero_extend/op_sign_extend reject to_width < source width.
+
+        Regression for angr-ph300.38: a narrowing width used to be silently
+        swallowed by zero_extend_into (``if to_width <= width { return self }``),
+        handing the caller a BV wider than requested. Combined with a real
+        narrower value that surfaces much later as a Z3 sort error (process
+        abort under panic=abort) or a silent eq-False. The boundary now raises
+        a clean ValueError instead.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        h64 = ctx.create_symbolic("x", 64)
+
+        with pytest.raises(ValueError):
+            ctx.op_zero_extend(h64.id, 32)
+        with pytest.raises(ValueError):
+            ctx.op_sign_extend(h64.id, 32)
+
+        # Equal width is a legitimate no-op (returns a same-width handle).
+        assert ctx.op_zero_extend(h64.id, 64).width == 64
+        assert ctx.op_sign_extend(h64.id, 64).width == 64
+
+        # Genuine widening still works.
+        assert ctx.op_zero_extend(h64.id, 96).width == 96
+        assert ctx.op_sign_extend(h64.id, 96).width == 96
+
     def test_eval_fp_comparison_bool_no_panic(self):
         """eval()/eval_upto() of a Bool-sorted AST that claripy_to_rustbv
         cannot lower (an fpEQ float comparison) must return a 0/1 value,
