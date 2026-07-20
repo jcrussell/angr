@@ -387,6 +387,47 @@ fn test_bare_z3_push_depth_none_branch_balanced() {
     assert_eq!(ctx.scope_savepoint_depth(), 0);
 }
 
+/// angr-ph300.48: `try_pop()` refuses an unbalanced under-pop on the None
+/// lineage branch (which would reach z3-rs's panic) and returns `false`,
+/// while a balanced push/pop pair pops cleanly and returns `true`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_try_pop_refuses_bare_underpop() {
+    let ctx = SymContext::new();
+    assert!(ctx.lineage_arc().is_none());
+    assert_eq!(ctx.bare_z3_push_depth(), 0);
+
+    // No matching push: refused, counter stays at 0, no panic.
+    assert!(!ctx.try_pop(), "under-pop with empty scope must be refused");
+    assert_eq!(ctx.bare_z3_push_depth(), 0);
+
+    // Balanced push then pop: accepted, counter drains.
+    ctx.push();
+    assert_eq!(ctx.bare_z3_push_depth(), 1);
+    assert!(ctx.try_pop(), "balanced pop must succeed");
+    assert_eq!(ctx.bare_z3_push_depth(), 0);
+
+    // And a second pop with the stack empty again is refused.
+    assert!(!ctx.try_pop(), "second under-pop must be refused");
+}
+
+/// angr-ph300.48: on the Some (shared-lineage) branch a mismatched pop is
+/// harmlessly ignored, so `try_pop()` is always safe (returns `true`) even
+/// with no matching push — it never touches the panic-prone bare Z3 scope.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_try_pop_always_safe_on_some_branch() {
+    use super::super::lineage::SharedLineageSolver;
+
+    let ctx = SymContext::new();
+    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+    ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+    // No matching push, but the Some branch silently ignores it.
+    assert!(ctx.try_pop(), "Some-branch pop is always safe");
+    assert_eq!(ctx.bare_z3_push_depth(), 0);
+}
+
 /// angr-3ms1 step 1a: on the Some (shared-lineage) branch,
 /// `scope_savepoint_push`/`pop` record on `scope_savepoints` and must
 /// NOT touch `bare_z3_push_depth` — the counter only tracks pushes

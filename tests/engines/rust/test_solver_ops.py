@@ -54,6 +54,39 @@ class TestSolverOperations:
         assert ctx.min(x, signed=False) == 10
         assert ctx.max(x, signed=False) == 20
 
+    def test_unbalanced_pop_raises_valueerror(self):
+        """pop() with no matching push() raises ValueError, not a panic.
+
+        Regression for angr-ph300.48: an unbalanced ``pop()`` used to reach
+        z3-rs's under-pop panic (surfaced as a PanicException/abort) instead
+        of a clean Python exception.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        with pytest.raises(ValueError):
+            ctx.pop()
+
+        # Balanced push/pop still works, and the extra pop is refused again.
+        ctx.push()
+        ctx.pop()
+        with pytest.raises(ValueError):
+            ctx.pop()
+
+    def test_pop_to_level_beyond_depth_raises(self):
+        """pop_to_level past the actual scope depth raises ValueError.
+
+        Regression for angr-ph300.48: ``pop_to_level(0, 5)`` after only two
+        pushes must refuse the surplus pops cleanly.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        ctx.push()
+        ctx.push()
+        with pytest.raises(ValueError):
+            ctx.pop_to_level(0, 5)
+
     def test_solver_unsatisfiable(self):
         """Contradictory constraints make solver UNSAT."""
         import claripy

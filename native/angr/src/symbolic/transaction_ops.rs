@@ -103,6 +103,41 @@ impl SymContext {
         *self.model_cache.borrow_mut() = None;
     }
 
+    /// Attempt a scope [`pop()`](Self::pop), refusing an unbalanced under-pop
+    /// (angr-ph300.48).
+    ///
+    /// In the **None** lineage branch a bare `pop()` forwards to
+    /// `z3::Solver::pop(1)`, which **panics** on under-pop — a Python caller
+    /// invoking `RustSolverContext.pop()` with no matching `push()` would
+    /// otherwise abort the interpreter. This gate consults
+    /// [`bare_z3_push_depth()`](Self::bare_z3_push_depth) (the counter
+    /// `scope_savepoint_push`/`pop` keep in lockstep with the per-context Z3
+    /// scope stack) and returns `false` instead of popping when it is `0`.
+    ///
+    /// In the **Some** (shared-lineage) branch a mismatched pop is already
+    /// silently ignored (`scope_savepoints` empties out harmlessly), so it is
+    /// always safe — `try_pop` returns `true` and delegates to `pop()`.
+    ///
+    /// Returns `true` when a pop was performed (or would have been safe),
+    /// `false` when it was refused to avoid a bare-scope underflow.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn try_pop(&self) -> bool {
+        let has_lineage = self.lineage.lock().is_some();
+        if !has_lineage && self.bare_z3_push_depth() == 0 {
+            return false;
+        }
+        self.pop();
+        true
+    }
+
+    /// Mock `try_pop` — without Z3 a `pop()` is a no-op that never panics, so
+    /// every pop is trivially "safe".
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn try_pop(&self) -> bool {
+        self.pop();
+        true
+    }
+
     // =========================================================================
     // Transactional Constraint Sync
     // =========================================================================

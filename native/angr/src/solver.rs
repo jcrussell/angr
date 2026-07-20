@@ -626,8 +626,16 @@ impl RustSolverContext {
     }
 
     /// Restore solver state.
-    pub fn pop(&self) {
-        self.i().ctx().pop();
+    ///
+    /// Refuses an unbalanced pop (no matching `push()`) with a `ValueError`
+    /// instead of letting it reach z3-rs's under-pop panic (angr-ph300.48).
+    pub fn pop(&self) -> PyResult<()> {
+        if !self.i().ctx().try_pop() {
+            return Err(PyValueError::new_err(
+                "pop() with no matching push() — solver scope stack is empty",
+            ));
+        }
+        Ok(())
     }
 
     /// Fork the solver context.
@@ -684,11 +692,18 @@ impl RustSolverContext {
     ///
     /// This is used for deferred fork processing to restore solver state
     /// to before specific branch constraints were added.
-    pub fn pop_to_level(&self, target_level: u32, current_level: u32) {
+    pub fn pop_to_level(&self, target_level: u32, current_level: u32) -> PyResult<()> {
         let pops = current_level.saturating_sub(target_level);
+        let ctx = self.i().ctx();
         for _ in 0..pops {
-            self.i().ctx().pop();
+            if !ctx.try_pop() {
+                return Err(PyValueError::new_err(format!(
+                    "pop_to_level({target_level}, {current_level}) exceeds the \
+                     solver scope depth — no matching push()",
+                )));
+            }
         }
+        Ok(())
     }
 
     /// Add a constraint that a 1-bit value is true.
