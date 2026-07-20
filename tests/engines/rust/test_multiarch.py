@@ -229,6 +229,62 @@ class TestMultiArchSupport:
         raw2 = state2.get_registers_raw()
         assert int.from_bytes(raw2[576:584], "little") == 0, "fcsr write leaked into guest_ULR (offset 576)"
 
+    @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
+    def test_mips_sync_reg_map_matches_archinfo(self, arch_name):
+        """MIPS GPR sync-back tables ground-truth-checked against archinfo.
+
+        Covers angr-hrcds: `_get_reg_map_and_return_regs` /
+        `_get_arch_register_names` (angr/exploration/rust_state_sync.py) had
+        no MIPS arms, so a MIPS Python-SimProcedure bounce dropped every
+        register the proc wrote — including the $v0/$v1 return value — on
+        sync-back, silently returning a stale result on a "Supported" arch.
+        A wrong offset or missing name here re-breaks that soundness path.
+        """
+        import archinfo
+
+        from angr.exploration.rust_state_sync import RustStateSyncMixin
+
+        arch = getattr(archinfo, "Arch" + arch_name)(archinfo.Endness.LE)
+
+        # No "Unknown architecture" warning, and non-None tables.
+        with self._assert_no_unknown_arch_warning():
+            reg_map, return_regs = RustStateSyncMixin._get_reg_map_and_return_regs(arch)
+        assert reg_map is not None and return_regs is not None
+
+        # Return value lives in $v0/$v1 — the whole point of the fix.
+        assert return_regs == {"v0", "v1"}
+
+        # Every mapped (offset, size) must match the VEX guest layout archinfo
+        # reports, else a SimProc write lands in the wrong register on sync-back.
+        for name, (off, size) in reg_map.items():
+            assert arch.registers[name] == (off, size), (
+                f"{arch_name} {name}: sync table has ({off}, {size}), archinfo has {arch.registers[name]}"
+            )
+
+        # The name table used by export_callback_bundle must cover the same set.
+        names = RustStateSyncMixin._get_arch_register_names(RustStateSyncMixin, arch)
+        assert set(names) == set(reg_map)
+        assert "v0" in names and "v1" in names
+
+    @staticmethod
+    def _assert_no_unknown_arch_warning():
+        import contextlib
+
+        from angr.exploration import rust_state_sync
+
+        @contextlib.contextmanager
+        def _cm():
+            seen = []
+            orig = rust_state_sync.l.warning
+            rust_state_sync.l.warning = lambda msg, *a, **k: seen.append(msg)
+            try:
+                yield
+            finally:
+                rust_state_sync.l.warning = orig
+            assert not any("Unknown architecture" in str(m) for m in seen), seen
+
+        return _cm()
+
     def test_arm32_full_register_family_dispatch(self):
         """ARM32 VFP (d/q), FPSCR, and high GPRs round-trip via the standard
         register dispatch.

@@ -26,6 +26,45 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)
 
+# MIPS integer register file, in VEX guest-state order. Offsets are contiguous
+# (MIPS32: base 8, stride 4; MIPS64: base 16, stride 8), matching archinfo's
+# ArchMIPS32/ArchMIPS64 layout. $v0/$v1 hold the SimProcedure return value.
+_MIPS_GPR_NAMES = (
+    "zero",
+    "at",
+    "v0",
+    "v1",
+    "a0",
+    "a1",
+    "a2",
+    "a3",
+    "t0",
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t5",
+    "t6",
+    "t7",
+    "s0",
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5",
+    "s6",
+    "s7",
+    "t8",
+    "t9",
+    "k0",
+    "k1",
+    "gp",
+    "sp",
+    "s8",
+    "ra",
+    "pc",
+)
+
 
 class RustStateSyncMixin:
     """State synchronization between Python and Rust
@@ -1115,6 +1154,8 @@ class RustStateSyncMixin:
             return ["x%d" % i for i in range(31)] + ["sp", "pc"]
         if arch.name.startswith("ARM"):
             return ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc"]
+        if arch.name in ("MIPS32", "MIPS64"):
+            return list(_MIPS_GPR_NAMES)
         return []
 
     @staticmethod
@@ -1183,6 +1224,11 @@ class RustStateSyncMixin:
             reg_map["sp"] = (264, 8)
             reg_map["pc"] = (272, 8)
             return_regs = {"x0"}
+        elif arch.name in ("MIPS32", "MIPS64"):
+            # Contiguous GPR file: MIPS32 base 8/stride 4, MIPS64 base 16/stride 8.
+            base, stride = (16, 8) if arch.name == "MIPS64" else (8, 4)
+            reg_map = {name: (base + i * stride, stride) for i, name in enumerate(_MIPS_GPR_NAMES)}
+            return_regs = {"v0", "v1"}
         else:
             l.warning(f"Unknown architecture {arch.name} for register extraction")
             return None, None
