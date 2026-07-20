@@ -152,6 +152,47 @@ macro_rules! define_rotate_pair {
     };
 }
 
+/// Generate a borrow + consuming pair for a regular binary op
+/// (add/sub/mul/udiv/sdiv/urem/srem/and/or/xor).
+///
+/// Every such op is a hand-copied borrow-wrapper plus a
+/// `match (self.as_u128(), other.as_u128()) { … }` skeleton whose only
+/// per-op content is the arms (concrete fold, identity simplifications,
+/// symbolic fallthrough). This macro owns everything *around* those arms —
+/// the two `#[inline]` fns, the `self.clone()`/`other.clone()` delegation,
+/// the width `debug_assert_eq!`, and the `as_u128` scrutinee — so each op
+/// supplies only its arms. Shifts/rotates keep their own macros
+/// (`define_rotate_pair!`) because their concrete arms are irregular.
+///
+/// The invocation names the two operands and the ctx binding
+/// (`|lhs, rhs, ctx|`) so the arms can refer to them by value; `lhs` is the
+/// consumed receiver (`self`), rebound to the chosen name after the width
+/// assertion. Underscore-prefix the ctx name (`_ctx`) for ops that don't
+/// use it.
+macro_rules! define_binop_pair {
+    (
+        $(#[$doc_borrow:meta])* $name:ident,
+        $(#[$doc_consume:meta])* $into_name:ident,
+        |$lhs:ident, $rhs:ident, $ctx:ident| { $($arms:tt)* }
+    ) => {
+        $(#[$doc_borrow])*
+        #[inline]
+        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
+            self.clone().$into_name(other.clone(), ctx)
+        }
+
+        $(#[$doc_consume])*
+        #[inline]
+        pub fn $into_name(self, $rhs: Self, $ctx: &SymContext) -> Self {
+            debug_assert_eq!(self.width(), $rhs.width());
+            let $lhs = self;
+            match ($lhs.as_u128(), $rhs.as_u128()) {
+                $($arms)*
+            }
+        }
+    };
+}
+
 impl RustBV {
     // =========================================================================
     // Arithmetic Operations
@@ -225,193 +266,158 @@ impl RustBV {
         }
     }
 
-    /// Add two bitvectors.
-    #[inline]
-    pub fn add(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().add_into(other.clone(), ctx)
-    }
-
-    /// Add two bitvectors, consuming both arguments.
-    ///
-    /// Avoids `self.clone()`/`other.clone()` for the Expression branch and
-    /// identity simplifications. Hot-path callers (e.g. `VEXOps::binop`) that
-    /// already own the operands should prefer this.
-    #[inline]
-    pub fn add_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
+    define_binop_pair! {
+        /// Add two bitvectors.
+        add,
+        /// Add two bitvectors, consuming both arguments.
+        ///
+        /// Avoids `self.clone()`/`other.clone()` for the Expression branch and
+        /// identity simplifications. Hot-path callers (e.g. `VEXOps::binop`)
+        /// that already own the operands should prefer this.
+        add_into,
+        |lhs, rhs, _ctx| {
+            (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), lhs.width()),
             // x + 0 → x
-            (None, Some(0)) => self,
+            (None, Some(0)) => lhs,
             // 0 + x → x
-            (Some(0), None) => other,
+            (Some(0), None) => rhs,
             _ => {
-                let width = self.width();
-                let (lhs, rhs) = self.canonicalize_commutative(other);
-                Self::expr_node(width, BVOp::Add, [lhs, rhs])
+                let width = lhs.width();
+                let (l, r) = lhs.canonicalize_commutative(rhs);
+                Self::expr_node(width, BVOp::Add, [l, r])
             }
         }
     }
 
-    /// Subtract two bitvectors.
-    #[inline]
-    pub fn sub(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().sub_into(other.clone(), ctx)
-    }
-
-    /// Subtract two bitvectors, consuming both arguments.
-    #[inline]
-    pub fn sub_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
+    define_binop_pair! {
+        /// Subtract two bitvectors.
+        sub,
+        /// Subtract two bitvectors, consuming both arguments.
+        sub_into,
+        |lhs, rhs, _ctx| {
+            (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), lhs.width()),
             // x - 0 → x
-            (None, Some(0)) => self,
+            (None, Some(0)) => lhs,
             _ => {
-                let width = self.width();
-                Self::expr_node(width, BVOp::Sub, [self, other])
+                let width = lhs.width();
+                Self::expr_node(width, BVOp::Sub, [lhs, rhs])
             }
         }
     }
 
-    /// Multiply two bitvectors.
-    #[inline]
-    pub fn mul(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().mul_into(other.clone(), ctx)
-    }
-
-    /// Multiply two bitvectors, consuming both arguments.
-    #[inline]
-    pub fn mul_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        let width = self.width();
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), width),
+    define_binop_pair! {
+        /// Multiply two bitvectors.
+        mul,
+        /// Multiply two bitvectors, consuming both arguments.
+        mul_into,
+        |lhs, rhs, ctx| {
+            (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), lhs.width()),
             // x * 0 → 0
-            (_, Some(0)) | (Some(0), _) => Self::zero(width),
+            (_, Some(0)) | (Some(0), _) => Self::zero(lhs.width()),
             // x * 1 → x
-            (None, Some(1)) => self,
+            (None, Some(1)) => lhs,
             // 1 * x → x
-            (Some(1), None) => other,
+            (Some(1), None) => rhs,
             // sym * 2^k → sym << k (avoids Z3's O(N^2) Dadda bit-blast)
             (None, Some(b)) if b.is_power_of_two() => {
                 let k = b.trailing_zeros();
-                let amt = Self::concrete(k as u128, width);
-                self.shl_into(amt, _ctx)
+                let amt = Self::concrete(k as u128, lhs.width());
+                lhs.shl_into(amt, ctx)
             }
             // 2^k * sym → sym << k
             (Some(a), None) if a.is_power_of_two() => {
                 let k = a.trailing_zeros();
-                let amt = Self::concrete(k as u128, width);
-                other.shl_into(amt, _ctx)
+                let amt = Self::concrete(k as u128, lhs.width());
+                rhs.shl_into(amt, ctx)
             }
             _ => {
-                let (lhs, rhs) = self.canonicalize_commutative(other);
-                Self::expr_node(width, BVOp::Mul, [lhs, rhs])
+                let width = lhs.width();
+                let (l, r) = lhs.canonicalize_commutative(rhs);
+                Self::expr_node(width, BVOp::Mul, [l, r])
             }
         }
     }
 
-    /// Unsigned division.
-    #[inline]
-    pub fn udiv(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().udiv_into(other.clone(), ctx)
-    }
-
-    /// Unsigned division, consuming both arguments.
-    #[inline]
-    pub fn udiv_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
+    define_binop_pair! {
+        /// Unsigned division.
+        udiv,
+        /// Unsigned division, consuming both arguments.
+        udiv_into,
+        |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    Self::ones(self.width())
+                    Self::ones(lhs.width())
                 } else {
-                    Self::concrete(a / b, self.width())
+                    Self::concrete(a / b, lhs.width())
                 }
             }
             _ => {
-                let width = self.width();
-                Self::expr_node(width, BVOp::UDiv, [self, other])
+                let width = lhs.width();
+                Self::expr_node(width, BVOp::UDiv, [lhs, rhs])
             }
         }
     }
 
-    /// Signed division.
-    #[inline]
-    pub fn sdiv(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().sdiv_into(other.clone(), ctx)
-    }
-
-    /// Signed division, consuming both arguments.
-    #[inline]
-    pub fn sdiv_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
+    define_binop_pair! {
+        /// Signed division.
+        sdiv,
+        /// Signed division, consuming both arguments.
+        sdiv_into,
+        |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    Self::ones(self.width())
+                    Self::ones(lhs.width())
                 } else {
-                    let a_signed = sign_extend(a, self.width());
-                    let b_signed = sign_extend(b, self.width());
-                    Self::concrete((a_signed / b_signed) as u128, self.width())
+                    let a_signed = sign_extend(a, lhs.width());
+                    let b_signed = sign_extend(b, lhs.width());
+                    Self::concrete((a_signed / b_signed) as u128, lhs.width())
                 }
             }
             _ => {
-                let width = self.width();
-                Self::expr_node(width, BVOp::SDiv, [self, other])
+                let width = lhs.width();
+                Self::expr_node(width, BVOp::SDiv, [lhs, rhs])
             }
         }
     }
 
-    /// Unsigned remainder.
-    #[inline]
-    pub fn urem(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().urem_into(other.clone(), ctx)
-    }
-
-    /// Unsigned remainder, consuming both arguments.
-    #[inline]
-    pub fn urem_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
+    define_binop_pair! {
+        /// Unsigned remainder.
+        urem,
+        /// Unsigned remainder, consuming both arguments.
+        urem_into,
+        |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    self
+                    lhs
                 } else {
-                    Self::concrete(a % b, self.width())
+                    Self::concrete(a % b, lhs.width())
                 }
             }
             _ => {
-                let width = self.width();
-                Self::expr_node(width, BVOp::URem, [self, other])
+                let width = lhs.width();
+                Self::expr_node(width, BVOp::URem, [lhs, rhs])
             }
         }
     }
 
-    /// Signed remainder.
-    #[inline]
-    pub fn srem(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().srem_into(other.clone(), ctx)
-    }
-
-    /// Signed remainder, consuming both arguments.
-    #[inline]
-    pub fn srem_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
+    define_binop_pair! {
+        /// Signed remainder.
+        srem,
+        /// Signed remainder, consuming both arguments.
+        srem_into,
+        |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    self
+                    lhs
                 } else {
-                    let a_signed = sign_extend(a, self.width());
-                    let b_signed = sign_extend(b, self.width());
-                    Self::concrete((a_signed % b_signed) as u128, self.width())
+                    let a_signed = sign_extend(a, lhs.width());
+                    let b_signed = sign_extend(b, lhs.width());
+                    Self::concrete((a_signed % b_signed) as u128, lhs.width())
                 }
             }
             _ => {
-                let width = self.width();
-                Self::expr_node(width, BVOp::SRem, [self, other])
+                let width = lhs.width();
+                Self::expr_node(width, BVOp::SRem, [lhs, rhs])
             }
         }
     }
@@ -447,78 +453,61 @@ impl RustBV {
     // Bitwise Operations
     // =========================================================================
 
-    /// Bitwise AND.
-    #[inline]
-    pub fn and(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().and_into(other.clone(), ctx)
-    }
-
-    /// Bitwise AND, consuming both arguments.
-    #[inline]
-    pub fn and_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        let all_ones = Self::all_ones_mask(self.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a & b, self.width()),
+    define_binop_pair! {
+        /// Bitwise AND.
+        and,
+        /// Bitwise AND, consuming both arguments.
+        and_into,
+        |lhs, rhs, _ctx| {
+            (Some(a), Some(b)) => Self::concrete(a & b, lhs.width()),
             // x & 0 → 0
-            (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
+            (_, Some(0)) | (Some(0), _) => Self::zero(lhs.width()),
             // x & all_ones → x
-            (None, Some(v)) if v == all_ones => self,
-            (Some(v), None) if v == all_ones => other,
+            (None, Some(v)) if v == Self::all_ones_mask(lhs.width()) => lhs,
+            (Some(v), None) if v == Self::all_ones_mask(rhs.width()) => rhs,
             _ => {
-                let width = self.width();
-                let (lhs, rhs) = self.canonicalize_commutative(other);
-                Self::expr_node(width, BVOp::And, [lhs, rhs])
+                let width = lhs.width();
+                let (l, r) = lhs.canonicalize_commutative(rhs);
+                Self::expr_node(width, BVOp::And, [l, r])
             }
         }
     }
 
-    /// Bitwise OR.
-    #[inline]
-    pub fn or(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().or_into(other.clone(), ctx)
-    }
-
-    /// Bitwise OR, consuming both arguments.
-    #[inline]
-    pub fn or_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        let all_ones = Self::all_ones_mask(self.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
+    define_binop_pair! {
+        /// Bitwise OR.
+        or,
+        /// Bitwise OR, consuming both arguments.
+        or_into,
+        |lhs, rhs, _ctx| {
+            (Some(a), Some(b)) => Self::concrete(a | b, lhs.width()),
             // x | 0 → x
-            (None, Some(0)) => self,
-            (Some(0), None) => other,
+            (None, Some(0)) => lhs,
+            (Some(0), None) => rhs,
             // x | all_ones → all_ones
-            (_, Some(v)) if v == all_ones => Self::ones(self.width()),
-            (Some(v), _) if v == all_ones => Self::ones(self.width()),
+            (_, Some(v)) if v == Self::all_ones_mask(lhs.width()) => Self::ones(lhs.width()),
+            (Some(v), _) if v == Self::all_ones_mask(lhs.width()) => Self::ones(lhs.width()),
             _ => {
-                let width = self.width();
-                let (lhs, rhs) = self.canonicalize_commutative(other);
-                Self::expr_node(width, BVOp::Or, [lhs, rhs])
+                let width = lhs.width();
+                let (l, r) = lhs.canonicalize_commutative(rhs);
+                Self::expr_node(width, BVOp::Or, [l, r])
             }
         }
     }
 
-    /// Bitwise XOR.
-    #[inline]
-    pub fn xor(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().xor_into(other.clone(), ctx)
-    }
-
-    /// Bitwise XOR, consuming both arguments.
-    #[inline]
-    pub fn xor_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
+    define_binop_pair! {
+        /// Bitwise XOR.
+        xor,
+        /// Bitwise XOR, consuming both arguments.
+        xor_into,
+        |lhs, rhs, _ctx| {
+            (Some(a), Some(b)) => Self::concrete(a ^ b, lhs.width()),
             // x ^ 0 → x
-            (None, Some(0)) => self,
-            (Some(0), None) => other,
+            (None, Some(0)) => lhs,
+            (Some(0), None) => rhs,
             _ => {
-                let width = self.width();
-                let (lhs, rhs) = self.canonicalize_commutative(other);
-                Self::expr_node(width, BVOp::Xor, [lhs, rhs])
+                let width = lhs.width();
+                let (l, r) = lhs.canonicalize_commutative(rhs);
+                Self::expr_node(width, BVOp::Xor, [l, r])
             }
         }
     }
