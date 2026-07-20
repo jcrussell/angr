@@ -540,20 +540,32 @@ impl PyRustSimState {
     }
 
     /// Load from memory.
+    ///
+    /// angr-ph300.53: split into 16-byte sub-loads mirroring `memory_store`.
+    /// `RustBV::Concrete` is u128-backed so `as_u128()` caps at 16 bytes; a
+    /// single load of a wider (but fully concrete) region would otherwise error
+    /// as "symbolic" even though every byte is concrete. Loading in 16-byte
+    /// chunks keeps each `as_u128()` within range and reassembles the bytes.
     pub fn memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        let bv = self
-            .inner
-            .memory_load(addr, size)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        let value = bv.as_u128().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "memory_load at 0x{addr:x} returned a symbolic value; cannot convert to concrete bytes"
-            ))
-        })?;
-        let bytes: Vec<u8> = (0..size as usize)
-            .map(|i| (value >> (i * 8)) as u8)
-            .collect();
+        let mut bytes = Vec::with_capacity(size as usize);
+        let mut offset = 0u32;
+        while offset < size {
+            let chunk_size = (size - offset).min(16);
+            let bv = self
+                .inner
+                .memory_load(addr + offset as u64, chunk_size)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let value = bv.as_u128().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "memory_load at 0x{:x} returned a symbolic value; cannot convert to concrete bytes",
+                    addr + offset as u64
+                ))
+            })?;
+            for i in 0..chunk_size as usize {
+                bytes.push((value >> (i * 8)) as u8);
+            }
+            offset += chunk_size;
+        }
         Ok(bytes)
     }
 

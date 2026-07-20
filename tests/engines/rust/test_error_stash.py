@@ -168,6 +168,22 @@ class TestErrorRecovery:
         data = state.memory_load(0x1000, 4)
         assert len(data) == 4
 
+    def test_wide_concrete_store_load_roundtrip(self):
+        """angr-ph300.53: a fully-concrete store wider than 16 bytes must read
+        back byte-for-byte. `memory_load` previously funneled the whole load
+        through `RustBV::as_u128()` (u128-backed), so any size > 16 errored as
+        'returned a symbolic value' even though every byte was concrete —
+        asymmetric with `memory_store`, which already chunk-splits at 16 bytes.
+        """
+        state = RustSimState("amd64")
+        state.map_memory(0x1000, 0x1000, 7)  # RWX
+        # 32 bytes: two full 16-byte chunks. 0x41..0x60 so no byte is zero.
+        pattern = bytes(range(0x41, 0x61))
+        state.memory_store(0x1000, pattern)
+        assert state.memory_load(0x1000, 32) == pattern
+        # Non-multiple-of-16 width straddling a chunk boundary (16 + 4).
+        assert state.memory_load(0x1000, 20) == pattern[:20]
+
     def test_symbolic_load_to_unmapped_address_does_not_stay_active(self):
         """Symbolic load address pinned to a single unmapped value must NOT
         keep the state in `active`. It should land in `errored` (or at minimum
