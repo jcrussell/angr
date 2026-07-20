@@ -289,14 +289,42 @@ impl RustSimState {
             merged_mem.merge(&other.memory, cond, &merged_solver);
         }
 
-        // Merge stdout buffers: pick the longest (heuristic — full merge would need ITE on bytes)
-        let mut best_fs = self.fs.clone();
+        // Merge the FileSystem by the longest-stdout heuristic (angr-ph300.75).
+        // This is a *documented stdout-only* merge contract: the merged state
+        // keeps exactly one branch's fd table, file offsets, writes, and
+        // symbolic-content registry — a true per-file merge would need
+        // byte-level ITE on every file's content keyed by the merge condition
+        // (out of scope, and fd numbers collide across branches so a naive
+        // union is not well-defined). Ties keep the earlier branch (self >
+        // earlier-other > later-other), matching the prior strictly-greater
+        // loop. When a *dropped* branch carried open fds above stderr, its
+        // offsets / writes are silently discarded, so warn loudly: a post-merge
+        // read of a file written only on the losing branch will not see it.
+        let mut best_idx = 0usize;
         let mut best_len = self.stdout_buffer().len();
-        for other in others {
+        for (i, other) in others.iter().enumerate() {
             let other_len = other.stdout_buffer().len();
             if other_len > best_len {
-                best_fs = other.fs.clone();
+                best_idx = i + 1;
                 best_len = other_len;
+            }
+        }
+        let best_fs = if best_idx == 0 {
+            self.fs.clone()
+        } else {
+            others[best_idx - 1].fs.clone()
+        };
+        for (i, fs) in std::iter::once(&self.fs)
+            .chain(others.iter().map(|o| &o.fs))
+            .enumerate()
+        {
+            if i != best_idx && fs.has_fds_above_stderr() {
+                log::warn!(
+                    "merge: dropping branch {i}'s non-stdout filesystem state \
+                     (open fds above stderr); merged state keeps only branch \
+                     {best_idx}'s fd table by the longest-stdout heuristic — \
+                     file writes/offsets on the dropped branch are lost"
+                );
             }
         }
 
