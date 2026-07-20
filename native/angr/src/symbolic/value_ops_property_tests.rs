@@ -301,3 +301,99 @@ fn prop_extract_bv_value_wide_roundtrip(v: u128, ws: u8) -> bool {
         None => false,
     }
 }
+
+// ---------------------------------------------------------------------------
+// try_zext_const_cmp_fold equivalence (angr-ph300.37)
+//
+// The fold rewrites `Cmp(ZeroExt(k, x), BVV(c))` (and the commuted form) into a
+// narrowed comparison or a 1-bit constant, hitting 14 branches across 6 fold
+// tags. A wrong trivial-decide still returns a well-formed 1-bit constant, so a
+// direction/arm regression is silent at the type level. This property proves,
+// per random case, that the folded RustBV result is *semantically identical* to
+// the unfolded Z3 encoding: the solver finds no assignment to `x` that makes the
+// two disagree. Covers all 6 user-facing unsigned cmps in both operand orders
+// (so Ugt/Uge's inverted UltSwapped/UleSwapped mapping is exercised), which
+// drives every branch of `try_zext_const_cmp_fold` including the swapped tags.
+// ---------------------------------------------------------------------------
+
+/// The six user-facing unsigned comparisons routed through the fold.
+#[derive(Copy, Clone)]
+enum UCmp {
+    Eq,
+    Ne,
+    Ult,
+    Ule,
+    Ugt,
+    Uge,
+}
+
+const UCMPS: [UCmp; 6] = [
+    UCmp::Eq,
+    UCmp::Ne,
+    UCmp::Ult,
+    UCmp::Ule,
+    UCmp::Ugt,
+    UCmp::Uge,
+];
+
+/// Apply the RustBV comparison (the folding path) with `zext` on the left when
+/// `zext_left`, else on the right.
+fn rust_cmp(op: UCmp, zext: &RustBV, c: &RustBV, zext_left: bool, ctx: &SymContext) -> RustBV {
+    let (a, b) = if zext_left { (zext, c) } else { (c, zext) };
+    match op {
+        UCmp::Eq => a.eq(b, ctx),
+        UCmp::Ne => a.ne(b, ctx),
+        UCmp::Ult => a.ult(b, ctx),
+        UCmp::Ule => a.ule(b, ctx),
+        UCmp::Ugt => a.ugt(b, ctx),
+        UCmp::Uge => a.uge(b, ctx),
+    }
+}
+
+/// The unfolded Z3 reference for the same comparison.
+fn z3_cmp(op: UCmp, a: &z3::ast::BV, b: &z3::ast::BV) -> z3::ast::Bool {
+    match op {
+        UCmp::Eq => a.eq(b),
+        UCmp::Ne => a.eq(b).not(),
+        UCmp::Ult => a.bvult(b),
+        UCmp::Ule => a.bvule(b),
+        UCmp::Ugt => a.bvugt(b),
+        UCmp::Uge => a.bvuge(b),
+    }
+}
+
+#[quickcheck]
+fn prop_zext_const_cmp_fold_matches_z3(
+    iw_seed: u8,
+    k_seed: u8,
+    c: u128,
+    op_seed: u8,
+    zext_left: bool,
+) -> bool {
+    let inner_width = (iw_seed % 32) as u32 + 1; // 1..=32
+    let extend_bits = (k_seed % 32) as u32 + 1; // 1..=32
+    let total = inner_width + extend_bits; // 2..=64 — as_u128-readable
+    let op = UCMPS[(op_seed % 6) as usize];
+
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "x", inner_width);
+    let zx = x.zero_extend(total, &ctx);
+    let cbv = RustBV::concrete(c & mask(total), total);
+
+    // Folded RustBV result (goes through try_zext_const_cmp_fold).
+    let folded_bv = rust_cmp(op, &zx, &cbv, zext_left, &ctx).to_z3_ast();
+
+    // Unfolded Z3 reference over the same symbolic `x`.
+    let zx_z3 = zx.to_z3_ast();
+    let c_z3 = cbv.to_z3_ast();
+    let (za, zb) = if zext_left {
+        (&zx_z3, &c_z3)
+    } else {
+        (&c_z3, &zx_z3)
+    };
+    let ref_bv = z3_cmp(op, za, zb).ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1));
+
+    // Equivalent iff no assignment to `x` makes the two 1-bit results differ.
+    ctx.add_constraint(folded_bv.eq(&ref_bv).not());
+    !ctx.is_sat()
+}
