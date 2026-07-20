@@ -1060,3 +1060,69 @@ fn test_check_branch_feasibility_keeps_branch_on_timeout() {
         "an undecided (timeout) cond must not prune the false branch"
     );
 }
+
+// angr-ph300.29: the internal Z3 arm for Clz/Ctz/Popcount must build a sound
+// encoding tied to the operand, not a shared unconstrained new_const. With the
+// old `BV::new_const("clz", w)`, every symbolic clz of a width lowered to ONE
+// hash-consed variable, so distinct operands' clz aliased.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_clz_distinct_operands_not_aliased() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "clz_alias_x", 32);
+    let y = RustBV::symbolic(&ctx, "clz_alias_y", 32);
+
+    let zero = RustBV::concrete(0, 32);
+    let five = RustBV::concrete(5, 32);
+    // clz(x) == 0  (top bit of x set)  &&  clz(y) == 5
+    ctx.assume_true(&x.clz(&ctx).eq(&zero, &ctx));
+    ctx.assume_true(&y.clz(&ctx).eq(&five, &ctx));
+
+    // With aliased consts this is UNSAT (one var can't be both 0 and 5); with
+    // the sound operand-tied encoding it is clearly satisfiable.
+    assert!(
+        ctx.is_sat(),
+        "clz(x)==0 && clz(y)==5 must be SAT — distinct operands must not alias"
+    );
+}
+
+// angr-ph300.29: Rust-side eval through the internal Z3 arm must respect the
+// clz constraint on the operand. With the shared new_const, eval(x) was
+// unconstrained by `clz(x)==k` and could return a value whose real leading
+// zero count differs from k.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_clz_constraint_binds_operand_eval() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "clz_bind_x", 32);
+    let zero = RustBV::concrete(0, 32);
+    // clz(x) == 0  =>  x's MSB is set  =>  x >= 0x8000_0000.
+    ctx.assume_true(&x.clz(&ctx).eq(&zero, &ctx));
+
+    let v = ctx.eval(&x).expect("x must be evaluable");
+    assert_eq!(
+        (v as u32).leading_zeros(),
+        0,
+        "eval(x) under clz(x)==0 must have zero leading zeros, got {v:#x}"
+    );
+}
+
+// angr-ph300.29: symbolic popcount must equal the concrete population count
+// when the operand is pinned, exercising the sum-of-bits Z3 encoding.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_popcount_matches_concrete_when_operand_pinned() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "popcnt_x", 32);
+    let val = RustBV::concrete(0xF0F0_00FF, 32);
+    ctx.assume_true(&x.eq(&val, &ctx));
+
+    let pc = ctx
+        .eval(&x.popcount(&ctx))
+        .expect("popcount must be evaluable");
+    assert_eq!(
+        pc,
+        0xF0F0_00FFu32.count_ones() as u128,
+        "symbolic popcount of a pinned operand must match concrete count_ones"
+    );
+}

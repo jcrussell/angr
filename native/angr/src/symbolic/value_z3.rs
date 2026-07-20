@@ -564,10 +564,48 @@ impl RustBV {
                 }
             }
 
-            // Bit counting ops
-            BVOp::Clz => z3::ast::BV::new_const("clz", _width),
-            BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
-            BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),
+            // Bit counting ops — build a sound Z3 encoding tied to the
+            // operand, mirroring the claripy export ITE ladder
+            // (export.rs::build_sound_bitcount). A bare `new_const` hash-conses
+            // to ONE shared unconstrained variable per width, unrelated to the
+            // operand, so `clz(x)==0 && clz(y)==5` aliased to UNSAT and eval
+            // ignored the operand — diverging from the concrete arm and the
+            // exported claripy AST (angr-ph300.29).
+            BVOp::Clz | BVOp::Ctz => {
+                let ast = operands[0].to_z3_ast_cached(cache);
+                let one = z3::ast::BV::from_u64(1, 1);
+                let mut result = z3::ast::BV::from_u64(_width as u64, _width);
+                // Clz: iterate LSB->MSB so the MSB test is outermost.
+                // Ctz: iterate MSB->LSB so the LSB test is outermost.
+                let positions: Vec<u32> = match op {
+                    BVOp::Clz => (0.._width).collect(),
+                    _ => (0.._width).rev().collect(),
+                };
+                for pos in positions {
+                    let cond = ast.extract(pos, pos).eq(one.clone());
+                    let leading_count = match op {
+                        BVOp::Clz => _width - 1 - pos,
+                        _ => pos, // ctz: trailing zeros == index of lowest set bit
+                    };
+                    let val = z3::ast::BV::from_u64(leading_count as u64, _width);
+                    result = cond.ite(&val, &result);
+                }
+                result
+            }
+            BVOp::Popcount => {
+                // Sum of the zero-extended individual bits; fits in `_width`.
+                let ast = operands[0].to_z3_ast_cached(cache);
+                let mut acc = if _width > 1 {
+                    ast.extract(0, 0).zero_ext(_width - 1)
+                } else {
+                    ast.extract(0, 0)
+                };
+                for pos in 1.._width {
+                    let ext = ast.extract(pos, pos).zero_ext(_width - 1);
+                    acc = acc.bvadd(ext);
+                }
+                acc
+            }
 
             // Floating-point operations via Z3 FP theory.
             BVOp::Float { kind, prec } => {
