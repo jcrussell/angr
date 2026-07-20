@@ -223,6 +223,15 @@ impl RustExplorationManager {
         to_stash: &str,
         filter_fn: Option<Py<PyAny>>,
     ) -> PyResult<usize> {
+        // Moving a stash onto itself is a no-op. The no-filter path below
+        // removes the source deque and then overwrites the (identical) key
+        // with an empty VecDeque, dropping every state it just re-appended
+        // and dangling their index entries (angr-ph300.17). Guard here so all
+        // paths agree on same-stash semantics.
+        if from_stash == to_stash {
+            return Ok(0);
+        }
+
         // If no filter, move all
         if filter_fn.is_none() {
             if let Some(mut from) = self.sm.remove(from_stash) {
@@ -342,3 +351,7 @@ impl RustExplorationManager {
         Ok(found_state_id)
     }
 }
+
+#[cfg(test)]
+#[path = "state_lifecycle_tests.rs"]
+mod tests;
