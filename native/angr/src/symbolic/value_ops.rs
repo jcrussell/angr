@@ -920,19 +920,10 @@ impl RustBV {
         debug_assert!(high < self.width());
         let result_width = high - low + 1;
 
-        // Fast path for concrete values
+        // Fast path for concrete values (fold shared with extract_no_ctx and
+        // the Z3 emitter — see bv_codec::concrete_extract_u128).
         if let Some(v) = self.as_u128() {
-            // A Concrete stores its value in a u128, so any bit at position
-            // >= 128 (possible when width > 128) is logically zero. Shifting a
-            // u128 by >= 128 overflows in Rust, so guard both the shift (low)
-            // and the mask (result_width).
-            let shifted = if low >= 128 { 0 } else { v >> low };
-            let mask = if result_width >= 128 {
-                u128::MAX
-            } else {
-                (1u128 << result_width) - 1
-            };
-            let extracted = shifted & mask;
+            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
             return Self::concrete(extracted, result_width);
         }
 
@@ -1054,18 +1045,9 @@ impl RustBV {
         let result_width = high - low + 1;
 
         if let Some(v) = self.as_u128() {
-            // Mirror extract_into's fast path: a Concrete stores its value in a
-            // u128, so any bit at position >= 128 (possible when width > 128)
-            // is logically zero. Shifting a u128 by >= 128 overflows in Rust
-            // (debug abort / release wraps mod 128), so guard both the shift
-            // (low) and the mask (result_width).
-            let shifted = if low >= 128 { 0 } else { v >> low };
-            let mask = if result_width >= 128 {
-                u128::MAX
-            } else {
-                (1u128 << result_width) - 1
-            };
-            let extracted = shifted & mask;
+            // Fold shared with extract_into and the Z3 emitter — see
+            // bv_codec::concrete_extract_u128.
+            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
             return Self::concrete(extracted, result_width);
         }
 

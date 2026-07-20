@@ -296,7 +296,7 @@ impl RustBV {
         // Concrete fast path — fold the extraction at the Rust level so Z3
         // never sees Extract over a literal.
         if let Some(v) = inner.as_u128() {
-            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
             return super::bv_codec::make_bv_const(extracted, result_width);
         }
 
