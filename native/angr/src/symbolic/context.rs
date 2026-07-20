@@ -39,9 +39,10 @@
 //!   and `test_lineage_not_minted_under_bare_push`.
 //! - **fork-freeze under push** (`fork-freeze-self-invariant`):
 //!   [`fork`](SymContext::fork) only drains local→shared in place when
-//!   `push_level == 0`. Inside a transaction, `transaction_rollback`
-//!   truncates `local` back to its pre-transaction length; draining would
-//!   leak rolled-back constraints into `shared`.
+//!   `push_level == 0`. Inside an open scope a `pop()` truncates `local`
+//!   back to its pre-push length; draining would leak popped constraints
+//!   into `shared`. (`push_level` is now always 0 — the transaction API that
+//!   raised it was removed in angr-ph300.44 — but the guard is retained.)
 //! - **Z3 construction canonicalization** (`invariant-z3-construction-canonicalization`):
 //!   Z3 hash-cons applies at construction time, but commutative operands
 //!   are NOT normalized (`mk_bvadd(x, y)` and `mk_bvadd(y, x)` produce
@@ -69,7 +70,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 
 use super::RustBV;
 // Constraint-sharing analysis types live in `sharing.rs` (angr-a2br.2 slice 3).
@@ -203,11 +203,6 @@ fn default_true() -> bool {
 /// [`RustExplorationManager::set_solver_timeout`](crate::exploration::RustExplorationManager).
 pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
 
-/// Inline capacity for SymContext push_* stacks. Branch nesting is typically
-/// shallow (≤8) within a single block; SmallVec avoids the heap allocation
-/// for the first push.
-pub(super) type PushStack = SmallVec<[usize; 8]>;
-
 /// Local-only constraint state added after fork.
 ///
 /// Combines `assumed` (RustBV pairs for Python export) and `z3_assertions`
@@ -248,10 +243,10 @@ pub(super) struct LocalConstraints {
     #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set: HashSet<usize>,
     /// True once `dedup_set` has been populated from shared+local for this
-    /// context. Reset to false by `fork()`, `merge()` (via `new()`),
-    /// `transaction_rollback()`, and a bare `pop()` that closes a scope which
-    /// added assertions (`scope_savepoint_pop`, angr-ph300.41) — all of which
-    /// truncate `z3_assertions`.
+    /// context. Reset to false by `fork()`, `merge()` (via `new()`), and a
+    /// bare `pop()` that closes a scope which added assertions
+    /// (`scope_savepoint_pop`, angr-ph300.41) — all of which truncate
+    /// `z3_assertions`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set_seeded: bool,
 }
@@ -302,20 +297,6 @@ impl LocalConstraints {
     }
 }
 
-/// Error type for constraint sync operations.
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum ConstraintSyncError {
-    /// Conversion failed for a constraint.
-    #[error("constraint conversion failed: {0}")]
-    ConversionFailed(String),
-    /// Constraints became unsatisfiable after sync.
-    #[error("constraints became unsatisfiable after sync")]
-    Unsatisfiable,
-    /// Invalid rollback (no transaction to rollback).
-    #[error("no transaction to rollback")]
-    NoTransaction,
-}
-
 /// Solver context for symbolic execution.
 ///
 /// Manages symbolic variable creation and, when Z3 is available,
@@ -325,12 +306,9 @@ pub enum ConstraintSyncError {
 /// to store a reference to it. All Z3 operations on a thread share
 /// the same context automatically.
 ///
-/// ## Transactional Constraint Sync
-///
-/// The context supports transactional constraint sync with push/pop semantics:
-/// - `transaction_begin()`: Start a new transaction
-/// - `transaction_commit()`: Commit constraints (validate and keep)
-/// - `transaction_rollback()`: Rollback on failure
+/// Bare scope save/restore is available via `push()` / `pop()` / `try_pop()`
+/// (see `transaction_ops.rs`); the higher-level `transaction_begin/commit/
+/// rollback` API was removed in angr-ph300.44 (dead code + latent corruption).
 pub struct SymContext {
     /// Number of constraints added (for tracking).
     /// `pub(super)` for the `num_constraints` accessor in `bv_id_ops.rs`.
@@ -340,21 +318,13 @@ pub struct SymContext {
     /// a fresh merged context — Arc::make_mut works because the merged
     /// SymContext is freshly created with a unique Arc.
     pub(super) symbol_table: Arc<HashMap<String, u64>>,
-    /// Current push level for transaction tracking.
-    /// `pub(super)` for the transaction/scoping methods in `transaction_ops.rs`
-    /// (slice 10, angr-a2br.2.8).
+    /// Transaction push level, read by `fork()`'s `in_transaction` gate
+    /// (`snapshot_fork_ops`) and exposed for diagnostics via `debug_push_level`.
+    /// The only incrementer was `transaction_begin`, removed in angr-ph300.44
+    /// (dead API + latent corruption), so this is now always 0 and the fork
+    /// gate consequently always sees no transaction. Kept as a field so the
+    /// gate and `debug_push_level` stay structurally intact.
     pub(super) push_level: AtomicUsize,
-    /// Constraint count at each push level (for rollback).
-    /// `pub(super)` for `transaction_ops.rs` (slice 10, angr-a2br.2.8).
-    pub(super) push_constraint_counts: Mutex<PushStack>,
-    /// Local Z3 cache length at each push level (for rollback truncation).
-    /// `pub(super)` for `transaction_ops.rs` (slice 10, angr-a2br.2.8).
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) push_local_cache_lengths: Mutex<PushStack>,
-    /// Local assumed_constraints length at each push level (for rollback truncation).
-    /// `pub(super)` for `transaction_ops.rs` (slice 10, angr-a2br.2.8).
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) push_assumed_local_lengths: Mutex<PushStack>,
     /// Local-constraint savepoints for **bare** `push()`/`pop()` (angr-ph300.41/.42).
     ///
     /// Each entry records `(z3_assertions.len(), assumed.len(),
@@ -362,17 +332,12 @@ pub struct SymContext {
     /// moment of a bare `push()`. `scope_savepoint_pop()` truncates all three
     /// local logs back to the saved lengths and drops the dedup side-table,
     /// so constraints added inside a bare push/pop scope do not leak past the
-    /// matching `pop()` — matching what `transaction_rollback` already does for
-    /// transactions. Without this, a `pop()` popped the Z3 frame but left the
+    /// matching `pop()`. Without this, a `pop()` popped the Z3 frame but left the
     /// `z3_assertions` log (and `dedup_set` ptrs) intact: re-adding the same
     /// constraint dedup-hit and was skipped (.41), and `fork()` replayed the
     /// stale log into the child as permanent asserts (.42).
     ///
-    /// Pairs push↔pop exactly like `scope_savepoints`; `transaction_begin`'s
-    /// `push()` records an entry that `transaction_commit` intentionally does
-    /// not pop (the frame's constraints are kept), while `transaction_rollback`
-    /// pops it via `pop()` (a harmless idempotent re-truncate to the length its
-    /// own bookkeeping already restores).
+    /// Pairs push↔pop exactly like `scope_savepoints`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
@@ -576,7 +541,6 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
@@ -613,9 +577,6 @@ impl SymContext {
 
         SymContext {
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(PushStack::new()),
-            push_local_cache_lengths: Mutex::new(PushStack::new()),
-            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             bare_local_savepoints: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
@@ -696,8 +657,8 @@ impl SymContext {
     /// Paired with [`Self::truncate_assumed_local`] to bracket transient
     /// `assume_true`/`assume_false` calls whose Z3 assertions live inside a
     /// bare `push()`/`pop()` scope but whose export-log entries must NOT
-    /// persist. The plain `pop()` restores the Z3 solver frame but does not
-    /// truncate `local.assumed` (only `transaction_rollback` does), so
+    /// persist. The plain `pop()` restores the Z3 solver frame but this
+    /// explicit truncation is what clears `local.assumed`, so
     /// feasibility-check assumes would otherwise leak into the log that
     /// `to_snapshot`/`restore_from_snapshot` faithfully re-assert on a wave
     /// migration — the ype54 concrete-guard poison (angr-ype54).
@@ -748,11 +709,11 @@ impl SymContext {
     // seed_and_check_z3_dedup / check_z3_dedup_if_seeded and the model-cache
     // invalidators) moved to constraint_ops.rs (slice 9, angr-a2br.2.7).
 
-    // Transaction / scoping &self methods (set_timeout / timeout_ms /
-    // set_sat_cache / push / pop / transaction_begin / transaction_commit /
-    // transaction_rollback / current_push_level / in_transaction / unsat_core /
-    // get_all_constraints_str / z3_assertion_count, plus their non-Z3 mock
-    // variants) moved to transaction_ops.rs (slice 10, angr-a2br.2.8).
+    // Scoping &self methods (set_timeout / timeout_ms / set_sat_cache /
+    // push / pop / try_pop / unsat_core / get_all_constraints_str /
+    // z3_assertion_count, plus their non-Z3 mock variants) moved to
+    // transaction_ops.rs (slice 10, angr-a2br.2.8). The transaction_begin/
+    // commit/rollback lifecycle was removed in angr-ph300.44.
 
     // =========================================================================
     // Mock implementations when Z3 is not available
@@ -824,12 +785,16 @@ impl Clone for SymContext {
 
 /// Freeze a local additions vector into the shared Arc<Vec<T>>.
 ///
-/// Outside a push/pop transaction (when `in_transaction` is false) this drains
+/// Outside an open push/pop scope (when `in_transaction` is false) this drains
 /// `local` into `shared` in place — when shared has unique ownership the move
 /// avoids the per-element clones (e.g. each `z3::ast::Bool::clone` is a
-/// `Z3_inc_ref` FFI call). Inside a transaction we must preserve `local` so
-/// `transaction_rollback` can truncate it; in that case we fall back to
+/// `Z3_inc_ref` FFI call). When `in_transaction` is true we must preserve
+/// `local` so a later `pop()` can truncate it; in that case we fall back to
 /// allocating a fresh Vec by cloning shared and copying local's elements.
+///
+/// (Callers derive `in_transaction` from `push_level > 0`, which is always 0
+/// since the transaction API was removed in angr-ph300.44 — so the copy branch
+/// is currently unreachable, but retained as generic fork infrastructure.)
 pub(super) fn freeze_into_shared<T: Clone>(
     shared: &Mutex<Arc<Vec<T>>>,
     local: &mut Vec<T>,

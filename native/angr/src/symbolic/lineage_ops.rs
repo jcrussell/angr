@@ -159,19 +159,14 @@ impl SymContext {
     /// which pushes whatever frames the state has accumulated.
     ///
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
-    /// the public wrappers (`push()`, `transaction_begin`) own that.
+    /// the public wrapper (`push()`) owns that.
     ///
-    /// Wired in by slice 4b.2: [`push()`](Self::push) is the public
-    /// caller; `transaction_begin` inherits the dispatch transitively
-    /// since it delegates to `push()`.
+    /// Wired in by slice 4b.2: [`push()`](Self::push) is the public caller.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_push(&self) {
         // angr-ph300.41/.42: record the local-constraint log lengths so the
         // matching bare `pop()` can truncate everything added inside this
-        // scope. Mirrors the transaction path's `push_local_cache_lengths` /
-        // `push_assumed_local_lengths` bookkeeping, but for bare push/pop
-        // (which `transaction_rollback` never covers). Captured before the
-        // lineage dispatch so both branches share it.
+        // scope. Captured before the lineage dispatch so both branches share it.
         {
             let local = self.local_constraints.lock();
             self.bare_local_savepoints.lock().push((
@@ -219,21 +214,19 @@ impl SymContext {
     /// pre-push length.
     ///
     /// Mismatched pops (no preceding push) are silently ignored in the
-    /// Some branch — the public wrappers already validate the
-    /// transaction nesting via `push_level`. The None branch
-    /// inherits z3-rs's behavior (a panic on under-popping the solver).
+    /// Some branch — `scope_savepoints` simply empties out. The None branch
+    /// inherits z3-rs's behavior (a panic on under-popping the solver),
+    /// which `try_pop()` guards against via `bare_z3_push_depth`.
     ///
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
-    /// the public wrappers (`pop()`, `transaction_rollback`) own that.
+    /// the public wrapper (`pop()`) owns that.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_pop(&self) {
         // angr-ph300.41/.42: discard any local constraints logged inside the
         // scope this pop closes, so they neither dedup-suppress a re-add nor
         // get replayed into a fork as permanent asserts. Balanced with the
-        // record in `scope_savepoint_push`; `transaction_commit` intentionally
-        // keeps its entry (frame kept), `transaction_rollback` re-truncates
-        // idempotently. A mismatched pop (no matching push) leaves the logs
-        // untouched.
+        // record in `scope_savepoint_push`. A mismatched pop (no matching push)
+        // leaves the logs untouched.
         if let Some((z3_len, assumed_len, non_bv_len)) = self.bare_local_savepoints.lock().pop() {
             let mut local = self.local_constraints.lock();
             if local.z3_assertions.len() > z3_len

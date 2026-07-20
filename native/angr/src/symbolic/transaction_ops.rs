@@ -1,12 +1,16 @@
 //! Transaction / scoping `&self` methods for [`SymContext`].
 //!
 //! Slice 10 of the `symbolic/context.rs` split (angr-a2br.2.8). These are the
-//! solver-scope and transactional-sync entry points: the timeout accessors
+//! solver-scope entry points: the timeout accessors
 //! (`set_timeout` / `timeout_ms`), the SAT-cache primer (`set_sat_cache`), the
-//! raw scope save/restore (`push` / `pop`), the transaction lifecycle
-//! (`transaction_begin` / `transaction_commit` / `transaction_rollback`,
-//! `current_push_level`, `in_transaction`), and the constraint-introspection
-//! read paths (`unsat_core`, `get_all_constraints_str`, `z3_assertion_count`).
+//! raw scope save/restore (`push` / `pop` / `try_pop`), and the
+//! constraint-introspection read paths (`unsat_core`, `get_all_constraints_str`,
+//! `z3_assertion_count`).
+//!
+//! The `transaction_begin` / `transaction_commit` / `transaction_rollback`
+//! lifecycle (plus `current_push_level` / `in_transaction`) was removed in
+//! angr-ph300.44 — it had zero callers and a latent corruption bug (commit
+//! popped only one of the three aux stacks and never released the Z3 frame).
 //!
 //! Unlike the fully Z3-gated `constraint_ops`, this slice carries both the
 //! `#[cfg(feature = "vex-engine-z3")]` implementations and their non-Z3 mock
@@ -26,15 +30,8 @@
 use super::SymContext;
 
 #[cfg(feature = "vex-engine-z3")]
-use super::ConstraintSyncError;
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
 #[cfg(feature = "vex-engine-z3")]
-use std::sync::atomic::Ordering;
-
-#[cfg(not(feature = "vex-engine-z3"))]
-use super::ConstraintSyncError;
-#[cfg(not(feature = "vex-engine-z3"))]
 use std::sync::atomic::Ordering;
 
 impl SymContext {
@@ -136,143 +133,6 @@ impl SymContext {
     pub fn try_pop(&self) -> bool {
         self.pop();
         true
-    }
-
-    // =========================================================================
-    // Transactional Constraint Sync
-    // =========================================================================
-
-    /// Begin a new transaction.
-    ///
-    /// This pushes a new solver frame and records the constraint count,
-    /// allowing rollback on failure via `transaction_rollback()`.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn transaction_begin(&self) {
-        self.push();
-        let current_count = self.constraint_count.load(Ordering::SeqCst);
-        self.push_constraint_counts.lock().push(current_count);
-        let (local_len, assumed_local_len) = {
-            let local = self.local_constraints.lock();
-            (local.z3_assertions.len(), local.assumed.len())
-        };
-        self.push_local_cache_lengths.lock().push(local_len);
-        self.push_assumed_local_lengths
-            .lock()
-            .push(assumed_local_len);
-        self.push_level.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Commit the current transaction.
-    ///
-    /// This validates that constraints are satisfiable before committing.
-    /// Returns an error if constraints became unsatisfiable.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn transaction_commit(&self) -> Result<(), ConstraintSyncError> {
-        let level = self.push_level.load(Ordering::SeqCst);
-        if level == 0 {
-            return Err(ConstraintSyncError::NoTransaction);
-        }
-
-        // Validate constraints are satisfiable before committing
-        if !self.is_sat() {
-            // Rollback on failure
-            self.transaction_rollback()?;
-            return Err(ConstraintSyncError::Unsatisfiable);
-        }
-
-        // Pop the solver frame but keep the constraints
-        // Note: We don't actually pop here since we want to keep constraints
-        // The push was just for protection during sync
-        self.push_constraint_counts.lock().pop();
-        self.push_level.fetch_sub(1, Ordering::SeqCst);
-
-        Ok(())
-    }
-
-    /// Rollback the current transaction.
-    ///
-    /// This restores the solver state to before `transaction_begin()` was called.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn transaction_rollback(&self) -> Result<(), ConstraintSyncError> {
-        let level = self.push_level.load(Ordering::SeqCst);
-        if level == 0 {
-            return Err(ConstraintSyncError::NoTransaction);
-        }
-
-        // Pop the solver frame (discards constraints added since begin)
-        self.pop();
-
-        // Restore constraint count
-        if let Some(prev_count) = self.push_constraint_counts.lock().pop() {
-            self.constraint_count.store(prev_count, Ordering::SeqCst);
-        }
-
-        // Truncate local Z3 cache and assumed_constraints to pre-transaction length
-        let prev_z3_len = self.push_local_cache_lengths.lock().pop();
-        let prev_assumed_len = self.push_assumed_local_lengths.lock().pop();
-        if prev_z3_len.is_some() || prev_assumed_len.is_some() {
-            let mut local = self.local_constraints.lock();
-            if let Some(prev_len) = prev_z3_len {
-                local.z3_assertions.truncate(prev_len);
-            }
-            if let Some(prev_len) = prev_assumed_len {
-                local.assumed.truncate(prev_len);
-            }
-            // angr-sfp9: stale dedup_set entries from the rolled-back
-            // assertions could falsely dedup a re-assert. Drop the side-
-            // table and let the next add_constraint_raw call rebuild it
-            // from shared + post-truncate local.
-            local.dedup_set.clear();
-            local.dedup_set_seeded = false;
-        }
-
-        self.push_level.fetch_sub(1, Ordering::SeqCst);
-
-        Ok(())
-    }
-
-    /// Get the current transaction level.
-    ///
-    /// Returns 0 if no transaction is active.
-    pub fn current_push_level(&self) -> usize {
-        self.push_level.load(Ordering::SeqCst)
-    }
-
-    /// Check if currently in a transaction.
-    pub fn in_transaction(&self) -> bool {
-        self.current_push_level() > 0
-    }
-
-    // Non-Z3 versions of transaction methods
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn transaction_begin(&self) {
-        let current_count = self.constraint_count.load(Ordering::SeqCst);
-        self.push_constraint_counts.lock().push(current_count);
-        self.push_level.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn transaction_commit(&self) -> Result<(), ConstraintSyncError> {
-        let level = self.push_level.load(Ordering::SeqCst);
-        if level == 0 {
-            return Err(ConstraintSyncError::NoTransaction);
-        }
-        self.push_constraint_counts.lock().pop();
-        self.push_level.fetch_sub(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn transaction_rollback(&self) -> Result<(), ConstraintSyncError> {
-        let level = self.push_level.load(Ordering::SeqCst);
-        if level == 0 {
-            return Err(ConstraintSyncError::NoTransaction);
-        }
-        if let Some(prev_count) = self.push_constraint_counts.lock().pop() {
-            self.constraint_count.store(prev_count, Ordering::SeqCst);
-        }
-        self.push_level.fetch_sub(1, Ordering::SeqCst);
-        Ok(())
     }
 
     /// Get the unsat core as indices of constraints added.

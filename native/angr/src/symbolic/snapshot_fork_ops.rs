@@ -15,11 +15,11 @@
 //! `fork`/`merge` reconstruct a full `SymContext { .. }`, so every struct field
 //! they touch must be reachable from this sibling module. All but two were
 //! already promoted by earlier slices; this slice promotes the last holdouts
-//! (`symbol_table`, `assumed_constraints_shared`) and the private `PushStack`
-//! type alias to `pub(super)` (== `pub(in crate::symbolic)`). See bd memory
+//! (`symbol_table`, `assumed_constraints_shared`) to `pub(super)`
+//! (== `pub(in crate::symbolic)`). See bd memory
 //! `a2br2-context-split-impl-block-plan` for the slice plan.
 
-use super::context::{LocalConstraints, PushStack, freeze_into_shared};
+use super::context::{LocalConstraints, freeze_into_shared};
 use super::{RustBV, SymContext, SymContextSnapshot};
 
 use std::sync::Arc;
@@ -664,9 +664,6 @@ impl SymContext {
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(PushStack::new()),
-            push_local_cache_lengths: Mutex::new(PushStack::new()),
-            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             bare_local_savepoints: Mutex::new(Vec::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
@@ -891,7 +888,6 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             assume_class_reconstructible: AtomicBool::new(
                 self.assume_class_reconstructible.load(Ordering::Relaxed),

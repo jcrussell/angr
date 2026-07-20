@@ -40,7 +40,7 @@ mod value_z3;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
 
-pub use context::{ConstraintSyncError, DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
+pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
 pub use handle::RustBVHandle;
 pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
