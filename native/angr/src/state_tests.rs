@@ -1859,3 +1859,60 @@ fn test_migrate_across_real_thread() {
         "migrated state's solver must remain SAT on the worker thread"
     );
 }
+
+// angr-ph300.51: RustSimState::merge must union the three Python-AST overlay
+// maps (not take only self's) and carry the furthest-advanced allocator
+// watermarks — otherwise a branch-B symbolic overlay byte is silently lost and
+// the merged state's next malloc can alias live allocations from B's ITE arm.
+#[test]
+fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
+    Python::initialize();
+
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = RustSimState::new("amd64").unwrap();
+
+    // Self (a) owns an overlay at 0x1000; other (b) owns a *distinct* overlay at
+    // 0x2000 plus a conflicting one at 0x1000. b also advances the allocators.
+    Python::attach(|py| {
+        a.set_hook_symbolic_memory(0x1000, py.None(), 8);
+        b.set_hook_symbolic_memory(0x1000, py.None(), 4); // conflict -> keep self
+        b.set_hook_symbolic_memory(0x2000, py.None(), 8); // other-only -> survive
+    });
+    a.set_heap_brk(0x10_0000);
+    b.set_heap_brk(0x20_0000); // b allocated further
+    a.set_posix_brk(0x30_0000);
+    b.set_posix_brk(0x11_0000); // a's is higher here
+    a.set_mmap_base(0x40_0000);
+    b.set_mmap_base(0x50_0000);
+
+    let m0 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "ph30051_m0", 1)
+    };
+    let m1 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "ph30051_m1", 1)
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    // Other-only overlay survived; conflicting key kept self's size (8, not 4).
+    assert_eq!(
+        merged.hook_symbolic_memory().len(),
+        2,
+        "other-only overlay must survive the merge"
+    );
+    assert!(
+        merged.hook_symbolic_memory().contains_key(&0x2000),
+        "b's 0x2000 overlay must be present in the merged state"
+    );
+    assert_eq!(
+        merged.hook_symbolic_memory().get(&0x1000).map(|(_, sz)| *sz),
+        Some(8),
+        "conflicting overlay must keep self's entry (size 8), not other's (4)"
+    );
+
+    // Allocator watermarks take the furthest-advanced value per field.
+    assert_eq!(merged.heap_brk(), 0x20_0000, "heap_brk must be max(a, b)");
+    assert_eq!(merged.posix_brk(), 0x30_0000, "posix_brk must be max(a, b)");
+    assert_eq!(merged.mmap_base(), 0x50_0000, "mmap_base must be max(a, b)");
+}

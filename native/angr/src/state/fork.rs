@@ -310,7 +310,44 @@ impl RustSimState {
             }
         }
 
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
+        // Union the three Python-AST overlay maps across self + others
+        // (angr-ph300.51). `clone_py_metadata` seeds from self; each other's
+        // entries are folded in, but a key already present is kept from the
+        // earlier state (self wins over others; an earlier `others` entry wins
+        // over a later one) and the conflict is warned. A byte-level ITE merge
+        // of overlay ASTs is out of scope here; without this union an
+        // other-only symbolic overlay byte was silently lost on merge.
+        let (mut symbolic_pages, mut hook_symbolic_memory, mut addr_to_ast) =
+            self.clone_py_metadata();
+        for other in others {
+            for (addr, ast) in other.symbolic_pages() {
+                if symbolic_pages.contains_key(addr) {
+                    log::warn!(
+                        "merge: conflicting symbolic_pages overlay at {addr:#x}; keeping earlier state's AST"
+                    );
+                } else {
+                    symbolic_pages.insert(*addr, ast.clone());
+                }
+            }
+            for (addr, entry) in other.hook_symbolic_memory() {
+                if hook_symbolic_memory.contains_key(addr) {
+                    log::warn!(
+                        "merge: conflicting hook_symbolic_memory overlay at {addr:#x}; keeping earlier state's AST"
+                    );
+                } else {
+                    hook_symbolic_memory.insert(*addr, entry.clone());
+                }
+            }
+            for (addr, entry) in other.addr_to_ast() {
+                if addr_to_ast.contains_key(addr) {
+                    log::warn!(
+                        "merge: conflicting addr_to_ast overlay at {addr:#x}; keeping earlier state's AST"
+                    );
+                } else {
+                    addr_to_ast.insert(*addr, entry.clone());
+                }
+            }
+        }
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
@@ -327,9 +364,17 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: best_fs,
-            heap_brk: self.heap_brk,
-            posix_brk: self.posix_brk,
-            mmap_base: self.mmap_base,
+            // Take the furthest-advanced allocator watermarks (angr-ph300.51):
+            // if any branch bumped its brk/mmap, keeping only self's would let
+            // the merged state's next malloc alias live allocations from that
+            // branch's ITE arm.
+            heap_brk: others.iter().fold(self.heap_brk, |m, o| m.max(o.heap_brk)),
+            posix_brk: others
+                .iter()
+                .fold(self.posix_brk, |m, o| m.max(o.posix_brk)),
+            mmap_base: others
+                .iter()
+                .fold(self.mmap_base, |m, o| m.max(o.mmap_base)),
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
