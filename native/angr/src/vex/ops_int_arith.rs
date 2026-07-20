@@ -110,8 +110,12 @@ impl VEXOps {
             let (quotient, remainder) = if signed {
                 let dvd_i = Self::sign_extend_low_to_i128(dvd, dividend_w);
                 let dvs_i = Self::sign_extend_low_to_i128(dvs, divisor_w);
-                let q = (dvd_i / dvs_i) as u128 & half_mask;
-                let r = (dvd_i % dvs_i) as u128 & half_mask;
+                // `i128::MIN / -1` overflows and Rust's checked division panics
+                // even in release; with `panic = "abort"` that SIGABRTs the whole
+                // process. `wrapping_div`/`wrapping_rem` return the two's-complement
+                // wrap (i128::MIN, 0) matching Z3 bvsdiv/bvsrem semantics.
+                let q = dvd_i.wrapping_div(dvs_i) as u128 & half_mask;
+                let r = dvd_i.wrapping_rem(dvs_i) as u128 & half_mask;
                 (q, r)
             } else {
                 (dvd / dvs, dvd % dvs)
