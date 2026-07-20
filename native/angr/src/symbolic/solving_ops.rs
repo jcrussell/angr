@@ -73,6 +73,12 @@ fn eval_all_in_model(model: &z3::Model, bvs: &[RustBV]) -> Option<Vec<u128>> {
 /// lower half when satisfiable. `cmp` selects the signed (`bvsle`) vs unsigned
 /// (`bvule`) ordering. Shared by `min` and the min half of `range_seeded`; the
 /// caller owns the surrounding `with_z3_solver` push/pop frame.
+///
+/// Returns `None` when any mid-bisection check comes back Z3 `Unknown` (a
+/// timeout under a tight `set_timeout`, angr-ph300.43): the search cannot tell
+/// "nothing at or below mid" from "gave up", and swallowing the Unknown as the
+/// former would move `lo` past the true minimum and return a confidently wrong
+/// bound. Aborting lets the caller degrade to `None` rather than fabricate one.
 #[cfg(feature = "vex-engine-z3")]
 fn bsearch_min(
     solver: &z3::Solver,
@@ -81,24 +87,21 @@ fn bsearch_min(
     mut lo: u128,
     mut hi: u128,
     cmp: impl Fn(&z3::ast::BV, &z3::ast::BV) -> z3::ast::Bool,
-) -> u128 {
+) -> Option<u128> {
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
         solver.push();
         let mid_ast = make_bv_const(mid, width);
         solver.assert(cmp(ast, &mid_ast));
-        let can_be_le_mid = matches!(
-            timed_check(solver, CheckSite::MinSearch),
-            z3::SatResult::Sat
-        );
+        let check = timed_check(solver, CheckSite::MinSearch);
         solver.pop(1);
-        if can_be_le_mid {
-            hi = mid;
-        } else {
-            lo = mid + 1;
+        match check {
+            z3::SatResult::Sat => hi = mid,
+            z3::SatResult::Unsat => lo = mid + 1,
+            z3::SatResult::Unknown => return None,
         }
     }
-    lo
+    Some(lo)
 }
 
 /// Binary search for the maximum feasible value of `ast` in `[lo, hi]`.
@@ -108,6 +111,10 @@ fn bsearch_min(
 /// satisfiable. `cmp` selects the signed (`bvsge`) vs unsigned (`bvuge`)
 /// ordering. Shared by `max` and the max half of `range_seeded`; the caller
 /// owns the surrounding `with_z3_solver` push/pop frame.
+///
+/// Returns `None` on a Z3 `Unknown` mid-bisection check for the same reason as
+/// [`bsearch_min`] (angr-ph300.43): swallowing the timeout would drop `hi`
+/// below the true maximum and return a wrong extremum.
 #[cfg(feature = "vex-engine-z3")]
 fn bsearch_max(
     solver: &z3::Solver,
@@ -116,24 +123,21 @@ fn bsearch_max(
     mut lo: u128,
     mut hi: u128,
     cmp: impl Fn(&z3::ast::BV, &z3::ast::BV) -> z3::ast::Bool,
-) -> u128 {
+) -> Option<u128> {
     while lo < hi {
         let mid = lo + (hi - lo).div_ceil(2);
         solver.push();
         let mid_ast = make_bv_const(mid, width);
         solver.assert(cmp(ast, &mid_ast));
-        let can_be_ge_mid = matches!(
-            timed_check(solver, CheckSite::MaxSearch),
-            z3::SatResult::Sat
-        );
+        let check = timed_check(solver, CheckSite::MaxSearch);
         solver.pop(1);
-        if can_be_ge_mid {
-            lo = mid;
-        } else {
-            hi = mid - 1;
+        match check {
+            z3::SatResult::Sat => lo = mid,
+            z3::SatResult::Unsat => hi = mid - 1,
+            z3::SatResult::Unknown => return None,
         }
     }
-    lo
+    Some(lo)
 }
 
 impl SymContext {
@@ -159,26 +163,38 @@ impl SymContext {
         // Perform actual SAT check. Both the check() and the post-check
         // get_model() must happen under the same solver lock, so both run
         // inside the with_z3_solver closure.
-        let result = self.with_z3_solver(|solver| {
-            let result = matches!(
-                timed_check(solver, CheckSite::Satisfiable),
-                z3::SatResult::Sat
-            );
-            // Populate model_cache if SAT — get_model is essentially free
-            // after a successful check, and the model lets
-            // check_branch_feasibility skip one of two Z3 checks.
-            if result {
-                let mut cache = self.model_cache.borrow_mut();
-                if cache.is_none()
-                    && let Some(m) = solver.get_model()
-                {
-                    *cache = Some(m);
+        //
+        // Returns None on a Z3 Unknown (timeout): the constraint set's
+        // satisfiability is genuinely undetermined, so we must NOT cache it.
+        // Caching Some(false) after a transient timeout would pin the context
+        // unsatisfiable permanently — every later satisfiable()/eval gate on it
+        // returns the stale false even once the timeout budget would allow a
+        // real answer (angr-ph300.43).
+        let result: Option<bool> = self.with_z3_solver(|solver| {
+            match timed_check(solver, CheckSite::Satisfiable) {
+                z3::SatResult::Sat => {
+                    // Populate model_cache — get_model is essentially free
+                    // after a successful check, and the model lets
+                    // check_branch_feasibility skip one of two Z3 checks.
+                    let mut cache = self.model_cache.borrow_mut();
+                    if cache.is_none()
+                        && let Some(m) = solver.get_model()
+                    {
+                        *cache = Some(m);
+                    }
+                    Some(true)
                 }
+                z3::SatResult::Unsat => Some(false),
+                z3::SatResult::Unknown => None,
             }
-            result
         });
-        self.sat_cache.set(Some(result));
-        result
+        // Only a decided result updates the cache; Unknown leaves it unset so a
+        // later call retries. Conservatively report "not satisfiable" to the
+        // caller on Unknown without pinning that verdict.
+        if let Some(v) = result {
+            self.sat_cache.set(Some(v));
+        }
+        result.unwrap_or(false)
     }
 
     /// Check if a bitvector condition can be true.
@@ -244,9 +260,12 @@ impl SymContext {
                     // other direction (¬cond) with Z3.
                     solver.push();
                     solver.assert(bool_ast.not());
-                    let can_false = matches!(
+                    // A Z3 Unknown (timeout) here must NOT prune the false
+                    // branch: only a decided Unsat proves ¬cond infeasible
+                    // (angr-ph300.43). Conservatively keep the branch on Unknown.
+                    let can_false = !matches!(
                         timed_check(solver, CheckSite::BranchFalse),
-                        z3::SatResult::Sat
+                        z3::SatResult::Unsat
                     );
                     solver.pop(1);
                     (true, can_false)
@@ -256,33 +275,39 @@ impl SymContext {
                     // can_be_false=true is proven by the model. Check cond.
                     solver.push();
                     solver.assert(&bool_ast);
-                    let can_true = matches!(
+                    // Unknown must not prune the true branch (angr-ph300.43).
+                    let can_true = !matches!(
                         timed_check(solver, CheckSite::BranchTrue),
-                        z3::SatResult::Sat
+                        z3::SatResult::Unsat
                     );
                     solver.pop(1);
                     (can_true, true)
                 }
                 None => {
                     Z3_BRANCH_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                    // No cached model: do the original two-check flow.
+                    // No cached model: do the original two-check flow. A Z3
+                    // Unknown (timeout) on either check must not prune that
+                    // branch — only a decided Unsat does (angr-ph300.43). The
+                    // pre-fix `matches!(_, Sat)` treated a timeout on the cond
+                    // check as "cond infeasible" and returned (false, true),
+                    // silently killing the feasible true branch.
                     solver.push();
                     solver.assert(&bool_ast);
-                    let can_true = matches!(
-                        timed_check(solver, CheckSite::BranchTrue),
-                        z3::SatResult::Sat
-                    );
+                    let cond_check = timed_check(solver, CheckSite::BranchTrue);
                     solver.pop(1);
+                    let can_true = !matches!(cond_check, z3::SatResult::Unsat);
 
-                    if !can_true {
+                    // Only short-circuit on a proven-infeasible cond (Unsat),
+                    // never on an undecided Unknown.
+                    if matches!(cond_check, z3::SatResult::Unsat) {
                         return (false, true); // Must be false-only
                     }
 
                     solver.push();
                     solver.assert(bool_ast.not());
-                    let can_false = matches!(
+                    let can_false = !matches!(
                         timed_check(solver, CheckSite::BranchFalse),
-                        z3::SatResult::Sat
+                        z3::SatResult::Unsat
                     );
                     solver.pop(1);
 
@@ -364,10 +389,14 @@ impl SymContext {
                 z3::SatResult::Sat => {
                     self.sat_cache.set(Some(true));
                 }
-                _ => {
+                // Only a decided Unsat pins sat_cache=false; a Z3 Unknown
+                // (timeout) leaves it unset so a later query can retry, rather
+                // than pinning the context unsatisfiable forever (angr-ph300.43).
+                z3::SatResult::Unsat => {
                     self.sat_cache.set(Some(false));
                     return None;
                 }
+                z3::SatResult::Unknown => return None,
             }
 
             let model = solver.get_model()?;
@@ -519,10 +548,12 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             match timed_check(solver, CheckSite::Eval) {
                 z3::SatResult::Sat => self.sat_cache.set(Some(true)),
-                _ => {
+                // Unknown (timeout) must not pin the context unsat (angr-ph300.43).
+                z3::SatResult::Unsat => {
                     self.sat_cache.set(Some(false));
                     return None;
                 }
+                z3::SatResult::Unknown => return None,
             }
 
             let model = solver.get_model()?;
@@ -661,18 +692,37 @@ impl SymContext {
             let mut values = Vec::with_capacity(parts.len());
             for (ast, width) in parts {
                 // The pins asserted below are satisfiable by construction, so an
-                // unsat here can only come from the base constraint set.
-                if !matches!(timed_check(solver, CheckSite::Eval), z3::SatResult::Sat) {
-                    solver.pop(1);
-                    self.sat_cache.set(Some(false));
-                    return None;
+                // unsat here can only come from the base constraint set. A Z3
+                // Unknown (timeout) aborts without pinning sat_cache=false — the
+                // base set's satisfiability stays undetermined (angr-ph300.43).
+                match timed_check(solver, CheckSite::Eval) {
+                    z3::SatResult::Sat => {}
+                    z3::SatResult::Unsat => {
+                        solver.pop(1);
+                        self.sat_cache.set(Some(false));
+                        return None;
+                    }
+                    z3::SatResult::Unknown => {
+                        solver.pop(1);
+                        return None;
+                    }
                 }
                 let max_val = if *width >= 128 {
                     u128::MAX
                 } else {
                     (1u128 << width) - 1
                 };
-                let value = bsearch_min(solver, ast, *width, 0, max_val, |a, m| a.bvule(m));
+                let value = match bsearch_min(solver, ast, *width, 0, max_val, |a, m| a.bvule(m)) {
+                    Some(v) => v,
+                    // Mid-bisection Z3 timeout (angr-ph300.43): no canonical
+                    // minimum for this part, so abort the whole joint witness
+                    // rather than return one built on a fabricated value. Leave
+                    // sat_cache unset — the base set's satisfiability is unknown.
+                    None => {
+                        solver.pop(1);
+                        return None;
+                    }
+                };
                 solver.assert(ast.eq(make_bv_const(value, *width)));
                 values.push(value);
             }
@@ -732,7 +782,13 @@ impl SymContext {
                 }
                 // Feasible min in [lo, max_val] — `ast >= lo` is already
                 // asserted, so bsearch_min never returns below the floor.
-                let value = bsearch_min(solver, &ast, width, lo, max_val, |a, m| a.bvule(m));
+                // A mid-bisection Z3 timeout (angr-ph300.43) yields None: stop
+                // enumerating rather than append a fabricated value. The prefix
+                // gathered so far is still a valid ascending set.
+                let Some(value) = bsearch_min(solver, &ast, width, lo, max_val, |a, m| a.bvule(m))
+                else {
+                    break;
+                };
                 results.push(value);
                 if value == max_val {
                     break; // No room above the top of the range.
@@ -946,7 +1002,9 @@ impl SymContext {
             };
 
             solver.pop(1);
-            Some(result)
+            // `result` is None on a mid-bisection Z3 timeout (angr-ph300.43):
+            // propagate the unknown rather than a fabricated extremum.
+            result
         })
     }
 
@@ -1060,7 +1118,8 @@ impl SymContext {
             };
 
             solver.pop(1);
-            Some(result)
+            // None on a mid-bisection Z3 timeout (angr-ph300.43).
+            result
         })
     }
 
@@ -1127,7 +1186,9 @@ impl SymContext {
             let max_result = bsearch_max(solver, &ast, width, lo_seed, max_val, |a, m| a.bvuge(m));
 
             solver.pop(1);
-            Some((min_val, max_result))
+            // None if either half hit a Z3 timeout mid-bisection (angr-ph300.43):
+            // a half-known range would be a wrong bound, so report unknown.
+            Some((min_val?, max_result?))
         })
     }
 

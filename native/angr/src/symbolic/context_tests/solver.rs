@@ -959,3 +959,104 @@ fn test_eval_wide_deterministic_is_unsigned_min() {
         assert_eq!(ctx.eval_wide(&x), Some(expected.clone()));
     }
 }
+
+// ---------------------------------------------------------------------------
+// angr-ph300.43: Z3 Unknown (timeout) must not be conflated with Unsat in the
+// binary-search extrema or the branch-feasibility checks. A mid-bisection
+// timeout used to be swallowed as "nothing at/below mid" (bsearch) or
+// "branch infeasible" (check_branch_feasibility), yielding a confidently wrong
+// extremum / pruning a feasible branch. The fix propagates Unknown distinctly.
+//
+// Both tests build a hard-but-satisfiable factoring instance (product of two
+// ~63-bit primes) under a 1ms solver budget so every Z3 check on it reliably
+// returns Unknown, then assert the conservative outcome.
+
+/// Product of two 63-bit primes — a genuine semiprime whose factorization
+/// exists (so priming sat_cache(true) is legitimate) but that Z3 cannot crack
+/// within a 1ms budget.
+#[cfg(feature = "vex-engine-z3")]
+const HARD_SEMIPRIME: u128 = 9_223_372_036_854_775_783u128 * 9_223_372_036_854_775_643u128;
+
+/// Assert `x * y == N`, `x > 1`, `y > 1` on a 1ms-budget context, returning the
+/// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
+/// not overflow.
+#[cfg(feature = "vex-engine-z3")]
+fn build_hard_factoring(ctx: &SymContext) -> RustBV {
+    let x = RustBV::symbolic(ctx, "fac_x", 64);
+    let y = RustBV::symbolic(ctx, "fac_y", 64);
+    let one = RustBV::concrete(1, 64);
+    ctx.assume_true(&x.ugt(&one, ctx));
+    ctx.assume_true(&y.ugt(&one, ctx));
+    let zx = x.zero_extend(128, ctx);
+    let zy = y.zero_extend(128, ctx);
+    let prod = zx.mul(&zy, ctx);
+    let n = RustBV::concrete(HARD_SEMIPRIME, 128);
+    ctx.assume_true(&prod.eq(&n, ctx));
+    x
+}
+
+/// min() must abort to None on a mid-bisection Z3 timeout rather than return a
+/// fabricated extremum. sat_cache is primed true (the constraints ARE
+/// satisfiable — a factorization exists) so min() skips its is_sat gate and
+/// drives straight into bsearch_min, where every check times out at 1ms.
+/// Pre-fix: bsearch swallowed each Unknown as "not <= mid", moved lo up, and
+/// returned a confident wrong value. Post-fix: None.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_min_aborts_to_none_on_bisection_timeout() {
+    let ctx = SymContext::with_timeout(1);
+    let x = build_hard_factoring(&ctx);
+    // Legitimate: the semiprime has a factorization, so the set is satisfiable.
+    ctx.set_sat_cache(true);
+    assert_eq!(
+        ctx.min(&x, false),
+        None,
+        "min() must return None on a bisection timeout, not a fabricated extremum"
+    );
+}
+
+/// max() likewise aborts to None on a bisection timeout (angr-ph300.43).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_max_aborts_to_none_on_bisection_timeout() {
+    let ctx = SymContext::with_timeout(1);
+    let x = build_hard_factoring(&ctx);
+    ctx.set_sat_cache(true);
+    assert_eq!(
+        ctx.max(&x, false),
+        None,
+        "max() must return None on a bisection timeout, not a fabricated extremum"
+    );
+}
+
+/// check_branch_feasibility must not prune a branch on a Z3 timeout — only a
+/// decided Unsat prunes. The condition `x * y == N` is genuinely feasible but
+/// unsolvable at 1ms, so both checks return Unknown. Pre-fix the None-arm
+/// first check timed out, was read as "cond infeasible", and returned
+/// (false, true) — silently killing the feasible true branch. Post-fix both
+/// directions stay live: (true, true).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_check_branch_feasibility_keeps_branch_on_timeout() {
+    let ctx = SymContext::with_timeout(1);
+    let x = RustBV::symbolic(&ctx, "cbf_x", 64);
+    let y = RustBV::symbolic(&ctx, "cbf_y", 64);
+    let one = RustBV::concrete(1, 64);
+    ctx.assume_true(&x.ugt(&one, &ctx));
+    ctx.assume_true(&y.ugt(&one, &ctx));
+    let zx = x.zero_extend(128, &ctx);
+    let zy = y.zero_extend(128, &ctx);
+    let prod = zx.mul(&zy, &ctx);
+    let n = RustBV::concrete(HARD_SEMIPRIME, 128);
+    // 1-bit condition whose feasibility is as hard as the factoring itself.
+    let cond = prod.eq(&n, &ctx);
+    let (can_true, can_false) = ctx.check_branch_feasibility(&cond);
+    assert!(
+        can_true,
+        "an undecided (timeout) cond must not prune the true branch"
+    );
+    assert!(
+        can_false,
+        "an undecided (timeout) cond must not prune the false branch"
+    );
+}
