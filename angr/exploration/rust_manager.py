@@ -5495,6 +5495,9 @@ class RustExplorationManager(
         if residency:
             self._set_frontier_residency(False)
 
+        # angr-87e56: after the parallel session joins its workers, free any
+        # owned solver forks their off-thread GC stranded in the graveyard.
+        self._drain_solver_graveyard()
         return self
 
     def _maybe_phase2_eager_retry(self, num_find):
@@ -5931,7 +5934,28 @@ class RustExplorationManager(
             else:
                 steps_taken += 1
 
+        self._drain_solver_graveyard()
         return self
+
+    @staticmethod
+    def _drain_solver_graveyard() -> None:
+        """Free solver forks stranded by off-thread GC (angr-87e56).
+
+        Called on the coordinator (main) thread after each step()/explore().
+        Under RUST_PARALLEL_WORKERS>1 an owned RustSolverContext whose proxy is
+        collected on a scheduler worker cannot be dropped there (pyo3 refuses
+        the unsendable cross-thread dealloc); its finalizer buries it and this
+        drain closes it on the owning coordinator thread. No-op (cheap locked
+        empty check) in the single-worker case, where forks close inline.
+        """
+        try:
+            from angr.exploration.rust_state_proxy import drain_solver_graveyard
+
+            drain_solver_graveyard()
+        except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort cleanup; never let a
+            # drain hiccup escape into the step loop.
+            pass
 
     def _found_count(self) -> int:
         """Fast count of found states without triggering full state export/sync."""

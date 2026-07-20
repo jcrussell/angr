@@ -11,6 +11,34 @@ fn test_solver_fork() {
     let _forked = ctx.fork();
 }
 
+/// angr-87e56: `close()` on the owning thread drops the payload (idempotent)
+/// so a later off-owner tp_dealloc finds `None` and leaks nothing.
+#[test]
+fn test_solver_close_on_owner_empties_payload() {
+    let mut ctx = RustSolverContext::new();
+    assert!(!ctx.is_closed());
+    ctx.close();
+    assert!(ctx.is_closed());
+    // Idempotent: a second close() is a no-op, not a double-free/panic.
+    ctx.close();
+    assert!(ctx.is_closed());
+}
+
+/// angr-87e56: a `close()` routed from a non-owning thread must NOT drop the
+/// non-Send payload cross-thread — it stays intact for pyo3's leak-safe
+/// dealloc refusal. `RustSolverContext` is `unsendable`, so we cannot move it
+/// across a thread boundary in a Rust test; instead assert the guard's core
+/// invariant directly: the recorded owner is the constructing thread, and a
+/// close() from that same thread does empty it (the negative direction is
+/// covered by construction — the `owner` comparison is the only gate).
+#[test]
+fn test_solver_close_is_owner_guarded() {
+    let mut ctx = RustSolverContext::new();
+    assert_eq!(ctx.owner, std::thread::current().id());
+    ctx.close();
+    assert!(ctx.is_closed());
+}
+
 #[test]
 fn test_z3_available() {
     let available = RustSolverContext::z3_available();
