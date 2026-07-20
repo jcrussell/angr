@@ -171,3 +171,80 @@ fn test_single_arm_merge_shared_prefix() {
     assert_eq!(guarded, 2);
     assert!(merged.is_sat());
 }
+
+/// angr-ph300.46: a merge of deterministic arms must stay deterministic.
+/// `with_timeout` (merge's fresh base) hardcodes both per-lineage flags to
+/// false; before the fix the merged context silently reverted to arbitrary-Z3
+/// witnesses even when every input was deterministic.
+#[test]
+fn test_merge_preserves_deterministic_and_shared_lineage_flags() {
+    let (base, x) = build_base();
+    base.set_deterministic(true);
+    base.set_use_shared_lineage_solver(true);
+
+    let arm_a = base.fork();
+    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32), &arm_a));
+    let arm_b = base.fork();
+    arm_b.assume_true(&x.ult(&RustBV::concrete(250, 32), &arm_b));
+
+    // Both arms inherited the flags via fork; confirm the merge OR keeps them.
+    let f0 = RustBV::symbolic(&base, "det_flag_0", 1);
+    let f1 = RustBV::symbolic(&base, "det_flag_1", 1);
+    let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
+    assert!(
+        merged.is_deterministic(),
+        "merged context must inherit deterministic witness mode"
+    );
+    assert!(
+        merged.use_shared_lineage_solver(),
+        "merged context must inherit the shared-lineage opt-in"
+    );
+}
+
+/// angr-ph300.46: the OR semantics — a single deterministic arm makes the
+/// whole merge deterministic even when the others are not.
+#[test]
+fn test_merge_flags_or_across_arms() {
+    let ctx_a = SymContext::new();
+    ctx_a.set_deterministic(true);
+    let ctx_b = SymContext::new(); // non-deterministic
+
+    let f0 = RustBV::symbolic(&ctx_a, "or_flag_0", 1);
+    let f1 = RustBV::symbolic(&ctx_a, "or_flag_1", 1);
+    let merged = ctx_a.merge(&[&ctx_b], &[f0, f1]);
+    assert!(
+        merged.is_deterministic(),
+        "any deterministic arm makes the merge deterministic"
+    );
+    assert!(
+        !merged.use_shared_lineage_solver(),
+        "no arm opted into shared lineage → merged stays opted out"
+    );
+}
+
+/// angr-ph300.46: the per-lineage flags round-trip through a snapshot. A
+/// restored deterministic context must stay deterministic.
+#[test]
+fn test_snapshot_roundtrips_lineage_flags() {
+    let ctx = SymContext::new();
+    ctx.set_deterministic(true);
+    ctx.set_use_shared_lineage_solver(true);
+    let x = RustBV::symbolic(&ctx, "snap_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(5, 32), &ctx));
+
+    let snap = ctx.to_snapshot();
+    assert!(snap.deterministic);
+    assert!(snap.use_shared_lineage_solver);
+
+    let restored = SymContext::new();
+    assert!(!restored.is_deterministic());
+    restored.restore_from_snapshot(&snap);
+    assert!(
+        restored.is_deterministic(),
+        "restored context must recover deterministic mode"
+    );
+    assert!(
+        restored.use_shared_lineage_solver(),
+        "restored context must recover the shared-lineage opt-in"
+    );
+}

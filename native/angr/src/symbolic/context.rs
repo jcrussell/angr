@@ -170,6 +170,24 @@ pub struct SymContextSnapshot {
     /// `assumed_constraints`.
     #[serde(default)]
     pub next_id: u64,
+    /// Whether the source context was in deterministic (unsigned-minimum
+    /// witness) `eval` mode at capture time (angr-ph300.46).
+    ///
+    /// A whole lineage stays in one witness-selection mode (`fork` inherits
+    /// it), so a snapshot must round-trip it too — otherwise a restored
+    /// deterministic state silently reverts to arbitrary-Z3-model witnesses
+    /// and run-to-run nondeterminism reappears. `#[serde(default)]` yields
+    /// `false` for legacy snapshots (the historical default).
+    #[serde(default)]
+    pub deterministic: bool,
+    /// Whether the source context had the `SharedLineageSolver`
+    /// materialization opt-in set at capture time (angr-ph300.46).
+    ///
+    /// Inherited across `fork` like `deterministic`; round-tripped so a
+    /// restored descendant keeps minting shared lineages. `#[serde(default)]`
+    /// yields `false` for legacy snapshots.
+    #[serde(default)]
+    pub use_shared_lineage_solver: bool,
 }
 
 /// serde default for [`SymContextSnapshot::reassert_assumed`] — the common

@@ -159,6 +159,12 @@ impl SymContext {
             // ids 0..watermark, so without this every symbol minted during the
             // resume aliases one of them.
             next_id: crate::symbolic::symbol_id_watermark(),
+            // angr-ph300.46: witness-selection mode and the shared-lineage
+            // opt-in are per-lineage flags that `fork` inherits, so a snapshot
+            // must round-trip them or a restored deterministic state reverts to
+            // arbitrary-model witnesses (nondeterminism returns).
+            deterministic: self.deterministic.load(Ordering::Relaxed),
+            use_shared_lineage_solver: self.use_shared_lineage_solver.load(Ordering::Relaxed),
         }
     }
 
@@ -267,6 +273,13 @@ impl SymContext {
             snap.next_id
                 .saturating_add(crate::symbolic::symbol_id_rebase_offset()),
         );
+        // angr-ph300.46: restore the per-lineage witness-selection mode and
+        // shared-lineage opt-in captured by `to_snapshot`. Fields always exist
+        // regardless of feature; legacy snapshots carry `false` via serde.
+        self.deterministic
+            .store(snap.deterministic, Ordering::Relaxed);
+        self.use_shared_lineage_solver
+            .store(snap.use_shared_lineage_solver, Ordering::Relaxed);
         #[cfg(feature = "vex-engine-z3")]
         {
             if snap.reassert_assumed {
@@ -1078,6 +1091,26 @@ impl SymContext {
             .assume_class_reconstructible
             .store(false, Ordering::Relaxed);
 
+        // angr-ph300.46: `with_timeout` hardcodes both per-lineage flags to
+        // false, but `fork` inherits them so a whole diamond stays in one
+        // witness-selection mode. A sibling merge must preserve that invariant:
+        // OR the inputs so a merged state whose any arm was deterministic keeps
+        // returning the unsigned-minimum witness (otherwise
+        // RustExplorationManager(deterministic=True) silently loses determinism
+        // exactly at the merge point). Same for the shared-lineage opt-in.
+        merged.deterministic.store(
+            all_contexts
+                .iter()
+                .any(|ctx| ctx.deterministic.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
+        merged.use_shared_lineage_solver.store(
+            all_contexts
+                .iter()
+                .any(|ctx| ctx.use_shared_lineage_solver.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
+
         merged
     }
 
@@ -1126,6 +1159,24 @@ impl SymContext {
         merged
             .assume_class_reconstructible
             .store(false, Ordering::Relaxed);
+
+        // angr-ph300.46: mirror the Z3 path — OR the per-lineage flags so the
+        // mock context tracks the same invariant (kept in parity for tests).
+        let all_contexts: Vec<&SymContext> = std::iter::once(self)
+            .chain(others.iter().copied())
+            .collect();
+        merged.deterministic.store(
+            all_contexts
+                .iter()
+                .any(|ctx| ctx.deterministic.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
+        merged.use_shared_lineage_solver.store(
+            all_contexts
+                .iter()
+                .any(|ctx| ctx.use_shared_lineage_solver.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
 
         merged
     }
