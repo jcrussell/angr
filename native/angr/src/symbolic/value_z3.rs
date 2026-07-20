@@ -284,116 +284,13 @@ impl RustBV {
         low: u32,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        debug_assert!(high >= low);
-        debug_assert!(high < inner.width());
-        let result_width = high - low + 1;
-
-        // Identity: Extract(width-1, 0, x) → x
-        if high == inner.width() - 1 && low == 0 {
-            return inner.to_z3_ast_cached(cache);
-        }
-
-        // Concrete fast path — fold the extraction at the Rust level so Z3
-        // never sees Extract over a literal.
-        if let Some(v) = inner.as_u128() {
-            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
-            return super::bv_codec::make_bv_const(extracted, result_width);
-        }
-
-        if let RustBV::Expression { op, operands, .. } = inner {
-            match op {
-                // Rule 1: Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
-                BVOp::Extract(_, inner_low) => {
-                    return Self::emit_extract_z3_cached(
-                        &operands[0],
-                        inner_low + high,
-                        inner_low + low,
-                        cache,
-                    );
-                }
-
-                // Rule 2: Extract(Concat(a, b)) → distribute to the relevant part(s)
-                BVOp::Concat if operands.len() == 2 => {
-                    let b_width = operands[1].width();
-                    if high < b_width {
-                        return Self::emit_extract_z3_cached(&operands[1], high, low, cache);
-                    } else if low >= b_width {
-                        return Self::emit_extract_z3_cached(
-                            &operands[0],
-                            high - b_width,
-                            low - b_width,
-                            cache,
-                        );
-                    }
-                    // Crosses boundary — extract from each part and concat.
-                    let lo_part =
-                        Self::emit_extract_z3_cached(&operands[1], b_width - 1, low, cache);
-                    let hi_part =
-                        Self::emit_extract_z3_cached(&operands[0], high - b_width, 0, cache);
-                    return hi_part.concat(&lo_part);
-                }
-
-                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.
-                // Single-byte: Reverse is a no-op, just extract the flipped byte from x.
-                // Multi-byte: extract the matching byte range from x, then byte-reverse
-                // (emitted as the canonical Concat-of-Extracts Z3 shape, matching
-                // build_z3_ast_cached's BVOp::Reverse arm).
-                BVOp::Reverse
-                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
-                {
-                    let w = operands[0].width();
-                    let inner_ast = Self::emit_extract_z3_cached(
-                        &operands[0],
-                        w - 1 - low,
-                        w - 1 - high,
-                        cache,
-                    );
-                    if high - low + 1 == 8 {
-                        return inner_ast;
-                    }
-                    let inner_w = high - low + 1;
-                    let byte_count = inner_w / 8;
-                    let parts: Vec<z3::ast::BV> = (0..byte_count)
-                        .map(|i| inner_ast.extract(i * 8 + 7, i * 8))
-                        .collect();
-                    let mut result = parts[0].clone();
-                    for part in &parts[1..] {
-                        result = result.concat(part);
-                    }
-                    return result;
-                }
-
-                // Rule 4: Extract(ZeroExt(x)) — collapse to original or zero
-                BVOp::ZeroExt(_) => {
-                    let inner_width = operands[0].width();
-                    if high < inner_width {
-                        return Self::emit_extract_z3_cached(&operands[0], high, low, cache);
-                    } else if low >= inner_width {
-                        return z3::ast::BV::from_u64(0, result_width);
-                    }
-                    // Straddles the extension boundary — fall through to the
-                    // generic path. Don't try to split here: the existing
-                    // build_z3_ast_cached emits ZeroExt as a concat of zero
-                    // bits, so Z3's bv_rewriter already collapses
-                    // Extract(zero_ext) cleanly.
-                }
-
-                // Rule 5: Extract(SignExt(x)) — collapse if entirely within original width
-                BVOp::SignExt(_) => {
-                    let inner_width = operands[0].width();
-                    if high < inner_width {
-                        return Self::emit_extract_z3_cached(&operands[0], high, low, cache);
-                    }
-                    // Otherwise fall through — the SignExt encoding handles
-                    // sign-bit propagation; bv_rewriter folds the Extract.
-                }
-
-                _ => {}
-            }
-        }
-
-        // Default: build the inner Z3 AST and apply Extract.
-        inner.to_z3_ast_cached(cache).extract(high, low)
+        // Rules 1-5 canonicalization is shared with the RustBV builder
+        // (`extract_into`) via the generic `drive_extract` driver — see the
+        // `ExtractTarget` trait in `value_ops.rs`. This target emits z3 AST;
+        // the Z3-specific terminals (byte-reversed Concat-of-Extracts, cached
+        // AST build) live in `Z3ExtractTarget` below.
+        let mut target = Z3ExtractTarget { cache };
+        super::value_ops::drive_extract(&mut target, inner, high, low)
     }
 
     /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
@@ -1265,5 +1162,57 @@ unsafe fn fresh_unconstrained_raw(
     unsafe {
         Z3_mk_fresh_const(raw_ctx, prefix, raw_sort)
             .expect("Z3_mk_fresh_const returned NULL (out of memory)")
+    }
+}
+
+/// [`ExtractTarget`](super::value_ops::ExtractTarget) that emits `z3::ast::BV`,
+/// used by `emit_extract_z3_cached`. Shares the Rules 1-5 dispatch with the
+/// RustBV builder via `drive_extract` (angr-ph300.81).
+#[cfg(feature = "vex-engine-z3")]
+struct Z3ExtractTarget<'a> {
+    cache: &'a mut std::collections::HashMap<usize, z3::ast::BV>,
+}
+
+#[cfg(feature = "vex-engine-z3")]
+impl super::value_ops::ExtractTarget for Z3ExtractTarget<'_> {
+    type Output = z3::ast::BV;
+
+    fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> z3::ast::BV {
+        super::value_ops::drive_extract(self, inner, high, low)
+    }
+
+    fn concrete(&mut self, value: u128, width: u32) -> z3::ast::BV {
+        super::bv_codec::make_bv_const(value, width)
+    }
+
+    fn identity(&mut self, inner: &RustBV) -> z3::ast::BV {
+        inner.to_z3_ast_cached(self.cache)
+    }
+
+    fn concat(&mut self, hi: z3::ast::BV, lo: z3::ast::BV) -> z3::ast::BV {
+        hi.concat(&lo)
+    }
+
+    fn zero(&mut self, width: u32) -> z3::ast::BV {
+        z3::ast::BV::from_u64(0, width)
+    }
+
+    /// Byte-reverse an already-extracted multi-byte value. Z3 has no native
+    /// Reverse, so emit the canonical Concat-of-Extracts shape (matching
+    /// build_z3_ast_cached's BVOp::Reverse arm).
+    fn reverse_bytes(&mut self, inner: z3::ast::BV, inner_width: u32) -> z3::ast::BV {
+        let byte_count = inner_width / 8;
+        let parts: Vec<z3::ast::BV> = (0..byte_count)
+            .map(|i| inner.extract(i * 8 + 7, i * 8))
+            .collect();
+        let mut result = parts[0].clone();
+        for part in &parts[1..] {
+            result = result.concat(part);
+        }
+        result
+    }
+
+    fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> z3::ast::BV {
+        inner.to_z3_ast_cached(self.cache).extract(high, low)
     }
 }

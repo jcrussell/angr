@@ -915,98 +915,15 @@ impl RustBV {
 
     /// Extract bits \[high:low\] (inclusive), consuming the argument.
     #[inline]
-    pub fn extract_into(self, high: u32, low: u32, _ctx: &SymContext) -> Self {
-        debug_assert!(high >= low);
-        debug_assert!(high < self.width());
-        let result_width = high - low + 1;
-
-        // Fast path for concrete values (fold shared with extract_no_ctx and
-        // the Z3 emitter — see bv_codec::concrete_extract_u128).
-        if let Some(v) = self.as_u128() {
-            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
-            return Self::concrete(extracted, result_width);
-        }
-
-        // Identity extraction: Extract(width-1, 0, x) → x
-        if high == self.width() - 1 && low == 0 {
-            return self;
-        }
-
-        // Canonicalization rules for Expression nodes — borrow self to inspect,
-        // then either delegate (returning early) or fall through to construct.
-        if let RustBV::Expression { op, operands, .. } = &self {
-            match op {
-                // Rule 1: Extract(Extract(x)) → fused single Extract
-                // Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
-                BVOp::Extract(_, inner_low) => {
-                    return operands[0].extract(inner_low + high, inner_low + low, _ctx);
-                }
-
-                // Rule 2: Extract(Concat(a, b)) → distribute to relevant part(s)
-                BVOp::Concat if operands.len() == 2 => {
-                    let b_width = operands[1].width();
-                    if high < b_width {
-                        // Entirely within the low part (b)
-                        return operands[1].extract(high, low, _ctx);
-                    } else if low >= b_width {
-                        // Entirely within the high part (a)
-                        return operands[0].extract(high - b_width, low - b_width, _ctx);
-                    }
-                    // Crosses boundary — extract from each part and concat
-                    let lo_part = operands[1].extract(b_width - 1, low, _ctx);
-                    let hi_part = operands[0].extract(high - b_width, 0, _ctx);
-                    return hi_part.concat_into(lo_part, _ctx);
-                }
-
-                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.
-                //
-                // The byte at position k of Reverse(x) (with B = x.width/8 bytes)
-                // is x's byte at position B-1-k. Extracting bytes [l/8..h/8] from
-                // Reverse(x) is therefore the byte sequence of x at indices
-                // [B-1-h/8 .. B-1-l/8], delivered in reversed order.
-                //
-                // → Single-byte (h == l + 7): plain Extract(w-1-low, w-1-high, x).
-                // → Multi-byte:                Reverse(Extract(w-1-low, w-1-high, x)).
-                //
-                // The previous form dropped the byte-shuffle for the multi-byte
-                // case, which is silently wrong on a Z3 round-trip.
-                BVOp::Reverse
-                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
-                {
-                    let w = operands[0].width();
-                    let inner = operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
-                    if high - low + 1 == 8 {
-                        return inner;
-                    }
-                    return inner.reverse(_ctx);
-                }
-
-                // Rule 4: Extract(ZeroExt(x)) — if entirely within original width,
-                // extract from x directly; if entirely in extended bits, result is 0
-                BVOp::ZeroExt(_) => {
-                    let inner_width = operands[0].width();
-                    if high < inner_width {
-                        return operands[0].extract(high, low, _ctx);
-                    } else if low >= inner_width {
-                        return Self::zero(result_width);
-                    }
-                }
-
-                // Rule 5: Extract(SignExt(x)) — if entirely within original width,
-                // extract from x directly
-                BVOp::SignExt(_) => {
-                    let inner_width = operands[0].width();
-                    if high < inner_width {
-                        return operands[0].extract(high, low, _ctx);
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        record_bvop_extract();
-        Self::expr_node(result_width, BVOp::Extract(high, low), [self])
+    pub fn extract_into(self, high: u32, low: u32, ctx: &SymContext) -> Self {
+        // Rules 1-5 canonicalization is shared with the Z3 emitter
+        // (`emit_extract_z3_cached`) via the generic `drive_extract` driver —
+        // see the `ExtractTarget` trait below. The RustBV target reconstructs
+        // Extract/Concat/Reverse/Zero nodes; the Z3 target emits z3 AST. This
+        // used to be ~90 LOC duplicated line-for-line in two places
+        // (angr-ph300.81).
+        let mut target = RustBVExtractTarget { ctx };
+        drive_extract(&mut target, &self, high, low)
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
@@ -1385,6 +1302,183 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
         } else {
             value
         }
+    }
+}
+
+// =============================================================================
+// Shared Extract canonicalization driver (angr-ph300.81)
+// =============================================================================
+
+/// Sink for the `Extract(high, low, inner)` canonicalization rules driven by
+/// [`drive_extract`]. Two implementations exist:
+///
+/// - [`RustBVExtractTarget`] rebuilds `RustBV` nodes (construction-time folding
+///   in [`RustBV::extract_into`]).
+/// - the Z3 target in `value_z3.rs` emits `z3::ast::BV` directly.
+///
+/// The Rules 1-5 dispatch (Extract/Concat/Reverse/ZeroExt/SignExt) is identical
+/// for both; only the terminal actions differ. Crucially, `recurse` routes the
+/// recursion **back through `drive_extract`**, not through `to_z3` of a
+/// reconstructed node — the latter infinite-loops for the Z3 target (a rebuilt
+/// `RustBV::Extract` re-enters the emitter with the same operands). See bd
+/// memory `emit-extract-z3-recursion-hazard`.
+pub(super) trait ExtractTarget {
+    /// What this target produces (a `RustBV` or a `z3::ast::BV`).
+    type Output;
+    /// Recurse into `inner`, extracting bits `[low..=high]`.
+    fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> Self::Output;
+    /// A fully-folded concrete `value` of `width` bits.
+    fn concrete(&mut self, value: u128, width: u32) -> Self::Output;
+    /// Identity extraction — the whole `inner` (`Extract(width-1, 0, x) → x`).
+    fn identity(&mut self, inner: &RustBV) -> Self::Output;
+    /// Concatenate two already-produced halves (`hi` high, `lo` low).
+    fn concat(&mut self, hi: Self::Output, lo: Self::Output) -> Self::Output;
+    /// A zero constant of `width` bits.
+    fn zero(&mut self, width: u32) -> Self::Output;
+    /// Byte-reverse an already-extracted multi-byte value of `inner_width` bits.
+    fn reverse_bytes(&mut self, inner: Self::Output, inner_width: u32) -> Self::Output;
+    /// Terminal `Extract(high, low, inner)` with no rule applied.
+    fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> Self::Output;
+}
+
+/// Apply the Extract canonicalization rules once, threading terminal actions
+/// through `target`. The single source of truth for both the RustBV builder and
+/// the Z3 emitter (angr-ph300.81).
+///
+/// Ordering note: the concrete fast-path is checked before the identity rule so
+/// a full-width extract of a literal folds to a fresh constant — matching the
+/// RustBV construction-time builders. The two orders diverge only for a
+/// full-width extract of a `Constrained` inner, which no builder ever
+/// constructs (they all fold it away first), so both targets are behavior-
+/// preserving.
+pub(super) fn drive_extract<T: ExtractTarget>(
+    target: &mut T,
+    inner: &RustBV,
+    high: u32,
+    low: u32,
+) -> T::Output {
+    debug_assert!(high >= low);
+    debug_assert!(high < inner.width());
+    let result_width = high - low + 1;
+
+    // Concrete fast path — fold at the Rust level (shared with every Extract
+    // site, see bv_codec::concrete_extract_u128).
+    if let Some(v) = inner.as_u128() {
+        let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
+        return target.concrete(extracted, result_width);
+    }
+
+    // Identity: Extract(width-1, 0, x) → x
+    if high == inner.width() - 1 && low == 0 {
+        return target.identity(inner);
+    }
+
+    if let RustBV::Expression { op, operands, .. } = inner {
+        match op {
+            // Rule 1: Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
+            BVOp::Extract(_, inner_low) => {
+                return target.recurse(&operands[0], inner_low + high, inner_low + low);
+            }
+
+            // Rule 2: Extract(Concat(a, b)) → distribute to the relevant part(s)
+            BVOp::Concat if operands.len() == 2 => {
+                let b_width = operands[1].width();
+                if high < b_width {
+                    // Entirely within the low part (b)
+                    return target.recurse(&operands[1], high, low);
+                } else if low >= b_width {
+                    // Entirely within the high part (a)
+                    return target.recurse(&operands[0], high - b_width, low - b_width);
+                }
+                // Crosses boundary — extract from each part and concat
+                let lo_part = target.recurse(&operands[1], b_width - 1, low);
+                let hi_part = target.recurse(&operands[0], high - b_width, 0);
+                return target.concat(hi_part, lo_part);
+            }
+
+            // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.
+            //
+            // The byte at position k of Reverse(x) (with B = x.width/8 bytes) is
+            // x's byte at position B-1-k. Extracting bytes [l/8..h/8] from
+            // Reverse(x) is x's byte sequence at [B-1-h/8 .. B-1-l/8], reversed.
+            // Single-byte (h == l+7): Reverse is a no-op, extract the flipped
+            // byte. Multi-byte: extract the range then byte-reverse.
+            BVOp::Reverse
+                if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
+            {
+                let w = operands[0].width();
+                let inner_out = target.recurse(&operands[0], w - 1 - low, w - 1 - high);
+                if high - low + 1 == 8 {
+                    return inner_out;
+                }
+                return target.reverse_bytes(inner_out, high - low + 1);
+            }
+
+            // Rule 4: Extract(ZeroExt(x)) — collapse to original or zero
+            BVOp::ZeroExt(_) => {
+                let inner_width = operands[0].width();
+                if high < inner_width {
+                    return target.recurse(&operands[0], high, low);
+                } else if low >= inner_width {
+                    return target.zero(result_width);
+                }
+                // Straddles the boundary — fall through to the terminal.
+            }
+
+            // Rule 5: Extract(SignExt(x)) — collapse if entirely within original
+            BVOp::SignExt(_) => {
+                let inner_width = operands[0].width();
+                if high < inner_width {
+                    return target.recurse(&operands[0], high, low);
+                }
+                // Otherwise fall through to the terminal.
+            }
+
+            _ => {}
+        }
+    }
+
+    target.default_extract(inner, high, low)
+}
+
+/// [`ExtractTarget`] that rebuilds `RustBV` nodes (used by `extract_into`).
+pub(super) struct RustBVExtractTarget<'a> {
+    /// Threaded through to the reconstruction helpers (currently unused by them,
+    /// but kept for signature parity with the public `extract`/`concat`/`reverse`).
+    pub(super) ctx: &'a SymContext,
+}
+
+impl ExtractTarget for RustBVExtractTarget<'_> {
+    type Output = RustBV;
+
+    fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {
+        drive_extract(self, inner, high, low)
+    }
+
+    fn concrete(&mut self, value: u128, width: u32) -> RustBV {
+        RustBV::concrete(value, width)
+    }
+
+    fn identity(&mut self, inner: &RustBV) -> RustBV {
+        inner.clone()
+    }
+
+    fn concat(&mut self, hi: RustBV, lo: RustBV) -> RustBV {
+        hi.concat_into(lo, self.ctx)
+    }
+
+    fn zero(&mut self, width: u32) -> RustBV {
+        RustBV::zero(width)
+    }
+
+    fn reverse_bytes(&mut self, inner: RustBV, _inner_width: u32) -> RustBV {
+        inner.reverse(self.ctx)
+    }
+
+    fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {
+        record_bvop_extract();
+        let result_width = high - low + 1;
+        RustBV::expr_node(result_width, BVOp::Extract(high, low), [inner.clone()])
     }
 }
 
