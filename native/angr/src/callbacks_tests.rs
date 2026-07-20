@@ -20,3 +20,93 @@ fn test_loop_execution_event() {
     assert_eq!(event.pc, Some(0x1000));
     assert_eq!(event.blocks_executed, 5);
 }
+
+/// angr-ph300.66: `call_memory_store_symbolic_full` must hard-error (not
+/// silently `Ok(())`) when the callback is unset — module invariant 1
+/// (`avoid-silent-no-op-callback-fallbacks`). A silent no-op would drop the
+/// store and diverge Rust↔Python memory. The unset arm returns before any
+/// claripy import, so this test does not need claripy on sys.path.
+#[test]
+fn store_symbolic_full_errors_when_callback_unset() {
+    use crate::symbolic::RustBV;
+
+    Python::initialize();
+    let cb = PythonCallbacks::new();
+    assert!(!cb.has_memory_store_symbolic_full());
+
+    let addr = RustBV::concrete(0x1000, 64);
+    let data = RustBV::concrete(0x41, 8);
+    let res = cb.call_memory_store_symbolic_full(&addr, &data);
+    let err = res.expect_err("unset full-store callback must error, not no-op");
+    Python::attach(|py| {
+        assert!(
+            err.to_string()
+                .contains("memory_store_symbolic_full callback not set"),
+            "unexpected error message: {}",
+            err.value(py)
+        );
+    });
+}
+
+/// angr-ph300.64: a multi-address store of *concrete* data must route to the
+/// wired `memory_store_symbolic_full` callback (which stores across every
+/// concretized candidate via Python's memory model), NOT degrade to the
+/// first-address-only fallback that silently drops addrs[1..].
+#[test]
+fn concrete_multi_addr_store_prefers_full_callback() {
+    use crate::symbolic::{RustBV, SymContext};
+    use pyo3::types::{PyDict, PyList};
+
+    let ctx = SymContext::new_mock();
+
+    Python::initialize();
+    Python::attach(|py| {
+        // rustbv_to_claripy imports claripy; skip when it is not importable.
+        if py.import("claripy").is_err() {
+            return;
+        }
+
+        let globals = PyDict::new(py);
+        py.run(
+            c"_full = []
+_first = []
+def full_cb(addr_ast, data_ast):
+    _full.append((addr_ast.op, data_ast.size()))
+def store_cb(addr, data):
+    _first.append(addr)
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define recorder callbacks");
+
+        let full_cb = globals.get_item("full_cb").unwrap().unwrap();
+        let store_cb = globals.get_item("store_cb").unwrap().unwrap();
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store_symbolic_full(full_cb.unbind());
+        cb.set_memory_store(store_cb.unbind());
+        assert!(cb.has_memory_store_symbolic_full());
+
+        // Symbolic address concretized to 17 candidates (> the in-Rust ITE
+        // cap), concrete data — the exact `table[x]=const` shape from the bug.
+        let addr_ast = RustBV::symbolic(&ctx, "store_addr", 64);
+        let data = RustBV::concrete(0x41, 8);
+        let addrs: Vec<u64> = (0..17).map(|i| 0x1000 + i * 8).collect();
+
+        cb.call_memory_store_symbolic(&addrs, &data, &addr_ast)
+            .expect("call_memory_store_symbolic");
+
+        let full = globals.get_item("_full").unwrap().unwrap();
+        let full = full.cast::<PyList>().unwrap();
+        assert_eq!(full.len(), 1, "full callback must fire exactly once");
+
+        let first = globals.get_item("_first").unwrap().unwrap();
+        let first = first.cast::<PyList>().unwrap();
+        assert_eq!(
+            first.len(),
+            0,
+            "first-address-only fallback must NOT fire when full callback is wired"
+        );
+    });
+}

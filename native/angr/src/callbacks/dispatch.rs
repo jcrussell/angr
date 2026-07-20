@@ -226,8 +226,15 @@ impl PythonCallbacks {
             );
             use crate::claripy_bridge::rustbv_to_claripy;
 
-            // If data is symbolic and we have the full symbolic callback, use it
-            if data.is_symbolic() && self.memory_store_symbolic_full.is_some() {
+            // Prefer the full symbolic callback whenever it is wired. It handles
+            // both symbolic and *concrete* data over a symbolic address range by
+            // handing the address AST + data to Python's memory model, which
+            // builds the correct conditional stores across every concretized
+            // candidate. Gating this on `data.is_symbolic()` (the old behavior)
+            // let concrete data fall through to the first-address-only fallback
+            // below, silently dropping stores to addrs[1..] — the angr-ph300.64
+            // divergent-memory bug for `table[x]=const` with 17+ concretizations.
+            if self.memory_store_symbolic_full.is_some() {
                 return self.call_memory_store_symbolic_full(addr_ast, data);
             }
 
@@ -621,8 +628,15 @@ impl PythonCallbacks {
                 return Ok(());
             }
 
-            // Fallback: silently ignore (no proper fallback available)
-            Ok(())
+            // Hard-error rather than silently no-op (module invariant 1,
+            // `avoid-silent-no-op-callback-fallbacks`): a silent Ok(()) here
+            // would drop the store and diverge Rust↔Python memory. Every
+            // production call site guards with has_memory_store_symbolic_full(),
+            // so this is only reachable if a future unguarded caller (or a
+            // teardown that nulls the callback) hits it — surface it loudly.
+            Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "memory_store_symbolic_full callback not set",
+            ))
         })
     }
 
