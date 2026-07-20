@@ -327,6 +327,24 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
+        // u128_to_le_bytes only round-trips 16 bytes; wider concrete loads
+        // wrapped mod 128 (repeating pattern) and the 'is symbolic' error was
+        // misleading for wide concrete buffers. Chunk to <=16 bytes
+        // (angr-ph300.19).
+        if size > 16 {
+            let mut out = Vec::with_capacity(size as usize);
+            let mut off = 0u32;
+            while off < size {
+                let chunk = (size - off).min(16);
+                out.extend_from_slice(&self._get_pending_memory(
+                    state_id,
+                    addr + off as u64,
+                    chunk,
+                )?);
+                off += chunk;
+            }
+            return Ok(out);
+        }
         self.with_pending(state_id, |pending| {
             let bv = pending
                 .state
@@ -638,26 +656,42 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
+        // The u128 reconstruction below round-trips at most 16 bytes; a wider
+        // request truncated to 16 (`.min(16)`), silently dropping the tail.
+        // Read in <=16-byte chunks and concatenate so any size is exact
+        // (mirrors state_api::_get_state_memory, angr-ph300.19).
+        if size > 16 {
+            let mut out = Vec::with_capacity(size as usize);
+            let mut off = 0u32;
+            while off < size {
+                let chunk = (size - off).min(16);
+                out.extend_from_slice(&self._pending_memory_load(
+                    state_id,
+                    addr + off as u64,
+                    chunk,
+                )?);
+                off += chunk;
+            }
+            return Ok(out);
+        }
         self.with_pending(state_id, |pending| {
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
             match pending.state.memory().load_concrete(addr, size, &ctx) {
                 Ok(bv) => {
                     if let Some(val) = bv.as_u128() {
-                        let byte_count = (size as usize).min(16);
-                        Ok(val.to_le_bytes()[..byte_count].to_vec())
+                        Ok(super::helpers::u128_to_le_bytes(val, size as usize))
+                    } else if let Some(val) = ctx.eval(&bv) {
+                        Ok(super::helpers::u128_to_le_bytes(val, size as usize))
                     } else {
-                        let solver = pending.state.solver();
-                        let ctx = solver.borrow();
-                        if let Some(val) = ctx.eval(&bv) {
-                            let byte_count = (size as usize).min(16);
-                            Ok(val.to_le_bytes()[..byte_count].to_vec())
-                        } else {
-                            Ok(vec![0u8; size as usize])
-                        }
+                        Ok(vec![0u8; size as usize])
                     }
                 }
-                Err(_) => Ok(vec![0u8; size as usize]),
+                // Previously swallowed the error and returned full-size zeros,
+                // which callbacks consuming by length mistook for real data.
+                Err(e) => Err(PyValueError::new_err(format!(
+                    "pending memory load at 0x{addr:x} failed: {e}"
+                ))),
             }
         })
     }

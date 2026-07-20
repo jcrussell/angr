@@ -2324,6 +2324,69 @@ class TestNativeReadCacheSync:
             f"page filter leaked 0x{SYM_ADDR:x} into the wrong page (0x{HOOK & ~0xFFF:x})"
         )
 
+    def test_pending_memory_load_wide_concrete_not_truncated(self):
+        """`pending_memory_load`/`get_pending_memory` must return every byte of
+        a >16-byte concrete load, not a 16-byte prefix (angr-ph300.19).
+
+        The prior body did ``(size).min(16)`` and returned only 16 bytes for a
+        32-byte request; ``get_pending_memory`` fed the u128 reconstruction a
+        size>16 that wrapped mod 128. Both are now chunked into <=16-byte reads.
+        Driven inside a live SimProcedure pending callback (same mechanism as
+        ``test_pending_memory_load_symbolic_page_returns_page_symbols``).
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+
+        HOOK = 0x500000
+        DATA_PAGE = 0x510000
+        DATA_ADDR = DATA_PAGE + 0x40
+        STACK_BASE = 0x7FFF0000
+        pattern = bytes((i * 7 + 3) & 0xFF for i in range(32))
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
+
+        def proc(args):
+            return 0
+
+        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+
+        state = RustSimState("amd64")
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STACK_BASE, (0xDEADC0DE).to_bytes(8, "little"))
+        state.set_register("rsp", STACK_BASE)
+        state.map_memory(DATA_PAGE, 0x1000, 7)
+        state.memory_store(DATA_ADDR, pattern)
+        state.pc = HOOK
+
+        # Symbolic RDI forces the Python SimProcedure fallback → live pending.
+        sym_arg = claripy.BVS("sym_arg0", 64)
+        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+
+        mgr.add_state("active", state)
+        sid = mgr.get_state_ids("active")[0]
+        assert sid is not None
+
+        event = mgr.run(5)
+        assert event.callback_reason == "simprocedure", (
+            f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
+        )
+
+        cid = event.callback_state_id
+        loaded = mgr.pending_memory_load(cid, DATA_ADDR, 32)
+        assert bytes(loaded) == pattern, (
+            f"pending_memory_load truncated/garbled the 32-byte load: {bytes(loaded)!r} != {pattern!r}"
+        )
+        got = mgr.get_pending_memory(cid, DATA_ADDR, 32)
+        assert bytes(got) == pattern, (
+            f"get_pending_memory truncated/garbled the 32-byte load: {bytes(got)!r} != {pattern!r}"
+        )
+
 
 class TestNativeExtendedStringProcedures:
     """Integration tests for NativeStrrchr / NativeStrpbrk / NativeStrspn /
@@ -2925,7 +2988,7 @@ class TestReturnUnconstrainedStub:
     ``rust_callback_dispatch._unconstrained_stub_spec``.
     """
 
-    def test_spec_accepts_plain_stub(self, fauxware_project):  # noqa: F811
+    def test_spec_accepts_plain_stub(self, fauxware_project):
         from angr.exploration.rust_callback_dispatch import _unconstrained_stub_spec
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
@@ -2939,7 +3002,7 @@ class TestReturnUnconstrainedStub:
         assert bits > 0
         proj.unhook(addr)
 
-    def test_spec_declines_explicit_return_val_and_real_procs(self, fauxware_project):  # noqa: F811
+    def test_spec_declines_explicit_return_val_and_real_procs(self, fauxware_project):
         from angr.exploration.rust_callback_dispatch import _unconstrained_stub_spec
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
@@ -2952,7 +3015,7 @@ class TestReturnUnconstrainedStub:
         # A real SimProcedure is not a stub.
         assert _unconstrained_stub_spec(angr.SIM_PROCEDURES["libc"]["strlen"](), proj.arch) is None
 
-    def test_stub_registered_natively_on_manager_init(self, fauxware_project):  # noqa: F811
+    def test_stub_registered_natively_on_manager_init(self, fauxware_project):
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
         proj = fauxware_project
