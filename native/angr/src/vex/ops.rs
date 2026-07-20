@@ -1833,3 +1833,7 @@ mod tests_vec_set_lo;
 #[cfg(test)]
 #[path = "ops_tests_vec_int_lane.rs"]
 mod tests_vec_int_lane;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_compare.rs"]
+mod tests_vec_compare;
