@@ -262,7 +262,16 @@ impl PyRustSimState {
                 "I5: register {name} has zero size — arch table is malformed"
             );
             let bv = RustBV::concrete(value, size * 8);
-            self.inner.set_register(&name, bv);
+            // Propagate a slotless-register failure the same way scalar
+            // set_register does. register_size returning Some does not
+            // guarantee a RegisterFile slot (the I5 size-known-but-slotless
+            // drift case the debug_assert worries about), so a false return
+            // here is a silent dropped write unless we surface it.
+            if !self.inner.set_register(&name, bv) {
+                return Err(PyValueError::new_err(format!(
+                    "failed to set register: {name}"
+                )));
+            }
         }
         Ok(())
     }
