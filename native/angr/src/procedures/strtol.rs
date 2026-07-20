@@ -16,7 +16,33 @@ use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
+/// Native parses up to 64 digits. Python caps at `state.libc.max_strtol_len`
+/// (= 11, angr/state_plugins/libc.py). This is a **deliberate divergence**: a
+/// 12+-digit concrete string makes Python's `final_constraint` Or(...) evaluate
+/// False, so the state goes unsat and is silently discarded, while native
+/// parses it C-style. Native's behavior is closer to C; Python's unsat-at-12
+/// is arguably its own bug. See bd angr-vu1q4 (axis 2). We do NOT replicate
+/// Python's cap because truncating to 11 digits would match neither engine
+/// (Python rejects the input outright rather than truncating), and forcing the
+/// state unsat is an invasive behavior change with real benchmark risk.
 const MAX_DIGITS: usize = 64;
+
+/// Python's `_string_to_int` clamps the accumulated magnitude at the SIGNED max
+/// `2^(bits-1) - 1` — `strtol.run` always calls `strtol_inner(..., signed=True)`,
+/// even for `strtoul`, so the whole family shares this cap. Only defined for
+/// `bits` in `[2, 64]`; callers gate on `bits < 64` (see `run_strtol`).
+fn signed_max(bits: u32) -> u128 {
+    (1u128 << (bits - 1)) - 1
+}
+
+/// Mask a concrete register value to `w` low bits when `ret_int_bits` requests
+/// an int-width return (atoi: Python returns `val[sizeof(int)*8 - 1 : 0]`).
+fn apply_int_width(val: u128, ret_int_bits: Option<u32>) -> u128 {
+    match ret_int_bits {
+        Some(w) if w < 128 => val & ((1u128 << w) - 1),
+        _ => val,
+    }
+}
 
 /// Read up to `max_len` bytes from `addr`, stopping at the first concrete
 /// null terminator (symbolic bytes do not stop the scan).
@@ -131,9 +157,15 @@ fn parse_concrete_prefix(
     Ok((idx, Some((base, negative))))
 }
 
-/// Concrete digit-only parser. Returns (value, num_consumed).
-fn parse_concrete_digits(bytes: &[u8], base: u32) -> (i64, usize) {
-    let mut value: i64 = 0;
+/// Concrete digit-only parser. Returns (magnitude, num_consumed).
+///
+/// The magnitude accumulates *saturating* in `u128` (never panics on a
+/// pathological 64-digit input) and is UNsigned — the sign and the signed
+/// overflow clamp are applied by the caller so the clamp can compare against
+/// `signed_max(bits)` before negation, matching Python's clamp-then-negate
+/// order.
+fn parse_concrete_digits(bytes: &[u8], base: u32) -> (u128, usize) {
+    let mut value: u128 = 0;
     let mut found_digit = false;
     let mut idx = 0;
     while idx < bytes.len() {
@@ -147,7 +179,9 @@ fn parse_concrete_digits(bytes: &[u8], base: u32) -> (i64, usize) {
             break;
         }
         found_digit = true;
-        value = value.wrapping_mul(base as i64).wrapping_add(digit as i64);
+        value = value
+            .saturating_mul(base as u128)
+            .saturating_add(digit as u128);
         idx += 1;
     }
     if !found_digit { (0, 0) } else { (value, idx) }
@@ -231,11 +265,15 @@ fn build_symbolic_accumulator(
 ///
 /// `endptr` is `Some(0)` for an explicit NULL pointer and `None` for callers
 /// that take no `endptr` argument (atoi/atol).
+/// `ret_int_bits` requests an int-width (rather than arch-width) return, as
+/// `atoi` does: Python's `atoi.run` returns `val[sizeof(int)*8 - 1 : 0]`.
+/// `None` returns the full arch width (atol/strtol/strtoul).
 fn run_strtol(
     state: &mut RustSimState,
     addr: u64,
     endptr: Option<u64>,
     base_arg: i64,
+    ret_int_bits: Option<u32>,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bytes = read_bytes_until_null(state, addr, MAX_DIGITS)?;
     let bits = state.arch().bits();
@@ -263,12 +301,27 @@ fn run_strtol(
             .iter()
             .map(|b| b.as_u64().unwrap() as u8)
             .collect();
-        let (value, consumed) = parse_concrete_digits(&cb, base);
-        let value = if negative {
-            value.wrapping_neg()
+        let (mag, consumed) = parse_concrete_digits(&cb, base);
+        // Python clamps the magnitude at the signed max before negating. On
+        // 32-bit archs this clamp is reachable for <=max_strtol_len-digit
+        // inputs where native's old wrapping accumulator diverged (e.g. x86
+        // atoi("3000000000") -> Python 0x7FFFFFFF vs native 0xB2D05E00). On
+        // 64-bit archs Python's 11-digit cap rejects any i63-overflowing
+        // concrete input as unsat *before* the clamp fires, so there is no
+        // Python value to match — native keeps its C-style full-width parse
+        // (this is what lets strtoull return values above i64::MAX). See the
+        // MAX_DIGITS note and bd angr-vu1q4 (axis 1 vs axis 2).
+        let clamped = if bits < 64 {
+            mag.min(signed_max(bits))
         } else {
-            value
+            mag
         };
+        let reg_val = if negative {
+            0u128.wrapping_sub(clamped)
+        } else {
+            clamped
+        };
+        let reg_val = apply_int_width(reg_val, ret_int_bits);
         if let Some(end) = endptr
             && end != 0
         {
@@ -282,7 +335,7 @@ fn run_strtol(
             };
             state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
         }
-        return Ok(Some(RustBV::concrete(value as u128, bits)));
+        return Ok(Some(RustBV::concrete(reg_val, bits)));
     }
 
     // Symbolic digit region: build accumulator.
@@ -290,6 +343,15 @@ fn run_strtol(
     let ctx = ctx_handle.borrow();
     let accum = build_symbolic_accumulator(&bytes, prefix_end, base, bits, &ctx);
     let result = if negative { accum.neg(&ctx) } else { accum };
+    // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
+    // Extract the low `w` bits then zero-extend back into the return register.
+    // NOTE: the symbolic accumulator itself still wraps at `bits` (Python
+    // accumulates double-width and clamps at signed_max); replicating that
+    // clamp symbolically is deferred — see bd angr-vu1q4 (axis 1, symbolic).
+    let result = match ret_int_bits {
+        Some(w) if w < bits => result.extract(w - 1, 0, &ctx).zero_extend(bits, &ctx),
+        _ => result,
+    };
     drop(ctx);
 
     // Endptr: best-effort over-approximation = addr + bytes.len() (i.e. past
@@ -310,7 +372,7 @@ crate::declare_proc! {
     struct = NativeStrtol,
     args = [nptr: concrete, endptr: concrete, base: concrete],
     call |state| {
-        run_strtol(state, nptr, Some(endptr), base as i64)
+        run_strtol(state, nptr, Some(endptr), base as i64, None)
     }
 }
 
@@ -321,7 +383,7 @@ crate::declare_proc! {
     struct = NativeStrtoul,
     args = [nptr: concrete, endptr: concrete, base: concrete],
     call |state| {
-        run_strtol(state, nptr, Some(endptr), base as i64)
+        run_strtol(state, nptr, Some(endptr), base as i64, None)
     }
 }
 
@@ -331,7 +393,8 @@ crate::declare_proc! {
     struct = NativeAtoi,
     args = [nptr: concrete],
     call |state| {
-        run_strtol(state, nptr, None, 10)
+        // atoi returns int-width (Python: `val[sizeof(int)*8 - 1 : 0]`).
+        run_strtol(state, nptr, None, 10, Some(32))
     }
 }
 
@@ -341,7 +404,7 @@ crate::declare_proc! {
     struct = NativeAtol,
     args = [nptr: concrete],
     call |state| {
-        run_strtol(state, nptr, None, 10)
+        run_strtol(state, nptr, None, 10, None)
     }
 }
 
@@ -368,7 +431,7 @@ crate::declare_proc! {
         if state.arch().bits() < 64 {
             return Err(ProcedureError::NotImplemented);
         }
-        run_strtol(state, nptr, Some(endptr), base as i64)
+        run_strtol(state, nptr, Some(endptr), base as i64, None)
     }
 }
 
@@ -383,7 +446,7 @@ crate::declare_proc! {
         if state.arch().bits() < 64 {
             return Err(ProcedureError::NotImplemented);
         }
-        run_strtol(state, nptr, Some(endptr), base as i64)
+        run_strtol(state, nptr, Some(endptr), base as i64, None)
     }
 }
 

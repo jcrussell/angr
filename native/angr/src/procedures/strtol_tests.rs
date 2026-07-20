@@ -51,7 +51,9 @@ fn test_atoi_negative_concrete() {
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    assert_eq!(result.as_u64(), Some((-123i64) as u64));
+    // atoi returns int-width bits: Python `val[31:0]` = 0xFFFFFF85, then
+    // zero-extended into rax (NOT sign-extended to 0xFFFF..FF85). See angr-vu1q4.
+    assert_eq!(result.as_u64(), Some(0xFFFF_FF85));
 }
 
 #[test]
@@ -245,9 +247,10 @@ fn test_atoi_negative_symbolic_digits() {
     state.add_constraint(c0);
     state.add_constraint(c1);
     let ctx = state.solver().borrow();
-    // Result is 64-bit; -42 in two's complement = 0xffffffffffffffd6.
-    assert_eq!(ctx.min(&result, false), Some((-42i64) as u64 as u128));
-    assert_eq!(ctx.max(&result, false), Some((-42i64) as u64 as u128));
+    // atoi extracts int-width bits: -42 -> low 32 bits (0xFFFFFFD6) zero-extended
+    // into the 64-bit register, matching Python's `val[31:0]`. See angr-vu1q4.
+    assert_eq!(ctx.min(&result, false), Some(0xFFFF_FFD6));
+    assert_eq!(ctx.max(&result, false), Some(0xFFFF_FFD6));
 }
 
 #[test]
@@ -419,4 +422,37 @@ fn test_strtoull_ilp32_falls_back_to_python() {
         )
         .unwrap_err();
     assert!(matches!(err, ProcedureError::NotImplemented));
+}
+
+#[test]
+fn test_atoi_overflow_clamps_x86() {
+    // Axis 1 (angr-vu1q4): on 32-bit archs Python's `_string_to_int` clamps
+    // the magnitude at the signed max `2^31 - 1`. atoi("3000000000") on x86
+    // → Python eax 0x7FFFFFFF, whereas the old wrapping accumulator produced
+    // 0xB2D05E00. Pin the clamp.
+    let mut state = RustSimState::new("x86").unwrap();
+    setup_string(&mut state, 0x1000, b"3000000000");
+    let p = NativeAtoi;
+    let result = p
+        .call(&mut state, &[RustBV::concrete(0x1000, 32)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x7FFF_FFFF));
+}
+
+#[test]
+fn test_atoi_int_width_truncates_amd64() {
+    // Axis 3 (angr-vu1q4): atoi returns int-width bits (Python
+    // `val[sizeof(int)*8 - 1 : 0]`). atoi("10000000000") on amd64:
+    // magnitude 0x2_540B_E400, low 32 bits 0x540B_E400 zero-extended into
+    // rax — NOT the full arch-width 0x2_540B_E400. On amd64 the 11-digit cap
+    // does not bind (10 digits) so the value survives to the int-width slice.
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, b"10000000000");
+    let p = NativeAtoi;
+    let result = p
+        .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x540B_E400));
 }
