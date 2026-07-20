@@ -1120,6 +1120,19 @@ class TestRustSimStateIntegration:
         assert state1.pc == 0x1000
         assert state1.get_register("rax") == 42
 
+    def test_set_register_symbolic_null_ptr_raises(self):
+        """A null Z3 AST pointer must raise, not segfault (angr-ph300.49).
+
+        ``set_register_symbolic`` is a ``#[pymethods]`` entry callable from
+        Python with an arbitrary integer. It previously fed the raw usize into
+        ``NonNull::new_unchecked`` — a 0 (the guarded absent-AST value from
+        rust_state_sync.py) produced UB and a Z3_inc_ref segfault. The binding
+        now rejects a null pointer with a ValueError before any unsafe deref.
+        """
+        state = RustSimState("amd64")
+        with pytest.raises(ValueError):
+            state.set_register_symbolic("rax", 0, 64)
+
     def test_state_memory(self):
         """Test memory operations."""
         state = RustSimState("amd64")

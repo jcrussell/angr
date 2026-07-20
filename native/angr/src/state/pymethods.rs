@@ -307,13 +307,22 @@ impl PyRustSimState {
             )));
         }
         // Reconstruct z3::ast::BV from raw pointer.
-        // SAFETY: caller guarantees `z3_ast_ptr` is a non-null, BV-sorted
-        // Z3_ast in the active thread-local context (z3-rs 0.19+ shares the
-        // process-global context with claripy's z3 backend). `BV::wrap` takes
-        // its own ref. `width` was validated above to match the register's
-        // bit width — i.e. the AST's BV sort width.
+        // Reject a null pointer explicitly — this is a `#[pymethods]` entry
+        // callable from Python with an arbitrary integer, so a 0 (or otherwise
+        // absent) AST must surface as a `ValueError`, not `NonNull::new_unchecked`
+        // UB / a Z3_inc_ref segfault on a bogus pointer.
+        let raw = std::ptr::NonNull::new(z3_ast_ptr as *mut _).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_register_symbolic: null Z3 AST pointer for register {name}"
+            ))
+        })?;
+        // SAFETY: `raw` is non-null (checked above); caller guarantees it is a
+        // BV-sorted `Z3_ast` in the active thread-local context (z3-rs 0.19+
+        // shares the process-global context with claripy's z3 backend).
+        // `BV::wrap` takes its own ref. `width` was validated above to match the
+        // register's bit width — i.e. the AST's BV sort width. A non-null but
+        // otherwise garbage pointer remains the caller's responsibility.
         let z3_bv = unsafe {
-            let raw = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
             let ctx = z3::Context::thread_local();
             z3::ast::BV::wrap(&ctx, raw)
         };
