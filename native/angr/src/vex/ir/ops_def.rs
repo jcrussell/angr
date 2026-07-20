@@ -216,6 +216,18 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+    /// Widening vector multiply — each contributing `elem`-wide input lane is
+    /// sign/zero-extended to `2*elem` bits, multiplied with the matching lane
+    /// of the other operand, and truncated to `2*elem` bits to form one output
+    /// lane. `even=false` widens all `count` lanes (Iop_Mull{N}{S,U}x{M},
+    /// (I64,I64)->V128, NEON VMULL); `even=true` widens only the even-indexed
+    /// lanes (Iop_MullEven{N}{S,U}x{M}, (V128,V128)->V128, SSE PMULDQ/PMULUDQ).
+    VMull {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        even: bool,
+    },
     /// Vector and
     VAnd(IRType), // V128 or V256
     /// Vector or
@@ -844,6 +856,7 @@ impl IROp {
             IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
+            | IROp::VMull { .. }
             | IROp::VShlN { .. }
             | IROp::VShrN { .. }
             | IROp::VSarN { .. }

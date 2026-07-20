@@ -480,6 +480,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VAdd { .. }
         | IROp::VSub { .. }
         | IROp::VMul { .. }
+        | IROp::VMull { .. }
         | IROp::VAnd(_)
         | IROp::VOr(_)
         | IROp::VXor(_)
@@ -817,6 +818,7 @@ impl VEXOps {
             | IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
+            | IROp::VMull { .. }
             | IROp::VQAdd { .. }
             | IROp::VQSub { .. }
             | IROp::VQShlSat { .. }
@@ -1032,6 +1034,12 @@ impl VEXOps {
             IROp::VMul { elem, count } => {
                 Self::vec_int_lane_op(&[left, right], elem, count, &IMul, ctx)
             }
+            IROp::VMull {
+                elem,
+                count,
+                signed,
+                even,
+            } => Self::vec_mull(left, right, elem, count, signed, even, ctx),
 
             // NEON saturating integer add/sub.
             IROp::VQAdd {

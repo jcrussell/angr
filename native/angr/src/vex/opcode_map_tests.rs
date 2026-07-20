@@ -102,33 +102,60 @@ fn test_unmapped_opcode() {
 }
 
 #[test]
-fn test_widening_vector_multiply_is_unmapped() {
-    // angr-ph300.58: the widening vector-multiply families are not yet
-    // implemented — they route to IROp::Unmapped (UnsupportedVexOp -> Python)
-    // rather than silently producing a wrong result. This CHARACTERIZES the
-    // gap: when a future increment lands even/full-lane widening multiply,
-    // flip the failing entries here to positive routing assertions.
+fn test_widening_vector_multiply_routing() {
+    // angr-ph300.78: the widening vector-multiply families now map to
+    // IROp::VMull (implemented in ops_vec_permute_mul::vec_mull). Real libVEX
+    // names put S/U AFTER the size (e.g. Iop_Mull32Sx2); the former phantom
+    // "Iop_MullS32x4" arm libVEX never emits still routes to Unmapped.
     //
-    // Real libVEX names put S/U AFTER the size (e.g. Iop_Mull32Sx2); the old
-    // opcode_map had a phantom "Iop_MullS32x4" -> VMulLo arm that libVEX never
-    // emits. That arm (and the dead VMulLo IROp / vec_mul_lo impl) is gone.
-    for op in [
-        "Iop_MullS32x4", // phantom — never emitted by libVEX
-        "Iop_Mull8Sx8",  // NEON VMULL (widening, full lanes)
-        "Iop_Mull16Ux4",
-        "Iop_Mull32Sx2",
-        "Iop_MullEven8Ux16", // PMULUDQ/PMULDQ (widening, even lanes)
-        "Iop_MullEven16Sx8",
-        "Iop_MullEven32Ux4",
+    // Full-lane family (Iop_Mull{N}{S,U}x{M}, (I64,I64)->V128, NEON VMULL).
+    for (op, elem, count, signed) in [
+        ("Iop_Mull8Ux8", IRType::I8, 8u8, false),
+        ("Iop_Mull8Sx8", IRType::I8, 8, true),
+        ("Iop_Mull16Ux4", IRType::I16, 4, false),
+        ("Iop_Mull16Sx4", IRType::I16, 4, true),
+        ("Iop_Mull32Ux2", IRType::I32, 2, false),
+        ("Iop_Mull32Sx2", IRType::I32, 2, true),
     ] {
-        match parse_opcode(op) {
-            IROp::Unmapped(name) => assert_eq!(name, op, "{op}: interned name"),
-            other => panic!("{op}: expected Unmapped (unimplemented), got {other:?}"),
-        }
+        assert_eq!(
+            parse_opcode(op),
+            IROp::VMull {
+                elem,
+                count,
+                signed,
+                even: false
+            },
+            "{op}"
+        );
+    }
+    // Even-lane family (Iop_MullEven{N}{S,U}x{M}, (V128,V128)->V128, PMUL[U]DQ).
+    for (op, elem, count, signed) in [
+        ("Iop_MullEven8Ux16", IRType::I8, 16u8, false),
+        ("Iop_MullEven8Sx16", IRType::I8, 16, true),
+        ("Iop_MullEven16Ux8", IRType::I16, 8, false),
+        ("Iop_MullEven16Sx8", IRType::I16, 8, true),
+        ("Iop_MullEven32Ux4", IRType::I32, 4, false),
+        ("Iop_MullEven32Sx4", IRType::I32, 4, true),
+    ] {
+        assert_eq!(
+            parse_opcode(op),
+            IROp::VMull {
+                elem,
+                count,
+                signed,
+                even: true
+            },
+            "{op}"
+        );
+    }
+    // The phantom "Iop_MullS32x4" name libVEX never emits stays Unmapped.
+    match parse_opcode("Iop_MullS32x4") {
+        IROp::Unmapped(name) => assert_eq!(name, "Iop_MullS32x4"),
+        other => panic!("Iop_MullS32x4 (phantom) expected Unmapped, got {other:?}"),
     }
     // Guard the regression: the scalar widening multiplies with the SAME
     // "Iop_MullS"/"Iop_MullU" prefix must still map (they share the prefix the
-    // phantom arm keyed on, so a careless re-add could shadow them).
+    // vector arms key on, so a careless refactor could shadow them).
     assert_eq!(parse_opcode("Iop_MullS32"), IROp::MullS(IRType::I32));
     assert_eq!(parse_opcode("Iop_MullU16"), IROp::MullU(IRType::I16));
 }

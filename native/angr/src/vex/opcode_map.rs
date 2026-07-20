@@ -789,12 +789,111 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "16x4" => (I16, 4), "16x8" => (I16, 8),
         "32x2" => (I32, 2), "32x4" => (I32, 4),
     });
-    // Widening vector multiply — Iop_Mull{8,16,32}{S,U}x* and
-    // Iop_MullEven{8,16,32}{S,U}x* (PMULDQ/PMULUDQ, NEON VMULL) — are not yet
-    // mapped; they fall through to IROp::Unmapped (UnsupportedVexOp -> Python).
-    // See angr-ph300.58: no even/full-lane widening-multiply IROp exists yet,
-    // and the former "Iop_MullS32x4" -> VMulLo arm was a phantom opcode libVEX
-    // never emits (real names put S/U after the size, e.g. Iop_Mull32Sx2).
+    // Widening vector multiply (angr-ph300.78). Two families, both -> V128:
+    //   Iop_Mull{N}{S,U}x{M}      full-lane, (I64,I64)->V128, NEON VMULL
+    //   Iop_MullEven{N}{S,U}x{M}  even-lane, (V128,V128)->V128, SSE PMULDQ/PMULUDQ
+    // `even` selects which input lanes contribute; `signed` picks sign vs zero
+    // extension. libVEX puts S/U AFTER the lane size (e.g. Iop_Mull32Sx2), so
+    // these do not collide with the "Iop_Mul" VMul arm above.
+    match op_str {
+        "Iop_Mull8Ux8" => {
+            return Some(IROp::VMull {
+                elem: IRType::I8,
+                count: 8,
+                signed: false,
+                even: false,
+            });
+        }
+        "Iop_Mull8Sx8" => {
+            return Some(IROp::VMull {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+                even: false,
+            });
+        }
+        "Iop_Mull16Ux4" => {
+            return Some(IROp::VMull {
+                elem: IRType::I16,
+                count: 4,
+                signed: false,
+                even: false,
+            });
+        }
+        "Iop_Mull16Sx4" => {
+            return Some(IROp::VMull {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+                even: false,
+            });
+        }
+        "Iop_Mull32Ux2" => {
+            return Some(IROp::VMull {
+                elem: IRType::I32,
+                count: 2,
+                signed: false,
+                even: false,
+            });
+        }
+        "Iop_Mull32Sx2" => {
+            return Some(IROp::VMull {
+                elem: IRType::I32,
+                count: 2,
+                signed: true,
+                even: false,
+            });
+        }
+        "Iop_MullEven8Ux16" => {
+            return Some(IROp::VMull {
+                elem: IRType::I8,
+                count: 16,
+                signed: false,
+                even: true,
+            });
+        }
+        "Iop_MullEven8Sx16" => {
+            return Some(IROp::VMull {
+                elem: IRType::I8,
+                count: 16,
+                signed: true,
+                even: true,
+            });
+        }
+        "Iop_MullEven16Ux8" => {
+            return Some(IROp::VMull {
+                elem: IRType::I16,
+                count: 8,
+                signed: false,
+                even: true,
+            });
+        }
+        "Iop_MullEven16Sx8" => {
+            return Some(IROp::VMull {
+                elem: IRType::I16,
+                count: 8,
+                signed: true,
+                even: true,
+            });
+        }
+        "Iop_MullEven32Ux4" => {
+            return Some(IROp::VMull {
+                elem: IRType::I32,
+                count: 4,
+                signed: false,
+                even: true,
+            });
+        }
+        "Iop_MullEven32Sx4" => {
+            return Some(IROp::VMull {
+                elem: IRType::I32,
+                count: 4,
+                signed: true,
+                even: true,
+            });
+        }
+        _ => {}
+    }
 
     // NEON lane extract / insert — Iop_{Get,Set}Elem{N}x{M}: (vec, idx[, val]).
     vec_arms!(op_str; "Iop_GetElem" => VGetElem {

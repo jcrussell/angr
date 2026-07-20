@@ -1,5 +1,6 @@
 // angr-9hleg: vector reverse / low-half packed-mul tests (mirror of ops_vec_permute_mul.rs).
 
+use super::ops_test_helpers::*;
 use super::*;
 
 // =========================================================================
@@ -193,6 +194,143 @@ fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
     assert!(
         !ctx.is_sat(),
         "VReverse 32sIn64_x2 must match the Python reference Concat pattern"
+    );
+    ctx.pop();
+}
+
+// =========================================================================
+// VMull — widening vector multiply (angr-ph300.78).
+//   Full-lane  Iop_Mull{N}{S,U}x{M}     (I64,I64)->V128, NEON VMULL
+//   Even-lane  Iop_MullEven{N}{S,U}x{M} (V128,V128)->V128, SSE PMUL[U]DQ
+// Each contributing lane widens N->2N (sign/zero) before multiplying.
+// =========================================================================
+
+/// Iop_Mull8Ux8 — NEON VMULL.U8: 8 unsigned byte lanes (64-bit input) widened
+/// to 8 u16 output lanes (128-bit). Exercises zero-extension incl. 255*255.
+#[test]
+fn test_vec_mull_8ux8_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [u128; 8] = [2, 3, 255, 0, 16, 100, 7, 1];
+    let r: [u128; 8] = [4, 5, 255, 9, 16, 2, 7, 255];
+    let exp: [u128; 8] = [8, 15, 65025, 0, 256, 200, 49, 255];
+    let lv = pack_lanes_uint(&l, 8);
+    let rv = pack_lanes_uint(&r, 8);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I8,
+            count: 8,
+            signed: false,
+            even: false,
+        },
+        RustBV::concrete(lv, 64),
+        RustBV::concrete(rv, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 16);
+}
+
+/// Iop_Mull16Sx4 — NEON VMULL.S16: 4 signed i16 lanes (64-bit input) widened
+/// to 4 i32 output lanes (128-bit). Exercises sign-extension and the
+/// -32768*-1 = 32768 case that overflows a 16-bit lane but not 32-bit.
+#[test]
+fn test_vec_mull_16sx4_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i16; 4] = [-2, 100, -32768, 3];
+    let r: [i16; 4] = [3, -4, -1, -5];
+    let exp: [i32; 4] = [-6, -400, 32768, -15];
+    let lv = pack_lanes_uint(&l.map(|x| x as u16 as u128), 16);
+    let rv = pack_lanes_uint(&r.map(|x| x as u16 as u128), 16);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I16,
+            count: 4,
+            signed: true,
+            even: false,
+        },
+        RustBV::concrete(lv, 64),
+        RustBV::concrete(rv, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(
+        result.as_u128().unwrap(),
+        &exp.map(|x| x as u32 as u128),
+        32,
+    );
+}
+
+/// Iop_MullEven32Ux4 — SSE PMULUDQ: multiplies the even 32-bit lanes (0, 2) of
+/// two 128-bit inputs, producing 2 u64 output lanes. Odd lanes (1, 3) are
+/// ignored. Exercises the widest widening (32->64) and full-range 0xFFFFFFFF^2.
+#[test]
+fn test_vec_mull_even_32ux4_concrete() {
+    let ctx = SymContext::new_mock();
+    // Lanes 0..3; only 0 and 2 (even) contribute. 1 and 3 are decoys.
+    let l: [u128; 4] = [0xFFFF_FFFF, 0xDEAD_BEEF, 5, 0x1_0000];
+    let r: [u128; 4] = [0xFFFF_FFFF, 0xCAFE_BABE, 7, 0x1_0000];
+    // even lane 0: 0xFFFFFFFF * 0xFFFFFFFF = 0xFFFFFFFE_00000001
+    // even lane 2: 5 * 7 = 35
+    let exp: [u128; 2] = [0xFFFF_FFFE_0000_0001, 35];
+    let lv = pack_lanes_uint(&l, 32);
+    let rv = pack_lanes_uint(&r, 32);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I32,
+            count: 4,
+            signed: false,
+            even: true,
+        },
+        RustBV::concrete(lv, 128),
+        RustBV::concrete(rv, 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 64);
+}
+
+/// Symbolic parity: Iop_Mull16Sx4 on fully-symbolic operands must equal the
+/// reference concat of per-lane sign-extended 16->32 products, for every
+/// input. Verified by a Z3 universality check (no satisfying counter-example).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_mull_16sx4_symbolic_matches_reference() {
+    let ctx = SymContext::new_mock();
+    let left = RustBV::symbolic(&ctx, "mull_l", 64);
+    let right = RustBV::symbolic(&ctx, "mull_r", 64);
+    let got = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I16,
+            count: 4,
+            signed: true,
+            even: false,
+        },
+        left.clone(),
+        right.clone(),
+        &ctx,
+    )
+    .unwrap();
+
+    // Reference: for each of the 4 lanes, sign-extend both 16-bit lanes to 32
+    // bits, multiply, and concat low-to-high.
+    let mut lanes = Vec::with_capacity(4);
+    for i in 0..4u32 {
+        let lo = i * 16;
+        let hi = lo + 15;
+        let la = left.extract(hi, lo, &ctx).extend_into(32, true, &ctx);
+        let ra = right.extract(hi, lo, &ctx).extend_into(32, true, &ctx);
+        lanes.push(la.mul(&ra, &ctx));
+    }
+    let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VMull 16Sx4 must match the per-lane sign-extended product reference"
     );
     ctx.pop();
 }

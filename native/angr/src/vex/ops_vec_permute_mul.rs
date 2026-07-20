@@ -83,4 +83,69 @@ impl VEXOps {
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
+
+    /// Widening vector multiply (`Iop_Mull{N}{S,U}x{M}` full-lane, NEON VMULL;
+    /// `Iop_MullEven{N}{S,U}x{M}` even-lane, SSE PMULDQ/PMULUDQ).
+    ///
+    /// Each contributing input lane (all `count` lanes when `even` is false;
+    /// only the even-indexed lanes 0,2,…,count-2 when `even` is true) is
+    /// sign- or zero-extended from `elem.bits()` to `2*elem.bits()`, multiplied
+    /// with the same-indexed lane of the other operand, and the low
+    /// `2*elem.bits()` bits form one output lane. Output lanes are packed
+    /// low-to-high, giving a V128 result in every mapped case.
+    pub(super) fn vec_mull(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        even: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let in_width = elem.bits();
+        let out_width = in_width * 2;
+        // Contributing input lanes step by 2 for even-lane, else 1.
+        let step: u32 = if even { 2 } else { 1 };
+        let out_lanes = count as u32 / step;
+        let out_total = out_width * out_lanes;
+
+        // Concrete fast path: sign/zero-extend within i128, multiply, mask.
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let in_mask = Self::low_bit_mask_u128(in_width);
+            let out_mask = Self::low_bit_mask_u128(out_width);
+            let sign_bit: u128 = 1u128 << (in_width - 1);
+            let widen = |lane: u128| -> i128 {
+                if signed && (lane & sign_bit != 0) {
+                    // Two's-complement fill of the upper bits, reinterpreted.
+                    (lane | !in_mask) as i128
+                } else {
+                    lane as i128
+                }
+            };
+            let mut result: u128 = 0;
+            for j in 0..out_lanes {
+                let lo = j * step * in_width;
+                let la = widen((l >> lo) & in_mask);
+                let ra = widen((r >> lo) & in_mask);
+                let prod = (la.wrapping_mul(ra) as u128) & out_mask;
+                result |= prod << (j * out_width);
+            }
+            return Ok(RustBV::concrete(result, out_total));
+        }
+
+        // Symbolic: extract each contributing lane, extend, multiply, concat.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(out_lanes as usize);
+        for j in 0..out_lanes {
+            let lo = j * step * in_width;
+            let hi = lo + in_width - 1;
+            let la = left
+                .extract(hi, lo, ctx)
+                .extend_into(out_width, signed, ctx);
+            let ra = right
+                .extract(hi, lo, ctx)
+                .extend_into(out_width, signed, ctx);
+            elements.push(la.mul(&ra, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
 }
