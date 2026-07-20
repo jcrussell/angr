@@ -275,6 +275,55 @@ class TestMultiArchSupport:
         state.set_register("fpscr", 0x0A0B0C0D)
         assert state.get_register("fpscr") == 0x0A0B0C0D
 
+    def test_arm32_offsets_match_archinfo(self):
+        """ARM32 register offsets are ground-truth-checked against archinfo,
+        not just self-consistent round-trips.
+
+        Covers angr-ihfe5: the ``mod offsets`` table omitted the 16-byte VEX
+        block at 108-127 (emnote/cmstart/cmlen/nraddr/ip_at_syscall), so every
+        field from D0 on was shifted -16 vs the real VEX/pyvex layout
+        (D0=112 not 128, fpscr=368 not 384, tpidruro=372 not 388,
+        itstate=376 not 392). Because get/set share the same table, the
+        paired ``test_arm32_full_register_family_dispatch`` round-trip passed
+        despite every name aliasing the wrong slot, and IR-level PUTs to the
+        real fpscr/tpidruro/itstate offsets fell past the 380-byte buffer and
+        were silently dropped. This writes each name and reads the raw
+        register file at the *archinfo* offset — the interpreter's ground
+        truth — so a wrong offset fails here.
+        """
+        import archinfo
+
+        arch = archinfo.ArchARM()
+        state = RustSimState("arm")
+
+        # Every register whose offset the -16 drift moved, plus the newly
+        # named 108-127 block. Values are per-register-distinct so a -16 alias
+        # lands in the wrong slot.
+        names = (
+            [f"d{i}" for i in range(32)]
+            + ["fpscr", "tpidruro", "itstate"]
+            + ["emnote", "cmstart", "cmlen", "nraddr", "ip_at_syscall"]
+        )
+        for idx, name in enumerate(names):
+            off, size = arch.registers[name]
+            value = (0x1122334455667788 + idx) & ((1 << (size * 8)) - 1)
+            state.set_register(name, value)
+            raw = state.get_registers_raw()
+            got = int.from_bytes(raw[off : off + size], "little")
+            assert got == value, (
+                f"{name}: wrote {value:#x}, archinfo offset {off} holds {got:#x} "
+                "(ARM offset table drifted from VEX layout)"
+            )
+
+        # tpidruro (VEX 388) is the TLS base a `mrc p15,0,rN,c13,c0,3` GET
+        # reads. Pre-fix its Rust slot was 372, aliasing d31's high word; a
+        # write there must now land at 388 and leave the old 372 slot alone.
+        state2 = RustSimState("arm")
+        state2.set_register("tpidruro", 0x76543210)
+        raw2 = state2.get_registers_raw()
+        assert int.from_bytes(raw2[388:392], "little") == 0x76543210
+        assert int.from_bytes(raw2[372:376], "little") == 0, "tpidruro write leaked into the pre-fix -16 slot (372)"
+
     def test_aarch64_full_register_family_dispatch(self):
         """AArch64 SIMD (q/v/d), CC thunks, and high GPRs round-trip via the
         standard register dispatch.

@@ -44,51 +44,64 @@ mod offsets {
     pub const GEFLAG2: u32 = 100;
     pub const GEFLAG3: u32 = 104;
 
+    // Emulation-warning note
+    pub const EMNOTE: u32 = 108;
+
+    // Chunk-marker / self-modifying-code fields and syscall bookkeeping.
+    // These occupy the 112-127 VEX block that a prior revision omitted,
+    // which shifted every VFP/FPSCR/TPIDRURO field -16 vs the real layout
+    // (angr-ihfe5). Keep them named so IR PUT/GET offsets resolve.
+    pub const CMSTART: u32 = 112;
+    pub const CMLEN: u32 = 116;
+    pub const NRADDR: u32 = 120;
+    pub const IP_AT_SYSCALL: u32 = 124;
+
     // NEON/VFP registers (D0-D31, Q0-Q15)
-    pub const D0: u32 = 112;
-    pub const D1: u32 = 120;
-    pub const D2: u32 = 128;
-    pub const D3: u32 = 136;
-    pub const D4: u32 = 144;
-    pub const D5: u32 = 152;
-    pub const D6: u32 = 160;
-    pub const D7: u32 = 168;
-    pub const D8: u32 = 176;
-    pub const D9: u32 = 184;
-    pub const D10: u32 = 192;
-    pub const D11: u32 = 200;
-    pub const D12: u32 = 208;
-    pub const D13: u32 = 216;
-    pub const D14: u32 = 224;
-    pub const D15: u32 = 232;
-    pub const D16: u32 = 240;
-    pub const D17: u32 = 248;
-    pub const D18: u32 = 256;
-    pub const D19: u32 = 264;
-    pub const D20: u32 = 272;
-    pub const D21: u32 = 280;
-    pub const D22: u32 = 288;
-    pub const D23: u32 = 296;
-    pub const D24: u32 = 304;
-    pub const D25: u32 = 312;
-    pub const D26: u32 = 320;
-    pub const D27: u32 = 328;
-    pub const D28: u32 = 336;
-    pub const D29: u32 = 344;
-    pub const D30: u32 = 352;
-    pub const D31: u32 = 360;
+    pub const D0: u32 = 128;
+    pub const D1: u32 = 136;
+    pub const D2: u32 = 144;
+    pub const D3: u32 = 152;
+    pub const D4: u32 = 160;
+    pub const D5: u32 = 168;
+    pub const D6: u32 = 176;
+    pub const D7: u32 = 184;
+    pub const D8: u32 = 192;
+    pub const D9: u32 = 200;
+    pub const D10: u32 = 208;
+    pub const D11: u32 = 216;
+    pub const D12: u32 = 224;
+    pub const D13: u32 = 232;
+    pub const D14: u32 = 240;
+    pub const D15: u32 = 248;
+    pub const D16: u32 = 256;
+    pub const D17: u32 = 264;
+    pub const D18: u32 = 272;
+    pub const D19: u32 = 280;
+    pub const D20: u32 = 288;
+    pub const D21: u32 = 296;
+    pub const D22: u32 = 304;
+    pub const D23: u32 = 312;
+    pub const D24: u32 = 320;
+    pub const D25: u32 = 328;
+    pub const D26: u32 = 336;
+    pub const D27: u32 = 344;
+    pub const D28: u32 = 352;
+    pub const D29: u32 = 360;
+    pub const D30: u32 = 368;
+    pub const D31: u32 = 376;
 
     // FPSCR
-    pub const FPSCR: u32 = 368;
+    pub const FPSCR: u32 = 384;
 
     // TPIDRURO (thread pointer)
-    pub const TPIDRURO: u32 = 372;
+    pub const TPIDRURO: u32 = 388;
 
     // IT state for conditional execution
-    pub const ITSTATE: u32 = 376;
+    pub const ITSTATE: u32 = 392;
 
-    // Total guest state size
-    pub const GUEST_STATE_SIZE: usize = 380;
+    // Total guest state size. ITSTATE ends at 396; VexGuestARMState carries
+    // 8-byte-aligned ULong D-registers, so sizeof rounds up to 400.
+    pub const GUEST_STATE_SIZE: usize = 400;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.
@@ -131,6 +144,12 @@ const ALIASES: &[RegEntry] = &[
     ("geflag1", offsets::GEFLAG1, 4),
     ("geflag2", offsets::GEFLAG2, 4),
     ("geflag3", offsets::GEFLAG3, 4),
+    // Emulation note + chunk-marker/syscall bookkeeping (VEX 108-127 block)
+    ("emnote", offsets::EMNOTE, 4),
+    ("cmstart", offsets::CMSTART, 4),
+    ("cmlen", offsets::CMLEN, 4),
+    ("nraddr", offsets::NRADDR, 4),
+    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
     // VFP/NEON D registers (64-bit)
     ("d0", offsets::D0, 8),
     ("d1", offsets::D1, 8),

@@ -41,10 +41,12 @@ fn test_neon_q_and_d_registers() {
     // pairs of D registers: Q0=D0..D1, Q1=D2..D3, ..., Q15=D30..D31.
     let arch = ARM;
 
-    // D registers are 8 bytes wide.
-    assert_eq!(arch.register_offset("d0"), Some(112));
+    // D registers are 8 bytes wide. D0 is at VEX offset 128 (after the
+    // 108-127 emnote/cmstart/cmlen/nraddr/ip_at_syscall block); the pre-fix
+    // table had D0=112 and was -16 off the real layout (angr-ihfe5).
+    assert_eq!(arch.register_offset("d0"), Some(128));
     assert_eq!(arch.register_size("d0"), Some(8));
-    assert_eq!(arch.register_offset("d31"), Some(112 + 31 * 8));
+    assert_eq!(arch.register_offset("d31"), Some(128 + 31 * 8));
 
     // Q registers are 16 bytes wide and start at the matching even
     // D register: Qn lives at offset of D(2n).
