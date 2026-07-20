@@ -157,59 +157,6 @@ impl PythonCallbacks {
         })
     }
 
-    /// Call the symbolic memory load callback.
-    ///
-    /// This is called when the address is symbolic and concretizes to multiple values.
-    /// Returns the loaded value as a RustBV.
-    pub fn call_memory_load_symbolic(
-        &self,
-        addrs: &[u64],
-        size: u32,
-        addr_ast: &RustBV,
-    ) -> PyResult<RustBV> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::MemoryLoadSymbolic,
-            );
-            // If symbolic callback is set, use it
-            if let Some(cb) = &self.memory_load_symbolic {
-                let addrs_list: Vec<u64> = addrs.to_vec();
-                // Convert addr_ast to Python representation
-                // For now we pass the concrete addresses and let Python handle the ITE chain
-                let result = cb.call1(py, (addrs_list, size, addr_ast.width()))?;
-
-                // The callback should return bytes
-                let bytes: Vec<u8> = result.extract(py)?;
-                let width = size * 8;
-                let mut value: u128 = 0;
-                for (i, &byte) in bytes.iter().enumerate() {
-                    if (i * 8) as u32 >= width {
-                        break;
-                    }
-                    value |= (byte as u128) << (i * 8);
-                }
-                return Ok(RustBV::concrete(value, width));
-            }
-
-            // Fallback: load from first address only
-            if let Some(first_addr) = addrs.first() {
-                let (data, _is_symbolic, _ast) = self.call_memory_load(*first_addr, size)?;
-                let width = size * 8;
-                let mut value: u128 = 0;
-                for (i, &byte) in data.iter().enumerate() {
-                    if (i * 8) as u32 >= width {
-                        break;
-                    }
-                    value |= (byte as u128) << (i * 8);
-                }
-                Ok(RustBV::concrete(value, width))
-            } else {
-                // No addresses - return zero
-                Ok(RustBV::zero(size * 8))
-            }
-        })
-    }
-
     /// Call the symbolic memory store callback.
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
@@ -253,15 +200,6 @@ impl PythonCallbacks {
                         cb.call1(py, (*first_addr, data_ast))?;
                     }
                 }
-                return Ok(());
-            }
-
-            // If symbolic callback is set, use it (concrete data case)
-            if let Some(cb) = &self.memory_store_symbolic {
-                let addrs_list: Vec<u64> = addrs.to_vec();
-                let data_bytes = bv_to_bytes(data);
-                let py_bytes = PyBytes::new(py, &data_bytes);
-                cb.call1(py, (addrs_list, py_bytes, addr_ast.width()))?;
                 return Ok(());
             }
 

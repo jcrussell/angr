@@ -123,10 +123,6 @@ pub struct PythonCallbacks {
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is more efficient than individual loads when multiple loads can be batched.
     pub memory_load_batch: Option<Py<PyAny>>,
-    /// Callback for symbolic memory loads: fn(addrs: list\[int\], size: int, addr_ast) -> RustBV
-    pub memory_load_symbolic: Option<Py<PyAny>>,
-    /// Callback for symbolic memory stores: fn(addrs: list\[int\], data: bytes, addr_ast) -> None
-    pub memory_store_symbolic: Option<Py<PyAny>>,
     /// Callback for hook execution: fn(addr: u64) -> new_pc
     pub on_hook: Option<Py<PyAny>>,
     /// Callback for syscall handling: fn(num: u64) -> None
@@ -387,8 +383,6 @@ impl PythonCallbacks {
             memory_store: None,
             memory_store_batch: None,
             memory_load_batch: None,
-            memory_load_symbolic: None,
-            memory_store_symbolic: None,
             on_hook: None,
             on_syscall: None,
             lift_block: None,
@@ -465,28 +459,6 @@ impl PythonCallbacks {
     /// If not set, falls back to individual loads.
     pub fn set_memory_load_batch(&mut self, cb: Py<PyAny>) {
         self.memory_load_batch = Some(cb);
-    }
-
-    /// Set the symbolic memory load callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addrs: list\[int\], size: int, addr_ast: object) -> RustBV`
-    ///
-    /// This is called when the address is symbolic and concretizes to multiple values.
-    /// The callback should build an ITE chain based on the possible addresses.
-    pub fn set_memory_load_symbolic(&mut self, cb: Py<PyAny>) {
-        self.memory_load_symbolic = Some(cb);
-    }
-
-    /// Set the symbolic memory store callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addrs: list\[int\], data: bytes, addr_ast: object) -> None`
-    ///
-    /// This is called when the address is symbolic and concretizes to multiple values.
-    /// The callback should perform conditional stores to each possible address.
-    pub fn set_memory_store_symbolic(&mut self, cb: Py<PyAny>) {
-        self.memory_store_symbolic = Some(cb);
     }
 
     /// Set the hook execution callback.
@@ -1039,8 +1011,6 @@ impl PythonCallbacks {
             &self.memory_store,
             &self.memory_store_batch,
             &self.memory_load_batch,
-            &self.memory_load_symbolic,
-            &self.memory_store_symbolic,
             &self.on_hook,
             &self.on_syscall,
             &self.lift_block,
@@ -1087,8 +1057,6 @@ impl PythonCallbacks {
         self.memory_store = None;
         self.memory_store_batch = None;
         self.memory_load_batch = None;
-        self.memory_load_symbolic = None;
-        self.memory_store_symbolic = None;
         self.on_hook = None;
         self.on_syscall = None;
         self.lift_block = None;
