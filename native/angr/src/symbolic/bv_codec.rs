@@ -100,38 +100,117 @@ pub(super) fn make_bv_from_bytes(bytes: &[u8], width: u32) -> z3::ast::BV {
         return z3::ast::BV::from_u64(val, width);
     }
 
-    // Build from 64-bit chunks (big-endian)
-    let byte_len = bytes.len();
-    let mut result: Option<z3::ast::BV> = None;
-    let mut bits_remaining = width;
-    let mut pos = 0;
+    // The byte array is a right-aligned big-endian value of `width` bits, so
+    // when width % 8 != 0 the top byte is ragged (its high 8-(width%8) bits are
+    // zero padding). Chunk from the LSB in aligned 64-bit groups; the leading
+    // bytes form a single ragged top chunk of `width % 64` bits. Splitting from
+    // the FRONT instead (the previous implementation) misaligned every chunk by
+    // 8-(width%8) bits for non-byte-multiple widths, silently corrupting the
+    // constant — the wide eval_upto exclusion then encoded the wrong value
+    // (angr-ph300.34).
+    let num_full = (width / 64) as usize; // trailing full 64-bit chunks
+    let top_bits = width % 64; // ragged top chunk width (0 when 64 | width)
+    let top_bytes = top_bits.div_ceil(8) as usize;
 
-    while bits_remaining > 0 {
-        let chunk_bits = std::cmp::min(bits_remaining, 64);
-        let chunk_bytes = chunk_bits.div_ceil(8) as usize;
+    // Read `count` big-endian bytes starting at `start`, zero-filling any
+    // out-of-range index (defensive: the sole caller sizes `bytes` exactly).
+    let read = |start: usize, count: usize| -> u64 {
         let mut val: u64 = 0;
-        for i in 0..chunk_bytes {
-            if pos + i < byte_len {
-                val = (val << 8) | (bytes[pos + i] as u64);
-            } else {
-                val <<= 8;
-            }
+        for i in 0..count {
+            val = (val << 8) | (bytes.get(start + i).copied().unwrap_or(0) as u64);
         }
-        let chunk = z3::ast::BV::from_u64(val, chunk_bits);
+        val
+    };
+
+    let mut result: Option<z3::ast::BV> = None;
+    let mut pos = 0usize;
+
+    if top_bits > 0 {
+        // from_u64 keeps the low `top_bits` bits, dropping the top byte's padding.
+        result = Some(z3::ast::BV::from_u64(read(pos, top_bytes), top_bits));
+        pos += top_bytes;
+    }
+    for _ in 0..num_full {
+        let chunk = z3::ast::BV::from_u64(read(pos, 8), 64);
         result = Some(match result {
             Some(prev) => prev.concat(&chunk),
             None => chunk,
         });
-        pos += chunk_bytes;
-        bits_remaining -= chunk_bits;
+        pos += 8;
     }
 
+    // width > 64 guarantees num_full >= 1, so `result` is always Some here.
     result.unwrap_or_else(|| z3::ast::BV::from_u64(0, width))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::concrete_extract_u128;
+    use super::{concrete_extract_u128, extract_bv_value_wide, make_bv_const, make_bv_from_bytes};
+
+    /// Canonical numeral string of a concrete BV (z3 prints #x.../#b.../decimal).
+    fn numeral(bv: &z3::ast::BV) -> String {
+        use z3::ast::Ast;
+        format!("{}", bv.simplify())
+    }
+
+    /// Round-trip a `<=128`-bit value at a ragged width: build the reference
+    /// constant via make_bv_const, extract its bytes, rebuild via
+    /// make_bv_from_bytes, and require identical Z3 numerals. Before the
+    /// angr-ph300.34 fix the rebuilt constant was corrupted for width % 8 != 0.
+    fn assert_roundtrip_u128(value: u128, width: u32) {
+        let masked = if width >= 128 {
+            value
+        } else {
+            value & ((1u128 << width) - 1)
+        };
+        use z3::ast::Ast;
+        // extract_bv_value_wide parses a concrete numeral literal (as produced
+        // by model eval); simplify the concat expression down to one first.
+        let reference = make_bv_const(masked, width).simplify();
+        let bytes = extract_bv_value_wide(&reference, width).expect("extract bytes");
+        let rebuilt = make_bv_from_bytes(&bytes, width);
+        assert_eq!(
+            numeral(&rebuilt),
+            numeral(&reference),
+            "round-trip mismatch at width {width} (value {masked:#x})"
+        );
+    }
+
+    #[test]
+    fn make_bv_from_bytes_ragged_widths_roundtrip() {
+        // width % 8 != 0 — the buggy path. Use values whose low/high bytes and
+        // sub-byte top bits are all set so any misalignment shifts the numeral.
+        for &width in &[65u32, 72, 96, 125] {
+            assert_roundtrip_u128(0x1234_5678_9abc_def0_1122_3344_5566_7788, width);
+            assert_roundtrip_u128(u128::MAX, width);
+            assert_roundtrip_u128(1, width);
+        }
+    }
+
+    #[test]
+    fn make_bv_from_bytes_aligned_widths_roundtrip() {
+        // Multiples of 8 and/or 64 — already-correct paths, guard no regression.
+        for &width in &[72u32, 96, 128] {
+            assert_roundtrip_u128(0x0fed_cba9_8765_4321_1020_3040_5060_7080, width);
+        }
+    }
+
+    #[test]
+    fn make_bv_from_bytes_129_bit_roundtrip() {
+        // 129-bit value: Concat(1-bit top, 128-bit body) — the exact shape the
+        // wide eval_upto exclusion builds. Round-trip through the byte codec.
+        let body = make_bv_const(0xdead_beef_cafe_babe_0102_0304_0506_0708, 128);
+        let top = z3::ast::BV::from_u64(1, 1);
+        use z3::ast::Ast;
+        let wide = top.concat(&body).simplify(); // 129 bits, top bit set
+        let bytes = extract_bv_value_wide(&wide, 129).expect("extract 129-bit bytes");
+        let rebuilt = make_bv_from_bytes(&bytes, 129);
+        assert_eq!(
+            numeral(&rebuilt),
+            numeral(&wide),
+            "129-bit round-trip mismatch"
+        );
+    }
 
     #[test]
     fn low_bits() {
