@@ -22,6 +22,28 @@ l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)
 
 
+class _RustInjectedStdin(claripy.Annotation):
+    """Provenance marker for a stdin packet appended by ``_inject_rust_stdin``.
+
+    Dedupe-by-value (a manager-wide ``set[bytes]``) silently stripped any
+    legitimate Python-side concrete packet whose bytes happened to collide with
+    a previously-injected eval — e.g. an unconstrained materialization evals its
+    stdin to all-zeros, so ``b'\\x00'*N`` enters the set and any zero-filled
+    concrete preseed is then dropped from ``posix.dumps(0)`` (angr-p8jyz). We tag
+    the injected BVV instead, so ``_drop_stale_rust_stdin_packets`` drops purely
+    by provenance. ``relocatable`` keeps the tag attached across the SimState
+    ``.copy()`` that mints a child stdin stream.
+    """
+
+    @property
+    def eliminatable(self):
+        return False
+
+    @property
+    def relocatable(self):
+        return True
+
+
 def _simproc_dispatch_name(proc) -> str:
     """Canonical name used to dispatch a SimProcedure to the Rust native registry.
 
@@ -540,17 +562,14 @@ class RustCallbackDispatchMixin:
             self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
 
     @staticmethod
-    def _packet_bytes(packet):
-        """Concrete bytes of a ``SimPackets`` content entry, or None if symbolic."""
+    def _is_rust_injected(packet):
+        """True if this ``SimPackets`` content entry carries the provenance tag."""
         try:
-            data = packet[0]
-            if data.symbolic:
-                return None
-            return data.concrete_value.to_bytes(len(data) // 8, "big")
+            return any(isinstance(a, _RustInjectedStdin) for a in packet[0].annotations)
         except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: an entry whose bytes we cannot read
-            # is by definition not one we injected; leave it in place.
-            return None
+            # cat-(a) EXPECTED CONTROL FLOW: an entry whose annotations we cannot
+            # read is by definition not one we injected; leave it in place.
+            return False
 
     def _drop_stale_rust_stdin_packets(self, stdin_stream):
         """Remove packets a previous Rust stdin injection put on this stream.
@@ -562,13 +581,15 @@ class RustCallbackDispatchMixin:
         byte the parent read — so re-appending would double-count them and
         ``posix.dumps(0)`` would grow a junk prefix (angr-psrxs).
 
-        Packets Python appended itself (a bounced SimProcedure reading stdin)
-        are never in ``_rust_stdin_packets`` and are left alone.
+        Dropped purely by the ``_RustInjectedStdin`` provenance tag, not by byte
+        value (angr-p8jyz): a Python-side concrete packet that happens to collide
+        with a previously-injected eval — e.g. a zero preseed vs an all-zeros
+        materialization eval — is never tagged, so it is left alone.
         """
         content = stdin_stream.content
-        if not content or not self._rust_stdin_packets:
+        if not content:
             return
-        kept = [pkt for pkt in content if self._packet_bytes(pkt) not in self._rust_stdin_packets]
+        kept = [pkt for pkt in content if not self._is_rust_injected(pkt)]
         if len(kept) != len(content):
             content[:] = kept
 
@@ -600,10 +621,9 @@ class RustCallbackDispatchMixin:
             if concrete_bytes:
                 packet = bytes(concrete_bytes)
                 self._drop_stale_rust_stdin_packets(stdin_stream)
-                data = claripy.BVV(packet)
+                data = claripy.BVV(packet).annotate(_RustInjectedStdin())
                 size = claripy.BVV(len(packet), state.arch.bits)
                 stdin_stream.content.append((data, size))
-                self._rust_stdin_packets.add(packet)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust stdin injection raised; posix.
             # dumps(0) will not show the symbolic-stdin bytes that Rust read.
