@@ -3763,7 +3763,19 @@ class RustExplorationManager(
         # Digest the concrete argv/env surface once and thread it into both
         # keys so a warm run with different concrete args/env misses the cache
         # instead of replaying the prior run's inputs (angr-gxaht).
-        input_digest = self._concrete_input_digest(state)
+        #
+        # Compute it *lazily*: both key functions discard the digest (return "")
+        # when caching is ineligible — no binary path, or user-symbolic data
+        # that blank_state can't round-trip. The digest's full-page
+        # ``solver.eval(cast_to=bytes)`` resolves default-fill symbolic bytes
+        # and cost ~0.10s + ~80 MB RSS on a state that never caches
+        # (cmu_binary_bomb seeds symbolic stdin -> _state_has_user_symbolic
+        # True -> caching off). Gate on the same cheap conditions the key
+        # functions use so we only pay for the digest when it can matter
+        # (angr-gxaht follow-up).
+        input_digest = None
+        if cache_key and not self._state_has_user_symbolic(state):
+            input_digest = self._concrete_input_digest(state)
         mem_key = self._compute_mem_init_key(state, cache_key, input_digest)
         disk_key = self._compute_disk_init_key(state, cache_key, input_digest)
 
