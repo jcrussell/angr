@@ -230,8 +230,10 @@ pub(super) struct LocalConstraints {
     #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set: HashSet<usize>,
     /// True once `dedup_set` has been populated from shared+local for this
-    /// context. Reset to false by `fork()`, `merge()` (via `new()`), and
-    /// `transaction_rollback()` (which truncates `z3_assertions`).
+    /// context. Reset to false by `fork()`, `merge()` (via `new()`),
+    /// `transaction_rollback()`, and a bare `pop()` that closes a scope which
+    /// added assertions (`scope_savepoint_pop`, angr-ph300.41) — all of which
+    /// truncate `z3_assertions`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set_seeded: bool,
 }
@@ -335,6 +337,26 @@ pub struct SymContext {
     /// `pub(super)` for `transaction_ops.rs` (slice 10, angr-a2br.2.8).
     #[cfg(feature = "vex-engine-z3")]
     pub(super) push_assumed_local_lengths: Mutex<PushStack>,
+    /// Local-constraint savepoints for **bare** `push()`/`pop()` (angr-ph300.41/.42).
+    ///
+    /// Each entry records `(z3_assertions.len(), assumed.len(),
+    /// non_bv_assertions.len())` captured by `scope_savepoint_push()` at the
+    /// moment of a bare `push()`. `scope_savepoint_pop()` truncates all three
+    /// local logs back to the saved lengths and drops the dedup side-table,
+    /// so constraints added inside a bare push/pop scope do not leak past the
+    /// matching `pop()` — matching what `transaction_rollback` already does for
+    /// transactions. Without this, a `pop()` popped the Z3 frame but left the
+    /// `z3_assertions` log (and `dedup_set` ptrs) intact: re-adding the same
+    /// constraint dedup-hit and was skipped (.41), and `fork()` replayed the
+    /// stale log into the child as permanent asserts (.42).
+    ///
+    /// Pairs push↔pop exactly like `scope_savepoints`; `transaction_begin`'s
+    /// `push()` records an entry that `transaction_commit` intentionally does
+    /// not pop (the frame's constraints are kept), while `transaction_rollback`
+    /// pops it via `pop()` (a harmless idempotent re-truncate to the length its
+    /// own bookkeeping already restores).
+    #[cfg(feature = "vex-engine-z3")]
+    pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
     /// Arc<Vec<...>> for O(1) clone on fork; local additions live alongside
@@ -576,6 +598,7 @@ impl SymContext {
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_local_cache_lengths: Mutex::new(PushStack::new()),
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
+            bare_local_savepoints: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
             assumed_constraints_shared: Mutex::new(crate::arc_shared(Vec::new())),

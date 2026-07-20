@@ -769,3 +769,62 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
         "both Python-imported constraints must be nameable, got {core:?}"
     );
 }
+
+/// angr-ph300.41: a bare `pop()` must truncate the local `z3_assertions`
+/// log back to its pre-`push()` length. Before the fix, `pop()` popped the
+/// Z3 frame but left the log intact, so the stale ptr dedup-suppressed a
+/// re-assert and `fork()` replayed the popped constraint as a permanent
+/// assert.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_bare_pop_truncates_local_z3_assertions_log() {
+    let ctx = SymContext::new();
+    let z = RustBV::symbolic(&ctx, "test_bare_pop_trunc_z", 32);
+    let twenty = RustBV::concrete(20, 32);
+
+    let before = ctx.local_z3_assertions_len();
+    ctx.push();
+    ctx.assume_true(&z.eq(&twenty, &ctx));
+    assert!(
+        ctx.local_z3_assertions_len() > before,
+        "assume_true inside the scope must grow the local z3_assertions log"
+    );
+    ctx.pop();
+    assert_eq!(
+        ctx.local_z3_assertions_len(),
+        before,
+        "bare pop must truncate the local z3_assertions log to its pre-push length"
+    );
+}
+
+/// angr-ph300.42: forking after `push(); add(z==20); pop()` must not
+/// resurrect `z == 20` in the child — the popped constraint was discarded,
+/// so the child is free to assert `z != 20` and stay SAT. Before the fix,
+/// the stale `z3_assertions` entry was frozen into the child on fork and
+/// replayed as a permanent assert, pruning the feasible `z != 20` path.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_after_bare_pop_drops_popped_constraint() {
+    let ctx = SymContext::new();
+    let z = RustBV::symbolic(&ctx, "test_fork_after_pop_z", 32);
+    let twenty = RustBV::concrete(20, 32);
+
+    ctx.push();
+    ctx.assume_true(&z.eq(&twenty, &ctx)); // z == 20, inside the scope
+    assert!(ctx.is_sat());
+    ctx.pop(); // discard z == 20
+
+    let child = ctx.fork();
+    child.assume_false(&z.eq(&twenty, &child)); // z != 20
+    assert!(
+        child.is_sat(),
+        "popped z == 20 must not resurrect in the fork; z != 20 is feasible"
+    );
+
+    // The parent stays consistent too: after the pop, z is unconstrained.
+    ctx.assume_false(&z.eq(&twenty, &ctx));
+    assert!(
+        ctx.is_sat(),
+        "parent must also be free of the popped z == 20"
+    );
+}

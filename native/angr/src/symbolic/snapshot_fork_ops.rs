@@ -643,6 +643,7 @@ impl SymContext {
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_local_cache_lengths: Mutex::new(PushStack::new()),
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
+            bare_local_savepoints: Mutex::new(Vec::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
             non_bv_assertions_shared: Mutex::new(frozen_non_bv),

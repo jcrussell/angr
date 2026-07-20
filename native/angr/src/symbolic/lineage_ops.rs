@@ -87,6 +87,14 @@ impl SymContext {
         self.bare_z3_push_depth.load(Ordering::Relaxed)
     }
 
+    /// Current length of the local `z3_assertions` log (angr-ph300.41).
+    /// Test-only white-box accessor for asserting that a bare `pop()`
+    /// truncates constraints added inside the popped scope.
+    #[cfg(all(test, feature = "vex-engine-z3"))]
+    pub(crate) fn local_z3_assertions_len(&self) -> usize {
+        self.local_constraints.lock().z3_assertions.len()
+    }
+
     /// Whether fork-time `SharedLineageSolver` materialization is opted
     /// in for this context (angr-3ms1 step 1b).
     ///
@@ -158,6 +166,20 @@ impl SymContext {
     /// since it delegates to `push()`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_push(&self) {
+        // angr-ph300.41/.42: record the local-constraint log lengths so the
+        // matching bare `pop()` can truncate everything added inside this
+        // scope. Mirrors the transaction path's `push_local_cache_lengths` /
+        // `push_assumed_local_lengths` bookkeeping, but for bare push/pop
+        // (which `transaction_rollback` never covers). Captured before the
+        // lineage dispatch so both branches share it.
+        {
+            let local = self.local_constraints.lock();
+            self.bare_local_savepoints.lock().push((
+                local.z3_assertions.len(),
+                local.assumed.len(),
+                local.non_bv_assertions.len(),
+            ));
+        }
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
@@ -205,6 +227,29 @@ impl SymContext {
     /// the public wrappers (`pop()`, `transaction_rollback`) own that.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_pop(&self) {
+        // angr-ph300.41/.42: discard any local constraints logged inside the
+        // scope this pop closes, so they neither dedup-suppress a re-add nor
+        // get replayed into a fork as permanent asserts. Balanced with the
+        // record in `scope_savepoint_push`; `transaction_commit` intentionally
+        // keeps its entry (frame kept), `transaction_rollback` re-truncates
+        // idempotently. A mismatched pop (no matching push) leaves the logs
+        // untouched.
+        if let Some((z3_len, assumed_len, non_bv_len)) = self.bare_local_savepoints.lock().pop() {
+            let mut local = self.local_constraints.lock();
+            if local.z3_assertions.len() > z3_len
+                || local.assumed.len() > assumed_len
+                || local.non_bv_assertions.len() > non_bv_len
+            {
+                local.z3_assertions.truncate(z3_len);
+                local.assumed.truncate(assumed_len);
+                local.non_bv_assertions.truncate(non_bv_len);
+                // Stale dedup ptrs from the truncated assertions would falsely
+                // dedup a re-assert (angr-ph300.41); drop the side-table and
+                // let the next add_constraint_raw rebuild it from shared+local.
+                local.dedup_set.clear();
+                local.dedup_set_seeded = false;
+            }
+        }
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
