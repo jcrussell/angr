@@ -1906,7 +1906,10 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
         "b's 0x2000 overlay must be present in the merged state"
     );
     assert_eq!(
-        merged.hook_symbolic_memory().get(&0x1000).map(|(_, sz)| *sz),
+        merged
+            .hook_symbolic_memory()
+            .get(&0x1000)
+            .map(|(_, sz)| *sz),
         Some(8),
         "conflicting overlay must keep self's entry (size 8), not other's (4)"
     );
