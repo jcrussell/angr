@@ -1522,3 +1522,87 @@ fn test_rotl_width_128_zero_effective_amount_no_panic() {
     let r2 = RustBV::concrete(v, 128).rotr(&RustBV::concrete(256, 128), &ctx);
     assert_eq!(r2.as_u128(), Some(v));
 }
+
+// =========================================================================
+// rotl/rotr concrete-arm coverage (angr-ph300.33): before this the only
+// direct rotate tests were the 2^32-truncation / 128-zero-amount edges above.
+// These pin the ordinary hand-computed folds across widths {8,64} and the
+// amount==w-1 boundary, plus the symbolic fallthrough arm and the algebraic
+// inverse/mod-width identities.
+// =========================================================================
+
+#[test]
+fn test_rotl_rotr_concrete_hand_computed() {
+    let ctx = SymContext::new_mock();
+    // w=8, 0x81 = 1000_0001.
+    let x8 = RustBV::concrete(0x81, 8);
+    assert_eq!(x8.rotl(&RustBV::concrete(0, 8), &ctx).as_u64(), Some(0x81));
+    // rotl by 1 → 0000_0011 = 0x03.
+    assert_eq!(x8.rotl(&RustBV::concrete(1, 8), &ctx).as_u64(), Some(0x03));
+    // rotl by w-1 (7) → 1100_0000 = 0xC0 (== rotr by 1).
+    assert_eq!(x8.rotl(&RustBV::concrete(7, 8), &ctx).as_u64(), Some(0xC0));
+    assert_eq!(x8.rotr(&RustBV::concrete(1, 8), &ctx).as_u64(), Some(0xC0));
+    // amt == w folds back to identity (a % w == 0).
+    assert_eq!(x8.rotl(&RustBV::concrete(8, 8), &ctx).as_u64(), Some(0x81));
+
+    // w=64: rotl(1, 63) sets the top bit; rotr(1, 1) does the same.
+    let one64 = RustBV::concrete(1, 64);
+    assert_eq!(
+        one64.rotl(&RustBV::concrete(63, 64), &ctx).as_u64(),
+        Some(0x8000_0000_0000_0000)
+    );
+    assert_eq!(
+        one64.rotr(&RustBV::concrete(1, 64), &ctx).as_u64(),
+        Some(0x8000_0000_0000_0000)
+    );
+}
+
+#[test]
+fn test_rotl_rotr_symbolic_builds_rotate_node() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "x", 32);
+    let amt = RustBV::concrete(5, 32);
+    // Symbolic operand → no fold, emit the dark RotL/RotR expr arms.
+    match x.rotl(&amt, &ctx) {
+        RustBV::Expression {
+            op: BVOp::RotL,
+            operands,
+            width,
+            ..
+        } => {
+            assert_eq!(width, 32);
+            assert_eq!(operands.len(), 2);
+            assert_eq!(operands[1].as_u128(), Some(5));
+        }
+        other => panic!("expected RotL node, got {other:?}"),
+    }
+    match x.rotr(&amt, &ctx) {
+        RustBV::Expression {
+            op: BVOp::RotR,
+            operands,
+            width,
+            ..
+        } => {
+            assert_eq!(width, 32);
+            assert_eq!(operands.len(), 2);
+            assert_eq!(operands[1].as_u128(), Some(5));
+        }
+        other => panic!("expected RotR node, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_rotl_rotr_concrete_identities() {
+    let ctx = SymContext::new_mock();
+    let v: u128 = 0xDEAD_BEEF_CAFE_1234;
+    let x = RustBV::concrete(v, 64);
+    // rotl(rotr(x, n), n) == x for an arbitrary n.
+    let n = RustBV::concrete(13, 64);
+    let round = x.rotr(&n, &ctx).rotl(&n, &ctx);
+    assert_eq!(round.as_u128(), Some(v));
+    // rotl(x, n) == rotl(x, n mod w): width 48, n = w+5 vs 5.
+    let x48 = RustBV::concrete(0x1234_5678_9ABC, 48);
+    let by_big = x48.rotl(&RustBV::concrete(48 + 5, 48), &ctx);
+    let by_small = x48.rotl(&RustBV::concrete(5, 48), &ctx);
+    assert_eq!(by_big.as_u64(), by_small.as_u64());
+}
