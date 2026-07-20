@@ -1034,7 +1034,9 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     // V128/V256 to/from conversions.
     cast_arms!(op_str; "Iop_" => Truncate    { "V128to64"   => (V128, I64) });
     cast_arms!(op_str; "Iop_" => ZeroExtend  { "64UtoV128"  => (I64, V128), "32UtoV128" => (I32, V128) });
-    cast_arms!(op_str; "Iop_" => Reinterpret { "SetV128lo64" => (I64, V128) });
+    // NOTE: no "SetV128lo64" arm here — parse_float claims it first (returns
+    // IROp::SetV128lo64, a binop preserving the upper 64 bits), so a Reinterpret
+    // arm would be both dead and semantically wrong. See angr-ph300.62.
 
     match op_str {
         "Iop_V128HIto64" => Some(IROp::Extract {

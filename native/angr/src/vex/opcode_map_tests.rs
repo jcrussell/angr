@@ -62,6 +62,15 @@ fn test_parse_conversion() {
 }
 
 #[test]
+fn test_setv128lo64_resolves_to_binop_not_reinterpret() {
+    // parse_float runs before parse_vector in parse_opcode, so
+    // "Iop_SetV128lo64" must map to the binop variant (upper 64 bits
+    // preserved) — NOT a Reinterpret(I64->V128). Locks in angr-ph300.62.
+    assert_eq!(parse_opcode("Iop_SetV128lo64"), IROp::SetV128lo64);
+    assert_eq!(parse_opcode("Iop_SetV128lo32"), IROp::SetV128lo32);
+}
+
+#[test]
 fn test_parse_type() {
     assert_eq!(parse_type("Ity_I32"), Some(IRType::I32));
     assert_eq!(parse_type("Ity_I64"), Some(IRType::I64));
