@@ -1099,11 +1099,10 @@ impl SymContext {
             }
         }
 
-        let mut max_id = self.next_id.load(Ordering::SeqCst);
-        for other in others {
-            max_id = max_id.max(other.next_id.load(Ordering::SeqCst));
-        }
-        merged.next_id.store(max_id, Ordering::SeqCst);
+        // No id reconciliation needed: symbol ids come from the process-global
+        // allocator (`symbolic::bv_id_ops::NEXT_SYMBOL_ID`), so every input
+        // context's ids are already disjoint from every other's. Mirrors the
+        // `vex-engine-z3` merge path.
 
         // Merge assumed constraints (shared + local from each context).
         {
