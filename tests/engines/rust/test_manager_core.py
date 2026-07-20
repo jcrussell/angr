@@ -1133,6 +1133,41 @@ class TestRustSimStateIntegration:
         with pytest.raises(ValueError):
             state.set_register_symbolic("rax", 0, 64)
 
+    def test_set_register_symbolic_distinct_ids_no_alias(self):
+        """Two independent set_register_symbolic writes must not alias each
+        other on export (angr-ph300.50).
+
+        The binding used to build ``RustBV::Symbolic { id: 0, .. }`` for every
+        wrapped register. ``NEXT_SYMBOL_ID`` starts at 0, so id 0 is a real
+        symbol id; the exporter resolves ``Symbolic`` by ``get_claripy_ast(id)``
+        with no width check, so two registers both wearing id 0 collapse to the
+        *same* claripy AST on the way back (and would even hijack an unrelated
+        leaf that legitimately owns id 0). The binding now mints a fresh global
+        id per call, so distinct wrapped registers export to distinct symbols.
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+        state = RustSimState("amd64")
+
+        sym_a = claripy.BVS("reg_a", 64)
+        sym_b = claripy.BVS("reg_b", 64)
+        ptr_a = claripy.backends.z3.convert(sym_a).as_ast().value
+        ptr_b = claripy.backends.z3.convert(sym_b).as_ast().value
+        state.set_register_symbolic("rax", ptr_a, 64)
+        state.set_register_symbolic("rbx", ptr_b, 64)
+
+        mgr.add_state("active", state)
+        sid = mgr.get_state_ids("active")[0]
+
+        ast_a = mgr.get_state_register_ast(sid, "rax")
+        ast_b = mgr.get_state_register_ast(sid, "rbx")
+        assert ast_a is not None and ast_b is not None
+        # Before the fix both wore id 0 and exported to the same AST.
+        assert hash(ast_a) != hash(ast_b), (
+            "two independent symbolic registers must export to distinct symbols, not alias via a shared hardcoded id"
+        )
+
     def test_state_memory(self):
         """Test memory operations."""
         state = RustSimState("amd64")

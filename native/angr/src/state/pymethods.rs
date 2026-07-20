@@ -326,8 +326,17 @@ impl PyRustSimState {
             let ctx = z3::Context::thread_local();
             z3::ast::BV::wrap(&ctx, raw)
         };
+        // Allocate a fresh, globally-unique symbol id rather than the constant
+        // `0`. `NEXT_SYMBOL_ID` starts at 0, so the first symbol minted anywhere
+        // in the process legitimately owns id 0; hardcoding `0` here made this
+        // wrapped register alias whatever AST is registered under id 0 (a
+        // cross-symbol identity collision, not merely the documented loss of
+        // leaf-symbol identity — angr-ph300.50). A fresh id from the same global
+        // allocator every other minted symbol uses keeps this register's export
+        // independent of any unrelated leaf.
+        let id = self.inner.solver().borrow().next_id();
         let bv = RustBV::Symbolic {
-            id: 0,
+            id,
             ast: z3_bv,
             width,
             name: Arc::from(name),
@@ -344,8 +353,8 @@ impl PyRustSimState {
     /// Set a register to a symbolic value from a full claripy AST.
     ///
     /// Unlike [`set_register_symbolic`] (which wraps a raw Z3 pointer as an
-    /// opaque `RustBV::Symbolic` with `id: 0` and so loses leaf-symbol
-    /// identity on export), this routes the claripy AST through
+    /// opaque `RustBV::Symbolic` with a freshly-minted id and so loses
+    /// leaf-symbol identity on export), this routes the claripy AST through
     /// `claripy_to_rustbv`. That interns every leaf BVS into the shared
     /// claripy<->Rust symbol cache, so a subregister set like
     /// `state.regs.ecx = BVS('ecx', 32)` round-trips back to the user's
