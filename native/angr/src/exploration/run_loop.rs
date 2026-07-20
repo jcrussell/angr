@@ -526,13 +526,31 @@ impl RustExplorationManager {
         py: Python<'_>,
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
-        if self.parallel_real_workers <= 1 {
+        if self.must_run_serial() {
             return self.run_loop_single_threaded(n);
         }
         if self.steady_state_eligible() {
             return self.run_loop_parallel_steady(py, n);
         }
         self.run_loop_parallel(py, n)
+    }
+
+    /// Whether `run_loop` must fall back to the single-threaded loop instead of
+    /// any parallel path, given the worker count and registered native
+    /// techniques.
+    ///
+    /// Native techniques (LoopBound / Timeout / LengthLimiter) are
+    /// coordinator-side and only run BETWEEN waves via `apply_native_techniques`.
+    /// A single wave runs its frontier to quiescence with the GIL released, so on
+    /// a non-terminating frontier (e.g. a LoopBound meant to cap a loop) the wave
+    /// never returns and the technique never prunes — `run()` hangs and ignores
+    /// both the technique and the `run(n)` step budget. The Python driver's
+    /// `parallel_eligible` gate downgrades to serial for the kwarg path, but the
+    /// `RUST_PARALLEL_WORKERS` env path bypasses that gate (the env value always
+    /// wins), so guard here at the engine chokepoint too. The single-threaded
+    /// loop applies techniques after every step (angr-ph300.6).
+    pub(crate) fn must_run_serial(&self) -> bool {
+        self.parallel_real_workers <= 1 || !self.native_techniques.is_empty()
     }
 
     /// Whether the steady-state loop (angr-nkoct) engages for this `run()`.

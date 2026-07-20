@@ -165,3 +165,64 @@ fn untagged_residual_at_neutral_pc_routes_to_active() {
         assert_eq!(mgr.stash_count(STASH_FOUND), 0);
     });
 }
+
+// --- must_run_serial: the run_loop parallel-vs-serial routing guard
+// (angr-ph300.6). Native techniques are coordinator-side and only run between
+// waves, so a wave on a non-terminating frontier would never quiesce and the
+// technique/`run(n)` budget would be ignored. The guard forces serial whenever
+// techniques are registered, regardless of how the worker count was engaged
+// (kwarg gate OR `RUST_PARALLEL_WORKERS` env). These pin that decision without
+// spinning a live wave.
+
+#[test]
+fn must_run_serial_true_when_single_worker() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mgr = RustExplorationManager::new("amd64", None).unwrap();
+        // Default construction (no env) leaves one worker → always serial.
+        assert!(mgr.must_run_serial());
+    });
+}
+
+#[test]
+fn must_run_serial_false_with_workers_and_no_techniques() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(2);
+        assert!(mgr.native_techniques.is_empty());
+        assert!(
+            !mgr.must_run_serial(),
+            "workers>1 with no techniques takes a parallel path"
+        );
+    });
+}
+
+#[test]
+fn must_run_serial_true_when_native_technique_registered() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(2);
+        // A LoopBound is coordinator-side; the wave can't apply it mid-flight.
+        mgr.register_loop_bound(5, "deadended");
+        assert!(
+            mgr.must_run_serial(),
+            "a registered native technique forces the serial loop even at workers>1"
+        );
+    });
+}
+
+#[test]
+fn must_run_serial_true_when_timeout_registered() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(4);
+        mgr.register_timeout(1.0);
+        assert!(
+            mgr.must_run_serial(),
+            "a registered timeout technique forces the serial loop"
+        );
+    });
+}
