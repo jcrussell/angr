@@ -217,3 +217,116 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
         );
     });
 }
+
+/// angr-ph300.2: round-trip `import(export(bv))` must be semantically identical
+/// to `bv` for every node kind the bridge supports. Proven with a Z3
+/// universality check — `bv != roundtrip` must be unsatisfiable — plus a width
+/// guard so a silent width drift (the class of bug the AST_CACHE width check
+/// defends against) is caught even when it happens to stay satisfiable-clean.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_roundtrip_import_export_preserves_semantics() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return, // claripy not importable in this env — skip
+        };
+        let ctx = SymContext::new_mock();
+
+        // export bv -> claripy AST -> import back to a fresh RustBV
+        let roundtrip = |bv: &RustBV| -> RustBV {
+            let ast = rustbv_to_claripy(py, bv, claripy.as_any()).unwrap();
+            claripy_to_rustbv(py, ast.bind(py), &ctx).unwrap()
+        };
+        let assert_equiv = |bv: &RustBV, label: &str| {
+            let rt = roundtrip(bv);
+            assert_eq!(bv.width(), rt.width(), "{label}: round-trip width drift");
+            ctx.push();
+            ctx.add_constraint(bv.to_z3_ast().eq(rt.to_z3_ast()).not());
+            assert!(
+                !ctx.is_sat(),
+                "{label}: round-trip changed semantics (counter-example exists)"
+            );
+            ctx.pop();
+        };
+
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let y = RustBV::symbolic(&ctx, "y", 32);
+        let c5 = RustBV::concrete(5, 32);
+
+        // BVV (concrete) across widths incl. zero + all-ones.
+        assert_equiv(&RustBV::concrete(0, 8), "bvv_zero_8");
+        assert_equiv(&RustBV::concrete(0xFF, 8), "bvv_ones_8");
+        assert_equiv(&RustBV::concrete(0xDEAD_BEEF, 32), "bvv_32");
+        assert_equiv(&RustBV::concrete(0x1122_3344_5566_7788, 64), "bvv_64");
+        // BVS leaf.
+        assert_equiv(&x, "bvs");
+        // Arithmetic.
+        assert_equiv(&x.add(&y, &ctx), "add");
+        assert_equiv(&x.sub(&c5, &ctx), "sub");
+        assert_equiv(&x.mul(&y, &ctx), "mul");
+        assert_equiv(&x.neg(&ctx), "neg");
+        // Bitwise.
+        assert_equiv(&x.and(&y, &ctx), "and");
+        assert_equiv(&x.or(&y, &ctx), "or");
+        assert_equiv(&x.xor(&y, &ctx), "xor");
+        assert_equiv(&x.not(&ctx), "not");
+        // Shifts (concrete and symbolic amount).
+        assert_equiv(&x.shl(&RustBV::concrete(3, 32), &ctx), "shl");
+        assert_equiv(&x.lshr(&RustBV::concrete(3, 32), &ctx), "lshr");
+        assert_equiv(&x.ashr(&y, &ctx), "ashr_sym");
+        // Comparisons -> width-1 Bool.
+        assert_equiv(&x.eq(&c5, &ctx), "eq");
+        assert_equiv(&x.ne(&y, &ctx), "ne");
+        // Bool combinators (And/Or/Not over two comparisons).
+        let b1 = x.eq(&c5, &ctx);
+        let b2 = y.eq(&RustBV::concrete(7, 32), &ctx);
+        assert_equiv(&b1.and(&b2, &ctx), "bool_and");
+        assert_equiv(&b1.or(&b2, &ctx), "bool_or");
+        assert_equiv(&b1.not(&ctx), "bool_not");
+        // ITE selecting between two 32-bit operands on a Bool condition.
+        assert_equiv(&b1.ite(&x, &y, &ctx), "ite");
+        // Extract / Concat / ZeroExt / SignExt.
+        assert_equiv(&x.extract(15, 8, &ctx), "extract");
+        assert_equiv(&x.concat(&y, &ctx), "concat");
+        assert_equiv(&x.clone().extend_into(64, false, &ctx), "zero_ext");
+        assert_equiv(&x.clone().extend_into(64, true, &ctx), "sign_ext");
+        // Nested compound expression across several node kinds.
+        let nested = x.add(&y, &ctx).mul(&c5, &ctx).xor(&x, &ctx);
+        assert_equiv(&nested, "nested");
+    });
+}
+
+/// angr-ph300.2: a concrete BVV must survive the round-trip with its exact
+/// value and width preserved (the Z3 check above proves equivalence, this
+/// pins the literal so a value-corrupting import bug is unambiguous).
+#[test]
+fn test_roundtrip_concrete_value_exact() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let ctx = SymContext::new_mock();
+        for (val, width) in [
+            (0u128, 8u32),
+            (0xFF, 8),
+            (0x7F, 8),
+            (0x1234, 16),
+            (0xDEAD_BEEF, 32),
+            (0x1122_3344_5566_7788, 64),
+        ] {
+            let bv = RustBV::concrete(val, width);
+            let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).unwrap();
+            let rt = claripy_to_rustbv(py, ast.bind(py), &ctx).unwrap();
+            assert_eq!(rt.width(), width, "width for {val:#x}/{width}");
+            assert_eq!(
+                rt.as_u128(),
+                Some(val),
+                "concrete value for {val:#x}/{width}"
+            );
+        }
+    });
+}
