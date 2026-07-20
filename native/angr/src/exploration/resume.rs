@@ -425,6 +425,26 @@ impl RustExplorationManager {
         // Track root state ID for lineage
         let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
+        // Deferred forks diverged BEFORE this symbolic branch, so their
+        // unexplored side must NOT inherit the branch guard (assume_true /
+        // assume_false applied to true_state / false_state below). Mirror the
+        // simprocedure path (_resume_after_simprocedure): build a clean fork
+        // base from the pre-callback snapshot (or a fork of the pre-branch
+        // state) BEFORE the guard is applied. Without this, a snapshot-less
+        // deferred fork gets built on true_state's guard-polluted solver and a
+        // reachable path is falsely pruned as UNSAT (angr-ph300.9). Only pay
+        // the ~3ms fork cost when there are deferred forks to materialize.
+        let fork_base = if pending.deferred_forks.is_empty() {
+            drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
+            None
+        } else {
+            Some(
+                pending
+                    .pre_callback_snapshot
+                    .unwrap_or_else(|| pending.state.fork()),
+            )
+        };
+
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();
         self.sm.set_root(true_state.state_id(), root_state_id);
@@ -450,6 +470,12 @@ impl RustExplorationManager {
         let mut deferred_successors = Vec::new();
         let mut deferred_pruned = Vec::new();
         if !pending.deferred_forks.is_empty() {
+            // fork_base is Some whenever deferred_forks is non-empty (set above);
+            // it is the guard-free base so unexplored sides don't inherit the
+            // branch condition assumed onto true_state / false_state.
+            let fb = fork_base
+                .as_ref()
+                .expect("fork_base set when deferred_forks non-empty");
             let mut snapshots = pending.fork_snapshots;
             for fork in pending.deferred_forks {
                 let condition = pending.stored_conditions.get(&fork.condition_id);
@@ -459,7 +485,7 @@ impl RustExplorationManager {
                     if let Some(ref py_ast) = fork.condition_ast {
                         Python::attach(|py| {
                             let ast = py_ast.bind(py);
-                            let solver_ref = true_state.solver();
+                            let solver_ref = fb.solver();
                             let ctx: &crate::symbolic::SymContext = &solver_ref.borrow();
                             crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
                         })
@@ -474,12 +500,8 @@ impl RustExplorationManager {
 
                 if let Some(cond) = effective_condition {
                     // Use solver snapshot if available (from before branch constraint)
-                    let forked = super::helpers::build_unexplored_fork(
-                        &true_state,
-                        &fork,
-                        cond,
-                        &mut snapshots,
-                    );
+                    let forked =
+                        super::helpers::build_unexplored_fork(fb, &fork, cond, &mut snapshots);
 
                     self.sm.set_root(forked.state_id(), root_state_id);
 
@@ -498,7 +520,7 @@ impl RustExplorationManager {
                         "Missing condition for deferred fork at 0x{:x} in symbolic branch handler",
                         fork.branch_addr
                     );
-                    let mut forked = true_state.fork();
+                    let mut forked = fb.fork();
                     forked.set_pc(fork.unexplored_target);
                     self.sm.set_root(forked.state_id(), root_state_id);
                     if self.constraint_solver.lazy_solves || forked.satisfiable() {

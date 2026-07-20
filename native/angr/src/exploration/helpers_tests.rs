@@ -390,6 +390,83 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
     assert!(mgr.pending_callbacks.is_empty());
 }
 
+/// A deferred fork resumed through _resume_after_symbolic_branch must be based
+/// on the guard-free `pre_callback_snapshot`, not on `true_state` (angr-ph300.9).
+/// Before the fix, deferred forks were built from `true_state`, which carries
+/// both the deferred fork's own taken constraint (`x == 0`, added by
+/// apply_deferred_fork_constraints) and the branch guard (`assume_true`). Its
+/// unexplored side `x != 0` therefore contradicted the base solver, came back
+/// UNSAT, and a genuinely reachable path was pruned — while
+/// pre_callback_snapshot (which predates both) was dropped unused. The fix
+/// mirrors _resume_after_simprocedure and forks the deferred branch from that
+/// snapshot. With no per-condition BranchSnapshot in `fork_snapshots`,
+/// build_unexplored_fork forks the base directly, so the base's cleanliness is
+/// what keeps the unexplored side satisfiable.
+#[test]
+fn resume_symbolic_branch_deferred_fork_uses_pre_callback_snapshot() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let sid = state.state_id();
+
+    // Build the guard/fork conditions in the state's own solver context so the
+    // forked solvers (clones of it) recognize the `x` symbol.
+    let mut stored = FxHashMap::default();
+    {
+        let ctx_ref = state.solver().borrow();
+        let ctx: &SymContext = &ctx_ref;
+        let x = RustBV::symbolic(ctx, "x", 64);
+        let zero = RustBV::zero(64);
+        stored.insert(1u64, x.eq(&zero, ctx)); // branch B guard: x == 0
+        stored.insert(2u64, x.eq(&zero, ctx)); // deferred fork A condition
+    }
+
+    // Snapshot captured here — before apply_deferred_fork_constraints and the
+    // branch guard run inside _resume — so it holds no constraint on `x`. The
+    // `x` symbol already exists in this context (created above), so the clone
+    // recognizes it.
+    let snapshot = state.fork();
+
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: Some(snapshot),
+            reason: CallbackReason::SymbolicBranch {
+                condition_id: 1,
+                true_target: 0x40_1100,
+                false_target: 0x40_1200,
+            },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: vec![crate::callbacks::DeferredFork {
+                branch_addr: 0x40_0500,
+                path_taken: true, // unexplored side is x != 0
+                unexplored_target: 0x40_2000,
+                condition_id: 2,
+                push_level: 0,
+                condition_ast: None,
+            }],
+            stored_conditions: stored,
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    Python::attach(|py| {
+        mgr._resume_after_symbolic_branch(py, sid, 0x40_1100, 0x40_1200, None, None)
+            .expect("resume ok");
+    });
+
+    // The deferred fork (x != 0) is satisfiable on a guard-free base, so it must
+    // be routed to active at its unexplored target rather than pruned as UNSAT.
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert!(
+        active.iter().any(|s| s.pc() == 0x40_2000),
+        "deferred fork must survive: it inherited the branch guard and was pruned"
+    );
+}
+
 // --- pending_callbacks keying (angr-1ilq.4) ------------------------------
 // The single-slot `pending_callback: Option<_>` became a `state_id`-keyed
 // `FxHashMap<StateId, PendingCallback>`. These assert the keying is genuine:
