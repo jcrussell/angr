@@ -153,19 +153,19 @@ pub struct ExecutionConfig {
 
 #[pymethods]
 impl ExecutionConfig {
-    /// Create a new execution config with default values.
+    /// Create a new execution config.
+    ///
+    /// Starts from [`ExecutionConfig::default`] (the single source of truth for
+    /// every field, including the "eager prefetch off / deferred forks on" hot
+    /// path) and overrides only the two Python-tunable arguments. The argument
+    /// defaults mirror the struct default so `ExecutionConfig()` == `default()`.
     #[new]
-    #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=false))]
+    #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=true))]
     pub fn py_new(max_deferred_forks: u32, use_deferred_forks: bool) -> Self {
         ExecutionConfig {
             max_deferred_forks,
-            branch_policy: BranchPolicy::TakeTrue,
             use_deferred_forks,
-            enable_eager_prefetch: true,
-            max_prefetch_batch: 256,
-            max_concretization_range: 65536,
-            enable_stride_detection: true,
-            max_symbolic_ip_targets: 257,
+            ..ExecutionConfig::default()
         }
     }
 

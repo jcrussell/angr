@@ -51,34 +51,44 @@ fn test_branch_policy_staticmethod_constructors() {
 }
 
 #[test]
-fn test_execution_config_py_new_defaults() {
-    // py_new signature defaults: max_deferred_forks=500, use_deferred_forks=false.
-    let cfg = ExecutionConfig::py_new(500, false);
-    assert_eq!(cfg.max_deferred_forks, 500);
+fn test_execution_config_py_new_overrides_only_two_args() {
+    // py_new starts from Default and overrides ONLY the two Python-tunable
+    // args; every other field (notably enable_eager_prefetch=false) comes
+    // straight from Default — no separate hardcoded value to drift.
+    let cfg = ExecutionConfig::py_new(123, false);
+    let def = ExecutionConfig::default();
+    assert_eq!(cfg.max_deferred_forks, 123);
     assert!(!cfg.use_deferred_forks);
-    assert_eq!(cfg.branch_policy, BranchPolicy::TakeTrue);
-    // py_new turns eager prefetch ON (distinct from the Default impl below).
-    assert!(cfg.enable_eager_prefetch);
-    assert_eq!(cfg.max_prefetch_batch, 256);
-    assert_eq!(cfg.max_concretization_range, 65536);
-    assert!(cfg.enable_stride_detection);
-    assert_eq!(cfg.max_symbolic_ip_targets, 257);
+    // Everything the args did NOT touch matches Default.
+    assert_eq!(cfg.branch_policy, def.branch_policy);
+    assert_eq!(cfg.enable_eager_prefetch, def.enable_eager_prefetch);
+    assert!(!cfg.enable_eager_prefetch, "inherited from Default (off)");
+    assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
+    assert_eq!(cfg.max_concretization_range, def.max_concretization_range);
+    assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
+    assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
 
 #[test]
-fn test_execution_config_default_trait_differs_from_py_new() {
-    // The Default impl is the engine's real runtime config; it enables
-    // deferred forks and DISABLES eager prefetch (per-page on demand), the
-    // opposite of py_new's prefetch flag. Pin both so a future tweak to one
-    // path is a conscious change.
-    let cfg = ExecutionConfig::default();
-    assert_eq!(cfg.max_deferred_forks, 500);
+fn test_execution_config_py_new_defaults_match_default_trait() {
+    // Calling ExecutionConfig() from Python (both args defaulted) must produce
+    // exactly the engine's runtime Default — the divergence tracked by
+    // angr-ph300.68 is now impossible because py_new is built ..Default.
+    let cfg = ExecutionConfig::py_new(500, true);
+    let def = ExecutionConfig::default();
+    assert_eq!(cfg.max_deferred_forks, def.max_deferred_forks);
+    assert_eq!(cfg.use_deferred_forks, def.use_deferred_forks);
     assert!(cfg.use_deferred_forks, "Default enables deferred forks");
+    assert_eq!(cfg.branch_policy, def.branch_policy);
+    assert_eq!(cfg.enable_eager_prefetch, def.enable_eager_prefetch);
     assert!(
         !cfg.enable_eager_prefetch,
         "Default disables eager prefetch (per-page on demand)"
     );
-    assert_eq!(cfg.max_symbolic_ip_targets, 257);
+    assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
+    assert_eq!(cfg.max_concretization_range, def.max_concretization_range);
+    assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
+    assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
 
 #[test]
