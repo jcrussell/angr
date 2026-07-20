@@ -181,13 +181,24 @@ pub fn claripy_to_rustbv(
                 .cast::<PyTuple>()
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let name: String = args_tuple.get_item(0)?.extract()?;
-            // Width might be in args[1] or in .length attribute
+            // Width might be in args[1] or in .length attribute. On double
+            // failure DO NOT default to 64: a wrong width poisons the
+            // name+width registry (lookup_symbol_by_name_and_width) and the Z3
+            // const sort for the process lifetime, and every downstream op
+            // silently papers over the mismatch with ZeroExt. Failing loud is
+            // strictly better than minting a wrong-width symbol (angr-ph300.56).
             let width: u32 = if args_tuple.len() > 1 {
-                args_tuple.get_item(1)?.extract().unwrap_or_else(|_| {
-                    ast.getattr("length")
+                match args_tuple.get_item(1)?.extract() {
+                    Ok(w) => w,
+                    Err(_) => ast
+                        .getattr("length")
                         .and_then(|l| l.extract())
-                        .unwrap_or(64)
-                })
+                        .map_err(|e| {
+                            BridgeError::InvalidArgs(format!(
+                                "BVS '{name}': args[1] not an int and .length unreadable ({e})"
+                            ))
+                        })?,
+                }
             } else {
                 ast.getattr("length")?.extract()?
             };
