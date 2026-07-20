@@ -116,33 +116,18 @@ impl RustExplorationManager {
             // Look up the condition for this deferred fork
             let condition = pending.stored_conditions.get(&fork.condition_id);
 
-            // P11 fix: If condition not in stored_conditions, try to reconstruct from condition_ast
-            let reconstructed_condition = if condition.is_none() {
-                if let Some(ref py_ast) = fork.condition_ast {
-                    // Try to convert the claripy AST to RustBV
-                    Python::attach(|py| {
-                        let ast = py_ast.bind(py);
-                        let fb = fork_base
-                            .as_ref()
-                            .expect("fork_base set before deferred fork processing");
-                        let solver_ref = fb.solver();
-                        let ctx: &SymContext = &solver_ref.borrow();
-                        claripy_to_rustbv(py, ast, ctx).ok()
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            // P11 fix: If condition not in stored_conditions, try to reconstruct
+            // from condition_ast (shared helper — see angr-ph300.76).
+            let fb = fork_base
+                .as_ref()
+                .expect("fork_base set before deferred fork processing");
+            let reconstructed_condition =
+                super::helpers::reconstruct_deferred_fork_condition(condition, &fork, fb);
 
             let effective_condition = condition.or(reconstructed_condition.as_ref());
 
             if let Some(cond) = effective_condition {
                 // Use solver snapshot (from before branch constraint) if available
-                let fb = fork_base
-                    .as_ref()
-                    .expect("fork_base set before deferred fork processing");
                 let forked = super::helpers::build_unexplored_fork(fb, &fork, cond, &mut snapshots);
 
                 // Track root state ID for this forked state
@@ -179,10 +164,7 @@ impl RustExplorationManager {
                 );
                 // Create a fork without additional constraints - this is conservative
                 // but ensures we don't lose valid paths
-                let mut forked = fork_base
-                    .as_ref()
-                    .expect("fork_base set before fork")
-                    .fork();
+                let mut forked = fb.fork();
                 forked.set_pc(fork.unexplored_target);
                 self.sm.set_root(forked.state_id(), root_state_id);
 
@@ -295,21 +277,10 @@ impl RustExplorationManager {
                 // `_resume_after_simprocedure`. Without this, an AST-only
                 // deferred fork parked behind a no-return SimProcedure
                 // (exit/abort) was silently dropped and its unexplored branch
-                // never reached (angr-ph300.7).
-                let reconstructed_condition = if condition.is_none() {
-                    if let Some(ref py_ast) = fork.condition_ast {
-                        Python::attach(|py| {
-                            let ast = py_ast.bind(py);
-                            let solver_ref = fork_base.solver();
-                            let ctx: &SymContext = &solver_ref.borrow();
-                            crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                // never reached (angr-ph300.7). Shared helper — see angr-ph300.76.
+                let reconstructed_condition = super::helpers::reconstruct_deferred_fork_condition(
+                    condition, &fork, &fork_base,
+                );
 
                 let effective_condition = condition.or(reconstructed_condition.as_ref());
 
@@ -480,21 +451,10 @@ impl RustExplorationManager {
             for fork in pending.deferred_forks {
                 let condition = pending.stored_conditions.get(&fork.condition_id);
 
-                // P11 fix: reconstruct from condition_ast if not in stored_conditions
-                let reconstructed_condition = if condition.is_none() {
-                    if let Some(ref py_ast) = fork.condition_ast {
-                        Python::attach(|py| {
-                            let ast = py_ast.bind(py);
-                            let solver_ref = fb.solver();
-                            let ctx: &crate::symbolic::SymContext = &solver_ref.borrow();
-                            crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                // P11 fix: reconstruct from condition_ast if not in
+                // stored_conditions (shared helper — see angr-ph300.76).
+                let reconstructed_condition =
+                    super::helpers::reconstruct_deferred_fork_condition(condition, &fork, fb);
 
                 let effective_condition = condition.or(reconstructed_condition.as_ref());
 

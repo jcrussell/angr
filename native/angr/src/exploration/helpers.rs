@@ -1229,6 +1229,39 @@ pub(crate) fn add_fork_guard_constraint(
     }
 }
 
+/// Reconstruct a deferred fork's branch condition from its stored claripy AST
+/// — the "P11" fallback — when the condition is absent from
+/// `stored_conditions`.
+///
+/// Returns `None` when `stored_condition` is already `Some` (nothing to
+/// reconstruct), when the fork carries no `condition_ast`, or when the
+/// claripy→RustBV conversion fails. The returned owned `RustBV` is evaluated
+/// against `fork_base`'s solver context so it shares the base's z3
+/// declarations.
+///
+/// This is the single source of truth for the four verbatim copies that used
+/// to live inline in `_resume_after_simprocedure`, `_deadend_pending_callback`,
+/// `_resume_after_symbolic_branch` (resume.rs) and the run-loop callback path
+/// (run_loop.rs). angr-ph300.7 fixed a drop-bug by porting this arm into the
+/// deadend copy verbatim; consolidating removes that copy-paste hazard (memory
+/// invariant-deferred-fork-p11-p15-fallback).
+pub(crate) fn reconstruct_deferred_fork_condition(
+    stored_condition: Option<&RustBV>,
+    fork: &DeferredFork,
+    fork_base: &RustSimState,
+) -> Option<RustBV> {
+    if stored_condition.is_some() {
+        return None;
+    }
+    let py_ast = fork.condition_ast.as_ref()?;
+    Python::attach(|py| {
+        let ast = py_ast.bind(py);
+        let solver_ref = fork_base.solver();
+        let ctx: &SymContext = &solver_ref.borrow();
+        crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
+    })
+}
+
 pub(crate) fn build_unexplored_fork(
     base: &RustSimState,
     fork: &DeferredFork,

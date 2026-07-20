@@ -390,6 +390,42 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
     assert!(mgr.pending_callbacks.is_empty());
 }
 
+/// `reconstruct_deferred_fork_condition` (the shared P11 helper extracted in
+/// angr-ph300.76) short-circuits without ever touching Python in its two
+/// non-reconstruction branches: when the condition is already present in
+/// `stored_conditions`, and when the fork carries no `condition_ast`. Both
+/// return `None` (nothing was reconstructed), leaving `condition.or(...)`
+/// intact at the call sites.
+#[test]
+fn reconstruct_deferred_fork_condition_early_returns_none() {
+    let fork_base = RustSimState::new("amd64").expect("base state");
+
+    let ctx = SymContext::new();
+    let stored = RustBV::symbolic(&ctx, "c", 1);
+    let fork_with_ast = crate::callbacks::DeferredFork {
+        branch_addr: 0x40_0500,
+        path_taken: true,
+        unexplored_target: 0x40_2000,
+        condition_id: 7,
+        push_level: 0,
+        condition_ast: None,
+    };
+
+    // Branch 1: stored condition already present -> nothing to reconstruct,
+    // even if an AST were also present. No Python attach happens.
+    assert!(
+        reconstruct_deferred_fork_condition(Some(&stored), &fork_with_ast, &fork_base).is_none(),
+        "present stored condition must short-circuit to None"
+    );
+
+    // Branch 2: no stored condition and no condition_ast -> P11 cannot supply
+    // a condition, so the P15 conservative arm must take over at the call site.
+    assert!(
+        reconstruct_deferred_fork_condition(None, &fork_with_ast, &fork_base).is_none(),
+        "absent condition_ast must yield None"
+    );
+}
+
 /// A deferred fork resumed through _resume_after_symbolic_branch must be based
 /// on the guard-free `pre_callback_snapshot`, not on `true_state` (angr-ph300.9).
 /// Before the fix, deferred forks were built from `true_state`, which carries

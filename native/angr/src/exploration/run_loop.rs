@@ -2151,20 +2151,11 @@ impl RustExplorationManager {
                     let cb_fork_total = pending.deferred_forks.len() as u64;
                     for fork in pending.deferred_forks {
                         let condition = pending.stored_conditions.get(&fork.condition_id);
-                        let reconstructed = if condition.is_none() {
-                            if let Some(ref py_ast) = fork.condition_ast {
-                                Python::attach(|py| {
-                                    let ast = py_ast.bind(py);
-                                    let solver_ref = fork_base.solver();
-                                    let ctx: &SymContext = &solver_ref.borrow();
-                                    claripy_to_rustbv(py, ast, ctx).ok()
-                                })
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
+                        // P11: reconstruct from condition_ast if absent from
+                        // stored_conditions (shared helper — see angr-ph300.76).
+                        let reconstructed = super::helpers::reconstruct_deferred_fork_condition(
+                            condition, &fork, &fork_base,
+                        );
 
                         if let Some(cond) = condition.or(reconstructed.as_ref()) {
                             // Add the taken-path constraint to the main state
