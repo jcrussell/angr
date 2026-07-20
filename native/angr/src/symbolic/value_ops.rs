@@ -561,8 +561,13 @@ impl RustBV {
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(width);
-                Self::concrete(v.wrapping_shl(amt), width)
+                // Match the symbolic `c >= w → 0` arm: clamp BEFORE narrowing so
+                // amounts >= 2^32 (and the width==128 full-shift) don't wrap.
+                if a >= width as u128 {
+                    Self::zero(width)
+                } else {
+                    Self::concrete(v.wrapping_shl(a as u32), width)
+                }
             }
             // x << 0 → x
             (None, Some(0)) => self,
@@ -594,8 +599,12 @@ impl RustBV {
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(width);
-                Self::concrete(v.wrapping_shr(amt), width)
+                // Match the symbolic `c >= w → 0` arm; clamp before narrowing.
+                if a >= width as u128 {
+                    Self::zero(width)
+                } else {
+                    Self::concrete(v.wrapping_shr(a as u32), width)
+                }
             }
             // x >> 0 → x
             (None, Some(0)) => self,
@@ -626,7 +635,10 @@ impl RustBV {
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(width);
+                // Saturate to the sign bit for amounts >= w (matches the symbolic
+                // `c >= w` arm). Clamp to w-1 BEFORE narrowing so amounts >= 2^32
+                // don't wrap to 0 and width==128 doesn't shift i128 by 128.
+                let amt = a.min((width - 1) as u128) as u32;
                 let signed = sign_extend(v, width);
                 Self::concrete((signed >> amt) as u128, width)
             }
@@ -660,8 +672,15 @@ impl RustBV {
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
                 let w = self.width();
-                let amt = (a as u32) % w;
-                let rotated = (v << amt) | (v >> (w - amt));
+                // Reduce mod w BEFORE narrowing so amounts >= 2^32 don't truncate
+                // to 0; special-case amt==0 so `v >> (w - amt)` never shifts a
+                // u128 by 128 (debug abort under panic=abort).
+                let amt = (a % w as u128) as u32;
+                let rotated = if amt == 0 {
+                    v
+                } else {
+                    (v << amt) | (v >> (w - amt))
+                };
                 Self::concrete(rotated, w)
             }
             _ => {
@@ -684,8 +703,14 @@ impl RustBV {
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
                 let w = self.width();
-                let amt = (a as u32) % w;
-                let rotated = (v >> amt) | (v << (w - amt));
+                // Reduce mod w BEFORE narrowing; special-case amt==0 so
+                // `v << (w - amt)` never shifts a u128 by 128.
+                let amt = (a % w as u128) as u32;
+                let rotated = if amt == 0 {
+                    v
+                } else {
+                    (v >> amt) | (v << (w - amt))
+                };
                 Self::concrete(rotated, w)
             }
             _ => {

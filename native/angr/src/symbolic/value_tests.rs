@@ -1422,3 +1422,80 @@ fn test_translate_into_per_node_cost() {
         "translate cost {per_node:.0} ns/node is absurdly high — likely a regression",
     );
 }
+
+// =========================================================================
+// Concrete shift/rotate amounts >= 2^32 and full-width edge cases (angr-ph300.30)
+//
+// The concrete arms of shl/lshr/ashr/rotl/rotr must reduce the amount BEFORE
+// narrowing it to u32, matching the Z3/symbolic arms. A pre-narrow `a as u32`
+// truncated amounts >= 2^32 to their low 32 bits, so e.g. an amount of 2^32
+// read as 0. Full-width shifts must not wrap a u128 shift back to a no-op.
+// =========================================================================
+
+const HUGE_AMT: u128 = 1u128 << 32; // low 32 bits are all zero → the trap value
+
+#[test]
+fn test_shl_amount_at_2pow32_is_zero_not_identity() {
+    let ctx = SymContext::new_mock();
+    // 2^32 >= width(64) → claripy bvshl yields 0. Pre-fix: (2^32 as u32)=0 → v.
+    let r = RustBV::concrete(5, 64).shl(&RustBV::concrete(HUGE_AMT, 64), &ctx);
+    assert_eq!(r.as_u64(), Some(0));
+}
+
+#[test]
+fn test_lshr_amount_at_2pow32_is_zero() {
+    let ctx = SymContext::new_mock();
+    let r = RustBV::concrete(0xDEAD_BEEF, 64).lshr(&RustBV::concrete(HUGE_AMT, 64), &ctx);
+    assert_eq!(r.as_u64(), Some(0));
+}
+
+#[test]
+fn test_ashr_amount_at_2pow32_saturates_to_sign() {
+    let ctx = SymContext::new_mock();
+    // Negative operand → all-sign; positive → 0.
+    let neg =
+        RustBV::concrete(0x8000_0000_0000_0000, 64).ashr(&RustBV::concrete(HUGE_AMT, 64), &ctx);
+    assert_eq!(neg.as_u64(), Some(0xFFFF_FFFF_FFFF_FFFF));
+    let pos =
+        RustBV::concrete(0x4000_0000_0000_0000, 64).ashr(&RustBV::concrete(HUGE_AMT, 64), &ctx);
+    assert_eq!(pos.as_u64(), Some(0));
+}
+
+#[test]
+fn test_shl_full_width_128_is_zero() {
+    let ctx = SymContext::new_mock();
+    // amt == width == 128: pre-fix wrapping_shl(128) == shift-by-0 → v.
+    let r = RustBV::concrete(0xFF, 128).shl(&RustBV::concrete(128, 128), &ctx);
+    assert_eq!(r.as_u128(), Some(0));
+}
+
+#[test]
+fn test_rotl_amount_at_2pow32_reduces_mod_width() {
+    let ctx = SymContext::new_mock();
+    // 2^32 % 48 == 16, so rotl by 2^32 == rotl by 16. Pre-fix rotated by 0.
+    let by_huge = RustBV::concrete(0x1, 48).rotl(&RustBV::concrete(HUGE_AMT, 48), &ctx);
+    let by_16 = RustBV::concrete(0x1, 48).rotl(&RustBV::concrete(16, 48), &ctx);
+    assert_eq!(by_huge.as_u64(), by_16.as_u64());
+    assert_eq!(by_huge.as_u64(), Some(1 << 16));
+}
+
+#[test]
+fn test_rotr_amount_at_2pow32_reduces_mod_width() {
+    let ctx = SymContext::new_mock();
+    let by_huge = RustBV::concrete(1 << 16, 48).rotr(&RustBV::concrete(HUGE_AMT, 48), &ctx);
+    let by_16 = RustBV::concrete(1 << 16, 48).rotr(&RustBV::concrete(16, 48), &ctx);
+    assert_eq!(by_huge.as_u64(), by_16.as_u64());
+    assert_eq!(by_huge.as_u64(), Some(1));
+}
+
+#[test]
+fn test_rotl_width_128_zero_effective_amount_no_panic() {
+    let ctx = SymContext::new_mock();
+    // amt % 128 == 0 → `v >> (w - amt)` would shift u128 by 128 (debug abort
+    // under panic=abort). Must return v unchanged.
+    let v: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+    let r = RustBV::concrete(v, 128).rotl(&RustBV::concrete(256, 128), &ctx);
+    assert_eq!(r.as_u128(), Some(v));
+    let r2 = RustBV::concrete(v, 128).rotr(&RustBV::concrete(256, 128), &ctx);
+    assert_eq!(r2.as_u128(), Some(v));
+}
