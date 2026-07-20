@@ -61,6 +61,29 @@ fn test_extract() {
 }
 
 #[test]
+fn test_extract_no_ctx_high_bits_of_wide_concrete_are_zero() {
+    // A Concrete stores its value in a u128, so bits at positions >= 128 are
+    // logically zero even for a width-256 value. extract_no_ctx must guard the
+    // shift/mask so it returns 0 (not a u128 shift-overflow abort / mod-128
+    // wrap) when the requested window lands entirely in those high bits.
+    let wide = RustBV::concrete(u128::MAX, 256);
+    // Window [143:136] is entirely above bit 128 -> all logically-zero bits.
+    let hi = wide.extract_no_ctx(143, 136);
+    assert_eq!(hi.width(), 8);
+    assert_eq!(hi.as_u128(), Some(0));
+    // low >= 128 alone: window [200:193] also fully in the zero region.
+    let hi2 = wide.extract_no_ctx(200, 193);
+    assert_eq!(hi2.as_u128(), Some(0));
+    // Low window still returns the real bits.
+    let lo = wide.extract_no_ctx(7, 0);
+    assert_eq!(lo.as_u128(), Some(0xFF));
+    // A result_width >= 128 window over the low 128 real bits stays exact.
+    let full_lo = wide.extract_no_ctx(127, 0);
+    assert_eq!(full_lo.width(), 128);
+    assert_eq!(full_lo.as_u128(), Some(u128::MAX));
+}
+
+#[test]
 fn test_concat() {
     let ctx = SymContext::new_mock();
     let hi = RustBV::concrete(0xAB, 8);

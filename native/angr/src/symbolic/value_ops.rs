@@ -1065,7 +1065,18 @@ impl RustBV {
         let result_width = high - low + 1;
 
         if let Some(v) = self.as_u128() {
-            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            // Mirror extract_into's fast path: a Concrete stores its value in a
+            // u128, so any bit at position >= 128 (possible when width > 128)
+            // is logically zero. Shifting a u128 by >= 128 overflows in Rust
+            // (debug abort / release wraps mod 128), so guard both the shift
+            // (low) and the mask (result_width).
+            let shifted = if low >= 128 { 0 } else { v >> low };
+            let mask = if result_width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << result_width) - 1
+            };
+            let extracted = shifted & mask;
             return Self::concrete(extracted, result_width);
         }
 
