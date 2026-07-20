@@ -1825,3 +1825,7 @@ mod tests_vec_float_lane;
 #[cfg(test)]
 #[path = "ops_tests_vec_float_scalar.rs"]
 mod tests_vec_float_scalar;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_set_lo.rs"]
+mod tests_vec_set_lo;
