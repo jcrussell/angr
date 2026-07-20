@@ -186,6 +186,49 @@ class TestMultiArchSupport:
         assert state.get_register("$26") == 0xABCD1234DEADBEEF
         assert state.get_register("$27") == 0x5678EF90CAFEBABE
 
+    def test_mips64_fpu_offsets_match_archinfo(self):
+        """MIPS64 FPU register offsets are ground-truth-checked against
+        archinfo, not just self-consistent round-trips.
+
+        Covers angr-mpln0: the whole ``offsets64`` FPU block (F0-F31 +
+        FIR/FCCR/FEXR/FENR/FCSR) was +8 off the VEX guest layout. Because
+        get/set share the same table, an in-isolation round-trip (the
+        angr-w2gj.2 test) passed despite every name aliasing the adjacent
+        register. This test writes each FPU name and reads the raw register
+        file at the *archinfo* offset — the interpreter's ground truth — so
+        a wrong offset fails here. The raw guest state is stored host-native
+        little-endian regardless of arch endianness.
+        """
+        import archinfo
+
+        arch = archinfo.ArchMIPS64()
+        state = RustSimState("mips64")
+
+        fpu_names = [f"f{i}" for i in range(32)] + [
+            "fir",
+            "fccr",
+            "fexr",
+            "fenr",
+            "fcsr",
+        ]
+        # Distinct per-register value so a +8 alias lands the wrong bytes.
+        for idx, name in enumerate(fpu_names):
+            off, size = arch.registers[name]
+            value = (0x1000000000000000 + idx) & ((1 << (size * 8)) - 1)
+            state.set_register(name, value)
+            raw = state.get_registers_raw()
+            got = int.from_bytes(raw[off : off + size], "little")
+            assert got == value, (
+                f"{name}: wrote {value:#x}, archinfo offset {off} holds {got:#x} (offset table drifted from VEX layout)"
+            )
+
+        # fcsr must NOT clobber guest_ULR (VEX offset 576) — the pre-fix
+        # +8 drift wrote fcsr straight into the TLS/userlocal register.
+        state2 = RustSimState("mips64")
+        state2.set_register("fcsr", 0xDEADBEEF)
+        raw2 = state2.get_registers_raw()
+        assert int.from_bytes(raw2[576:584], "little") == 0, "fcsr write leaked into guest_ULR (offset 576)"
+
     def test_arm32_full_register_family_dispatch(self):
         """ARM32 VFP (d/q), FPSCR, and high GPRs round-trip via the standard
         register dispatch.
