@@ -656,22 +656,6 @@ impl SymContext {
         results
     }
 
-    /// Canonical ascending enumeration for [`eval_upto`] under strict-
-    /// deterministic mode (angr-op0dn.10.2). Caller guarantees `n > 0`,
-    /// `width <= 128`, and a symbolic `bv`.
-    ///
-    /// Each iteration binary-searches the minimum feasible value at or above
-    /// `lo` (reusing [`bsearch_min`], the same machinery [`min`](Self::min)
-    /// drives), records it, then raises the floor to `v + 1`. So witness `i` is
-    /// the `i`-th smallest feasible value and the returned Vec is the ascending
-    /// prefix of the sorted feasible set — identical across runs regardless of
-    /// which model Z3 would have produced.
-    ///
-    /// Cost is why this is opt-in: `n * (1 + log2(width))` checks against the
-    /// default path's `n` checks. No `get_model` call happens, so the warm
-    /// model-cache seed is bypassed and `model_cache` is left untouched (a
-    /// history-dependent seed is precisely the nondeterminism being removed).
-    #[cfg(feature = "vex-engine-z3")]
     /// Canonical joint witness: the lexicographic minimum over `parts`, in the
     /// order given (angr-op0dn.10.7). `parts` must be non-empty and every width
     /// must be <= 128 (the `bsearch_min` bound; see `min`).
@@ -757,6 +741,22 @@ impl SymContext {
         )
     }
 
+    /// Canonical ascending enumeration for [`eval_upto`] under strict-
+    /// deterministic mode (angr-op0dn.10.2). Caller guarantees `n > 0`,
+    /// `width <= 128`, and a symbolic `bv`.
+    ///
+    /// Each iteration binary-searches the minimum feasible value at or above
+    /// `lo` (reusing [`bsearch_min`], the same machinery [`min`](Self::min)
+    /// drives), records it, then raises the floor to `v + 1`. So witness `i` is
+    /// the `i`-th smallest feasible value and the returned Vec is the ascending
+    /// prefix of the sorted feasible set — identical across runs regardless of
+    /// which model Z3 would have produced.
+    ///
+    /// Cost is why this is opt-in: `n * (1 + log2(width))` checks against the
+    /// default path's `n` checks. No `get_model` call happens, so the warm
+    /// model-cache seed is bypassed and `model_cache` is left untouched (a
+    /// history-dependent seed is precisely the nondeterminism being removed).
+    #[cfg(feature = "vex-engine-z3")]
     fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         let width = bv.width();
         let ast = bv.to_z3_ast();
