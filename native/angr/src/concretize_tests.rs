@@ -150,3 +150,51 @@ fn test_configure_strategies() {
     assert!(concretizer.avoid_multivalued_reads);
     assert!(concretizer.avoid_multivalued_writes);
 }
+
+// angr-lf108: try_detect_stride's sampled-GCD grid can exclude feasible
+// addresses. `stride_grid_excludes_feasible` is the soundness gate — it must
+// return true exactly when some feasible address is off the `{ base+i*stride }`
+// grid, so try_detect_stride can fall back to TooLarge instead of emitting an
+// unsound Strided result.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_stride_grid_excludes_feasible_off_grid() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let addr = ctx.new_bv("addr", 64);
+
+    // Feasible set {0, 4, 8, 7}: the on-stride members {0,4,8} would tempt a
+    // stride=4 grid, but 7 is off-grid (7 % 4 != 0). base = true min = 0.
+    let disj = addr
+        .eq(&RustBV::concrete(0, 64), &ctx)
+        .or(&addr.eq(&RustBV::concrete(4, 64), &ctx), &ctx)
+        .or(&addr.eq(&RustBV::concrete(8, 64), &ctx), &ctx)
+        .or(&addr.eq(&RustBV::concrete(7, 64), &ctx), &ctx);
+    ctx.assume_true(&disj);
+
+    assert!(
+        concretizer.stride_grid_excludes_feasible(&addr, &ctx, 0, 4),
+        "off-grid feasible address 0x7 must be detected"
+    );
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_stride_grid_excludes_feasible_on_grid() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let addr = ctx.new_bv("addr", 64);
+
+    // Feasible set {0, 4, 8} is exactly the stride=4 grid over [0, 8]; no
+    // feasible address lies off it, so the gate must not fire.
+    let disj = addr
+        .eq(&RustBV::concrete(0, 64), &ctx)
+        .or(&addr.eq(&RustBV::concrete(4, 64), &ctx), &ctx)
+        .or(&addr.eq(&RustBV::concrete(8, 64), &ctx), &ctx);
+    ctx.assume_true(&disj);
+
+    assert!(
+        !concretizer.stride_grid_excludes_feasible(&addr, &ctx, 0, 4),
+        "grid {{0,4,8}} covers the whole feasible set; gate must not fire"
+    );
+}

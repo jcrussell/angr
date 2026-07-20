@@ -543,6 +543,22 @@ impl AddressConcretizer {
         if stride > 1 {
             let count = (max - min) / stride + 1;
             if count <= self.max_stride_count {
+                // Soundness gate (angr-lf108): the GCD of a 4-sample subset can
+                // strictly exceed the true stride of the feasible set, so the
+                // grid `{ min + i*stride }` may exclude feasible addresses —
+                // consumers (ITE load/store builders) treat the grid as the
+                // complete solution set, silently dropping the off-grid ones.
+                // Any off-grid feasible address a in [min, max] must satisfy
+                // (a - min) % stride != 0: an on-stride address past the last
+                // grid cell (min + (count-1)*stride) would be >= that cell +
+                // stride > max, contradicting a <= max. So a single modulo SAT
+                // check is a *complete* test — if it is satisfiable the grid is
+                // unsound and we fall back to TooLarge (matching Python's
+                // narrow-and-constrain semantics, which never disagrees with
+                // the constraint set).
+                if self.stride_grid_excludes_feasible(addr, ctx, min, stride) {
+                    return None;
+                }
                 return Some(ConcretizationResult::Strided {
                     base: min,
                     stride,
@@ -552,6 +568,30 @@ impl AddressConcretizer {
         }
 
         None
+    }
+
+    /// Returns `true` if some feasible address lies off the Strided grid
+    /// `{ base + i*stride }`, i.e. adopting the grid would silently drop a
+    /// solution. See the soundness note in `try_detect_stride`: for a grid
+    /// whose `base` is the true minimum feasible address, off-grid ⟺
+    /// `(addr - base) % stride != 0`, so this single SAT check is complete.
+    ///
+    /// Without the Z3 feature the underlying `can_be_true` conservatively
+    /// returns `true`, which disables the (already best-effort) stride
+    /// abstraction — the safe direction.
+    fn stride_grid_excludes_feasible(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+        base: u64,
+        stride: u64,
+    ) -> bool {
+        let width = addr.width();
+        let base_bv = RustBV::concrete(base as u128, width);
+        let stride_bv = RustBV::concrete(stride as u128, width);
+        let zero = RustBV::concrete(0, width);
+        let off_grid = addr.sub(&base_bv, ctx).urem(&stride_bv, ctx).ne(&zero, ctx);
+        ctx.can_be_true(&off_grid)
     }
 
     /// Detect stride pattern from a list of sorted addresses.
