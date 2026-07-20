@@ -202,6 +202,23 @@ class RustSolverFallback:
         self._initial_constraint_count = n
         self._synced_constraint_count = n
 
+    def __del__(self):
+        # angr-87e56: _cached_rust_ctx is an owned fork_state_solver clone
+        # (unsendable). If this manager is GC'd on a scheduler worker thread
+        # (RUST_PARALLEL_WORKERS>1), the context's tp_dealloc would run
+        # off-thread and pyo3 would leak it. Route through the owner-thread
+        # graveyard so it is closed on its owning (coordinator) thread.
+        ctx = self.__dict__.get("_cached_rust_ctx")
+        if ctx is not None:
+            try:
+                from angr.exploration.rust_state_proxy import _release_owned_ctx
+
+                _release_owned_ctx(ctx)
+            except Exception:
+                # Teardown-time best-effort: a torn-down module just falls back
+                # to pyo3's leak-safe cross-thread drop refusal.
+                pass
+
     def attach(self):
         """Bind wrapper methods onto state.solver. No-op if already attached."""
         state = self._state

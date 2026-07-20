@@ -2153,11 +2153,15 @@ class RustPosixProxy:
         """Evaluate stdin symbolic variables to concrete bytes."""
         if not self._stdin_vars:
             return b""
+        owned_ctx = None
         try:
             if self._shared_ctx_getter is not None:
                 solver_ctx = self._shared_ctx_getter()
             else:
-                solver_ctx = self._mgr.fork_state_solver(self._state_id)
+                # angr-87e56: a fork_state_solver clone is an unsendable owned
+                # context. Release it on the owning thread when done rather than
+                # letting the local drop via GC on a scheduler worker thread.
+                solver_ctx = owned_ctx = self._mgr.fork_state_solver(self._state_id)
             result = bytearray()
             for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1]):
                 val = solver_ctx.eval(var)
@@ -2172,6 +2176,9 @@ class RustPosixProxy:
             # comparing solution bytes. Logged at warn so the failure is loud.
             l.warning("RustPosixProxy: failed to evaluate stdin: %s", e)
             return b""
+        finally:
+            # Release the owned fork on its owning thread (never the shared one).
+            _release_owned_ctx(owned_ctx)
 
 
 class RustCallStackFrameProxy:
