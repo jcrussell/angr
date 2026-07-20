@@ -623,6 +623,14 @@ impl RustExplorationManager {
         loop {
             // I8 termination path (a): enough solutions.
             if self.found_count() >= self.num_find {
+                // A prior wave may have parked the tail of its bounce queue in
+                // `pending_parallel_bounces` (states living in NO stash) before
+                // this wave reached `num_find`. Serial exploration leaves the
+                // equivalent frontier in STASH_ACTIVE, so flush the parked
+                // bounces back to active here for `active_count` parity — else
+                // they are stranded until the next `run()` (which never comes
+                // once `found` is reported) or a snapshot flush (angr-ph300.8).
+                self.flush_parked_bounces_to_active();
                 return Ok(ExplorationEvent::found(
                     self.found_count(),
                     self.active_count(),
@@ -1073,6 +1081,12 @@ impl RustExplorationManager {
             // report found.
             if self.found_count() >= self.num_find {
                 self.finalize_steady_session(py)?;
+                // Flush any bounces a prior run() parked in
+                // `pending_parallel_bounces` back to STASH_ACTIVE for
+                // `active_count` parity with serial exploration (angr-ph300.8).
+                // Runs after finalize so the resident-id guard in
+                // `flush_parked_bounces_to_active` sees the drained frontier.
+                self.flush_parked_bounces_to_active();
                 return Ok(ExplorationEvent::found(
                     self.found_count(),
                     self.active_count(),

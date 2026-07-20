@@ -11,6 +11,7 @@ use super::*;
 use crate::callbacks::{DeferredFork, RunErrorKind, RunResult};
 use crate::exploration::RustExplorationManager;
 use crate::procedures::NativeProcedureRegistry;
+use crate::stash::STASH_ACTIVE;
 use crate::state::RustSimState;
 use crate::syscalls::NativeSyscallRegistry;
 
@@ -460,6 +461,51 @@ fn native_hook_at_avoid_addr_bounces_to_python() {
             })
         ));
     });
+}
+
+/// A re-enterable bounce parked in `pending_parallel_bounces` (a state living
+/// in NO stash) must be recoverable into STASH_ACTIVE via
+/// `flush_parked_bounces_to_active` — restoring the pc to the bounce entry so a
+/// later step re-lifts the hook. The parallel found-early-return path calls
+/// this so `active_count` reaches parity with the serial loop instead of
+/// stranding the queue when `num_find` is hit mid-wave (angr-ph300.8).
+#[test]
+fn flush_parked_bounce_recovers_reenterable_state_to_active() {
+    let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+
+    // Park a re-enterable SimProcedurePython bounce whose entry addr differs
+    // from the state's current pc, so we can prove the flush restored it.
+    const BOUNCE_ADDR: u64 = 0x4000;
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(0xdead);
+    let id = state.state_id();
+    mgr.pending_parallel_bounces.push((
+        state,
+        BounceKind::SimProcedurePython {
+            addr: BOUNCE_ADDR,
+            name: "sp".to_string(),
+            num_args: 0,
+            return_addr: 0x4010,
+        },
+        id, // lineage root = self
+    ));
+
+    assert_eq!(mgr.active_count(), 0, "parked bounce is in NO stash");
+
+    mgr.flush_parked_bounces_to_active();
+
+    assert!(
+        mgr.pending_parallel_bounces.is_empty(),
+        "re-enterable bounce drained from the parked queue"
+    );
+    assert_eq!(mgr.active_count(), 1, "flushed back to STASH_ACTIVE");
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash exists");
+    assert_eq!(active[0].state_id(), id);
+    assert_eq!(
+        active[0].pc(),
+        BOUNCE_ADDR,
+        "pc restored to the bounce entry for faithful replay"
+    );
 }
 
 /// A native proc's unmapped-page error becomes a Python-identical
