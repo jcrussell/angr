@@ -1493,6 +1493,53 @@ fn test_shl_full_width_128_is_zero() {
 }
 
 #[test]
+fn test_lshr_full_width_128_is_zero() {
+    let ctx = SymContext::new_mock();
+    // amt >= width == 128: pre-fix `wrapping_shr(amt as u32)` masked the amount
+    // mod 128, so amt==128 shifted by 0 and returned v (angr-g35y0). The clamp
+    // must return 0 to match the symbolic `c >= w → 0` arm. Cover the exact
+    // boundary (128), a value between w and 2^32 (200), and one past the u32
+    // truncation edge (2^32 + 3, whose low 32 bits are 3).
+    let v: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+    for amt in [128u128, 200, (1u128 << 32) + 3] {
+        let r = RustBV::concrete(v, 128).lshr(&RustBV::concrete(amt, 128), &ctx);
+        assert_eq!(r.as_u128(), Some(0), "lshr by {amt} should be 0");
+    }
+}
+
+#[test]
+fn test_ashr_full_width_128_saturates_to_sign() {
+    let ctx = SymContext::new_mock();
+    // amt >= width == 128: pre-fix `signed >> (amt as u32)` either shifted an
+    // i128 by 128 (debug abort) or masked mod 128 (angr-g35y0). Must saturate
+    // to all sign bits, matching the symbolic `c >= w → SignExt(MSB)` arm.
+    let neg: u128 = 1u128 << 127; // MSB set → negative
+    let pos: u128 = 1u128 << 100; // MSB clear → positive
+    for amt in [128u128, 200, (1u128 << 32) + 3] {
+        let rn = RustBV::concrete(neg, 128).ashr(&RustBV::concrete(amt, 128), &ctx);
+        assert_eq!(
+            rn.as_u128(),
+            Some(u128::MAX),
+            "ashr(neg) by {amt} → all ones"
+        );
+        let rp = RustBV::concrete(pos, 128).ashr(&RustBV::concrete(amt, 128), &ctx);
+        assert_eq!(rp.as_u128(), Some(0), "ashr(pos) by {amt} → 0");
+    }
+}
+
+#[test]
+fn test_shl_full_width_128_amounts_above_boundary() {
+    let ctx = SymContext::new_mock();
+    // Complement test_shl_full_width_128_is_zero (amt==128) with amounts above
+    // the boundary and past the u32 truncation edge — all must yield 0.
+    let v: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+    for amt in [200u128, (1u128 << 32) + 3] {
+        let r = RustBV::concrete(v, 128).shl(&RustBV::concrete(amt, 128), &ctx);
+        assert_eq!(r.as_u128(), Some(0), "shl by {amt} should be 0");
+    }
+}
+
+#[test]
 fn test_rotl_amount_at_2pow32_reduces_mod_width() {
     let ctx = SymContext::new_mock();
     // 2^32 % 48 == 16, so rotl by 2^32 == rotl by 16. Pre-fix rotated by 0.
