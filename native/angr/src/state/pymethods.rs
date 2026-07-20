@@ -201,7 +201,7 @@ impl PyRustSimState {
 
     /// Get the history (basic block addresses).
     pub fn history(&self) -> Vec<u64> {
-        self.inner.history().to_vec()
+        self.inner.history().iter().copied().collect()
     }
 
     /// Get a register value by name.

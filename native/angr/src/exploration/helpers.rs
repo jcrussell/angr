@@ -765,7 +765,7 @@ impl RustExplorationManager {
     }
 
     /// Check if any address in the history exceeds the loop bound.
-    fn exceeds_loop_bound(history: &[u64], bound: usize) -> bool {
+    fn exceeds_loop_bound(history: &std::collections::VecDeque<u64>, bound: usize) -> bool {
         // Use a small HashMap to count address frequencies.
         // For typical histories this is fast since most addresses appear once.
         let mut counts: HashMap<u64, usize> = HashMap::new();

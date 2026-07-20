@@ -10,35 +10,38 @@ use super::*;
 
 impl RustSimState {
     /// Get the history (basic block addresses visited).
-    pub fn history(&self) -> &[u64] {
+    ///
+    /// Backed by a `VecDeque` so cap eviction is O(1); callers that need a
+    /// contiguous slice or `Vec` should `.iter()` / `.range(..)` over it.
+    pub fn history(&self) -> &VecDeque<u64> {
         &self.history
     }
 
     /// Add an address to history.
     pub fn add_to_history(&mut self, addr: u64) {
         if self.track_history {
-            self.history.push(addr);
+            self.history.push_back(addr);
             if self.max_history > 0 && self.history.len() > self.max_history {
-                self.history.remove(0);
+                self.history.pop_front();
             }
         }
     }
 
     /// Get the detailed execution history.
-    pub fn detailed_history(&self) -> &[HistoryEntry] {
+    pub fn detailed_history(&self) -> &VecDeque<HistoryEntry> {
         &self.detailed_history
     }
 
     /// Add a detailed history entry.
     pub fn add_history_entry(&mut self, addr: u64, jumpkind: u8, jump_target: u64) {
         if self.track_history {
-            self.detailed_history.push(HistoryEntry {
+            self.detailed_history.push_back(HistoryEntry {
                 addr,
                 jumpkind,
                 jump_target,
             });
             if self.max_history > 0 && self.detailed_history.len() > self.max_history {
-                self.detailed_history.remove(0);
+                self.detailed_history.pop_front();
             }
         }
     }
@@ -51,7 +54,8 @@ impl RustSimState {
             let drop = history.len() - self.max_history;
             history.drain(0..drop);
         }
-        self.detailed_history = history;
+        // `Vec -> VecDeque` reuses the allocation (O(1)).
+        self.detailed_history = history.into();
     }
 
     // =========================================================================

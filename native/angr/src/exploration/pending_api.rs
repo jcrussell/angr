@@ -115,7 +115,9 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _get_pending_history(&self, state_id: u64) -> PyResult<Vec<u64>> {
-        self.with_pending(state_id, |pending| Ok(pending.state.history().to_vec()))
+        self.with_pending(state_id, |pending| {
+            Ok(pending.state.history().iter().copied().collect::<Vec<_>>())
+        })
     }
 
     pub(crate) fn _get_pending_jumpkind(&self, state_id: u64) -> PyResult<String> {
@@ -132,7 +134,7 @@ impl RustExplorationManager {
         state_id: u64,
     ) -> PyResult<(Vec<u64>, String)> {
         self.with_pending(state_id, |pending| {
-            let history = pending.state.history().to_vec();
+            let history = pending.state.history().iter().copied().collect::<Vec<_>>();
             let jumpkind = pending
                 .jumpkind
                 .clone()
@@ -513,7 +515,10 @@ impl RustExplorationManager {
                 dict.set_item("constraint_count", constraint_count)?;
             }
 
-            dict.set_item("history", pending.state.history().to_vec())?;
+            dict.set_item(
+                "history",
+                pending.state.history().iter().copied().collect::<Vec<_>>(),
+            )?;
 
             dict.set_item(
                 "jumpkind",

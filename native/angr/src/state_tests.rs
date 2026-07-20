@@ -152,7 +152,10 @@ fn test_set_max_history_trims_retroactively() {
     state.set_max_history(4);
     let kept = state.history();
     assert_eq!(kept.len(), 4);
-    assert_eq!(kept, &[0x3010, 0x3011, 0x3012, 0x3013]);
+    assert_eq!(
+        kept.iter().copied().collect::<Vec<_>>(),
+        vec![0x3010, 0x3011, 0x3012, 0x3013]
+    );
     let kept_detailed = state.detailed_history();
     assert_eq!(kept_detailed.len(), 4);
     assert_eq!(kept_detailed[0].addr, 0x3010);
@@ -1083,7 +1086,10 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.pc(), orig.pc());
     assert_eq!(restored.state_id(), orig.state_id());
     assert_eq!(restored.parent_id(), orig.parent_id());
-    assert_eq!(restored.history().to_vec(), orig.history().to_vec());
+    assert_eq!(
+        restored.history().iter().copied().collect::<Vec<_>>(),
+        orig.history().iter().copied().collect::<Vec<_>>()
+    );
     assert_eq!(
         restored.detailed_history().len(),
         orig.detailed_history().len()

@@ -276,7 +276,7 @@ impl RustSimState {
             registers_raw,
             memory_pages,
             constraint_count,
-            history: self.history.clone(),
+            history: self.history.iter().copied().collect(),
             named_registers,
             symbolic_register_names,
             call_stack,

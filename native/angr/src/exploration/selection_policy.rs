@@ -1094,7 +1094,7 @@ mod tests {
                 trace.len() <= MAX_DISPATCH,
                 "scripted fork program diverged"
             );
-            let mut child_history = st.history().to_vec();
+            let mut child_history: Vec<u64> = st.history().iter().copied().collect();
             if child_history.len() >= DEPTH {
                 continue;
             }

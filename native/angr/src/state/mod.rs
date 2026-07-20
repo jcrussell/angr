@@ -145,7 +145,7 @@
 //!   handle is taken.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -361,10 +361,12 @@ pub struct RustSimState {
     state_id: u64,
     /// Parent state ID (for tracking fork tree).
     parent_id: Option<u64>,
-    /// Basic block history (addresses visited).
-    history: Vec<u64>,
+    /// Basic block history (addresses visited). `VecDeque` so FIFO
+    /// cap eviction (`pop_front`) is O(1) amortized rather than the
+    /// O(n) buffer shift a `Vec::remove(0)` incurs per block (angr-ph300.57).
+    history: VecDeque<u64>,
     /// Detailed execution history with jumpkind and target info.
-    detailed_history: Vec<HistoryEntry>,
+    detailed_history: VecDeque<HistoryEntry>,
     /// Maximum history length (0 = unlimited).
     max_history: usize,
     /// Hook addresses. Wrapped in Arc for cheap fork — copy-on-write

@@ -880,7 +880,7 @@ impl RustExplorationManager {
         } else {
             hist.len().saturating_sub(n)
         };
-        Some(hist[start..].to_vec())
+        Some(hist.range(start..).copied().collect())
     }
 
     /// Get state IDs in a stash.

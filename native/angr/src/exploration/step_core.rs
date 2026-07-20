@@ -237,7 +237,7 @@ pub(crate) fn run_interpreter_step_core(
     interp.current_state_id = state.state_id() as i64;
     // Transfer call stack and detailed history to interpreter
     interp.call_stack = state.call_stack().to_vec();
-    interp.detailed_history = state.detailed_history().to_vec();
+    interp.detailed_history = state.detailed_history().iter().cloned().collect();
 
     // Set up hooks, skipping the one we just processed (for zero-length hooks)
     for &addr in &ctx.hooks {
