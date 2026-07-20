@@ -319,32 +319,116 @@ fn test_sprintf_symbolic_dest() {
 }
 
 #[test]
-fn test_sprintf_pointer() {
+fn test_sprintf_pointer_falls_back() {
+    // %p must defer to Python (Err): native emitted "0xdeadbeef" (with a 0x
+    // prefix) while format_parser.py emits bare hex "deadbeef", and Python
+    // sign-folds bit-63-set pointers. A native "success" diverges from the
+    // engine we mirror. See `format-p-no-native-parity` (angr-3i88a).
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%p\x00", Permission::RWX);
 
-    let result = NativeSprintf
-        .call(
+    let result = NativeSprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0xdeadbeef, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(result.is_err(), "%p in sprintf should fall back to Python");
+}
+
+#[test]
+fn test_sprintf_unsigned_high_bit_falls_back() {
+    // %u/%x/%o with the high bit set diverge: Python's buggy signed sign-folds
+    // the value; native renders it C-correct unsigned. Defer for parity.
+    // Low-bit values (test_sprintf_percent_x with 255) still format natively.
+    // See `format-unsigned-highbit-no-native-parity` (angr-3i88a).
+    for spec in [b"%x\x00", b"%u\x00", b"%o\x00"] {
+        let mut state = setup_state();
+        state.map_memory_data(0x1000, spec, Permission::RWX);
+
+        let result = NativeSprintf.call(
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
                 RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0xdeadbeef, 64),
+                RustBV::concrete(0xdeadbeef, 64), // bit 31 set
                 RustBV::concrete(0, 64),
                 RustBV::concrete(0, 64),
                 RustBV::concrete(0, 64),
                 RustBV::concrete(0, 64),
                 RustBV::concrete(0, 64),
             ],
-        )
-        .unwrap();
-
-    assert_eq!(result.unwrap().as_u64(), Some(10)); // "0xdeadbeef"
-    let mut out = Vec::new();
-    for i in 0..10u64 {
-        out.push(state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8);
+        );
+        assert!(
+            result.is_err(),
+            "high-bit unsigned spec should fall back to Python"
+        );
     }
-    assert_eq!(&out, b"0xdeadbeef");
+}
+
+#[test]
+fn test_sprintf_digit_precision_falls_back() {
+    // "%.3d" / "%.3s": Python's _match_spec mis-slices the '.', drops the
+    // conversion letter, and FormatString.replace raises SimProcedureError
+    // (state errored). Native previously continued — defer for parity.
+    // See `format-digit-precision-no-native-parity` (angr-3i88a).
+    for spec in [b"%.3d\x00".as_slice(), b"%.3s\x00".as_slice()] {
+        let mut state = setup_state();
+        state.map_memory_data(0x1000, spec, Permission::RWX);
+        state.map_memory_data(0x3000, b"hello\x00", Permission::RWX);
+
+        let result = NativeSprintf.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x3000, 64), // usable as int 7 or str ptr
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "digit precision should fall back to Python"
+        );
+    }
+}
+
+#[test]
+fn test_sprintf_star_width_falls_back() {
+    // "%*d": Python's extract_components swallows '%*' without consuming a
+    // width arg, shifting later variadic args. Native can't reproduce that
+    // shift; defer for parity. See `format-star-width-no-native-parity`.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%*d\x00", Permission::RWX);
+
+    let result = NativeSprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(5, 64),  // width
+            RustBV::concrete(42, 64), // value
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "'*' dynamic width should fall back to Python"
+    );
 }
 
 #[test]

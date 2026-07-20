@@ -25,6 +25,21 @@ fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedure
 ///
 /// `args` is the slice of variadic arguments (after dest/format/size).
 /// Returns the formatted output bytes and the number of variadic args consumed.
+/// Python's `FormatSpecifier.signed` is buggy — `getattr(ty, "size", False)`
+/// returns the truthy size int even for unsigned specs — so
+/// format_parser.py::FormatString.replace sign-folds EVERY int conversion
+/// (`if c_val >= 2^(bits-1): c_val -= 2^bits`). For unsigned specs
+/// (%u/%x/%X/%o) with the high bit clear the fold is a no-op and native output
+/// matches; with the high bit set Python renders a negative value that native
+/// can't cheaply reproduce (Rust `{:x}` prints two's-complement bits, Python
+/// prints `-<abs hex>`), so those must defer to Python. `masked` is already
+/// masked to `bits`. See `format-unsigned-highbit-no-native-parity`
+/// (angr-3i88a).
+fn unsigned_high_bit_set(masked: u64, wide: bool) -> bool {
+    let bits = if wide { 64 } else { 32 };
+    masked >> (bits - 1) != 0
+}
+
 fn format_string(
     state: &mut RustSimState,
     fmt: &[u8],
@@ -76,45 +91,46 @@ fn format_string(
             zero_pad = false; // '-' overrides '0'
         }
 
-        // Parse width
-        let width: usize;
+        // Parse width. '*' dynamic width diverges from Python: format_parser.py's
+        // _match_spec has no '*' arm, so extract_components swallows the '%*'
+        // without consuming a width arg, shifting every later variadic arg by
+        // one. Native can't cheaply reproduce that arg-shift; defer to Python for
+        // faithful parity. See `format-star-width-no-native-parity` (angr-3i88a).
         if i < fmt.len() && fmt[i] == b'*' {
-            // Width from argument
-            if arg_idx >= args.len() {
-                return Err(ProcedureError::SymbolicArgument("width arg".to_string()));
-            }
-            let w = extract_concrete_arg(&args[arg_idx], "width")?;
-            width = w as usize;
-            arg_idx += 1;
-            i += 1;
-        } else {
-            let (w, advanced) = parse_width_digits(fmt, i);
-            width = w;
-            i += advanced;
+            return Err(ProcedureError::Other(
+                "'*' dynamic width defers to Python".to_string(),
+            ));
         }
+        let (width, advanced) = parse_width_digits(fmt, i);
+        i += advanced;
 
-        // Parse precision (skip for now, just consume it)
+        // Parse precision.
         let mut _precision: Option<usize> = None;
         if i < fmt.len() && fmt[i] == b'.' {
             i += 1;
-            let mut prec: usize = 0;
             if i < fmt.len() && fmt[i] == b'*' {
+                // '.*' precision (arg-supplied) is matched correctly by Python.
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument(
                         "precision arg".to_string(),
                     ));
                 }
                 let p = extract_concrete_arg(&args[arg_idx], "precision")?;
-                prec = p as usize;
+                _precision = Some(p as usize);
                 arg_idx += 1;
                 i += 1;
             } else {
-                while i < fmt.len() && fmt[i].is_ascii_digit() {
-                    prec = prec * 10 + (fmt[i] - b'0') as usize;
-                    i += 1;
-                }
+                // '.N' digit precision diverges: format_parser.py's _match_spec
+                // mis-slices the consumed '.', dropping the actual conversion
+                // letter, so FormatString.replace raises SimProcedureError and
+                // the state errors. Native previously truncated/ignored the
+                // precision and continued — succeeding where Python errors.
+                // Defer for parity. See
+                // `format-digit-precision-no-native-parity` (angr-3i88a).
+                return Err(ProcedureError::Other(
+                    "'.N' digit precision defers to Python".to_string(),
+                ));
             }
-            _precision = Some(prec);
         }
 
         // Parse length modifier
@@ -172,6 +188,11 @@ fn format_string(
                 } else {
                     val as u32 as u64
                 };
+                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                    return Err(ProcedureError::Other(
+                        "unsigned high-bit value defers to Python".to_string(),
+                    ));
+                }
                 let formatted = format!("{unsigned_val}");
                 pad_and_push(
                     &mut output,
@@ -193,6 +214,11 @@ fn format_string(
                 } else {
                     val as u32 as u64
                 };
+                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                    return Err(ProcedureError::Other(
+                        "unsigned high-bit value defers to Python".to_string(),
+                    ));
+                }
                 let mut formatted = if spec == b'x' {
                     format!("{unsigned_val:x}")
                 } else {
@@ -222,6 +248,11 @@ fn format_string(
                 } else {
                     val as u32 as u64
                 };
+                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                    return Err(ProcedureError::Other(
+                        "unsigned high-bit value defers to Python".to_string(),
+                    ));
+                }
                 let mut formatted = format!("{unsigned_val:o}");
                 if hash_flag && unsigned_val != 0 {
                     formatted = format!("0{formatted}");
@@ -259,20 +290,12 @@ fn format_string(
                 pad_and_push(&mut output, s, width, left_align, false, false);
             }
             b'p' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("ptr arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                let formatted = format!("0x{val:x}");
-                pad_and_push(
-                    &mut output,
-                    formatted.as_bytes(),
-                    width,
-                    left_align,
-                    false,
-                    false,
-                );
+                // %p always diverges from Python: native emitted a "0x" prefix
+                // (format!("0x{val:x}")) while format_parser.py emits bare hex
+                // (f"{c_val:x}"), and Python additionally sign-folds bit-63-set
+                // pointers. Defer for parity. See `format-p-no-native-parity`
+                // (angr-3i88a).
+                return Err(ProcedureError::Other("%p defers to Python".to_string()));
             }
             b'n' => {
                 // %n writes the number of chars written so far to an int pointer.
