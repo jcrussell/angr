@@ -1820,3 +1820,7 @@ mod tests_vec_int_lane;
 #[cfg(test)]
 #[path = "ops_tests_vec_compare.rs"]
 mod tests_vec_compare;
+
+#[cfg(test)]
+#[path = "ops_tests_vec_dispatch.rs"]
+mod tests_vec_dispatch;
