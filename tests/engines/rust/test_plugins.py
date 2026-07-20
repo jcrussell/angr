@@ -230,6 +230,48 @@ class TestPluginTemplateSelection:
             f"state itself for state_id={root_id}, got {template!r}"
         )
 
+    def test_restore_copies_template_plugins_onto_blank_state(self, fauxware_project):
+        """angr-9cjmg: ``_restore_plugins_to_state`` must actually copy the
+        template's plugins onto a fresh export state.
+
+        The old guard ``if not hasattr(state, plugin_name)`` was vacuous —
+        ``PluginHub.__getattr__`` auto-instantiates a factory-default plugin on
+        the ``hasattr`` probe itself, so the condition was always False and the
+        ``register_plugin(... .copy())`` line was dead code. Every exported /
+        found state therefore silently carried factory-default posix (argv=None),
+        libc, heap, fs and log. Stamp a distinctive marker on the template's
+        posix plugin and assert it lands on a fresh blank_state after restore.
+        """
+        proj = fauxware_project
+        root_state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [root_state])
+        root_id = next(iter(mgr._state_roots))
+
+        # Stamp a distinctive marker fd on the TEMPLATE (the cached root, which
+        # _find_plugin_template_state returns for its own id).
+        from angr.storage import SimFile
+        from angr.storage.file import SimFileDescriptor
+
+        template = mgr._state_cache[root_id]
+        simfile = SimFile("9cjmg_marker", content=b"marker_data")
+        template.fs.insert("9cjmg_marker", simfile)
+        simfd = SimFileDescriptor(simfile, 0)
+        simfd.set_state(template)
+        template.posix.fd[77] = simfd
+
+        # A fresh export-style state carries only factory-default plugins and
+        # must NOT already have the marker (accessing .posix auto-registers a
+        # blank default here — exactly what the buggy guard mistook for
+        # "already restored").
+        fresh = proj.factory.blank_state(addr=root_state.addr)
+        assert 77 not in fresh.posix.fd
+
+        mgr._restore_plugins_to_state(fresh, root_id)
+
+        assert 77 in fresh.posix.fd, (
+            "posix plugin was never restored from the template — the vacuous hasattr guard regressed (angr-9cjmg)"
+        )
+
     def test_falls_back_to_parent_id_when_state_not_cached(self, fauxware_project):
         """When ``state_id`` is uncached but its snapshot parent IS cached,
         the parent must be the template."""

@@ -1582,13 +1582,23 @@ class RustStateExportMixin:
 
         for plugin_name in plugins_to_restore:
             try:
-                if hasattr(template, plugin_name):
+                if template.has_plugin(plugin_name):
                     plugin = getattr(template, plugin_name)
                     if plugin is not None and hasattr(plugin, "copy"):
-                        # Only copy if not already present
-                        if not hasattr(state, plugin_name) or getattr(state, plugin_name) is None:
-                            state.register_plugin(plugin_name, plugin.copy())
-                            l.debug(f"Restored {plugin_name} plugin to state")
+                        # Always overwrite from the template. `state` is a fresh
+                        # blank_state (see _snapshot_to_angr) whose posix/fs are
+                        # eager factory defaults and whose libc/heap/log would be
+                        # auto-instantiated on first access — none of them carry
+                        # the user's seeded config (argv/environ, heap layout).
+                        # The template is the nearest cached ancestor SimState,
+                        # so its plugins are authoritative. The previous
+                        # `not hasattr(state, plugin_name)` guard was vacuous:
+                        # PluginHub.__getattr__ auto-instantiates on the hasattr
+                        # probe, so it was always False and this copy never ran
+                        # (angr-9cjmg — posix.argv silently lost on every
+                        # exported/found state).
+                        state.register_plugin(plugin_name, plugin.copy())
+                        l.debug(f"Restored {plugin_name} plugin to state")
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: per-plugin restore failed
                 # (incompatible copy()). State is left without that
