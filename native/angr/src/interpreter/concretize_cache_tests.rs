@@ -141,3 +141,52 @@ fn concretize_cached_write_keeps_toolarge_when_fallback_disabled() {
         other => panic!("expected TooLarge unchanged, got {other:?}"),
     }
 }
+
+/// angr-owr37: two addresses whose differing leaf symbol sits >= 2 levels deep
+/// — `Add(And(x,0xf),c)` vs `Add(And(y,0xf),c)` — must NOT share a cache key.
+/// The original 1-level `bv_cache_key` hashed only `(discriminant, width)` for a
+/// nested Expression operand, so both keyed identically and the second
+/// symbolic-address store in a block cache-hit the first's target — silent
+/// wrong-address memory corruption.
+#[test]
+fn bv_cache_key_distinguishes_nested_leaf_symbols() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "x", 64);
+    let y = RustBV::symbolic(&ctx, "y", 64);
+    let mask = RustBV::concrete(0xf, 64);
+    let off = RustBV::concrete(0x1800, 64);
+
+    let addr_x = x.and(&mask, &ctx).add(&off, &ctx);
+    let addr_y = y.and(&mask, &ctx).add(&off, &ctx);
+
+    // Sanity: these are genuinely nested Expression trees, not simplified leaves.
+    assert!(matches!(addr_x, RustBV::Expression { .. }));
+    assert!(matches!(addr_y, RustBV::Expression { .. }));
+
+    assert_ne!(
+        VEXInterpreter::bv_cache_key(&addr_x),
+        VEXInterpreter::bv_cache_key(&addr_y),
+        "distinct nested leaf symbols must produce distinct cache keys"
+    );
+}
+
+/// angr-owr37 hardening: `BVOp` carries inline payload (`Extract(hi,lo)`,
+/// `ZeroExt(n)`, `Float{..}`). Hashing only the op discriminant collapsed
+/// `Extract(7,0,x)` and `Extract(15,8,x)` to the same key even though they read
+/// disjoint bits; the fix hashes the whole op.
+#[test]
+fn bv_cache_key_distinguishes_op_payload() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "x", 64);
+
+    let lo = x.extract(7, 0, &ctx);
+    let hi = x.extract(15, 8, &ctx);
+    assert!(matches!(lo, RustBV::Expression { .. }));
+    assert!(matches!(hi, RustBV::Expression { .. }));
+
+    assert_ne!(
+        VEXInterpreter::bv_cache_key(&lo),
+        VEXInterpreter::bv_cache_key(&hi),
+        "Extract ops reading disjoint bit ranges must produce distinct cache keys"
+    );
+}

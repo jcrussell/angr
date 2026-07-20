@@ -110,46 +110,71 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Compute a cache key for a RustBV value.
-    /// Uses the symbolic id for Symbolic/Constrained, and a hash of op+operand structure for Expression.
+    /// Uses the symbolic id for Symbolic/Constrained, and a hash of the FULL op
+    /// tree for Expression.
+    ///
+    /// The Expression case recurses over the entire operand tree (angr-owr37):
+    /// a nested `Expression` operand carries the `RustBV::EXPRESSION_ID`
+    /// sentinel for its `id`, so hashing only `(discriminant(op), width)` at each
+    /// nested node — as the original 1-level implementation did — dropped all
+    /// leaf identity for symbols sitting >= 2 levels deep. Two distinct
+    /// addresses like `Add(And(x,0xf),c)` vs `Add(And(y,0xf),c)` then collided,
+    /// and `concretize_cached_write` returned the first store's target for the
+    /// second store — silent wrong-address memory corruption.
     fn bv_cache_key(bv: &RustBV) -> u64 {
         use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
         match bv {
             RustBV::Concrete { value, .. } => *value as u64,
             RustBV::Symbolic { id, .. } => *id,
             RustBV::Constrained { id, .. } => *id,
+            RustBV::Expression { .. } => {
+                let mut hasher = DefaultHasher::new();
+                Self::hash_bv(bv, &mut hasher);
+                hasher.finish()
+            }
+        }
+    }
+
+    /// Feed the full structure of `bv` into `hasher`, recursing into nested
+    /// `Expression` operands so leaf identity at every depth participates in the
+    /// key. A per-variant tag byte plus the operand count prevent structurally
+    /// distinct trees from hashing alike.
+    fn hash_bv(bv: &RustBV, hasher: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        match bv {
+            RustBV::Concrete { value, width } => {
+                0u8.hash(hasher);
+                value.hash(hasher);
+                width.hash(hasher);
+            }
+            RustBV::Symbolic { id, width, .. } => {
+                1u8.hash(hasher);
+                id.hash(hasher);
+                width.hash(hasher);
+            }
+            RustBV::Constrained { id, width, .. } => {
+                2u8.hash(hasher);
+                id.hash(hasher);
+                width.hash(hasher);
+            }
             RustBV::Expression {
                 op,
                 operands,
                 width,
                 ..
             } => {
-                let mut hasher = DefaultHasher::new();
-                // Hash op discriminant + width + operand keys recursively (1 level deep)
-                std::mem::discriminant(op).hash(&mut hasher);
-                width.hash(&mut hasher);
+                3u8.hash(hasher);
+                // Hash the whole op, not just its discriminant: BVOp payloads
+                // (ZeroExt(n), Extract(hi,lo), Float{..}) distinguish otherwise
+                // structurally-identical trees — e.g. Extract(7,0,x) vs
+                // Extract(15,8,x) must not share a key (angr-owr37).
+                op.hash(hasher);
+                width.hash(hasher);
+                operands.len().hash(hasher);
                 for operand in operands.iter() {
-                    match operand {
-                        RustBV::Concrete { value, .. } => {
-                            value.hash(&mut hasher);
-                        }
-                        RustBV::Symbolic { id, .. } => {
-                            id.hash(&mut hasher);
-                        }
-                        RustBV::Constrained { id, .. } => {
-                            id.hash(&mut hasher);
-                        }
-                        RustBV::Expression {
-                            op: sub_op,
-                            width: sub_w,
-                            ..
-                        } => {
-                            std::mem::discriminant(sub_op).hash(&mut hasher);
-                            sub_w.hash(&mut hasher);
-                        }
-                    }
+                    Self::hash_bv(operand, hasher);
                 }
-                hasher.finish()
             }
         }
     }
