@@ -351,3 +351,7 @@ pub(crate) fn run_interpreter_step_core(
         symbolic_ip_at_exit,
     }
 }
+
+#[cfg(test)]
+#[path = "step_core_tests.rs"]
+mod tests;

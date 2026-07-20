@@ -2384,3 +2384,7 @@ impl RustExplorationManager {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "run_loop_tests.rs"]
+mod tests;
