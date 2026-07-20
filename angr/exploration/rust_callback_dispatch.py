@@ -588,11 +588,15 @@ class RustCallbackDispatchMixin:
             # Evaluate each stdin symbol via Rust solver to get concrete bytes
             concrete_bytes = bytearray()
             for name, bits in stdin_symbols:
-                val = self._rust_mgr.eval_stdin_symbol(state_id, name)
+                # Eval at the symbol's recorded width — a hardcoded 8 minted a
+                # fresh unconstrained const for scanf %d/%ld (32/64-bit) symbols,
+                # so the solved value never reached posix.dumps(0) (angr-ph300.18).
+                nbytes = max(1, bits // 8)
+                val = self._rust_mgr.eval_stdin_symbol(state_id, name, bits)
                 if val is not None:
-                    concrete_bytes.append(val & 0xFF)
+                    concrete_bytes.extend((val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little"))
                 else:
-                    concrete_bytes.append(0)
+                    concrete_bytes.extend(b"\x00" * nbytes)
             if concrete_bytes:
                 packet = bytes(concrete_bytes)
                 self._drop_stale_rust_stdin_packets(stdin_stream)

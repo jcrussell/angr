@@ -2357,12 +2357,15 @@ impl RustExplorationManager {
         self._get_state_inspection_events(state_id)
     }
 
-    /// Evaluate a stdin symbol by name using the state's solver.
+    /// Evaluate a stdin symbol by name and width using the state's solver.
     ///
+    /// `width` is the symbol's recorded bit-width (8 for byte reads, 32/64 for
+    /// scanf numeric conversions). Passing the wrong width mints a distinct,
+    /// unconstrained Z3 const and yields a garbage model value (angr-ph300.18).
     /// Returns the concrete value as `Option<u64>`, or None if the symbol
     /// cannot be found or evaluated.
-    pub fn eval_stdin_symbol(&self, state_id: u64, name: &str) -> Option<u64> {
-        self._eval_stdin_symbol(state_id, name)
+    pub fn eval_stdin_symbol(&self, state_id: u64, name: &str, width: u32) -> Option<u64> {
+        self._eval_stdin_symbol(state_id, name, width)
     }
 
     // =========================================================================

@@ -1115,11 +1115,14 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _eval_stdin_symbol(&self, state_id: u64, name: &str) -> Option<u64> {
+    pub(crate) fn _eval_stdin_symbol(&self, state_id: u64, name: &str, width: u32) -> Option<u64> {
         let state = self.find_state(state_id)?;
         let ctx = state.solver().borrow();
-        // Find the symbol by name in the solver context
-        let sym = crate::symbolic::RustBV::symbolic(&ctx, name, 8);
+        // Reconstruct the symbol at its recorded width. The Z3 const identity is
+        // (name, sort) — a hardcoded width 8 minted a *different*, unconstrained
+        // const for any non-byte stdin symbol (scanf %d/%ld record at 32/64
+        // bits), so eval returned an arbitrary model value (angr-ph300.18).
+        let sym = crate::symbolic::RustBV::symbolic(&ctx, name, width.max(1));
         ctx.eval(&sym).map(|v| v as u64)
     }
 }

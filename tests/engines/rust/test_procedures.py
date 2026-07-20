@@ -3095,3 +3095,55 @@ class TestReturnUnconstrainedStub:
             )
         finally:
             proj.unhook(addr)
+
+
+class TestEvalStdinSymbolWidth:
+    """eval_stdin_symbol must honor the symbol's recorded bit-width (angr-ph300.18).
+
+    scanf %d/%ld record stdin symbols at 32/64 bits (procedures/scanf.rs
+    record_stdin_symbol). _eval_stdin_symbol previously hardcoded width 8, so it
+    minted a *different* Z3 const — const identity is (name, sort) — that carried
+    none of the recorded symbol's constraints. eval then returned an arbitrary
+    model value and posix.dumps(0) reconstructed wrong stdin bytes. These drive
+    the manager API directly with a claripy-imported named symbol.
+    """
+
+    HOOK_ADDR = 0x4008C0  # fauxware .fini area; keeps state in the active stash
+
+    def _mgr_with_constrained_symbol(self, proj, name, width, value):
+        import claripy
+
+        sym = claripy.BVS(name, width, explicit_name=True)
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        state.solver.add(sym == value)
+        mgr = RustExplorationManager(proj, [state])
+        ids = mgr._rust_mgr.get_state_ids("active")
+        assert ids, f"no active state to eval against: {mgr.stash_counts()}"
+        return mgr, ids[0]
+
+    def test_eval_at_recorded_width_returns_constrained_value(self, fauxware_project):
+        # 0x12345678 does not fit in a byte, so a truncating read cannot recover it.
+        value = 0x12345678
+        mgr, sid = self._mgr_with_constrained_symbol(fauxware_project, "scanf_int32", 32, value)
+        got = mgr._rust_mgr.eval_stdin_symbol(sid, "scanf_int32", 32)
+        assert got == value, f"expected constrained {value:#x}, got {got}"
+
+    def test_eval_at_recorded_width_64bit(self, fauxware_project):
+        value = 0x1122334455667788
+        mgr, sid = self._mgr_with_constrained_symbol(fauxware_project, "scanf_long64", 64, value)
+        got = mgr._rust_mgr.eval_stdin_symbol(sid, "scanf_long64", 64)
+        assert got == value, f"expected constrained {value:#x}, got {got}"
+
+    def test_wrong_width_cannot_reproduce_value(self, fauxware_project):
+        # Regression guard for the old hardcoded-8 path: a width-8 read mints a
+        # distinct unconstrained const (0..255) that can never equal a 32-bit value.
+        value = 0x12345678
+        mgr, sid = self._mgr_with_constrained_symbol(fauxware_project, "scanf_int32b", 32, value)
+        got = mgr._rust_mgr.eval_stdin_symbol(sid, "scanf_int32b", 8)
+        assert got != value, "width-8 read must not reproduce the 32-bit constrained value"
