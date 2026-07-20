@@ -433,6 +433,45 @@ class RustDiskCacheManager:
             pass
         return False
 
+    @staticmethod
+    def _concrete_input_digest(state) -> str:
+        """Short hex digest of the concrete argv/env surface on the entry stack.
+
+        The init caches are keyed only by binary hash + arch, and
+        ``_state_has_user_symbolic`` gates only on *symbolic* data — concrete
+        argv/env strings pass clean. Two runs of the same binary that differ
+        only in CONCRETE args or environment would therefore collide, and a
+        warm hit silently replays the first run's argv/env (angr-gxaht).
+
+        ``SimLinux.state_entry`` writes argc, the argv/envp pointer arrays, and
+        the arg + env string bytes onto the stack just above SP
+        (``table.dump(state, sp - 16)``), so those inputs live in the stack
+        page containing SP. Digesting that page's concrete bytes makes the
+        cache key input-sensitive: same args -> same digest (stable across
+        processes, since ``eval(..., cast_to=bytes)`` resolves default-fill
+        symbolic bytes to their deterministic minimum), different args ->
+        different digest -> cache miss.
+
+        Callers only reach this after ``_state_has_user_symbolic`` returns
+        False, so the page holds no user symbolic data. Returns '' on any
+        failure — the digest then simply doesn't differentiate, matching the
+        pre-fix behavior rather than crashing init.
+        """
+        try:
+            sp = state.solver.eval(state.regs.sp)
+            sp_page = sp & ~PAGE_MASK
+            page = state.memory.load(sp_page, PAGE_SIZE, endness="Iend_BE", inspect=False, disable_actions=True)
+            raw = state.solver.eval(page, cast_to=bytes)
+            return hashlib.md5(raw).hexdigest()[:16]
+        except Exception:
+            # cat-(b) FALLBACK WITH LOSS: best-effort digest only. SP may be
+            # unresolvable, the page load may fail, or the state's constraint
+            # set may be unsat (SimUnsatError) — e.g. an error-recovery state
+            # deliberately seeded unsat. Any of these fall back to a
+            # non-differentiating (empty) digest, matching the pre-fix behavior
+            # rather than aborting manager construction.
+            return ""
+
     def _load_init_pickle(self, cache_key: str):
         """Read and unpickle the disk cache file. Returns the raw data dict
         on hit, None on miss or read failure. Pure I/O — no state mutation."""

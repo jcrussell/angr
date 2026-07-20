@@ -157,12 +157,41 @@ class TestInitCacheUserSymbolicGate:
 
     def test_concrete_state_allows_mem_init_key(self, fauxware_project):
         """A purely concrete entry_state yields a non-empty in-memory init
-        key — caching is permitted."""
+        key — caching is permitted. The key carries the concrete-input digest
+        (``dummy_key:<hex>``) so distinct args don't collide (angr-gxaht)."""
         proj = fauxware_project
         state = proj.factory.entry_state()
         mgr = RustExplorationManager(proj, [state])
 
-        assert mgr._compute_mem_init_key(state, "dummy_key") == "dummy_key"
+        key = mgr._compute_mem_init_key(state, "dummy_key")
+        assert key.startswith("dummy_key:")
+        assert key != "dummy_key"  # a non-empty digest was appended
+
+    def test_concrete_input_digest_differentiates_argv(self, fauxware_project):
+        """Two entry_states differing only in concrete argv (same length) yield
+        different init keys; identical argv yields identical keys. Guards the
+        angr-gxaht collision where a warm run silently replayed the prior run's
+        argv/env because the key was keyed only by binary hash."""
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        state_a = proj.factory.entry_state(args=["prog", "AAAAAAAA"])
+        state_a2 = proj.factory.entry_state(args=["prog", "AAAAAAAA"])
+        state_b = proj.factory.entry_state(args=["prog", "BBBBBBBB"])
+
+        mem_a = mgr._compute_mem_init_key(state_a, "dummy_key")
+        mem_a2 = mgr._compute_mem_init_key(state_a2, "dummy_key")
+        mem_b = mgr._compute_mem_init_key(state_b, "dummy_key")
+        assert mem_a == mem_a2  # deterministic for identical inputs
+        assert mem_a != mem_b  # distinct concrete argv -> distinct key
+
+        # Disk keys hash the real binary bytes, so use the actual path.
+        bin_path = proj.loader.main_object.binary
+        disk_a = mgr._compute_disk_init_key(state_a, bin_path)
+        disk_a2 = mgr._compute_disk_init_key(state_a2, bin_path)
+        disk_b = mgr._compute_disk_init_key(state_b, bin_path)
+        assert disk_a and disk_a == disk_a2
+        assert disk_a != disk_b
 
     def test_user_symbolic_register_suppresses_keys(self, fauxware_project):
         """A user-set symbolic register (state.regs.rdi = BVS) makes both the

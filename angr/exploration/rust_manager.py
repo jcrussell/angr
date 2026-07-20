@@ -3760,8 +3760,12 @@ class RustExplorationManager(
         main_obj = self._project.loader.main_object
         addr = state.addr
         cache_key = getattr(main_obj, "binary", None) or ""
-        mem_key = self._compute_mem_init_key(state, cache_key)
-        disk_key = self._compute_disk_init_key(state, cache_key)
+        # Digest the concrete argv/env surface once and thread it into both
+        # keys so a warm run with different concrete args/env misses the cache
+        # instead of replaying the prior run's inputs (angr-gxaht).
+        input_digest = self._concrete_input_digest(state)
+        mem_key = self._compute_mem_init_key(state, cache_key, input_digest)
+        disk_key = self._compute_disk_init_key(state, cache_key, input_digest)
 
         if addr == self._project.entry:
             cached = self._try_in_memory_init_cache(state, mem_key)
@@ -3857,18 +3861,30 @@ class RustExplorationManager(
             # without it the option-mirror step is skipped.
             pass
 
-    def _compute_disk_init_key(self, state: angr.SimState, cache_key: str) -> str:
+    def _compute_disk_init_key(self, state: angr.SimState, cache_key: str, input_digest: str | None = None) -> str:
         """Compute disk init cache key. Empty string means caching is disabled
         (no binary path, or state has user symbolic data that blank_state can't
-        round-trip)."""
+        round-trip).
+
+        The concrete argv/env surface is mixed in via ``input_digest`` so a
+        second run of the same binary with different concrete args/env lands
+        at a distinct key instead of silently replaying the first run's inputs
+        (angr-gxaht). Pass a precomputed digest to avoid re-evaluating the
+        stack page; ``None`` computes it here.
+        """
         if not cache_key:
             return ""
         if self._state_has_user_symbolic(state):
             return ""
+        if input_digest is None:
+            input_digest = self._concrete_input_digest(state)
         arch_name = getattr(self._project.arch, "name", "") or ""
-        return self._disk_cache_key(cache_key, arch_name)
+        base = self._disk_cache_key(cache_key, arch_name)
+        if not base:
+            return ""
+        return f"{base}-{input_digest}" if input_digest else base
 
-    def _compute_mem_init_key(self, state: angr.SimState, cache_key: str) -> str:
+    def _compute_mem_init_key(self, state: angr.SimState, cache_key: str, input_digest: str | None = None) -> str:
         """In-memory init cache key. Returns '' (caching disabled) when the
         state has user-created symbolic data, mirroring _compute_disk_init_key.
         Without this gate, a user-symbolic store on the input state survives
@@ -3876,12 +3892,18 @@ class RustExplorationManager(
         callers that hit the cache via .copy() inherit those stores while
         their own stores are silently lost — _apply_state_metadata copies
         constraints/options but not memory pages.
+
+        The concrete argv/env digest (``input_digest``) is appended for the
+        same reason as ``_compute_disk_init_key``: distinct concrete inputs
+        must not collide on the per-process cache (angr-gxaht).
         """
         if not cache_key:
             return ""
         if self._state_has_user_symbolic(state):
             return ""
-        return cache_key
+        if input_digest is None:
+            input_digest = self._concrete_input_digest(state)
+        return f"{cache_key}:{input_digest}" if input_digest else cache_key
 
     def _try_in_memory_init_cache(self, state: angr.SimState, cache_key: str) -> angr.SimState | None:
         """Try the per-process init cache (~180ms savings). Returns ready state or None."""
