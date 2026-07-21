@@ -279,7 +279,10 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
     Python::initialize();
     Python::attach(|_py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
-        assert!(!mgr.parallel_session_active(), "fresh manager has no session");
+        assert!(
+            !mgr.parallel_session_active(),
+            "fresh manager has no session"
+        );
 
         mgr.add_hook(0x40_1000);
         assert!(mgr.hooks.contains(&0x40_1000), "add_hook inserted the addr");
@@ -291,7 +294,10 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
         );
 
         mgr.register_simprocedure(0x40_4000, "strlen".to_string(), 1, false);
-        assert!(mgr.hooks.contains(&0x40_4000), "register_simprocedure hooked the addr");
+        assert!(
+            mgr.hooks.contains(&0x40_4000),
+            "register_simprocedure hooked the addr"
+        );
         assert!(
             mgr.simprocedures.contains_key(&0x40_4000),
             "register_simprocedure recorded the proc"

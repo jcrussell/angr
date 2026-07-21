@@ -1269,6 +1269,12 @@ impl RustExplorationManager {
     ///
     /// This is used by Python to find cached state data when the current state
     /// is a multi-level fork of an original state.
+    ///
+    /// The walk is best-effort: it follows parent links only through states the
+    /// manager still holds (pending callbacks + stashes) and stops at the first
+    /// ancestor that has been consumed or dropped. The lineage root from
+    /// `sm.roots()` is always appended when not already present, so the list is
+    /// never shorter than the previous `[state, parent, root]` behaviour.
     /// See `pending_api::_get_pending_ancestry` for the body.
     pub fn get_pending_ancestry(&self, state_id: u64) -> PyResult<Vec<u64>> {
         self._get_pending_ancestry(state_id)

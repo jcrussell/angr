@@ -455,16 +455,44 @@ impl RustExplorationManager {
         })
     }
 
+    /// Look up the parent id of an arbitrary state the manager still holds.
+    ///
+    /// Only two places hold states: `pending_callbacks` (checked first, it is a
+    /// direct hash lookup) and the stashes. A state that is in neither has been
+    /// consumed by a fork or dropped, so its parent link is unrecoverable —
+    /// hence the best-effort walk in `_get_pending_ancestry`.
+    fn _parent_of(&self, state_id: u64) -> Option<u64> {
+        if let Some(pending) = self.pending_callbacks.get(&StateId::new(state_id)) {
+            return pending.state.parent_id();
+        }
+        self.sm.find_state(state_id).and_then(|s| s.parent_id())
+    }
+
+    /// Depth cap for the ancestry walk. Fork chains this deep do not occur in
+    /// practice; the cap exists so a corrupted parent link cannot make the walk
+    /// scan every stash an unbounded number of times.
+    const MAX_ANCESTRY_DEPTH: usize = 64;
+
     pub(crate) fn _get_pending_ancestry(&self, state_id: u64) -> PyResult<Vec<u64>> {
         self.with_pending(state_id, |pending| {
-            let mut ancestry = vec![pending.state.state_id()];
+            let self_id = pending.state.state_id();
+            let mut ancestry = vec![self_id];
 
-            if let Some(parent_id) = pending.state.parent_id() {
-                ancestry.push(parent_id);
+            // Walk the parent chain transitively rather than a single hop, so a
+            // >=3-level fork chain does not drop its intermediate ancestors (the
+            // Python cache walks in rust_callback_dispatch.py / rust_state_sync.py
+            // key on exactly these ids). Best-effort: the walk stops at the first
+            // ancestor the manager no longer holds.
+            let mut next = pending.state.parent_id();
+            while let Some(pid) = next {
+                if ancestry.contains(&pid) || ancestry.len() >= Self::MAX_ANCESTRY_DEPTH {
+                    break;
+                }
+                ancestry.push(pid);
+                next = self._parent_of(pid);
             }
 
-            let state_id = pending.state.state_id();
-            if let Some(&root_id) = self.sm.roots().get(&state_id)
+            if let Some(&root_id) = self.sm.roots().get(&self_id)
                 && !ancestry.contains(&root_id)
             {
                 ancestry.push(root_id);
@@ -818,3 +846,7 @@ fn import_byte_asts(
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+#[path = "pending_api_tests.rs"]
+mod tests;
