@@ -169,24 +169,15 @@ impl RustExplorationManager {
             ));
         }
 
-        // Look up all states by ID across all stashes
+        // Look up all states by ID via the state_index fast-path, forking each
+        // (the sources stay in place for Python's _merge_drop). Was an O(n^2)
+        // nested all-stash scan that ignored state_index entirely
+        // (angr-ph300.27).
         let mut states: Vec<RustSimState> = Vec::new();
         for &sid in &state_ids {
-            let mut found = false;
-            for stash in self.sm.stashes().values() {
-                for state in stash.iter() {
-                    if state.state_id() == sid {
-                        states.push(state.fork());
-                        found = true;
-                        break;
-                    }
-                }
-                if found {
-                    break;
-                }
-            }
-            if !found {
-                return Err(PyValueError::new_err(format!("state {sid} not found")));
+            match self.sm.find_state(sid) {
+                Some(state) => states.push(state.fork()),
+                None => return Err(PyValueError::new_err(format!("state {sid} not found"))),
             }
         }
 
@@ -298,23 +289,10 @@ impl RustExplorationManager {
         from_stash: &str,
         to_stash: &str,
     ) -> PyResult<bool> {
-        // Find and remove the state from the source stash
-        let mut found_state = None;
-        if let Some(stash) = self.sm.get_mut(from_stash) {
-            let mut idx = None;
-            for (i, state) in stash.iter().enumerate() {
-                if state.state_id() == state_id {
-                    idx = Some(i);
-                    break;
-                }
-            }
-            if let Some(i) = idx {
-                found_state = stash.remove(i);
-            }
-        }
-
-        // Add to destination stash if found
-        if let Some(state) = found_state {
+        // Move keeps the state's root; take_state_from removes it from the
+        // source stash + unindexes, then we re-index onto the destination
+        // (angr-ph300.27).
+        if let Some(state) = self.sm.take_state_from(state_id, from_stash) {
             self.index_state(state_id, to_stash);
             self.sm.ensure_stash(to_stash).push_back(state);
             Ok(true)

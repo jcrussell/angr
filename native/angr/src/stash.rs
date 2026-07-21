@@ -398,6 +398,24 @@ impl StashManager {
         state
     }
 
+    /// Remove `state_id` from a *specific* `stash`, returning it by value and
+    /// clearing its `state_index` entry.
+    ///
+    /// Unlike [`take_state`](Self::take_state), this does not fall back to
+    /// scanning other stashes — the caller asserts which stash holds the state,
+    /// so a state living elsewhere yields `None` rather than being silently
+    /// relocated. Root bookkeeping is left to the caller: a drop clears the
+    /// root, a move preserves it. Single-sources the find-index-then-remove
+    /// dance open-coded by `drop_state_from_stash` and `_move_state`
+    /// (angr-ph300.27).
+    pub fn take_state_from(&mut self, state_id: u64, stash: &str) -> Option<RustSimState> {
+        let s = self.stashes.get_mut(stash)?;
+        let idx = s.iter().position(|st| st.state_id() == state_id)?;
+        let state = s.remove(idx);
+        self.unindex(state_id);
+        state
+    }
+
     /// Find a mutable reference to a state by ID.
     pub fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
         let stash_name = if let Some(name) = self.state_index.get(&state_id) {

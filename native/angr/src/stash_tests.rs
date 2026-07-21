@@ -166,3 +166,35 @@ fn test_foreign_envelope_rebases_symbol_ids() {
         "the allocator must be reserved past every rebased leaf"
     );
 }
+
+/// `take_state_from` single-sources the find-index-then-remove dance
+/// (angr-ph300.27): it resolves via the given stash, unindexes on success,
+/// leaves roots untouched, and refuses to relocate a state living elsewhere.
+#[test]
+fn test_take_state_from_stash_scoped() {
+    let mut mgr = StashManager::new();
+    let s1 = RustSimState::new("amd64").unwrap();
+    let s2 = RustSimState::new("amd64").unwrap();
+    let id1 = s1.state_id();
+    let id2 = s2.state_id();
+    mgr.push(STASH_ACTIVE, s1);
+    mgr.push(STASH_FOUND, s2);
+    mgr.set_root(id1, id1);
+
+    // Wrong stash: state is NOT relocated, index/root untouched.
+    assert!(mgr.take_state_from(id1, STASH_FOUND).is_none());
+    assert_eq!(mgr.stash_of(id1), Some(STASH_ACTIVE));
+    assert_eq!(mgr.count(STASH_ACTIVE), 1);
+
+    // Correct stash: removed + unindexed, but the root survives (caller's job).
+    let taken = mgr.take_state_from(id1, STASH_ACTIVE).expect("state taken");
+    assert_eq!(taken.state_id(), id1);
+    assert_eq!(mgr.count(STASH_ACTIVE), 0);
+    assert_eq!(mgr.stash_of(id1), None);
+    assert_eq!(mgr.get_root(id1), Some(id1), "take_state_from must not drop roots");
+
+    // Unknown id in a valid stash yields None without disturbing the stash.
+    assert!(mgr.take_state_from(9_999, STASH_FOUND).is_none());
+    assert_eq!(mgr.count(STASH_FOUND), 1);
+    assert_eq!(mgr.stash_of(id2), Some(STASH_FOUND));
+}

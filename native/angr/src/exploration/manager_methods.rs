@@ -1656,28 +1656,14 @@ impl RustExplorationManager {
     /// the Rust-side state can be reclaimed without waiting for the whole
     /// manager to drop. Returns `true` when a state was actually dropped.
     pub fn drop_state_from_stash(&mut self, state_id: u64, stash: &str) -> bool {
-        let removed = if let Some(s) = self.sm.get_mut(stash) {
-            let mut idx = None;
-            for (i, state) in s.iter().enumerate() {
-                if state.state_id() == state_id {
-                    idx = Some(i);
-                    break;
-                }
-            }
-            if let Some(i) = idx {
-                s.remove(i);
-                true
-            } else {
-                false
-            }
+        // Drop clears the root too (the state is gone for good); take_state_from
+        // handles the stash removal + unindex (angr-ph300.27).
+        if self.sm.take_state_from(state_id, stash).is_some() {
+            self.sm.remove_root(state_id);
+            true
         } else {
             false
-        };
-        if removed {
-            self.sm.unindex(state_id);
-            self.sm.remove_root(state_id);
         }
-        removed
     }
 
     /// Prepare for a new exploration stage: move a specific found state
