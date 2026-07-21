@@ -1293,6 +1293,30 @@ pub(crate) fn build_unexplored_fork(
     forked
 }
 
+/// The address a state should report to Python, with the angr-4rq7 pc==0
+/// fallback applied.
+///
+/// `self.pc` is stale at 0 for states produced by register-file-replace paths
+/// that never round-trip through `set_pc` — notably forked successors under the
+/// register-proxy write-through gate, whose proxy is bound to the parent
+/// state_id — while the IP register already holds the real branch target. The
+/// full-export path (`_snapshot_to_angr`) derives `state.addr` from the IP
+/// register, so every accessor Python treats as "the state's address" must
+/// agree with it or the find/avoid predicate cache keys on addr 0 and misses
+/// the genuine find until a later step refreshes `pc` (angr-ph300.23).
+///
+/// A nonzero `self.pc` is always authoritative (the gate-off path keeps the two
+/// in sync); only the `pc == 0` case falls back, and a genuinely-zero IP
+/// register still reports 0.
+pub(crate) fn effective_pc(state: &RustSimState) -> u64 {
+    let pc = state.pc();
+    if pc != 0 {
+        pc
+    } else {
+        state.get_ip().as_u64().unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod tests;

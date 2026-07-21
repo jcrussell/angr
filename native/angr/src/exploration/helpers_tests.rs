@@ -710,3 +710,66 @@ fn merge_point_defers_then_fires_on_counter() {
     assert!(active_ids.contains(&live), "live state untouched");
     assert_eq!(active_ids.len(), 2, "live state + merged product");
 }
+
+// amd64 RIP guest-state offset — writing here bypasses `set_ip`, which would
+// otherwise sync `self.pc` and hide the stale-pc case we need to reproduce.
+const RIP: u32 = 184;
+
+/// Build the angr-4rq7 shape: IP register holds the real branch target while
+/// `self.pc` is still 0 (register-file-replace path that never went through
+/// `set_pc`). Returns the state id.
+fn push_active_stale_pc(mgr: &mut RustExplorationManager, target: u64) -> u64 {
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_register_by_offset(RIP, RustBV::concrete(target as u128, 64));
+    assert_eq!(s.pc(), 0, "fixture must leave self.pc stale at 0");
+    let sid = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+    sid
+}
+
+/// All three "what address is this state at" accessors must agree for a
+/// stale-pc forked state: get_state_pc (by stash index), get_state_pc_by_id,
+/// and the addr field of get_state_predicate_info (angr-ph300.23).
+#[test]
+fn stale_pc_state_reports_ip_from_every_accessor() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let sid = push_active_stale_pc(&mut mgr, 0x40_1234);
+
+    assert_eq!(mgr.get_state_pc_by_id(sid), Some(0x40_1234));
+    assert_eq!(
+        mgr.get_state_pc(STASH_ACTIVE, 0),
+        Some(0x40_1234),
+        "index accessor must not report the stale 0"
+    );
+    let info = mgr.get_state_predicate_info(STASH_ACTIVE);
+    assert_eq!(
+        info,
+        vec![(sid, 0x40_1234, 0)],
+        "predicate cache would key on (sid, 0) without the IP fallback"
+    );
+}
+
+/// A nonzero `self.pc` stays authoritative — the fallback must not override it
+/// even when the IP register disagrees (gate-off path keeps them in sync, and a
+/// genuinely-zero IP still reports 0).
+#[test]
+fn nonzero_pc_is_authoritative_and_zero_ip_stays_zero() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let live = push_active_at(&mut mgr, 0x2000, 0xF);
+    // Desync the IP register behind the back of set_pc.
+    mgr.sm
+        .get_mut(STASH_ACTIVE)
+        .unwrap()
+        .get_mut(0)
+        .unwrap()
+        .set_register_by_offset(RIP, RustBV::concrete(0x9999, 64));
+    assert_eq!(mgr.get_state_pc_by_id(live), Some(0x2000));
+    assert_eq!(mgr.get_state_pc(STASH_ACTIVE, 0), Some(0x2000));
+
+    // pc == 0 and IP == 0 -> 0, not None.
+    let zero = push_active_stale_pc(&mut mgr, 0);
+    assert_eq!(mgr.get_state_pc_by_id(zero), Some(0));
+    assert_eq!(mgr.get_state_pc(STASH_ACTIVE, 1), Some(0));
+}

@@ -848,36 +848,23 @@ impl RustExplorationManager {
     }
 
     /// Get the PC of a state in a stash by index.
+    ///
+    /// Applies the same angr-4rq7 pc==0 IP fallback as `get_state_pc_by_id` so
+    /// the two accessors agree for a stale-pc forked state (angr-ph300.23).
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {
         self.sm
             .get(stash)
             .and_then(|s| s.get(index))
-            .map(crate::state::RustSimState::pc)
+            .map(super::helpers::effective_pc)
     }
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
     pub fn get_state_pc_by_id(&self, state_id: u64) -> Option<u64> {
         // find_state already checks pending_callback first.
-        self.find_state(state_id).map(|s| {
-            // angr-4rq7 (root cause #2): prefer the concrete IP register when
-            // `self.pc` is stale at 0. The full-export path (`_snapshot_to_angr`)
-            // derives `state.addr` from the IP register, so `RustStateProxy.addr`
-            // (which reads through here) must agree with it. Some states created
-            // by register-file-replace paths that don't round-trip through
-            // `set_pc` — notably forked successors under the register-proxy
-            // write-through gate, whose proxy is bound to the parent state_id —
-            // end up with `self.pc == 0` while the IP register holds the real
-            // branch target. A nonzero `self.pc` is always authoritative (the
-            // gate-off path keeps them in sync); only the `pc == 0` case falls
-            // back, and a genuinely-zero IP register still reports 0.
-            let pc = s.pc();
-            if pc != 0 {
-                pc
-            } else {
-                s.get_ip().as_u64().unwrap_or(0)
-            }
-        })
+        // angr-4rq7 (root cause #2): see `helpers::effective_pc` for why a
+        // pc==0 state falls back to the IP register.
+        self.find_state(state_id).map(super::helpers::effective_pc)
     }
 
     /// Get the tail of a state's bbl history (last `n` addresses).
@@ -917,13 +904,23 @@ impl RustExplorationManager {
     /// Get (state_id, addr, stdout_len) tuples for states in a stash.
     /// Used by Python predicate caching to skip re-evaluation when
     /// a state's address and stdout haven't changed.
+    ///
+    /// `addr` goes through `helpers::effective_pc`: a stale-pc forked successor
+    /// would otherwise be cached under key `(sid, 0)` and its find predicate
+    /// evaluated at address 0, missing the genuine find (angr-ph300.23).
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_predicate_info(&self, stash: &str) -> Vec<(u64, u64, usize)> {
         self.sm
             .get(stash)
             .map(|s| {
                 s.iter()
-                    .map(|state| (state.state_id(), state.pc(), state.stdout_buffer().len()))
+                    .map(|state| {
+                        (
+                            state.state_id(),
+                            super::helpers::effective_pc(state),
+                            state.stdout_buffer().len(),
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default()
