@@ -14,8 +14,9 @@
 use super::*;
 
 use crate::exploration::core_outcome::BounceKind;
-use crate::stash::{STASH_ACTIVE, STASH_AVOID, STASH_FOUND, STASH_UNCONSTRAINED};
+use crate::stash::{STASH_ACTIVE, STASH_AVOID, STASH_FOUND, STASH_PRUNED, STASH_UNCONSTRAINED};
 use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 /// A fresh manager plus a state parked at `pc`. The state is registered in no
 /// stash yet — exactly the precondition `route_materialized_terminal` assumes
@@ -145,6 +146,87 @@ fn untagged_residual_at_find_pc_routes_to_found() {
         assert!(bounce_queue.is_empty());
         assert_eq!(mgr.stash_count(STASH_FOUND), 1);
         assert_eq!(mgr.sm.get_root(id), Some(5));
+    });
+}
+
+/// Pin `rax` to two different values so the state's path constraints are UNSAT.
+fn unsat_state(pc: u64) -> RustSimState {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(pc);
+    let x = {
+        let s = state.solver().borrow();
+        RustBV::symbolic(&s, "unsat_x", 64)
+    };
+    state.set_register("rax", x.clone());
+    for witness in [1u128, 2u128] {
+        let c = {
+            let s = state.solver().borrow();
+            x.eq(&RustBV::concrete(witness, 64), &s)
+        };
+        state.add_constraint(c);
+    }
+    assert!(!state.satisfiable(), "fixture must be UNSAT");
+    state
+}
+
+#[test]
+fn unsat_successor_at_find_pc_routes_to_pruned() {
+    Python::initialize();
+    Python::attach(|_py| {
+        // angr-ph300.13: an UNSAT state reaching a find address via an
+        // infeasible path must land in STASH_PRUNED, not vanish. The
+        // popped-state path (`check_terminal_conditions`) already did this;
+        // the successor path silently dropped it, so `pruned_count` differed
+        // by arrival path between two semantically identical explorations.
+        let find = 0x40_9000;
+        let (mut mgr, _sat, _id) = mgr_and_state(find);
+        mgr.set_find_addrs(vec![find]);
+
+        mgr.route_successor(unsat_state(find), true);
+
+        assert_eq!(mgr.stash_count(STASH_FOUND), 0, "UNSAT is not a find");
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 1, "tracked, not dropped");
+        assert_eq!(mgr.stash_count(STASH_ACTIVE), 0);
+    });
+}
+
+#[test]
+fn sat_successor_at_find_pc_still_routes_to_found() {
+    Python::initialize();
+    Python::attach(|_py| {
+        // Guard the other half of the gate: the prune arm must not swallow a
+        // satisfiable successor.
+        let find = 0x40_a000;
+        let (mut mgr, state, _id) = mgr_and_state(find);
+        mgr.set_find_addrs(vec![find]);
+
+        mgr.route_successor(state, true);
+
+        assert_eq!(mgr.stash_count(STASH_FOUND), 1);
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 0);
+    });
+}
+
+#[test]
+fn untagged_unsat_residual_at_find_pc_routes_to_pruned() {
+    Python::initialize();
+    Python::attach(|_py| {
+        // The coordinator's untagged residual arm funnels an UNSAT-at-find
+        // state through `route_successor(state, true)`, so it inherits the
+        // prune routing rather than the old silent drop.
+        let find = 0x40_b000;
+        let (mut mgr, _sat, _id) = mgr_and_state(find);
+        mgr.set_find_addrs(vec![find]);
+        let state = unsat_state(find);
+        let id = state.state_id();
+        let mut bounce_queue = Vec::new();
+
+        mgr.route_materialized_terminal(state, None, 7, &mut bounce_queue);
+
+        assert!(bounce_queue.is_empty());
+        assert_eq!(mgr.stash_count(STASH_FOUND), 0);
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 1);
+        assert_eq!(mgr.sm.get_root(id), Some(7), "lineage root still replayed");
     });
 }
 

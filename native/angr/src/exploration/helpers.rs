@@ -278,10 +278,13 @@ impl RustExplorationManager {
     ///
     /// When `gate_found_on_sat` is true the FOUND push is skipped for states
     /// that are neither `lazy_solves` nor `satisfiable()` (the run_loop
-    /// successor/loop-exit sites that have not yet filtered satisfiability).
-    /// The resume.rs sites pass false because satisfiability was already
-    /// established upstream (the whole block is gated on it), so the FOUND
-    /// push is unconditional there.
+    /// successor/loop-exit sites that have not yet filtered satisfiability);
+    /// such a state is routed to `STASH_PRUNED` — NOT silently dropped —
+    /// exactly as the popped-state path in `check_terminal_conditions` does
+    /// for the same condition, so `pruned_count` is arrival-path invariant
+    /// (angr-ph300.13). The resume.rs sites pass false because satisfiability
+    /// was already established upstream (the whole block is gated on it), so
+    /// the FOUND push is unconditional there and the prune arm is unreachable.
     #[inline]
     pub(crate) fn route_successor(&mut self, state: RustSimState, gate_found_on_sat: bool) {
         let spc = state.pc();
@@ -292,6 +295,9 @@ impl RustExplorationManager {
                     .entry(STASH_FOUND.to_string())
                     .or_default()
                     .push_back(state);
+            } else {
+                log::debug!("State at find address 0x{spc:x} is UNSAT, pruning");
+                self.push_or_drop_terminal(STASH_PRUNED, state);
             }
         } else if self.avoid_addrs.contains(&spc) {
             self.push_or_drop_terminal(STASH_AVOID, state);
