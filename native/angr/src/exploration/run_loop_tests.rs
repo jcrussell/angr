@@ -166,6 +166,45 @@ fn untagged_residual_at_neutral_pc_routes_to_active() {
     });
 }
 
+#[test]
+fn coordinator_routed_find_beyond_num_find_caps_to_active() {
+    Python::initialize();
+    Python::attach(|_py| {
+        // The `worker_found_hint` is bumped ONLY by a worker's pre-step find
+        // arm; coordinator-routed finds (bounce->find, untagged residual at a
+        // find pc) never touch it (angr-ph300.16). Their `num_find` cap is
+        // therefore NOT the hint but `push_found_capped`'s
+        // `found_count() >= num_find` gate. Prove that gate holds on the
+        // coordinator path independently of the hint: with `num_find == 1`
+        // already satisfied, a second coordinator-routed find spills to ACTIVE,
+        // keeping the found-set worker-invariant.
+        let find = 0x40_8000;
+        let (mut mgr, first, _first_id) = mgr_and_state(find);
+        mgr.set_find_addrs(vec![find]);
+        assert_eq!(mgr.num_find, 1, "default num_find");
+        let mut bounce_queue = Vec::new();
+
+        // First coordinator find (untagged residual at find pc) fills FOUND.
+        mgr.route_materialized_terminal(first, None, 1, &mut bounce_queue);
+        assert_eq!(mgr.stash_count(STASH_FOUND), 1);
+
+        // Second coordinator find must NOT over-collect past num_find — the
+        // surplus stays an active, re-findable frontier state.
+        let mut second = RustSimState::new("amd64").unwrap();
+        second.set_pc(find);
+        let second_id = second.state_id();
+        mgr.route_materialized_terminal(second, None, 2, &mut bounce_queue);
+
+        assert_eq!(mgr.stash_count(STASH_FOUND), 1, "cap holds at num_find");
+        assert_eq!(
+            mgr.stash_count(STASH_ACTIVE),
+            1,
+            "surplus coordinator find spills to active, not found"
+        );
+        assert_eq!(mgr.get_state_ids(STASH_ACTIVE), vec![second_id]);
+    });
+}
+
 // --- must_run_serial: the run_loop parallel-vs-serial routing guard
 // (angr-ph300.6). Native techniques are coordinator-side and only run between
 // waves, so a wave on a non-terminating frontier would never quiesce and the

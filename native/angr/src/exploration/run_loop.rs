@@ -177,9 +177,21 @@ struct ParallelShared {
     /// Per-step `CoreCounters` the coordinator folds into the manager after the
     /// wave (native-proc / syscall / simproc fallback tallies).
     counters: Mutex<Vec<super::core_outcome::CoreCounters>>,
-    /// Running found count (seeded with the manager's current `found_count`);
-    /// reaching `num_find` requests cancellation of the whole pool.
-    found_counter: AtomicUsize,
+    /// Best-effort worker-side early-cancel HINT (seeded with the manager's
+    /// current `found_count`). Bumped ONLY by a worker's pre-step find arm
+    /// (`parallel_process_state`); reaching `num_find` there trips the pool
+    /// cancel one wave/pump-round early. It is deliberately NOT authoritative:
+    /// coordinator-routed finds (a bounce whose target is a find address, or an
+    /// untagged residual frontier state sitting at a find pc — both routed by
+    /// `route_materialized_terminal` → `push_found_capped`) never touch this
+    /// hint, so it under-counts them. The found-set *count* stays exactly
+    /// `num_find` regardless, because the authoritative cap is
+    /// `push_found_capped`'s `found_count() >= num_find` gate plus the loop-top
+    /// `found_count() >= num_find` finalize check — those, not this hint, bound
+    /// collection (angr-op0dn.13.17). The only effect of the miss is that a run
+    /// whose finds all arrive via the coordinator paths cancels a round later
+    /// than one whose finds hit the worker pre-step arm.
+    worker_found_hint: AtomicUsize,
     num_find: usize,
     /// angr-vh834 Phase 5 (M2): number of dispatches that actually took an
     /// interpreter step AND produced a `Successors`/`Terminal`-equivalent outcome
@@ -201,7 +213,9 @@ struct ParallelShared {
 /// How it replicates `step_one`:
 /// * Pre-step address-based find/avoid (`step_one` ~296-361): PC in `avoid_addrs`
 ///   → an `Avoided` summary; PC in `find_addrs` + satisfiable → a materialized
-///   `Found` (bumping the shared found counter, requesting cancel at `num_find`);
+///   `Found` (bumping the worker-side `worker_found_hint`, requesting cancel at
+///   `num_find` — a best-effort early trip; coordinator-routed finds rely on the
+///   `push_found_capped` cap, not this hint);
 ///   PC in `find_addrs` + UNSAT → a `Pruned` summary. Callable predicates never
 ///   reach here (the coordinator routes them single-threaded).
 /// * Otherwise it steps via the now-GIL-free `run_interpreter_step_core` and
@@ -250,7 +264,7 @@ fn parallel_process_state(
                 .expect("kind_map poisoned")
                 .insert(id, MatKind::Found);
             let reached =
-                shared.found_counter.fetch_add(1, Ordering::SeqCst) + 1 >= shared.num_find;
+                shared.worker_found_hint.fetch_add(1, Ordering::SeqCst) + 1 >= shared.num_find;
             return TaskOutcome {
                 continue_states: Vec::new(),
                 terminal_states: vec![state],
@@ -720,7 +734,7 @@ impl RustExplorationManager {
                 root_map: Mutex::new(FxHashMap::default()),
                 kind_map: Mutex::new(FxHashMap::default()),
                 counters: Mutex::new(Vec::new()),
-                found_counter: AtomicUsize::new(self.found_count()),
+                worker_found_hint: AtomicUsize::new(self.found_count()),
                 num_find: self.num_find,
                 stepped: AtomicUsize::new(0),
             });
@@ -1187,7 +1201,7 @@ impl RustExplorationManager {
             root_map: Mutex::new(FxHashMap::default()),
             kind_map: Mutex::new(FxHashMap::default()),
             counters: Mutex::new(Vec::new()),
-            found_counter: AtomicUsize::new(self.found_count()),
+            worker_found_hint: AtomicUsize::new(self.found_count()),
             num_find: self.num_find,
             stepped: AtomicUsize::new(0),
         });
