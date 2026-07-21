@@ -727,6 +727,41 @@ class TestParallelSteady:
         assert stats["parallel_bounce_roundtrips"] > 0, "no bounce round-tripped in steady mode"
         assert stats["parallel_resume_reinjects"] > 0, "no resumed state re-injected in steady mode"
 
+    def test_steady_budget_yield_preserves_frontier(self, fauxware_project, monkeypatch):
+        """angr-ph300.14: the ``SteadyOutcome::Budget`` arm — finalize the
+        session and hand control back to Python once a ``run()`` has dispatched
+        its allotment — must not lose frontier across the teardown.
+
+        The other steady tests all run a single unbounded ``explore()``, so the
+        session is created once and torn down once (via ``Quiesced``). Driving
+        the same exploration as a sequence of ``max_steps=1`` explores forces a
+        budget yield + ``finalize_steady_session`` + re-creation on *every*
+        step, which is exactly where a dropped resident frontier would hide.
+        """
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
+        monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        assert mgr.stats["parallel_real_workers"] == 2
+
+        calls = 0
+        for _ in range(200):
+            calls += 1
+            # max_steps=1 keeps `until`/techniques out of the picture, so the
+            # driver leaves frontier residency ON and the budget arm is the only
+            # way out of the pump while work remains.
+            mgr.explore(find=FAUXWARE_ACCEPTED_ADDR, num_find=2, max_steps=1)
+            if len(mgr.found) >= 2 or not mgr.active:
+                break
+
+        assert calls > 1, "exploration finished in one budgeted step — the Budget arm was never exercised"
+        assert mgr.stats["parallel_steady_budget_yields"] > 0, (
+            "no SteadyOutcome::Budget yield recorded — the pump exited some other way"
+        )
+        assert _path_set(mgr) == {
+            (FAUXWARE_ACCEPTED_ADDR, True),
+            (FAUXWARE_ACCEPTED_ADDR, False),
+        }, f"found set diverged across budget yields: {_path_set(mgr)}"
+
     def test_steady_path_set_stable_across_runs(self, fauxware_project, monkeypatch):
         run_a = _path_set(_explore_steady(fauxware_project, monkeypatch))
         run_b = _path_set(_explore_steady(fauxware_project, monkeypatch))

@@ -109,6 +109,7 @@ impl RustExplorationManager {
                 .map(|v| v == "1")
                 .unwrap_or(false),
             parallel_residual_drains: 0,
+            parallel_steady_budget_yields: 0,
             parallel_post_cancel_steps: 0,
         })
     }

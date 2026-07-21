@@ -167,6 +167,10 @@ impl RustExplorationManager {
         )?;
         dict.set_item("parallel_resume_reinjects", self.parallel_resume_reinjects)?;
         dict.set_item("parallel_residual_drains", self.parallel_residual_drains)?;
+        dict.set_item(
+            "parallel_steady_budget_yields",
+            self.parallel_steady_budget_yields,
+        )?;
         // Post-find speculative waste (angr-1ilq.8): steps a worker committed
         // after a peer/coordinator already requested cancel (num_find reached).
         dict.set_item(

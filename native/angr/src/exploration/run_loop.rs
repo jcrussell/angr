@@ -1207,6 +1207,7 @@ impl RustExplorationManager {
                     ));
                 }
                 SteadyOutcome::Budget => {
+                    self.parallel_steady_budget_yields += 1;
                     self.finalize_steady_session(py)?;
                     return Ok(ExplorationEvent::step_complete(
                         self.found_count(),
@@ -1370,13 +1371,20 @@ impl RustExplorationManager {
     ) -> PyResult<SteadyOutcome> {
         let mut bounce_queue: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
         loop {
+            // Every arm below that can push into `bounce_queue` returns in the
+            // same breath, so the queue is necessarily empty at the loop top —
+            // the budget yield can never strand a pending bounce (angr-ph300.14).
+            debug_assert!(
+                bounce_queue.is_empty(),
+                "steady_pump reached loop top with {} pending bounces",
+                bounce_queue.len()
+            );
             // Budget check (approximate, mirrors the wave loop): finalize and
             // yield to Python once this run() has dispatched its allotment.
             if self
                 .steady_dispatched_total()
                 .saturating_sub(dispatched_at_entry)
                 >= max_steps
-                && bounce_queue.is_empty()
             {
                 return Ok(SteadyOutcome::Budget);
             }

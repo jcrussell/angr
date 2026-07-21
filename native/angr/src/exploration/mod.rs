@@ -429,6 +429,11 @@ pub struct RustExplorationManager {
     /// `SchedulerStats::post_cancel_steps`. Quantifies the num_find=1
     /// speculative waste the find-aware dispatch bead (angr-1ilq.9) targets.
     pub(crate) parallel_post_cancel_steps: u64,
+    /// Steady-loop budget yields: a `run(n)` dispatched its whole allotment
+    /// with work still resident, so the session was finalized and control
+    /// handed back to Python (`SteadyOutcome::Budget`). 0 in wave mode and on
+    /// any steady run that only ever quiesces (angr-ph300.14).
+    pub(crate) parallel_steady_budget_yields: u64,
 }
 
 /// The manager's entire `#[pymethods]` surface lives in this child module
