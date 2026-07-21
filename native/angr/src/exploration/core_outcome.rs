@@ -52,8 +52,7 @@ use rustc_hash::FxHashMap;
 use crate::callbacks::{DeferredFork, PythonCallbacks, RunErrorKind, RunResult};
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
 use crate::procedures::{
-    NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome, ProcedureError,
-    native_resume_sentinel,
+    NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome, native_resume_sentinel,
 };
 use crate::stash::STASH_DEADENDED;
 use crate::state::{NativeResumeFrame, RustSimState};

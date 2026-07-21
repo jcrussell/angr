@@ -60,6 +60,7 @@ use super::core_outcome::{
     BounceKind, CoreCtx, CoreReturn, NativeSubcall, ParallelProfiling, PendingBounce,
     PostStepInputs, materialize_bounce_forks, run_post_step_core,
 };
+use super::helpers::{NativeProcCounters, NativeProcDisposition, dispatch_native_proc};
 use super::scheduler::{
     CancelToken, PersistentPool, ProcessFn, RunSession, TaskOutcome,
     TerminalDisposition as SchedDisposition, TerminalSummary, WaveJob, WorkerUp,
@@ -1955,14 +1956,15 @@ impl RustExplorationManager {
                 // overrides); see `execution_env::prefer_native_dispatch`.
                 let prefer_native = self.environment.prefer_native_dispatch(pc);
                 // Try native procedure first (only for external/library hooks)
-                if prefer_native && let Some(native_proc) = self.native_procedures.get(&name) {
-                    // Extract arguments from state registers (and stack
-                    // when num_args exceeds the register count). On
-                    // failure (symbolic SP, unmapped stack slot) skip
-                    // the native fast path and let the Python
-                    // SimProcedure callback below handle it — handing
-                    // the native handler fabricated zeros would mask
-                    // the underlying stack-setup bug.
+                if prefer_native
+                    && let Some(native_proc) = self.native_procedures.get(&name).cloned()
+                {
+                    // Extract arguments from state registers (and stack when
+                    // num_args exceeds the register count). On failure (symbolic
+                    // SP, unmapped stack slot) `dispatch_native_proc` skips the
+                    // native fast path and falls through to the Python
+                    // SimProcedure callback below — handing the native handler
+                    // fabricated zeros would mask the underlying stack-setup bug.
                     //
                     // `num_args` is the Python SimProcedure's FIXED-arg count
                     // (variadics excluded). Native procs that consume variadic
@@ -1970,190 +1972,163 @@ impl RustExplorationManager {
                     // the max so `extract_procedure_args` reads the full window.
                     // Truncating to the Python count made the scanf family a
                     // silent no-op end-to-end (angr-8onrp).
+                    //
+                    // The registry entry is cloned (cheap `Arc`) so the shared
+                    // dispatcher can take `&mut self.profiling` alongside it.
                     let native_num_args = num_args.max(native_proc.num_args());
-                    match self.extract_procedure_args(&state, native_num_args) {
-                        Err(e) => {
-                            log::debug!(
-                                "Skipping native procedure {name} (arg extraction failed: {e:?})"
-                            );
-                            self.profiling.native_proc_stats.python_fallbacks += 1;
-                            *self
-                                .profiling
-                                .native_proc_stats
-                                .other_fallbacks_by_name
-                                .entry(name.clone())
-                                .or_insert(0) += 1;
-                        }
-                        Ok(args) => match native_proc.call_ex(&mut state, &args) {
-                            // Borrow note: `native_proc` borrows
-                            // `self.native_procedures`; that borrow ends at
-                            // the `call_ex` call above (NLL), freeing
-                            // `&mut self` for `setup_native_subcall` /
-                            // `push_to_active_or_drop` below. These arms must
-                            // NOT reference `native_proc` again. (Path B's
-                            // `handle_simprocedure` uses an explicit
-                            // `NativeProcDisposition` enum for the same reason.)
-                            Ok(ProcOutcome::Return(ret_val)) => {
-                                // Native execution succeeded
-                                self.profiling.native_proc_stats.native_calls += 1;
-                                *self
-                                    .profiling
-                                    .native_proc_stats
-                                    .call_counts
-                                    .entry(name.clone())
-                                    .or_insert(0) += 1;
-
-                                // For no-return procedures (exit/abort), skip
-                                // the return-address dance and deadend directly.
-                                // Setting PC to a stack-derived return address
-                                // can produce a spurious successor (e.g. when
-                                // exit is called from rejected() in fauxware,
-                                // the post-call address happens to overlap
-                                // main's start, causing infinite re-entry).
-                                if no_return {
-                                    self.push_or_drop_terminal(STASH_DEADENDED, state);
-                                    return Ok(StepOutcome::Routed);
-                                }
-
-                                // Set return value if present
-                                if let Some(rv) = ret_val {
-                                    let ret_reg =
-                                        self.environment.calling_convention.return_register();
-                                    state.set_register_by_offset(ret_reg, rv);
-                                }
-
-                                // Get return address and set PC. Use the
-                                // state's real register file so that LR/X30/$ra
-                                // overrides see actual values; passing a blank
-                                // RegisterFile here used to make ARM/ARM64/MIPS
-                                // read LR=0 and set PC to 0.
-                                let ctx = state.solver().borrow();
-                                let ret_addr_opt = self
-                                    .environment
-                                    .calling_convention
-                                    .get_return_addr(state.registers(), None, &ctx);
-                                let pops_return_addr =
-                                    self.environment.calling_convention.pops_return_addr();
-                                drop(ctx);
-                                if let Some(ret_addr) = ret_addr_opt {
-                                    // Only adjust SP for stack-based ABIs
-                                    // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
-                                    // in a register and leave SP untouched.
-                                    if pops_return_addr {
-                                        let sp = state.get_sp().as_u64().unwrap_or(0);
-                                        let ptr_size = state.arch().bytes() as u64;
-                                        state.set_sp(RustBV::concrete(
-                                            (sp + ptr_size) as u128,
-                                            state.arch().bits(),
-                                        ));
-                                    }
-                                    state.set_pc(ret_addr);
-                                } else if pops_return_addr {
-                                    // Fallback: read ret addr from [sp] for
-                                    // stack-based ABIs (only useful when the
-                                    // calling convention's get_return_addr
-                                    // declined to read memory itself).
-                                    if let Some(sp) = state.get_sp().as_u64()
-                                        && let Ok(ret_bv) =
-                                            state.memory_load(sp, state.arch().bytes())
-                                        && let Some(ret_addr) = ret_bv.as_u64()
-                                    {
-                                        let ptr_size = state.arch().bytes() as u64;
-                                        state.set_sp(RustBV::concrete(
-                                            (sp + ptr_size) as u128,
-                                            state.arch().bits(),
-                                        ));
-                                        state.set_pc(ret_addr);
-                                    }
-                                }
-
-                                self.push_to_active_or_drop(state);
+                    let args = self.extract_procedure_args(&state, native_num_args);
+                    let stats = &mut self.profiling.native_proc_stats;
+                    let disposition = dispatch_native_proc(
+                        native_proc.as_ref(),
+                        &mut state,
+                        &name,
+                        no_return,
+                        args,
+                        // Unlike the parallel mirror, a strict-page-access fault
+                        // still bounces to Python here (angr-ph300.73 tracks
+                        // unifying the two).
+                        false,
+                        &mut NativeProcCounters {
+                            native_calls: &mut stats.native_calls,
+                            python_fallbacks: &mut stats.python_fallbacks,
+                            call_counts: &mut stats.call_counts,
+                            symbolic_fallbacks_by_name: &mut stats.symbolic_fallbacks_by_name,
+                            not_implemented_fallbacks_by_name: &mut stats
+                                .not_implemented_fallbacks_by_name,
+                            other_fallbacks_by_name: &mut stats.other_fallbacks_by_name,
+                        },
+                    );
+                    match disposition {
+                        NativeProcDisposition::Returned { no_return, ret_val } => {
+                            // For no-return procedures (exit/abort), skip the
+                            // return-address dance and deadend directly. Setting
+                            // PC to a stack-derived return address can produce a
+                            // spurious successor (e.g. when exit is called from
+                            // rejected() in fauxware, the post-call address
+                            // happens to overlap main's start, causing infinite
+                            // re-entry).
+                            if no_return {
+                                self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 return Ok(StepOutcome::Routed);
                             }
-                            Ok(ProcOutcome::CallAndResume {
-                                target,
-                                args: sub_args,
-                                resume_tag,
-                            }) => {
-                                // The proc requested a guest sub-call. Capture
-                                // the caller return address from [sp] BEFORE
-                                // `setup_native_subcall` overwrites that slot
-                                // with the resume sentinel. A symbolic SP /
-                                // unmapped slot (None) or a setup failure falls
-                                // back to Python (the state is left untouched
-                                // by setup on Err). Do NOT pop SP or honour
-                                // `no_return` here: the guest's own `ret`
-                                // advances SP, and `handle_native_resume`
-                                // finishes without re-adjusting it.
-                                let setup = match self.get_return_addr(&state) {
-                                    Some(caller_return_addr) => self
-                                        .setup_native_subcall(
-                                            &mut state,
-                                            NativeSubcall {
-                                                proc_name: name.clone(),
-                                                saved_args: args,
-                                                caller_return_addr,
-                                                target,
-                                                sub_args,
-                                                resume_tag,
-                                            },
-                                        )
-                                        .map_err(|e| format!("{e:?}")),
-                                    None => Err("no concrete return address".to_string()),
-                                };
-                                match setup {
-                                    Ok(()) => {
-                                        self.profiling.native_proc_stats.native_calls += 1;
-                                        *self
-                                            .profiling
-                                            .native_proc_stats
-                                            .call_counts
-                                            .entry(name.clone())
-                                            .or_insert(0) += 1;
-                                        self.push_to_active_or_drop(state);
-                                        return Ok(StepOutcome::Routed);
-                                    }
-                                    Err(reason) => {
-                                        log::debug!(
-                                            "native sub-call setup failed ({reason}); \
-                                             falling back to Python for {name}"
-                                        );
-                                        self.profiling.native_proc_stats.python_fallbacks += 1;
-                                        *self
-                                            .profiling
-                                            .native_proc_stats
-                                            .other_fallbacks_by_name
-                                            .entry(name.clone())
-                                            .or_insert(0) += 1;
-                                    }
+
+                            // Set return value if present
+                            if let Some(rv) = ret_val {
+                                let ret_reg = self.environment.calling_convention.return_register();
+                                state.set_register_by_offset(ret_reg, rv);
+                            }
+
+                            // Get return address and set PC. Use the state's real
+                            // register file so that LR/X30/$ra overrides see
+                            // actual values; passing a blank RegisterFile here
+                            // used to make ARM/ARM64/MIPS read LR=0 and set PC to
+                            // 0.
+                            let ctx = state.solver().borrow();
+                            let ret_addr_opt = self.environment.calling_convention.get_return_addr(
+                                state.registers(),
+                                None,
+                                &ctx,
+                            );
+                            let pops_return_addr =
+                                self.environment.calling_convention.pops_return_addr();
+                            drop(ctx);
+                            if let Some(ret_addr) = ret_addr_opt {
+                                // Only adjust SP for stack-based ABIs
+                                // (x86/AMD64). ARM/ARM64/MIPS keep ret addr in a
+                                // register and leave SP untouched.
+                                if pops_return_addr {
+                                    let sp = state.get_sp().as_u64().unwrap_or(0);
+                                    let ptr_size = state.arch().bytes() as u64;
+                                    state.set_sp(RustBV::concrete(
+                                        (sp + ptr_size) as u128,
+                                        state.arch().bits(),
+                                    ));
+                                }
+                                state.set_pc(ret_addr);
+                            } else if pops_return_addr {
+                                // Fallback: read ret addr from [sp] for
+                                // stack-based ABIs (only useful when the calling
+                                // convention's get_return_addr declined to read
+                                // memory itself).
+                                if let Some(sp) = state.get_sp().as_u64()
+                                    && let Ok(ret_bv) = state.memory_load(sp, state.arch().bytes())
+                                    && let Some(ret_addr) = ret_bv.as_u64()
+                                {
+                                    let ptr_size = state.arch().bytes() as u64;
+                                    state.set_sp(RustBV::concrete(
+                                        (sp + ptr_size) as u128,
+                                        state.arch().bits(),
+                                    ));
+                                    state.set_pc(ret_addr);
                                 }
                             }
-                            Err(e) => {
-                                // Native execution failed, fall back to Python
-                                self.profiling.native_proc_stats.python_fallbacks += 1;
-                                let bucket = match e {
-                                    ProcedureError::SymbolicArgument(_) => {
-                                        &mut self
-                                            .profiling
-                                            .native_proc_stats
-                                            .symbolic_fallbacks_by_name
-                                    }
-                                    ProcedureError::NotImplemented => {
-                                        &mut self
-                                            .profiling
-                                            .native_proc_stats
-                                            .not_implemented_fallbacks_by_name
-                                    }
-                                    _ => {
-                                        &mut self
-                                            .profiling
-                                            .native_proc_stats
-                                            .other_fallbacks_by_name
-                                    }
-                                };
-                                *bucket.entry(name.clone()).or_insert(0) += 1;
+
+                            self.push_to_active_or_drop(state);
+                            return Ok(StepOutcome::Routed);
+                        }
+                        NativeProcDisposition::SubCall {
+                            proc_name,
+                            saved_args,
+                            target,
+                            sub_args,
+                            resume_tag,
+                        } => {
+                            // The proc requested a guest sub-call. Capture the
+                            // caller return address from [sp] BEFORE
+                            // `setup_native_subcall` overwrites that slot with the
+                            // resume sentinel. A symbolic SP / unmapped slot
+                            // (None) or a setup failure falls back to Python (the
+                            // state is left untouched by setup on Err). Do NOT pop
+                            // SP or honour `no_return` here: the guest's own `ret`
+                            // advances SP, and `handle_native_resume` finishes
+                            // without re-adjusting it.
+                            let setup = match self.get_return_addr(&state) {
+                                Some(caller_return_addr) => self
+                                    .setup_native_subcall(
+                                        &mut state,
+                                        NativeSubcall {
+                                            proc_name,
+                                            saved_args,
+                                            caller_return_addr,
+                                            target,
+                                            sub_args,
+                                            resume_tag,
+                                        },
+                                    )
+                                    .map_err(|e| format!("{e:?}")),
+                                None => Err("no concrete return address".to_string()),
+                            };
+                            match setup {
+                                Ok(()) => {
+                                    self.profiling.native_proc_stats.native_calls += 1;
+                                    *self
+                                        .profiling
+                                        .native_proc_stats
+                                        .call_counts
+                                        .entry(name.clone())
+                                        .or_insert(0) += 1;
+                                    self.push_to_active_or_drop(state);
+                                    return Ok(StepOutcome::Routed);
+                                }
+                                Err(reason) => {
+                                    log::debug!(
+                                        "native sub-call setup failed ({reason}); \
+                                         falling back to Python for {name}"
+                                    );
+                                    self.profiling.native_proc_stats.python_fallbacks += 1;
+                                    *self
+                                        .profiling
+                                        .native_proc_stats
+                                        .other_fallbacks_by_name
+                                        .entry(name.clone())
+                                        .or_insert(0) += 1;
+                                }
                             }
-                        },
+                        }
+                        NativeProcDisposition::Fallback => {}
+                        NativeProcDisposition::Segfault(_) => {
+                            unreachable!("mirror_segfault=false never yields Segfault")
+                        }
                     }
                 } // if prefer_native
 

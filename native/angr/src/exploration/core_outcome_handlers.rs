@@ -7,7 +7,6 @@
 //! / `ForkSink` / `SimProcCall` helper structs (visible to this descendant).
 
 use super::*;
-use crate::memory::MemoryError;
 
 /// Package a Python-bouncing outcome (no fork materialization here — the
 /// deferred forks ride into the `PendingCallback` the coordinator builds).
@@ -501,47 +500,11 @@ pub(super) fn handle_symbolic_jump_target_core(
     }
 }
 
-/// What the native fast path decided, so the follow-up runs after the borrow of
-/// the registry is released (mirror of `stepping::NativeProcDisposition`).
-enum NativeProcDisposition {
-    Returned {
-        no_return: bool,
-        ret_val: Option<RustBV>,
-    },
-    SubCall {
-        proc_name: String,
-        saved_args: Vec<RustBV>,
-        target: u64,
-        sub_args: Vec<RustBV>,
-        resume_tag: u32,
-    },
-    Fallback,
-    /// The native proc touched an unmapped page while STRICT_PAGE_ACCESS is on:
-    /// Python's `PrivilegedPagingMixin._initialize_page` would raise
-    /// `SimSegfaultException`, so the state is terminal-errored natively instead
-    /// of bouncing to Python just to raise. Carries the message Python formats
-    /// (`"{page_addr:#x} (unmapped)"`).
-    Segfault(String),
-}
-
-/// Map a native procedure error onto the `SimSegfaultException` Python would
-/// raise for the same access, or `None` when Python would service it (and we
-/// must therefore fall back).
-///
-/// Only the unmapped-page case is mirrored: with STRICT_PAGE_ACCESS off Python
-/// lazily initializes the page and keeps going, so the state must still bounce.
-pub(super) fn segfault_message(state: &RustSimState, err: &ProcedureError) -> Option<String> {
-    if !state.enforce_permissions() {
-        return None;
-    }
-    match err {
-        ProcedureError::Memory(MemoryError::Unmapped { addr, .. }) => {
-            let page_addr = addr & !(crate::memory::PAGE_SIZE - 1);
-            Some(format!("{page_addr:#x} (unmapped)"))
-        }
-        _ => None,
-    }
-}
+// The proc-dispatch decision itself lives in `helpers.rs` so `step_one`'s
+// serial arm and this parallel one cannot drift (angr-ph300.73).
+#[cfg(test)]
+pub(super) use super::super::helpers::segfault_message;
+use super::super::helpers::{NativeProcCounters, NativeProcDisposition, dispatch_native_proc};
 
 /// Mirror of `handle_simprocedure` (native fast path + native resume; Python
 /// fallback bounces).
@@ -593,64 +556,35 @@ pub(super) fn handle_simprocedure_core(
             // declare a larger `num_args()`; use the max so the full arg window
             // is read. Truncating made the scanf family a no-op (angr-8onrp).
             let native_num_args = num_args.max(native_proc.num_args());
-            match ctx.cc.extract_procedure_args(&state, native_num_args) {
-                Err(e) => {
-                    log::debug!("Skipping native procedure {name} (arg extraction failed: {e:?})");
-                    counters.native_python_fallbacks += 1;
-                    *counters
-                        .other_fallbacks_by_name
-                        .entry(name.clone())
-                        .or_insert(0) += 1;
-                    NativeProcDisposition::Fallback
-                }
-                Ok(args) => match native_proc.call_ex(&mut state, &args) {
-                    Ok(outcome) => {
-                        counters.native_calls += 1;
-                        *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
-                        match outcome {
-                            ProcOutcome::Return(ret_val) => NativeProcDisposition::Returned {
-                                no_return: proc_no_return,
-                                ret_val,
-                            },
-                            ProcOutcome::CallAndResume {
-                                target,
-                                args: sub_args,
-                                resume_tag,
-                            } => NativeProcDisposition::SubCall {
-                                proc_name: name.clone(),
-                                saved_args: args,
-                                target,
-                                sub_args,
-                                resume_tag,
-                            },
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(msg) = segfault_message(&state, &e) {
-                            log::debug!("Native procedure {name} segfaulted: {msg}");
-                            counters.native_calls += 1;
-                            *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
-                            NativeProcDisposition::Segfault(msg)
-                        } else {
-                            log::debug!(
-                                "Native procedure {name} returned error, falling back to Python: {e:?}"
-                            );
-                            counters.native_python_fallbacks += 1;
-                            let bucket = match e {
-                                ProcedureError::SymbolicArgument(_) => {
-                                    &mut counters.symbolic_fallbacks_by_name
-                                }
-                                ProcedureError::NotImplemented => {
-                                    &mut counters.not_implemented_fallbacks_by_name
-                                }
-                                _ => &mut counters.other_fallbacks_by_name,
-                            };
-                            *bucket.entry(name.clone()).or_insert(0) += 1;
-                            NativeProcDisposition::Fallback
-                        }
-                    }
+            let args = ctx.cc.extract_procedure_args(&state, native_num_args);
+            let disposition = dispatch_native_proc(
+                native_proc.as_ref(),
+                &mut state,
+                &name,
+                proc_no_return,
+                args,
+                // This path terminal-errors a strict-page-access fault natively
+                // rather than bouncing to Python just to raise.
+                true,
+                &mut NativeProcCounters {
+                    native_calls: &mut counters.native_calls,
+                    python_fallbacks: &mut counters.native_python_fallbacks,
+                    call_counts: &mut counters.call_counts,
+                    symbolic_fallbacks_by_name: &mut counters.symbolic_fallbacks_by_name,
+                    not_implemented_fallbacks_by_name: &mut counters
+                        .not_implemented_fallbacks_by_name,
+                    other_fallbacks_by_name: &mut counters.other_fallbacks_by_name,
                 },
+            );
+            // A sub-call counts as a native call the moment `call_ex` asks for
+            // it — `setup_native_subcall` failing below books no extra fallback
+            // on this path (`step_one` books one instead, hence the caller-side
+            // bump).
+            if matches!(disposition, NativeProcDisposition::SubCall { .. }) {
+                counters.native_calls += 1;
+                *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
             }
+            disposition
         } else {
             NativeProcDisposition::Fallback
         }
