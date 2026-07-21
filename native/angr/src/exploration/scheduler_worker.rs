@@ -511,3 +511,7 @@ pub(super) fn steal_from_injector(
     idle_workers.fetch_sub(1, Ordering::SeqCst);
     result
 }
+
+#[cfg(test)]
+#[path = "scheduler_worker_tests.rs"]
+mod tests;
