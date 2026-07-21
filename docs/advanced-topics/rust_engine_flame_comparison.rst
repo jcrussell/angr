@@ -6,10 +6,25 @@ Rust vs Python engine: flame-graph comparison
 This page records the angr-trsg characterization experiment: where does
 time actually go on two contrasting benches?
 
+The two benches, **as measured at the time of that experiment** (these are
+the historical figures the analysis below was written against, not live
+numbers — see the note that follows):
+
 * **sym-write** — Z3-heavy CTF: 2.3× speedup on Rust (1.0 s Python →
-  0.44 s Rust per ``baseline_timings.json``).
+  0.44 s Rust).
 * **mma_howtouse** — callback-heavy MFC DLL: **0.65× speedup**, i.e.
   Rust is slower (4.25 s Python → 6.51 s Rust).
+
+.. note::
+
+   Do not cross-check these against
+   ``tests/benchmarks/baseline_timings.json`` and expect a match: later
+   baseline refreshes moved the Rust side (as of 2026-07-21 the file
+   records 0.55 s for sym-write and 6.8 s for mma_howtouse, with the
+   Python times unchanged). The qualitative picture — Rust wins big on
+   the Z3-heavy bench and loses on the callback-heavy one — still holds,
+   and the flame analysis below is a snapshot of that run. Read the
+   baseline file for current numbers.
 
 Hypothesis going in (per the bead): "Python flame is dominated by
 interpreter / claripy overhead in the inner loop; Rust flame is
