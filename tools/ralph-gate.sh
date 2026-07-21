@@ -22,6 +22,18 @@
 #      Runs first: a failing unit test invalidates the bench numbers anyway, and
 #      failing fast keeps the gate short in the case we most want to catch.
 #
+#      Hard-capped at CARGO_TEST_TIMEOUT_SECS (default 600s = 5x the ~2m worst
+#      case above): a hung test (observed 2026-07-21,
+#      context_tests_solver::test_check_branch_feasibility_keeps_branch_on_timeout
+#      — Z3_solver_check itself never returns, so the timeout-under-test never
+#      fires) otherwise blocks every future iteration's gate forever, since
+#      ralph's own iteration timeout does not reliably tear down the process
+#      tree cargo forks (a killed cargo/gate process leaves the compiled test
+#      binary orphaned and still running). `timeout`'s SIGKILL only reaches the
+#      process it directly launched, not that already-forked grandchild, so we
+#      also sweep any surviving `rustylib-*` test binary by name after a
+#      timeout/failure.
+#
 #   2. run_regression.py — the fast-tier benchmark regression check, mirroring
 #      .github/workflows/ci.yml::benchmark_regression
 #      (--rust-only --skip-bimodal --threshold 0.15).
@@ -43,7 +55,17 @@ export PATH="$HOME/.cargo/bin:$PATH"
 . /home/ubuntu/repos/angr/.venv/bin/activate
 
 echo "== ralph gate [1/2]: cargo test --release =="
-cargo test --release
+: "${CARGO_TEST_TIMEOUT_SECS:=600}"
+# `rc=$?` must be captured on the || side, not inside `if ! cmd`: the `!`
+# rewrites $? to 0 in the then-block, so the gate would exit 0 on a failure.
+rc=0
+timeout --kill-after=30s --signal=TERM "${CARGO_TEST_TIMEOUT_SECS}s" cargo test --release || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "cargo test --release failed or timed out after ${CARGO_TEST_TIMEOUT_SECS}s (rc=$rc);" \
+        "sweeping any orphaned test binaries" >&2
+    pkill -KILL -f 'target/release/deps/rustylib-' 2>/dev/null || true
+    exit "$rc"
+fi
 
 echo "== ralph gate [2/2]: fast-tier benchmark regression =="
 exec python tests/benchmarks/run_regression.py \
