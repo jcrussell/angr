@@ -397,3 +397,69 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// angr-ph300.11: a payload that fails to reattach must not take the rest of
+// the wave down with it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn corrupt_payload_is_dropped_and_later_payloads_still_route() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let (mut mgr, state, id) = mgr_and_state(0x40_9000);
+        let mut kind_map = FxHashMap::default();
+        kind_map.insert(id, MatKind::Found);
+        let mut root_map = FxHashMap::default();
+        root_map.insert(id, 0x7777);
+
+        // Corrupt payload FIRST: under the old `?` this aborted the loop and
+        // the trailing found was destroyed with no stash record.
+        let payloads = vec![
+            StateMigrationPayload::corrupt_for_test(),
+            state.detach_for_migration(),
+        ];
+
+        let mut bounce_queue = Vec::new();
+        let dropped =
+            mgr.route_materialized_payloads(payloads, &mut kind_map, &root_map, &mut bounce_queue);
+
+        assert_eq!(dropped, 1, "exactly the corrupt payload was dropped");
+        assert_eq!(
+            mgr.stash_count(STASH_FOUND),
+            1,
+            "the found behind the corrupt payload still reached its stash"
+        );
+        assert_eq!(mgr.sm.get_root(id), Some(0x7777), "lineage root replayed");
+        assert!(
+            kind_map.is_empty(),
+            "routed state's kind entry removed; the corrupt one never had a key"
+        );
+    });
+}
+
+#[test]
+fn all_corrupt_payloads_drop_without_routing_anything() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        let mut kind_map = FxHashMap::default();
+        let root_map = FxHashMap::default();
+        let mut bounce_queue = Vec::new();
+
+        let dropped = mgr.route_materialized_payloads(
+            vec![
+                StateMigrationPayload::corrupt_for_test(),
+                StateMigrationPayload::corrupt_for_test(),
+            ],
+            &mut kind_map,
+            &root_map,
+            &mut bounce_queue,
+        );
+
+        assert_eq!(dropped, 2);
+        assert_eq!(mgr.stash_count(STASH_FOUND), 0);
+        assert_eq!(mgr.stash_count(STASH_ACTIVE), 0);
+        assert!(bounce_queue.is_empty());
+    });
+}

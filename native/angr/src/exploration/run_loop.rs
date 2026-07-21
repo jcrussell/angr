@@ -825,16 +825,15 @@ impl RustExplorationManager {
             // route immediately; bounces are queued so we surface at most one
             // need_callback event per wave (mirroring single-threaded, which
             // returns on the first state needing Python).
-            let main_ctx = z3::Context::thread_local();
             let mut bounce_queue: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
-            for payload in materialized {
-                let state = payload
-                    .reattach(&main_ctx)
-                    .map_err(|e| PyRuntimeError::new_err(format!("reattach failed: {e:?}")))?;
-                let id = state.state_id();
-                let root = root_map.get(&id).copied().unwrap_or(id);
-                let kind = kind_map.remove(&id);
-                self.route_materialized_terminal(state, kind, root, &mut bounce_queue);
+            let dropped = self.route_materialized_payloads(
+                materialized,
+                &mut kind_map,
+                &root_map,
+                &mut bounce_queue,
+            );
+            if dropped > 0 {
+                log::warn!("wave: dropped {dropped} terminal(s) that failed to reattach");
             }
 
             // Per-wave bookkeeping (mirror of the single-threaded post-step
@@ -905,6 +904,44 @@ impl RustExplorationManager {
             self.fold_core_counters(counters);
         }
         worker_stepped
+    }
+
+    /// Reattach and route every materialized payload recovered from a wave
+    /// barrier, returning the number that could **not** be reattached.
+    ///
+    /// A failed reattach is logged and skipped, never propagated (angr-ph300.11).
+    /// By this point the wave's results have already been taken out of the job
+    /// and its residual injector drained, so the payload vec is the *only*
+    /// remaining handle on those states: aborting on payload `k` of `n` would
+    /// silently destroy the remaining `n - k` states — including materialized
+    /// founds — with no stash record. That is strictly worse than dropping the
+    /// one payload whose bytes are bad, and it diverges from the steady-state
+    /// twins ([`Self::route_steady_terminal`] and `finalize_steady_session`),
+    /// which both log-and-drop per state.
+    fn route_materialized_payloads(
+        &mut self,
+        materialized: Vec<StateMigrationPayload>,
+        kind_map: &mut FxHashMap<u64, MatKind>,
+        root_map: &FxHashMap<u64, u64>,
+        bounce_queue: &mut Vec<(RustSimState, BounceKind, u64)>,
+    ) -> usize {
+        let main_ctx = z3::Context::thread_local();
+        let mut dropped = 0usize;
+        for payload in materialized {
+            let state = match payload.reattach(&main_ctx) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("wave: reattach failed, dropping terminal: {e:?}");
+                    dropped += 1;
+                    continue;
+                }
+            };
+            let id = state.state_id();
+            let root = root_map.get(&id).copied().unwrap_or(id);
+            let kind = kind_map.remove(&id);
+            self.route_materialized_terminal(state, kind, root, bounce_queue);
+        }
+        dropped
     }
 
     /// Route one reattached materialized terminal by its [`MatKind`] tag —
