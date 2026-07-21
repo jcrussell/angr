@@ -191,7 +191,11 @@ fn test_take_state_from_stash_scoped() {
     assert_eq!(taken.state_id(), id1);
     assert_eq!(mgr.count(STASH_ACTIVE), 0);
     assert_eq!(mgr.stash_of(id1), None);
-    assert_eq!(mgr.get_root(id1), Some(id1), "take_state_from must not drop roots");
+    assert_eq!(
+        mgr.get_root(id1),
+        Some(id1),
+        "take_state_from must not drop roots"
+    );
 
     // Unknown id in a valid stash yields None without disturbing the stash.
     assert!(mgr.take_state_from(9_999, STASH_FOUND).is_none());
