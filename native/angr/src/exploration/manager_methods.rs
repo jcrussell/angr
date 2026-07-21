@@ -458,6 +458,11 @@ impl RustExplorationManager {
     /// one real scheduler worker the steal order still varies, so the found
     /// set is stable but the order states are reported in is not.
     pub fn set_deterministic(&mut self, v: bool) {
+        // Finalize a live steady session first: workers snapshot the solver
+        // config and resident/parked-pending states never appear in the
+        // stashes we iterate below, so without the guard a mid-session flip
+        // would leave those states minting non-canonical witnesses.
+        self.steady_config_guard();
         self.constraint_solver.deterministic = v;
         for states in self.sm.stashes_mut().values_mut() {
             for state in states.iter() {
@@ -719,12 +724,18 @@ impl RustExplorationManager {
     }
 
     /// Add a hook address.
+    ///
+    /// Guarded like `register_simprocedures`: a live steady session snapshots
+    /// `hooks` into each worker's `StepContext`, so mutating the set mid-run
+    /// must finalize first or the new hook silently never fires.
     pub fn add_hook(&mut self, addr: u64) {
+        self.steady_config_guard();
         self.hooks.insert(addr);
     }
 
     /// Add multiple hook addresses.
     pub fn add_hooks(&mut self, addrs: Vec<u64>) {
+        self.steady_config_guard();
         for addr in addrs {
             self.hooks.insert(addr);
         }
@@ -744,6 +755,7 @@ impl RustExplorationManager {
         num_args: usize,
         no_return: bool,
     ) {
+        self.steady_config_guard();
         self.hooks.insert(addr);
         self.simprocedures.insert(addr, (name, num_args, no_return));
     }

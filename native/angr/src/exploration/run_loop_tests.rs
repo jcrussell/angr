@@ -265,3 +265,47 @@ fn must_run_serial_true_when_timeout_registered() {
         );
     });
 }
+
+/// angr-ph300.24: `add_hook`, `add_hooks`, `register_simprocedure`, and
+/// `set_deterministic` each open with `steady_config_guard()` so a mid-steady
+/// session is finalized before its snapshotted hook set / solver config goes
+/// stale. With no live session the guard is a no-op — this pins that inserting
+/// it did not break the mutation itself, and that the four stay guard-first
+/// (the guard runs on the no-session path without panicking or clobbering the
+/// mutation). The end-to-end finalize-a-live-session proof is the Python
+/// `tests/engines/rust/test_parallel_wave.py` steady suite.
+#[test]
+fn config_mutators_apply_and_are_guard_safe_without_session() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        assert!(!mgr.parallel_session_active(), "fresh manager has no session");
+
+        mgr.add_hook(0x40_1000);
+        assert!(mgr.hooks.contains(&0x40_1000), "add_hook inserted the addr");
+
+        mgr.add_hooks(vec![0x40_2000, 0x40_3000]);
+        assert!(
+            mgr.hooks.contains(&0x40_2000) && mgr.hooks.contains(&0x40_3000),
+            "add_hooks inserted both addrs"
+        );
+
+        mgr.register_simprocedure(0x40_4000, "strlen".to_string(), 1, false);
+        assert!(mgr.hooks.contains(&0x40_4000), "register_simprocedure hooked the addr");
+        assert!(
+            mgr.simprocedures.contains_key(&0x40_4000),
+            "register_simprocedure recorded the proc"
+        );
+
+        assert!(!mgr.is_deterministic(), "default is non-deterministic");
+        mgr.set_deterministic(true);
+        assert!(mgr.is_deterministic(), "set_deterministic flipped the flag");
+
+        // The guard ran on the no-session path for every mutator above and
+        // left the session absent (nothing to finalize).
+        assert!(
+            !mgr.parallel_session_active(),
+            "guard stays a no-op when no session is live"
+        );
+    });
+}
