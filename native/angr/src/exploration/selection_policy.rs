@@ -42,7 +42,7 @@
 //!
 //! **No hash-order may enter selection.** The per-policy `HashMap`/`HashSet`
 //! fields (`CoverageGuided::seen`, `FindDirected::seen`,
-//! `LoopHeadRoundRobin::dispatched`, `DirectedCfgDistance::{distances,
+//! `LoopHeadRoundRobin::{dispatched, key_cache}`, `DirectedCfgDistance::{distances,
 //! dispatched}`) are *only ever indexed* (`get`/`contains`/`entry`) — never
 //! iterated. Rust's `HashMap` seeds a fresh `RandomState` hasher per instance,
 //! so a single `for (k, v) in map` in a `select` path would make the dispatch
@@ -272,6 +272,22 @@ pub struct LoopHeadRoundRobin {
     /// under the `&self` `select` hook while preserving `Send + Sync` so a
     /// parallel scheduler can share the `Arc`.
     dispatched: Mutex<HashMap<u64, u64>>,
+    /// Memoized `state_id -> bucket_key` so `select` recomputes a state's key
+    /// (a full history scan) at most once while it sits in `active`, not once
+    /// per active state per step. A state's key changes only when the state is
+    /// stepped, and a state is stepped only after `select` *removes* it — so a
+    /// state still in the deque has a fixed key, and the dispatched state's
+    /// entry is evicted on removal (children re-enter with fresh `state_id`s).
+    /// This bounds the cache to roughly `active.len()` and turns select from
+    /// O(active x history) into O(active) after each state's first sighting.
+    /// Only ever indexed (`get`/`insert`/`remove`) — never iterated — so it
+    /// respects the no-hash-order-in-selection contract above.
+    key_cache: Mutex<HashMap<u64, u64>>,
+    /// Test-only tally of `bucket_key` computations (cache misses), used to
+    /// assert the memoization actually collapses a full drain from
+    /// O(active^2) key computations down to O(active).
+    #[cfg(test)]
+    key_computations: std::sync::atomic::AtomicU64,
 }
 
 impl LoopHeadRoundRobin {
@@ -313,6 +329,10 @@ impl SelectionPolicy for LoopHeadRoundRobin {
         if active.is_empty() {
             return None;
         }
+        let mut cache = self
+            .key_cache
+            .lock()
+            .expect("LoopHeadRoundRobin key cache poisoned");
         let mut dispatched = self
             .dispatched
             .lock()
@@ -323,7 +343,19 @@ impl SelectionPolicy for LoopHeadRoundRobin {
         let mut best_count = u64::MAX;
         let mut best_key = 0u64;
         for (i, st) in active.iter().enumerate() {
-            let key = Self::bucket_key(st);
+            // A state's bucket key is fixed while it sits in the deque, so
+            // compute it at most once and memoize on `state_id`.
+            let key = match cache.get(&st.state_id()) {
+                Some(&k) => k,
+                None => {
+                    let k = Self::bucket_key(st);
+                    #[cfg(test)]
+                    self.key_computations
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    cache.insert(st.state_id(), k);
+                    k
+                }
+            };
             let count = dispatched.get(&key).copied().unwrap_or(0);
             if count < best_count {
                 best_count = count;
@@ -334,6 +366,10 @@ impl SelectionPolicy for LoopHeadRoundRobin {
         let state = active
             .remove(pick)
             .expect("index from non-empty deque is valid");
+        // The dispatched state is stepped next (mutating its history) and its
+        // successors re-enter with fresh `state_id`s, so its cached key is now
+        // dead — evict to keep the cache bounded to ~active.len().
+        cache.remove(&state.state_id());
         *dispatched.entry(best_key).or_insert(0) += 1;
         Some(state)
     }
@@ -782,6 +818,37 @@ mod tests {
         assert_eq!(
             order, ids,
             "distinct fresh buckets drain FIFO front-to-back"
+        );
+    }
+
+    #[test]
+    fn test_loop_head_key_cache_computes_each_key_once_per_drain() {
+        use std::sync::atomic::Ordering;
+        // A full drain of N states must compute bucket_key exactly N times —
+        // once per state on its first sighting — not the O(N^2) recompute the
+        // un-memoized select did (N + (N-1) + ... + 1). Each state carries a
+        // multi-address history so an un-cached scan would be visibly costly.
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        const N: u64 = 8;
+        for i in 0..N {
+            active.push_back(state_with_history(0x100 + i, &[0xAA, 0xBB, 0xAA, i]));
+        }
+        let mut drained = 0u64;
+        while policy.select(&mut active).is_some() {
+            drained += 1;
+        }
+        assert_eq!(drained, N, "every state must be dispatched");
+        assert_eq!(
+            policy.key_computations.load(Ordering::Relaxed),
+            N,
+            "memoized select must compute each state's key exactly once, not once per select",
+        );
+        // The dispatched-state eviction leaves the cache empty after a full drain.
+        assert!(
+            policy.key_cache.lock().expect("cache poisoned").is_empty(),
+            "every dispatched state's cache entry must be evicted",
         );
     }
 
