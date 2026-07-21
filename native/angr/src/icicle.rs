@@ -392,17 +392,14 @@ impl Icicle {
     /// the newly-written instruction differs from the one previously at the
     /// same address.
     fn invalidate_code_range(&mut self, addr: u64, size: u64) {
-        if size == 0 {
+        let Some((addr, end)) = written_range(addr, size) else {
             return;
-        }
-        let end = addr.saturating_add(size);
+        };
 
         let mut affected_keys = Vec::new();
         let mut affected_blocks = Vec::new();
         for (key, group) in &self.vm.code.map {
-            // group covers inclusive [start, end]; range overlaps iff
-            //   group.start < end && group.end >= addr
-            if group.start < end && group.end >= addr {
+            if code_group_overlaps(group.start, group.end, addr, end) {
                 affected_keys.push(*key);
                 affected_blocks.extend(group.range());
             }
@@ -417,7 +414,7 @@ impl Icicle {
         self.vm
             .code
             .disasm
-            .retain(|&vaddr, _| vaddr < addr || vaddr >= end);
+            .retain(|&vaddr, _| disasm_addr_retained(vaddr, addr, end));
     }
 
     // Specialized state accessors
@@ -610,6 +607,40 @@ fn perms_to_icicle(perm: u8) -> u8 {
     }
     icicle_perm
 }
+
+/// The half-open range `[addr, addr + size)` a write touches, or `None` for an
+/// empty write. `size` is clamped with `saturating_add` so a write running off
+/// the top of the address space ends at `u64::MAX` instead of wrapping to 0 and
+/// silently invalidating nothing.
+fn written_range(addr: u64, size: u64) -> Option<(u64, u64)> {
+    if size == 0 {
+        return None;
+    }
+    Some((addr, addr.saturating_add(size)))
+}
+
+/// Does a lifted code group overlap the written range?
+///
+/// A group covers the **inclusive** byte range `[group_start, group_end]`,
+/// while the written range is **half-open** `[addr, end)` (`end` is
+/// `addr.saturating_add(size)` and is never touched by the write). Mixing the
+/// two conventions is where off-by-ones hide, so the predicate lives here with
+/// its own tests rather than inline in `invalidate_code_range`.
+fn code_group_overlaps(group_start: u64, group_end: u64, addr: u64, end: u64) -> bool {
+    group_start < end && group_end >= addr
+}
+
+/// Should a cached disassembly entry at `vaddr` survive a write to `[addr, end)`?
+///
+/// Entries are keyed by the address of a single instruction, so only an entry
+/// *inside* the half-open written range is stale.
+fn disasm_addr_retained(vaddr: u64, addr: u64, end: u64) -> bool {
+    vaddr < addr || vaddr >= end
+}
+
+#[cfg(test)]
+#[path = "icicle_tests.rs"]
+mod tests;
 
 #[pymodule]
 pub fn icicle(m: &Bound<'_, PyModule>) -> PyResult<()> {
