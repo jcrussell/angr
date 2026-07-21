@@ -310,20 +310,40 @@ impl RustExplorationManager {
             )));
         }
 
-        // Clear all other stashes
-        for stash in &[
-            STASH_FOUND,
-            STASH_AVOID,
-            STASH_DEADENDED,
-            STASH_ERRORED,
-            STASH_UNCONSTRAINED,
-        ] {
+        // Clear every stash except 'active'. A fixed name list used to be
+        // spelled out here, which silently omitted STASH_PRUNED and every
+        // technique stash (cut/spinning/timeout/not_unique/_copies/
+        // merge_waiting_*): those stage-1 states — and their Z3 solver
+        // clones — stayed alive across all later stages (angr-ph300.26).
+        let others: Vec<String> = self
+            .sm
+            .iter()
+            .map(|(name, _)| name.clone())
+            .filter(|name| name != STASH_ACTIVE)
+            .collect();
+        for stash in &others {
             self.sm.clear(stash);
         }
 
-        // Remove all other active states (keep only the moved one)
-        if let Some(active) = self.sm.get_mut("active") {
+        // Remove all other active states (keep only the moved one). A bare
+        // retain() drops the states without touching the bookkeeping maps,
+        // so state_stash(dropped_id) would keep answering 'active' forever;
+        // unindex + remove_root each dropped id, mirroring
+        // drop_state_from_stash (angr-ph300.26).
+        let dropped: Vec<u64> = match self.sm.get(STASH_ACTIVE) {
+            Some(active) => active
+                .iter()
+                .map(|s| s.state_id())
+                .filter(|id| *id != found_state_id)
+                .collect(),
+            None => Vec::new(),
+        };
+        if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
             active.retain(|s| s.state_id() == found_state_id);
+        }
+        for id in dropped {
+            self.sm.unindex(id);
+            self.sm.remove_root(id);
         }
 
         Ok(found_state_id)
