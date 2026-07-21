@@ -2214,68 +2214,31 @@ impl RustExplorationManager {
                     let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
                     let mut snapshots = pending.fork_snapshots;
-                    let cb_fork_start = if self.profiling.profiling_enabled {
-                        Some(std::time::Instant::now())
-                    } else {
-                        None
-                    };
-                    let cb_fork_total = pending.deferred_forks.len() as u64;
-                    for fork in pending.deferred_forks {
-                        let condition = pending.stored_conditions.get(&fork.condition_id);
-                        // P11: reconstruct from condition_ast if absent from
-                        // stored_conditions (shared helper — see angr-ph300.76).
-                        let reconstructed = super::helpers::reconstruct_deferred_fork_condition(
-                            condition, &fork, &fork_base,
-                        );
-
-                        if let Some(cond) = condition.or(reconstructed.as_ref()) {
-                            // Add the taken-path constraint to the main state
-                            // (mirrors the BlockEnd handling at line 3560-3564).
-                            if fork.path_taken {
-                                pending.state.solver().borrow().assume_true(cond);
-                            } else {
-                                pending.state.solver().borrow().assume_false(cond);
-                            }
-                            let fork_op_start = if self.profiling.profiling_enabled {
-                                Some(std::time::Instant::now())
-                            } else {
-                                None
-                            };
-                            let forked = super::helpers::build_unexplored_fork(
-                                &fork_base,
-                                &fork,
-                                cond,
-                                &mut snapshots,
-                            );
-                            if let Some(start) = fork_op_start {
-                                self.profiling.accumulated_stats.solver_fork_time_ns +=
-                                    start.elapsed().as_nanos() as u64;
-                                self.profiling.accumulated_stats.solver_fork_count += 1;
-                            }
-                            self.sm.set_root(forked.state_id(), root_state_id);
-                            let sat_start = if self.profiling.profiling_enabled {
-                                Some(std::time::Instant::now())
-                            } else {
-                                None
-                            };
-                            if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                                if let Some(start) = sat_start {
-                                    self.profiling.accumulated_stats.solver_sat_time_ns +=
-                                        start.elapsed().as_nanos() as u64;
-                                    self.profiling.accumulated_stats.solver_sat_count += 1;
-                                }
-                                self.push_to_active_or_drop(forked);
-                            } else if let Some(start) = sat_start {
-                                self.profiling.accumulated_stats.solver_sat_time_ns +=
-                                    start.elapsed().as_nanos() as u64;
-                                self.profiling.accumulated_stats.solver_sat_count += 1;
-                            }
-                        }
+                    let profiling_enabled = self.profiling.profiling_enabled;
+                    let lazy_solves = self.constraint_solver.lazy_solves;
+                    let materialized = super::helpers::materialize_deferred_forks(
+                        pending.deferred_forks,
+                        super::helpers::MaterializeForkCtx {
+                            fork_base: &fork_base,
+                            stored_conditions: &pending.stored_conditions,
+                            snapshots: &mut snapshots,
+                            lazy_solves,
+                            // The taken-path guard lands on the find/avoid state
+                            // itself (mirrors the BlockEnd handling).
+                            guard_sink: Some(&pending.state),
+                            stats: profiling_enabled
+                                .then_some(&mut self.profiling.accumulated_stats),
+                        },
+                    );
+                    for forked in &materialized.unsat {
+                        // Lineage is registered for UNSAT forks too, then the
+                        // state is dropped (this path has never had a pruned
+                        // stash push).
+                        self.sm.set_root(forked.state_id(), root_state_id);
                     }
-                    if let Some(start) = cb_fork_start {
-                        self.profiling.accumulated_stats.deferred_fork_time_ns +=
-                            start.elapsed().as_nanos() as u64;
-                        self.profiling.accumulated_stats.deferred_fork_count += cb_fork_total;
+                    for forked in materialized.sat {
+                        self.sm.set_root(forked.state_id(), root_state_id);
+                        self.push_to_active_or_drop(forked);
                     }
 
                     // Now handle the main state

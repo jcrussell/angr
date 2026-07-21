@@ -1180,20 +1180,6 @@ pub(crate) fn prepare_shared_callback_solver(
     (pre_callback_snapshot, shared_ctx)
 }
 
-/// Build the unexplored-path fork for one deferred branch.
-///
-/// Every deferred-fork materialization site (the two `stepping.rs` helpers
-/// plus the open-coded copies in `run_loop.rs` and `resume.rs`) constructs the
-/// opposite-path state with the same byte-identical 3-way branch: prefer a
-/// pre-branch solver `snapshot` (and re-assume the *opposite* constraint onto
-/// it) when one was captured, otherwise `fork_false` / `fork_true` off `base`
-/// depending on which side the main path took. The forked state's PC is then
-/// set to `fork.unexplored_target`.
-///
-/// Callers retain their own bespoke surrounding logic — base mutation
-/// (assume taken-path constraint), `set_root` lineage, profiling counters, and
-/// SAT/UNSAT routing — and differ only in which state they fork from and which
-/// condition / snapshot map they pass in.
 /// Install a deferred fork's branch guard on the continuing state, firing the
 /// `state.inspect.constraints` BP around the add (angr-op0dn.14.4.1).
 ///
@@ -1268,6 +1254,16 @@ pub(crate) fn reconstruct_deferred_fork_condition(
     })
 }
 
+/// Build the unexplored-path fork for one deferred branch.
+///
+/// Every deferred-fork materialization site (the two `stepping.rs` helpers,
+/// [`materialize_deferred_forks`], and the parallel mirror in
+/// `core_outcome_handlers.rs`) constructs the opposite-path state with the same
+/// byte-identical 3-way branch: prefer a pre-branch solver `snapshot` (and
+/// re-assume the *opposite* constraint onto it) when one was captured,
+/// otherwise `fork_false` / `fork_true` off `base` depending on which side the
+/// main path took. The forked state's PC is then set to
+/// `fork.unexplored_target`.
 pub(crate) fn build_unexplored_fork(
     base: &RustSimState,
     fork: &DeferredFork,
@@ -1291,6 +1287,150 @@ pub(crate) fn build_unexplored_fork(
     };
     forked.set_pc(fork.unexplored_target);
     forked
+}
+
+/// SAT / UNSAT split produced by [`materialize_deferred_forks`], in fork
+/// dispatch order. Neither vector has had `set_root` applied — lineage needs
+/// `&mut StateManager`, which the callers own; they register both vectors
+/// (UNSAT forks were registered by every legacy copy too, before the SAT check).
+pub(crate) struct MaterializedForks {
+    pub(crate) sat: Vec<RustSimState>,
+    pub(crate) unsat: Vec<RustSimState>,
+}
+
+/// Everything [`materialize_deferred_forks`] needs beyond the fork list itself.
+pub(crate) struct MaterializeForkCtx<'a> {
+    /// The guard-free base every unexplored side forks from. Callers pick this
+    /// (pre-callback snapshot, bounce state, …); it must NOT carry the taken
+    /// path's branch guard or the unexplored side inherits it.
+    pub(crate) fork_base: &'a RustSimState,
+    pub(crate) stored_conditions: &'a FxHashMap<u64, RustBV>,
+    /// Pre-branch solver snapshots, consumed (`remove`d) per fork by
+    /// [`build_unexplored_fork`].
+    pub(crate) snapshots: &'a mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
+    /// When true, skip the per-fork SAT check and treat every fork as SAT.
+    pub(crate) lazy_solves: bool,
+    /// Continuing state that should receive the *taken*-path guard as each fork
+    /// is materialized (`assume_true` when `path_taken`, `assume_false`
+    /// otherwise). `None` for callers whose continuing state already carries the
+    /// guard (`_resume_after_simprocedure`) or that mint both directions
+    /// themselves (`_resume_after_symbolic_branch`).
+    pub(crate) guard_sink: Option<&'a RustSimState>,
+    /// `Some` iff profiling is enabled; receives the deferred-fork / fork-op /
+    /// SAT timers and counts.
+    pub(crate) stats: Option<&'a mut ExecutionStats>,
+}
+
+/// Materialize a step's deferred forks into SAT / UNSAT state lists.
+///
+/// Single source of truth for the condition-lookup → P11 `condition_ast`
+/// reconstruction → P15 conservative-fork → [`build_unexplored_fork`] → SAT
+/// check pipeline that used to be open-coded in three near-identical copies:
+/// `step_one`'s find/avoid callback arm (`run_loop.rs`), and both
+/// `_resume_after_simprocedure` / `_deadend_pending_callback` /
+/// `_resume_after_symbolic_branch` loops (`resume.rs`). Only the parallel
+/// mirror (`core_outcome_handlers.rs::materialize_deferred_forks_core`) was
+/// unit-tested, so the serial copies were free to drift — angr-ph300.7 was
+/// exactly that drift (a missing P11 arm silently dropping AST-only forks).
+///
+/// The parallel mirror is deliberately NOT folded in here: it has no P11
+/// fallback, fires the `constraints` inspect BP via
+/// [`add_fork_guard_constraint`], and accumulates into atomics rather than
+/// `ExecutionStats` (angr-ph300.73 tracks unifying it).
+pub(crate) fn materialize_deferred_forks(
+    forks: Vec<DeferredFork>,
+    ctx: MaterializeForkCtx<'_>,
+) -> MaterializedForks {
+    let MaterializeForkCtx {
+        fork_base,
+        stored_conditions,
+        snapshots,
+        lazy_solves,
+        guard_sink,
+        mut stats,
+    } = ctx;
+    let mut out = MaterializedForks {
+        sat: Vec::new(),
+        unsat: Vec::new(),
+    };
+    // NOTE: no early return on an empty fork list. The batch timer below is
+    // charged unconditionally when profiling is on, matching the legacy
+    // `step_one` site — `deferred_fork_time_ns` is the liveness signal the
+    // profiling-gate regression test reads, and on binaries whose find/avoid
+    // callbacks carry no deferred forks the empty batches are its only source.
+    let total = forks.len() as u64;
+    let batch_start = stats.is_some().then(std::time::Instant::now);
+
+    for fork in forks {
+        let condition = stored_conditions.get(&fork.condition_id);
+        // P11: reconstruct from the stored claripy AST when the condition is
+        // absent from `stored_conditions`.
+        let reconstructed = reconstruct_deferred_fork_condition(condition, &fork, fork_base);
+
+        if let Some(cond) = condition.or(reconstructed.as_ref()) {
+            if let Some(sink) = guard_sink {
+                if fork.path_taken {
+                    sink.solver().borrow().assume_true(cond);
+                } else {
+                    sink.solver().borrow().assume_false(cond);
+                }
+            }
+            let fork_start = stats.is_some().then(std::time::Instant::now);
+            let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots);
+            if let (Some(s), Some(start)) = (stats.as_deref_mut(), fork_start) {
+                s.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                s.solver_fork_count += 1;
+            }
+            if reconstructed.is_some() {
+                log::debug!(
+                    "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
+                    fork.branch_addr
+                );
+            }
+            let sat_start = stats.is_some().then(std::time::Instant::now);
+            let sat = lazy_solves || forked.satisfiable();
+            if let (Some(s), Some(start)) = (stats.as_deref_mut(), sat_start) {
+                s.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                s.solver_sat_count += 1;
+            }
+            if sat {
+                out.sat.push(forked);
+            } else {
+                log::debug!(
+                    "P13: Forked state at 0x{:x} is UNSAT, adding to pruned",
+                    fork.unexplored_target
+                );
+                out.unsat.push(forked);
+            }
+        } else {
+            // P15: no condition from either source — build a conservative
+            // unconstrained fork so the unexplored branch is still routed
+            // rather than dropped.
+            log::warn!(
+                "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                 Creating conservative fork to explore the path.",
+                fork.branch_addr,
+                fork.condition_id
+            );
+            let mut forked = fork_base.fork();
+            forked.set_pc(fork.unexplored_target);
+            if lazy_solves || forked.satisfiable() {
+                out.sat.push(forked);
+            } else {
+                log::debug!(
+                    "P13: Unconstrained fork at 0x{:x} is UNSAT, adding to pruned",
+                    fork.unexplored_target
+                );
+                out.unsat.push(forked);
+            }
+        }
+    }
+
+    if let (Some(s), Some(start)) = (stats, batch_start) {
+        s.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+        s.deferred_fork_count += total;
+    }
+    out
 }
 
 /// The address a state should report to Python, with the angr-4rq7 pc==0

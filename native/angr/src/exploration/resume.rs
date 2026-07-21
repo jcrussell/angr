@@ -112,73 +112,30 @@ impl RustExplorationManager {
             (vec![state], Vec::new())
         };
         let mut snapshots = pending.fork_snapshots;
-        for fork in pending.deferred_forks {
-            // Look up the condition for this deferred fork
-            let condition = pending.stored_conditions.get(&fork.condition_id);
-
-            // P11 fix: If condition not in stored_conditions, try to reconstruct
-            // from condition_ast (shared helper — see angr-ph300.76).
+        if !pending.deferred_forks.is_empty() {
             let fb = fork_base
                 .as_ref()
                 .expect("fork_base set before deferred fork processing");
-            let reconstructed_condition =
-                super::helpers::reconstruct_deferred_fork_condition(condition, &fork, fb);
-
-            let effective_condition = condition.or(reconstructed_condition.as_ref());
-
-            if let Some(cond) = effective_condition {
-                // Use solver snapshot (from before branch constraint) if available
-                let forked = super::helpers::build_unexplored_fork(fb, &fork, cond, &mut snapshots);
-
-                // Track root state ID for this forked state
+            // DO NOT sync callback constraints to the forked states! These paths
+            // diverged before the callback occurred; adding callback constraints
+            // would pollute the unexplored branches. The continuing state
+            // already carries the taken-path guard, hence `guard_sink: None`.
+            let materialized = super::helpers::materialize_deferred_forks(
+                pending.deferred_forks,
+                super::helpers::MaterializeForkCtx {
+                    fork_base: fb,
+                    stored_conditions: &pending.stored_conditions,
+                    snapshots: &mut snapshots,
+                    lazy_solves: self.constraint_solver.lazy_solves,
+                    guard_sink: None,
+                    stats: None,
+                },
+            );
+            for forked in materialized.sat.iter().chain(materialized.unsat.iter()) {
                 self.sm.set_root(forked.state_id(), root_state_id);
-
-                // DO NOT sync callback constraints to forked state!
-                // These paths diverged before the callback occurred.
-                // Adding callback constraints would pollute unexplored branches.
-
-                // P13: Check satisfiability before adding to successors
-                if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                    successors.push(forked);
-                    if reconstructed_condition.is_some() {
-                        log::debug!(
-                            "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
-                            fork.branch_addr
-                        );
-                    }
-                } else {
-                    log::debug!(
-                        "P13: Forked state at 0x{:x} is UNSAT, adding to pruned",
-                        fork.unexplored_target
-                    );
-                    pruned_states.push(forked);
-                }
-            } else {
-                // P15: Better handling of missing deferred fork conditions
-                // Try harder to get a condition or create a fresh boolean to explore both paths
-                log::warn!(
-                    "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
-                     Creating conservative fork to explore the path.",
-                    fork.branch_addr,
-                    fork.condition_id
-                );
-                // Create a fork without additional constraints - this is conservative
-                // but ensures we don't lose valid paths
-                let mut forked = fb.fork();
-                forked.set_pc(fork.unexplored_target);
-                self.sm.set_root(forked.state_id(), root_state_id);
-
-                // P13: Still check satisfiability
-                if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                    successors.push(forked);
-                } else {
-                    log::debug!(
-                        "P13: Unconstrained fork at 0x{:x} is UNSAT, adding to pruned",
-                        fork.unexplored_target
-                    );
-                    pruned_states.push(forked);
-                }
             }
+            successors.extend(materialized.sat);
+            pruned_states.extend(materialized.unsat);
         }
 
         // Add all successors (original state + forks) to stashes
@@ -269,55 +226,29 @@ impl RustExplorationManager {
             let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
             let mut snapshots = pending.fork_snapshots;
-            for fork in pending.deferred_forks {
-                let condition = pending.stored_conditions.get(&fork.condition_id);
-
-                // P11: reconstruct the branch condition from the stored claripy
-                // AST when it is absent from stored_conditions, mirroring
-                // `_resume_after_simprocedure`. Without this, an AST-only
-                // deferred fork parked behind a no-return SimProcedure
-                // (exit/abort) was silently dropped and its unexplored branch
-                // never reached (angr-ph300.7). Shared helper — see angr-ph300.76.
-                let reconstructed_condition = super::helpers::reconstruct_deferred_fork_condition(
-                    condition, &fork, &fork_base,
-                );
-
-                let effective_condition = condition.or(reconstructed_condition.as_ref());
-
-                if let Some(cond) = effective_condition {
-                    if fork.path_taken {
-                        pending.state.solver().borrow().assume_true(cond);
-                    } else {
-                        pending.state.solver().borrow().assume_false(cond);
-                    }
-                    let forked = super::helpers::build_unexplored_fork(
-                        &fork_base,
-                        &fork,
-                        cond,
-                        &mut snapshots,
-                    );
-                    self.sm.set_root(forked.state_id(), root_state_id);
-                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                        self.route_successor(forked, false);
-                    }
-                } else {
-                    // P15: no condition available from either source — build a
-                    // conservative unconstrained fork so the unexplored branch
-                    // is still routed rather than dropped.
-                    log::warn!(
-                        "P15: Missing condition for deferred fork at 0x{:x} \
-                         (condition_id={}) in deadend path. Creating conservative \
-                         fork to explore the path.",
-                        fork.branch_addr,
-                        fork.condition_id
-                    );
-                    let mut forked = fork_base.fork();
-                    forked.set_pc(fork.unexplored_target);
-                    self.sm.set_root(forked.state_id(), root_state_id);
-                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                        self.route_successor(forked, false);
-                    }
-                }
+            // The P11 `condition_ast` reconstruction matters most here: without
+            // it an AST-only deferred fork parked behind a no-return
+            // SimProcedure (exit/abort) was silently dropped and its unexplored
+            // branch never reached (angr-ph300.7).
+            let materialized = super::helpers::materialize_deferred_forks(
+                pending.deferred_forks,
+                super::helpers::MaterializeForkCtx {
+                    fork_base: &fork_base,
+                    stored_conditions: &pending.stored_conditions,
+                    snapshots: &mut snapshots,
+                    lazy_solves: self.constraint_solver.lazy_solves,
+                    guard_sink: Some(&pending.state),
+                    stats: None,
+                },
+            );
+            for forked in materialized.unsat {
+                // Lineage registered, then dropped: the deadend path has never
+                // had a pruned-stash push.
+                self.sm.set_root(forked.state_id(), root_state_id);
+            }
+            for forked in materialized.sat {
+                self.sm.set_root(forked.state_id(), root_state_id);
+                self.route_successor(forked, false);
             }
         }
 
@@ -448,48 +379,25 @@ impl RustExplorationManager {
                 .as_ref()
                 .expect("fork_base set when deferred_forks non-empty");
             let mut snapshots = pending.fork_snapshots;
-            for fork in pending.deferred_forks {
-                let condition = pending.stored_conditions.get(&fork.condition_id);
-
-                // P11 fix: reconstruct from condition_ast if not in
-                // stored_conditions (shared helper — see angr-ph300.76).
-                let reconstructed_condition =
-                    super::helpers::reconstruct_deferred_fork_condition(condition, &fork, fb);
-
-                let effective_condition = condition.or(reconstructed_condition.as_ref());
-
-                if let Some(cond) = effective_condition {
-                    // Use solver snapshot if available (from before branch constraint)
-                    let forked =
-                        super::helpers::build_unexplored_fork(fb, &fork, cond, &mut snapshots);
-
-                    self.sm.set_root(forked.state_id(), root_state_id);
-
-                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                        deferred_successors.push(forked);
-                    } else {
-                        log::debug!(
-                            "Deferred fork at 0x{:x} is UNSAT, adding to pruned",
-                            fork.unexplored_target
-                        );
-                        deferred_pruned.push(forked);
-                    }
-                } else {
-                    // Missing condition: create conservative fork
-                    log::warn!(
-                        "Missing condition for deferred fork at 0x{:x} in symbolic branch handler",
-                        fork.branch_addr
-                    );
-                    let mut forked = fb.fork();
-                    forked.set_pc(fork.unexplored_target);
-                    self.sm.set_root(forked.state_id(), root_state_id);
-                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
-                        deferred_successors.push(forked);
-                    } else {
-                        deferred_pruned.push(forked);
-                    }
-                }
+            // `guard_sink: None` — this handler mints both directions itself
+            // (true_state / false_state above), so nothing here should receive
+            // the taken-path guard.
+            let materialized = super::helpers::materialize_deferred_forks(
+                pending.deferred_forks,
+                super::helpers::MaterializeForkCtx {
+                    fork_base: fb,
+                    stored_conditions: &pending.stored_conditions,
+                    snapshots: &mut snapshots,
+                    lazy_solves: self.constraint_solver.lazy_solves,
+                    guard_sink: None,
+                    stats: None,
+                },
+            );
+            for forked in materialized.sat.iter().chain(materialized.unsat.iter()) {
+                self.sm.set_root(forked.state_id(), root_state_id);
             }
+            deferred_successors.extend(materialized.sat);
+            deferred_pruned.extend(materialized.unsat);
         }
 
         // Add states to stashes. BOTH branch states need a real satisfiability
