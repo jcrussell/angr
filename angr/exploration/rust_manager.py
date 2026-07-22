@@ -258,10 +258,12 @@ _REJECTED_OPTION_NAMES = frozenset(
         "UNDER_CONSTRAINED_SYMEXEC",
         # BYPASS_VERITESTING_EXCEPTIONS is consulted only from
         # angr/analyses/veritesting.py (resilience= kwarg passed to nested
-        # SimulationManager.run). Veritesting under Rust already raises via
-        # EFFICIENT_STATE_MERGING (Veritesting auto-adds that option), so a
-        # user driving Veritesting hits the raise on EFFICIENT_STATE_MERGING
-        # first. Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
+        # SimulationManager.run). That analysis builds its own Python
+        # SimulationManager, so it never runs on the Rust engine and the
+        # option can have no effect there. (It used to be reachable only
+        # behind the EFFICIENT_STATE_MERGING raise; that option was demoted
+        # in angr-op0dn.11.6, so this comment no longer leans on it.)
+        # Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
         # no-op — `resilience` bundle users carry it implicitly. Reject with
         # a warn-once rather than raise so adding `angr.options.resilience`
         # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)

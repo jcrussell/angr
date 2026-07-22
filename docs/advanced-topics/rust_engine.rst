@@ -1910,6 +1910,15 @@ vs. Python.
    ``RustExplorationManager.merge()``, which exports states to Python
    and calls ``state.merge()`` per group.
 
+   **Demoted again (angr-op0dn.11.6):** ``EFFICIENT_STATE_MERGING`` is
+   back to **honored** and is no longer in ``_RAISE_OPTION_NAMES``.
+   Merging is now native — ``RustExplorationManager.merge()`` takes the
+   ``merge_states`` fast path and ``ManualMergepoint`` drives
+   ``register_merge_point`` — so no path consults ``SimStateHistory``'s
+   strongref and the raise had no rationale left. Veritesting's
+   auto-added copy of the option therefore no longer hard-fails at the
+   manager boundary.
+
    **Followup (angr-apre, 2026-05-17):**
    ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS`` was promoted to **raise
    ``NotImplementedError``** at manager construction. The Python filler
@@ -2120,9 +2129,10 @@ vs. Python.
    * - ``BYPASS_VERITESTING_EXCEPTIONS``
      - Tells ``analyses/veritesting.py`` to forward ``resilience=True``
        to the nested ``SimulationManager.run`` call.
-     - **(b) explicitly reject** — only consulted from inside Veritesting,
-       which already raises via ``EFFICIENT_STATE_MERGING`` (Veritesting
-       auto-adds that option). Outside Veritesting the option is a
+     - **(b) explicitly reject** — only consulted from inside the
+       Veritesting *analysis*, which builds its own Python
+       ``SimulationManager`` and is unsupported under a Rust-attached
+       project regardless. Outside Veritesting the option is a
        no-op. Carried by the ``angr.options.resilience`` bundle, so
        reject-with-warn rather than raise to keep bundle users alive
        (angr-6rz8, 2026-06-03).
@@ -2945,12 +2955,22 @@ registered returns ``False`` and disarms nothing.
        calls :meth:`RustExplorationManager.drop_copy` (``angr-yhe0``).
        Callers that need eager cleanup can invoke ``drop_copy`` directly.
    * - ``Veritesting``
-     - **Unsupported (raises)**
-     - Auto-adds ``EFFICIENT_STATE_MERGING``, which is in
-       ``_RAISE_OPTION_NAMES`` (the Rust engine does not drive
-       ``SimStateHistory``'s strongref path). Construction raises
-       ``NotImplementedError`` listing the offending option.
-       Drop to the Python engine for veritesting workflows.
+     - **step_state dispatched (angr-op0dn.11.7)**
+     - The technique's ``step_state()`` is routed through
+       ``dispatch_step_state_with_hooks`` (``rust_techniques.py``): each
+       active state is exported, run through the ``HookSet``-composed
+       chain, and the nested CMU merging analysis' successor dict is
+       re-imported into the Rust stashes. ``EFFICIENT_STATE_MERGING``,
+       which the technique auto-adds, is **no longer** in
+       ``_RAISE_OPTION_NAMES`` (demoted in ``angr-op0dn.11.6`` — merge is
+       native, so the ``SimStateHistory`` strongref rationale is moot),
+       so construction no longer raises. Watch the
+       ``veritesting_dispatches`` / ``veritesting_applied`` stats
+       counters to confirm the hook fired; ``states_merged_native``
+       stays 0 because the merges happen inside the technique's own
+       nested Python ``SimulationManager``. Note the *analysis*
+       (``angr.analyses.veritesting``) remains unsupported — see the
+       Analyses matrix below.
    * - ``Threading``
      - **Unsupported (untested, unsafe)**
      - Wraps ``simgr.step`` in a thread pool. The Rust engine is
@@ -2974,15 +2994,23 @@ registered returns ``False`` and disarms nothing.
        a rewrite. Drop to ``use_rust_engine=False`` if you need
        unicorn-fallback for unsupported VEX ops.
    * - ``Tracer``
-     - **Incompatible — overrides ``step_state()``**
+     - **Incompatible — silently declines (no loud failure)**
      - Trace-following hooks run (``angr-rqvq``) and proxy writes now
        write through (the read-only-proxy blocker is gone, write-through
-       epic ``angr-j28e`` landed). The remaining blocker is dispatch:
-       ``Tracer`` overrides ``step_state()`` (``tracer.py:361``), and
-       ``RustSimulationManagerProxy.step_state`` raises
-       ``NotImplementedError`` (``rust_state_proxy.py`` ~:3051) — the
-       Rust manager never routes the step through the technique, so the
-       trace-replay logic never executes. Use ``use_rust_engine=False``.
+       epic ``angr-j28e`` landed). ``Tracer.step_state()``
+       (``tracer.py``) *is* dispatched by
+       ``dispatch_step_state_with_hooks``, but it delegates the actual
+       step to ``simgr.step_state(...)``, which the dispatcher has
+       swapped for a declined-sentinel base — so the technique's
+       partial side effects run (``self.predecessors``,
+       ``state.globals``, ``RepHook`` installation) and then the state
+       is advanced by a plain native ``run()`` with **no trace
+       enforcement**. If the hook raises instead, it is caught and
+       logged (``l.warning("step_state() hook raised ...; leaving it in
+       place")``) and the state is likewise advanced natively. Either
+       way the failure mode is *silent divergence*, not a
+       ``NotImplementedError`` — do not rely on a hard failure. Use
+       ``use_rust_engine=False`` for trace replay.
    * - ``Director``
      - **Step hook dispatched, stash assignment honored**
      - Goal-prioritisation ``step()`` runs (``angr-rqvq``) and the
@@ -2991,11 +3019,14 @@ registered returns ``False`` and disarms nothing.
        (``angr-wxuo``) via Rust ``move_state``. Assignments of foreign
        or non-proxy states raise.
    * - ``Slicecutor``
-     - **Silently no-op (step_state/successors hooks)**
-     - ``filter()`` runs and ``step()`` would dispatch, but the
-       slice-enforcement and successor pruning happen in
-       ``successors()`` / ``step_state()`` which the Rust manager
-       does not dispatch (raises ``NotImplementedError`` if called).
+     - **Silently no-op (declines / undispatched successors)**
+     - ``filter()`` runs and ``step()`` would dispatch. Its
+       ``step_state()`` *is* dispatched, but its first act is to call
+       ``simgr.step_state(state)`` — the declined-sentinel base — so the
+       hook always declines and the slice enforcement below that call
+       never runs; the state is advanced natively, unpruned. Successor
+       pruning in ``successors()`` is not dispatched at all (the proxy
+       method raises ``NotImplementedError`` if called).
    * - ``DrillerCore``
      - **Step hook dispatched**
      - Drilling ``step()`` runs (``angr-rqvq``). Driller handoff and
@@ -3003,11 +3034,18 @@ registered returns ``False`` and disarms nothing.
        by whatever ``RustStateProxy`` exposes to driller's per-state
        inspection.
    * - ``ManualMergepoint``
-     - **Step hook dispatched, copy() works but history mutation raises**
-     - Merge-point ``step()`` is dispatched and ``state.copy()`` now does
-       a Rust-side CoW deep fork (``angr-d1dr``), but the technique also
-       mutates ``SimStateHistory``, which still raises
-       ``NotImplementedError`` on the proxy.
+     - **Native (angr-op0dn.11.5)**
+     - ``register_technique`` forwards ``address`` /
+       ``wait_counter_limit`` to ``register_merge_point(...)``
+       (``rust_techniques.py``); the native MergePoint technique parks
+       states reaching the address, groups waiters by callstack, and
+       merges each ≥2 group entirely in Rust. Because the class is in
+       ``_NATIVE_STEP_TECH_NAMES`` its Python ``step()`` is suppressed,
+       so the two implementations never both run and the technique's
+       ``SimStateHistory`` mutation is never reached. If native
+       registration fails (non-``int`` address, or the call raises),
+       there is no Python fallback — merging silently does not occur and
+       a ``logging.WARNING`` is emitted.
    * - ``StubStasher``
      - **Step hook dispatched**
      - ``step()`` runs (``angr-rqvq``) and ``simgr.move("active",
@@ -3034,9 +3072,12 @@ registered returns ``False`` and disarms nothing.
 
 Anything not listed above will be accepted, tracked in
 ``mgr._active_techniques``, and dispatched as ``setup`` / ``filter`` /
-``step`` / ``complete`` over ``RustStateProxy``; ``successors`` and
-``step_state`` hooks raise ``NotImplementedError`` from
-:class:`RustSimulationManagerProxy` (see "Dispatch coverage" above). The
+``step`` / ``step_state`` / ``complete`` over ``RustStateProxy``;
+``successors`` hooks are never dispatched (the method on
+:class:`RustSimulationManagerProxy` raises ``NotImplementedError``), and
+a ``step_state`` hook that delegates to ``simgr.step_state(...)``
+*declines* — the state is then advanced by a native ``run()`` without
+the technique's post-step logic (see "Dispatch coverage" above). The
 accept-everything default keeps construction non-fatal, but techniques
 that read internal ``SimState`` plugins beyond the proxy's contract
 (``state.history.parent``, ``state.history.events``,
@@ -3234,15 +3275,14 @@ the verdict for running it against a project that has had a
        2. Veritesting needs ``EFFICIENT_STATE_MERGING`` for ancestor
           retention during plugin merging. The Veritesting
           *exploration technique*
-          (``exploration_techniques/veritesting.py:21-22``) auto-adds
-          this option at ``step_state`` time; the option lives in
-          ``_RAISE_OPTION_NAMES`` so attempting to seed a Rust
-          manager with a state that already has
-          ``EFFICIENT_STATE_MERGING`` set raises
-          ``NotImplementedError``. The Veritesting *analysis* does
-          not auto-add the option, but without it the analysis falls
-          back to weak-ref merging and may miss common ancestors —
-          a silent correctness gap.
+          (``exploration_techniques/veritesting.py``) auto-adds
+          this option at ``step_state`` time; the *analysis* does not.
+          The option was demoted out of ``_RAISE_OPTION_NAMES``
+          (``angr-op0dn.11.6``) so seeding a Rust manager with a state
+          carrying it no longer raises — but the analysis still runs on
+          the Python engine, and without the option it falls back to
+          weak-ref merging and may miss common ancestors: a silent
+          correctness gap.
 
        Workaround: run Veritesting on a project that has *not* had a
        ``RustExplorationManager`` attached. Construct a fresh
@@ -3658,10 +3698,14 @@ Unsupported ``state.inspect`` registration also raises
 ``rust_state_proxy.py``); see the *state.inspect support* section
 for the supported/unsupported event split.
 
-``ExplorationTechnique`` ``setup``/``step`` for the eight rejected
-techniques (Veritesting, Spiller, MemoryWatcher, etc.) raises
-``NotImplementedError`` from the manager's technique-dispatch path
-(``rust_manager.py``); see *Exploration technique compatibility*.
+``ExplorationTechnique`` registration itself never raises — every
+technique is accepted, tracked in ``mgr._active_techniques``, and
+dispatched over ``setup`` / ``filter`` / ``step`` / ``step_state`` /
+``complete``. What raises is the undispatched ``successors`` hook
+(``RustSimulationManagerProxy.successors``) plus any proxy read/write
+outside the ``RustStateProxy`` contract; techniques whose logic lives
+past a ``simgr.step_state(...)`` delegation instead *silently decline*.
+See *Exploration technique compatibility* for the per-technique verdict.
 
 Known incompatibilities
 ~~~~~~~~~~~~~~~~~~~~~~~
