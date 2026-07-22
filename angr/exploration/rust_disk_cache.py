@@ -280,26 +280,66 @@ class RustDiskCacheManager:
     """
 
     # Class-level cache for disk cache keys (MD5 of binary content).
-    # Keyed by (binary_path, arch_name) so cross-arch lookups don't collide.
+    # Keyed by (binary_path, arch_name, loader_digest) so cross-arch lookups and
+    # differing shared-library sets don't collide.
     # Avoids re-hashing the same file on every RustExplorationManager construction.
-    _disk_key_cache: dict[tuple[str, str], str] = {}
+    _disk_key_cache: dict[tuple[str, str, str], str] = {}
 
     @staticmethod
     def _disk_cache_dir() -> str:
         """Return the disk cache directory for init state data."""
         return os.path.join(os.path.expanduser("~"), ".cache", "angr_rust_init")
 
+    @staticmethod
+    def _loader_identity_digest(loader) -> str:
+        """Digest the identity of every loaded object, not just the main binary.
+
+        The cached payload embeds pages and post-relocation section patches for
+        *all* ``loader.all_objects`` (see ``_extract_loader_pages`` /
+        ``_extract_section_patches``), so keying only on the main binary lets a
+        shared-library upgrade, a changed ``auto_load_libs`` / ``force_load_libs``
+        setting, or a different CLE base layout collide with a stale entry and
+        replay old library bytes and GOT fixups into Rust memory (angr-uv7z5).
+
+        Each object contributes its binary path, on-disk size + mtime, and
+        mapped base. Stat metadata rather than content: shared libs are large
+        and rarely edited in place, and a libc upgrade changes the path's
+        size/mtime (or the path itself). Synthetic CLE objects (``cle##...``,
+        externs, kernel) have no readable file; they contribute their class name
+        and base, which is what distinguishes their presence from absence.
+        Objects are sorted so loader ordering jitter doesn't change the digest.
+        """
+        parts = []
+        for obj in getattr(loader, "all_objects", []) or []:
+            path = getattr(obj, "binary", None) or ""
+            base = getattr(obj, "mapped_base", 0) or 0
+            try:
+                st = os.stat(path)
+                ident = f"{st.st_size}:{st.st_mtime_ns}"
+            except OSError:
+                # cat-(a) EXPECTED CONTROL FLOW: synthetic/backing-less object
+                # (cle##externs, kernel, or a path that no longer exists) —
+                # fall back to the class name, which still separates a loader
+                # that has this object from one that does not.
+                ident = type(obj).__name__
+            parts.append(f"{path}|{ident}|{base:x}")
+        parts.sort()
+        return hashlib.md5("\n".join(parts).encode()).hexdigest()[:16]
+
     @classmethod
-    def _disk_cache_key(cls, binary_path: str, arch_name: str = "") -> str:
+    def _disk_cache_key(cls, binary_path: str, arch_name: str = "", loader_digest: str = "") -> str:
         """Compute a cache key from binary content hash, version axes, and arch.
 
         Combines (binary_hash, _RUST_CACHE_VERSION, _PYTHON_METADATA_VERSION,
-        arch_name) so a change on any axis lands at a different filename and
-        treats stale entries as misses. Results are memoized per
-        (binary_path, arch_name) to avoid re-hashing the same file on every
-        RustExplorationManager construction (~0.5ms for 100KB binary).
+        arch_name, loader_digest) so a change on any axis lands at a different
+        filename and treats stale entries as misses. ``loader_digest`` covers
+        the shared libraries baked into the payload — see
+        ``_loader_identity_digest``. Results are memoized per
+        (binary_path, arch_name, loader_digest) to avoid re-hashing the same
+        file on every RustExplorationManager construction (~0.5ms for 100KB
+        binary).
         """
-        memo_key = (binary_path, arch_name)
+        memo_key = (binary_path, arch_name, loader_digest)
         cached = cls._disk_key_cache.get(memo_key)
         if cached is not None:
             return cached
@@ -307,7 +347,7 @@ class RustDiskCacheManager:
             h = hashlib.md5()
             # Mix all version dimensions into the hash so any one bumping
             # produces a fresh key without colliding with old cache files.
-            h.update(f"r{_RUST_CACHE_VERSION}:p{_PYTHON_METADATA_VERSION}:a{arch_name}:".encode())
+            h.update(f"r{_RUST_CACHE_VERSION}:p{_PYTHON_METADATA_VERSION}:a{arch_name}:l{loader_digest}:".encode())
             with open(binary_path, "rb") as f:
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)

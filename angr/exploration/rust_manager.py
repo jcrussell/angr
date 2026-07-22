@@ -22,8 +22,14 @@ I1. Disk-cache key axes
     `_disk_cache_key` (now in the RustDiskCacheManager mixin,
     `rust_disk_cache.py`, alongside `_save_init_to_disk_cache` and the
     `_extract_*` snapshot helpers) mixes (binary path, `_RUST_CACHE_VERSION`,
-    `_PYTHON_METADATA_VERSION`, arch name) into the filename hash and
-    memoizes on `(binary_path, arch_name)` in `_disk_key_cache`. When you
+    `_PYTHON_METADATA_VERSION`, arch name, loader digest) into the filename
+    hash and memoizes on `(binary_path, arch_name, loader_digest)` in
+    `_disk_key_cache`. The loader digest (`_loader_identity_digest`) is not
+    optional: the payload embeds pages and post-relocation section patches
+    for EVERY `loader.all_objects` entry, so keying on the main binary alone
+    replays stale libc pages / GOT fixups after a library upgrade or an
+    `auto_load_libs` change (angr-uv7z5). Any future `_extract_*` helper that
+    snapshots more of the loader must be covered by that digest. When you
     add a new dimension that affects the serialized init state, you must
     bump the matching version constant AND extend the memo tuple — all
     three (constant, hash, memo key) move together. Old-format pkls are
@@ -3891,7 +3897,12 @@ class RustExplorationManager(
         if input_digest is None:
             input_digest = self._concrete_input_digest(state)
         arch_name = getattr(self._project.arch, "name", "") or ""
-        base = self._disk_cache_key(cache_key, arch_name)
+        # The cached payload embeds pages/section patches for every loader
+        # object, so the shared-library set has to be a key axis too — keying
+        # on the main binary alone replays stale libc pages and GOT fixups
+        # after a library upgrade or an auto_load_libs change (angr-uv7z5).
+        loader_digest = self._loader_identity_digest(self._project.loader)
+        base = self._disk_cache_key(cache_key, arch_name, loader_digest)
         if not base:
             return ""
         return f"{base}-{input_digest}" if input_digest else base
