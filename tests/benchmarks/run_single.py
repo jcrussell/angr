@@ -60,9 +60,9 @@ EXAMPLE_CATALOG = {
     "securityfest_fairlight": {"tier": "medium", "rust_ok": True, "notes": "Heavy VEX interpretation"},
     "flareon2015_5": {"tier": "medium", "rust_ok": True, "notes": "Complex symbolic memory"},
     "flareon2015_10": {
-        "tier": "medium",
+        "tier": "fast",
         "rust_ok": True,
-        "notes": "Callable step_func, pruning. angr-zbpw0 (2026-07-14): now genuinely runs on Rust (the monkeypatch used to route every Callable to Python) — Rust ~2.7s vs Py 7.3s (~2.7x), replacing the mis-attributed 5.4s Python-engine number.",
+        "notes": "Callable step_func, pruning. angr-zbpw0 (2026-07-14): now genuinely runs on Rust (the monkeypatch used to route every Callable to Python) — Rust ~2.7s vs Py 7.3s (~2.7x), replacing the mis-attributed 5.4s Python-engine number. Retiered medium->fast (angr-zm7im) since 2.8s rust is well inside the <5s fast bucket; like sym-write / csaw_wyvern / ekopartyctf2016_rev250 it stays in run_regression.MEDIUM_SUITE, which is a hand-maintained runtime-budget list, not a mirror of this tier field.",
     },
     "ekopartyctf2016_rev250": {
         "tier": "fast",
