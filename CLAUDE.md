@@ -82,6 +82,7 @@ for the full list. Most-used targets:
 | `make rebuild-fast` | Inner-loop rebuild via `[profile.release-fast]` (~3s warm vs ~36s). NOT for bench gates. |
 | `make check` | `cargo check --release` — fast type/borrow check. |
 | `make test` (`test-quick`) | Run `tests/engines/rust/` (~1-2 min). |
+| `make test-libvex` | libVEX-FFI unit + corpus parity tests (`--features libvex-ffi`, default-off in cargo). |
 | `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
 | `make test-full` | Full angr test suite (long). |
 | `make bench-regression` | Fast-tier benchmark regression check. |

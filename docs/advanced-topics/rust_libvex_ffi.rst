@@ -121,6 +121,26 @@ a ``NativeLibVEXLifter`` slots in beside the pyvex-callback path. Steps:
    pyvex-serialized path, asserting structural ``IRSB`` equality. Gate:
    100 % structural parity on the corpus block set.
 
+Running the parity gate
+-----------------------
+
+The lifter unit tests and the corpus parity harness live *inside* the
+``#[cfg(feature = "libvex-ffi")]`` module, and that feature is default-**off**
+in ``native/angr/Cargo.toml`` (it is default-**on** in the shipped wheel via
+``setup.py::_rust_features``). A plain ``cargo test`` therefore compiles
+neither. Run them explicitly::
+
+    make test-libvex
+    # == cargo test --manifest-path native/angr/Cargo.toml --release \
+    #        --features libvex-ffi --lib libvex
+
+The build needs ``libpyvex.so``; ``build.rs::find_pyvex_lib_dir`` locates it by
+shelling out to ``python3 -c "import pyvex"``, or you can point it at a
+directory with ``PYVEX_FFI_LIB_DIR``. In CI this runs nightly as the
+``libvex_ffi_tests`` job in ``.github/workflows/nightly-ci.yml`` (nightly rather
+than PR-time because of the pyvex install + link cost); PR-time
+``cargo clippy --all-features`` compiles the module but does not execute it.
+
 Open risks (all inherited, none new after this verdict)
 -------------------------------------------------------
 

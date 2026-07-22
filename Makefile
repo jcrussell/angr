@@ -102,6 +102,10 @@ test-verbose:  ## Same as test, but verbose.
 test-full:  ## Run the full angr test suite (long; use sparingly).
 	$(PYTEST) tests/ --tb=short -q
 
+.PHONY: test-libvex
+test-libvex:  ## Run the libVEX-FFI unit + corpus parity tests (feature is default-off in cargo).
+	$(CARGO) test --manifest-path $(MANIFEST) --release --features libvex-ffi --lib libvex
+
 .PHONY: test-python-baseline
 test-python-baseline:  ## Run a fast (~5min) vanilla angr Python-engine regression subset (needs angr/binaries).
 	@if [ ! -d "$(REPO_ROOT)/../binaries" ] && [ "$$CI" != "true" ]; then \

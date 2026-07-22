@@ -91,6 +91,30 @@ jobs:
       - name: Behavioral smoke test with features "${{ matrix.features }}"
         run: cargo test --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}" --test feature_flag_smoke
 
+  libvex_ffi_tests:
+    # The `libvex-ffi` cargo feature is default-OFF in Cargo.toml but default-ON
+    # in the shipped wheel (setup.py::_rust_features, angr-3trr7), so nothing in
+    # the `rust_feature_flags` matrix above ever *runs* vex/libvex_lifter.rs's
+    # unit tests or libvex_corpus_tests.rs — the Stage-1 native-vs-pyvex parity
+    # gate. PR-time `cargo clippy --all-features` compiles them but never
+    # executes them. This lane closes that gap (angr-kl5qt). Nightly rather
+    # than PR-time because it needs pyvex installed to link libpyvex.so.
+    name: libVEX FFI Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.12"
+      # build.rs::find_pyvex_lib_dir shells out to `python3 -c "import pyvex"`
+      # to locate libpyvex.so, then emits link-search/link-lib/rpath for it.
+      - name: Install pyvex
+        run: python -m pip install pyvex
+      - name: Test with features "libvex-ffi"
+        run: cargo test --manifest-path native/angr/Cargo.toml --release --features libvex-ffi --lib libvex
+
   benchmark_regression:
     name: Benchmark Regression
     runs-on: ubuntu-latest
