@@ -12,10 +12,21 @@ Rust engine: proxy-backed SimState writes — design comparison
    :doc:`rust_engine` "RustStateProxy write-through contract" for the
    shipped behavior.
 
-   The diff-and-push path described below still governs the
-   **SimProcedure callback boundary** (Python full ``SimState``
-   mutates → Rust syncs back on return). That part of the document
-   is current. The "proposed proxy-plugin design" section is now
+   **Further superseded for memory (angr-grji4, 2026-07-15,
+   commit 2d9bb6598).** At the **SimProcedure callback boundary**
+   (Python full ``SimState`` mutates → Rust syncs back on return),
+   the diff-and-push path described below now governs only
+   **registers and constraints**. The **memory** half is proxy
+   write-through by default: ``_use_callback_memory_proxy`` resolves
+   to ``True`` in ``rust_manager.py``, so a Python SimProcedure's
+   ``state.memory.store(…)`` lands in Rust immediately and
+   ``rust_callback_dispatch.py`` discards the ``CallbackMemoryTracker``
+   write lists instead of replaying them on return. Set
+   ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` to opt back into the
+   legacy tracked-write diff-and-push. See :doc:`rust_engine` for the
+   shipped contract.
+
+   The "proposed proxy-plugin design" section is now
    historical reading — the proxy uses an immediate write-through
    model, not the queued-mutation plugin substitution this doc
    compared against.
