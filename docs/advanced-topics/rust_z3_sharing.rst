@@ -74,9 +74,19 @@ constructed on the same thread shares one ``Z3_context``. This is
 both an opportunity (raw-AST passthrough, ``Z3_inc_ref``-free reuse)
 and a constraint:
 
-* **Single-threaded by design.** Crossing a Z3 AST or solver across
-  OS threads is undefined. The Rust engine is single-threaded today
-  (parallel exploration is tracked in :doc:`rust_parallel_design`).
+* **One context per thread, never crossed.** Crossing a Z3 AST or
+  solver between OS threads is undefined. The engine does support
+  multi-worker exploration today — ``RustExplorationManager(project,
+  parallel_workers=N)`` / ``RUST_PARALLEL_WORKERS``, see
+  :doc:`rust_engine` — and honors the rule by giving each worker its
+  own thread-local context. A worker's live successors stay in a
+  thread-private queue and are never serialized; a state that *is*
+  handed to another worker (stolen surplus, or a materialized
+  found/matched terminal) is detached into a ``Send`` payload and
+  ``reattach``-ed into the destination's own context with every AST
+  minted locally, so no context is ever read cross-thread. See
+  ``native/angr/src/exploration/scheduler.rs`` for the mechanism and
+  :doc:`rust_parallel_design` for the design rationale.
 * **``Send``/``Sync`` audit.** ``RustSolverContext`` is
   ``#[pyclass(unsendable)]`` precisely so PyO3 refuses to ship it to
   another thread.
