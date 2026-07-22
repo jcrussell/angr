@@ -301,6 +301,109 @@ class TestParallelExhaustiveSynthetic:
         assert {s.addr for s in found} == {target_addr}
 
 
+# Leaves whose find gate is actually satisfiable. On leaves 0 and 4 the width
+# region pins ``b[0] == 0`` AND ``b[1] == 0``, so both mixing rounds fold in a
+# zero and ``acc`` is a CONSTANT determined by ``s`` alone — its low byte is not
+# ``0xee`` for either, so neither leaf can reach ``reach_target``. Every other
+# leaf leaves at least one of ``b[0]`` / ``b[1]`` free (167-256 reachable low
+# bytes, ``0xee`` among them). Enumerated exhaustively over the C source's
+# arithmetic, not inferred from a run.
+_FEASIBLE_LEAVES = {1, 2, 3, 5, 6, 7}
+
+# angr-lkim0 found this the moment the content projection existed: at
+# ``workers >= 2`` ONE of the eight found states exports a stdin solution that
+# replays to ``acc & 0xff != 0xee`` — i.e. a witness that does not reach
+# ``reach_target``. The other seven are valid and cover ``_FEASIBLE_LEAVES``, and
+# the count/pc gates stay green throughout. Single-threaded never does this. The
+# fix is tracked separately; the gate stays in the suite (non-strict xfail so an
+# xpass is reported, not a failure) because it is the only thing watching this.
+_PARALLEL_CONTENT_XFAIL = "angr-lkim0: workers>=2 exports one found state whose stdin witness fails the find gate"
+
+
+def _pbounce_witness(state):
+    """Replay the synthetic's arithmetic on a found state's *concrete* stdin.
+
+    Returns ``(leaf_index, acc)`` recomputed in Python from
+    ``state.posix.dumps(0)``, mirroring ``fork_solve_pbounce_W3_S2_M8_B1.c``
+    ``main()`` exactly: the width region derives the concrete leaf index ``s``
+    from whether bytes 0-2 are nonzero, then two levels of LCG mixing fold in
+    ``b[0]`` / ``b[1]``. The gated ``trap_point`` calls are an identity hook, so
+    they contribute nothing and can be skipped.
+
+    This is the *content* projection the addr/count gates cannot make: it does
+    not care which model Z3 picked (only which leaf the witness lands in and
+    whether the witness actually satisfies the find gate), so it is stable
+    across worker counts, migration, and re-solves.
+    """
+    data = state.posix.dumps(0)
+    assert len(data) >= 32, f"stdin witness truncated to {len(data)} bytes"
+    b = data[:32]
+    s = (1 if b[0] else 0) + (2 if b[1] else 0) + (4 if b[2] else 0)
+    acc = (s + 0x1234567) & 0xFFFFFFFF
+    for i in (0, 1):
+        acc = ((acc * 1103515245 + 12345) & 0xFFFFFFFF) ^ (acc >> 3)
+        acc = (acc + b[i]) & 0xFFFFFFFF
+    return s, acc
+
+
+class TestParallelFoundContentSynthetic:
+    """angr-lkim0: gate found-state CONTENT, not just pc/count, under workers>=2.
+
+    ``TestParallelExhaustiveSynthetic`` proves the right *number* of leaves at
+    the right *address* is drained; it cannot see a parallel-only regression
+    that attaches the wrong payload (path constraints / stdin solution) to a
+    correctly-located found terminal. The vh834 AST fingerprint is vacuous here
+    (Rust found states export an empty Python constraint log — see that class's
+    docstring), so the content is reached the only way it exists: through the
+    solver, by evaluating stdin and *replaying the binary's own arithmetic* on
+    the witness.
+
+    Two independent content invariants, both worker-invariant by construction:
+
+    * every found witness genuinely satisfies the find gate
+      ``(acc & 0xff) == 0xee`` — a mis-attached solver payload yields a witness
+      that does not reach ``reach_target``;
+    * the witnesses cover exactly the *feasible* leaf set ``_FEASIBLE_LEAVES``
+      — a lost path drops a leaf, and a found state carrying some other path's
+      constraints shows up as a leaf that provably cannot reach the target.
+      The count-only gate sees neither.
+
+    Note the drain count (8) exceeds ``len(_FEASIBLE_LEAVES)`` (6): the found
+    stash holds duplicate paths (two of the eight witnesses are byte-identical).
+    That over-collection is present single-threaded too, so it is not a wave-loop
+    defect — tracked separately; this gate deliberately asserts on the leaf SET
+    so it stays green either way.
+    """
+
+    @pytest.mark.parametrize(
+        "workers",
+        [
+            1,
+            pytest.param(2, marks=pytest.mark.xfail(reason=_PARALLEL_CONTENT_XFAIL, strict=False)),
+            pytest.param(4, marks=pytest.mark.xfail(reason=_PARALLEL_CONTENT_XFAIL, strict=False)),
+        ],
+    )
+    def test_found_witnesses_satisfy_gate_and_cover_all_leaves(self, pbounce_project, workers, monkeypatch):
+        mgr, _ = _explore_pbounce(pbounce_project, workers, monkeypatch)
+        found = list(mgr.found)
+        assert len(found) == _SYNTH_LEAVES, f"workers={workers}: drained {len(found)} leaves"
+
+        witnesses = [_pbounce_witness(st) for st in found]
+        for leaf, acc in witnesses:
+            assert acc & 0xFF == 0xEE, (
+                f"workers={workers} leaf={leaf}: stdin witness replays to acc={acc:#x}, "
+                f"which fails the find gate (acc & 0xff) == 0xee — the found state's "
+                f"solver payload does not correspond to a path reaching reach_target"
+            )
+        leaves = {leaf for leaf, _ in witnesses}
+        assert leaves == _FEASIBLE_LEAVES, (
+            f"workers={workers}: found witnesses cover leaves {sorted(leaves)}, expected "
+            f"{sorted(_FEASIBLE_LEAVES)} — a missing leaf means a real path was lost; an "
+            f"extra one means a found state carries constraints from a path that cannot "
+            f"reach reach_target"
+        )
+
+
 def _pbounce_state(project):
     """Blank state at ``main`` with 32 symbolic stdin bytes (the 8-leaf synthetic)."""
     main_sym = project.loader.find_symbol("main")
