@@ -542,3 +542,76 @@ fn incremental_steady_fold_is_a_noop_without_a_session() {
         assert!(!mgr.parallel_session_active());
     });
 }
+
+/// Helper: park a re-enterable `SimProcedurePython` bounce (a state living in
+/// NO stash) at `pc`, the shape a wave leaves behind when it surfaces one
+/// `need_callback` and defers the rest of its bounce queue.
+fn park_reenterable_bounce(mgr: &mut RustExplorationManager, pc: u64) -> u64 {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(0xdead);
+    let id = state.state_id();
+    mgr.pending_parallel_bounces.push((
+        state,
+        BounceKind::SimProcedurePython {
+            addr: pc,
+            name: "sp".to_string(),
+            num_args: 0,
+            return_addr: pc + 0x10,
+        },
+        id,
+    ));
+    id
+}
+
+/// angr-05kiw: only the two parallel loops drain `pending_parallel_bounces`.
+/// A `run()` that routes to the single-threaded loop instead — worker count
+/// dropped to 1, a native technique registered, or a callable find/avoid
+/// predicate set between calls — used to strand the parked queue permanently
+/// and silently. The drain now happens at the top of the loop, ahead of the
+/// callbacks check, so even the error exit consumes the queue.
+#[test]
+fn single_threaded_loop_drains_parked_parallel_bounces() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        const BOUNCE_ADDR: u64 = 0x40_2000;
+        let id = park_reenterable_bounce(&mut mgr, BOUNCE_ADDR);
+        assert_eq!(mgr.active_count(), 0, "parked bounce is in NO stash");
+
+        // No callbacks configured, so the loop bails right after the drain.
+        assert!(mgr.run_loop_single_threaded(Some(1)).is_err());
+
+        assert!(
+            mgr.pending_parallel_bounces.is_empty(),
+            "single-threaded route consumed the parked queue"
+        );
+        assert_eq!(mgr.active_count(), 1, "parked bounce replayed into active");
+        let active = mgr.sm.get(STASH_ACTIVE).expect("active stash exists");
+        assert_eq!(active[0].state_id(), id);
+        assert_eq!(active[0].pc(), BOUNCE_ADDR, "pc restored to bounce entry");
+    });
+}
+
+/// angr-05kiw: the explore-end hook `_finalize_parallel_session` calls into
+/// `finalize_parallel_session`, which must flush parked bounces too — otherwise
+/// an explore() that ends with bounces parked under-reports the resumable
+/// frontier in `stash_counts()` versus the serial loop. The flush half is not
+/// session-gated (there is no live steady session here).
+#[test]
+fn finalize_parallel_session_flushes_parked_bounces() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        const BOUNCE_ADDR: u64 = 0x40_3000;
+        let id = park_reenterable_bounce(&mut mgr, BOUNCE_ADDR);
+        assert!(!mgr.parallel_session_active());
+
+        mgr.finalize_parallel_session(py).unwrap();
+
+        assert!(mgr.pending_parallel_bounces.is_empty());
+        assert_eq!(mgr.active_count(), 1);
+        let active = mgr.sm.get(STASH_ACTIVE).expect("active stash exists");
+        assert_eq!(active[0].state_id(), id);
+        assert_eq!(active[0].pc(), BOUNCE_ADDR);
+    });
+}

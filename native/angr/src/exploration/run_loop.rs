@@ -1729,8 +1729,11 @@ impl RustExplorationManager {
     #[cfg(not(feature = "vex-engine-z3"))]
     pub(crate) fn steady_config_guard(&mut self) {}
 
-    /// Materialize `pending_parallel_bounces` back into `STASH_ACTIVE` so a
-    /// snapshot can see them (angr-op0dn.13.10).
+    /// Materialize `pending_parallel_bounces` back into `STASH_ACTIVE` so any
+    /// consumer that only reads stashes can see them (angr-op0dn.13.10):
+    /// `dump_snapshot_bytes`, `finalize_parallel_session` (explore-end stash
+    /// accounting), and `run_loop_single_threaded` (angr-05kiw — the only
+    /// route that never drains the queue itself).
     ///
     /// A wave that surfaces one `need_callback` event parks the REST of its
     /// bounce queue in `pending_parallel_bounces` — states that live in NO
@@ -1772,9 +1775,9 @@ impl RustExplorationManager {
                 }
                 _ => {
                     log::warn!(
-                        "snapshot: parked bounce for state {id} has no re-enterable \
-                         entry address (kind={kind:?}); it stays live in this manager \
-                         but will NOT appear in the snapshot"
+                        "parked bounce for state {id} has no re-enterable entry \
+                         address (kind={kind:?}); it stays live in this manager but \
+                         will NOT appear in any stash (snapshot / stash_counts)"
                     );
                     kept.push((state, kind, root));
                 }
@@ -1791,6 +1794,15 @@ impl RustExplorationManager {
         &mut self,
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
+        // A previous wave may have parked the tail of its bounce queue in
+        // `pending_parallel_bounces` (states living in NO stash). Only the two
+        // parallel loops drain that queue, so a `run()` that routes here
+        // instead — worker count dropped to 1, a native technique registered,
+        // or a callable find/avoid predicate set between calls — would strand
+        // those states permanently and silently (angr-05kiw). Replay them into
+        // STASH_ACTIVE first so every route consumes the queue.
+        self.flush_parked_bounces_to_active();
+
         let max_steps = n.unwrap_or(self.max_steps_per_run);
 
         // Ensure callbacks are set and clone to avoid borrow issues

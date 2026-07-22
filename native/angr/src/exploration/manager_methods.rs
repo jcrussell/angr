@@ -215,13 +215,22 @@ impl RustExplorationManager {
     /// into the active stash, and fold its counters. rust_manager.py calls
     /// this at explore-loop exits so a timeout/error break never leaves states
     /// parked inside worker Z3 contexts. No-op without a live session.
+    ///
+    /// Also flushes any wave-parked bounce queue back to `STASH_ACTIVE`
+    /// (angr-05kiw): those states live in NO stash, so an explore() that ends
+    /// with bounces parked would otherwise under-report the resumable frontier
+    /// in `stash_counts()` relative to the serial loop. Unlike the steady
+    /// drain, this half is not session-gated.
     #[cfg(feature = "vex-engine-z3")]
     pub fn finalize_parallel_session(&mut self, py: Python<'_>) -> PyResult<()> {
-        self.finalize_steady_session(py)
+        self.finalize_steady_session(py)?;
+        self.flush_parked_bounces_to_active();
+        Ok(())
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn finalize_parallel_session(&mut self) -> PyResult<()> {
+        self.flush_parked_bounces_to_active();
         Ok(())
     }
 
