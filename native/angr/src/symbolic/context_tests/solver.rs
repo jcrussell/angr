@@ -97,7 +97,7 @@ fn test_min_max_use_cached_model_unsigned() {
     // cached model, and that the HIT counter increments. Counters are
     // process-wide and tests run in parallel, so we only assert deltas
     // with >= bounds (other tests may bump the same counter concurrently).
-    use super::super::stats::{Z3_EXTREMA_MODEL_HIT_COUNT, Z3_EXTREMA_MODEL_MISS_COUNT};
+    use super::super::stats::Z3_EXTREMA_MODEL_HIT_COUNT;
 
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "x_min_max_cached", 32);
@@ -111,27 +111,25 @@ fn test_min_max_use_cached_model_unsigned() {
     assert!(v.is_some());
 
     let hit_before = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
-    let miss_before = Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed);
 
     let min_val = ctx.min(&x, false);
     let max_val = ctx.max(&x, false);
 
     let hit_after = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
-    let miss_after = Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed);
 
     assert_eq!(min_val, Some(11), "min should be 11");
     assert_eq!(max_val, Some(19), "max should be 19");
-    // Our 2 calls each had a usable model — should bump HIT by >=2 and
-    // not bump MISS at all.
+    // Our 2 calls each had a usable model — should bump HIT by >=2.
+    //
+    // There is deliberately NO companion `MISS delta == 0` assertion: MISS is
+    // the same process-wide counter, so any *other* test in the binary that
+    // calls min()/max() without a cached model bumps it concurrently and the
+    // exact-equality form fails at random (it did, ~25% of runs). Only >=
+    // bounds are sound against a global counter.
     assert!(
         hit_after - hit_before >= 2,
         "expected >=2 extrema cache hits across min+max, got {}",
         hit_after - hit_before
-    );
-    assert_eq!(
-        miss_after - miss_before,
-        0,
-        "expected 0 extrema cache misses from this test's calls"
     );
 }
 
@@ -977,6 +975,69 @@ fn test_eval_wide_deterministic_is_unsigned_min() {
 #[cfg(feature = "vex-engine-z3")]
 const HARD_SEMIPRIME: u128 = 9_223_372_036_854_775_783u128 * 9_223_372_036_854_775_643u128;
 
+/// Deterministic search budget layered under the 1ms wall-clock timeout — see
+/// [`pin_rlimit`]. Sized far above what 1ms of Z3 consumes (so the tests still
+/// exercise the *timeout* path they were written for) but far below anything
+/// that could run long: worst case the check aborts in well under a second.
+#[cfg(feature = "vex-engine-z3")]
+const HARD_FACTORING_RLIMIT: u32 = 100_000;
+
+/// Deterministic termination bound for the three hard-factoring timeout tests
+/// (angr-x8ocv / angr-zdakq).
+///
+/// Z3's `timeout` param is enforced by a background `scoped_timer` thread that
+/// flips the context's cancel flag. Under a heavily parallel `cargo test
+/// --release` run that timer has been observed *not* to fire: a gdb backtrace
+/// on a wedged run showed the thread genuinely grinding inside
+/// `Z3_solver_check -> smt::context::search -> bounded_search -> propagate`
+/// for 20.5h under a 1ms budget. `rlimit` is a *deterministic* budget polled by
+/// the search loop itself (`reslimit::inc`) with no thread involved, so it
+/// bounds the check regardless of timer behavior.
+///
+/// Both are kept: `timeout` is what these tests are actually about (they assert
+/// the conservative Unknown handling), `rlimit` only guarantees the check
+/// terminates so a missed timer degrades to a fast Unknown instead of a hang.
+/// Applied *after* the constraints are asserted, because `set_params` on a
+/// fresh solver would be clobbered by a later solver rebuild.
+#[cfg(feature = "vex-engine-z3")]
+fn pin_rlimit(ctx: &SymContext, rlimit: u32) {
+    ctx.with_z3_solver(|solver| {
+        let mut params = crate::symbolic::solver_build::build_solver_params(ctx.timeout_ms());
+        params.set_u32("rlimit", rlimit);
+        solver.set_params(&params);
+    });
+}
+
+/// Guard that [`pin_rlimit`] actually reaches the solver (angr-zdakq). The
+/// three hard-factoring tests above cannot detect a silently-ignored `rlimit`
+/// param — they would just fall back to the flaky wall-clock timeout, and on
+/// the run where that timer misfires the suite wedges again.
+///
+/// So exercise it on a query that is *easy*: `10 < x < 20` under an rlimit of 1
+/// resource unit and no wall-clock timeout. If `rlimit` is honored the check
+/// aborts Unknown and `min()` returns None; if it is ignored the check runs to
+/// completion and returns `Some(11)` — a fast, non-hanging failure.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_pin_rlimit_reaches_the_solver() {
+    let ctx = SymContext::with_timeout(u32::MAX);
+    let x = RustBV::symbolic(&ctx, "rlimit_probe_x", 32);
+    let ten = RustBV::concrete(10, 32);
+    let twenty = RustBV::concrete(20, 32);
+    ctx.assume_true(&x.ugt(&ten, &ctx));
+    ctx.assume_true(&x.ult(&twenty, &ctx));
+    pin_rlimit(&ctx, 1);
+    // Skip min()'s is_sat gate so the bisection checks are what we observe.
+    ctx.set_sat_cache(true);
+    assert_eq!(
+        ctx.min(&x, false),
+        None,
+        "rlimit=1 must abort every check to Unknown — a Some(_) here means the \
+         rlimit param never reached the solver and the hard-factoring timeout \
+         tests have lost their deterministic termination bound"
+    );
+}
+
 /// Assert `x * y == N`, `x > 1`, `y > 1` on a 1ms-budget context, returning the
 /// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
 /// not overflow.
@@ -1006,6 +1067,7 @@ fn build_hard_factoring(ctx: &SymContext) -> RustBV {
 fn test_min_aborts_to_none_on_bisection_timeout() {
     let ctx = SymContext::with_timeout(1);
     let x = build_hard_factoring(&ctx);
+    pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
     // Legitimate: the semiprime has a factorization, so the set is satisfiable.
     ctx.set_sat_cache(true);
     assert_eq!(
@@ -1021,6 +1083,7 @@ fn test_min_aborts_to_none_on_bisection_timeout() {
 fn test_max_aborts_to_none_on_bisection_timeout() {
     let ctx = SymContext::with_timeout(1);
     let x = build_hard_factoring(&ctx);
+    pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
     ctx.set_sat_cache(true);
     assert_eq!(
         ctx.max(&x, false),
@@ -1050,6 +1113,7 @@ fn test_check_branch_feasibility_keeps_branch_on_timeout() {
     let n = RustBV::concrete(HARD_SEMIPRIME, 128);
     // 1-bit condition whose feasibility is as hard as the factoring itself.
     let cond = prod.eq(&n, &ctx);
+    pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
     let (can_true, can_false) = ctx.check_branch_feasibility(&cond);
     assert!(
         can_true,
