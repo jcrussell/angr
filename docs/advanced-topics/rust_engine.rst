@@ -2862,6 +2862,20 @@ Caveats specific to ``step()`` dispatch:
   ``angr-8oiw``) — see `RustStateProxy write-through contract`_ above.
   Symbolic-address ``memory.store`` is the one refused write.
 
+``mgr.remove_technique(tech)`` mirrors
+:meth:`~angr.sim_manager.SimulationManager.remove_technique`: the
+technique stops being dispatched *and* the native state it armed is
+undone (``angr-w9zce``). Because the Rust manager has no per-technique
+unregister, removal resets the native *categories* the removed technique
+touched — state-selection policy, ``find``/``avoid`` addresses,
+uniqueness filter, or the native technique queue (``LoopSeer`` /
+``LengthLimiter`` / ``Timeout`` / ``ManualMergepoint``) — and then
+re-arms the techniques still registered. Categories the removed
+technique never touched are left untouched, so a manual
+``set_state_selection_*`` or ``set_find_addrs`` call made outside the
+technique API is not clobbered. Removing a technique that was never
+registered returns ``False`` and disarms nothing.
+
 .. list-table::
    :widths: 22 16 62
    :header-rows: 1

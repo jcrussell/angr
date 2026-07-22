@@ -913,6 +913,72 @@ class TestNativeTechniques:
         mgr.register_loop_bound(10, "spinning")
         assert mgr.native_technique_count() == 3
 
+    def test_remove_technique_disarms_length_limiter(self, fauxware_project):
+        """remove_technique undoes the native effect, not just the dispatch (angr-w9zce)."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LengthLimiter
+
+        tech = LengthLimiter(max_length=5)
+        mgr.use_technique(tech)
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+        assert mgr.remove_technique(tech) is True
+        assert mgr._rust_mgr.native_technique_count() == 0
+
+        # Without the limiter armed, nothing should land in 'cut'.
+        mgr.run(max_steps=200)
+        assert list(mgr._rust_mgr.get_state_ids("cut")) == []
+
+    def test_remove_technique_rearms_survivors(self, fauxware_project):
+        """Removing one native technique leaves the others armed (angr-w9zce)."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LengthLimiter, Timeout
+
+        limiter = LengthLimiter(max_length=5)
+        timeout = Timeout(timeout=30)
+        mgr.use_technique(limiter)
+        mgr.use_technique(timeout)
+        assert mgr._rust_mgr.native_technique_count() == 2
+
+        assert mgr.remove_technique(timeout) is True
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+        # The surviving limiter must still cut long paths.
+        mgr.run(max_steps=200)
+        assert len(list(mgr._rust_mgr.get_state_ids("cut"))) > 0
+
+    def test_remove_technique_disarms_uniqueness_filter(self, fauxware_project):
+        """CheckUniqueness removal clears the native register filter (angr-w9zce)."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import ExplorationTechnique
+
+        class CheckUniqueness(ExplorationTechnique):
+            pass
+
+        tech = CheckUniqueness()
+        mgr.use_technique(tech)
+        assert mgr._rust_mgr.uniqueness_filter_enabled()
+
+        assert mgr.remove_technique(tech) is True
+        assert not mgr._rust_mgr.uniqueness_filter_enabled()
+
+    def test_remove_unregistered_technique_is_noop(self, fauxware_project):
+        """Removing a never-registered technique returns False and disarms nothing."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LengthLimiter
+
+        mgr.use_technique(LengthLimiter(max_length=5))
+        assert mgr.remove_technique(LengthLimiter(max_length=9)) is False
+        assert mgr._rust_mgr.native_technique_count() == 1
+
     def test_loop_seer_via_use_technique(self, fauxware_project):
         """LoopSeer(bound=N) routes to the native register_loop_bound."""
         state = fauxware_project.factory.entry_state()

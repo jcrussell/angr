@@ -45,6 +45,16 @@ _NATIVE_STEP_TECH_NAMES = {
 _MONOTONIC_FILTER_TECHNIQUES = frozenset({"CheckUniqueness"})
 
 
+# Native-effect categories, keyed by the technique names _arm_native_technique
+# dispatches on. remove_technique resets a category and re-arms the survivors
+# (angr-w9zce); keep these in sync with the if/elif chain in
+# _arm_native_technique or a removal will leave native state stale.
+_SELECTION_TECH_NAMES = frozenset({"DFS", "DepthFirst", "BFS", "BreadthFirst"})
+_FIND_AVOID_TECH_NAMES = frozenset({"Explorer"})
+_UNIQUENESS_TECH_NAMES = frozenset({"CheckUniqueness"})
+_NATIVE_QUEUE_TECH_NAMES = frozenset({"LoopSeer", "LocalLoopSeer", "LengthLimiter", "Timeout", "ManualMergepoint"})
+
+
 def _has_dispatched_step_hook(tech) -> bool:
     """Return True iff `tech` overrides step() AND isn't natively handled."""
     tech_name = type(tech).__name__
@@ -286,42 +296,15 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
     return event, applied
 
 
-def use_technique(mgr: RustExplorationManager, technique, **kwargs):
-    """Apply an exploration technique to the Rust manager.
+def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
+    """Install the native (Rust-side) effect of `technique` on `mgr._rust_mgr`.
 
-    Techniques are tracked and their setup methods are called.
-    Common techniques like DFS, BFS, and LoopSeer have basic support.
-
-    Args:
-        mgr: The RustExplorationManager instance.
-        technique: An ExplorationTechnique instance.
-
-    Returns:
-        The technique, for chaining.
+    Split out of :func:`use_technique` so :func:`remove_technique` can rebuild
+    the native state from the remaining ``_active_techniques`` after a removal
+    (angr-w9zce). Pure native arming: it does not touch ``_active_techniques``,
+    call ``setup()``, or emit the hook-coverage warnings.
     """
     tech_name = type(technique).__name__
-
-    # Track the technique
-    mgr._active_techniques.append(technique)
-
-    # Mirror SimulationManager.use_technique: hand the technique the project
-    # BEFORE setup(). step_state techniques (Veritesting) reach for
-    # ``self.project.analyses`` to drive their nested analysis, so a missing
-    # project would AttributeError on the first dispatch (angr-op0dn.11.7).
-    try:
-        technique.project = mgr._project
-    except Exception as e:  # pragma: no cover - defensive
-        l.debug("Could not set project on technique %s: %s", tech_name, e)
-
-    # Call setup if available
-    try:
-        if hasattr(technique, "setup"):
-            technique.setup(mgr)
-            l.debug(f"Called setup() on technique {tech_name}")
-    except Exception as e:
-        # cat-(b) FALLBACK WITH LOSS: technique setup failed; we keep going
-        # with a partially-initialized technique. Warn so the user sees it.
-        l.warning(f"Technique {tech_name} setup failed: {e}")
 
     # Handle specific technique types
     # DFS: Use depth-first state selection (LIFO)
@@ -536,6 +519,46 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     else:
         l.debug(f"Technique {tech_name} registered (limited support)")
 
+
+def use_technique(mgr: RustExplorationManager, technique, **kwargs):
+    """Apply an exploration technique to the Rust manager.
+
+    Techniques are tracked and their setup methods are called.
+    Common techniques like DFS, BFS, and LoopSeer have basic support.
+
+    Args:
+        mgr: The RustExplorationManager instance.
+        technique: An ExplorationTechnique instance.
+
+    Returns:
+        The technique, for chaining.
+    """
+    tech_name = type(technique).__name__
+
+    # Track the technique
+    mgr._active_techniques.append(technique)
+
+    # Mirror SimulationManager.use_technique: hand the technique the project
+    # BEFORE setup(). step_state techniques (Veritesting) reach for
+    # ``self.project.analyses`` to drive their nested analysis, so a missing
+    # project would AttributeError on the first dispatch (angr-op0dn.11.7).
+    try:
+        technique.project = mgr._project
+    except Exception as e:  # pragma: no cover - defensive
+        l.debug("Could not set project on technique %s: %s", tech_name, e)
+
+    # Call setup if available
+    try:
+        if hasattr(technique, "setup"):
+            technique.setup(mgr)
+            l.debug(f"Called setup() on technique {tech_name}")
+    except Exception as e:
+        # cat-(b) FALLBACK WITH LOSS: technique setup failed; we keep going
+        # with a partially-initialized technique. Warn so the user sees it.
+        l.warning(f"Technique {tech_name} setup failed: {e}")
+
+    _arm_native_technique(mgr, technique)
+
     # Surface hook coverage at registration time:
     #   step()       — now dispatched per-batch via dispatch_step_with_hooks()
     #   successors() — still no-op (would require Python-side re-run; see
@@ -566,8 +589,63 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     return technique
 
 
+def _disarm_native_technique(mgr: RustExplorationManager, technique) -> None:
+    """Undo the native effect of an already-removed `technique` (angr-w9zce).
+
+    The Rust manager has no per-technique unregister, so each native *category*
+    the removed technique touched is reset to its default and then re-armed from
+    the techniques still in ``mgr._active_techniques``. Categories the removed
+    technique never touched are left alone, so a manual ``set_state_selection_*``
+    or ``set_find_addrs`` made outside the technique API is not clobbered.
+    """
+    tech_name = type(technique).__name__
+    rust = mgr._rust_mgr
+
+    def rearm(names):
+        for tech in mgr._active_techniques:
+            if type(tech).__name__ in names:
+                _arm_native_technique(mgr, tech)
+
+    def reset(what, fn):
+        try:
+            fn()
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: the reset entry point is missing or
+            # failed, so the native effect outlives the removal. Warn — this is
+            # exactly the silent-stale-technique bug the teardown exists to fix.
+            l.warning("Could not reset native %s after removing %s: %s", what, tech_name, e)
+
+    if tech_name in _SELECTION_TECH_NAMES:
+        # FIFO is the Rust manager's default selection policy.
+        reset("state selection", rust.set_state_selection_fifo)
+        rearm(_SELECTION_TECH_NAMES)
+
+    if tech_name in _FIND_AVOID_TECH_NAMES:
+        reset("find addrs", lambda: rust.set_find_addrs([]))
+        reset("avoid addrs", lambda: rust.set_avoid_addrs([]))
+        reset("num_find", lambda: rust.set_num_find(1))
+        mgr._has_technique_avoids = False
+        rearm(_FIND_AVOID_TECH_NAMES)
+
+    if tech_name in _UNIQUENESS_TECH_NAMES:
+        reset("uniqueness filter", rust.disable_uniqueness_filter)
+        rearm(_UNIQUENESS_TECH_NAMES)
+
+    if tech_name in _NATIVE_QUEUE_TECH_NAMES:
+        # These all land in the same `native_techniques` vec, which only has a
+        # clear-all entry point — so drop it and re-arm the survivors.
+        reset("techniques", rust.clear_native_techniques)
+        rearm(_NATIVE_QUEUE_TECH_NAMES)
+
+
 def remove_technique(mgr: RustExplorationManager, technique) -> bool:
     """Remove an exploration technique.
+
+    Mirrors ``SimulationManager.remove_technique``: the technique stops being
+    dispatched *and* its installed effect is undone. Here that means resetting
+    the native state it armed on the Rust manager and re-arming the remaining
+    techniques (angr-w9zce) — without it a removed Timeout would still stop the
+    next explore, and a removed LengthLimiter/LoopSeer would still cut states.
 
     Args:
         mgr: The RustExplorationManager instance.
@@ -578,11 +656,12 @@ def remove_technique(mgr: RustExplorationManager, technique) -> bool:
     """
     try:
         mgr._active_techniques.remove(technique)
-        return True
     except ValueError:
         # cat-(a) EXPECTED CONTROL FLOW: list.remove raises ValueError when the
         # technique was never registered; returning False is the documented contract.
         return False
+    _disarm_native_technique(mgr, technique)
+    return True
 
 
 def apply_technique_filters(mgr: RustExplorationManager):
