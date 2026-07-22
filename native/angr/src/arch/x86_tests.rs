@@ -54,3 +54,17 @@ fn test_segment_base_aliases() {
     assert_eq!(arch.register_offset("gdt"), Some(312));
     assert_eq!(arch.register_size("gdt"), Some(8));
 }
+
+#[test]
+fn test_sp_bp_aliases_are_full_width() {
+    // angr-6qzik: see the amd64 sibling. X86 'sp' == (24, 4) per archinfo.
+    let arch = X86;
+
+    assert_eq!(arch.register_offset("sp"), Some(24));
+    assert_eq!(arch.register_size("sp"), Some(4));
+    assert_eq!(arch.register_offset("bp"), Some(28));
+    assert_eq!(arch.register_size("bp"), Some(4));
+
+    assert_eq!(arch.register_size("ax"), Some(2));
+    assert_eq!(arch.register_size("di"), Some(2));
+}

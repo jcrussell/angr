@@ -61,12 +61,7 @@ ARCHES = {
 # Each entry is a REAL disagreement with archinfo, filed as its own bug. The
 # parity test asserts the drift is still exactly this, so closing the bead
 # fails this module until the entry is deleted.
-KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {
-    ("amd64", "sp"): (48, 2, "angr-6qzik", "Rust 'sp' is the legacy 16-bit sub-register"),
-    ("amd64", "bp"): (56, 2, "angr-6qzik", "Rust 'bp' is the legacy 16-bit sub-register"),
-    ("x86", "sp"): (24, 2, "angr-6qzik", "Rust 'sp' is the legacy 16-bit sub-register"),
-    ("x86", "bp"): (28, 2, "angr-6qzik", "Rust 'bp' is the legacy 16-bit sub-register"),
-}
+KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {}
 
 # archinfo arch id -> beads for guest-state sizes smaller than the last
 # archinfo register slot. Same self-cleaning contract as KNOWN_DRIFT.

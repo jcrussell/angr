@@ -106,13 +106,17 @@ const CANONICAL: &[RegEntry] = &[
 // `register_offset` and `register_size` consult these as a fallback;
 // `register_name` does not.
 const ALIASES: &[RegEntry] = &[
+    // Architecture-independent full-width aliases (match archinfo). The legacy
+    // 16-bit `sp`/`bp` sub-registers are deliberately absent: archinfo binds
+    // these two names to the full-width stack/base pointer (X86 `sp` is
+    // (24, 4)), so a `set_register("sp", ...)` must not truncate to 2 bytes.
+    ("sp", offsets::ESP, 4),
+    ("bp", offsets::EBP, 4),
     // 16-bit
     ("ax", offsets::EAX, 2),
     ("cx", offsets::ECX, 2),
     ("dx", offsets::EDX, 2),
     ("bx", offsets::EBX, 2),
-    ("sp", offsets::ESP, 2),
-    ("bp", offsets::EBP, 2),
     ("si", offsets::ESI, 2),
     ("di", offsets::EDI, 2),
     // 8-bit low

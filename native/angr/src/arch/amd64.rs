@@ -148,6 +148,9 @@ const CANONICAL: &[RegEntry] = &[
 // `register_offset` and `register_size` consult these as a fallback;
 // `register_name` does not.
 const ALIASES: &[RegEntry] = &[
+    // Architecture-independent full-width aliases (match archinfo).
+    ("sp", offsets::RSP, 8),
+    ("bp", offsets::RBP, 8),
     // 32-bit sub-registers (low 32 of RAX etc.)
     ("eax", offsets::RAX, 4),
     ("ecx", offsets::RCX, 4),
@@ -171,8 +174,10 @@ const ALIASES: &[RegEntry] = &[
     ("cx", offsets::RCX, 2),
     ("dx", offsets::RDX, 2),
     ("bx", offsets::RBX, 2),
-    ("sp", offsets::RSP, 2),
-    ("bp", offsets::RBP, 2),
+    // NB: no 16-bit `sp`/`bp` entries. archinfo binds those two names to the
+    // architecture-independent full-width stack/base pointer (AMD64 `sp` is
+    // (48, 8)), so they live in the 64-bit block below; the legacy 16-bit
+    // sub-registers are unreachable by name here, exactly as in archinfo.
     ("si", offsets::RSI, 2),
     ("di", offsets::RDI, 2),
     // 8-bit low
