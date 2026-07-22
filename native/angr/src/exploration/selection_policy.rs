@@ -1229,4 +1229,93 @@ mod tests {
             assert_eq!(build_policy(name, &distances).name(), name);
         }
     }
+
+    // -- Fifo / Lifo -------------------------------------------------------
+    //
+    // The two order-only policies are the reference the tests above compare
+    // against ("degenerated to the FIFO dispatch order"), and `Lifo` is what the
+    // scheduler's worker-local frontier runs by default — so their contracts are
+    // pinned directly rather than only implied by the guards.
+
+    /// Drain `n` fresh states through `policy`, returning the dispatch order as
+    /// insertion indices. Forks are inserted through `on_fork`, exactly as
+    /// `absorb_continues` does.
+    fn order_only_drain(policy: &dyn SelectionPolicy, n: usize) -> Vec<usize> {
+        let _ctx = Context::thread_local();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        let mut id_to_idx: HashMap<u64, usize> = HashMap::new();
+        for i in 0..n {
+            let st = RustSimState::new("amd64").unwrap();
+            id_to_idx.insert(st.state_id(), i);
+            policy.on_fork(&mut active, st);
+        }
+        let mut order = Vec::new();
+        while let Some(st) = policy.select(&mut active) {
+            order.push(id_to_idx[&st.state_id()]);
+        }
+        order
+    }
+
+    #[test]
+    fn test_fifo_is_breadth_first() {
+        assert_eq!(
+            order_only_drain(&Fifo, 5),
+            vec![0, 1, 2, 3, 4],
+            "Fifo dispatches the oldest state first",
+        );
+    }
+
+    #[test]
+    fn test_lifo_is_depth_first() {
+        assert_eq!(
+            order_only_drain(&Lifo, 5),
+            vec![4, 3, 2, 1, 0],
+            "Lifo dispatches the most recent fork first",
+        );
+    }
+
+    // Both append at the tail, so a fork lands behind the existing frontier for
+    // `Fifo` and in front of it for `Lifo`. This is the property `dispatch_next`
+    // relies on to keep the freshest child hot in the Z3 context.
+    #[test]
+    fn test_on_fork_appends_at_the_tail_for_both() {
+        let _ctx = Context::thread_local();
+        for policy in [&Fifo as &dyn SelectionPolicy, &Lifo] {
+            let mut active: VecDeque<RustSimState> = VecDeque::new();
+            let first = RustSimState::new("amd64").unwrap();
+            let first_id = first.state_id();
+            active.push_back(first);
+
+            let child = RustSimState::new("amd64").unwrap();
+            let child_id = child.state_id();
+            policy.on_fork(&mut active, child);
+
+            assert_eq!(active.len(), 2, "{}: on_fork enqueues", policy.name());
+            assert_eq!(
+                active.back().unwrap().state_id(),
+                child_id,
+                "{}: the fork lands at the tail",
+                policy.name(),
+            );
+            assert_eq!(
+                active.front().unwrap().state_id(),
+                first_id,
+                "{}: the existing frontier is not reordered",
+                policy.name(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_order_only_policies_empty_is_none() {
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        assert!(Fifo.select(&mut active).is_none());
+        assert!(Lifo.select(&mut active).is_none());
+    }
+
+    #[test]
+    fn test_order_only_policy_names() {
+        assert_eq!(Fifo.name(), "fifo");
+        assert_eq!(Lifo.name(), "lifo");
+    }
 }
