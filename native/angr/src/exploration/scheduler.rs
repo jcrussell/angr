@@ -263,12 +263,15 @@ pub(crate) struct SchedulerCounters {
     /// Per-disposition split of `summarized_terminals` (angr-op0dn.13.15). The
     /// summarized states themselves are dropped in-worker, but their *counts*
     /// must still reach the manager's `deadended_count` / `pruned_count` /
-    /// `errored_count`, or a parallel run reports zero dead paths where the
-    /// serial loop reports N. `Avoided` never appears here (avoid-routing is a
-    /// coordinator decision), so there is no fourth slot.
+    /// `errored_count` / `avoided_count`, or a parallel run reports zero dead
+    /// paths where the serial loop reports N. `Avoided` DOES occur here
+    /// (angr-pwu71): avoid-routing is usually a coordinator decision, but
+    /// `parallel_process_state` also matches a successor's pc against
+    /// `avoid_addrs` in-worker, so the fourth slot is required.
     summarized_deadended: AtomicUsize,
     summarized_errored: AtomicUsize,
     summarized_pruned: AtomicUsize,
+    summarized_avoided: AtomicUsize,
     /// Payloads pulled from the injector and `reattach`ed into a worker's own Z3
     /// context (the injector-steal path). Observability only — equals
     /// `injector_dispatches` today; the two diverge once the steady-state
@@ -364,10 +367,10 @@ impl SchedulerCounters {
                 TerminalDisposition::Deadended => &self.summarized_deadended,
                 TerminalDisposition::Errored => &self.summarized_errored,
                 TerminalDisposition::Pruned => &self.summarized_pruned,
-                // Avoid-routing is a coordinator decision (it needs the find/avoid
-                // predicates), so no worker ever summarizes one; counted under the
-                // total only.
-                TerminalDisposition::Avoided => continue,
+                // Reachable from `parallel_process_state`, which checks a
+                // successor's pc against `avoid_addrs` on the worker thread
+                // (angr-pwu71) — not only the coordinator's avoid-routing.
+                TerminalDisposition::Avoided => &self.summarized_avoided,
             };
             slot.fetch_add(1, Ordering::SeqCst);
         }
@@ -408,11 +411,13 @@ pub struct SchedulerStats {
     pub summarized_terminals: usize,
     /// Per-disposition split of `summarized_terminals`; the coordinator folds
     /// these into the manager's `deadended_count` / `errored_count` /
-    /// `pruned_count` so terminal accounting is worker-count invariant even
-    /// though the states themselves are dropped in-worker (angr-op0dn.13.15).
+    /// `pruned_count` / `avoided_count` so terminal accounting is worker-count
+    /// invariant even though the states themselves are dropped in-worker
+    /// (angr-op0dn.13.15, extended to `avoided` by angr-pwu71).
     pub summarized_deadended: usize,
     pub summarized_errored: usize,
     pub summarized_pruned: usize,
+    pub summarized_avoided: usize,
     /// Payloads reattached into a worker's own Z3 context (injector-steal path).
     /// Observability only; see [`SchedulerCounters::reattaches`].
     pub reattaches: usize,
@@ -481,6 +486,7 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
         summarized_deadended: counters.summarized_deadended.load(Ordering::SeqCst),
         summarized_errored: counters.summarized_errored.load(Ordering::SeqCst),
         summarized_pruned: counters.summarized_pruned.load(Ordering::SeqCst),
+        summarized_avoided: counters.summarized_avoided.load(Ordering::SeqCst),
         reattaches: counters.reattaches.load(Ordering::SeqCst),
         bounce_roundtrips: counters.bounce_roundtrips.load(Ordering::SeqCst),
         resume_reinjects: counters.resume_reinjects.load(Ordering::SeqCst),

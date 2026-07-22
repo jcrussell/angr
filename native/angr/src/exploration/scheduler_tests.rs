@@ -1067,3 +1067,42 @@ fn test_dispatch_records_width_and_per_worker_counts() {
         stats.width_hist,
     );
 }
+
+/// angr-pwu71: `record_summaries` used to `continue` on `Avoided`, bumping the
+/// total but no split slot, so a worker-avoided terminal vanished from
+/// `stats()["avoided_count"]`. Every disposition must land in exactly one slot,
+/// and the four slots must reconstruct the total.
+#[test]
+fn record_summaries_splits_every_disposition_including_avoided() {
+    let counters = super::SchedulerCounters::default();
+    let summary = |id: u64, disposition| TerminalSummary {
+        state_id: id,
+        pc: 0x400000 + id,
+        disposition,
+    };
+    counters.record_summaries(&[
+        summary(1, TerminalDisposition::Deadended),
+        summary(2, TerminalDisposition::Errored),
+        summary(3, TerminalDisposition::Pruned),
+        summary(4, TerminalDisposition::Avoided),
+        summary(5, TerminalDisposition::Avoided),
+    ]);
+
+    let stats = super::snapshot_stats(0, &counters);
+    assert_eq!(stats.summarized_terminals, 5);
+    assert_eq!(stats.summarized_deadended, 1);
+    assert_eq!(stats.summarized_errored, 1);
+    assert_eq!(stats.summarized_pruned, 1);
+    assert_eq!(
+        stats.summarized_avoided, 2,
+        "worker-summarized Avoided terminals must reach the manager's avoided_count",
+    );
+    assert_eq!(
+        stats.summarized_deadended
+            + stats.summarized_errored
+            + stats.summarized_pruned
+            + stats.summarized_avoided,
+        stats.summarized_terminals,
+        "the per-disposition split must reconstruct the total — no silently dropped arm",
+    );
+}

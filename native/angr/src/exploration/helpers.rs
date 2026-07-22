@@ -45,6 +45,12 @@ impl RustExplorationManager {
         self.sm.deadended_count += stats.summarized_deadended as u64;
         self.sm.errored_count += stats.summarized_errored as u64;
         self.sm.pruned_count += stats.summarized_pruned as u64;
+        // `avoided` is summarized in-worker too (angr-pwu71): `parallel_process_state`
+        // matches a successor's pc against `avoid_addrs` before the state ever
+        // reaches the coordinator's avoid-routing, so without this fold a
+        // fork-successor landing on an avoid address is invisible to
+        // `stats()["avoided_count"]` on a parallel run.
+        self.sm.avoided_count += stats.summarized_avoided as u64;
     }
 
     /// DS-instr (angr-11djq.16): sample the active stash once per step and

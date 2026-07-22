@@ -1309,3 +1309,29 @@ fn snapshot_built_fork_replays_earlier_guards() {
         "snapshot-built fork did not inherit branch 1's taken-path guard"
     );
 }
+
+/// angr-pwu71: `fold_scheduler_dispatch_stats` must land the worker-summarized
+/// `Avoided` split on `sm.avoided_count`, alongside the three dispositions
+/// angr-op0dn.13.15 already folded. Without it, a fork successor whose pc hits
+/// an avoid address inside a worker is invisible to `stats()["avoided_count"]`.
+#[test]
+fn fold_scheduler_dispatch_stats_folds_avoided_split() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let stats = crate::exploration::scheduler::SchedulerStats {
+        summarized_terminals: 10,
+        summarized_deadended: 4,
+        summarized_errored: 2,
+        summarized_pruned: 1,
+        summarized_avoided: 3,
+        ..Default::default()
+    };
+    mgr.fold_scheduler_dispatch_stats(&stats);
+    assert_eq!(mgr.sm.deadended_count, 4);
+    assert_eq!(mgr.sm.errored_count, 2);
+    assert_eq!(mgr.sm.pruned_count, 1);
+    assert_eq!(
+        mgr.sm.avoided_count, 3,
+        "worker-avoided terminals must reach avoided_count for worker-count invariance",
+    );
+}
