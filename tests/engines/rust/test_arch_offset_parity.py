@@ -70,7 +70,6 @@ KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {
     ("arm", "ip"): (56, 4, "angr-itm3u", "Rust 'ip' aliases r12; archinfo 'ip' is the PC"),
     ("arm64", "qcflag"): (832, 4, "angr-a4xix", "qcflag declared 4 bytes, VEX field is U128"),
     ("arm64", "fpcr"): (836, 4, "angr-zxzi3", "fpcr offset 836; archinfo/VEX says 888"),
-    ("amd64", "ftop"): (896, 8, "angr-1593d", "ftop declared 8 bytes, VEX field is UInt"),
 }
 
 # archinfo arch id -> beads for guest-state sizes smaller than the last

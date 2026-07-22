@@ -140,7 +140,8 @@ const CANONICAL: &[RegEntry] = &[
     ("fptag", offsets::FPTAG, 8),
     ("fpround", offsets::FPROUND, 8),
     ("fc3210", offsets::FC3210, 8),
-    ("ftop", offsets::FTOP, 8),
+    // guest_FTOP is a UInt in VEX's amd64 guest state, not a ULong.
+    ("ftop", offsets::FTOP, 4),
 ];
 
 // Aliases: alternate names or sub-registers sharing a canonical offset.
