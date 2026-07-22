@@ -26,6 +26,7 @@ no manager state and are independently testable.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -59,6 +60,38 @@ l = logging.getLogger(name=__name__)
 # is treated as a miss — never deserialized into a current-format slot.
 _RUST_CACHE_VERSION = 2
 _PYTHON_METADATA_VERSION = 1
+
+# Bounded-cache policy for ~/.cache/angr_rust_init. The cache key is an MD5 of
+# (binary content, version axes, arch), so a version bump orphans the whole
+# previous generation under names we cannot recognize by inspection — the only
+# workable GC is a usage-ordered budget. Files are ranked newest-mtime-first
+# (the load path touches a file on every hit, so mtime is last-use, not
+# last-write) and everything past either budget is unlinked. Both budgets are
+# overridable per-process; 0 on either disables that dimension, and 0 on both
+# disables pruning entirely.
+_DISK_CACHE_MAX_BYTES = 512 * 1024 * 1024
+_DISK_CACHE_MAX_FILES = 128
+
+
+def _disk_cache_budgets() -> tuple[int, int]:
+    """Return the (max_bytes, max_files) budget, honoring env overrides.
+
+    ``ANGR_RUST_INIT_CACHE_MAX_BYTES`` / ``ANGR_RUST_INIT_CACHE_MAX_FILES``
+    override the module defaults. A negative or unparseable value falls back
+    to the default; 0 disables that dimension.
+    """
+    budgets = []
+    for env_name, default in (
+        ("ANGR_RUST_INIT_CACHE_MAX_BYTES", _DISK_CACHE_MAX_BYTES),
+        ("ANGR_RUST_INIT_CACHE_MAX_FILES", _DISK_CACHE_MAX_FILES),
+    ):
+        raw = os.environ.get(env_name)
+        try:
+            value = default if raw is None else int(raw)
+        except ValueError:
+            value = default
+        budgets.append(default if value < 0 else value)
+    return budgets[0], budgets[1]
 
 
 def _extract_register_snapshot(state, arch) -> dict[str, int]:
@@ -286,6 +319,71 @@ class RustDiskCacheManager:
             # cache disabled for this binary (empty key returns ''-keyed nothing).
             return ""
 
+    @staticmethod
+    def _prune_disk_cache(cache_dir: str, keep_key: str = "") -> int:
+        """Evict cache files past the size/count budget, least-recently-used first.
+
+        Ranks ``<cache_dir>/*.pkl`` by mtime (newest first) and unlinks
+        everything past ``_disk_cache_budgets()``. ``keep_key`` is never
+        evicted — the just-written entry stays even if it alone exceeds the
+        byte budget, so a single oversized binary degrades to a one-entry
+        cache instead of an empty one. Returns the number of files removed.
+        Best-effort: any OSError is swallowed like the write path.
+        """
+        max_bytes, max_files = _disk_cache_budgets()
+        if max_bytes <= 0 and max_files <= 0:
+            return 0
+        try:
+            entries = []
+            with os.scandir(cache_dir) as it:
+                for entry in it:
+                    if not entry.name.endswith(".pkl") or not entry.is_file():
+                        continue
+                    try:
+                        st = entry.stat()
+                    except OSError:
+                        continue
+                    entries.append((st.st_mtime, st.st_size, entry.name, entry.path))
+        except OSError:
+            return 0
+
+        keep_name = f"{keep_key}.pkl" if keep_key else None
+        # Newest first; ties broken by name so the order is deterministic.
+        entries.sort(key=lambda e: (-e[0], e[2]))
+
+        removed = 0
+        total_bytes = 0
+        kept = 0
+        # Charge the retained entry against the budget up front, so the
+        # remaining files are ranked against what is actually left rather
+        # than overshooting by its size wherever it lands in mtime order.
+        for _mtime, size, name, _path in entries:
+            if name == keep_name:
+                total_bytes += size
+                kept += 1
+                break
+
+        for _mtime, size, name, path in entries:
+            if name == keep_name:
+                continue
+            over_bytes = max_bytes > 0 and total_bytes + size > max_bytes
+            over_files = max_files > 0 and kept + 1 > max_files
+            if over_bytes or over_files:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    # cat-(b) FALLBACK WITH LOSS: eviction failed (races with a
+                    # concurrent run, read-only dir). The cache stays over
+                    # budget until the next save retries.
+                    continue
+                removed += 1
+                continue
+            total_bytes += size
+            kept += 1
+        if removed:
+            l.debug(f"Pruned {removed} init cache file(s) from {cache_dir} ({kept} kept, {total_bytes} bytes)")
+        return removed
+
     def _save_init_to_disk_cache(self, cache_key: str, state: angr.SimState):
         """Save essential post-init state data to disk cache.
 
@@ -327,6 +425,7 @@ class RustDiskCacheManager:
             with open(cache_path, "wb") as f:
                 pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
             l.debug(f"Saved init cache to {cache_path} ({os.path.getsize(cache_path)} bytes, {len(batch_pages)} pages)")
+            self._prune_disk_cache(cache_dir, keep_key=cache_key)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: disk cache write failed (e.g., OOM,
             # permission, ENOSPC). Run continues without persistent caching.
@@ -480,7 +579,13 @@ class RustDiskCacheManager:
             if not os.path.exists(cache_path):
                 return None
             with open(cache_path, "rb") as f:
-                return pickle.load(f)
+                data = pickle.load(f)
+            # Touch on hit so _prune_disk_cache's mtime ranking is last-USE,
+            # not last-write: a hot binary rebuilt rarely must not be evicted
+            # ahead of a one-shot binary cached yesterday.
+            with contextlib.suppress(OSError):
+                os.utime(cache_path, None)
+            return data
         except (OSError, pickle.UnpicklingError, EOFError) as e:
             # cat-(b) FALLBACK WITH LOSS: disk cache read failed / corrupt;
             # treated as a cache miss. Caller pays full Python init.
