@@ -179,6 +179,10 @@ impl From<RustExecError> for PyErr {
     }
 }
 
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
+
 /// Register the typed exception classes on the rustylib vex_engine module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();

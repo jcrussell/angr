@@ -7,7 +7,12 @@
 // instruction. Building an `icicle_vm::Vm` needs a sleigh processors_path, so
 // the predicates are tested directly.
 
-use super::{code_group_overlaps, disasm_addr_retained, written_range};
+// The `Hitmap` / enum-conversion tests below are the angr-ph300.5 smoke layer:
+// everything in icicle.rs that can be exercised without a sleigh install.
+
+use super::{
+    ExceptionCode, Hitmap, VmExit, code_group_overlaps, disasm_addr_retained, written_range,
+};
 
 /// Convenience: does a group `[gs, ge]` get invalidated by a write of `size` at `addr`?
 fn invalidated(gs: u64, ge: u64, addr: u64, size: u64) -> bool {
@@ -121,4 +126,86 @@ fn disasm_retain_at_top_of_address_space() {
     // even though the write nominally reaches it. Documented, not desired:
     // an instruction cached at u64::MAX cannot be executed anyway.
     assert!(disasm_addr_retained(u64::MAX, addr, end));
+}
+
+// ---------------------------------------------------------------------------
+// Hitmap — the edge-count buffer handed to the VM as a raw pointer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hitmap_starts_zeroed_at_the_requested_length() {
+    let hm = Hitmap::new(64);
+    assert_eq!(hm.len(), 64);
+    assert_eq!(hm.as_slice().len(), 64);
+    assert!(hm.as_slice().iter().all(|&b| b == 0));
+}
+
+#[test]
+fn hitmap_raw_pointer_aliases_the_slice() {
+    // The VM writes edge counts through `as_mut_ptr()`; the Python-visible
+    // reads go through `as_slice()`. They must be the same buffer, and the
+    // pinned box must not move when the map is written through.
+    let mut hm = Hitmap::new(8);
+    let ptr = hm.as_mut_ptr();
+    // SAFETY: `ptr` points at the pinned 8-byte buffer we just allocated, and
+    // `hm` outlives the write.
+    unsafe {
+        *ptr.add(3) = 0xAB;
+    }
+    assert_eq!(hm.as_slice()[3], 0xAB);
+    assert_eq!(hm.as_mut_ptr(), ptr, "pinned buffer must not relocate");
+
+    hm.as_slice_mut()[7] = 0xCD;
+    assert_eq!(hm.as_slice()[7], 0xCD);
+}
+
+#[test]
+fn hitmap_of_zero_length_is_allowed() {
+    let hm = Hitmap::new(0);
+    assert_eq!(hm.len(), 0);
+    assert!(hm.as_slice().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Enum bridging — icicle's types -> the Python-visible pyclass enums
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vm_exit_bridges_every_icicle_variant_distinctly() {
+    use icicle_vm::VmExit as Src;
+    let pairs = [
+        (Src::Running, VmExit::Running),
+        (Src::InstructionLimit, VmExit::InstructionLimit),
+        (Src::Breakpoint, VmExit::Breakpoint),
+        (Src::Interrupted, VmExit::Interrupted),
+        (Src::Halt, VmExit::Halt),
+        (Src::Killed, VmExit::Killed),
+        (Src::Deadlock, VmExit::Deadlock),
+        (Src::OutOfMemory, VmExit::OutOfMemory),
+        (Src::Unimplemented, VmExit::Unimplemented),
+    ];
+    for (src, expected) in pairs {
+        let got: VmExit = src.into();
+        assert!(got.__eq__(&expected), "{src:?} bridged to {got:?}");
+    }
+    // `UnhandledException` carries a payload that the Python enum drops; the
+    // code itself is read back via `get_exception_code()`.
+    assert!(!VmExit::Halt.__eq__(&VmExit::Killed));
+}
+
+#[test]
+fn exception_code_from_code_matches_the_from_impl() {
+    // `from_code` is the u32 route Python takes; it must agree with the typed
+    // `From<icicle_vm::cpu::ExceptionCode>` conversion for every code icicle
+    // round-trips, and must not panic on an out-of-range one.
+    use icicle_vm::cpu::ExceptionCode as Src;
+    for code in 0u32..64 {
+        let src = Src::from_u32(code);
+        let expected: ExceptionCode = src.into();
+        assert!(
+            ExceptionCode::from_code(code).__eq__(&expected),
+            "code {code} disagreed with the From impl"
+        );
+    }
+    assert!(!ExceptionCode::Halt.__eq__(&ExceptionCode::None));
 }

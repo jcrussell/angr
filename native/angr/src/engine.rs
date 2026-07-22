@@ -408,6 +408,10 @@ fn libvex_ffi_enabled() -> bool {
     cfg!(feature = "libvex-ffi")
 }
 
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Typed exception classes (angr-tkbr.3).
