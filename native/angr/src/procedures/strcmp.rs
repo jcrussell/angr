@@ -8,7 +8,10 @@
 //!
 //! - Concrete addresses are required (symbolic addresses fall back to Python).
 //! - Concrete fast path scans byte-by-byte and short-circuits on the first
-//!   mismatch or null terminator (mirroring libc behavior).
+//!   mismatch or null terminator (mirroring libc behavior). The mismatch
+//!   result is the SIGN (-1 / 1), matching Python's `strncmp`/`memcmp`
+//!   SimProcedures rather than glibc's implementation-defined raw byte
+//!   difference (angr-e71o4).
 //! - When the scan encounters a symbolic byte (or for strncmp when n is
 //!   symbolic — currently unsupported), we switch to building a 32-bit ITE
 //!   chain expressing the byte-wise diff:
@@ -106,8 +109,14 @@ pub(super) fn compare_bytes(
                     }
                 }
                 if a != b {
-                    let diff = (a as i32) - (b as i32);
-                    ConcreteStep::Stop(RustBV::concrete(diff as u128, 32))
+                    // Return the SIGN, not the raw byte difference: Python's
+                    // strncmp/memcmp SimProcedures return exactly -1 or 1 on a
+                    // concrete mismatch, and glibc's magnitude is
+                    // implementation-defined anyway. Matching keeps rax
+                    // identical across engines for exact-value consumers
+                    // (`res == -1`, table indexing) — see angr-e71o4.
+                    let signed = if a < b { -1i32 } else { 1i32 };
+                    ConcreteStep::Stop(RustBV::concrete(signed as u32 as u128, 32))
                 } else if stop_at_null && a == 0 {
                     ConcreteStep::Stop(RustBV::zero(32))
                 } else {

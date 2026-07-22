@@ -61,6 +61,76 @@ fn test_strcmp_greater_than() {
     assert!(val > 0);
 }
 
+/// Python's `strncmp` (and `strcmp`, which inline-calls it) returns exactly
+/// -1 or 1 on a concrete mismatch, never the raw byte difference. Pin the
+/// magnitude on byte pairs more than 1 apart, where a glibc-style raw diff
+/// would show up as -2 / 2 (angr-e71o4).
+#[test]
+fn test_strcmp_concrete_mismatch_is_plus_minus_one() {
+    let mut state = RustSimState::new("amd64").unwrap();
+
+    state.map_memory_data(0x1000, b"a\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"c\x00", Permission::RWX);
+
+    let proc = NativeStrcmp;
+    let less = proc
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    assert_eq!(less.unwrap().as_u128().unwrap() as i32, -1);
+
+    // Swapped operands: 'c' vs 'a' is +2 as a raw diff, +1 under Python parity.
+    let greater = proc
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64)],
+        )
+        .unwrap();
+    assert_eq!(greater.unwrap().as_u128().unwrap() as i32, 1);
+}
+
+#[test]
+fn test_strncmp_and_memcmp_concrete_mismatch_is_plus_minus_one() {
+    let mut state = RustSimState::new("amd64").unwrap();
+
+    state.map_memory_data(0x1000, b"xa\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"xd\x00", Permission::RWX);
+
+    let args = [
+        RustBV::concrete(0x1000, 64),
+        RustBV::concrete(0x2000, 64),
+        RustBV::concrete(2, 64),
+    ];
+    let n = NativeStrncmp.call(&mut state, &args).unwrap();
+    assert_eq!(n.unwrap().as_u128().unwrap() as i32, -1);
+
+    // memcmp shares the same concrete closure, and Python's memcmp.py also
+    // returns BVV(-1)/BVV(1).
+    let m = crate::procedures::memcmp::NativeMemcmp
+        .call(&mut state, &args)
+        .unwrap();
+    assert_eq!(m.unwrap().as_u128().unwrap() as i32, -1);
+}
+
+/// Case folding happens before the sign is taken, so 'A' vs 'b' is still -1.
+#[test]
+fn test_strcasecmp_concrete_mismatch_is_plus_minus_one() {
+    let mut state = RustSimState::new("amd64").unwrap();
+
+    state.map_memory_data(0x1000, b"A\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"d\x00", Permission::RWX);
+
+    let result = NativeStrcasecmp
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u128().unwrap() as i32, -1);
+}
+
 #[test]
 fn test_strcmp_prefix() {
     let mut state = RustSimState::new("amd64").unwrap();
