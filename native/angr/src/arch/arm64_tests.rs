@@ -72,7 +72,12 @@ fn test_neon_q_registers() {
         assert_eq!(arch.register_size(&d), Some(8));
     }
 
-    // FPCR and the saturation flag sit just past the V register file.
-    assert_eq!(arch.register_offset("fpcr"), Some(836));
+    // The saturation flag sits just past the V register file; it is a U128,
+    // so FPCR lands 56 bytes further on, past emnote/cmstart/cmlen/nraddr/
+    // ip_at_syscall (angr-a4xix, angr-zxzi3).
     assert_eq!(arch.register_offset("qcflag"), Some(832));
+    assert_eq!(arch.register_size("qcflag"), Some(16));
+    assert_eq!(arch.register_offset("fpcr"), Some(888));
+    assert_eq!(arch.register_size("fpcr"), Some(4));
+    assert_eq!(arch.register_offset("ip_at_syscall"), Some(880));
 }

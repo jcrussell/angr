@@ -95,12 +95,23 @@ mod offsets {
     pub const Q30: u32 = 800;
     pub const Q31: u32 = 816;
 
-    // FPCR/FPSR
+    // Tail of VexGuestARM64State, in declaration order. `guest_QCFLAG` is a
+    // U128 (the sticky FPSR.QC saturation flag), so the next field starts at
+    // 848 — not 836. See /usr/include/valgrind/libvex_guest_arm64.h and
+    // archinfo ArchAArch64.registers, which agree on every offset below.
     pub const QCFLAG: u32 = 832;
-    pub const FPCR: u32 = 836;
+    pub const EMNOTE: u32 = 848;
+    pub const CMSTART: u32 = 856;
+    pub const CMLEN: u32 = 864;
+    pub const NRADDR: u32 = 872;
+    pub const IP_AT_SYSCALL: u32 = 880;
+    pub const FPCR: u32 = 888;
 
-    // Total guest state size
-    pub const GUEST_STATE_SIZE: usize = 848;
+    // Total guest state size. After guest_FPCR come 4 bytes of padding and
+    // the LL/SC fallback block (guest_LLSC_{SIZE,ADDR,DATA_LO64,DATA_HI64},
+    // 896..928). We do not name those, but the buffer must cover them or
+    // IR-level PUTs to them are silently dropped by RegisterFile::put.
+    pub const GUEST_STATE_SIZE: usize = 928;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.
@@ -284,8 +295,13 @@ const ALIASES: &[RegEntry] = &[
     ("d29", offsets::Q29, 8),
     ("d30", offsets::Q30, 8),
     ("d31", offsets::Q31, 8),
-    // FPCR
-    ("qcflag", offsets::QCFLAG, 4),
+    // Guest-state tail (see the offsets module for the layout rationale).
+    ("qcflag", offsets::QCFLAG, 16),
+    ("emnote", offsets::EMNOTE, 4),
+    ("cmstart", offsets::CMSTART, 8),
+    ("cmlen", offsets::CMLEN, 8),
+    ("nraddr", offsets::NRADDR, 8),
+    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 8),
     ("fpcr", offsets::FPCR, 4),
 ];
 

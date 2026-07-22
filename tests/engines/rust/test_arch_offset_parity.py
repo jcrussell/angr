@@ -68,15 +68,11 @@ KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {
     ("x86", "bp"): (28, 2, "angr-6qzik", "Rust 'bp' is the legacy 16-bit sub-register"),
     ("x86", "fptag"): (136, 4, "angr-rfxc7", "fptag declared 4 bytes, VEX field is 8"),
     ("arm", "ip"): (56, 4, "angr-itm3u", "Rust 'ip' aliases r12; archinfo 'ip' is the PC"),
-    ("arm64", "qcflag"): (832, 4, "angr-a4xix", "qcflag declared 4 bytes, VEX field is U128"),
-    ("arm64", "fpcr"): (836, 4, "angr-zxzi3", "fpcr offset 836; archinfo/VEX says 888"),
 }
 
 # archinfo arch id -> beads for guest-state sizes smaller than the last
 # archinfo register slot. Same self-cleaning contract as KNOWN_DRIFT.
-KNOWN_STATE_SIZE_DRIFT = {
-    "arm64": "angr-zxzi3",
-}
+KNOWN_STATE_SIZE_DRIFT: dict[str, str] = {}
 
 # Wider than any register we probe; set_register truncates to Rust's width, so
 # an all-ones write paints exactly register_size(name) bytes with 0xFF.
