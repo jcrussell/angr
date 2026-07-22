@@ -86,6 +86,7 @@ for the full list. Most-used targets:
 | `make test-fuzzer` | icicle/libafl fuzzer unit tests (`--features fuzzer`, default-off in cargo; nightly lane `fuzzer_feature_tests`). |
 | `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
 | `make test-full` | Full angr test suite (long). |
+| `make gate-findall` | Find-all worker-count-invariance gate (nightly lane `findall_worker_invariance`). |
 | `make bench-regression` | Fast-tier benchmark regression check. |
 | `make bench-single EXAMPLE=fauxware ARGS="--both"` | Run one bench in a subprocess. |
 | `make profile-bench FILTER=... SECS=... TOOL=...` | Wrap the criterion bench with a profiler. |
@@ -229,6 +230,27 @@ ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_re
   missing file just suppresses the diff). The table caps at 20 rows by
   default and shows the counters that moved most in absolute terms; ns-level
   timing counters always lead because they vary slightly across runs.
+
+### Nightly find-all worker-count-invariance gate
+
+`.github/workflows/nightly-ci.yml::findall_worker_invariance` runs
+`tests/benchmarks/run_findall_gate.py` — the parallel scheduler's correctness
+contract: an exhaustive `explore(find=..., num_find=all-leaves)` must produce
+the **same found-set** regardless of `RUST_PARALLEL_WORKERS`.
+
+The gate is **structural, not wall-clock** (wall-clock acceptance lives on the
+spike bead): each run exports the multiset of found pcs via
+`ANGR_BENCH_FOUND_FINGERPRINT=1`, and the fingerprint must be identical across
+every worker count and rep. An empty found-set fails rather than passing
+vacuously. Default corpus is the two in-repo synthetic find-all benches
+(`fork_solve_pbounce_W6_S8_M12_B2`, `fork_solve_trap_W5_S8_M12`) swept over
+workers {1,2,4} x 3 reps — 18 `run_single.py` children, ~12 min.
+
+```bash
+make gate-findall                                        # full default sweep
+python tests/benchmarks/run_findall_gate.py --only fork_solve_pbounce_W6_S8_M12_B2 --workers 1 2 --reps 1
+python tests/benchmarks/run_findall_gate.py --json findall.json
+```
 
 ### Nightly RSS leak check
 

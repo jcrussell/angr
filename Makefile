@@ -110,6 +110,10 @@ test-libvex:  ## Run the libVEX-FFI unit + corpus parity tests (feature is defau
 test-fuzzer:  ## Run the icicle/libafl fuzzer unit tests (feature is default-off in cargo).
 	$(CARGO) test --manifest-path $(MANIFEST) --release --features fuzzer --lib fuzzer
 
+.PHONY: gate-findall
+gate-findall:  ## Find-all worker-count-invariance gate (found-set fingerprint across 1/2/4 workers; ~12min).
+	$(PY) tests/benchmarks/run_findall_gate.py
+
 .PHONY: test-python-baseline
 test-python-baseline:  ## Run a fast (~5min) vanilla angr Python-engine regression subset (needs angr/binaries).
 	@if [ ! -d "$(REPO_ROOT)/../binaries" ] && [ "$$CI" != "true" ]; then \
