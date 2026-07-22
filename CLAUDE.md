@@ -83,6 +83,7 @@ for the full list. Most-used targets:
 | `make check` | `cargo check --release` — fast type/borrow check. |
 | `make test` (`test-quick`) | Run `tests/engines/rust/` (~1-2 min). |
 | `make test-libvex` | libVEX-FFI unit + corpus parity tests (`--features libvex-ffi`, default-off in cargo). |
+| `make test-fuzzer` | icicle/libafl fuzzer unit tests (`--features fuzzer`, default-off in cargo; nightly lane `fuzzer_feature_tests`). |
 | `make test-python-baseline` | Fast (~5min) vanilla Python-engine regression subset (needs `../binaries`). |
 | `make test-full` | Full angr test suite (long). |
 | `make bench-regression` | Fast-tier benchmark regression check. |
