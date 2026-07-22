@@ -540,8 +540,10 @@ impl SymContext {
     // Arc<Mutex<SharedLineageSolver>>: SharedLineageSolver wraps a z3::Solver (not Send/Sync),
     // but the Arc is load-bearing — every sibling SymContext minted from a common fork shares
     // the same Arc so cross-state lineage queries hit the same Z3 solver (see field doc on
-    // `lineage`). Engine runs single-threaded under Python's GIL; Rc would force the fork
-    // signature to surface non-Send, breaking the Arc<Mutex<...>> sharing contract.
+    // `lineage`). The missing Send/Sync is unobservable because SymContext is !Send and only
+    // travels between threads as a StateMigrationPayload (state/migration.rs), which rebuilds
+    // the solver on the destination thread; Rc would force the fork signature to surface
+    // non-Send, breaking the Arc<Mutex<...>> sharing contract. See `arc_shared` in lib.rs.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;

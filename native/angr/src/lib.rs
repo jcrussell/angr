@@ -48,9 +48,21 @@ use pyo3::prelude::*;
 
 /// Wrap a value in an `Arc` whose inner type is deliberately not `Send`/`Sync`.
 ///
-/// The Rust symex engine runs single-threaded under Python's GIL, and its core
-/// shared types (`RustBV`, Z3 AST handles, `FileDescriptor`) are `!Send` by
-/// design. The `Arc`s over them are load-bearing: they give O(1) copy-on-write
+/// The engine's core shared types (`RustBV`, Z3 AST handles, `FileDescriptor`)
+/// are `!Send` by design, and that is what makes the suppression sound — NOT
+/// single-threadedness. The engine does step states on real OS worker threads
+/// (`scheduler::worker_thread`, spawned as `angr-worker-N`); what keeps these
+/// `Arc`s confined to one thread is that the only cross-thread transport for a
+/// state is `StateMigrationPayload` (`state/migration.rs`), which is
+/// `Send`-by-construction and guarded at compile time by an `assert_send::<..>()`
+/// check. There is no `unsafe impl Send`/`Sync` in production code, so an
+/// `arc_shared` `Arc` cannot escape its worker except by round-tripping through
+/// `detach_for_migration`/`reattach`, which rebuilds the shared state on the
+/// destination thread. Contributors adding a new cross-thread share must go
+/// through that payload — do not widen this suppression to cover an `Arc` that
+/// is genuinely handed between threads.
+///
+/// The `Arc`s over them are load-bearing: they give O(1) copy-on-write
 /// sharing across `fork()`/snapshot siblings, which `Rc` could not without
 /// leaking `!Send` through the public fork/snapshot API surface. Clippy's
 /// `arc_with_non_send_sync` flags every such `Arc::new` as a design smell;
