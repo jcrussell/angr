@@ -306,9 +306,13 @@ class TestMultiArchSupport:
         assert state.get_register("r8") == 0x08080808
         assert state.get_register("r9") == 0x09090909
         assert state.get_register("r10") == 0x10101010
-        # fp aliases r11, ip aliases r12.
+        # fp aliases r11. r12 has no "ip" alias on purpose (angr-itm3u):
+        # archinfo reserves "ip" for the instruction pointer (R15T) on every
+        # arch, so the ARM-ABI reading of "ip" as r12 would silently redirect
+        # a PC write into a scratch register.
         assert state.get_register("fp") == 0x11111111
-        assert state.get_register("ip") == 0x12121212
+        with pytest.raises(ValueError):
+            state.get_register("ip")
 
         # VFP double registers (64-bit): d0 (first), d15 (mid), d31 (last).
         state.set_register("d0", 0x1122334455667788)
