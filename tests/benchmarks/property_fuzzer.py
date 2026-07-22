@@ -88,6 +88,13 @@ Usage
     # Strict mode: every divergence is a failure (default: prints summary
     # and exits 0 only if zero divergences)
     python tests/benchmarks/property_fuzzer.py --trials 50 --strict
+
+    # Solver-differential mode: random constraint sets, RustSolverContext
+    # vs claripy (no binaries involved, ~10s for the default 100 trials)
+    python tests/benchmarks/property_fuzzer.py --mode solver --trials 100 --seed 0
+
+    # Re-run exactly one solver trial from a reported divergence
+    python tests/benchmarks/property_fuzzer.py --mode solver --solver-trial-seed 12345
 """
 
 from __future__ import annotations
@@ -353,11 +360,306 @@ def run_trial(idx: int, example: str, strategy: str, seed: int, timeout: int, me
     return result
 
 
+# ======================================================================
+# Solver-differential mode (angr-ph300.4)
+# ======================================================================
+#
+# The corpus mode above compares whole-binary exploration output, which
+# makes a solver bug expensive to localize. This mode targets the solver
+# layer directly: it draws a random constraint set over random-width BVs
+# and compares `RustSolverContext` against a plain `claripy.Solver` on
+# satisfiability, min, max, eval-set and the one-model batch path.
+#
+# Every trial is driven by its own `trial_seed`, so a divergence is
+# reproducible standalone via `--mode solver --solver-trial-seed <S>`.
+
+_SOLVER_WIDTHS = (8, 16, 32, 64)
+
+# Comparison operators, as (name, callable) over two claripy BVs. Signed
+# comparisons go through the operator methods claripy exposes for them.
+_SOLVER_CMPS = (
+    ("eq", lambda a, b: a == b),
+    ("ne", lambda a, b: a != b),
+    ("ult", lambda a, b: a.ULT(b)),
+    ("ule", lambda a, b: a.ULE(b)),
+    ("ugt", lambda a, b: a.UGT(b)),
+    ("uge", lambda a, b: a.UGE(b)),
+    ("slt", lambda a, b: a.SLT(b)),
+    ("sle", lambda a, b: a.SLE(b)),
+    ("sgt", lambda a, b: a.SGT(b)),
+    ("sge", lambda a, b: a.SGE(b)),
+)
+
+
+def _gen_solver_case(rng, claripy):
+    """Build one random (variables, constraints) pair.
+
+    Kept deliberately shallow (depth <= 2, <= 3 variables, <= 4
+    constraints): the point is to cover the Rust translation and solving
+    paths broadly, not to build Z3-hard instances that dominate runtime.
+    """
+    width = rng.choice(_SOLVER_WIDTHS)
+    nvars = rng.randint(1, 3)
+    variables = [claripy.BVS(f"v{i}", width, explicit_name=True) for i in range(nvars)]
+
+    def leaf():
+        if rng.random() < 0.65:
+            return rng.choice(variables)
+        return claripy.BVV(rng.getrandbits(width), width)
+
+    def term(depth=0):
+        if depth >= 2 or rng.random() < 0.45:
+            return leaf()
+        a = term(depth + 1)
+        op = rng.choice(("add", "sub", "mul", "and", "or", "xor", "lshr", "shl"))
+        if op == "add":
+            return a + leaf()
+        if op == "sub":
+            return a - leaf()
+        if op == "mul":
+            # Only var*const — symbolic*symbolic multiplication is the one
+            # shape that reliably turns a trivial instance into a slow one.
+            return a * claripy.BVV(rng.randint(1, 7), width)
+        if op == "and":
+            return a & leaf()
+        if op == "or":
+            return a | leaf()
+        if op == "xor":
+            return a ^ leaf()
+        shift = claripy.BVV(rng.randint(1, max(1, width - 1)), width)
+        return claripy.LShR(a, shift) if op == "lshr" else (a << shift)
+
+    constraints = []
+    for _ in range(rng.randint(1, 4)):
+        _name, cmp_fn = rng.choice(_SOLVER_CMPS)
+        constraints.append(cmp_fn(term(), term()))
+    return variables, constraints
+
+
+def _solver_trial_child(trial_seeds, mem_limit_mb, n_eval):
+    """Run a chunk of solver-differential trials in a subprocess.
+
+    Called via multiprocessing spawn, so it must stay top-level and take
+    only picklable arguments. Returns a list of plain dicts (one per
+    trial) — dataclasses are rebuilt in the parent.
+    """
+    import contextlib
+    import resource
+
+    mem_bytes = mem_limit_mb * 1024 * 1024
+    _soft, _hard = resource.getrlimit(resource.RLIMIT_AS)
+    with contextlib.suppress(ValueError):  # Can't raise above the hard limit.
+        resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, _hard))
+
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
+    import claripy
+    from angr.rustylib.vex_engine import RustSolverContext
+
+    from angr.exploration.rust_manager import _setup_shared_z3_context
+
+    # Rust and claripy must share one Z3 context for AST passthrough.
+    _setup_shared_z3_context()
+
+    out = []
+    for trial_seed in trial_seeds:
+        try:
+            out.append(_solver_trial_body(trial_seed, n_eval, claripy, RustSolverContext))
+        except Exception as e:
+            out.append(
+                {
+                    "trial_seed": trial_seed,
+                    "classification": "error",
+                    "detail": f"{type(e).__name__}: {e}",
+                    "constraints": [],
+                }
+            )
+    return out
+
+
+def _solver_trial_body(trial_seed, n_eval, claripy, RustSolverContext):
+    """The actual Rust-vs-claripy comparison for one seed.
+
+    Returns a dict with `classification` in {pass, diverge, error} and,
+    on divergence, a `detail` string plus the rendered constraint list
+    (the standalone reproducer).
+    """
+    rng = random.Random(trial_seed)
+    variables, constraints = _gen_solver_case(rng, claripy)
+    rendered = [str(c) for c in constraints]
+
+    def fail(detail):
+        return {
+            "trial_seed": trial_seed,
+            "classification": "diverge",
+            "detail": detail,
+            "constraints": rendered,
+        }
+
+    ctx = RustSolverContext()
+    py_solver = claripy.Solver()
+    for c in constraints:
+        ctx.add_constraint_ast(c)
+        py_solver.add(c)
+
+    rust_sat = bool(ctx.satisfiable())
+    py_sat = bool(py_solver.satisfiable())
+    if rust_sat != py_sat:
+        return fail(f"satisfiable mismatch: rust={rust_sat} python={py_sat}")
+
+    if not py_sat:
+        # UNSAT: everything downstream must degrade uniformly.
+        for v in variables:
+            if ctx.eval(v) is not None:
+                return fail(f"unsat but rust eval({v}) returned a value")
+            if ctx.min(v, signed=False) is not None or ctx.max(v, signed=False) is not None:
+                return fail(f"unsat but rust min/max({v}) returned a value")
+        return {"trial_seed": trial_seed, "classification": "pass", "detail": "unsat", "constraints": rendered}
+
+    for v in variables:
+        rust_min = ctx.min(v, signed=False)
+        rust_max = ctx.max(v, signed=False)
+        py_min = py_solver.min(v)
+        py_max = py_solver.max(v)
+        if rust_min != py_min:
+            return fail(f"min({v}) mismatch: rust={rust_min} python={py_min}")
+        if rust_max != py_max:
+            return fail(f"max({v}) mismatch: rust={rust_max} python={py_max}")
+
+        # eval: compare semantically, not by model identity. Every value
+        # either engine returns must be a genuine solution on BOTH.
+        rust_vals = list(ctx.eval_upto(v, n_eval))
+        py_vals = list(py_solver.eval(v, n_eval))
+        for val in rust_vals:
+            if not py_solver.solution(v, val):
+                return fail(f"rust eval({v}) returned {val}, which python rejects")
+        for val in py_vals:
+            if not ctx.solution(v, val):
+                return fail(f"python eval({v}) returned {val}, which rust rejects")
+        if len(rust_vals) != len(set(rust_vals)):
+            return fail(f"rust eval_upto({v}, {n_eval}) returned duplicates: {rust_vals}")
+        # When BOTH sides came back short of the cap they enumerated the
+        # full solution set, so the sets must agree exactly.
+        if len(rust_vals) < n_eval and len(py_vals) < n_eval and set(rust_vals) != set(py_vals):
+            return fail(f"exhaustive eval({v}) set mismatch: rust={sorted(rust_vals)} python={sorted(py_vals)}")
+
+    # Batch path: one model for all variables at once. Unlike per-variable
+    # eval the results must be JOINTLY consistent, so check them together.
+    batch = ctx.eval_batch(list(variables))
+    if batch is not None:
+        if len(batch) != len(variables):
+            return fail(f"eval_batch returned {len(batch)} values for {len(variables)} variables")
+        joint = claripy.Solver()
+        for c in constraints:
+            joint.add(c)
+        for v, val in zip(variables, batch):
+            joint.add(v == val)
+        if not joint.satisfiable():
+            return fail(f"eval_batch model {list(batch)} is not jointly satisfiable under python")
+
+    return {"trial_seed": trial_seed, "classification": "pass", "detail": "sat", "constraints": rendered}
+
+
+def _chunks(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
+def run_solver_mode(args) -> int:
+    """Entry point for `--mode solver`. Returns the process exit code."""
+    seed = args.seed if args.seed is not None else int(time.time())
+    if args.solver_trial_seed is not None:
+        trial_seeds = [args.solver_trial_seed]
+    else:
+        rng = random.Random(seed)
+        trial_seeds = [rng.randint(0, 2**31 - 1) for _ in range(args.trials)]
+
+    print(
+        f"property-fuzzer[solver]: seed={seed} trials={len(trial_seeds)} "
+        f"chunk={args.solver_chunk} eval-n={args.solver_eval_n} mem-limit={args.mem_limit}MB"
+    )
+
+    ctx_mp = multiprocessing.get_context("spawn")
+    results: list = []
+    t0 = time.perf_counter()
+    for chunk in _chunks(trial_seeds, args.solver_chunk):
+        pool = ctx_mp.Pool(1)
+        try:
+            async_result = pool.apply_async(_solver_trial_child, (chunk, args.mem_limit, args.solver_eval_n))
+            results.extend(async_result.get(timeout=args.timeout * max(1, len(chunk))))
+        except multiprocessing.TimeoutError:
+            results.append(
+                {
+                    "trial_seed": chunk[0],
+                    "classification": "error",
+                    "detail": f"chunk timeout (seeds {chunk[0]}..{chunk[-1]})",
+                    "constraints": [],
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "trial_seed": chunk[0],
+                    "classification": "error",
+                    "detail": f"child crash (seeds {chunk[0]}..{chunk[-1]}): {e}",
+                    "constraints": [],
+                }
+            )
+        finally:
+            pool.terminate()
+            pool.join()
+        print(f"  {len(results)}/{len(trial_seeds)} trials done", flush=True)
+    elapsed = time.perf_counter() - t0
+
+    counts: dict = {}
+    for r in results:
+        counts[r["classification"]] = counts.get(r["classification"], 0) + 1
+
+    bad = [r for r in results if r["classification"] != "pass"]
+    for r in bad:
+        print("\n" + "-" * 60)
+        print(f"{r['classification'].upper()} — trial_seed={r['trial_seed']}")
+        print(f"  {r['detail']}")
+        for c in r["constraints"]:
+            print(f"    constraint: {c}")
+        print(f"  reproduce: python {os.path.relpath(__file__)} --mode solver --solver-trial-seed {r['trial_seed']}")
+
+    print("\n" + "=" * 60)
+    print("Solver-differential summary")
+    print("=" * 60)
+    for k, v in sorted(counts.items()):
+        print(f"  {k:14s}: {v}")
+    print(f"  total elapsed : {elapsed:.2f}s")
+
+    if args.report:
+        with open(args.report, "w") as f:
+            json.dump({"mode": "solver", "seed": seed, "counts": counts, "results": results}, f, indent=2)
+        print(f"  report written to {args.report}")
+
+    if bad:
+        print(f"\nFAIL: {len(bad)} solver divergence(s)/error(s).")
+        return 1
+    print("\nOK: no solver divergences.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Property-based differential fuzzer for the Rust engine.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage\n")[-1] if "Usage" in (__doc__ or "") else "",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("corpus", "solver"),
+        default="corpus",
+        help=(
+            "corpus: differential whole-binary exploration over angr-examples (default). "
+            "solver: differential random-constraint solving, RustSolverContext vs claripy "
+            "(sat/min/max/eval/eval_batch); needs no example corpus."
+        ),
     )
     parser.add_argument("--trials", type=int, default=20, help="Number of trials to run (default: 20)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed (default: time-based)")
@@ -383,7 +685,29 @@ def main() -> int:
     )
     parser.add_argument("--report", default=None, metavar="PATH", help="Write a JSON report of all trials to PATH")
     parser.add_argument("--list", action="store_true", help="List the eligible example set and exit")
+    parser.add_argument(
+        "--solver-trial-seed",
+        type=int,
+        default=None,
+        metavar="S",
+        help="[--mode solver] Re-run exactly the one trial with this seed (standalone reproducer)",
+    )
+    parser.add_argument(
+        "--solver-chunk",
+        type=int,
+        default=25,
+        help="[--mode solver] Trials per subprocess (default: 25). Lower localizes a crashing trial.",
+    )
+    parser.add_argument(
+        "--solver-eval-n",
+        type=int,
+        default=5,
+        help="[--mode solver] Number of solutions requested per eval_upto/eval call (default: 5)",
+    )
     args = parser.parse_args()
+
+    if args.mode == "solver":
+        return run_solver_mode(args)
 
     eligible = _eligible_examples(include_bimodal=args.include_bimodal)
     if args.only:
