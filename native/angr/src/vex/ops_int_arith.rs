@@ -86,8 +86,9 @@ impl VEXOps {
     ///
     /// Z3 defines div/mod by zero totally (udiv→all-ones, urem→dividend,
     /// sdiv→±1, srem→dividend), matching claripy, so the symbolic path
-    /// needs no explicit zero guard. The concrete path returns 0 on a
-    /// zero divisor — callers are expected to have checked.
+    /// needs no explicit zero guard. The concrete path reproduces those
+    /// same totals rather than trapping, so a zero divisor yields the same
+    /// value whether the operands arrived concrete or symbolic.
     fn divmod_double_to_single(
         dividend: RustBV,
         divisor: RustBV,
@@ -102,11 +103,26 @@ impl VEXOps {
             let dvd = dvd & Self::low_bit_mask_u128(dividend_w);
             let dvs = dvs & Self::low_bit_mask_u128(divisor_w);
 
+            let half_mask = Self::low_bit_mask_u128(divisor_w);
+
             if dvs == 0 {
-                return Ok(RustBV::concrete(0, dividend_w));
+                // Mirror the symbolic arm below, which divides the full-width
+                // dividend by a zero-extended zero divisor and takes the low
+                // `divisor_w` bits of each Z3 total: quotient = all-ones
+                // (unsigned, or signed with a non-negative dividend) / +1
+                // (signed, negative dividend); remainder = the dividend.
+                let quotient = if signed && Self::sign_extend_low_to_i128(dvd, dividend_w) < 0 {
+                    1
+                } else {
+                    half_mask
+                };
+                let remainder = dvd & half_mask;
+                return Ok(RustBV::concrete(
+                    quotient | (remainder << divisor_w),
+                    dividend_w,
+                ));
             }
 
-            let half_mask = Self::low_bit_mask_u128(divisor_w);
             let (quotient, remainder) = if signed {
                 let dvd_i = Self::sign_extend_low_to_i128(dvd, dividend_w);
                 let dvs_i = Self::sign_extend_low_to_i128(dvs, divisor_w);

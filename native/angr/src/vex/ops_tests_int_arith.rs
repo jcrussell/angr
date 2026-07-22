@@ -103,3 +103,60 @@ fn test_sign_extend() {
     .unwrap();
     assert_eq!(result.as_u64(), Some(0xFFFFFFFF)); // -1 in 32 bits
 }
+
+// angr-g2je6: the concrete zero-divisor arm of `divmod_double_to_single` must
+// produce the same packed value as the symbolic arm (Z3's total div/mod), so a
+// guest DivMod's result does not depend on whether its operands arrived
+// concrete. Each case builds both and compares; the symbolic side pins the
+// divisor to 0 with a constraint so the symbolic path is actually taken.
+fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u32, divisor_w: u32) {
+    let ctx = SymContext::new_mock();
+
+    let concrete = VEXOps::binop(
+        op,
+        RustBV::concrete(dividend, dividend_w),
+        RustBV::concrete(0, divisor_w),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(concrete.width(), dividend_w);
+    let concrete_v = concrete.as_u128().expect("concrete arm must fold");
+
+    let dvs = RustBV::symbolic(&ctx, "dvs_zero", divisor_w);
+    let pinned = dvs.eq(&RustBV::concrete(0, divisor_w), &ctx);
+    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs, &ctx).unwrap();
+    assert!(symbolic.is_symbolic(), "symbolic arm must not fold");
+    let symbolic_v = ctx.eval(&symbolic).expect("symbolic result must be sat");
+
+    assert_eq!(
+        concrete_v, symbolic_v,
+        "{op:?}: concrete zero-divisor {concrete_v:#x} != symbolic {symbolic_v:#x}"
+    );
+}
+
+#[test]
+fn test_divmod_u64_to_32_zero_divisor_matches_symbolic() {
+    divmod_zero_divisor_matches_symbolic(IROp::DivModU64to32, 100, 64, 32);
+}
+
+#[test]
+fn test_divmod_s64_to_32_zero_divisor_positive_dividend() {
+    divmod_zero_divisor_matches_symbolic(IROp::DivModS64to32, 100, 64, 32);
+}
+
+#[test]
+fn test_divmod_s64_to_32_zero_divisor_negative_dividend() {
+    // -100 as i64: bvsdiv(x, 0) = +1 here, not all-ones.
+    divmod_zero_divisor_matches_symbolic(IROp::DivModS64to32, 0xFFFF_FFFF_FFFF_FF9C, 64, 32);
+}
+
+#[test]
+fn test_divmod_u128_to_64_zero_divisor_matches_symbolic() {
+    divmod_zero_divisor_matches_symbolic(IROp::DivModU128to64, 1000, 128, 64);
+}
+
+#[test]
+fn test_divmod_s128_to_64_zero_divisor_negative_dividend() {
+    divmod_zero_divisor_matches_symbolic(IROp::DivModS128to64, (-1000i128) as u128, 128, 64);
+}

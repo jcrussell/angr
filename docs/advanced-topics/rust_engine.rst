@@ -2401,6 +2401,15 @@ Consequently the flip gate is:
    ``RegisterFile`` is zero-backed), and ``PRODUCE_ZERODIV_SUCCESSORS`` — the
    one real gap, since Z3's division is total and Rust never emits the SigFPE
    successor — was promoted to raise, which the dispatcher routes to Python.
+
+   Within that total-division stance, the Rust engine's *concrete* folds are
+   held to the same SMT-LIB semantics as its symbolic arms (``angr-g2je6``):
+   ``udiv(x, 0)`` is all-ones, ``urem(x, 0)`` / ``srem(x, 0)`` are ``x``, and
+   ``sdiv(x, 0)`` is ``-1`` for ``x >= 0`` but ``+1`` for ``x < 0``. The guest
+   ``DivMod`` ops pack the low half of those same totals (quotient in the low
+   half, remainder in the high half) on a zero divisor rather than returning
+   zero. A division's result therefore never depends on whether its operands
+   happened to arrive concrete or symbolic-then-pinned.
 3. The rest of the silent surface is empty — either fixed, or on an explicit
    accepted-divergence list. Today that is the 63 flip-blocking bridge sites
    from the M6.5a fallback census. Both native-dispatch inspect gaps are

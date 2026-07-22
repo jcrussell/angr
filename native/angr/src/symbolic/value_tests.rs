@@ -1653,3 +1653,55 @@ fn test_rotl_rotr_concrete_identities() {
     let by_small = x48.rotl(&RustBV::concrete(5, 48), &ctx);
     assert_eq!(by_big.as_u64(), by_small.as_u64());
 }
+
+// angr-g2je6: SMT-LIB bvsdiv is total but asymmetric — x / 0 is -1 for x >= 0
+// and +1 for x < 0. The concrete fold in `sdiv_into` used to return all-ones
+// unconditionally, so sdiv(-5, 0) differed depending on whether the operands
+// arrived concrete or symbolic-then-pinned.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_sdiv_by_zero_concrete_matches_z3() {
+    for dividend in [5u128, 0, (-5i64) as u64 as u128, 1u128 << 63] {
+        let ctx = SymContext::new_mock();
+        let concrete = RustBV::concrete(dividend, 64).sdiv(&RustBV::concrete(0, 64), &ctx);
+        let folded = concrete.as_u128().expect("concrete sdiv must fold");
+
+        let d = RustBV::symbolic(&ctx, "sdiv_dvd", 64);
+        let pinned = d.eq(&RustBV::concrete(dividend, 64), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+        let symbolic = d.sdiv(&RustBV::concrete(0, 64), &ctx);
+        assert_eq!(
+            Some(folded),
+            ctx.eval(&symbolic),
+            "sdiv({dividend:#x}, 0): concrete fold disagrees with Z3 bvsdiv"
+        );
+    }
+}
+
+// Sibling coverage for the ops that were already Z3-correct, so a future
+// "simplification" of the zero-divisor arms cannot silently break them.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_udiv_srem_urem_by_zero_concrete_matches_z3() {
+    for dividend in [7u128, 0, (-7i64) as u64 as u128] {
+        let ctx = SymContext::new_mock();
+        let d = RustBV::symbolic(&ctx, "dvd0", 64);
+        let pinned = d.eq(&RustBV::concrete(dividend, 64), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+        let zero = RustBV::concrete(0, 64);
+        let c = RustBV::concrete(dividend, 64);
+
+        assert_eq!(
+            c.udiv(&zero, &ctx).as_u128(),
+            ctx.eval(&d.udiv(&zero, &ctx))
+        );
+        assert_eq!(
+            c.urem(&zero, &ctx).as_u128(),
+            ctx.eval(&d.urem(&zero, &ctx))
+        );
+        assert_eq!(
+            c.srem(&zero, &ctx).as_u128(),
+            ctx.eval(&d.srem(&zero, &ctx))
+        );
+    }
+}

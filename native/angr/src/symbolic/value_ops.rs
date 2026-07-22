@@ -365,12 +365,22 @@ impl RustBV {
         sdiv_into,
         |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
+                let a_signed = sign_extend(a, lhs.width());
                 if b == 0 {
-                    Self::ones(lhs.width())
+                    // SMT-LIB bvsdiv is total: x / 0 is -1 for x >= 0 but +1
+                    // for x < 0. Must match the symbolic BVOp::SDiv arm below,
+                    // which lowers straight to Z3 bvsdiv.
+                    if a_signed < 0 {
+                        Self::concrete(1, lhs.width())
+                    } else {
+                        Self::ones(lhs.width())
+                    }
                 } else {
-                    let a_signed = sign_extend(a, lhs.width());
                     let b_signed = sign_extend(b, lhs.width());
-                    Self::concrete((a_signed / b_signed) as u128, lhs.width())
+                    // `wrapping_div` for the MIN / -1 overflow: Rust's `/`
+                    // panics even in release and `panic = "abort"` would
+                    // SIGABRT the process; the wrap matches Z3 bvsdiv.
+                    Self::concrete(a_signed.wrapping_div(b_signed) as u128, lhs.width())
                 }
             }
             _ => {
@@ -412,7 +422,8 @@ impl RustBV {
                 } else {
                     let a_signed = sign_extend(a, lhs.width());
                     let b_signed = sign_extend(b, lhs.width());
-                    Self::concrete((a_signed % b_signed) as u128, lhs.width())
+                    // `wrapping_rem` for the MIN % -1 overflow — see `sdiv`.
+                    Self::concrete(a_signed.wrapping_rem(b_signed) as u128, lhs.width())
                 }
             }
             _ => {
