@@ -982,9 +982,11 @@ impl RustExplorationManager {
     /// Route one reattached materialized terminal by its [`MatKind`] tag —
     /// the per-payload body of the wave loop's post-barrier routing, extracted
     /// so the steady-state coordinator can route terminals one at a time as they
-    /// stream in. The caller looks up (and REMOVES — entries must not accumulate
-    /// over a long steady session) the state's `kind_map`/`root_map` entries and
-    /// passes them per-state; true bounces are pushed to `bounce_queue` for
+    /// stream in. The caller looks up the state's `kind_map`/`root_map` entries
+    /// and passes them per-state — the steady caller also REMOVES both, since
+    /// entries for a routed terminal are dead and must not accumulate over a
+    /// long session (the wave caller owns maps that die with the wave, so it
+    /// only reads); true bounces are pushed to `bounce_queue` for
     /// `process_parallel_bounce_queue` rather than dispatched inline, so both
     /// loops surface at most one Python callback per `run()`.
     fn route_materialized_terminal(
@@ -1205,6 +1207,11 @@ impl RustExplorationManager {
             if !self.pending_parallel_bounces.is_empty() {
                 let queue = std::mem::take(&mut self.pending_parallel_bounces);
                 if let Some(event) = self.process_parallel_bounce_queue(&callbacks, queue) {
+                    // The session stays LIVE across this return, so fold the
+                    // workers' accounting now — otherwise mid-session `stats()`
+                    // reports a stale step/counter total until the next
+                    // finalize (angr-offd5).
+                    self.fold_steady_counters_incrementally();
                     return Ok(event);
                 }
             }
@@ -1221,6 +1228,9 @@ impl RustExplorationManager {
             match self.steady_pump(py, &callbacks, dispatched_at_entry, max_steps)? {
                 SteadyOutcome::Bounces(queue) => {
                     if let Some(event) = self.process_parallel_bounce_queue(&callbacks, queue) {
+                        // Session left LIVE across the callback — fold now
+                        // (angr-offd5).
+                        self.fold_steady_counters_incrementally();
                         return Ok(event);
                     }
                     // Natively-resolved bounce successors are now in
@@ -1354,6 +1364,29 @@ impl RustExplorationManager {
         }
     }
 
+    /// Fold the live session's worker accounting into the manager WITHOUT
+    /// finalizing it (angr-offd5), honouring the incremental-fold contract
+    /// documented on [`Self::fold_parallel_shared_counters`].
+    ///
+    /// `finalize_steady_session` is the only other folder, and a steady session
+    /// stays live across every `need_callback` return — so on a bounce-heavy
+    /// explore that never quiesces, `stats()['steps']` and every `CoreCounters`
+    /// total would otherwise sit stale for the whole session. Both the counter
+    /// drain and the `stepped` read are M2 swaps, so folding early and folding
+    /// again at finalize cannot double-count.
+    #[cfg(feature = "vex-engine-z3")]
+    fn fold_steady_counters_incrementally(&mut self) {
+        let Some(shared) = self
+            .parallel_session
+            .as_ref()
+            .map(|s| Arc::clone(&s.shared))
+        else {
+            return;
+        };
+        let worker_stepped = self.fold_parallel_shared_counters(&shared);
+        self.steps += worker_stepped;
+    }
+
     /// Monotonic dispatch count for the live session (0 if none) — the steady
     /// analogue of the wave loop's `dispatched_total`, used for the step budget.
     fn steady_dispatched_total(&self) -> u64 {
@@ -1482,10 +1515,21 @@ impl RustExplorationManager {
     }
 
     /// Reattach one streamed terminal into the main Z3 context and route it via
-    /// the shared `route_materialized_terminal` helper (the coordinator owns
-    /// `kind_map`/`root_map`, REMOVING each entry as it routes so the maps do
-    /// not grow O(all-states-ever) over a long session). Bounce roundtrips are
-    /// counted here; the returned `bounce_queue` is dispatched by the caller.
+    /// the shared `route_materialized_terminal` helper. The coordinator owns
+    /// `kind_map`/`root_map` and removes the routed state's OWN entry from both
+    /// as it routes — a terminal never re-enters a worker under the same id, so
+    /// its entries are dead (angr-offd5). A bounce that IS re-injected gets its
+    /// root re-stamped by `steady_inject_resumed`, so the removal is safe there
+    /// too.
+    ///
+    /// This bounds the maps by the live frontier only in the terminal
+    /// dimension: `root_map` still retains one entry per `Continue` successor
+    /// for the session's lifetime (those states are still being stepped, and
+    /// nothing signals when a subtree finishes), so it is cleared wholesale when
+    /// the session is dropped in `finalize_steady_session`.
+    ///
+    /// Bounce roundtrips are counted here; the returned `bounce_queue` is
+    /// dispatched by the caller.
     fn route_steady_terminal(
         &mut self,
         payload: StateMigrationPayload,
@@ -1506,8 +1550,7 @@ impl RustExplorationManager {
             .root_map
             .lock()
             .expect("root_map poisoned")
-            .get(&id)
-            .copied()
+            .remove(&id)
             .unwrap_or(id);
         let kind = sess
             .shared

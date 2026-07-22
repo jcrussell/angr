@@ -13,7 +13,7 @@
 
 use super::*;
 
-use crate::exploration::core_outcome::BounceKind;
+use crate::exploration::core_outcome::{BounceKind, CoreCounters};
 use crate::stash::{STASH_ACTIVE, STASH_AVOID, STASH_FOUND, STASH_PRUNED, STASH_UNCONSTRAINED};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -486,4 +486,59 @@ fn steady_finalize_deadline_scales_with_solver_timeout() {
 
     // A pathological timeout must not overflow the millis -> Duration math.
     assert!(steady_finalize_deadline(u32::MAX) > Duration::from_secs(60));
+}
+
+/// angr-offd5(b): folding a live session's accounting mid-explore must be safe
+/// to repeat — the incremental fold at every `need_callback` return and the
+/// final fold in `finalize_steady_session` share one `ParallelShared`, so a
+/// non-destructive read would double-count every step and every `CoreCounters`
+/// entry. Both halves are M2 (swap `stepped` to zero, `mem::take` the counter
+/// queue), which this pins directly: a second fold with no new worker activity
+/// contributes exactly nothing.
+#[test]
+fn folding_shared_counters_twice_does_not_double_count() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        let shared = ParallelShared::seeded(0, 1);
+        shared.stepped.store(7, Ordering::SeqCst);
+        shared.counters.lock().unwrap().push(CoreCounters {
+            native_calls: 3,
+            syscall_native_count: 2,
+            ..Default::default()
+        });
+
+        let stepped = mgr.fold_parallel_shared_counters(&shared);
+        assert_eq!(stepped, 7, "first fold reports the workers' step total");
+        assert_eq!(mgr.profiling.native_proc_stats.native_calls, 3);
+        assert_eq!(mgr.syscall_native_count, 2);
+
+        // Second fold, no worker activity in between: pure no-op.
+        let stepped = mgr.fold_parallel_shared_counters(&shared);
+        assert_eq!(stepped, 0, "stepped was swapped to zero by the first fold");
+        assert_eq!(
+            mgr.profiling.native_proc_stats.native_calls, 3,
+            "counter queue was drained, not copied"
+        );
+        assert_eq!(mgr.syscall_native_count, 2);
+    });
+}
+
+/// angr-offd5(b): the incremental folder is reachable on the no-session path
+/// (a `need_callback` can surface before `ensure_steady_session` ever ran, and
+/// the serial/wave loops never build one) and must leave the manager untouched
+/// there rather than panicking on the absent session.
+#[test]
+fn incremental_steady_fold_is_a_noop_without_a_session() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.steps = 41;
+        assert!(!mgr.parallel_session_active());
+
+        mgr.fold_steady_counters_incrementally();
+
+        assert_eq!(mgr.steps, 41, "no session ⇒ nothing to fold");
+        assert!(!mgr.parallel_session_active());
+    });
 }
