@@ -64,11 +64,19 @@ mod offsets {
     // Segment base addresses
     pub const LDT: u32 = 304;
     pub const GDT: u32 = 312;
-    // Note: fs_const/gs_const not in archinfo for x86, using placeholders
-    pub const FS_CONST: u32 = 320;
-    pub const GS_CONST: u32 = 324;
+    // VEX bookkeeping tail (VexGuestX86State, libvex_guest_x86.h). x86 has no
+    // guest_FS_CONST/GS_CONST — that pair is amd64-only — so 320/324 are
+    // guest_EMNOTE/guest_CMSTART, not scratch space (angr-rfxc7).
+    pub const EMNOTE: u32 = 320;
+    pub const CMSTART: u32 = 324;
+    pub const CMLEN: u32 = 328;
+    pub const NRADDR: u32 = 332;
+    pub const SC_CLASS: u32 = 336;
+    pub const IP_AT_SYSCALL: u32 = 340;
 
-    // Total guest state size (must cover all registers)
+    // Total guest state size (must cover all registers). 344 is the end of
+    // guest_IP_AT_SYSCALL; everything past it is the struct's explicit
+    // padding1..3, not guest state, so archinfo and VEX agree here.
     pub const GUEST_STATE_SIZE: usize = 344;
 }
 
@@ -128,8 +136,13 @@ const ALIASES: &[RegEntry] = &[
     ("fs", offsets::FS, 2),
     ("gs", offsets::GS, 2),
     ("ss", offsets::SS, 2),
-    ("fs_const", offsets::FS_CONST, 4),
-    ("gs_const", offsets::GS_CONST, 4),
+    // VEX bookkeeping tail (see the offsets note above).
+    ("emnote", offsets::EMNOTE, 4),
+    ("cmstart", offsets::CMSTART, 4),
+    ("cmlen", offsets::CMLEN, 4),
+    ("nraddr", offsets::NRADDR, 4),
+    ("sc_class", offsets::SC_CLASS, 4),
+    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
     // Segment-base descriptor tables (archinfo.ArchX86: 8B each, zero-init).
     // Surfaced for TLS-aware analyses that read state.regs.ldt/gdt.
     ("ldt", offsets::LDT, 8),
@@ -146,7 +159,8 @@ const ALIASES: &[RegEntry] = &[
     ("xmm7", offsets::XMM7, 16),
     // FPU
     ("fpreg", offsets::FPREG, 64),
-    ("fptag", offsets::FPTAG, 4),
+    // guest_FPTAG is UChar[8] — one x87 tag byte per FP slot.
+    ("fptag", offsets::FPTAG, 8),
     ("fpround", offsets::FPROUND, 4),
     ("fc3210", offsets::FC3210, 4),
     ("ftop", offsets::FTOP, 4),

@@ -66,7 +66,6 @@ KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {
     ("amd64", "bp"): (56, 2, "angr-6qzik", "Rust 'bp' is the legacy 16-bit sub-register"),
     ("x86", "sp"): (24, 2, "angr-6qzik", "Rust 'sp' is the legacy 16-bit sub-register"),
     ("x86", "bp"): (28, 2, "angr-6qzik", "Rust 'bp' is the legacy 16-bit sub-register"),
-    ("x86", "fptag"): (136, 4, "angr-rfxc7", "fptag declared 4 bytes, VEX field is 8"),
     ("arm", "ip"): (56, 4, "angr-itm3u", "Rust 'ip' aliases r12; archinfo 'ip' is the PC"),
 }
 

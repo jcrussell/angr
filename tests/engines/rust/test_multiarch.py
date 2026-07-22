@@ -518,40 +518,46 @@ class TestMultiArchSupport:
         """x86 (32-bit) segment-base entries round-trip via the standard
         register dispatch.
 
-        Covers angr-5spy.2: the four segment-base slots — ``fs_const``
-        (320, 4B placeholder), ``gs_const`` (324, 4B placeholder),
-        ``ldt`` (304, 8B per archinfo), and ``gdt`` (312, 8B per
-        archinfo) — are reachable through
+        Covers angr-5spy.2: ``ldt`` (304, 8B per archinfo) and ``gdt``
+        (312, 8B per archinfo) are reachable through
         ``set_register``/``get_register`` after wiring them into
-        ``arch/x86.rs::ALIASES``. ``fs_const``/``gs_const`` are
-        Rust-only placeholders (archinfo does not define them for
-        x86, so Python-side parity is not applicable); ``ldt``/``gdt``
-        exist on both sides of the FFI boundary.
+        ``arch/x86.rs::ALIASES``.
+
+        Covers angr-rfxc7: x86 has **no** ``fs_const``/``gs_const`` —
+        that pair is amd64-only (``arch_prctl`` is an amd64 syscall).
+        The former Rust-only placeholders sat on VEX's live
+        ``guest_EMNOTE``/``guest_CMSTART`` (320/324), so writing them
+        by name silently clobbered guest state; they are now named
+        after the real VEX fields instead.
 
         A wrong-offset bug would surface as cross-talk between
-        neighbouring slots (writing ``fs_const`` would corrupt
-        ``gs_const`` or vice versa).
+        neighbouring slots (writing ``ldt`` would corrupt ``gdt`` or
+        vice versa).
         """
         state = RustSimState("x86")
 
         # Distinct values at each slot so a misaligned offset surfaces
         # as a cross-talk failure on the assertion side.
-        state.set_register("fs_const", 0xCAFE_BABE)
-        state.set_register("gs_const", 0xDEAD_BEEF)
         state.set_register("ldt", 0x1122334455667788)
         state.set_register("gdt", 0xAABBCCDDEEFF0011)
+        state.set_register("emnote", 0xCAFE_BABE)
+        state.set_register("cmstart", 0xDEAD_BEEF)
 
-        assert state.get_register("fs_const") == 0xCAFE_BABE
-        assert state.get_register("gs_const") == 0xDEAD_BEEF
         assert state.get_register("ldt") == 0x1122334455667788
         assert state.get_register("gdt") == 0xAABBCCDDEEFF0011
+        assert state.get_register("emnote") == 0xCAFE_BABE
+        assert state.get_register("cmstart") == 0xDEAD_BEEF
 
-        # Rewriting fs_const must not disturb gs_const (or vice versa),
+        # x86 must reject the amd64-only segment-base names outright.
+        with pytest.raises(Exception):
+            state.set_register("fs_const", 0x1234)
+
+        # Rewriting emnote must not disturb cmstart (or vice versa),
         # since the two slots are adjacent (320/324, both 4B) and a
         # wrong-width write would bleed across the boundary.
-        state.set_register("fs_const", 0x1234_5678)
-        assert state.get_register("fs_const") == 0x1234_5678
-        assert state.get_register("gs_const") == 0xDEAD_BEEF
+        state.set_register("emnote", 0x1234_5678)
+        assert state.get_register("emnote") == 0x1234_5678
+        assert state.get_register("cmstart") == 0xDEAD_BEEF
 
         # ldt/gdt are 8B and adjacent (304/312); writing one must not
         # bleed into the other.
