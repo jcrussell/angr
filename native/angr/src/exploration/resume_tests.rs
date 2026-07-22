@@ -188,23 +188,22 @@ fn all_three_entry_points_materialize_the_same_deferred_fork() {
     );
 }
 
-/// Characterization (NOT a spec): without a `pre_callback_snapshot` the three
-/// entry points DIVERGE.
+/// Regression (angr-khpsh): without a `pre_callback_snapshot` all three entry
+/// points must STILL keep the unexplored side live.
 ///
-/// `_resume_after_simprocedure` and `_resume_after_symbolic_branch` call
-/// `apply_deferred_fork_constraints` on the parking state *before* deriving
-/// `fork_base = state.fork()`, so the snapshot-less base inherits the
-/// taken-path guard and the unexplored side is UNSAT — pruned or dropped.
-/// `_deadend_pending_callback` never applies those constraints up front (it
-/// passes the parking state as `guard_sink` instead), so its fork stays live.
-///
-/// Pinned so the divergence cannot change silently; the fix is tracked
-/// separately as angr-khpsh.
+/// The snapshot-less fallback base is `state.fork()`, and it has to be taken
+/// *before* `apply_deferred_fork_constraints` stamps the taken-path guard onto
+/// the parking state — otherwise the base inherits that guard, the unexplored
+/// side (`x == 0` when the step took `x != 0`) is trivially UNSAT, and a
+/// reachable branch is silently pruned. `_deadend_pending_callback` was always
+/// correct here (it never applies those constraints up front, passing the
+/// parking state as `guard_sink` instead); the other two used to prune, which
+/// this test now forbids.
 #[test]
-fn snapshotless_resume_diverges_from_deadend_on_fork_survival() {
+fn snapshotless_resume_keeps_deferred_fork_live_in_every_entry_point() {
     Python::initialize();
 
-    // Deadend keeps the fork alive without a snapshot.
+    // 1. Deadend (was already correct).
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let (state, cond) = state_and_condition();
     let reason = CallbackReason::Error {
@@ -216,7 +215,7 @@ fn snapshotless_resume_diverges_from_deadend_on_fork_survival() {
     assert_eq!(deadend_forks.len(), 1, "deadend keeps the unexplored side");
     assert_eq!(deadend_forks[0].0, STASH_ACTIVE);
 
-    // The simprocedure path prunes it instead.
+    // 2. SimProcedure resume.
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let (state, cond) = state_and_condition();
     let reason = CallbackReason::SimProcedure {
@@ -233,8 +232,29 @@ fn snapshotless_resume_diverges_from_deadend_on_fork_survival() {
     let simproc_forks = fork_placements(&mgr);
     assert_eq!(simproc_forks.len(), 1);
     assert_eq!(
-        simproc_forks[0].0, STASH_PRUNED,
-        "snapshot-less simprocedure resume prunes the unexplored side",
+        simproc_forks[0].0, STASH_ACTIVE,
+        "snapshot-less simprocedure resume must keep the unexplored side live",
+    );
+    assert_eq!(mgr.stash_count(STASH_PRUNED), 0);
+
+    // 3. Symbolic branch resume.
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let (state, cond) = state_and_condition();
+    let reason = CallbackReason::SymbolicBranch {
+        condition_id: COND_ID,
+        true_target: 0x40_3000,
+        false_target: 0x40_4000,
+    };
+    let sid = park(&mut mgr, pending_with_one_fork(state, &cond, reason, None));
+    Python::attach(|py| {
+        mgr._resume_after_symbolic_branch(py, sid, 0x40_3000, 0x40_4000, None, None)
+            .expect("resume symbolic branch");
+    });
+    let branch_forks = fork_placements(&mgr);
+    assert_eq!(branch_forks.len(), 1);
+    assert_eq!(
+        branch_forks[0].0, STASH_ACTIVE,
+        "snapshot-less symbolic-branch resume must keep the unexplored side live",
     );
 }
 

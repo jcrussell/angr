@@ -73,15 +73,6 @@ impl RustExplorationManager {
         // such forks "will be skipped" was removed (angr-cudgw.16): the claim was
         // false and the loop had no side effect.
 
-        // Add taken-path constraints from deferred forks to the main state.
-        // Without these, the solver doesn't know which branch was taken,
-        // causing incorrect results for subsequent symbolic operations.
-        apply_deferred_fork_constraints(
-            &state,
-            &pending.deferred_forks,
-            &pending.stored_conditions,
-        );
-
         // Process deferred forks that were stored during the step
         // These represent unexplored branches that should be added to active
         //
@@ -89,6 +80,12 @@ impl RustExplorationManager {
         // NOT inherit callback constraints. Use pre_callback_snapshot as fork base.
         // Only create fork_base when there are deferred forks — state.fork() costs ~3ms
         // due to Z3 solver clone, and most callbacks have zero deferred forks.
+        //
+        // ORDER MATTERS (angr-khpsh): the snapshot-less fallback `state.fork()`
+        // must run BEFORE apply_deferred_fork_constraints below, otherwise the
+        // fork base inherits the taken-path guard and every unexplored side is
+        // trivially UNSAT — a reachable branch silently pruned. The deadend
+        // handler avoids this by never applying those constraints up front.
         let has_deferred_forks = !pending.deferred_forks.is_empty();
         let fork_base = if has_deferred_forks {
             Some(
@@ -100,6 +97,15 @@ impl RustExplorationManager {
             drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
             None
         };
+
+        // Add taken-path constraints from deferred forks to the main state.
+        // Without these, the solver doesn't know which branch was taken,
+        // causing incorrect results for subsequent symbolic operations.
+        apply_deferred_fork_constraints(
+            &state,
+            &pending.deferred_forks,
+            &pending.stored_conditions,
+        );
 
         // Track root state ID for lineage
         // The root is inherited from the original pending state
@@ -313,29 +319,20 @@ impl RustExplorationManager {
             _ => None,
         };
 
-        // Add taken-path constraints from deferred forks to the main state
-        // BEFORE forking for the symbolic branch. Since fork() creates an
-        // independent solver copy, both true_state and false_state will
-        // inherit these constraints. Without this, the solver wouldn't know
-        // which deferred-fork branch was taken.
-        apply_deferred_fork_constraints(
-            &pending.state,
-            &pending.deferred_forks,
-            &pending.stored_conditions,
-        );
-
         // Track root state ID for lineage
         let root_state_id = self.sm.root_or_self(pending.state.state_id());
 
         // Deferred forks diverged BEFORE this symbolic branch, so their
         // unexplored side must NOT inherit the branch guard (assume_true /
-        // assume_false applied to true_state / false_state below). Mirror the
-        // simprocedure path (_resume_after_simprocedure): build a clean fork
-        // base from the pre-callback snapshot (or a fork of the pre-branch
-        // state) BEFORE the guard is applied. Without this, a snapshot-less
-        // deferred fork gets built on true_state's guard-polluted solver and a
-        // reachable path is falsely pruned as UNSAT (angr-ph300.9). Only pay
-        // the ~3ms fork cost when there are deferred forks to materialize.
+        // assume_false applied to true_state / false_state below), nor the
+        // deferred forks' own taken-path constraints (applied just below).
+        // Mirror the simprocedure path (_resume_after_simprocedure): build a
+        // clean fork base from the pre-callback snapshot (or a fork of the
+        // pre-branch state) BEFORE either is applied. Without this, a
+        // snapshot-less deferred fork gets built on a guard-polluted solver
+        // and a reachable path is falsely pruned as UNSAT (angr-ph300.9 for
+        // the branch guard, angr-khpsh for the taken-path constraints). Only
+        // pay the ~3ms fork cost when there are deferred forks to materialize.
         let fork_base = if pending.deferred_forks.is_empty() {
             drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
             None
@@ -346,6 +343,17 @@ impl RustExplorationManager {
                     .unwrap_or_else(|| pending.state.fork()),
             )
         };
+
+        // Add taken-path constraints from deferred forks to the main state
+        // BEFORE forking for the symbolic branch. Since fork() creates an
+        // independent solver copy, both true_state and false_state will
+        // inherit these constraints. Without this, the solver wouldn't know
+        // which deferred-fork branch was taken.
+        apply_deferred_fork_constraints(
+            &pending.state,
+            &pending.deferred_forks,
+            &pending.stored_conditions,
+        );
 
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();
