@@ -174,8 +174,15 @@ pub fn try_concretize_triop_rm(
     if a.is_concrete() && b.is_concrete() {
         return try_concrete_triop_rm(opcode, rm, a, b);
     }
-    let av = ctx.eval(a)? as u64;
-    let bv = ctx.eval(b)? as u64;
+    // One JOINT witness for both operands (angr-z8elx). Two independent
+    // `ctx.eval` calls are not model-consistent in strict-deterministic mode
+    // (`eval` short-circuits to a per-variable `min`, deliberately skipping the
+    // model cache), so path-correlated operands could each be individually
+    // feasible yet jointly infeasible — and the pins below would then turn a
+    // SAT context UNSAT, silently killing a feasible path.
+    let vals = ctx.eval_many(&[a.clone(), b.clone()])?;
+    let av = vals[0] as u64;
+    let bv = vals[1] as u64;
     let af = f64::from_bits(av);
     let bf = f64::from_bits(bv);
     let r = match opcode {

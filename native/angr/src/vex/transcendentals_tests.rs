@@ -118,3 +118,29 @@ fn recip_exp_specials() {
     let r = try_concrete_binop_rm(IOP_RECPEXP_F32, &rm(), &bv32(8.0)).unwrap();
     assert_eq!(extract_f32(r), 0.125);
 }
+
+/// angr-z8elx: the two operands must be pinned to a JOINT witness. Under
+/// strict-deterministic mode `eval` returns a per-variable minimum, so two
+/// independent evals hand back `a=0, b=0` here — individually feasible, but
+/// the `a + b == 5` path constraint makes them jointly infeasible, and the
+/// pins would turn a SAT context UNSAT (a silently dropped feasible path).
+#[test]
+fn concretize_triop_rm_pins_a_joint_witness_under_deterministic_mode() {
+    let ctx = crate::symbolic::SymContext::new_mock();
+    ctx.set_deterministic(true);
+    let a = RustBV::symbolic(&ctx, "tz_a", 64);
+    let b = RustBV::symbolic(&ctx, "tz_b", 64);
+    let sum = a.add(&b, &ctx);
+    ctx.assume_true(&sum.eq(&RustBV::concrete(5, 64), &ctx));
+    assert!(
+        ctx.is_sat(),
+        "precondition: correlated operands are satisfiable"
+    );
+
+    let r = try_concretize_triop_rm(IOP_YL2X_F64, &rm(), &a, &b, &ctx);
+    assert!(r.is_some(), "symbolic operands should concretize");
+    assert!(
+        ctx.is_sat(),
+        "pinning both operands must not contradict the path constraint"
+    );
+}
