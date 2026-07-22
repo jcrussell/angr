@@ -79,8 +79,9 @@ _resolve_z3_header()
 
 
 def _resolve_pyvex_libdir() -> None:
-    # The non-default `libvex-ffi` Rust feature links the venv's
-    # pyvex/lib/libpyvex.so (see docs/advanced-topics/rust_libvex_ffi.rst).
+    # The `libvex-ffi` Rust feature -- default-ON, see _rust_features below --
+    # links the venv's pyvex/lib/libpyvex.so (see
+    # docs/advanced-topics/rust_libvex_ffi.rst).
     # build.rs resolves this itself via `python3 -c 'import pyvex'`, but export
     # PYVEX_FFI_LIB_DIR here as the authoritative override so a setuptools-rust
     # build (which may run cargo in a different cwd/interpreter) links the same

@@ -4,7 +4,7 @@
 Writes ``native/angr/vendor/pyvex_ffi.h`` from the installed pyvex's
 ``pyvex.vex_ffi.ffi_str`` — the authoritative C interface pyvex's own cffi
 uses to marshal libVEX output. Binding Rust (via bindgen, behind the
-non-default ``libvex-ffi`` cargo feature) against this exact cdef is
+default-ON ``libvex-ffi`` cargo feature) against this exact cdef is
 parity-safe (see docs/advanced-topics/rust_libvex_ffi.rst).
 
 Run this on any pyvex version bump, then re-run the corpus IRSB parity
@@ -41,7 +41,7 @@ def build_header() -> str:
  * (bd angr-3s5js.4).  ABI drift risk is dormant while the pin is frozen.
  *
  * Consumed by build.rs::generate_pyvex_ffi_bindings (bindgen) under the
- * non-default `libvex-ffi` cargo feature.
+ * `libvex-ffi` cargo feature (default-ON).
  */
 #include <stddef.h>  /* size_t (used by msg_current_size) */
 

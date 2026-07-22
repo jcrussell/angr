@@ -1,4 +1,4 @@
-//! Raw FFI declarations for the libVEX seam (non-default `libvex-ffi` feature).
+//! Raw FFI declarations for the libVEX seam (`libvex-ffi` feature, default-ON).
 //!
 //! These bindings are **generated** by `build.rs::generate_pyvex_ffi_bindings`
 //! (bindgen) from the vendored cffi cdef `native/angr/vendor/pyvex_ffi.h`,

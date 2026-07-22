@@ -15,7 +15,7 @@
  * (angr-3s5js.4).  ABI drift risk is dormant while the pin is frozen.
  *
  * Consumed by build.rs::generate_pyvex_ffi_bindings (bindgen) under the
- * non-default `libvex-ffi` cargo feature.
+ * `libvex-ffi` cargo feature (default-ON).
  */
 #include <stddef.h>  /* size_t (used by msg_current_size) */
 

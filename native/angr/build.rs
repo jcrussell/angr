@@ -6,9 +6,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=Z3_LIBRARY_PATH_OVERRIDE");
     println!("cargo:rerun-if-env-changed=PYVEX_FFI_LIB_DIR");
 
-    // Native libVEX FFI backend (non-default `libvex-ffi` feature): link the
-    // venv's libpyvex.so so `vex_lift`/`vex_init` resolve. Gated so the default
-    // build takes on no new rpath dependency. See rust_libvex_ffi.rst.
+    // Native libVEX FFI backend (`libvex-ffi` feature, default-ON via setup.py
+    // since angr-3trr7): link the venv's libpyvex.so so `vex_lift`/`vex_init`
+    // resolve. Still feature-gated so `ANGR_LIBVEX_FFI=0` yields a build with no
+    // libpyvex.so rpath dependency. See rust_libvex_ffi.rst.
     if env::var("CARGO_FEATURE_LIBVEX_FFI").is_ok() {
         configure_pyvex_ffi();
         generate_pyvex_ffi_bindings();

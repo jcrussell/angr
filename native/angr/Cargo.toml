@@ -14,11 +14,15 @@ vex-engine = ["im", "lru"]
 vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
 automaton = ["indexmap", "fixedbitset"]
-# Non-default: native cold-block lifting via direct libVEX FFI against the
-# venv's pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Kept off
-# the default set so the bench-regression gate takes on no libpyvex.so rpath
-# dependency. Opt in with `ANGR_LIBVEX_FFI=1 pip install -e .` (setup.py
-# appends it). See docs/advanced-topics/rust_libvex_ffi.rst.
+# Default-ON since 807bfd74d (human GO 2026-07-15, bd angr-3trr7): native
+# cold-block lifting via direct libVEX FFI against the venv's
+# pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Not in the
+# `default` set above because setup.py appends it -- a stock
+# `pip install -e .` builds WITH it, and the bench-regression baselines
+# (baseline_timings.json / baseline_counters.json) were refreshed on that
+# native-lift build, rpath and all. Opt OUT with
+# `ANGR_LIBVEX_FFI=0 pip install -e .`. See
+# docs/advanced-topics/rust_libvex_ffi.rst.
 libvex-ffi = ["dep:bindgen"]
 
 [dependencies]
@@ -65,7 +69,8 @@ libafl = { version = "=0.15.3", optional = true }
 libafl_bolts = { version = "=0.15.3", optional = true }
 pcode = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
 
-# Optional build-dep: only pulled in by the non-default `libvex-ffi` feature.
+# Optional build-dep: only pulled in by the `libvex-ffi` feature (default-ON
+# via setup.py; see the [features] comment above).
 # Pinned to the same major bindgen z3-sys already resolves in Cargo.lock so no
 # new registry fetch is needed. Generates the pyvex FFI decls from the vendored
 # cdef header (vendor/pyvex_ffi.h) at build time — see build.rs.
