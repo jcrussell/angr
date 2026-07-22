@@ -148,6 +148,21 @@ enum SteadyOutcome {
     Budget,
 }
 
+/// How long `finalize_steady_session` waits for each steady worker's `Paused`
+/// ack before giving up (angr-e4cys).
+///
+/// Cancellation is task-boundary-only — `scheduler::CancelToken` is
+/// deliberately not a mid-solve Z3 interrupt — so a worker that is inside one
+/// Z3 solve when the session is cancelled cannot ack until that solve returns
+/// or hits its own timeout. Scaling the drain deadline off the configured
+/// solver timeout keeps a healthy-but-slow worker (raised
+/// `set_solver_timeout`) from being mistaken for a lost wakeup, while the 60s
+/// floor preserves the historical deadline at the 30s default.
+fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(solver_timeout_ms).saturating_mul(2))
+        .max(Duration::from_secs(60))
+}
+
 /// The find/avoid-checkable target address a materialized bounce carries.
 ///
 /// Mirrors single-threaded `step_one`'s NeedCallback special case, which only
@@ -1535,14 +1550,23 @@ impl RustExplorationManager {
         // stream in. All recv waits release the GIL (workers may self-acquire
         // it while draining). A generous deadline turns a lost-wakeup bug into a
         // visible error rather than a silent hang.
+        //
+        // The deadline is derived from the configured solver timeout rather
+        // than hardcoded (angr-e4cys): cancellation is task-boundary-only
+        // (`scheduler::CancelToken` is deliberately NOT a mid-solve Z3
+        // interrupt), so a worker inside one solve cannot ack until that solve
+        // returns. A user who raised `set_solver_timeout` past 30s would
+        // otherwise trip the drain deadline on a healthy-but-slow worker.
+        let deadline = steady_finalize_deadline(self.constraint_solver.solver_timeout_ms);
         let mut paused: Vec<usize> = Vec::new();
         let mut residuals: Vec<StateMigrationPayload> = Vec::new();
+        let mut timed_out = false;
         while paused.len() < sess.workers {
             let recv = py.detach(|| {
                 sess.up_rx
                     .lock()
                     .expect("up_rx poisoned")
-                    .recv_timeout(Duration::from_secs(60))
+                    .recv_timeout(deadline)
             });
             match recv {
                 Ok(WorkerUp::Terminal { payload }) => residuals.push(payload),
@@ -1559,9 +1583,14 @@ impl RustExplorationManager {
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(PyRuntimeError::new_err(
-                        "steady finalize timed out waiting for workers to drain",
-                    ));
+                    // Do NOT bail out here (angr-e4cys): an early return drops
+                    // `sess` — and with it every residual already drained
+                    // upstream plus this session's counters — before the
+                    // routing/fold block below runs. Break instead, salvage
+                    // what arrived, then surface the error at the end. Only the
+                    // still-stuck workers' states are lost, and they are named.
+                    timed_out = true;
+                    break;
                 }
             }
         }
@@ -1625,6 +1654,18 @@ impl RustExplorationManager {
 
         self.apply_uniqueness_filter();
         self.apply_native_techniques();
+        if timed_out {
+            let stuck: Vec<usize> = (0..sess.workers).filter(|w| !paused.contains(w)).collect();
+            return Err(PyRuntimeError::new_err(format!(
+                "steady finalize timed out after {:?} waiting for workers {stuck:?} to drain \
+                 ({} of {} acked); their resident frontier states are lost. Residuals that did \
+                 arrive were routed and counters folded. If a single solve legitimately runs \
+                 longer than this, raise set_solver_timeout — the drain deadline scales with it.",
+                deadline,
+                paused.len(),
+                sess.workers,
+            )));
+        }
         Ok(())
     }
 

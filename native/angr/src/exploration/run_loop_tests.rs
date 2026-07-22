@@ -463,3 +463,27 @@ fn all_corrupt_payloads_drop_without_routing_anything() {
         assert!(bounce_queue.is_empty());
     });
 }
+
+/// The steady-finalize drain deadline scales with the configured solver
+/// timeout but never drops below the historical 60s floor (angr-e4cys).
+/// Cancellation is task-boundary-only, so a worker inside one solve cannot ack
+/// until that solve returns — a deadline shorter than the solve would blame a
+/// healthy worker for a lost wakeup.
+#[test]
+fn steady_finalize_deadline_scales_with_solver_timeout() {
+    use crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS;
+
+    // At (and below) the default the floor wins, preserving the old 60s.
+    assert_eq!(
+        steady_finalize_deadline(DEFAULT_SOLVER_TIMEOUT_MS),
+        Duration::from_secs(60)
+    );
+    assert_eq!(steady_finalize_deadline(0), Duration::from_secs(60));
+    assert_eq!(steady_finalize_deadline(1_000), Duration::from_secs(60));
+
+    // Above it the deadline is 2x the solver timeout.
+    assert_eq!(steady_finalize_deadline(120_000), Duration::from_secs(240));
+
+    // A pathological timeout must not overflow the millis -> Duration math.
+    assert!(steady_finalize_deadline(u32::MAX) > Duration::from_secs(60));
+}
