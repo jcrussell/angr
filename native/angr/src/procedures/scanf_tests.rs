@@ -866,3 +866,63 @@ fn test_scanf_numeric_native_without_unread_seed() {
     let val = state.memory_load(0x2100, 4).unwrap();
     assert!(val.as_u64().is_none(), "%d still mints a symbolic value");
 }
+
+/// Run `scanf(fmt, &dst)` with concrete 0xAA guard bytes filling the 8 bytes at
+/// `dst`, and assert exactly `expect_bytes` low bytes were overwritten with a
+/// symbolic value while every higher guard byte survived untouched.
+fn assert_scanf_store_width(fmt: &[u8], expect_bytes: u64) {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, fmt, Permission::RWX);
+    for off in 0..8u64 {
+        state
+            .memory_store(0x2000 + off, RustBV::concrete(0xAA, 8))
+            .unwrap();
+    }
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+
+    for off in 0..8u64 {
+        let byte = state.memory_load(0x2000 + off, 1).unwrap();
+        if off < expect_bytes {
+            assert!(
+                byte.as_u64().is_none(),
+                "byte {off} of {} should be symbolic",
+                String::from_utf8_lossy(fmt)
+            );
+        } else {
+            assert_eq!(
+                byte.as_u64(),
+                Some(0xAA),
+                "byte {off} of {} must not be clobbered",
+                String::from_utf8_lossy(fmt)
+            );
+        }
+    }
+}
+
+#[test]
+fn test_scanf_short_modifier_stores_two_bytes() {
+    // %hd targets a `short*` — writing 4 bytes clobbers the neighbour.
+    assert_scanf_store_width(b"%hd\x00", 2);
+}
+
+#[test]
+fn test_scanf_char_modifier_stores_one_byte() {
+    // %hhd targets a `signed char*`.
+    assert_scanf_store_width(b"%hhd\x00", 1);
+}
+
+#[test]
+fn test_scanf_int_and_long_store_widths_unchanged() {
+    assert_scanf_store_width(b"%d\x00", 4);
+    assert_scanf_store_width(b"%ld\x00", 8);
+    assert_scanf_store_width(b"%lld\x00", 8);
+    assert_scanf_store_width(b"%zu\x00", 8);
+    assert_scanf_store_width(b"%hx\x00", 2);
+}

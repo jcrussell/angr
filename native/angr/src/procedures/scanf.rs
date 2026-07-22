@@ -113,16 +113,11 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
         let field_width = width_val as u64;
         i += w_adv;
 
-        // Parse length modifier. `Short`/`Char` (`h`/`hh`) are consumed
-        // but still stored at int-width for simplicity; `z`/`j`/`t` are
+        // Parse length modifier. `h`/`hh` narrow the destination to 16/8 bits
+        // (matching Python's format_parser.py int_len_mod), `z`/`j`/`t` are
         // honoured as 64-bit (glibc accepts them in scanf).
         let (modifier, m_adv) = parse_length_modifier(fmt, i);
         i += m_adv;
-        let long_count: u8 = if matches!(modifier, LengthModifier::LongLong) {
-            2
-        } else {
-            u8::from(modifier.is_64bit())
-        };
 
         if i >= fmt.len() {
             break;
@@ -133,10 +128,11 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
 
         match spec {
             b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
-                let bits = match long_count {
-                    2 => 64, // long long
-                    1 => 64, // long (on 64-bit)
-                    _ => 32, // int
+                let bits = match modifier {
+                    LengthModifier::Char => 8,   // hh -> signed/unsigned char
+                    LengthModifier::Short => 16, // h  -> short
+                    m if m.is_64bit() => 64,     // l / ll / z / j / t
+                    _ => 32,                     // int
                 };
                 specs.push(ScanfSpec {
                     bits,
