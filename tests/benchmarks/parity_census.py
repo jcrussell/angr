@@ -146,6 +146,18 @@ _EXONERATED = {
     "register already reads as concrete zero — exactly what the option asks Python for. Setting it "
     "cannot change a Rust answer. (The SYMBOL_FILL_UNCONSTRAINED_REGISTERS sibling is the "
     "divergent one and raises.) (angr-op0dn.14.9)",
+    "CONSTRAINT_TRACKING_IN_SOLVER": "Demoted from raise in angr-op0dn.14.2 and honored by the "
+    "proxy: RustSolverProxyPlugin.unsat_core computes the core on demand "
+    "(SymContext::unsat_core_assumed) by rebuilding a throwaway assumption-guarded solver from the "
+    "assumed-constraint IR, so an opting-in user gets a complete core instead of a silently empty "
+    "one; and without the option on the bound state the proxy raises SimSolverOptionError exactly "
+    "like Python's. Honored in both directions, hence no raise. (angr-xz5uu)",
+    "EFFICIENT_STATE_MERGING": "Demoted from raise in angr-op0dn.11.6: merge is now native, so the "
+    "option's Python rationale (keep a SimStateHistory strongref so state.merge() can walk to a "
+    "common ancestor) is moot. RustExplorationManager.merge() takes the M3-4 fast path "
+    "(_merge_native -> _rust_mgr.merge_states) and the native MergePoint technique forks-and-merges "
+    "entirely in Rust; neither consults the strongref. Honored by NOT raising, which lets a state "
+    "carrying it (including Veritesting's auto-added copy) explore natively. (angr-xz5uu)",
     "TRACK_ACTION_HISTORY": "Demoted from raise in angr-fkvt: unlike its TRACK_*_ACTIONS siblings it "
     "does not gate action recording. Its only in-tree consumer (state_plugins/preconstrainer.py) "
     "uses it as a metadata flag whose clear/restore is a vacuous no-op under Rust.",
