@@ -14,10 +14,21 @@
 //!   difference (angr-e71o4).
 //! - When the scan encounters a symbolic byte (or for strncmp when n is
 //!   symbolic — currently unsupported), we switch to building a 32-bit ITE
-//!   chain expressing the byte-wise diff:
-//!   result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i),
+//!   chain over `sign_i = ITE(c1_i <u c2_i, -1, 1)`:
+//!   result = ITE(c1_i != c2_i, sign_i,
 //!   ITE(c1_i == 0, 0, result_next))   -- strcmp/strncmp
-//!   result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i), result_next) -- memcmp
+//!   result = ITE(c1_i != c2_i, sign_i, result_next) -- memcmp
+//!
+//!   The symbolic path returns the same `-1 / 0 / 1` alphabet as the concrete
+//!   path above (angr-u8gm8); it previously emitted the raw
+//!   `zext(c1,32) - zext(c2,32)` difference, which disagreed both with our own
+//!   concrete path and with Python's `memcmp.py` (`ite_cases` over
+//!   `BVV(-1)/BVV(0)/BVV(1)`). Python's *non-static* `strncmp.py` constrains
+//!   its return to `0`/`1` and never produces a negative value at all, so no
+//!   convention can match every Python proc; we match `memcmp.py` and stay
+//!   internally consistent, which is what exact-value consumers
+//!   (`res == -1`, table indexing) need. The clamp is also cheaper for Z3
+//!   than a 32-bit subtraction per position.
 //! - Maximum compare length is 4096 bytes (configurable).
 
 use super::ProcedureError;
@@ -49,6 +60,8 @@ fn build_diff_chain(
     ctx: &SymContext,
 ) -> RustBV {
     let zero32 = RustBV::concrete(0u128, 32);
+    let one32 = RustBV::concrete(1u128, 32);
+    let neg_one32 = RustBV::concrete(u32::MAX as u128, 32);
     let zero8 = RustBV::concrete(0u128, 8);
     let mut result = zero32.clone();
     for (c1, c2) in pairs.iter().rev() {
@@ -57,7 +70,8 @@ fn build_diff_chain(
         } else {
             (c1.clone(), c2.clone())
         };
-        let diff = lhs.zero_extend(32, ctx).sub(&rhs.zero_extend(32, ctx), ctx);
+        // Sign, not raw difference — see the module doc (angr-u8gm8).
+        let diff = lhs.ult(&rhs, ctx).ite(&neg_one32, &one32, ctx);
         let mismatch = lhs.ne(&rhs, ctx);
         if stop_at_null {
             // result = ITE(c1 != c2, diff, ITE(c1 == 0, 0, result_next))

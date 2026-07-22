@@ -183,7 +183,8 @@ fn test_memcmp_symbolic_byte_solver_evaluation() {
     state.map_memory_data(0x1000, b"\x01\x00\x03", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
 
-    // Constrain sym == 4 -> 4 - 2 = 2.
+    // Constrain sym == 4: 4 >u 2, so the sign is +1. (Before angr-u8gm8 the
+    // symbolic chain returned the raw difference 4 - 2 = 2.)
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(4u128, 8);
     let eq = sym.eq(&target, &ctx);
@@ -203,8 +204,8 @@ fn test_memcmp_symbolic_byte_solver_evaluation() {
         .unwrap();
     state.add_constraint(eq);
     let ctx = state.solver().borrow();
-    assert_eq!(ctx.min(&result, false), Some(2));
-    assert_eq!(ctx.max(&result, false), Some(2));
+    assert_eq!(ctx.min(&result, false), Some(1));
+    assert_eq!(ctx.max(&result, false), Some(1));
 }
 
 #[test]

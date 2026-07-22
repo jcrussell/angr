@@ -367,3 +367,106 @@ fn test_strncmp_symbolic_byte_within_limit_equal() {
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(0));
 }
+
+/// Run `proc` over s1=0x1000 / s2=0x2000 with one symbolic byte at
+/// `sym_addr` pinned to `pinned`, and return the concretized 32-bit result.
+///
+/// Both `s1`/`s2` are mapped verbatim; the symbolic byte overwrites s1.
+fn symbolic_pinned_result<P: NativeSimProcedure>(
+    proc: &P,
+    s1: &[u8],
+    s2: &[u8],
+    sym_addr: u64,
+    pinned: u8,
+    extra_args: &[RustBV],
+) -> u128 {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x2000, s2, Permission::RWX);
+    state.map_memory_data(0x1000, s1, Permission::RWX);
+    let sym = place_symbolic_byte(&mut state, sym_addr, "s1_sym");
+    let ctx = state.solver().borrow();
+    let eq = sym.eq(&RustBV::concrete(pinned as u128, 8), &ctx);
+    drop(ctx);
+
+    let mut args = vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)];
+    args.extend_from_slice(extra_args);
+    let result = proc.call(&mut state, &args).unwrap().unwrap();
+    state.add_constraint(eq);
+    let ctx = state.solver().borrow();
+    let lo = ctx.min(&result, false);
+    let hi = ctx.max(&result, false);
+    assert_eq!(lo, hi, "result is not uniquely determined under the pin");
+    lo.unwrap()
+}
+
+/// The symbolic ITE chain must return the SIGN, not the raw byte difference
+/// (angr-u8gm8). Byte pairs are chosen >1 apart so a raw-diff regression
+/// surfaces as +/-2 rather than passing a sign-only assert.
+#[test]
+fn test_strcmp_symbolic_mismatch_is_plus_minus_one() {
+    // s1 = [a, ?, \0] vs s2 = "ab\0"; pin ? = 'd' -> raw diff would be +2.
+    assert_eq!(
+        symbolic_pinned_result(&NativeStrcmp, b"a\x00\x00", b"ab\x00", 0x1001, b'd', &[]),
+        1
+    );
+    // pin ? = '`' (0x60) vs 'b' (0x62) -> raw diff would be -2.
+    assert_eq!(
+        symbolic_pinned_result(&NativeStrcmp, b"a\x00\x00", b"ab\x00", 0x1001, b'`', &[]),
+        u32::MAX as u128
+    );
+}
+
+#[test]
+fn test_memcmp_symbolic_mismatch_is_plus_minus_one() {
+    let n = [RustBV::concrete(3, 64)];
+    assert_eq!(
+        symbolic_pinned_result(
+            &crate::procedures::memcmp::NativeMemcmp,
+            b"a\x00z",
+            b"abz",
+            0x1001,
+            b'd',
+            &n
+        ),
+        1
+    );
+    assert_eq!(
+        symbolic_pinned_result(
+            &crate::procedures::memcmp::NativeMemcmp,
+            b"a\x00z",
+            b"abz",
+            0x1001,
+            b'`',
+            &n
+        ),
+        u32::MAX as u128
+    );
+}
+
+/// strcasecmp folds both sides before taking the sign: 'D' vs 'b' must
+/// compare as 'd' vs 'b' -> +1, not as 0x44 <u 0x62 -> -1.
+#[test]
+fn test_strcasecmp_symbolic_mismatch_folds_then_signs() {
+    assert_eq!(
+        symbolic_pinned_result(
+            &NativeStrcasecmp,
+            b"a\x00\x00",
+            b"ab\x00",
+            0x1001,
+            b'D',
+            &[]
+        ),
+        1
+    );
+    assert_eq!(
+        symbolic_pinned_result(
+            &NativeStrcasecmp,
+            b"a\x00\x00",
+            b"aB\x00",
+            0x1001,
+            b'`',
+            &[]
+        ),
+        u32::MAX as u128
+    );
+}
