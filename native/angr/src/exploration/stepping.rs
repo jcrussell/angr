@@ -888,6 +888,10 @@ impl RustExplorationManager {
         }
 
         let root_state_id = self.sm.root_or_self(successors[0].state_id());
+        // Guards of the forks already materialized. `successors[0]` accumulates
+        // them below, but a fork built from a pre-branch *snapshot* does not —
+        // see `PriorGuards` (angr-62ar5).
+        let mut prior_guards: Vec<(RustBV, bool)> = Vec::new();
 
         for fork in &deferred_forks {
             if let Some(condition) = stored_conditions.get(&fork.condition_id) {
@@ -906,7 +910,12 @@ impl RustExplorationManager {
                     fork,
                     condition,
                     &mut fork_snapshots,
+                    super::helpers::PriorGuards {
+                        guards: &prior_guards,
+                        base_carries: true,
+                    },
                 );
+                prior_guards.push((condition.clone(), fork.path_taken));
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 

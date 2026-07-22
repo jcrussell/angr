@@ -1203,3 +1203,109 @@ fn dispatch_native_proc_counts_return_but_leaves_subcall_to_the_caller() {
     assert_eq!(counters.native_calls, 0, "caller owns the sub-call bump");
     assert!(counters.call_counts.is_empty());
 }
+
+/// Two symbolic vars, so a fork of the *second* branch can be checked for the
+/// *first* branch's taken-path guard.
+fn state_with_two_conds() -> (RustSimState, RustBV, RustBV) {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let (c1, c2) = {
+        let ctx_ref = state.solver().borrow();
+        let ctx: &SymContext = &ctx_ref;
+        let x = RustBV::symbolic(ctx, "x", 64);
+        let y = RustBV::symbolic(ctx, "y", 64);
+        (x.eq(&RustBV::zero(64), ctx), y.eq(&RustBV::zero(64), ctx))
+    };
+    (state, c1, c2)
+}
+
+/// angr-62ar5: a fork materialized for branch *i* must inherit the taken-path
+/// guards of branches `0..i` in the same step. `materialize_deferred_forks`
+/// forks off a fixed, guard-free `fork_base` (the pre-callback snapshot), so
+/// without an explicit replay the second fork came back under-constrained —
+/// free to pick a model that contradicts a decision its own path already made.
+#[test]
+fn materialize_deferred_forks_replays_earlier_guards_onto_later_forks() {
+    Python::initialize();
+    let (base, c1, c2) = state_with_two_conds();
+    let mut stored = FxHashMap::default();
+    stored.insert(1u64, c1.clone());
+    stored.insert(2u64, c2.clone());
+    let mut snapshots = FxHashMap::default();
+
+    let out = materialize_deferred_forks(
+        // Branch 1: took the true side (x == 0). Branch 2: took the false side.
+        vec![deferred_fork(1, true), deferred_fork(2, false)],
+        MaterializeForkCtx {
+            fork_base: &base,
+            stored_conditions: &stored,
+            snapshots: &mut snapshots,
+            lazy_solves: false,
+            guard_sink: None,
+            stats: None,
+        },
+    );
+
+    assert_eq!(out.sat.len(), 2);
+    assert!(out.unsat.is_empty());
+
+    // Fork 0 is the unexplored side of branch 1 — no priors, so x != 0 only.
+    let probe = out.sat[0].fork();
+    probe.solver().borrow().assume_true(&c1);
+    assert!(!probe.satisfiable(), "fork 0 lost its own inverted guard");
+
+    // Fork 1 is the unexplored side of branch 2. Its path went THROUGH branch
+    // 1's true side, so x == 0 must still hold on it.
+    let probe = out.sat[1].fork();
+    probe.solver().borrow().assume_false(&c1);
+    assert!(
+        !probe.satisfiable(),
+        "fork 1 did not inherit branch 1's taken-path guard (x == 0)"
+    );
+    // ...and it carries the inverted guard of its own branch (y == 0).
+    let probe = out.sat[1].fork();
+    probe.solver().borrow().assume_false(&c2);
+    assert!(!probe.satisfiable(), "fork 1 lost its own inverted guard");
+}
+
+/// Same invariant on the pre-branch-*snapshot* path, which is the one the VEX
+/// interpreter actually takes: the snapshot is a clone of the block solver,
+/// which by design carries NO taken-path guards at all, so the replay is the
+/// only thing putting branch 1's decision onto branch 2's fork.
+#[test]
+fn snapshot_built_fork_replays_earlier_guards() {
+    Python::initialize();
+    let (base, c1, c2) = state_with_two_conds();
+    let mut stored = FxHashMap::default();
+    stored.insert(1u64, c1.clone());
+    stored.insert(2u64, c2.clone());
+    let mut snapshots = FxHashMap::default();
+    snapshots.insert(
+        2u64,
+        crate::interpreter::BranchSnapshot {
+            solver: base.solver().borrow().fork(),
+            registers: base.registers().fork(),
+            memory: None,
+        },
+    );
+
+    let out = materialize_deferred_forks(
+        vec![deferred_fork(1, true), deferred_fork(2, false)],
+        MaterializeForkCtx {
+            fork_base: &base,
+            stored_conditions: &stored,
+            snapshots: &mut snapshots,
+            lazy_solves: false,
+            guard_sink: None,
+            stats: None,
+        },
+    );
+
+    assert_eq!(out.sat.len(), 2);
+    let probe = out.sat[1].fork();
+    probe.solver().borrow().assume_false(&c1);
+    assert!(
+        !probe.satisfiable(),
+        "snapshot-built fork did not inherit branch 1's taken-path guard"
+    );
+}

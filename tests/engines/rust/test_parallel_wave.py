@@ -310,14 +310,15 @@ class TestParallelExhaustiveSynthetic:
 # arithmetic, not inferred from a run.
 _FEASIBLE_LEAVES = {1, 2, 3, 5, 6, 7}
 
-# angr-lkim0 found this the moment the content projection existed: at
-# ``workers >= 2`` ONE of the eight found states exports a stdin solution that
-# replays to ``acc & 0xff != 0xee`` — i.e. a witness that does not reach
-# ``reach_target``. The other seven are valid and cover ``_FEASIBLE_LEAVES``, and
-# the count/pc gates stay green throughout. Single-threaded never does this. The
-# fix is tracked separately; the gate stays in the suite (non-strict xfail so an
-# xpass is reported, not a failure) because it is the only thing watching this.
-_PARALLEL_CONTENT_XFAIL = "angr-lkim0: workers>=2 exports one found state whose stdin witness fails the find gate"
+# angr-lkim0 found this the moment the content projection existed: found states
+# exported stdin solutions replaying to ``acc & 0xff != 0xee`` — witnesses that
+# do not reach ``reach_target`` — while the count/pc gates stayed green. Root
+# cause (angr-62ar5): a fork built from a pre-branch solver *snapshot* inherited
+# none of the guards of the earlier deferred branches in the same step, because
+# the interpreter deliberately never assumes taken-path guards permanently. Fixed
+# by replaying those guards in ``build_unexplored_fork``. It presented as a
+# parallel-only bug, but serial was equally under-constrained and merely got
+# lucky in Z3's model choice — hence no worker-count xfail here.
 
 
 def _pbounce_witness(state):
@@ -375,14 +376,7 @@ class TestParallelFoundContentSynthetic:
     so it stays green either way.
     """
 
-    @pytest.mark.parametrize(
-        "workers",
-        [
-            1,
-            pytest.param(2, marks=pytest.mark.xfail(reason=_PARALLEL_CONTENT_XFAIL, strict=False)),
-            pytest.param(4, marks=pytest.mark.xfail(reason=_PARALLEL_CONTENT_XFAIL, strict=False)),
-        ],
-    )
+    @pytest.mark.parametrize("workers", [1, 2, 4])
     def test_found_witnesses_satisfy_gate_and_cover_all_leaves(self, pbounce_project, workers, monkeypatch):
         mgr, _ = _explore_pbounce(pbounce_project, workers, monkeypatch)
         found = list(mgr.found)
