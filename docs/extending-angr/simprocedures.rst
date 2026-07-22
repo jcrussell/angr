@@ -353,6 +353,10 @@ implements the ``NativeSimProcedure`` trait defined in
    pub trait NativeSimProcedure: Send + Sync {
        fn name(&self) -> &'static str;
        fn num_args(&self) -> usize;
+
+       /// Extra dispatch names, mirroring Python angr's `x_unlocked = x`
+       /// aliasing. `register()` inserts the proc under each alias too.
+       fn aliases(&self) -> &'static [&'static str] { &[] }
        fn no_return(&self) -> bool { false }
 
        fn call(
@@ -360,7 +364,30 @@ implements the ``NativeSimProcedure`` trait defined in
            state: &mut RustSimState,
            args: &[RustBV],
        ) -> Result<Option<RustBV>, ProcedureError>;
+
+       /// Fresh-entry point; default wraps `call` into `ProcOutcome::Return`.
+       /// Override only to express a sub-call (see below).
+       fn call_ex(
+           &self,
+           state: &mut RustSimState,
+           args: &[RustBV],
+       ) -> Result<ProcOutcome, ProcedureError> {
+           self.call(state, args).map(ProcOutcome::Return)
+       }
+
+       /// Continuation re-entered after a sub-call returns. Default is
+       /// `Err(ProcedureError::NotImplemented)`.
+       fn resume(
+           &self,
+           state: &mut RustSimState,
+           resume_tag: u32,
+           saved_args: &[RustBV],
+       ) -> Result<ProcOutcome, ProcedureError> { ... }
    }
+
+Most procedures implement only ``name``, ``num_args`` and ``call`` — the
+default ``call_ex``/``resume`` bodies make the sub-call machinery invisible
+unless you need it.
 
 The return convention is the contract between your procedure and the
 dispatcher:
@@ -377,8 +404,13 @@ dispatcher:
   variant.
 
 The full ``ProcedureError`` enum lives in ``procedures/mod.rs``:
-``SymbolicArgument``, ``MemoryError``, ``NotImplemented``,
-``MaxIterations``, and ``Other``. Any of them triggers Python fallback.
+``SymbolicArgument(String)``, ``Memory(MemoryError)`` (the structured
+memory-subsystem error — unmapped page, permission violation, symbolic
+address — reachable via ``#[from]``, so ``?`` on a memory operation
+converts automatically), ``NotImplemented``, ``MaxIterations(usize)``,
+and ``Other(String)``. Any of them triggers Python fallback. The enum is
+``#[non_exhaustive]`` (angr-irwe): minor versions may add variants, so
+every ``match`` on it needs a wildcard arm.
 
 .. warning::
 
@@ -401,6 +433,59 @@ The full ``ProcedureError`` enum lives in ``procedures/mod.rs``:
    ``Ok(Some(BVV(0, returnty_bits)))``; only mint a symbolic value when the
    option is set. ``void``-return stubs (``returnty == None`` →
    ``Ok(None)``) are always safe.
+
+Sub-calls (``ProcOutcome::CallAndResume``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A few procedures must invoke a *guest* routine and continue afterwards —
+the native equivalent of Python's
+``SimProcedure.call(func, args, "retsite")``. ``call`` cannot express
+that (its return type has no "jump somewhere and come back" case), so
+such a procedure overrides ``call_ex`` and returns ``ProcOutcome``:
+
+.. code-block:: rust
+
+   pub enum ProcOutcome {
+       /// Completed; store this return value (or `None` for void).
+       Return(Option<RustBV>),
+       /// Jump into guest routine `target`, then re-enter this proc's
+       /// `resume()` with `resume_tag` when it returns.
+       CallAndResume { target: u64, args: Vec<RustBV>, resume_tag: u32 },
+   }
+
+``pthread_once`` (``procedures/pthread.rs``) is the reference
+implementation: ``call_ex`` reads the once-guard, returns
+``ProcOutcome::Return(0)`` when the initializer already ran, otherwise
+sets the guard bit and returns
+``CallAndResume { target: func, args: vec![], resume_tag: 0 }``;
+``resume`` then yields ``0``. Its ``call`` is a plain
+``Err(ProcedureError::NotImplemented)`` so any dispatch path that still
+goes through ``call`` falls back to Python rather than silently skipping
+the sub-call.
+
+Mechanics, for procedures that need them:
+
+* The dispatcher makes the guest routine return to
+  ``native_resume_sentinel()`` — an address registered under the
+  reserved name ``NATIVE_RESUME_SENTINEL_NAME`` (``"__native_resume__"``)
+  in every interpreter's SimProcedure registry. When PC lands there the
+  dispatcher pops the top ``NativeResumeFrame`` and calls ``resume``.
+* The resume stack is **LIFO**: ``resume`` may itself return
+  ``CallAndResume``, so a continuation can chain further sub-calls.
+* ``resume_tag`` selects which continuation arm to run (the data-encoded
+  analogue of Python's named continuation), and ``saved_args`` are the
+  original ``call_ex`` arguments, captured at sub-call time — mirroring
+  Python's ``retsite`` re-receiving its ``run()`` args.
+* Bail out (return ``Err``) *before* mutating state whenever the sub-call
+  setup could still fail — e.g. ``pthread_once`` checks for a symbolic SP
+  before writing the guard bit, because the setup stores the sentinel to
+  ``[sp]`` and a later fallback to Python would otherwise see a guard bit
+  that says "already initialized".
+
+Design rationale: ``tools/decisions/native_subcall_dispatcher_design.md``
+(bead ``angr-5gf0s``, Option B). Regression coverage:
+``native/angr/src/exploration/subcall_tests.rs`` and
+``native/angr/src/procedures/pthread_tests.rs``.
 
 Argument extraction with ``declare_proc!``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -453,7 +538,8 @@ The engine looks up native procedures by **name** through
 Every angr SimProcedure that has a matching name in the registry is
 intercepted before its Python ``run()`` would be invoked. The dispatcher
 extracts the calling convention's argument bitvectors, hands them to
-``call()``, and acts on the returned ``Result``. The registry also
+``call_ex()`` — the fresh-entry point, whose default body delegates to
+``call()`` — and acts on the returned ``Result``. The registry also
 supports per-procedure ``disable()`` and ``set_python_override()`` —
 both force the dispatcher to fall back to Python — and a global
 ``disable_all()`` switch (used in differential testing).
@@ -485,9 +571,14 @@ both invoked except when native fails):
 4. **Global disable.** ``registry.disable_all()`` /
    ``mgr.disable_native_procedures()`` skips native for every name.
 5. **Native runs; on error, Python takes over.** If steps 1–4 do
-   not bypass it, the dispatcher calls ``native_proc.call(...)``.
-   On ``Ok``, ``native_proc_stats.native_calls`` increments and PC
-   advances to the return address. On any ``Err``, the dispatcher
+   not bypass it, the dispatcher calls ``native_proc.call_ex(...)``
+   (**not** ``call`` directly — the default ``call_ex`` wraps
+   ``call``'s result into ``ProcOutcome::Return``, so return-only
+   procedures behave identically). On ``Ok(ProcOutcome::Return(..))``,
+   ``native_proc_stats.native_calls`` increments and PC advances to
+   the return address; on ``Ok(ProcOutcome::CallAndResume { .. })``
+   it pushes a resume frame and jumps into the guest routine (see
+   *Sub-calls* above). On any ``Err``, the dispatcher
    bumps ``native_proc_stats.python_fallbacks`` (bucketed by error
    variant in ``symbolic_fallbacks_by_name``,
    ``not_implemented_fallbacks_by_name``, or
