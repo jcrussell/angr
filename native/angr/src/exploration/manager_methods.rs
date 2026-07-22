@@ -2621,3 +2621,7 @@ impl RustExplorationManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "manager_methods_tests.rs"]
+mod tests;

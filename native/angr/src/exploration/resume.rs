@@ -496,3 +496,7 @@ impl RustExplorationManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "resume_tests.rs"]
+mod tests;
