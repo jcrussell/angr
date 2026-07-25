@@ -612,13 +612,7 @@ class RustStateSyncMixin:
         Avoids the full 4096-byte byte-by-byte scan in _extract_symbolic_regions
         — this only walks the explicitly-stored symbolic byte ranges.
         """
-        scan_ranges = []
-        for sd_offset, sd_ast in sd.items():
-            if not hasattr(sd_ast, "variables"):
-                continue
-            if self._has_user_symbolic_var(sd_ast):
-                ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
-                scan_ranges.append((sd_offset, ast_size))
+        scan_ranges = self._scan_ranges_from_symbolic_data(sd)
         for start_offset, size in scan_ranges:
             for byte_off in range(size):
                 if start_offset + byte_off >= page_size:
@@ -649,6 +643,28 @@ class RustStateSyncMixin:
             # cat-(a) EXPECTED CONTROL FLOW: ast lacks .variables
             # (concrete claripy wrapper). Treat as no-user-symbolic.
             return False
+
+    @classmethod
+    def _scan_ranges_from_symbolic_data(cls, sd) -> list:
+        """Build a list of (offset, ast_size_bytes) ranges from a page's
+        symbolic_data dict, keeping only entries that reference a user-created
+        symbolic variable.
+
+        Shared by _extract_stack_symbolic_from_sd (stack fast-path) and
+        _extract_wide_symbolic_regions (wide-region grouping) so the
+        _has_user_symbolic_var filter and the size = ast.size() // 8
+        computation stay in one place. Note: _extract_from_ultrapage uses a
+        structurally different bitmap-walk (sb[] + MAX_EXTENT + next_key) and
+        deliberately does not go through this helper.
+        """
+        scan_ranges = []
+        for sd_offset, sd_ast in sd.items():
+            if not hasattr(sd_ast, "variables"):
+                continue
+            if cls._has_user_symbolic_var(sd_ast):
+                ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
+                scan_ranges.append((sd_offset, ast_size))
+        return scan_ranges
 
     def _sync_extra_python_pages(
         self,
@@ -850,13 +866,7 @@ class RustStateSyncMixin:
             sd = page_obj.symbolic_data
             if sd:
                 # Determine byte ranges that need scanning from symbolic_data entries
-                scan_ranges = []
-                for sd_offset, sd_ast in sd.items():
-                    if not hasattr(sd_ast, "variables"):
-                        continue
-                    if self._has_user_symbolic_var(sd_ast):
-                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
-                        scan_ranges.append((sd_offset, ast_size))
+                scan_ranges = self._scan_ranges_from_symbolic_data(sd)
 
                 if scan_ranges:
                     # Scan only the identified ranges
