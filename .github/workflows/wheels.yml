@@ -92,7 +92,7 @@ jobs:
           platforms: arm64
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21.3
+        uses: pypa/cibuildwheel@7940a4c0e76eb2030e473a5f864f291f63ee879b # v2.21.3
         env:
           CIBW_BUILD: ${{ matrix.cibw-build }}
           CIBW_ARCHS: ${{ matrix.cibw-archs }}
@@ -222,7 +222,7 @@ jobs:
             python -c "import angr; m=angr.exploration.RustExplorationManager; print('rust engine import OK')" &&
             python {project}/tests/smoke/wheel_ast_passthrough.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           # upload-artifact v4 requires unique names across the matrix.
           name: wheels-${{ matrix.cibw-build }}
