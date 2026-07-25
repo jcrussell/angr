@@ -449,118 +449,19 @@ impl<'a> VEXInterpreter<'a> {
         data: &IRExpr,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
-        {
-            // Evaluate guard condition
-            let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
+        // Evaluate guard condition
+        let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 
-            // Check if guard is symbolic
-            if guard_val.is_symbolic() {
-                // Symbolic guard: need to handle conditional store
-                // For now, check if guard can be true at all
-                if !self.ctx.can_be_true(&guard_val) {
-                    // Guard is always false - skip store
-                    return Ok(StmtResult::Continue);
-                }
-                if !self.ctx.can_be_false(&guard_val) {
-                    // Guard is always true - perform store unconditionally
-                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                    let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-
-                    if let Some(addr_concrete) = addr_val.as_u64() {
-                        // Check if data is symbolic - use symbolic store callback
-                        if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                            self.flush_stores(callbacks)?;
-                            callbacks
-                                .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                        } else {
-                            let data_bytes = bv_to_bytes(&data_val);
-                            self.pending_stores.push(addr_concrete, data_bytes);
-                            if self.pending_stores.len() >= self.max_pending_stores {
-                                self.flush_stores(callbacks)?;
-                            }
-                        }
-                    }
-                    return Ok(StmtResult::Continue);
-                }
-                // Both paths possible with symbolic guard - use ITE for conditional store
-                // Store ITE(guard, new_data, current_data)
-                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                let data_size = data_val.width().div_ceil(8) as usize;
-
-                if let Some(addr_concrete) = addr_val.as_u64() {
-                    // Load current value at address
-                    let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                    // Create ITE: if guard then new_data else current
-                    let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                    // ITE result is symbolic if guard or either operand is symbolic
-                    if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        self.flush_stores(callbacks)?;
-                        callbacks
-                            .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                    } else {
-                        let ite_bytes = bv_to_bytes(&ite_result);
-                        self.pending_stores.push(addr_concrete, ite_bytes);
-                        if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(callbacks)?;
-                        }
-                    }
-                } else {
-                    // Symbolic address with symbolic guard - concretize for write
-                    match &*self.concretize_cached_write(&addr_val) {
-                        ConcretizationResult::Single(addr_concrete) => {
-                            let addr_concrete = *addr_concrete;
-                            // Load current value and use ITE
-                            let current =
-                                self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                            let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                            self.flush_stores(callbacks)?;
-                            // ITE result is symbolic - use symbolic store callback
-                            if ite_result.is_symbolic()
-                                && callbacks.has_memory_store_symbolic_value()
-                            {
-                                callbacks
-                                    .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                let ite_bytes = bv_to_bytes(&ite_result);
-                                callbacks
-                                    .call_memory_store(addr_concrete, &ite_bytes)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
-                        }
-                        _ => {
-                            // Symbolic guard + non-Single address solutions
-                            // (Multiple/Strided/TooLarge/Failed). Combining the
-                            // guard-ITE with per-address ITEs requires a per-
-                            // address load and is brittle, so delegate to Python's
-                            // full symbolic store callback which has access to
-                            // angr's address concretization strategies.
-                            self.flush_stores(callbacks)?;
-                            if callbacks.has_memory_store_symbolic_full() {
-                                callbacks
-                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                return Err(CbExecutionError::Unsupported(
-                                    "guarded store with symbolic address: \
-                                         no memory_store_symbolic_full callback"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
-                }
+        // Check if guard is symbolic
+        if guard_val.is_symbolic() {
+            // Symbolic guard: need to handle conditional store
+            // For now, check if guard can be true at all
+            if !self.ctx.can_be_true(&guard_val) {
+                // Guard is always false - skip store
                 return Ok(StmtResult::Continue);
             }
-
-            // Concrete guard: simple check
-            if let Some(g) = guard_val.as_u64()
-                && g != 0
-            {
-                // Guard is true - perform the store
+            if !self.ctx.can_be_false(&guard_val) {
+                // Guard is always true - perform store unconditionally
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
 
@@ -578,67 +479,162 @@ impl<'a> VEXInterpreter<'a> {
                             self.flush_stores(callbacks)?;
                         }
                     }
-                } else {
-                    // Symbolic address with concrete guard - flush and use callback
+                }
+                return Ok(StmtResult::Continue);
+            }
+            // Both paths possible with symbolic guard - use ITE for conditional store
+            // Store ITE(guard, new_data, current_data)
+            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+            let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
+            let data_size = data_val.width().div_ceil(8) as usize;
+
+            if let Some(addr_concrete) = addr_val.as_u64() {
+                // Load current value at address
+                let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
+                // Create ITE: if guard then new_data else current
+                let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                // ITE result is symbolic if guard or either operand is symbolic
+                if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                     self.flush_stores(callbacks)?;
-                    // Check if data is symbolic - use symbolic store callback
-                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        // Concretize address for write (with cache)
-                        let concret_result = self.concretize_cached_write(&addr_val);
-                        match &*concret_result {
-                            ConcretizationResult::Single(addr_concrete) => {
-                                let addr_concrete = *addr_concrete;
-                                callbacks
-                                    .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
-                            ConcretizationResult::Multiple(addrs) => {
-                                // Symbolic data + multiple address solutions: prefer the full
-                                // symbolic store callback. Otherwise build an ITE chain in Rust
-                                // (mirrors fallback_to_python_store::Multiple) so all candidate
-                                // addresses are updated, not just the first one.
-                                if callbacks.has_memory_store_symbolic_full() {
-                                    callbacks
-                                        .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                } else if callbacks.has_memory_store_symbolic_value()
-                                    && addrs.len() <= 16
-                                {
-                                    self.build_ite_store_from_callbacks(
-                                        callbacks, addrs, &addr_val, &data_val,
-                                    )?;
-                                } else {
-                                    return Err(CbExecutionError::Unsupported(
-                                                "symbolic store with multiple address solutions: \
-                                                 no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
-                                            ));
-                                }
-                            }
-                            _ => {
-                                // TooLarge or Failed - delegate to Python's full symbolic callback
-                                if callbacks.has_memory_store_symbolic_full() {
-                                    callbacks
-                                        .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                } else {
-                                    return Err(CbExecutionError::Unsupported(
-                                        "symbolic store with unconcretizable address".to_string(),
-                                    ));
-                                }
-                            }
+                    callbacks
+                        .call_memory_store_symbolic_value(addr_concrete, &ite_result)
+                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                } else {
+                    let ite_bytes = bv_to_bytes(&ite_result);
+                    self.pending_stores.push(addr_concrete, ite_bytes);
+                    if self.pending_stores.len() >= self.max_pending_stores {
+                        self.flush_stores(callbacks)?;
+                    }
+                }
+            } else {
+                // Symbolic address with symbolic guard - concretize for write
+                match &*self.concretize_cached_write(&addr_val) {
+                    ConcretizationResult::Single(addr_concrete) => {
+                        let addr_concrete = *addr_concrete;
+                        // Load current value and use ITE
+                        let current =
+                            self.load_from_callback(callbacks, addr_concrete, data_size)?;
+                        let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                        self.flush_stores(callbacks)?;
+                        // ITE result is symbolic - use symbolic store callback
+                        if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            callbacks
+                                .call_memory_store_symbolic_value(addr_concrete, &ite_result)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        } else {
+                            let ite_bytes = bv_to_bytes(&ite_result);
+                            callbacks
+                                .call_memory_store(addr_concrete, &ite_bytes)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         }
-                    } else {
-                        let data_bytes = bv_to_bytes(&data_val);
-                        callbacks
-                            .call_memory_store(0, &data_bytes)
-                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    }
+                    _ => {
+                        // Symbolic guard + non-Single address solutions
+                        // (Multiple/Strided/TooLarge/Failed). Combining the
+                        // guard-ITE with per-address ITEs requires a per-
+                        // address load and is brittle, so delegate to Python's
+                        // full symbolic store callback which has access to
+                        // angr's address concretization strategies.
+                        self.flush_stores(callbacks)?;
+                        if callbacks.has_memory_store_symbolic_full() {
+                            callbacks
+                                .call_memory_store_symbolic_full(&addr_val, &data_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        } else {
+                            return Err(CbExecutionError::Unsupported(
+                                "guarded store with symbolic address: \
+                                         no memory_store_symbolic_full callback"
+                                    .to_string(),
+                            ));
+                        }
                     }
                 }
             }
-            // Guard is false - skip the store
-
-            Ok(StmtResult::Continue)
+            return Ok(StmtResult::Continue);
         }
+
+        // Concrete guard: simple check
+        if let Some(g) = guard_val.as_u64()
+            && g != 0
+        {
+            // Guard is true - perform the store
+            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+            let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
+
+            if let Some(addr_concrete) = addr_val.as_u64() {
+                // Check if data is symbolic - use symbolic store callback
+                if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                    self.flush_stores(callbacks)?;
+                    callbacks
+                        .call_memory_store_symbolic_value(addr_concrete, &data_val)
+                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                } else {
+                    let data_bytes = bv_to_bytes(&data_val);
+                    self.pending_stores.push(addr_concrete, data_bytes);
+                    if self.pending_stores.len() >= self.max_pending_stores {
+                        self.flush_stores(callbacks)?;
+                    }
+                }
+            } else {
+                // Symbolic address with concrete guard - flush and use callback
+                self.flush_stores(callbacks)?;
+                // Check if data is symbolic - use symbolic store callback
+                if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                    // Concretize address for write (with cache)
+                    let concret_result = self.concretize_cached_write(&addr_val);
+                    match &*concret_result {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            let addr_concrete = *addr_concrete;
+                            callbacks
+                                .call_memory_store_symbolic_value(addr_concrete, &data_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        }
+                        ConcretizationResult::Multiple(addrs) => {
+                            // Symbolic data + multiple address solutions: prefer the full
+                            // symbolic store callback. Otherwise build an ITE chain in Rust
+                            // (mirrors fallback_to_python_store::Multiple) so all candidate
+                            // addresses are updated, not just the first one.
+                            if callbacks.has_memory_store_symbolic_full() {
+                                callbacks
+                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else if callbacks.has_memory_store_symbolic_value()
+                                && addrs.len() <= 16
+                            {
+                                self.build_ite_store_from_callbacks(
+                                    callbacks, addrs, &addr_val, &data_val,
+                                )?;
+                            } else {
+                                return Err(CbExecutionError::Unsupported(
+                                                "symbolic store with multiple address solutions: \
+                                                 no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
+                                            ));
+                            }
+                        }
+                        _ => {
+                            // TooLarge or Failed - delegate to Python's full symbolic callback
+                            if callbacks.has_memory_store_symbolic_full() {
+                                callbacks
+                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                return Err(CbExecutionError::Unsupported(
+                                    "symbolic store with unconcretizable address".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    let data_bytes = bv_to_bytes(&data_val);
+                    callbacks
+                        .call_memory_store(0, &data_bytes)
+                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                }
+            }
+        }
+        // Guard is false - skip the store
+
+        Ok(StmtResult::Continue)
     }
 
     /// Execute an `IRStmt::LoadG` (guarded load): guard tristate handling
@@ -651,86 +647,56 @@ impl<'a> VEXInterpreter<'a> {
         args: LoadGArgs<'_>,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
-        {
-            let LoadGArgs {
-                dst,
-                guard,
-                addr,
-                alt,
-                cvt,
-            } = args;
-            // Evaluate guard condition
-            let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
+        let LoadGArgs {
+            dst,
+            guard,
+            addr,
+            alt,
+            cvt,
+        } = args;
+        // Evaluate guard condition
+        let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 
-            // Evaluate the alternative value (used when guard is false)
-            let alt_val = self.eval_expr_with_callbacks(callbacks, alt, &irsb.tyenv)?;
+        // Evaluate the alternative value (used when guard is false)
+        let alt_val = self.eval_expr_with_callbacks(callbacks, alt, &irsb.tyenv)?;
 
-            // Determine the load size from the destination temp type
-            let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
-                CbExecutionError::InvalidIR(format!("LoadG destination temp {dst} not in tyenv"))
-            })?;
-            let load_size = match cvt {
-                IRLoadGOp::Identity => dst_ty.bytes() as usize,
-                // The source width is carried in the cvt op, so an 8->32
-                // and a 16->32 widening load are correctly distinguished
-                // (the latter previously defaulted to a 1-byte load).
-                IRLoadGOp::WidenS { src_bits } | IRLoadGOp::WidenZ { src_bits } => {
-                    (*src_bits / 8) as usize
-                }
-                IRLoadGOp::Unknown => {
-                    return Err(CbExecutionError::InvalidIR(
-                        "LoadG has an unrecognized conversion op (cvt)".to_string(),
-                    ));
-                }
-            };
+        // Determine the load size from the destination temp type
+        let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
+            CbExecutionError::InvalidIR(format!("LoadG destination temp {dst} not in tyenv"))
+        })?;
+        let load_size = match cvt {
+            IRLoadGOp::Identity => dst_ty.bytes() as usize,
+            // The source width is carried in the cvt op, so an 8->32
+            // and a 16->32 widening load are correctly distinguished
+            // (the latter previously defaulted to a 1-byte load).
+            IRLoadGOp::WidenS { src_bits } | IRLoadGOp::WidenZ { src_bits } => {
+                (*src_bits / 8) as usize
+            }
+            IRLoadGOp::Unknown => {
+                return Err(CbExecutionError::InvalidIR(
+                    "LoadG has an unrecognized conversion op (cvt)".to_string(),
+                ));
+            }
+        };
 
-            // Check if guard is symbolic
-            if guard_val.is_symbolic() {
-                // Check if guard can be true/false
-                let can_be_true = self.ctx.can_be_true(&guard_val);
-                let can_be_false = self.ctx.can_be_false(&guard_val);
+        // Check if guard is symbolic
+        if guard_val.is_symbolic() {
+            // Check if guard can be true/false
+            let can_be_true = self.ctx.can_be_true(&guard_val);
+            let can_be_false = self.ctx.can_be_false(&guard_val);
 
-                if can_be_true && !can_be_false {
-                    // Guard is always true - perform load unconditionally
-                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                    let loaded = self.resolve_loadg_load(
-                        callbacks,
-                        &addr_val,
-                        load_size,
-                        "LoadG (always-true guard)",
-                    )?;
-
-                    // Apply conversion
-                    let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
-
-                    if (*dst as usize) < self.temps.len() {
-                        self.temps[*dst as usize] = Some(result);
-                    }
-                    return Ok(StmtResult::Continue);
-                }
-
-                if !can_be_true && can_be_false {
-                    // Guard is always false - use alt value
-                    if (*dst as usize) < self.temps.len() {
-                        self.temps[*dst as usize] = Some(alt_val);
-                    }
-                    return Ok(StmtResult::Continue);
-                }
-
-                // Both paths possible - evaluate address and load, then ITE
+            if can_be_true && !can_be_false {
+                // Guard is always true - perform load unconditionally
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let loaded = self.resolve_loadg_load(
                     callbacks,
                     &addr_val,
                     load_size,
-                    "LoadG (symbolic guard)",
+                    "LoadG (always-true guard)",
                 )?;
 
-                // Apply conversion to loaded value
-                let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
-
-                // Create ITE: if guard then loaded else alt
-                let result = guard_val.ite(&converted, &alt_val, self.ctx);
+                // Apply conversion
+                let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
 
                 if (*dst as usize) < self.temps.len() {
                     self.temps[*dst as usize] = Some(result);
@@ -738,35 +704,59 @@ impl<'a> VEXInterpreter<'a> {
                 return Ok(StmtResult::Continue);
             }
 
-            // Concrete guard
-            if let Some(g) = guard_val.as_u64() {
-                let result = if g != 0 {
-                    // Guard is true - perform the load
-                    let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                    let loaded = self.resolve_loadg_load(
-                        callbacks,
-                        &addr_val,
-                        load_size,
-                        "LoadG (concrete-true guard)",
-                    )?;
-                    self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
-                } else {
-                    // Guard is false - use alternative value
-                    alt_val
-                };
-
+            if !can_be_true && can_be_false {
+                // Guard is always false - use alt value
                 if (*dst as usize) < self.temps.len() {
-                    self.temps[*dst as usize] = Some(result);
+                    self.temps[*dst as usize] = Some(alt_val);
                 }
-            } else {
-                // This shouldn't happen if guard_val is concrete
-                return Err(CbExecutionError::InvalidIR(
-                    "LoadG guard evaluation failed".to_string(),
-                ));
+                return Ok(StmtResult::Continue);
             }
 
-            Ok(StmtResult::Continue)
+            // Both paths possible - evaluate address and load, then ITE
+            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+            let loaded =
+                self.resolve_loadg_load(callbacks, &addr_val, load_size, "LoadG (symbolic guard)")?;
+
+            // Apply conversion to loaded value
+            let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+            // Create ITE: if guard then loaded else alt
+            let result = guard_val.ite(&converted, &alt_val, self.ctx);
+
+            if (*dst as usize) < self.temps.len() {
+                self.temps[*dst as usize] = Some(result);
+            }
+            return Ok(StmtResult::Continue);
         }
+
+        // Concrete guard
+        if let Some(g) = guard_val.as_u64() {
+            let result = if g != 0 {
+                // Guard is true - perform the load
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let loaded = self.resolve_loadg_load(
+                    callbacks,
+                    &addr_val,
+                    load_size,
+                    "LoadG (concrete-true guard)",
+                )?;
+                self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
+            } else {
+                // Guard is false - use alternative value
+                alt_val
+            };
+
+            if (*dst as usize) < self.temps.len() {
+                self.temps[*dst as usize] = Some(result);
+            }
+        } else {
+            // This shouldn't happen if guard_val is concrete
+            return Err(CbExecutionError::InvalidIR(
+                "LoadG guard evaluation failed".to_string(),
+            ));
+        }
+
+        Ok(StmtResult::Continue)
     }
 
     /// Execute an `IRStmt::Dirty` call: guard handling, native dirty-helper
@@ -778,168 +768,163 @@ impl<'a> VEXInterpreter<'a> {
         dirty: &crate::vex::ir::IRDirty,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
-        {
-            // Check guard if present
-            if let Some(guard) = &dirty.guard {
-                let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
-                if guard_val.is_symbolic() {
-                    // Symbolic guard: pick the taken branch if feasible,
-                    // otherwise skip. We can't fork mid-block, so we
-                    // concretize-to-taken (lossy but unblocks execution).
-                    let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
-                    if !cb_true {
-                        // Guard must be false — skip the dirty call.
-                        return Ok(StmtResult::Continue);
-                    }
-                    if cb_false {
-                        // Both feasible: pin guard true so the dirty call
-                        // runs. Loses the not-taken branch but matches
-                        // angr's existing dirty-helper concretization.
-                        log::debug!(
-                            "dirty call '{}': symbolic guard concretized to taken branch",
-                            dirty.cee.name
-                        );
-                        self.ctx.assume_true(&guard_val);
-                    }
-                    // Fall through and execute the dirty call.
-                } else if let Some(g) = guard_val.as_u64()
-                    && g == 0
-                {
-                    // Guard is false - skip the dirty call
+        // Check guard if present
+        if let Some(guard) = &dirty.guard {
+            let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
+            if guard_val.is_symbolic() {
+                // Symbolic guard: pick the taken branch if feasible,
+                // otherwise skip. We can't fork mid-block, so we
+                // concretize-to-taken (lossy but unblocks execution).
+                let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
+                if !cb_true {
+                    // Guard must be false — skip the dirty call.
                     return Ok(StmtResult::Continue);
                 }
-            }
-
-            // Evaluate arguments. Eager-concretize symbolic args via the
-            // solver so that native dispatch + Python callback (which both
-            // expect concrete u64 args) can run; the equality constraint
-            // is added so downstream branches stay consistent.
-            let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
-            let mut all_args_concrete = true;
-            for arg in &dirty.args {
-                let val = self.eval_expr_with_callbacks(callbacks, arg, &irsb.tyenv)?;
-                if let Some(concrete) = val.as_u64() {
-                    arg_vals.push(concrete);
-                } else if let Some(concrete) = self.concretize_and_pin(&val) {
-                    arg_vals.push(concrete);
-                } else {
-                    // Solver couldn't produce a concrete value (e.g. UNSAT
-                    // path). Fall through to the Python/no-handler paths
-                    // so they can apply their own fallback strategy.
-                    all_args_concrete = false;
-                    break;
+                if cb_false {
+                    // Both feasible: pin guard true so the dirty call
+                    // runs. Loses the not-taken branch but matches
+                    // angr's existing dirty-helper concretization.
+                    log::debug!(
+                        "dirty call '{}': symbolic guard concretized to taken branch",
+                        dirty.cee.name
+                    );
+                    self.ctx.assume_true(&guard_val);
                 }
-            }
-
-            // Determine return type bits
-            let ret_ty_bits = if let Some(tmp) = dirty.tmp {
-                irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
-            } else {
-                0 // No return value
-            };
-
-            // Try native dirty helper dispatch first
-            if all_args_concrete
-                && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
+                // Fall through and execute the dirty call.
+            } else if let Some(g) = guard_val.as_u64()
+                && g == 0
             {
-                // Native handler succeeded!
-                log::trace!(
-                    "Native dirty call: {} (args: {:?})",
-                    dirty.cee.name,
-                    arg_vals
-                );
-
-                // Store result in temporary if specified
-                if let Some(tmp) = dirty.tmp
-                    && let Some(return_value) = result.return_value
-                {
-                    let value = RustBV::concrete(return_value as u128, ret_ty_bits);
-                    if (tmp as usize) < self.temps.len() {
-                        self.temps[tmp as usize] = Some(value);
-                    }
-                }
-
-                // Apply any register writes from the helper
-                for (offset, value) in result.reg_writes {
-                    // Convert u64 value to RustBV and store in register
-                    let bv = RustBV::concrete(value as u128, 64);
-                    self.registers.put(offset, bv);
-                }
-
+                // Guard is false - skip the dirty call
                 return Ok(StmtResult::Continue);
             }
+        }
 
-            // No native handler matched. If Python also has no callback
-            // registered, treat the dirty call as a stub: write a fresh
-            // symbolic value into the result tmp (if any) and continue.
-            // This avoids hard-erroring on long-tail dirty helpers that
-            // neither Rust nor Python explicitly model.
-            if !callbacks.has_dirty_call() {
-                log::warn!(
-                    "dirty call '{}': no native handler and no Python callback; \
-                         stubbing with a fresh symbolic tmp",
-                    dirty.cee.name
-                );
-                if let Some(tmp) = dirty.tmp {
-                    let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
-                    let stub =
-                        RustBV::symbolic(self.ctx, format!("dirty_{}_stub", dirty.cee.name), bits);
-                    if (tmp as usize) < self.temps.len() {
-                        self.temps[tmp as usize] = Some(stub);
-                    }
-                }
-                return Ok(StmtResult::Continue);
+        // Evaluate arguments. Eager-concretize symbolic args via the
+        // solver so that native dispatch + Python callback (which both
+        // expect concrete u64 args) can run; the equality constraint
+        // is added so downstream branches stay consistent.
+        let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
+        let mut all_args_concrete = true;
+        for arg in &dirty.args {
+            let val = self.eval_expr_with_callbacks(callbacks, arg, &irsb.tyenv)?;
+            if let Some(concrete) = val.as_u64() {
+                arg_vals.push(concrete);
+            } else if let Some(concrete) = self.concretize_and_pin(&val) {
+                arg_vals.push(concrete);
+            } else {
+                // Solver couldn't produce a concrete value (e.g. UNSAT
+                // path). Fall through to the Python/no-handler paths
+                // so they can apply their own fallback strategy.
+                all_args_concrete = false;
+                break;
             }
+        }
 
-            if !all_args_concrete {
-                // The arg-concretization loop above bailed early because the
-                // solver could not produce a concrete value for one of the
-                // args (UNSAT). `concretize_and_pin` only fails on an empty
-                // model, and the pins added for the preceding args merely
-                // tighten the constraint set — re-running the loop would fail
-                // on the same arg. So there is nothing more aggressive to try;
-                // surface a clear error and let Python apply its own fallback.
-                return Err(CbExecutionError::Unsupported(format!(
-                    "dirty call '{}' arg unconcretizable",
-                    dirty.cee.name
-                )));
-            }
+        // Determine return type bits
+        let ret_ty_bits = if let Some(tmp) = dirty.tmp {
+            irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+        } else {
+            0 // No return value
+        };
 
-            // Call Python callback
-            self.stats.python_dirty_call_count += 1;
-            let (data, is_symbolic, _symbolic_ast) = callbacks
-                .call_dirty_call(&dirty.cee.name, &arg_vals, ret_ty_bits)
-                .map_err(|e| {
-                    CbExecutionError::Callback(format!(
-                        "dirty call {} failed: {}",
-                        dirty.cee.name, e
-                    ))
-                })?;
+        // Try native dirty helper dispatch first
+        if all_args_concrete
+            && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
+        {
+            // Native handler succeeded!
+            log::trace!(
+                "Native dirty call: {} (args: {:?})",
+                dirty.cee.name,
+                arg_vals
+            );
 
             // Store result in temporary if specified
-            if let Some(tmp) = dirty.tmp {
-                let result = if is_symbolic {
-                    // Create a symbolic value for the result
-                    RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
-                } else {
-                    // Convert bytes to concrete value
-                    let mut value: u128 = 0;
-                    for (i, &byte) in data.iter().enumerate() {
-                        if (i * 8) as u32 >= ret_ty_bits {
-                            break;
-                        }
-                        value |= (byte as u128) << (i * 8);
-                    }
-                    RustBV::concrete(value, ret_ty_bits)
-                };
-
+            if let Some(tmp) = dirty.tmp
+                && let Some(return_value) = result.return_value
+            {
+                let value = RustBV::concrete(return_value as u128, ret_ty_bits);
                 if (tmp as usize) < self.temps.len() {
-                    self.temps[tmp as usize] = Some(result);
+                    self.temps[tmp as usize] = Some(value);
                 }
             }
 
-            Ok(StmtResult::Continue)
+            // Apply any register writes from the helper
+            for (offset, value) in result.reg_writes {
+                // Convert u64 value to RustBV and store in register
+                let bv = RustBV::concrete(value as u128, 64);
+                self.registers.put(offset, bv);
+            }
+
+            return Ok(StmtResult::Continue);
         }
+
+        // No native handler matched. If Python also has no callback
+        // registered, treat the dirty call as a stub: write a fresh
+        // symbolic value into the result tmp (if any) and continue.
+        // This avoids hard-erroring on long-tail dirty helpers that
+        // neither Rust nor Python explicitly model.
+        if !callbacks.has_dirty_call() {
+            log::warn!(
+                "dirty call '{}': no native handler and no Python callback; \
+                         stubbing with a fresh symbolic tmp",
+                dirty.cee.name
+            );
+            if let Some(tmp) = dirty.tmp {
+                let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
+                let stub =
+                    RustBV::symbolic(self.ctx, format!("dirty_{}_stub", dirty.cee.name), bits);
+                if (tmp as usize) < self.temps.len() {
+                    self.temps[tmp as usize] = Some(stub);
+                }
+            }
+            return Ok(StmtResult::Continue);
+        }
+
+        if !all_args_concrete {
+            // The arg-concretization loop above bailed early because the
+            // solver could not produce a concrete value for one of the
+            // args (UNSAT). `concretize_and_pin` only fails on an empty
+            // model, and the pins added for the preceding args merely
+            // tighten the constraint set — re-running the loop would fail
+            // on the same arg. So there is nothing more aggressive to try;
+            // surface a clear error and let Python apply its own fallback.
+            return Err(CbExecutionError::Unsupported(format!(
+                "dirty call '{}' arg unconcretizable",
+                dirty.cee.name
+            )));
+        }
+
+        // Call Python callback
+        self.stats.python_dirty_call_count += 1;
+        let (data, is_symbolic, _symbolic_ast) = callbacks
+            .call_dirty_call(&dirty.cee.name, &arg_vals, ret_ty_bits)
+            .map_err(|e| {
+                CbExecutionError::Callback(format!("dirty call {} failed: {}", dirty.cee.name, e))
+            })?;
+
+        // Store result in temporary if specified
+        if let Some(tmp) = dirty.tmp {
+            let result = if is_symbolic {
+                // Create a symbolic value for the result
+                RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
+            } else {
+                // Convert bytes to concrete value
+                let mut value: u128 = 0;
+                for (i, &byte) in data.iter().enumerate() {
+                    if (i * 8) as u32 >= ret_ty_bits {
+                        break;
+                    }
+                    value |= (byte as u128) << (i * 8);
+                }
+                RustBV::concrete(value, ret_ty_bits)
+            };
+
+            if (tmp as usize) < self.temps.len() {
+                self.temps[tmp as usize] = Some(result);
+            }
+        }
+
+        Ok(StmtResult::Continue)
     }
 }
 
