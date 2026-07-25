@@ -802,6 +802,61 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_htonl_symbolic_arg_exports_native_reverse(self, fauxware_project):
+        """angr-n0irt.27: htonl on a *symbolic* argument is the only path that
+        reaches export.rs's ``BVOp::Reverse`` arm (rustbv_to_claripy).
+
+        The native ``htonl`` proc (procedures/byteorder.rs) builds
+        ``reverse(extract(arg, 31, 0)).zero_extend(64)``. With a symbolic
+        ``rdi`` the reverse does NOT fold to a concrete ``BVV`` (that only
+        happens for a concrete operand), so the result RustBV carries a native
+        ``BVOp::Reverse`` node that must round-trip back to ``claripy.Reverse``
+        when rax is exported to the Python ``SimState``. Import can never
+        produce such a node (claripy.Reverse imports as a Concat-of-extracts and
+        exports verbatim from the reverse cache), so this integration path is
+        the only coverage of that export arm.
+
+        Constraining ``sym == 0x1122334455667788`` pins the low 32 bits to
+        ``0x55667788``; big-endian byte-reversal gives ``0x88776655``, then
+        zero-extension to the 64-bit rax keeps it unchanged. The rax AST stays
+        symbolic (references ``sym``) — an empty ``.variables`` set would mean
+        the value folded to a constant and never exercised the Reverse export.
+        """
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["htonl"]())
+            sym = claripy.BVS("htonl_input", 64)
+            state.solver.add(sym == 0x1122334455667788)
+            state.regs.rdi = sym
+            s = self._run_one_step(proj, state)
+            assert s.regs.rax.variables, "rax folded to a constant; native Reverse export not exercised"
+            assert s.solver.min(s.regs.rax) == 0x88776655
+            assert s.solver.max(s.regs.rax) == 0x88776655
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_htons_symbolic_arg_exports_native_reverse(self, fauxware_project):
+        """angr-n0irt.27 (16-bit twin of the htonl case): htons byte-reverses the
+        low 16 bits, so its native ``BVOp::Reverse`` node is width-16. Same
+        export arm, different reverse width. ``sym``'s low 16 bits are
+        ``0x7788``; byte-reversal gives ``0x8877``, zero-extended to rax."""
+        import claripy
+
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["htons"]())
+            sym = claripy.BVS("htons_input", 64)
+            state.solver.add(sym == 0x1122334455667788)
+            state.regs.rdi = sym
+            s = self._run_one_step(proj, state)
+            assert s.regs.rax.variables, "rax folded to a constant; native Reverse export not exercised"
+            assert s.solver.min(s.regs.rax) == 0x8877
+            assert s.solver.max(s.regs.rax) == 0x8877
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
 
 class TestCallbackSolverConcretizationFallback:
     """Regression: callback solver min()/max() must handle a ``None`` return
