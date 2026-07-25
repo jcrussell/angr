@@ -66,6 +66,17 @@ class TestSolverContextClose:
         # Graveyard is now empty; a second drain is a no-op.
         assert rsp.drain_solver_graveyard() == 0
 
+    # NOTE (angr-n0irt.24): the *off-owner* no-op branch of the drain — a
+    # context whose owner is a different thread staying ``is_closed()==False``
+    # after a wrong-thread ``close()`` — cannot be exercised from Python.
+    # ``RustSolverContext`` is ``#[pyclass(unsendable)]`` and the crate builds
+    # with ``panic = "abort"``, so pyo3's thread checker hard-aborts the process
+    # on ANY cross-thread method borrow (verified: forking or draining a context
+    # on a second thread aborts with "Fatal Python error: Aborted"). The
+    # off-owner branch is instead covered directly in Rust by
+    # ``solver_tests.rs::test_solver_close_off_owner_is_noop``, which spoofs the
+    # ``owner`` field to a foreign ``ThreadId`` without moving the object.
+
 
 class TestParallelNoUnsendableUnraisable:
     def test_workers_explore_no_unsendable_drop(self, fauxware_project, monkeypatch):
