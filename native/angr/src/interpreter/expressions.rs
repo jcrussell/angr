@@ -225,6 +225,30 @@ impl<'a> VEXInterpreter<'a> {
         None
     }
 
+    /// Exact-address hit (with width extract) then overlap fallback into a wider
+    /// covering store, over one symbolic-store map. Pairs with
+    /// `symbolic_overlap_load` so the pending and flushed buffers share the whole
+    /// dispatch instead of open-coding it twice. Returns `None` (falls through to
+    /// the concrete buffer) when an exact key is present but narrower than the
+    /// load — matching the original if / else-if structure.
+    fn symbolic_store_load(
+        &self,
+        map: &FxHashMap<u64, RustBV>,
+        addr: u64,
+        size: usize,
+    ) -> Option<RustBV> {
+        if let Some(sym_val) = map.get(&addr) {
+            let want = (size * 8) as u32;
+            if sym_val.width() == want {
+                return Some(sym_val.clone());
+            } else if sym_val.width() > want {
+                return Some(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+            }
+            return None;
+        }
+        self.symbolic_overlap_load(map, addr, size)
+    }
+
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
     /// and concrete-memory caches before falling back to the Python callback.
     fn load_concrete_addr(
@@ -245,14 +269,8 @@ impl<'a> VEXInterpreter<'a> {
         // no longer push zero placeholder bytes (angr-ofyh) — by the concrete
         // buffer too, so fall back to an overlap scan that extracts the covered
         // bytes from the covering store.
-        if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
-            if sym_val.width() == (size * 8) as u32 {
-                return Ok(sym_val.clone());
-            } else if sym_val.width() > (size * 8) as u32 {
-                return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
-            }
-        } else if let Some(sym_val) =
-            self.symbolic_overlap_load(&self.pending_symbolic_stores, addr_concrete, size)
+        if let Some(sym_val) =
+            self.symbolic_store_load(&self.pending_symbolic_stores, addr_concrete, size)
         {
             return Ok(sym_val);
         }
@@ -267,14 +285,8 @@ impl<'a> VEXInterpreter<'a> {
 
         // Also check previously flushed symbolic stores (cross-block), with the
         // same exact-then-overlap fallback as the pending map above.
-        if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
-            if sym_val.width() == (size * 8) as u32 {
-                return Ok(sym_val.clone());
-            } else if sym_val.width() > (size * 8) as u32 {
-                return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
-            }
-        } else if let Some(sym_val) =
-            self.symbolic_overlap_load(&self.all_flushed_symbolic_stores, addr_concrete, size)
+        if let Some(sym_val) =
+            self.symbolic_store_load(&self.all_flushed_symbolic_stores, addr_concrete, size)
         {
             return Ok(sym_val);
         }
