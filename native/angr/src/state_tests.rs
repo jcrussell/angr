@@ -1926,6 +1926,63 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
     assert_eq!(merged.mmap_base(), 0x50_0000, "mmap_base must be max(a, b)");
 }
 
+// angr-n0irt.2: RustSimState::merge must extend the angr-ph300.51 max-merge fix
+// to the CGC allocator state. cgc_allocation_base grows DOWNWARD, so the anti-
+// alias combinator is min (furthest-advanced base across branches), NOT the max
+// used for the up-growing brk/mmap watermarks. cgc_sinkholes must INTERSECT (a
+// freed region is only safe to reuse if it was freed in every branch — a region
+// freed in one branch but live in another survives the page-unioning merge, so
+// unioning sinkholes would reintroduce aliasing).
+#[test]
+fn test_merge_takes_min_cgc_base_and_intersects_sinkholes() {
+    Python::initialize();
+
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = RustSimState::new("amd64").unwrap();
+    let mut c = RustSimState::new("amd64").unwrap();
+
+    // Downward-growing base: a is the default high-water, b and c bumped lower
+    // (allocated more). min over all three is b's 0xB700_0000 — which is neither
+    // self's value nor a plain "take other", so this distinguishes min from max
+    // (max would be a's 0xB800_0000) and from "last other" (c's 0xB750_0000).
+    a.set_cgc_allocation_base(0xB800_0000);
+    b.set_cgc_allocation_base(0xB700_0000);
+    c.set_cgc_allocation_base(0xB750_0000);
+
+    // Only (0x1000, 0x100) is present in ALL three branches -> survives.
+    a.cgc_add_sinkhole(0x1000, 0x100);
+    a.cgc_add_sinkhole(0x2000, 0x100); // self-only -> dropped
+    b.cgc_add_sinkhole(0x1000, 0x100);
+    b.cgc_add_sinkhole(0x4000, 0x100); // other-only -> dropped
+    c.cgc_add_sinkhole(0x1000, 0x100);
+    c.cgc_add_sinkhole(0x5000, 0x100); // other-only -> dropped
+
+    let m0 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "n0irt2_m0", 1)
+    };
+    let m1 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "n0irt2_m1", 1)
+    };
+    let m2 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "n0irt2_m2", 1)
+    };
+    let merged = a.merge(&[&b, &c], &[m0, m1, m2]);
+
+    assert_eq!(
+        merged.cgc_allocation_base(),
+        0xB700_0000,
+        "cgc_allocation_base must be min across all branches (grows downward)"
+    );
+    assert_eq!(
+        merged.cgc_sinkholes(),
+        &[(0x1000, 0x100)],
+        "cgc_sinkholes must intersect: only the region freed in every branch survives"
+    );
+}
+
 // angr-ph300.75: RustSimState::merge keeps the longest-stdout branch's
 // FileSystem wholesale (documented stdout-only merge contract). This locks in
 // that contract: the merged fs is the longest-stdout branch's fd table, ties

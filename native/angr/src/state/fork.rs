@@ -421,8 +421,33 @@ impl RustSimState {
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
             force_eager_forks: self.force_eager_forks,
-            cgc_allocation_base: self.cgc_allocation_base,
-            cgc_sinkholes: self.cgc_sinkholes.clone(),
+            // CGC allocate(2) bumps DOWNWARD from cgc_allocation_base
+            // (checked_sub in syscalls/cgc.rs::NativeAllocateSyscall), so —
+            // unlike the up-growing heap_brk/posix_brk/mmap_base watermarks
+            // above — the anti-alias merge takes the *minimum* (furthest-
+            // advanced) base across branches. memory::merge unions pages from
+            // every branch, so keeping only self's higher base would let a
+            // later allocate() hand out an address aliasing a live allocation
+            // from a branch that bumped lower (angr-n0irt.2; same bug class as
+            // angr-ph300.51's heap_brk/mmap_base fix).
+            cgc_allocation_base: others.iter().fold(self.cgc_allocation_base, |m, o| {
+                m.min(o.cgc_allocation_base)
+            }),
+            // A sinkhole is a freed (unmapped) region eligible for allocate()
+            // reuse. After a page-unioning merge a region is only safe to reuse
+            // if it was freed in *every* branch: a region freed in one branch
+            // but still live in another survives in the merged memory, so
+            // reusing it would alias that live data. Intersect by exact
+            // (addr,len) rather than union — union would reintroduce exactly
+            // that aliasing (angr-n0irt.2). Order is irrelevant to
+            // cgc_take_max_sinkhole (it scans for the highest address), so
+            // preserving self's order via filter is fine.
+            cgc_sinkholes: self
+                .cgc_sinkholes
+                .iter()
+                .copied()
+                .filter(|hole| others.iter().all(|o| o.cgc_sinkholes.contains(hole)))
+                .collect(),
             sim_options: self.sim_options.clone(),
         }
     }
