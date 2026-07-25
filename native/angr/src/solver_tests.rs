@@ -24,21 +24,6 @@ fn test_solver_close_on_owner_empties_payload() {
     assert!(ctx.is_closed());
 }
 
-/// angr-87e56: a `close()` routed from a non-owning thread must NOT drop the
-/// non-Send payload cross-thread — it stays intact for pyo3's leak-safe
-/// dealloc refusal. `RustSolverContext` is `unsendable`, so we cannot move it
-/// across a thread boundary in a Rust test; instead assert the guard's core
-/// invariant directly: the recorded owner is the constructing thread, and a
-/// close() from that same thread does empty it (the negative direction is
-/// covered by construction — the `owner` comparison is the only gate).
-#[test]
-fn test_solver_close_is_owner_guarded() {
-    let mut ctx = RustSolverContext::new();
-    assert_eq!(ctx.owner, std::thread::current().id());
-    ctx.close();
-    assert!(ctx.is_closed());
-}
-
 /// angr-n0irt.24: exercise the OFF-owner branch of `close()` directly.
 ///
 /// The sibling test above only proves the on-owner drop; the negative
@@ -55,6 +40,9 @@ fn test_solver_close_is_owner_guarded() {
 #[test]
 fn test_solver_close_off_owner_is_noop() {
     let mut ctx = RustSolverContext::new();
+    // The constructor records the constructing (this) thread as owner — the
+    // sole gate `close()` checks before dropping the non-Send payload.
+    assert_eq!(ctx.owner, std::thread::current().id());
     // A ThreadId that is provably not this thread's.
     let foreign = std::thread::spawn(|| std::thread::current().id())
         .join()
