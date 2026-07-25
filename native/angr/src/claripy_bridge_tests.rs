@@ -267,6 +267,13 @@ fn test_roundtrip_import_export_preserves_semantics() {
         assert_equiv(&x.sub(&c5, &ctx), "sub");
         assert_equiv(&x.mul(&y, &ctx), "mul");
         assert_equiv(&x.neg(&ctx), "neg");
+        // Division / remainder (signed + unsigned). Guards the asymmetric
+        // claripy op-name mapping on both bridge directions: export emits
+        // UDiv/SDiv/URem/SMod, import maps them back to udiv/sdiv/urem/srem.
+        assert_equiv(&x.udiv(&y, &ctx), "udiv");
+        assert_equiv(&x.sdiv(&y, &ctx), "sdiv");
+        assert_equiv(&x.urem(&y, &ctx), "urem");
+        assert_equiv(&x.srem(&y, &ctx), "srem");
         // Bitwise.
         assert_equiv(&x.and(&y, &ctx), "and");
         assert_equiv(&x.or(&y, &ctx), "or");
@@ -328,5 +335,53 @@ fn test_roundtrip_concrete_value_exact() {
                 "concrete value for {val:#x}/{width}"
             );
         }
+    });
+}
+
+/// angr-n0irt.19: claripy's `BV.__floordiv__` (`//`) and `BV.__mod__` (`%`)
+/// are UNSIGNED (counter to Python `int` semantics); only the `SDiv` / `SMod`
+/// op-names are signed. `import.rs::claripy_to_rustbv` encodes that mapping in
+/// a comment but no test locked it in. Pin it with the exact values cited in
+/// that comment so a future op-name remap regresses loudly. The operand is a
+/// pinned symbolic BVS (not two concrete BVVs) so claripy keeps the div/mod op
+/// node instead of const-folding it away before it reaches the import arm.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_import_floordiv_mod_are_unsigned() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return, // claripy not importable in this env — skip
+        };
+        let ctx = SymContext::new_mock();
+
+        // Symbolic operand v, pinned to 0xFFFF_FFFE (== -2 as signed i32).
+        let bvs = claripy.call_method1("BVS", ("v", 32u32)).unwrap();
+        let three = claripy.call_method1("BVV", (3u64, 32u32)).unwrap();
+        let v = claripy_to_rustbv(py, &bvs, &ctx).unwrap();
+        ctx.add_constraint(v.to_z3_ast().eq(z3::ast::BV::from_u64(0xFFFF_FFFE, 32)));
+
+        // Import each op AST and evaluate under the pinned constraint. Same
+        // BVS "v" maps to the same z3 var, so eval resolves to a single value.
+        let eval_op = |ast: &Bound<'_, PyAny>| -> u128 {
+            let rt = claripy_to_rustbv(py, ast, &ctx).unwrap();
+            ctx.eval(&rt).expect("pinned operand -> concrete eval")
+        };
+
+        // __floordiv__ / __mod__ are UNSIGNED: 0xFFFF_FFFE / 3 == 0x5555_5554,
+        // 0xFFFF_FFFE % 3 == 2.
+        let floordiv = bvs.call_method1("__floordiv__", (&three,)).unwrap();
+        assert_eq!(eval_op(&floordiv), 0x5555_5554, "__floordiv__ must be udiv");
+        let modv = bvs.call_method1("__mod__", (&three,)).unwrap();
+        assert_eq!(eval_op(&modv), 2, "__mod__ must be urem");
+
+        // SDiv / SMod are SIGNED: (-2) sdiv 3 == 0 (trunc toward zero),
+        // (-2) srem 3 == -2 == 0xFFFF_FFFE. These must differ from the
+        // unsigned results above, proving the arms are not conflated.
+        let sdiv = claripy.call_method1("SDiv", (&bvs, &three)).unwrap();
+        assert_eq!(eval_op(&sdiv), 0, "SDiv must be signed sdiv");
+        let smod = claripy.call_method1("SMod", (&bvs, &three)).unwrap();
+        assert_eq!(eval_op(&smod), 0xFFFF_FFFE, "SMod must be signed srem");
     });
 }

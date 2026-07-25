@@ -478,15 +478,22 @@ fn rustbv_to_claripy_memo(
                     arg0.call_method1("__mul__", (&args[1],))
                         .map(std::convert::Into::into)
                 }
-                BVOp::UDiv => claripy_mod
-                    .call_method1("UDiv", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
+                // claripy exposes no top-level UDiv/URem; unsigned div/rem are
+                // the `//` / `%` operators (op-names __floordiv__ / __mod__),
+                // which is exactly what the import side maps back to udiv/urem.
+                BVOp::UDiv => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__floordiv__", (&args[1],))
+                        .map(std::convert::Into::into)
+                }
                 BVOp::SDiv => claripy_mod
                     .call_method1("SDiv", (&args[0], &args[1]))
                     .map(std::convert::Into::into),
-                BVOp::URem => claripy_mod
-                    .call_method1("URem", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
+                BVOp::URem => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__mod__", (&args[1],))
+                        .map(std::convert::Into::into)
+                }
                 BVOp::SRem => claripy_mod
                     .call_method1("SMod", (&args[0], &args[1]))
                     .map(std::convert::Into::into),
