@@ -2,6 +2,32 @@
 
 use super::*;
 
+/// Fold one branch's Python-AST overlay map into the accumulating merged map.
+///
+/// Shared by `merge`'s three overlay unions (`symbolic_pages`,
+/// `hook_symbolic_memory`, `addr_to_ast`). Entries already present in `target`
+/// are kept (earlier state wins) and the conflict is warned with `field` in the
+/// message; other-only keys are cloned in. Collapsing the three copy-pasted
+/// loops into one implementation means the conflict/insert logic is written —
+/// and tested — exactly once (angr-n0irt.10).
+fn union_overlay<'a, V>(
+    target: &mut HashMap<u64, V>,
+    source: impl IntoIterator<Item = (&'a u64, &'a V)>,
+    field: &str,
+) where
+    V: Clone + 'a,
+{
+    for (addr, value) in source {
+        if target.contains_key(addr) {
+            log::warn!(
+                "merge: conflicting {field} overlay at {addr:#x}; keeping earlier state's AST"
+            );
+        } else {
+            target.insert(*addr, value.clone());
+        }
+    }
+}
+
 impl RustSimState {
     /// Clone the three Python-AST metadata maps so the parent and the fork hold
     /// independent maps over shared AST handles.
@@ -348,33 +374,17 @@ impl RustSimState {
         let (mut symbolic_pages, mut hook_symbolic_memory, mut addr_to_ast) =
             self.clone_py_metadata();
         for other in others {
-            for (addr, ast) in other.symbolic_pages() {
-                if symbolic_pages.contains_key(addr) {
-                    log::warn!(
-                        "merge: conflicting symbolic_pages overlay at {addr:#x}; keeping earlier state's AST"
-                    );
-                } else {
-                    symbolic_pages.insert(*addr, ast.clone());
-                }
-            }
-            for (addr, entry) in other.hook_symbolic_memory() {
-                if hook_symbolic_memory.contains_key(addr) {
-                    log::warn!(
-                        "merge: conflicting hook_symbolic_memory overlay at {addr:#x}; keeping earlier state's AST"
-                    );
-                } else {
-                    hook_symbolic_memory.insert(*addr, entry.clone());
-                }
-            }
-            for (addr, entry) in other.addr_to_ast() {
-                if addr_to_ast.contains_key(addr) {
-                    log::warn!(
-                        "merge: conflicting addr_to_ast overlay at {addr:#x}; keeping earlier state's AST"
-                    );
-                } else {
-                    addr_to_ast.insert(*addr, entry.clone());
-                }
-            }
+            union_overlay(
+                &mut symbolic_pages,
+                other.symbolic_pages(),
+                "symbolic_pages",
+            );
+            union_overlay(
+                &mut hook_symbolic_memory,
+                other.hook_symbolic_memory(),
+                "hook_symbolic_memory",
+            );
+            union_overlay(&mut addr_to_ast, other.addr_to_ast(), "addr_to_ast");
         }
         RustSimState {
             arch: self.arch.clone(),
