@@ -397,3 +397,139 @@ fn prop_zext_const_cmp_fold_matches_z3(
     ctx.add_constraint(folded_bv.eq(&ref_bv).not());
     !ctx.is_sat()
 }
+
+// ---------------------------------------------------------------------------
+// Width-boundary exhaustive checks (angr-qwyti.5)
+//
+// The quickcheck properties above sample widths uniformly via `w128`/`w64`, so
+// the specific off-by-one boundaries that produced the width/truncation bug
+// class (scanf %hd/%hhd, sprintf h/hh, LoadG widening, extract width>=128,
+// shift/rotate cast, make_bv_from_bytes, ...) are hit only probabilistically.
+// These `#[test]` fns *deterministically* cross every width in `BOUNDARY_WIDTHS`
+// with a fixed set of adversarial values against a plain-`u128` reference, so a
+// regression on any single boundary fails on every run rather than 1/128 of the
+// time.
+// ---------------------------------------------------------------------------
+
+/// The widths actually load-bearing in the codebase: byte/half/word/dword/qword
+/// sizes and each ±1 neighbour, plus 65/127/128 for the >64-bit codec paths.
+const BOUNDARY_WIDTHS: [u32; 12] = [1, 7, 8, 15, 16, 31, 32, 63, 64, 65, 127, 128];
+
+/// Adversarial concrete values for a `width`-bit BV: all-zeros, all-ones, the
+/// sign bit alone, sign bit clear / low bit set, and the two alternating
+/// patterns. Each is pre-masked to `width`.
+fn boundary_values(width: u32) -> Vec<u128> {
+    let m = mask(width);
+    let sign = if width == 0 { 0 } else { 1u128 << (width - 1) };
+    let alt_a = 0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAu128 & m;
+    let alt_5 = 0x5555_5555_5555_5555_5555_5555_5555_5555u128 & m;
+    vec![0, 1, m, sign, m ^ sign, alt_a, alt_5]
+}
+
+#[test]
+fn boundary_truncate_matches_mask() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        for &to in &BOUNDARY_WIDTHS {
+            if to > w {
+                continue; // truncate only narrows
+            }
+            for &v in &boundary_values(w) {
+                let got = val(&bv(v, w).truncate(to, &ctx));
+                assert_eq!(got, v & mask(to), "truncate({w}->{to}) v={v:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_zero_extend_preserves_low_and_zeros_high() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        for &to in &BOUNDARY_WIDTHS {
+            if to < w {
+                continue; // zero_extend only widens
+            }
+            for &v in &boundary_values(w) {
+                let ze = bv(v, w).zero_extend(to, &ctx);
+                // Low `w` bits unchanged, high bits zero => value == masked src.
+                assert_eq!(val(&ze), v & mask(w), "zext({w}->{to}) v={v:#x}");
+                // Round-trip back down recovers the source exactly.
+                assert_eq!(
+                    val(&ze.truncate(w, &ctx)),
+                    v & mask(w),
+                    "zext-trunc({w}->{to}->{w}) v={v:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_sign_extend_matches_reference() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        for &to in &BOUNDARY_WIDTHS {
+            if to < w {
+                continue; // sign_extend only widens
+            }
+            for &v in &boundary_values(w) {
+                let want = sign_extend_to(v & mask(w), w, to) & mask(to);
+                let got = val(&bv(v, w).sign_extend(to, &ctx));
+                assert_eq!(got, want, "sext({w}->{to}) v={v:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_extract_single_bits_and_slices() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        for &v in &boundary_values(w) {
+            let x = bv(v, w);
+            // Every individual bit position.
+            for i in 0..w {
+                let got = val(&x.extract(i, i, &ctx));
+                assert_eq!(got, (v >> i) & 1, "extract bit {i} of w={w} v={v:#x}");
+            }
+            // Low slice [to-1:0] for each boundary width `to <= w`, plus the
+            // top-anchored slice [w-1 : w-to].
+            for &to in &BOUNDARY_WIDTHS {
+                if to > w {
+                    continue;
+                }
+                let low = val(&x.extract(to - 1, 0, &ctx));
+                assert_eq!(low, v & mask(to), "extract low {to} of w={w} v={v:#x}");
+                let hi = val(&x.extract(w - 1, w - to, &ctx));
+                assert_eq!(
+                    hi,
+                    (v >> (w - to)) & mask(to),
+                    "extract top {to} of w={w} v={v:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_concat_recovers_operands() {
+    let ctx = SymContext::new_mock();
+    // Restrict to pairs whose sum stays `as_u128`-readable (<= 128).
+    for &wa in &BOUNDARY_WIDTHS {
+        for &wb in &BOUNDARY_WIDTHS {
+            if wa + wb > 128 {
+                continue;
+            }
+            for &a in &boundary_values(wa) {
+                for &b in &boundary_values(wb) {
+                    let c = bv(a, wa).concat(&bv(b, wb), &ctx); // width wa+wb
+                    let top = c.extract(wa + wb - 1, wb, &ctx);
+                    let bot = c.extract(wb - 1, 0, &ctx);
+                    assert_eq!(val(&top), a & mask(wa), "concat hi wa={wa} wb={wb}");
+                    assert_eq!(val(&bot), b & mask(wb), "concat lo wa={wa} wb={wb}");
+                }
+            }
+        }
+    }
+}
