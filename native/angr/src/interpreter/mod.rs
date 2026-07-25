@@ -360,7 +360,7 @@ pub enum CbExecutionError {
     /// These come from underlying memory-model failures (unmapped, perms,
     /// solver timeout) that the interpreter can't paper over.
     #[error("memory error: {0}")]
-    Memory(String),
+    Memory(#[from] MemoryError),
     /// Operation error. Strategy: [`FallbackStrategy::Panic`].
     /// VEX op execution failed in a non-recoverable way; lifting to Python
     /// would just rerun the same op.

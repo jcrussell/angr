@@ -758,9 +758,9 @@ impl<'a> VEXInterpreter<'a> {
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
         if addrs.is_empty() {
-            return Err(CbExecutionError::Memory(
-                "no candidate addresses".to_string(),
-            ));
+            return Err(CbExecutionError::Memory(MemoryError::SymbolicAddress {
+                description: "no candidate addresses".to_string(),
+            }));
         }
 
         let width = (size * 8) as u32;
@@ -1015,7 +1015,7 @@ impl<'a> VEXInterpreter<'a> {
                 // multi-byte load, or imports didn't cover all bytes at the addr.
                 Ok(None)
             }
-            Err(e) => Err(CbExecutionError::Memory(e.to_string())),
+            Err(e) => Err(CbExecutionError::Memory(e)),
         }
     }
 

@@ -163,7 +163,7 @@ fn run_error_kind_invalid_ir_is_fatal() {
 #[test]
 fn run_error_kind_other_panic_variants_are_fatal() {
     for e in [
-        CbExecutionError::Memory("unmapped".to_string()),
+        CbExecutionError::Memory(MemoryError::Unmapped { addr: 0, size: 0 }),
         CbExecutionError::UnknownTemp(3),
         CbExecutionError::Callback("py raised".to_string()),
     ] {

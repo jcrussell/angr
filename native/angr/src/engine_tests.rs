@@ -7,6 +7,7 @@
 
 use super::*;
 
+use crate::memory::MemoryError;
 use crate::vex::ir::IROp;
 use log::{Level, LevelFilter};
 
@@ -141,7 +142,7 @@ fn deliberately_untyped_variants_collapse_to_other_preserving_the_message() {
     // These are the variants `cb_execution_error_to_typed` lists by name so a
     // new variant fails to compile; assert they still stringify losslessly.
     for err in [
-        CbExecutionError::Memory("unmapped 0x0".to_string()),
+        CbExecutionError::Memory(MemoryError::Unmapped { addr: 0, size: 0 }),
         CbExecutionError::UnknownTemp(7),
         CbExecutionError::Callback("python raised".to_string()),
         CbExecutionError::LiftError("bad bytes".to_string()),

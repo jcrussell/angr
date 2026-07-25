@@ -98,7 +98,7 @@ impl<'a> VEXInterpreter<'a> {
                 log::debug!("Symbolic address store: {description}, falling back to Python");
                 Ok(false)
             }
-            Err(e) => Err(CbExecutionError::Memory(e.to_string())),
+            Err(e) => Err(CbExecutionError::Memory(e)),
         }
     }
 

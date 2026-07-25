@@ -381,7 +381,7 @@ impl<'a> VEXInterpreter<'a> {
         // or the page is unmapped (existing lift paths handle that).
         if let Some(ref mem) = self.rust_memory {
             mem.check_executable(addr)
-                .map_err(|e| CbExecutionError::Memory(e.to_string()))?;
+                .map_err(CbExecutionError::Memory)?;
         }
 
         // Check cache first - Arc clone is O(1).
