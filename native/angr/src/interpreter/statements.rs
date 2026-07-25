@@ -892,24 +892,17 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             if !all_args_concrete {
-                // First-pass loop bailed early because the solver could not
-                // produce a concrete value for one of the args. Try again,
-                // this time concretizing more aggressively; if any arg is
-                // still unrepresentable, surface a clear error.
-                arg_vals.clear();
-                for arg in &dirty.args {
-                    let val = self.eval_expr_with_callbacks(callbacks, arg, &irsb.tyenv)?;
-                    if let Some(concrete) = val.as_u64() {
-                        arg_vals.push(concrete);
-                    } else if let Some(concrete) = self.concretize_and_pin(&val) {
-                        arg_vals.push(concrete);
-                    } else {
-                        return Err(CbExecutionError::Unsupported(format!(
-                            "dirty call '{}' arg unconcretizable",
-                            dirty.cee.name
-                        )));
-                    }
-                }
+                // The arg-concretization loop above bailed early because the
+                // solver could not produce a concrete value for one of the
+                // args (UNSAT). `concretize_and_pin` only fails on an empty
+                // model, and the pins added for the preceding args merely
+                // tighten the constraint set — re-running the loop would fail
+                // on the same arg. So there is nothing more aggressive to try;
+                // surface a clear error and let Python apply its own fallback.
+                return Err(CbExecutionError::Unsupported(format!(
+                    "dirty call '{}' arg unconcretizable",
+                    dirty.cee.name
+                )));
             }
 
             // Call Python callback
