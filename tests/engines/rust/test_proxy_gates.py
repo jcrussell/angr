@@ -756,6 +756,47 @@ class TestCallbackMemoryProxyReentryGuards:
             assert mapped is False
 
 
+class TestBatchFetchPagesFallbackDeclines:
+    """angr-hv4lt.2: ``_cb_batch_fetch_pages`` must return is_mapped=False in
+    its None-state and per-page-error fallback arms (matching the single-page
+    ``_cb_fetch_page`` siblings), so a transient failure is retryable rather
+    than permanently baked into Rust memory as an all-zero page.
+    """
+
+    def test_none_state_declines(self, fauxware_project):
+        """When no callback/default state is available, decline every page
+        (is_mapped=False) instead of mapping a permanent all-zero page."""
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr._get_callback_state = lambda: None
+        mgr._get_default_state = lambda: None
+        results = mgr._cb_batch_fetch_pages([0x400000, 0x401000])
+        assert len(results) == 2
+        for page, perms, mapped in results:
+            assert page == bytes(4096)
+            assert perms == 0
+            assert mapped is False
+
+    def test_load_error_declines(self, fauxware_project):
+        """A per-page SimError during load must decline that page
+        (is_mapped=False), keeping the retry path alive."""
+        from angr.errors import SimError
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        def _boom(*_a, **_k):
+            raise SimError("transient")
+
+        state.memory.load = _boom
+        mgr._get_callback_state = lambda: state
+        mgr._get_default_state = lambda: state
+        # Avoid the UltraPage fast path so the load error arm is exercised.
+        mgr._fetch_page_from_ultrapage = lambda *_a, **_k: None
+        results = mgr._cb_batch_fetch_pages([0x400000])
+        assert results == [(bytes(4096), 0, False)]
+
+
 class TestRustMemoryProxyPluginGapStubs:
     """angr-8dop.2: ``RustMemoryProxy`` exposes minimal stubs for the
     SimMemory plugin methods ``permissions`` / ``merge`` / ``widen`` /

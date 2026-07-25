@@ -2768,7 +2768,10 @@ class RustExplorationManager(
     def _cb_batch_fetch_pages(self, page_addrs: list) -> list:
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
-            return [(bytes(4096), 0, True) for _ in page_addrs]
+            # Match _cb_fetch_page: decline (is_mapped=False) so Rust falls
+            # back to its own page source and re-triggers the callback later,
+            # rather than permanently baking an all-zero page into Rust memory.
+            return [(bytes(4096), 0, False) for _ in page_addrs]
 
         # angr-hcok: proxy gate — decline; Rust falls back to its own
         # zero-fill / static-binary page source.
@@ -2797,10 +2800,13 @@ class RustExplorationManager(
                     concrete = state.solver.eval(data).to_bytes(4096, "little")
                     results.append((concrete, 7, True))
             except (SimError, ClaripyError) as e:
-                # cat-(c) WRONG-ANSWER RISK: batch page fetch partial failure;
-                # returns zero page — Rust sees concrete zero. Debug-logs.
+                # cat-(b) FALLBACK WITH LOSS: batch page fetch partial failure.
+                # Decline (is_mapped=False) so Rust marks the page inaccessible
+                # and can retry via the per-load callback, rather than baking a
+                # transient failure in as a permanent all-zero page (matches the
+                # single-page _cb_fetch_page error arm).
                 l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
-                results.append((bytes(4096), 0, True))
+                results.append((bytes(4096), 0, False))
         return results
 
     def _cb_memory_store_symbolic_value(self, addr: int, ast):
