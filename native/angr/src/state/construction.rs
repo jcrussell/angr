@@ -1,7 +1,7 @@
 //! Constructor family for `RustSimState`.
 //!
 //! Every entry point that builds a fresh `RustSimState` lives here: the
-//! arch-name and `VexArch` constructors, the shared-solver variants used when
+//! arch-name constructors, the shared-solver variants used when
 //! forking, and the private `new_state_memory` helper that registers the heap
 //! as a lazy region so the native SimProcedure heap fast path is consistent
 //! regardless of which constructor created the state. Split out of `mod.rs`
@@ -92,58 +92,6 @@ impl RustSimState {
             cgc_sinkholes: Vec::new(),
             sim_options: Arc::new(HashSet::new()),
         })
-    }
-
-    /// Create a state from VexArch.
-    pub fn from_vex_arch(vex_arch: VexArch) -> Self {
-        let arch = arch_from_vex(vex_arch);
-        let endness = if arch.is_little_endian() {
-            Endness::Little
-        } else {
-            Endness::Big
-        };
-
-        RustSimState {
-            vex_arch,
-            registers: RegisterFile::new(arch.clone()),
-            memory: Self::new_state_memory(endness),
-            solver: Rc::new(RefCell::new(SymContext::new())),
-            pc: 0,
-            state_id: next_state_id(),
-            parent_id: None,
-            history: VecDeque::new(),
-            detailed_history: VecDeque::new(),
-            max_history: 1000,
-            hooks: Arc::new(HashSet::new()),
-            concretizer: AddressConcretizer::default(),
-            track_history: true,
-            arch,
-            fs: FileSystem::default(),
-            heap_brk: 0xC000_0000,
-            posix_brk: 0x1B0_0000,
-            mmap_base: 0xC100_0000,
-            getopt_optind: 1,
-            getopt_optchar: 0,
-            getopt_extern: GetoptExternAddrs::default(),
-            native_resume_stack: Vec::new(),
-            ctype_loc: CtypeLocPtrs::default(),
-            stdin_symbols: Vec::new(),
-            call_stack: Vec::new(),
-            heap_metadata: HeapMetadata::default(),
-            inspection: InspectionManager::default(),
-            environment: Arc::new(HashMap::new()),
-            symbolic_pages: HashMap::new(),
-            hook_symbolic_memory: HashMap::new(),
-            addr_to_ast: HashMap::new(),
-            last_time: None,
-            no_ip_concretization: false,
-            no_symbolic_jump_resolution: false,
-            keep_ip_symbolic: false,
-            force_eager_forks: false,
-            cgc_allocation_base: 0xB800_0000,
-            cgc_sinkholes: Vec::new(),
-            sim_options: Arc::new(HashSet::new()),
-        }
     }
 
     /// Create a state with a shared solver context.

@@ -153,7 +153,7 @@ use rustc_hash::FxHashMap;
 
 use pyo3::prelude::*;
 
-use crate::arch::{Arch, RegisterFile, arch_from_name, arch_from_vex};
+use crate::arch::{Arch, RegisterFile, arch_from_name};
 use crate::concretize::AddressConcretizer;
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
