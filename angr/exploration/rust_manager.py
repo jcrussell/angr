@@ -6481,6 +6481,62 @@ class RustExplorationManager(
             self._rust_mgr.set_drop_terminal_states(True)
         return self
 
+    def _evaluate_predicate_on_stash(
+        self, stash: str, filter_func, cache_exported: bool = False
+    ) -> tuple[list[int], list[int], list[int]]:
+        """Evaluate ``filter_func`` against every state in ``stash``.
+
+        Shared backbone for move()/filter()/drop() (and prune() via filter()),
+        which previously hand-rolled this same proxy-then-full-export block
+        near-identically (angr-hv4lt.3). Tries the lightweight
+        ``RustStateProxy`` first; on ``(AttributeError, TypeError,
+        NotImplementedError)`` — the predicate touched something the proxy
+        doesn't expose — falls back to a full ``export_state`` +
+        ``_snapshot_to_angr`` and re-runs the predicate against the py_state.
+
+        Returns ``(matched_ids, unmatched_ids, errored_ids)``:
+          - matched_ids: predicate returned truthy,
+          - unmatched_ids: predicate returned falsy,
+          - errored_ids: predicate raised an unexpected exception (cat-(b)
+            fallback-with-loss; the state is neither matched nor unmatched so
+            callers leave it in place). Debug-logged.
+
+        If ``cache_exported`` is True, a py_state produced via the export
+        fallback is stored in ``self._state_cache[state_id]`` so
+        ``_get_stash_states`` finds the fresh snapshot rather than a stale root
+        copy — filter() relies on this side effect.
+        """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        matched_ids: list[int] = []
+        unmatched_ids: list[int] = []
+        errored_ids: list[int] = []
+
+        for state_id in list(self._rust_mgr.get_state_ids(stash)):
+            try:
+                proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
+                try:
+                    matched = bool(filter_func(proxy))
+                except (AttributeError, TypeError, NotImplementedError):
+                    # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an
+                    # attribute the predicate accessed; fall back to full export.
+                    snapshot = self._rust_mgr.export_state(state_id)
+                    py_state = self._snapshot_to_angr(snapshot)
+                    matched = bool(filter_func(py_state))
+                    if cache_exported:
+                        # Cache the snapshot-exported state so _get_stash_states
+                        # can find it later (avoids falling back to stale root copy).
+                        self._state_cache[state_id] = py_state
+                (matched_ids if matched else unmatched_ids).append(state_id)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: predicate raised on a state; leave
+                # it where it is rather than moving/dropping it. Debug-logs.
+                if _DBG:
+                    l.debug(f"predicate error for state {state_id} in {stash}: {e}")
+                errored_ids.append(state_id)
+
+        return matched_ids, unmatched_ids, errored_ids
+
     def move(self, from_stash: str, to_stash: str, filter_func=None) -> RustExplorationManager:
         """Move states between stashes.
 
@@ -6497,43 +6553,9 @@ class RustExplorationManager(
             # Move all states
             self._rust_mgr.move_states(from_stash, to_stash, None)
         else:
-            # Export states, evaluate predicate, and handle accordingly
-            state_ids = list(self._rust_mgr.get_state_ids(from_stash))
-            move_ids = []
-            keep_ids = []
-
-            for state_id in state_ids:
-                try:
-                    # Try lightweight proxy first (avoids expensive full state
-                    # export). Falls back to full export if the filter accesses
-                    # something the proxy doesn't support. Mirrors filter().
-                    from angr.exploration.rust_state_proxy import RustStateProxy
-
-                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
-                    try:
-                        if filter_func(proxy):
-                            move_ids.append(state_id)
-                        else:
-                            keep_ids.append(state_id)
-                        continue  # Proxy worked, skip full export
-                    except (AttributeError, TypeError, NotImplementedError):
-                        # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an
-                        # attribute the predicate accessed; fall back to full export.
-                        pass
-
-                    snapshot = self._rust_mgr.export_state(state_id)
-                    py_state = self._snapshot_to_angr(snapshot)
-
-                    if filter_func(py_state):
-                        move_ids.append(state_id)
-                    else:
-                        keep_ids.append(state_id)
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: move filter raised on a state; keep
-                    # the state in the source stash rather than dropping it. Debug-logs.
-                    if _DBG:
-                        l.debug(f"move filter error for state {state_id}: {e}")
-                    keep_ids.append(state_id)  # Keep on error
+            # Export states, evaluate predicate, and handle accordingly.
+            # Matched states move; unmatched/errored stay in the source stash.
+            move_ids, _keep_ids, _errored_ids = self._evaluate_predicate_on_stash(from_stash, filter_func)
 
             # Use Rust to move matching states
             for state_id in move_ids:
@@ -6569,45 +6591,9 @@ class RustExplorationManager(
         if filter_func is None:
             return self
 
-        state_ids = list(self._rust_mgr.get_state_ids(stash))
-        keep_ids = []
-        prune_ids = []
-
-        for state_id in state_ids:
-            try:
-                # Try lightweight proxy first (avoids expensive full state export).
-                # Falls back to full export if the filter accesses something
-                # the proxy doesn't support.
-                from angr.exploration.rust_state_proxy import RustStateProxy
-
-                proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
-                try:
-                    if filter_func(proxy):
-                        keep_ids.append(state_id)
-                    else:
-                        prune_ids.append(state_id)
-                    continue  # Proxy worked, skip full export
-                except (AttributeError, TypeError, NotImplementedError):
-                    # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an attribute
-                    # the predicate accessed; fall back to full export below.
-                    pass  # Proxy didn't support something, fall back
-
-                snapshot = self._rust_mgr.export_state(state_id)
-                py_state = self._snapshot_to_angr(snapshot)
-
-                if filter_func(py_state):
-                    keep_ids.append(state_id)
-                    # Cache the snapshot-exported state so _get_stash_states
-                    # can find it later (avoids falling back to stale root copy)
-                    self._state_cache[state_id] = py_state
-                else:
-                    prune_ids.append(state_id)
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: filter raised; keep the state in the
-                # source stash. Debug-logs.
-                if _DBG:
-                    l.debug(f"filter error for state {state_id}: {e}")
-                keep_ids.append(state_id)  # Keep on error
+        # Matched states are kept; unmatched are pruned. Errored states stay put
+        # (kept). cache_exported=True so _get_stash_states finds fresh snapshots.
+        _keep_ids, prune_ids, _errored_ids = self._evaluate_predicate_on_stash(stash, filter_func, cache_exported=True)
 
         # Move non-matching states to pruned stash
         for state_id in prune_ids:
@@ -6678,41 +6664,14 @@ class RustExplorationManager(
                 # Fallback: move all to deadended
                 self._rust_mgr.move_states(stash, "deadended", None)
         else:
-            # Drop states matching predicate
-            state_ids = list(self._rust_mgr.get_state_ids(stash))
-
-            for state_id in state_ids:
+            # Drop states matching predicate; unmatched/errored stay in place.
+            drop_ids, _keep_ids, _errored_ids = self._evaluate_predicate_on_stash(stash, filter_func)
+            for state_id in drop_ids:
                 try:
-                    # Try lightweight proxy first (avoids expensive full state
-                    # export). Falls back to full export if the filter accesses
-                    # something the proxy doesn't support. Mirrors filter().
-                    from angr.exploration.rust_state_proxy import RustStateProxy
-
-                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
-                    matched = None
-                    try:
-                        matched = bool(filter_func(proxy))
-                    except (AttributeError, TypeError, NotImplementedError):
-                        # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an
-                        # attribute the predicate accessed; fall back to full export.
-                        pass
-
-                    if matched is None:
-                        snapshot = self._rust_mgr.export_state(state_id)
-                        py_state = self._snapshot_to_angr(snapshot)
-                        matched = filter_func(py_state)
-
-                    if matched:
-                        try:
-                            self._rust_mgr.move_state(state_id, stash, "deadended")
-                        except (RuntimeError, KeyError):
-                            # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                            pass
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: drop filter raised; that state is
-                    # left in the source stash. Debug-logs.
-                    if _DBG:
-                        l.debug(f"drop filter error for state {state_id}: {e}")
+                    self._rust_mgr.move_state(state_id, stash, "deadended")
+                except (RuntimeError, KeyError):
+                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
+                    pass
 
         return self
 
