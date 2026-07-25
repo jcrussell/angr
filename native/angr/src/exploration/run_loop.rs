@@ -48,6 +48,16 @@
 //! section of [`scheduler`](super::scheduler) for the full argument — the same
 //! reasoning covers every `.expect` in this file, so there is no fallible site
 //! to propagate and no Python-exception path to build under this profile.
+//!
+//! **Enforcement (qwyti.15):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so any *new* fallible
+//! unwrap must be justified. The ~35 pre-existing `.expect()` sites are all the
+//! poison / session-live / pool-set invariant guards described above; each
+//! function that holds them carries a narrow
+//! `#[allow(clippy::expect_used, reason = ...)]` pointing back at this Panic
+//! policy, and the `mod tests;` decl is exempted (the deny propagates into
+//! `#[path]` test submodules — see bd `invariant-clippy-deny-propagates-to-test-submodule`).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -263,6 +273,10 @@ impl ParallelShared {
 ///   state for the coordinator's `dispatch_bounce` and keeps its deferred forks
 ///   local (re-materialized in-thread so no path is lost across the `!Send`
 ///   loose-condition boundary).
+#[allow(
+    clippy::expect_used,
+    reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison if a thread unwound while holding them, which panic=abort forecloses — see the module Panic policy header"
+)]
 fn parallel_process_state(
     mut state: RustSimState,
     cancel: &CancelToken,
@@ -655,6 +669,10 @@ impl RustExplorationManager {
     /// single-threaded loop's and the frontier is resumable. `residual_drains`
     /// counts every such state; the serde is bounded by the residual frontier,
     /// never the explored set.
+    #[allow(
+        clippy::expect_used,
+        reason = "poison-guard + local state-machine invariants (root_map/kind_map poison, pool-just-created, post-barrier sole ownership of ParallelShared) — see the module Panic policy header"
+    )]
     pub(crate) fn run_loop_parallel(
         &mut self,
         py: Python<'_>,
@@ -932,6 +950,10 @@ impl RustExplorationManager {
     /// of the `Arc`, so the steady-state coordinator can fold incrementally at
     /// every event return while workers still hold clones; the wave loop calls it
     /// once per wave right before `Arc::into_inner`.
+    #[allow(
+        clippy::expect_used,
+        reason = "counters-mutex poison guard: poison implies a prior unwind under panic=abort, impossible — see the module Panic policy header"
+    )]
     fn fold_parallel_shared_counters(&mut self, shared: &ParallelShared) -> u64 {
         let worker_stepped = shared.stepped.swap(0, Ordering::SeqCst) as u64;
         let drained = std::mem::take(&mut *shared.counters.lock().expect("counters poisoned"));
@@ -1270,6 +1292,10 @@ impl RustExplorationManager {
     /// so the resident frontier is stepped against a stable config snapshot —
     /// the `steady_config_guard` finalizes the session before any config
     /// mutation, which is what keeps that snapshot valid.
+    #[allow(
+        clippy::expect_used,
+        reason = "state-machine invariants: callbacks are checked by the caller and the parallel pool is set before this runs — see the module Panic policy header"
+    )]
     fn ensure_steady_session(&mut self) {
         if self.parallel_session.is_some() {
             return;
@@ -1306,6 +1332,10 @@ impl RustExplorationManager {
     /// state's lineage root into `root_map` so descendants inherit it) and wake
     /// the workers. No-op when the stash is empty (the common re-entry case:
     /// resume feeds the session injector directly).
+    #[allow(
+        clippy::expect_used,
+        reason = "session-live + root_map poison guards: the session is seeded live and the lock only poisons on an impossible panic=abort unwind — see the module Panic policy header"
+    )]
     fn seed_steady_session_from_active(&mut self) {
         let drained: Vec<RustSimState> = match self.sm.get_mut(STASH_ACTIVE) {
             Some(s) if !s.is_empty() => s.drain(..).collect(),
@@ -1341,6 +1371,10 @@ impl RustExplorationManager {
     /// `route_resume_successors` (resume.rs) after it partitions off find/avoid
     /// successors; no-op on an empty batch or absent session.
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "root_map poison guard: poison implies a prior unwind under panic=abort, impossible — see the module Panic policy header"
+    )]
     pub(crate) fn steady_inject_resumed(&mut self, inject: Vec<(u64, u64, StateMigrationPayload)>) {
         if inject.is_empty() {
             return;
@@ -1402,6 +1436,10 @@ impl RustExplorationManager {
     /// bounce terminals accumulate and are returned in a batch (so the caller
     /// surfaces at most one Python callback per `run()` via
     /// `process_parallel_bounce_queue`). All recv waits release the GIL.
+    #[allow(
+        clippy::expect_used,
+        reason = "session-live + up_rx poison guards: the pump only runs while the session is live and the lock poisons only on an impossible panic=abort unwind — see the module Panic policy header"
+    )]
     fn steady_pump(
         &mut self,
         py: Python<'_>,
@@ -1493,6 +1531,10 @@ impl RustExplorationManager {
     /// Non-blocking drain of any terminals still buffered in the session mpsc
     /// (routes found/unconstrained/residual, accumulates bounces). Called once
     /// all workers have parked, where no further message can be produced.
+    #[allow(
+        clippy::expect_used,
+        reason = "session-live + up_rx poison guards: draining runs only while the session is live and the lock poisons only on an impossible panic=abort unwind — see the module Panic policy header"
+    )]
     fn drain_steady_stragglers(&mut self, bounce_queue: &mut Vec<(RustSimState, BounceKind, u64)>) {
         loop {
             let msg = {
@@ -1530,6 +1572,10 @@ impl RustExplorationManager {
     ///
     /// Bounce roundtrips are counted here; the returned `bounce_queue` is
     /// dispatched by the caller.
+    #[allow(
+        clippy::expect_used,
+        reason = "session-live + root_map/kind_map poison guards: routing runs only while the session is live and the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
+    )]
     fn route_steady_terminal(
         &mut self,
         payload: StateMigrationPayload,
@@ -1578,6 +1624,10 @@ impl RustExplorationManager {
     /// every non-`need_callback` exit and before any config mutation (the
     /// `steady_config_guard`).
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "up_rx + root_map/kind_map poison guards: finalize consumes the live session and the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
+    )]
     pub(crate) fn finalize_steady_session(&mut self, py: Python<'_>) -> PyResult<()> {
         let Some(mut sess) = self.parallel_session.take() else {
             return Ok(());
@@ -2492,4 +2542,9 @@ impl RustExplorationManager {
 
 #[cfg(test)]
 #[path = "run_loop_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;
