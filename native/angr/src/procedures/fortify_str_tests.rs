@@ -7,7 +7,7 @@ use crate::procedures::NativeSimProcedure;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-fn load_cstr(state: &mut RustSimState, addr: u64, len: usize) -> Vec<u8> {
+fn load_cstr(state: &RustSimState, addr: u64, len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| {
             state
@@ -37,7 +37,7 @@ fn test_strcpy_chk_copies_and_ignores_destlen() {
         .unwrap();
 
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
-    assert_eq!(&load_cstr(&mut state, 0x2000, 6), b"hello\0");
+    assert_eq!(&load_cstr(&state, 0x2000, 6), b"hello\0");
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn test_strncpy_chk_pads_and_ignores_destlen() {
 
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
     // strncpy null-pads the remainder of the n-byte window.
-    assert_eq!(&load_cstr(&mut state, 0x2000, 5), b"hi\0\0\0");
+    assert_eq!(&load_cstr(&state, 0x2000, 5), b"hi\0\0\0");
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn test_strcat_chk_appends_and_ignores_destlen() {
         .unwrap();
 
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
-    assert_eq!(&load_cstr(&mut state, 0x2000, 5), b"ABCD\0");
+    assert_eq!(&load_cstr(&state, 0x2000, 5), b"ABCD\0");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_strncat_chk_appends_bounded() {
         .unwrap();
 
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
-    assert_eq!(&load_cstr(&mut state, 0x2000, 5), b"ABCD\0");
+    assert_eq!(&load_cstr(&state, 0x2000, 5), b"ABCD\0");
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn test_stpcpy_chk_returns_dest_plus_strlen() {
 
     // stpcpy returns a pointer to the written NUL: dest + strlen(src).
     assert_eq!(result.unwrap().as_u64(), Some(0x2000 + 5));
-    assert_eq!(&load_cstr(&mut state, 0x2000, 6), b"hello\0");
+    assert_eq!(&load_cstr(&state, 0x2000, 6), b"hello\0");
 }
 
 #[test]
