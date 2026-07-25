@@ -420,7 +420,17 @@ impl RustSimState {
             ctype_loc: self.ctype_loc,
             stdin_symbols: merged_stdin,
             call_stack: self.call_stack.clone(),
-            heap_metadata: self.heap_metadata.clone(),
+            // Union every branch's heap bookkeeping, not just self's: heap_brk
+            // is maxed above so a branch-only allocation stays reachable in the
+            // merged memory, and dropping its alloc_size entry makes
+            // NativeRealloc over-read past the true old size (angr-n0irt.3).
+            heap_metadata: {
+                let mut hm = self.heap_metadata.clone();
+                for o in others {
+                    hm.union_from(&o.heap_metadata);
+                }
+                hm
+            },
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
             symbolic_pages,

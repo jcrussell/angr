@@ -1983,6 +1983,103 @@ fn test_merge_takes_min_cgc_base_and_intersects_sinkholes() {
     );
 }
 
+// angr-n0irt.3: RustSimState::merge must union heap_metadata across every
+// branch, not keep only self's. heap_brk is maxed on merge, so a branch-only
+// malloc stays reachable in the unioned memory — but if its alloc_size entry
+// lived only on the dropped branch, NativeRealloc's copy length defaults to the
+// FULL new size (old_size.map_or(size, ..)), over-reading past the true old
+// allocation. Unioning allocations closes that; freed addresses union as a set.
+#[test]
+fn test_merge_unions_heap_metadata_across_branches() {
+    Python::initialize();
+
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = RustSimState::new("amd64").unwrap();
+
+    // self (a) allocates one block. other (b) allocates the same base block
+    // (shared, as if inherited from a common fork point) plus a *second*,
+    // higher block that lives only on its branch — that branch-only block must
+    // survive the merge carrying its true size. a and b are independent states
+    // starting from the same heap_brk, so b's first alloc aliases a's address.
+    let a_addr = a.heap_alloc(0x10);
+    let b_shared = b.heap_alloc(0x10);
+    assert_eq!(a_addr, b_shared, "both start at the same heap_brk");
+    let b_only = b.heap_alloc(0x40);
+    assert_ne!(a_addr, b_only, "branch-only block sits at a higher address");
+
+    // b frees the shared-address block only on its branch; the free must still
+    // be recorded in the merged state for double-free / leak analysis.
+    b.heap_free(b_shared);
+
+    let (m0, m1) = {
+        let s = a.solver().borrow();
+        (
+            RustBV::symbolic(&s, "n0irt3_m0", 1),
+            RustBV::symbolic(&s, "n0irt3_m1", 1),
+        )
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    let hm = merged.heap_metadata();
+    assert_eq!(
+        hm.alloc_size(a_addr),
+        Some(0x10),
+        "self's allocation must survive the merge (a still holds this address)"
+    );
+    assert_eq!(
+        hm.alloc_size(b_only),
+        Some(0x40),
+        "branch-only allocation must be unioned in with its true size, so \
+         NativeRealloc copies min(new, 0x40) rather than over-reading"
+    );
+    assert!(
+        hm.freed.contains(&b_shared),
+        "other-branch free must be recorded in the merged state"
+    );
+}
+
+// angr-n0irt.3 (unit): HeapMetadata::union_from keeps self's size on an
+// address collision and unions `freed` as a set (no double-count of a free both
+// branches inherited from a pre-fork allocation).
+#[test]
+fn test_heap_metadata_union_from() {
+    let mut a = HeapMetadata::default();
+    let mut b = HeapMetadata::default();
+
+    a.record_alloc(0x1000, 0x10); // shared addr, self size wins
+    a.record_alloc(0x2000, 0x20); // self-only
+    b.record_alloc(0x1000, 0x99); // conflict -> dropped in favor of self's 0x10
+    b.record_alloc(0x3000, 0x30); // other-only -> unioned in
+
+    a.record_free(0x9000); // inherited free present on both branches
+    b.record_free(0x9000); // dup -> not double-counted
+    b.record_free(0x8000); // other-only free -> unioned in
+
+    a.union_from(&b);
+
+    assert_eq!(
+        a.alloc_size(0x1000),
+        Some(0x10),
+        "self size wins on collision"
+    );
+    assert_eq!(
+        a.alloc_size(0x2000),
+        Some(0x20),
+        "self-only allocation kept"
+    );
+    assert_eq!(
+        a.alloc_size(0x3000),
+        Some(0x30),
+        "other-only allocation unioned"
+    );
+    assert_eq!(
+        a.free_count(),
+        2,
+        "freed unioned as a set: {{0x9000, 0x8000}}"
+    );
+    assert!(a.freed.contains(&0x8000), "other-only free must be present");
+}
+
 // angr-ph300.75: RustSimState::merge keeps the longest-stdout branch's
 // FileSystem wholesale (documented stdout-only merge contract). This locks in
 // that contract: the merged fs is the longest-stdout branch's fd table, ties

@@ -64,6 +64,31 @@ impl HeapMetadata {
     pub fn free_count(&self) -> usize {
         self.freed.len()
     }
+
+    /// Union another branch's heap bookkeeping into `self` during a state merge.
+    ///
+    /// A merged state's `heap_brk` is the max across branches (fork.rs), so an
+    /// allocation made only on a dropped branch stays reachable in the merged
+    /// memory — but if its `allocated` entry lived only on that branch,
+    /// `alloc_size` would return `None` and `NativeRealloc` would default to
+    /// copying the *full* new size, over-reading past the true old allocation
+    /// (angr-n0irt.3). Unioning every branch's allocations closes that gap.
+    ///
+    /// On address collision the existing (earlier-state) size is kept: a bump
+    /// allocator makes same-address collisions across branches vanishingly
+    /// rare, and preferring `self` keeps the merge deterministic. `freed`
+    /// addresses are unioned as a set so a pointer freed on any branch stays
+    /// recorded without double-counting a free both branches inherited.
+    pub fn union_from(&mut self, other: &HeapMetadata) {
+        for (&addr, &size) in &other.allocated {
+            self.allocated.entry(addr).or_insert(size);
+        }
+        for &addr in &other.freed {
+            if !self.freed.contains(&addr) {
+                self.freed.push(addr);
+            }
+        }
+    }
 }
 /// Entry in the execution history trace.
 ///
