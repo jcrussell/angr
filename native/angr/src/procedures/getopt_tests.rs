@@ -215,6 +215,42 @@ fn test_symbolic_argc_defers() {
 }
 
 #[test]
+fn test_shrunk_argv_element_defers_not_panics() {
+    // angr-qwyti.19: the guest shrinks its own argv element between getopt
+    // calls, leaving the engine's restored `optchar` cursor past the new end.
+    // The native proc must defer (Err), not panic-index the buffer.
+    let mut state = setup();
+    // optstring "ab": -a and -b are both flags. "-ab" packs two flags, so the
+    // first call parks the cursor mid-element (optchar=2, optind stays 1).
+    let argc = load_argv(&mut state, b"ab", &[b"prog", b"-ab"]);
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(read_optind(&state), 1); // cursor parked inside the element
+
+    // Strings are laid out sequentially from STR_BASE: optstring "ab\0" (3B) at
+    // 0x1000, "prog\0" (5B) at 0x1003, "-ab\0" at 0x1008. Shrink argv[1] to "-a"
+    // by NUL-ing offset 2 — the restored optchar (2) now exceeds arg.len() (2).
+    let argv1 = STR_BASE + 3 + 5;
+    state
+        .memory_store(argv1 + 2, RustBV::concrete(0, 8))
+        .unwrap();
+
+    // Second call: optchar==2 indexes a length-2 element. Must Err (defer to
+    // Python), not panic on the raw `arg[optchar]`.
+    let res = NativeGetopt.call(
+        &mut state,
+        &[
+            RustBV::concrete(argc as u128, 64),
+            RustBV::concrete(ARGV_BASE as u128, 64),
+            RustBV::concrete(STR_BASE as u128, 64),
+        ],
+    );
+    assert!(
+        matches!(res, Err(ProcedureError::Other(_))),
+        "expected defer-to-Python Err on shrunk argv, got {res:?}"
+    );
+}
+
+#[test]
 fn test_registered_in_registry() {
     let registry = crate::procedures::NativeProcedureRegistry::new();
     assert!(registry.has_native("getopt"));

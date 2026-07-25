@@ -197,7 +197,16 @@ crate::declare_proc! {
             optchar = 1;
         }
 
-        let c = arg[optchar as usize];
+        // Defense-in-depth (angr-qwyti.19): `optchar` is engine cursor state
+        // restored from a prior getopt call. If the guest mutated this argv
+        // element in its own memory to be shorter since then, the saved cursor
+        // can exceed the freshly-scanned `arg` length. Use a checked accessor
+        // and defer to the Python getopt proc rather than panic-indexing.
+        let Some(&c) = arg.get(optchar as usize) else {
+            return Err(ProcedureError::Other(
+                "getopt cursor past end of argv element (shrunk argv)".to_string(),
+            ));
+        };
         let spec = opts.get(&c).copied();
         if spec.is_none() || c == COLON {
             store_int(state, optopt_addr, c as u32)?;
