@@ -18,6 +18,7 @@ mod merge_divergence;
 mod merge_multi;
 mod merge_prefetch;
 mod multi;
+mod page_boundary_property_tests;
 mod symbolic;
 
 /// Test-only instrumentation for `SymbolicMemory::merge`'s page-walk count
