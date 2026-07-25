@@ -23,27 +23,16 @@ impl SymbolicMemory {
     /// # Returns
     /// List of addresses whose pages are mapped.
     pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], _size: u32) -> Vec<u64> {
-        let mut ready_addrs = Vec::with_capacity(addrs.len());
-
-        for &addr in addrs {
-            let page_num = addr >> 12;
-
-            // Check if page is already mapped
-            if self.pages.contains_key(&page_num) {
-                ready_addrs.push(addr);
-                continue;
-            }
-
-            // Page not mapped - skip this address
-            // The caller should fall back to Python callback which can provide
-            // actual backer data instead of speculative zeros
-            //
-            // NOTE: We intentionally do NOT auto-map zero pages here. Python may
-            // have actual data for this page from backers (file contents, initialized
-            // data). Speculatively creating zero pages causes state divergence.
-        }
-
-        ready_addrs
+        // Keep only addresses whose page is already mapped. Unmapped pages are
+        // intentionally dropped rather than auto-mapped as zeros: Python may
+        // have actual backer data (file contents, initialized data) for them,
+        // so the caller falls back to the Python callback. Speculatively
+        // materializing zero pages here would cause state divergence.
+        addrs
+            .iter()
+            .copied()
+            .filter(|&addr| self.pages.contains_key(&(addr >> 12)))
+            .collect()
     }
 
     /// Prepare a strided memory region (no-op - kept for API compatibility).
