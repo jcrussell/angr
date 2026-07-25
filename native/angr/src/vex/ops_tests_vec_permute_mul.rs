@@ -334,3 +334,56 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
     );
     ctx.pop();
 }
+
+/// Symbolic parity for the even-lane family: Iop_MullEven32Sx4 (even=true,
+/// step=2) on fully-symbolic V128 operands must equal the reference concat of
+/// per-even-lane sign-extended 32->64 products. This is the intersection the
+/// concrete `test_vec_mull_even_32ux4_concrete` and the symbolic
+/// `test_vec_mull_16sx4_symbolic_matches_reference` each miss: the symbolic
+/// branch's `lo = j * step * in_width` even-lane arithmetic runs only here.
+/// If someone simplified that to `j * in_width` (dropping the step-2
+/// multiplier), the symbolic MullEven path would silently multiply adjacent
+/// instead of every-other lanes; the universality check below catches it since
+/// the reference selects lanes 0 and 2 explicitly.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
+    let ctx = SymContext::new_mock();
+    let left = RustBV::symbolic(&ctx, "mulleven_l", 128);
+    let right = RustBV::symbolic(&ctx, "mulleven_r", 128);
+    let got = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I32,
+            count: 4,
+            signed: true,
+            even: true,
+        },
+        left.clone(),
+        right.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+
+    // Reference: only the even 32-bit lanes 0 and 2 contribute. Each is
+    // sign-extended 32->64, multiplied, and the two products concat low-to-high
+    // into 2 u64 output lanes. `lo` steps by 2*32=64 to skip the odd lanes.
+    let mut lanes = Vec::with_capacity(2);
+    for j in 0..2u32 {
+        let lo = j * 2 * 32;
+        let hi = lo + 31;
+        let la = left.extract(hi, lo, &ctx).extend_into(64, true, &ctx);
+        let ra = right.extract(hi, lo, &ctx).extend_into(64, true, &ctx);
+        lanes.push(la.mul(&ra, &ctx));
+    }
+    let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VMull even 32Sx4 must select only even lanes (0,2) and match the \
+         per-lane sign-extended product reference"
+    );
+    ctx.pop();
+}
