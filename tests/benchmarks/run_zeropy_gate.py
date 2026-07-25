@@ -244,6 +244,14 @@ def run_one(bench: str, timeout: int) -> dict:
     if not wall_ns:
         row["status"] = "UNMEASURED"
         row["reason"] = "no profiled run-loop window (run_wall_time_ns missing/zero)"
+    elif gil_ns is None:
+        # A *missing* gil_work_time_ns is not a real zero: it means the counter
+        # was never populated (e.g. renamed/dropped from stats_api.rs). Reading
+        # it as 0 would land in the PASS branch below and silently inflate the
+        # gate's verdict — the exact false-PASS-on-counter-rename trap the
+        # run_wall_time_ns guard above defends against.
+        row["status"] = "UNMEASURED"
+        row["reason"] = "gil_work_time_ns missing from stats() (counter renamed/dropped?)"
     elif gil_ns:
         row["status"] = "FAIL"
         row["gil_fraction"] = gil_ns / wall_ns
