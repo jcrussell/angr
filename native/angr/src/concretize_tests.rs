@@ -230,7 +230,11 @@ fn test_read_fallback_pins_address_to_single_solution() {
 
     // The pin collapses the address to exactly one solution == chosen.
     let sols = ctx.eval_upto(&addr, 5);
-    assert_eq!(sols, vec![chosen as u128], "fallback must pin addr == chosen");
+    assert_eq!(
+        sols,
+        vec![chosen as u128],
+        "fallback must pin addr == chosen"
+    );
 }
 
 #[cfg(feature = "vex-engine-z3")]
@@ -250,5 +254,9 @@ fn test_write_fallback_pins_address_to_single_solution() {
     };
     // Max fallback picks the range maximum; the pin makes it the unique solution.
     let sols = ctx.eval_upto(&addr, 5);
-    assert_eq!(sols, vec![chosen as u128], "write fallback must pin addr == chosen");
+    assert_eq!(
+        sols,
+        vec![chosen as u128],
+        "write fallback must pin addr == chosen"
+    );
 }
