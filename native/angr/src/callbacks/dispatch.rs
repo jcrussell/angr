@@ -167,11 +167,10 @@ impl PythonCallbacks {
         data: &RustBV,
         addr_ast: &RustBV,
     ) -> PyResult<()> {
-        Python::attach(|py| {
+        Python::attach(|_py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryStoreSymbolic,
             );
-            use crate::claripy_bridge::rustbv_to_claripy;
 
             // Prefer the full symbolic callback whenever it is wired. It handles
             // both symbolic and *concrete* data over a symbolic address range by
@@ -185,35 +184,18 @@ impl PythonCallbacks {
                 return self.call_memory_store_symbolic_full(addr_ast, data);
             }
 
-            // If data is symbolic, try to use symbolic value callback for each address
-            if data.is_symbolic() && self.memory_store_symbolic_value.is_some() {
-                let claripy_mod = py.import("claripy")?;
-                let data_ast = rustbv_to_claripy(py, data, &claripy_mod)?;
-                let _addr_claripy = rustbv_to_claripy(py, addr_ast, &claripy_mod)?;
-
-                // Use the symbolic value callback with claripy AST
-                if let Some(cb) = &self.memory_store_symbolic_value {
-                    // For multiple addresses, we need conditional stores
-                    // The callback should handle creating ITE chains
-                    // Store to first address with the full expression
-                    if let Some(first_addr) = addrs.first() {
-                        cb.call1(py, (*first_addr, data_ast))?;
-                    }
-                }
-                return Ok(());
-            }
-
-            // Fallback: store to first address only (not ideal but maintains progress)
-            if let Some(first_addr) = addrs.first() {
-                // Even in fallback, try to preserve symbolic data
-                if data.is_symbolic() && self.memory_store_symbolic_value.is_some() {
-                    self.call_memory_store_symbolic_value(*first_addr, data)?;
-                } else {
-                    let data_bytes = bv_to_bytes(data);
-                    self.call_memory_store(*first_addr, &data_bytes)?;
-                }
-            }
-            Ok(())
+            // Hard-error rather than silently storing only addrs[0] (module
+            // invariant 1, `avoid-silent-no-op-callback-fallbacks`). The older
+            // fallbacks below the `_full` dispatch above stored to addrs.first()
+            // and returned Ok(()), silently dropping addrs[1..] — the exact
+            // angr-ph300.64 divergent-memory bug class. `_full` is wired
+            // unconditionally by rust_manager.py::_setup_callbacks, so this is
+            // only reachable under Python/.so version skew (a stale .so predating
+            // the setter); surface that loudly instead of diverging memory.
+            let _ = addrs;
+            Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "memory_store_symbolic_full callback not set",
+            ))
         })
     }
 
