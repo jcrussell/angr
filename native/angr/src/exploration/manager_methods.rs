@@ -6,6 +6,11 @@
 //! `#[pyclass]` struct stays in the parent and `use super::*` pulls in the
 //! parent's imports, `pub(crate)` fields, and type aliases so the method
 //! bodies compile unchanged.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
 #[pymethods]
@@ -2633,4 +2638,9 @@ impl RustExplorationManager {
 
 #[cfg(test)]
 #[path = "manager_methods_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

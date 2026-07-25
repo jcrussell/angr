@@ -30,6 +30,11 @@
 //! 4. Surfaces that hand IDs to Python or format them keep `u64` (the
 //!    `Display`/`LowerHex` impls below let a `StateId` slot into existing
 //!    `{}` / `{:x}` messages without an explicit `.raw()`).
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 /// A monotonic state identifier within the exploration subsystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]

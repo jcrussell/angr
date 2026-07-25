@@ -4,6 +4,11 @@
 //! Split out of `exploration::mod` (angr-zel8z.3). The `#[pyclass]` and its
 //! constructor helpers live here; `register_exploration` in `mod.rs` still owns
 //! the `m.add_class::<ExplorationEvent>()` registration line.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::callback_types::SimProcCall;
 use crate::stash::{STASH_ERRORED, STASH_FOUND};

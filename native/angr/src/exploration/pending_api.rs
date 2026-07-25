@@ -11,6 +11,11 @@
 //! `invariant-pyo3-single-pymethods-impl`. This module mirrors the
 //! `helpers.rs` / `stepping.rs` / `run_loop.rs` / `resume.rs` extension-impl
 //! pattern used elsewhere in `exploration/`.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -849,4 +854,9 @@ fn import_byte_asts(
 
 #[cfg(test)]
 #[path = "pending_api_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

@@ -11,6 +11,11 @@
 //! `helpers.rs` / `stepping.rs` / `run_loop.rs` / `resume.rs` /
 //! `pending_api.rs` / `state_api.rs` extension-impl pattern used elsewhere in
 //! `exploration/`.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
