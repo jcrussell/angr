@@ -1205,8 +1205,9 @@ class TestErrorRecovery:
             mgr._cb_memory_load_batch([(0x1000, 4)])
 
     def test_cb_batch_fetch_pages_swallows_sim_memory_error(self):
-        """SimMemoryError from state.memory.load() must keep returning empty
-        pages per-entry in the batch loop."""
+        """SimMemoryError from state.memory.load() must be swallowed per-entry in
+        the batch loop, declining the page (is_mapped=False) rather than baking a
+        wrong all-zero page in (angr-hv4lt.2)."""
         from angr.errors import SimMemoryError
 
         mgr, state = self._build_load_store_manager()
@@ -1222,8 +1223,11 @@ class TestErrorRecovery:
         state.memory.load = boom
         self._put_state_in_default_cache(mgr, state)
 
+        # angr-hv4lt.2: the load-error arm returns is_mapped=False so Rust declines
+        # the page and retries via the per-load callback, instead of permanently
+        # mapping a wrong all-zero page.
         result = mgr._cb_batch_fetch_pages([0x1000])
-        assert result == [(bytes(4096), 0, True)]
+        assert result == [(bytes(4096), 0, False)]
 
     def test_cb_batch_fetch_pages_propagates_unrelated_exceptions(self):
         """Non-Sim/Claripy exceptions must propagate out of _cb_batch_fetch_pages."""
