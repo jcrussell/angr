@@ -1137,6 +1137,25 @@ fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
     x
 }
 
+/// The `SatOutcome::decided` forcing-function (angr-qwyti.3) must map a Z3
+/// `Unknown` to `None` — never fold it into a sat/unsat boolean. This is the
+/// single mapping every solver query now routes through, so the mapping itself
+/// is pinned here directly (deterministic, no timeout needed), complementing the
+/// end-to-end min/max probe tests below that exercise the None-propagation path.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_satoutcome_decided_maps_unknown_to_none() {
+    use crate::symbolic::solver_build::SatOutcome;
+    assert_eq!(z3::SatResult::Sat.decided(), Some(true));
+    assert_eq!(z3::SatResult::Unsat.decided(), Some(false));
+    assert_eq!(
+        z3::SatResult::Unknown.decided(),
+        None,
+        "Unknown (timeout) must map to None, not a boolean — the angr-ph300.43 / \
+         angr-n0irt.1 bug class"
+    );
+}
+
 /// Signed min() must return None when the sign probe (`x <_s 0`) times out,
 /// never a fabricated extremum. The unsigned bisection-timeout tests never
 /// exercised `signed=true`, so the MinInit-probe arm was previously uncovered;

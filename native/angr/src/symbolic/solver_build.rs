@@ -83,11 +83,46 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
     // angr-op0dn.3). Unclassified unless ANGR_RUST_QUERY_CLASS is set.
     crate::symbolic::query_class::record_check();
     match result {
+        // satresult-exempt: per-variant stats counter distinguishes all three.
         z3::SatResult::Sat => Z3_SAT_COUNT.fetch_add(1, Ordering::Relaxed),
         z3::SatResult::Unsat => Z3_UNSAT_COUNT.fetch_add(1, Ordering::Relaxed),
         z3::SatResult::Unknown => Z3_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed),
     };
     result
+}
+
+/// Single forcing-function for interpreting a Z3 `check()` outcome
+/// (angr-qwyti.3). Every site that needs a sat/unsat *decision* routes through
+/// [`SatOutcome::decided`] so a reviewer can see, at the call site, exactly
+/// what a timeout does — `Unknown` becomes `None` and MUST be handled, never
+/// silently folded into `false`/`Unsat`.
+///
+/// Conflating `Unknown` (Z3 timeout / incompleteness) with `Unsat` is the
+/// angr-ph300.43 / angr-n0irt.1 bug class: it fabricates extrema, permanently
+/// pins `sat_cache=false`, and prunes feasible branches. See the
+/// `invariant-z3-unknown-not-unsat` memory. The only sanctioned raw
+/// `SatResult::{Sat,Unsat}` matches are this trait's impl and the stats
+/// counter in [`timed_check`], both tagged `// satresult-exempt`; a grep gate
+/// (`tools/audit_satresult.py`) bans any new ones.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) trait SatOutcome {
+    /// `Some(true)` = Sat, `Some(false)` = Unsat, `None` = Unknown (undecided
+    /// — timeout or incompleteness). Callers must decide what `None` means at
+    /// their own site rather than letting it collapse to a boolean.
+    fn decided(self) -> Option<bool>;
+}
+
+#[cfg(feature = "vex-engine-z3")]
+impl SatOutcome for z3::SatResult {
+    #[inline]
+    fn decided(self) -> Option<bool> {
+        match self {
+            // satresult-exempt: this impl is the sanctioned mapping site.
+            z3::SatResult::Sat => Some(true),
+            z3::SatResult::Unsat => Some(false),
+            z3::SatResult::Unknown => None,
+        }
+    }
 }
 
 /// Build the Z3 `Params` object applied to every fresh `z3::Solver` and

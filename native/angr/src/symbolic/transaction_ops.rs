@@ -192,7 +192,6 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core_assumed(&self, extra: &[z3::ast::Bool]) -> Vec<usize> {
         use std::collections::HashSet;
-        use z3::SatResult;
 
         let assumed = self.get_assumed_constraints();
         // Assumption literals + `check_assumptions`, NOT `assert_and_track` +
@@ -248,7 +247,9 @@ impl SymContext {
             solver.assert(c);
         }
 
-        if solver.check_assumptions(&trackers) != SatResult::Unsat {
+        // Only a decided Unsat produces a core; Sat and Unknown (timeout) alike
+        // yield no core (angr-qwyti.3, invariant-z3-unknown-not-unsat).
+        if solver.check_assumptions(&trackers).decided() != Some(false) {
             return Vec::new();
         }
         let mut core: Vec<usize> = solver

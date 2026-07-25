@@ -95,10 +95,10 @@ fn bsearch_min(
         solver.assert(cmp(ast, &mid_ast));
         let check = timed_check(solver, CheckSite::MinSearch);
         solver.pop(1);
-        match check {
-            z3::SatResult::Sat => hi = mid,
-            z3::SatResult::Unsat => lo = mid + 1,
-            z3::SatResult::Unknown => return None,
+        // Unknown (timeout) aborts with None — never move a bound (angr-ph300.43).
+        match check.decided()? {
+            true => hi = mid,
+            false => lo = mid + 1,
         }
     }
     Some(lo)
@@ -131,10 +131,10 @@ fn bsearch_max(
         solver.assert(cmp(ast, &mid_ast));
         let check = timed_check(solver, CheckSite::MaxSearch);
         solver.pop(1);
-        match check {
-            z3::SatResult::Sat => lo = mid,
-            z3::SatResult::Unsat => hi = mid - 1,
-            z3::SatResult::Unknown => return None,
+        // Unknown (timeout) aborts with None — never move a bound (angr-ph300.43).
+        match check.decided()? {
+            true => lo = mid,
+            false => hi = mid - 1,
         }
     }
     Some(lo)
@@ -171,22 +171,21 @@ impl SymContext {
         // returns the stale false even once the timeout budget would allow a
         // real answer (angr-ph300.43).
         let result: Option<bool> = self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Satisfiable) {
-                z3::SatResult::Sat => {
-                    // Populate model_cache — get_model is essentially free
-                    // after a successful check, and the model lets
-                    // check_branch_feasibility skip one of two Z3 checks.
-                    let mut cache = self.model_cache.borrow_mut();
-                    if cache.is_none()
-                        && let Some(m) = solver.get_model()
-                    {
-                        *cache = Some(m);
-                    }
-                    Some(true)
+            let decided = timed_check(solver, CheckSite::Satisfiable).decided();
+            if decided == Some(true) {
+                // Populate model_cache — get_model is essentially free
+                // after a successful check, and the model lets
+                // check_branch_feasibility skip one of two Z3 checks.
+                let mut cache = self.model_cache.borrow_mut();
+                if cache.is_none()
+                    && let Some(m) = solver.get_model()
+                {
+                    *cache = Some(m);
                 }
-                z3::SatResult::Unsat => Some(false),
-                z3::SatResult::Unknown => None,
             }
+            // None (Unknown) propagates untouched: the caller leaves sat_cache
+            // unset so a later query retries (angr-ph300.43).
+            decided
         });
         // Only a decided result updates the cache; Unknown leaves it unset so a
         // later call retries. Conservatively report "not satisfiable" to the
@@ -262,11 +261,10 @@ impl SymContext {
                     solver.assert(bool_ast.not());
                     // A Z3 Unknown (timeout) here must NOT prune the false
                     // branch: only a decided Unsat proves ¬cond infeasible
-                    // (angr-ph300.43). Conservatively keep the branch on Unknown.
-                    let can_false = !matches!(
-                        timed_check(solver, CheckSite::BranchFalse),
-                        z3::SatResult::Unsat
-                    );
+                    // (angr-ph300.43). Conservatively keep the branch on Unknown
+                    // (decided() == None) — only Some(false) prunes.
+                    let can_false =
+                        timed_check(solver, CheckSite::BranchFalse).decided() != Some(false);
                     solver.pop(1);
                     (true, can_false)
                 }
@@ -275,11 +273,10 @@ impl SymContext {
                     // can_be_false=true is proven by the model. Check cond.
                     solver.push();
                     solver.assert(&bool_ast);
-                    // Unknown must not prune the true branch (angr-ph300.43).
-                    let can_true = !matches!(
-                        timed_check(solver, CheckSite::BranchTrue),
-                        z3::SatResult::Unsat
-                    );
+                    // Unknown must not prune the true branch (angr-ph300.43):
+                    // only a decided Unsat (Some(false)) makes it infeasible.
+                    let can_true =
+                        timed_check(solver, CheckSite::BranchTrue).decided() != Some(false);
                     solver.pop(1);
                     (can_true, true)
                 }
@@ -293,22 +290,20 @@ impl SymContext {
                     // silently killing the feasible true branch.
                     solver.push();
                     solver.assert(&bool_ast);
-                    let cond_check = timed_check(solver, CheckSite::BranchTrue);
+                    let cond_check = timed_check(solver, CheckSite::BranchTrue).decided();
                     solver.pop(1);
-                    let can_true = !matches!(cond_check, z3::SatResult::Unsat);
+                    let can_true = cond_check != Some(false);
 
-                    // Only short-circuit on a proven-infeasible cond (Unsat),
-                    // never on an undecided Unknown.
-                    if matches!(cond_check, z3::SatResult::Unsat) {
+                    // Only short-circuit on a proven-infeasible cond (decided
+                    // Unsat), never on an undecided Unknown (None).
+                    if cond_check == Some(false) {
                         return (false, true); // Must be false-only
                     }
 
                     solver.push();
                     solver.assert(bool_ast.not());
-                    let can_false = !matches!(
-                        timed_check(solver, CheckSite::BranchFalse),
-                        z3::SatResult::Unsat
-                    );
+                    let can_false =
+                        timed_check(solver, CheckSite::BranchFalse).decided() != Some(false);
                     solver.pop(1);
 
                     (can_true, can_false)
@@ -385,18 +380,19 @@ impl SymContext {
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
         self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Eval) {
-                z3::SatResult::Sat => {
+            match timed_check(solver, CheckSite::Eval).decided() {
+                Some(true) => {
                     self.sat_cache.set(Some(true));
                 }
                 // Only a decided Unsat pins sat_cache=false; a Z3 Unknown
-                // (timeout) leaves it unset so a later query can retry, rather
-                // than pinning the context unsatisfiable forever (angr-ph300.43).
-                z3::SatResult::Unsat => {
+                // (None, timeout) leaves it unset so a later query can retry,
+                // rather than pinning the context unsatisfiable forever
+                // (angr-ph300.43).
+                Some(false) => {
                     self.sat_cache.set(Some(false));
                     return None;
                 }
-                z3::SatResult::Unknown => return None,
+                None => return None,
             }
 
             let model = solver.get_model()?;
@@ -472,9 +468,10 @@ impl SymContext {
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
         self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Eval) {
-                z3::SatResult::Sat => {}
-                _ => return None,
+            // Proceed only on a decided Sat; both Unsat and Unknown yield None
+            // (this path never wrote sat_cache — preserve that, angr-ph300.43).
+            if timed_check(solver, CheckSite::Eval).decided() != Some(true) {
+                return None;
             }
 
             let model = solver.get_model()?;
@@ -546,14 +543,15 @@ impl SymContext {
             query_class::classify_eval_many(bvs, &self.get_assumed_constraints())
         });
         self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Eval) {
-                z3::SatResult::Sat => self.sat_cache.set(Some(true)),
-                // Unknown (timeout) must not pin the context unsat (angr-ph300.43).
-                z3::SatResult::Unsat => {
+            match timed_check(solver, CheckSite::Eval).decided() {
+                Some(true) => self.sat_cache.set(Some(true)),
+                // Unknown (None, timeout) must not pin the context unsat
+                // (angr-ph300.43); only a decided Unsat does.
+                Some(false) => {
                     self.sat_cache.set(Some(false));
                     return None;
                 }
-                z3::SatResult::Unknown => return None,
+                None => return None,
             }
 
             let model = solver.get_model()?;
@@ -621,8 +619,11 @@ impl SymContext {
             }
 
             for _ in 0..remaining {
-                match timed_check(solver, CheckSite::EvalUpto) {
-                    z3::SatResult::Sat => {
+                // Stop enumerating on anything but a decided Sat: Unsat means the
+                // set is exhausted, Unknown (timeout) means undetermined — either
+                // way the prefix gathered so far is a valid set (angr-ph300.43).
+                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                    Some(true) => {
                         if let Some(model) = solver.get_model() {
                             if let Some(result) = model.eval(&ast, true) {
                                 if let Some(value) = extract_bv_value(&result) {
@@ -679,14 +680,16 @@ impl SymContext {
                 // unsat here can only come from the base constraint set. A Z3
                 // Unknown (timeout) aborts without pinning sat_cache=false — the
                 // base set's satisfiability stays undetermined (angr-ph300.43).
-                match timed_check(solver, CheckSite::Eval) {
-                    z3::SatResult::Sat => {}
-                    z3::SatResult::Unsat => {
+                match timed_check(solver, CheckSite::Eval).decided() {
+                    Some(true) => {}
+                    Some(false) => {
                         solver.pop(1);
                         self.sat_cache.set(Some(false));
                         return None;
                     }
-                    z3::SatResult::Unknown => {
+                    // Unknown (None): base set's satisfiability undetermined —
+                    // abort without pinning sat_cache (angr-ph300.43).
+                    None => {
                         solver.pop(1);
                         return None;
                     }
@@ -777,7 +780,9 @@ impl SymContext {
                 // Is anything left at or above the current floor? The floor is
                 // an asserted `ast >= lo` (below), so this check also covers an
                 // unsat base constraint set on iteration 0.
-                if !matches!(timed_check(solver, CheckSite::EvalUpto), z3::SatResult::Sat) {
+                // Stop on anything but a decided Sat (Unsat = exhausted,
+                // Unknown = undetermined); the prefix stays a valid set.
+                if timed_check(solver, CheckSite::EvalUpto).decided() != Some(true) {
                     break;
                 }
                 // Feasible min in [lo, max_val] — `ast >= lo` is already
@@ -853,8 +858,10 @@ impl SymContext {
             }
 
             for _ in 0..remaining {
-                match timed_check(solver, CheckSite::EvalUpto) {
-                    z3::SatResult::Sat => {
+                // As in eval_upto: only a decided Sat continues enumerating;
+                // Unsat/Unknown stop with the valid prefix (angr-ph300.43).
+                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                    Some(true) => {
                         if let Some(model) = solver.get_model() {
                             if let Some(result) = model.eval(&ast, true) {
                                 if let Some(bytes) = extract_bv_value_wide(&result, width) {
@@ -964,18 +971,18 @@ impl SymContext {
                     solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
                     let check = timed_check(solver, CheckSite::MinInit);
                     solver.pop(1);
-                    match check {
-                        z3::SatResult::Sat => true,
-                        z3::SatResult::Unsat => false,
-                        // The sign probe timed out: whether the feasible set
-                        // reaches below zero is undetermined. Collapsing Unknown
-                        // to false (has_negative=false) would confine the search
-                        // to [0, max_positive] and converge on a fabricated
+                    match check.decided() {
+                        // Some(true)=has_negative, Some(false)=no negative value.
+                        Some(v) => v,
+                        // The sign probe timed out (None): whether the feasible
+                        // set reaches below zero is undetermined. Collapsing
+                        // Unknown to false (has_negative=false) would confine the
+                        // search to [0, max_positive] and converge on a fabricated
                         // non-negative minimum even when the true minimum is
                         // negative. Propagate the unknown instead — the same rule
                         // bsearch_min already follows on a mid-bisection Unknown
                         // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
-                        z3::SatResult::Unknown => {
+                        None => {
                             solver.pop(1); // balance the outer push() before abort
                             return None;
                         }
@@ -1094,18 +1101,18 @@ impl SymContext {
                     solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
                     let check = timed_check(solver, CheckSite::MaxInit);
                     solver.pop(1);
-                    match check {
-                        z3::SatResult::Sat => true,
-                        z3::SatResult::Unsat => false,
-                        // The sign probe timed out: whether the feasible set
-                        // reaches at or above zero is undetermined. Collapsing
+                    match check.decided() {
+                        // Some(true)=has_non_negative, Some(false)=all negative.
+                        Some(v) => v,
+                        // The sign probe timed out (None): whether the feasible
+                        // set reaches at or above zero is undetermined. Collapsing
                         // Unknown to false (has_non_negative=false) would confine
                         // the search to [sign_bit, max_val] and converge on a
                         // fabricated negative maximum even when the true maximum
                         // is non-negative. Propagate the unknown instead — the
                         // same rule bsearch_max follows on a mid-bisection Unknown
                         // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
-                        z3::SatResult::Unknown => {
+                        None => {
                             solver.pop(1); // balance the outer push() before abort
                             return None;
                         }
@@ -1256,10 +1263,11 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             solver.push();
             solver.assert(&constraint);
-            let result = matches!(
-                timed_check(solver, CheckSite::Satisfiable),
-                z3::SatResult::Sat
-            );
+            // `value` is a solution only if pinning it is a decided Sat; a
+            // timeout (None) cannot prove feasibility, so it is conservatively
+            // "not a solution" — preserving this query's original behavior while
+            // making the Unknown handling explicit (angr-qwyti.3).
+            let result = timed_check(solver, CheckSite::Satisfiable).decided() == Some(true);
             solver.pop(1);
             result
         })
