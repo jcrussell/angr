@@ -1705,3 +1705,51 @@ fn test_udiv_srem_urem_by_zero_concrete_matches_z3() {
         );
     }
 }
+
+// angr-n0irt.15: the wrapping_div/wrapping_rem in sdiv_into/srem_into exist
+// solely to survive the i128::MIN / -1 overflow, which plain `/`,`%` would
+// panic on even in release (panic=abort -> SIGABRT). That path is only
+// reachable at width 128: sign_extend's i128 result can equal i128::MIN only
+// when the operand is 1u128<<127. The by-zero tests above are width-64 and
+// never a non-zero divisor at width 128, so a revert to plain `/`,`%` during a
+// future dedup pass would go uncaught. This pins the exact overflow case.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_sdiv_srem_min_by_neg_one_width_128() {
+    let ctx = SymContext::new_mock();
+    let min = 1u128 << 127; // i128::MIN reinterpreted as u128
+    let neg_one = u128::MAX; // -1 at width 128
+    let a = RustBV::concrete(min, 128);
+    let b = RustBV::concrete(neg_one, 128);
+
+    // Concrete folds must not panic and must match Z3 bvsdiv/bvsrem, which
+    // wrap: MIN / -1 == MIN, MIN % -1 == 0.
+    let sdiv = a.sdiv(&b, &ctx);
+    let srem = a.srem(&b, &ctx);
+    assert_eq!(
+        sdiv.as_u128(),
+        Some(min),
+        "sdiv(i128::MIN, -1) must wrap to i128::MIN, not panic"
+    );
+    assert_eq!(
+        srem.as_u128(),
+        Some(0),
+        "srem(i128::MIN, -1) must wrap to 0, not panic"
+    );
+
+    // Symbolic-pinned parity: same expression with a symbolic dividend pinned
+    // to MIN, evaluated through Z3, must agree with the concrete fold.
+    let d = RustBV::symbolic(&ctx, "sdiv128_min", 128);
+    let pinned = d.eq(&RustBV::concrete(min, 128), &ctx);
+    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    assert_eq!(
+        sdiv.as_u128(),
+        ctx.eval(&d.sdiv(&b, &ctx)),
+        "concrete sdiv fold disagrees with Z3 bvsdiv at width 128"
+    );
+    assert_eq!(
+        srem.as_u128(),
+        ctx.eval(&d.srem(&b, &ctx)),
+        "concrete srem fold disagrees with Z3 bvsrem at width 128"
+    );
+}
