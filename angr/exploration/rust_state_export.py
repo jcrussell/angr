@@ -806,98 +806,69 @@ class RustStateExportMixin:
         # when the snapshot reports none — keeps the plain register hot path.
         self._recover_symbolic_registers_from_snapshot(state, snapshot)
 
-    def _sync_rust_mmap_base_to_state(self, state: angr.SimState, state_id: int):
-        """Push Rust's per-state mmap_base into Python's state.heap.mmap_base.
+    # Table-driven rust->python break-pointer sync (angr-hv4lt.13). Each entry
+    # is (plugin_attr, py_field, getter_name): read Rust's per-state break
+    # pointer via the getter and bump the matching Python-side field, never
+    # walking it backwards. The three named methods below are thin delegators
+    # over _sync_rust_break_field_to_state so a future 4th field (or a fix to
+    # the max()-clobber-guard logic) lives in exactly one place. Mirror of the
+    # reverse-direction _sync_state_heap_to_rust table.
+    _RUST_BREAK_SYNC_FIELDS = {
+        "mmap_base": ("heap", "mmap_base", "get_state_mmap_base"),
+        "posix_brk": ("posix", "brk", "get_state_posix_brk"),
+        "heap_brk": ("heap", "heap_location", "get_state_heap_brk"),
+    }
 
-        The native mmap syscall handler bumps Rust's mmap_base on addr=0 calls;
-        without this sync, a subsequent Python-side allocation (SimProcedure
-        fallback or unhandled syscall) reads a stale state.heap.mmap_base and
-        hands out an address that overlaps a Rust-allocated region.
+    def _sync_rust_break_field_to_state(
+        self, state: angr.SimState, state_id: int, plugin_attr: str, py_field: str, getter: str
+    ):
+        """Push one Rust per-state break pointer into its Python-side field.
+
+        Shared body for the mmap_base / posix_brk / heap_brk syncs. The native
+        mmap syscall, brk(2) handler, and heap-allocating SimProcedures bump
+        Rust's break pointers; without this sync a subsequent Python-side
+        fallback reads a stale value and hands out an address overlapping a
+        Rust-allocated region.
+
+        Only applied when the Python field is a plain int. Python's set_brk
+        rewrites posix.brk as a claripy BV (concrete BVV or an If(...) tree);
+        in that case Python already advanced past the default and we leave the
+        BV alone rather than risk an int<->BV mismatch downstream. mmap_base /
+        heap_location are always ints, so the guard is a no-op for them.
 
         Take max(rust, python) to avoid clobbering a Python-side advance that
-        happened between Rust runs (e.g. the user calling state.heap.mmap_base
-        = N before re-entering exploration).
+        happened between Rust runs.
         """
-        heap = getattr(state, "heap", None)
-        if heap is None or not hasattr(heap, "mmap_base"):
+        plugin = getattr(state, plugin_attr, None)
+        if plugin is None or not hasattr(plugin, py_field):
+            return
+        py_val = getattr(plugin, py_field)
+        if not isinstance(py_val, int):
             return
         try:
-            rust_base = self._rust_mgr.get_state_mmap_base(state_id)
+            rust_val = getattr(self._rust_mgr, getter)(state_id)
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: per-state mmap_base unavailable
-            # (state may have been dropped from Rust). Python keeps its
-            # current heap.mmap_base; a subsequent Python-side allocation
-            # may overlap a Rust-allocated region. Debug only because
-            # this state is likely no longer being explored.
-            l.debug("get_state_mmap_base(%d) failed: %s", state_id, e)
+            # cat-(b) FALLBACK WITH LOSS: per-state break pointer unavailable
+            # (state may have been dropped from Rust). Python keeps its current
+            # value; a subsequent Python-side allocation may overlap a
+            # Rust-allocated region. Debug only — this state is likely no
+            # longer being explored.
+            l.debug("%s(%d) failed: %s", getter, state_id, e)
             return
-        if rust_base > heap.mmap_base:
-            heap.mmap_base = rust_base
+        if rust_val > py_val:
+            setattr(plugin, py_field, rust_val)
+
+    def _sync_rust_mmap_base_to_state(self, state: angr.SimState, state_id: int):
+        """Push Rust's per-state mmap_base into Python's state.heap.mmap_base."""
+        self._sync_rust_break_field_to_state(state, state_id, *self._RUST_BREAK_SYNC_FIELDS["mmap_base"])
 
     def _sync_rust_posix_brk_to_state(self, state: angr.SimState, state_id: int):
-        """Push Rust's per-state posix_brk into Python's state.posix.brk.
-
-        Mirror of _sync_rust_mmap_base_to_state for the brk(2) heap pointer.
-        NativeBrkSyscall bumps Rust's posix_brk on concrete grow calls; without
-        this sync, a Python-side fallback (symbolic brk or set_brk collision
-        retry) reads a stale state.posix.brk and hands out heap addresses
-        overlapping a Rust-allocated region.
-
-        Only applied when state.posix.brk is a plain int — Python's set_brk
-        rewrites the field as a claripy BV (concrete BVV after a concrete
-        bump, an If(...) tree after a symbolic bump). In those cases Python
-        already advanced past the default and we leave the BV alone rather
-        than risk an int<->BV type mismatch in downstream Python code.
-
-        Take max(rust, python) to avoid clobbering a Python-side advance.
-        """
-        posix = getattr(state, "posix", None)
-        if posix is None or not hasattr(posix, "brk"):
-            return
-        py_brk = posix.brk
-        if not isinstance(py_brk, int):
-            return
-        try:
-            rust_brk = self._rust_mgr.get_state_posix_brk(state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: per-state posix_brk unavailable.
-            # Same risk as mmap_base sync — Python-side fallback may
-            # overlap a Rust heap region.
-            l.debug("get_state_posix_brk(%d) failed: %s", state_id, e)
-            return
-        if rust_brk > py_brk:
-            posix.brk = rust_brk
+        """Push Rust's per-state posix_brk into Python's state.posix.brk."""
+        self._sync_rust_break_field_to_state(state, state_id, *self._RUST_BREAK_SYNC_FIELDS["posix_brk"])
 
     def _sync_rust_heap_brk_to_state(self, state: angr.SimState, state_id: int):
-        """Push Rust's per-state heap_brk into Python's state.heap.heap_location.
-
-        Mirror of _sync_rust_posix_brk_to_state for the malloc bump allocator.
-        Native heap-allocating SimProcedures (malloc/calloc/realloc/strdup/
-        fopen) bump Rust's heap_brk via heap_alloc; without this sync a later
-        Python-side fallback SimProcedure reads a stale state.heap.heap_location
-        and hands out heap addresses overlapping a Rust-allocated region
-        (angr-um39j; latent until angr-blq01 made native fopen/calloc/realloc
-        actually run instead of falling back).
-
-        Take max(rust, python) to avoid clobbering a Python-side advance (a
-        prior fallback malloc that bumped heap_location past Rust's value).
-        """
-        heap = getattr(state, "heap", None)
-        if heap is None or not hasattr(heap, "heap_location"):
-            return
-        py_loc = heap.heap_location
-        if not isinstance(py_loc, int):
-            return
-        try:
-            rust_brk = self._rust_mgr.get_state_heap_brk(state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: per-state heap_brk unavailable
-            # (state may have been dropped from Rust). Same overlap risk as
-            # the mmap_base / posix_brk syncs. Debug only.
-            l.debug("get_state_heap_brk(%d) failed: %s", state_id, e)
-            return
-        if rust_brk > py_loc:
-            heap.heap_location = rust_brk
+        """Push Rust's per-state heap_brk into Python's state.heap.heap_location."""
+        self._sync_rust_break_field_to_state(state, state_id, *self._RUST_BREAK_SYNC_FIELDS["heap_brk"])
 
     def _sync_state_heap_to_rust(self, state: angr.SimState, state_id: int):
         """Push a Python-side heap bump back into Rust (callback write-back).
