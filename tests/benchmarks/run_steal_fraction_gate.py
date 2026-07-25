@@ -127,8 +127,8 @@ def main() -> int:
     print(f"  found materialization  = {found_fraction * 100:.4f}%")
     print(f"  honest f_gate          = {f_gate * 100:.3f}%")
 
-    run_gate(args.bench, args.workers, f_gate, args.timeout)
-    return 0
+    result = run_gate(args.bench, args.workers, f_gate, args.timeout)
+    return 0 if result["returncode"] == 0 else 1
 
 
 if __name__ == "__main__":
