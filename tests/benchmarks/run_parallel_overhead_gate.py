@@ -77,11 +77,12 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from trailing_json import trailing_json
 
 HERE = Path(__file__).resolve().parent
 RUN_SINGLE = HERE / "run_single.py"
@@ -338,30 +339,14 @@ def run_one(name: str, timeout: int, probe: bool) -> dict:
 
     out = proc.stdout
     first_line = out.splitlines()[0] if out.splitlines() else ""
-    # run_single emits the ``--counters-json`` blob as the TRAILING JSON object
-    # (printed by ``json.dumps(indent=2)`` on its own line at end-of-stdout).
-    # We locate it via the last ``\n{`` rather than the first ``{`` because the
-    # solve.py output-preview lines (``  > ...``) can themselves contain braces
-    # (e.g. a recovered flag) — bench_diff.load_counters' first-``{`` heuristic
-    # would grab those.  Only the top-level object opens at column 0 after a
-    # newline, so rfind("\n{") is unambiguous.
-    brace = out.rfind("\n{")
-    if brace == -1 and out.startswith("{"):
-        brace = 0
-    if brace == -1:
+    stats = trailing_json(out)
+    if stats is None:
         raise GateError(
-            f"{name}: no trailing JSON block in run_single output (run failed?).\n"
+            f"{name}: no parseable trailing JSON block in run_single output "
+            f"(run failed or emitted corrupt counters?).\n"
             f"  first stdout line: {first_line!r}\n"
             f"  stderr tail: {proc.stderr[-500:]!r}"
         )
-    try:
-        stats = json.loads(out[brace:])
-    except json.JSONDecodeError as exc:
-        raise GateError(
-            f"{name}: could not parse counters JSON from run_single output.\n"
-            f"  first stdout line: {first_line!r}\n"
-            f"  stderr tail: {proc.stderr[-500:]!r}"
-        ) from exc
     if not isinstance(stats, dict) or not stats:
         raise GateError(f"{name}: empty/invalid stats dict from run_single ({first_line!r}).")
     return stats

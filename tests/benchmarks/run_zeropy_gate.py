@@ -70,6 +70,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from trailing_json import trailing_json
+
 HERE = Path(__file__).resolve().parent
 RUN_SINGLE = HERE / "run_single.py"
 BASELINE_TIMINGS = HERE / "baseline_timings.json"
@@ -134,19 +136,6 @@ def no_rust_baseline(bench: str) -> bool:
     return "rust_time" in entry and entry["rust_time"] is None
 
 
-def _trailing_json(out: str) -> dict | None:
-    brace = out.rfind("\n{")
-    if brace == -1:
-        if out.startswith("{"):
-            brace = 0
-        else:
-            return None
-    try:
-        return json.loads(out[brace:])
-    except json.JSONDecodeError:
-        return None
-
-
 def attribution(stats: dict) -> dict[str, dict[str, int]]:
     """Per-class ``{count, ns}`` for every callback class the bench crossed.
 
@@ -205,7 +194,7 @@ def run_one(bench: str, timeout: int) -> dict:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 60, env=env)
     except subprocess.TimeoutExpired:
         return {"bench": bench, "status": "ERROR", "reason": f"timeout (harness, >{timeout + 60}s)"}
-    stats = _trailing_json(proc.stdout)
+    stats = trailing_json(proc.stdout)
     if stats is None or OK_RE.search(proc.stdout) is None:
         # run_single traps its own timeout and exits cleanly without JSON, so a
         # divergent bench reaches here rather than the TimeoutExpired branch.

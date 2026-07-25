@@ -46,7 +46,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from run_zeropy_gate import _trailing_json, split_baseline_key
+from run_zeropy_gate import split_baseline_key
+from trailing_json import trailing_json
 
 RUN_SINGLE = os.path.join(_HERE, "run_single.py")
 OUT_JSON = os.path.join(_HERE, "zeropy_bounce_census.json")
@@ -142,7 +143,7 @@ def run_one(bench: str, timeout: int, native: set[str]) -> dict:
     except subprocess.TimeoutExpired:
         return {"bench": bench, "status": "ERROR", "reason": f"timeout (>{timeout + 60}s)", "bounces": []}
 
-    stats = _trailing_json(proc.stdout) or {}
+    stats = trailing_json(proc.stdout) or {}
 
     # Why each native handler bailed, keyed by proc name. A name can show up in
     # more than one counter (different call sites decline differently) — keep

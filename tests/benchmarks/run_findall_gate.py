@@ -53,6 +53,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from trailing_json import trailing_json
+
 HERE = Path(__file__).resolve().parent
 RUN_SINGLE = HERE / "run_single.py"
 
@@ -84,19 +86,6 @@ BENCH_ENV = {
 }
 
 
-def _trailing_json(out: str) -> dict | None:
-    brace = out.rfind("\n{")
-    if brace == -1:
-        if out.startswith("{"):
-            brace = 0
-        else:
-            return None
-    try:
-        return json.loads(out[brace:])
-    except json.JSONDecodeError:
-        return None
-
-
 def run_one(bench: str, workers: int, timeout: int, steady: bool) -> dict | None:
     """One find-all run through run_single.py. Returns None on timeout/crash."""
     env = dict(os.environ)
@@ -123,7 +112,7 @@ def run_one(bench: str, workers: int, timeout: int, steady: bool) -> dict | None
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 60, env=env)
     except subprocess.TimeoutExpired:
         return None
-    stats = _trailing_json(proc.stdout)
+    stats = trailing_json(proc.stdout)
     if stats is None:
         return None
     m = OK_RE.search(proc.stdout)

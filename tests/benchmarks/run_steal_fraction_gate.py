@@ -27,12 +27,13 @@ pessimistic break-even); we report the margin.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import statistics
 import subprocess
 import sys
 from pathlib import Path
+
+from trailing_json import trailing_json
 
 HERE = Path(__file__).resolve().parent
 RUN_SINGLE = HERE / "run_single.py"
@@ -40,13 +41,16 @@ GATE = HERE / "run_parallel_overhead_gate.py"
 
 
 def _trailing_json(out: str) -> dict:
-    """Extract run_single's trailing ``--counters-json`` object."""
-    brace = out.rfind("\n{")
-    if brace == -1 and out.startswith("{"):
-        brace = 0
-    if brace == -1:
+    """Extract run_single's trailing ``--counters-json`` object (strict).
+
+    A missing OR malformed trailing object raises ``SystemExit`` with the tail
+    of the captured output, rather than letting a raw ``json.JSONDecodeError``
+    escape on truncated/corrupt JSON.
+    """
+    stats = trailing_json(out)
+    if stats is None:
         raise SystemExit(f"no trailing JSON in run_single output:\n{out[-500:]}")
-    return json.loads(out[brace:])
+    return stats
 
 
 def capture_f_model(name: str, workers: int, timeout: int) -> tuple[float, float, dict]:
