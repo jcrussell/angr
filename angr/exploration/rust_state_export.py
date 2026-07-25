@@ -1409,6 +1409,13 @@ class RustStateExportMixin:
 
     def _load_snapshot_pages(self, state: angr.SimState, snapshot, arch):
         """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""
+        # Per-snapshot memo for the symbolic-AST recovery maps (angr-hv4lt.10):
+        # get_state_addr_to_ast / get_state_hook_symbolic_memory each rebuild the
+        # *entire* map from Rust on every call, so they must be fetched once per
+        # state and reused across all regions/pages — not re-derived per region.
+        # Lazily populated on the first region that needs recovery so a
+        # concrete-only snapshot pays nothing.
+        recovery: dict = {}
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
             if page is None:
@@ -1427,6 +1434,7 @@ class RustStateExportMixin:
                     page_addr,
                     regions,
                     arch,
+                    recovery,
                 )
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: page failed to load. State
@@ -1451,11 +1459,15 @@ class RustStateExportMixin:
         regions.append((start, end - start + 1))
         return regions
 
-    def _restore_symbolic_regions(self, state, snapshot, page_addr, regions, arch) -> None:
-        """Overwrite symbolic regions on a page with recovered or fresh symbols."""
+    def _restore_symbolic_regions(self, state, snapshot, page_addr, regions, arch, recovery) -> None:
+        """Overwrite symbolic regions on a page with recovered or fresh symbols.
+
+        ``recovery`` is a per-snapshot memo dict (see ``_load_snapshot_pages``)
+        holding the AST-recovery maps fetched once and reused across regions.
+        """
         for offset, size in regions:
             sym_addr = page_addr + offset
-            ast = self._recover_symbolic_ast(snapshot, sym_addr, size)
+            ast = self._recover_symbolic_ast(snapshot, sym_addr, size, recovery)
             if ast is None:
                 # Fallback for symbols created in Rust without a tracked AST.
                 # angr-4o7d (2026-05-22): instrumented to measure fire rate.
@@ -1467,12 +1479,43 @@ class RustStateExportMixin:
                 self._stats_orphan_bvs_snapshot_restore += 1
             state.memory.store(sym_addr, ast, endness=arch.memory_endness, inspect=False)
 
-    def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int):
+    def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int, recovery: dict):
         """Look up the original claripy AST for a symbolic byte at sym_addr.
 
         Searches address-tracked AST maps for the snapshot's state, parent, and
         root, then the hook-symbolic-memory map. Returns the first AST whose
         tracked size matches; None if no match.
+
+        ``recovery`` is a per-snapshot memo (see ``_load_snapshot_pages``): the
+        candidate addr_to_ast maps and hook_symbolic_memory map are each fetched
+        from Rust at most once and cached here, since each FFI call rebuilds the
+        whole map (angr-hv4lt.10). Both are populated lazily — addr maps on the
+        first region, the hook map only if an addr lookup misses.
+        """
+        addr_maps = recovery.get("addr_maps")
+        if addr_maps is None:
+            addr_maps = recovery["addr_maps"] = self._build_recovery_addr_maps(snapshot)
+
+        for addr_map in addr_maps:
+            entry = addr_map.get(sym_addr)
+            if entry is not None and entry[1] == size:
+                return entry[0]
+
+        if "hook_map" not in recovery:
+            recovery["hook_map"] = self._rust_mgr.get_state_hook_symbolic_memory(snapshot.state_id)
+        hook_map = recovery["hook_map"]
+        hook_entry = hook_map.get(sym_addr)
+        if hook_entry is not None and hook_entry[1] == size:
+            return hook_entry[0]
+        return None
+
+    def _build_recovery_addr_maps(self, snapshot) -> list:
+        """Fetch the candidate addr_to_ast maps for a snapshot, once.
+
+        Resolves the state / parent / root candidate ids (deduplicating root vs
+        state) and fetches each map from Rust a single time. Callers reuse the
+        returned list across every symbolic region on every page of the
+        snapshot rather than re-fetching per region (angr-hv4lt.10).
         """
         candidate_ids = [snapshot.state_id]
         if snapshot.parent_id >= 0:
@@ -1489,19 +1532,12 @@ class RustStateExportMixin:
         if root_id is not None and root_id != snapshot.state_id:
             candidate_ids.append(root_id)
 
+        addr_maps = []
         for sid in candidate_ids:
             if sid is None:
                 continue
-            addr_map = self._rust_mgr.get_state_addr_to_ast(sid)
-            entry = addr_map.get(sym_addr)
-            if entry is not None and entry[1] == size:
-                return entry[0]
-
-        hook_map = self._rust_mgr.get_state_hook_symbolic_memory(snapshot.state_id)
-        hook_entry = hook_map.get(sym_addr)
-        if hook_entry is not None and hook_entry[1] == size:
-            return hook_entry[0]
-        return None
+            addr_maps.append(self._rust_mgr.get_state_addr_to_ast(sid))
+        return addr_maps
 
     def _find_plugin_template_state(
         self,
