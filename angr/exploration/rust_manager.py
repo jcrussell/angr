@@ -2602,7 +2602,8 @@ class RustExplorationManager(
                                     else:
                                         state = self._get_default_state()
                                         if state:
-                                            got_val = state.memory.load(got_addr, 8, endness="Iend_LE")
+                                            ptr_size = self._project.arch.bytes
+                                            got_val = state.memory.load(got_addr, ptr_size, endness="Iend_LE")
                                             extern_addr = state.solver.eval(got_val)
                                             if extern_addr in self._project._sim_procedures:
                                                 proc = self._project._sim_procedures[extern_addr]
