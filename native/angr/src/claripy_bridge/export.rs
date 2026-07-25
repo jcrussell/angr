@@ -300,6 +300,40 @@ impl ConcreteBvvEncoding {
     }
 }
 
+/// Convert a claripy `Bool` AST to a 1-bit BV via `If(cond, BVV(1,1), BVV(0,1))`.
+///
+/// claripy's `ZeroExt`/`SignExt`/`Extract` and the width-matching binary-op
+/// path all require a BV operand, not a Bool. This is the single canonical
+/// coercion (previously re-implemented inline four times — angr-c3rd,
+/// angr-n0irt.11).
+fn bool_to_bv1<'py>(
+    claripy_mod: &Bound<'py, PyAny>,
+    arg: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
+    let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
+    claripy_mod.call_method1("If", (arg, one, zero))
+}
+
+/// If `arg` is a claripy `Bool`, coerce it to a 1-bit BV; otherwise return it
+/// unchanged. Used by the `ZeroExt`/`SignExt`/`Extract` arms, which reject a
+/// Bool operand.
+fn coerce_bool_to_bv1<'py>(
+    claripy_mod: &Bound<'py, PyAny>,
+    arg: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let arg0_type = arg
+        .get_type()
+        .name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    if arg0_type == "Bool" {
+        bool_to_bv1(claripy_mod, arg)
+    } else {
+        Ok(arg.clone())
+    }
+}
+
 fn rustbv_to_claripy_memo(
     py: Python<'_>,
     bv: &RustBV,
@@ -424,25 +458,13 @@ fn rustbv_to_claripy_memo(
                 // its real semantics. (Previously these arms early-returned and
                 // either dropped the second operand or rebuilt non-And/Or/Xor ops
                 // as __add__ — see bead angr-c3rd.)
-                let bool_to_bv1 = |arg: &Py<PyAny>| -> PyResult<Py<PyAny>> {
-                    let bv = claripy_mod.call_method1(
-                        "If",
-                        (
-                            arg,
-                            claripy_mod.call_method1("BVV", (1i32, 1u32))?,
-                            claripy_mod.call_method1("BVV", (0i32, 1u32))?,
-                        ),
-                    )?;
-                    Ok(bv.unbind())
+                let to_bv1 = |arg: &Py<PyAny>| -> PyResult<Py<PyAny>> {
+                    Ok(bool_to_bv1(claripy_mod, arg.bind(py))?.unbind())
                 };
                 let (args, w0, w1) = match (w0, w1) {
-                    (None, Some(w)) => (vec![bool_to_bv1(&args[0])?, args[1].clone()], 1u32, w),
-                    (Some(w), None) => (vec![args[0].clone(), bool_to_bv1(&args[1])?], w, 1u32),
-                    (None, None) => (
-                        vec![bool_to_bv1(&args[0])?, bool_to_bv1(&args[1])?],
-                        1u32,
-                        1u32,
-                    ),
+                    (None, Some(w)) => (vec![to_bv1(&args[0])?, args[1].clone()], 1u32, w),
+                    (Some(w), None) => (vec![args[0].clone(), to_bv1(&args[1])?], w, 1u32),
+                    (None, None) => (vec![to_bv1(&args[0])?, to_bv1(&args[1])?], 1u32, 1u32),
                     (Some(a), Some(b)) => (args, a, b),
                 };
                 if w0 != w1 {
@@ -600,74 +622,25 @@ fn rustbv_to_claripy_memo(
 
                 // Extension operations (args already validated)
                 BVOp::ZeroExt(extend_bits) => {
-                    let arg0_type = args[0]
-                        .bind(py)
-                        .get_type()
-                        .name()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
-
-                    // If arg0 is a Bool, convert it to a 1-bit BV first
                     // claripy.ZeroExt requires a BV, not a Bool
-                    if arg0_type == "Bool" {
-                        // Use claripy.If(cond, BVV(1, 1), BVV(0, 1)) to convert Bool to 1-bit BV
-                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
-                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
-                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod
-                            .call_method1("ZeroExt", (*extend_bits, bv1))
-                            .map(std::convert::Into::into)
-                    } else {
-                        claripy_mod
-                            .call_method1("ZeroExt", (*extend_bits, &args[0]))
-                            .map(std::convert::Into::into)
-                    }
+                    let arg0 = coerce_bool_to_bv1(claripy_mod, args[0].bind(py))?;
+                    claripy_mod
+                        .call_method1("ZeroExt", (*extend_bits, arg0))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::SignExt(extend_bits) => {
-                    let arg0_type = args[0]
-                        .bind(py)
-                        .get_type()
-                        .name()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
-
-                    // If arg0 is a Bool, convert it to a 1-bit BV first
                     // claripy.SignExt requires a BV, not a Bool
-                    if arg0_type == "Bool" {
-                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
-                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
-                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod
-                            .call_method1("SignExt", (*extend_bits, bv1))
-                            .map(std::convert::Into::into)
-                    } else {
-                        claripy_mod
-                            .call_method1("SignExt", (*extend_bits, &args[0]))
-                            .map(std::convert::Into::into)
-                    }
+                    let arg0 = coerce_bool_to_bv1(claripy_mod, args[0].bind(py))?;
+                    claripy_mod
+                        .call_method1("SignExt", (*extend_bits, arg0))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::Extract(high, low) => {
-                    let arg0_type = args[0]
-                        .bind(py)
-                        .get_type()
-                        .name()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
-
-                    // If arg0 is a Bool, convert it to a 1-bit BV first
                     // claripy.Extract requires a BV, not a Bool
-                    if arg0_type == "Bool" {
-                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
-                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
-                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod
-                            .call_method1("Extract", (*high, *low, bv1))
-                            .map(std::convert::Into::into)
-                    } else {
-                        claripy_mod
-                            .call_method1("Extract", (*high, *low, &args[0]))
-                            .map(std::convert::Into::into)
-                    }
+                    let arg0 = coerce_bool_to_bv1(claripy_mod, args[0].bind(py))?;
+                    claripy_mod
+                        .call_method1("Extract", (*high, *low, arg0))
+                        .map(std::convert::Into::into)
                 }
                 BVOp::Concat => {
                     // Concat takes multiple args (already validated)
