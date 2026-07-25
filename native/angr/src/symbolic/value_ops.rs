@@ -609,7 +609,12 @@ impl RustBV {
             (Some(v), Some(a)) => {
                 // Match the symbolic `c >= w → 0` arm: clamp BEFORE narrowing so
                 // amounts >= 2^32 (and the width==128 full-shift) don't wrap.
-                if a >= width as u128 {
+                // `width.min(128)`: for a `Concrete` of `width > 128` only the
+                // low 128 bits are stored, so any shift `>= 128` clears every
+                // readable bit (and `wrapping_shl(a)` would wrap `a` mod 128,
+                // corrupting the low 128 bits). For `width <= 128` this is
+                // exactly the original `a >= width` cutoff.
+                if a >= width.min(128) as u128 {
                     Self::zero(width)
                 } else {
                     Self::concrete(v.wrapping_shl(a as u32), width)
@@ -646,7 +651,11 @@ impl RustBV {
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
                 // Match the symbolic `c >= w → 0` arm; clamp before narrowing.
-                if a >= width as u128 {
+                // `width.min(128)`: a `Concrete` of `width > 128` stores only its
+                // low 128 bits, so any right-shift `>= 128` clears every readable
+                // bit (and `wrapping_shr(a)` would wrap `a` mod 128). For
+                // `width <= 128` this is the original `a >= width` cutoff.
+                if a >= width.min(128) as u128 {
                     Self::zero(width)
                 } else {
                     Self::concrete(v.wrapping_shr(a as u32), width)
@@ -684,9 +693,23 @@ impl RustBV {
                 // Saturate to the sign bit for amounts >= w (matches the symbolic
                 // `c >= w` arm). Clamp to w-1 BEFORE narrowing so amounts >= 2^32
                 // don't wrap to 0 and width==128 doesn't shift i128 by 128.
-                let amt = a.min((width - 1) as u128) as u32;
-                let signed = sign_extend(v, width);
-                Self::concrete((signed >> amt) as u128, width)
+                let amt = a.min((width - 1) as u128);
+                if width > 128 {
+                    // A `Concrete` of `width > 128` stores only its low 128 bits;
+                    // the sign bit (position `width - 1 >= 128`) is logically
+                    // zero, so the value is non-negative and ashr collapses to
+                    // lshr. Any shift `>= 128` clears every readable bit (and an
+                    // `i128 >> amt` with `amt >= 128` would overflow/panic).
+                    let res = if amt >= 128 {
+                        0
+                    } else {
+                        v.wrapping_shr(amt as u32)
+                    };
+                    Self::concrete(res, width)
+                } else {
+                    let signed = sign_extend(v, width);
+                    Self::concrete((signed >> amt as u32) as u128, width)
+                }
             }
             // x >>> 0 → x
             (None, Some(0)) => self,
@@ -1309,7 +1332,14 @@ fn sign_extend(value: u128, width: u32) -> i128 {
 
 /// Sign-extend a value from one width to another (staying in u128).
 fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
-    if from_width >= to_width {
+    if from_width >= to_width || from_width >= 128 {
+        // `from_width >= to_width`: no widening, value is already correct.
+        // `from_width >= 128`: the sign bit (position `from_width - 1 >= 128`)
+        // lies beyond the u128-backed `Concrete`'s stored bits, which are
+        // logically zero, so the value is non-negative and sign-extension is a
+        // no-op (== zero-extend). This arm also avoids the `1u128 << (from_width
+        // - 1)` overflow the `else` shift would hit at `from_width >= 128`
+        // (panic under debug / `panic = "abort"`, wraps mod 128 in release).
         value
     } else {
         // `from_width < to_width <= 128`, so `from_width < 128` and the

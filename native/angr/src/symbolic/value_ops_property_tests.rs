@@ -566,3 +566,168 @@ fn boundary_concat_recovers_operands() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wider-than-128 concrete fast-path checks (angr-qwyti.12)
+//
+// `RustBV::Concrete` stores its value in a u128, but a `Concrete` node may
+// legitimately carry a `width > 128` when only the low 128 bits are non-zero
+// (e.g. `zero_extend`/`truncate` fast paths return `concrete(v, to_width)` for
+// any `to_width`). Every bit at position >= 128 of such a node is *logically
+// zero*. The concrete fast paths that internally shift/mask a u128 by a width
+// or bit-position (shl/lshr/ashr, sign_extend) previously assumed width <= 128
+// and would overflow (`1u128 << 129`, `i128 >> 200`) or wrap (`wrapping_shl(a)`
+// with `a mod 128`) at these widths -- the exact `1u128 << 128`-class hazard
+// that was fixed twice before (angr-tk7yv assembly-side, angr-dondi
+// slicing-side, angr-qwyti.16 sign_extend_to, angr-qwyti.17 sar_fill_mask).
+// These deterministic checks cross widths > 128 with adversarial values and an
+// INDEPENDENT plain-u128 reference so a regression fails on every run, not
+// 1/128 of the time.
+// ---------------------------------------------------------------------------
+
+/// Widths past the u128 storage ceiling: 128+1, and the AVX/YMM-scale widths a
+/// `zero_extend` of a smaller concrete would produce.
+const WIDE_WIDTHS: [u32; 4] = [129, 160, 192, 256];
+
+/// Adversarial low-128-bit payloads for a wide `Concrete` (bits >= 128 are
+/// always zero by construction). Cannot reuse `boundary_values` -- its
+/// `1u128 << (width - 1)` sign term overflows for `width > 128`.
+fn wide_payloads() -> [u128; 7] {
+    [
+        0,
+        1,
+        u128::MAX,
+        1u128 << 127,
+        (1u128 << 127) - 1,
+        0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAu128,
+        0x5555_5555_5555_5555_5555_5555_5555_5555u128,
+    ]
+}
+
+/// Shift amounts that straddle the 128-bit storage boundary for each wide
+/// width `w`: below, at, just past, and at/over the declared width.
+fn wide_shift_amounts(w: u32) -> [u128; 8] {
+    [0, 1, 63, 127, 128, 129, (w - 1) as u128, w as u128]
+}
+
+#[test]
+fn wide_shl_clears_readable_bits_past_128() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            for &a in &wide_shift_amounts(w) {
+                // low 128 bits of `v << a`: any shift >= 128 pushes every stored
+                // bit out of the readable window.
+                let want = if a >= 128 {
+                    0
+                } else {
+                    v.wrapping_shl(a as u32)
+                };
+                let got = val(&bv(v, w).shl(&bv(a, w), &ctx));
+                assert_eq!(got, want, "shl w={w} v={v:#x} a={a}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_lshr_clears_readable_bits_past_128() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            for &a in &wide_shift_amounts(w) {
+                let want = if a >= 128 {
+                    0
+                } else {
+                    v.wrapping_shr(a as u32)
+                };
+                let got = val(&bv(v, w).lshr(&bv(a, w), &ctx));
+                assert_eq!(got, want, "lshr w={w} v={v:#x} a={a}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_ashr_is_logical_because_sign_bit_is_zero() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            for &a in &wide_shift_amounts(w) {
+                // The true sign bit (position w-1 >= 128) is a logical zero, so
+                // arithmetic shift right equals logical shift right -- even when
+                // bit 127 of the stored payload is set.
+                let want = if a >= 128 {
+                    0
+                } else {
+                    v.wrapping_shr(a as u32)
+                };
+                let got = val(&bv(v, w).ashr(&bv(a, w), &ctx));
+                assert_eq!(got, want, "ashr w={w} v={v:#x} a={a}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_sign_extend_is_noop_because_source_is_nonnegative() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &to in &WIDE_WIDTHS {
+            if to <= w {
+                continue; // sign_extend only widens
+            }
+            for &v in &wide_payloads() {
+                // Sign bit at position w-1 >= 128 is zero => sign-extend == the
+                // value itself. Must NOT overflow `1u128 << (from_width - 1)`.
+                let got = val(&bv(v, w).sign_extend(to, &ctx));
+                assert_eq!(got, v, "sext({w}->{to}) v={v:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_zero_extend_and_truncate_roundtrip() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            // zero_extend to a larger wide width preserves the payload.
+            for &to in &WIDE_WIDTHS {
+                if to <= w {
+                    continue;
+                }
+                let ze = bv(v, w).zero_extend(to, &ctx);
+                assert_eq!(val(&ze), v, "zext({w}->{to}) v={v:#x}");
+            }
+            // truncate down to each boundary width recovers the masked payload.
+            for &to in &BOUNDARY_WIDTHS {
+                let got = val(&bv(v, w).truncate(to, &ctx));
+                assert_eq!(got, v & mask(to), "trunc({w}->{to}) v={v:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_extract_reads_zero_past_bit_128() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            let x = bv(v, w);
+            // A slice entirely at/above bit 128 is all zeros.
+            let top = x.extract(w - 1, 128, &ctx);
+            assert_eq!(val(&top), 0, "extract top [{}:128] w={w} v={v:#x}", w - 1);
+            // The low 128 bits round-trip exactly.
+            let low = x.extract(127, 0, &ctx);
+            assert_eq!(val(&low), v, "extract low [127:0] w={w} v={v:#x}");
+            // A slice straddling bit 128 keeps only the in-range payload bits.
+            // Needs `high < w`, so only for widths comfortably past 128.
+            if w >= 136 {
+                let straddle = x.extract(135, 120, &ctx); // 16-bit slice [135:120]
+                let want = (v >> 120) & mask(16);
+                assert_eq!(val(&straddle), want, "extract [135:120] w={w} v={v:#x}");
+            }
+        }
+    }
+}
