@@ -460,5 +460,29 @@
   "arch": "AMD64",
   "bytes": "66480f6ec0c3",
   "pyvex_json": "{\"addr\": 2130706608, \"arch\": \"AMD64\", \"statements\": [{\"tag\": \"Ist_IMark\", \"addr\": 2130706608, \"len\": 5, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 4, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 16, \"ty\": \"Ity_I64\"}}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 3, \"data\": {\"tag\": \"Iex_Unop\", \"op\": \"Iop_64UtoV128\", \"arg\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 4}}}, {\"tag\": \"Ist_Put\", \"offset\": 224, \"data\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 3}}, {\"tag\": \"Ist_Put\", \"offset\": 184, \"data\": {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U64\", \"value\": 2130706613}}}, {\"tag\": \"Ist_IMark\", \"addr\": 2130706613, \"len\": 1, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 0, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 48, \"ty\": \"Ity_I64\"}}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 1, \"data\": {\"tag\": \"Iex_Load\", \"ty\": \"Ity_I64\", \"end\": \"Iend_LE\", \"addr\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 0}}}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 2, \"data\": {\"tag\": \"Iex_Binop\", \"op\": \"Iop_Add64\", \"args\": [{\"tag\": \"Iex_RdTmp\", \"tmp\": 0}, {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U64\", \"value\": 8}}]}}, {\"tag\": \"Ist_Put\", \"offset\": 48, \"data\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 2}}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 5, \"data\": {\"tag\": \"Iex_Binop\", \"op\": \"Iop_Sub64\", \"args\": [{\"tag\": \"Iex_RdTmp\", \"tmp\": 2}, {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U64\", \"value\": 128}}]}}, {\"tag\": \"Ist_AbiHint\", \"len\": 128, \"base\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 5}, \"nia\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 1}}], \"next\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 1}, \"jumpkind\": \"Ijk_Ret\", \"offsIP\": 184, \"tyenv\": {\"types\": [\"Ity_I64\", \"Ity_I64\", \"Ity_I64\", \"Ity_V128\", \"Ity_I64\", \"Ity_I64\", \"Ity_I64\"]}}"
+ },
+ {
+  "addr": 32768,
+  "arch": "ARM",
+  "bytes": "0100a0e31eff2fe1",
+  "pyvex_json": "{\"addr\": 32768, \"arch\": \"ARMEL\", \"statements\": [{\"tag\": \"Ist_IMark\", \"addr\": 32768, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_Put\", \"offset\": 8, \"data\": {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U32\", \"value\": 1}}}, {\"tag\": \"Ist_IMark\", \"addr\": 32772, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 2, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 64, \"ty\": \"Ity_I32\"}}], \"next\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 2}, \"jumpkind\": \"Ijk_Ret\", \"offsIP\": 68, \"tyenv\": {\"types\": [\"Ity_I32\", \"Ity_I32\", \"Ity_I32\", \"Ity_I32\"]}}"
+ },
+ {
+  "addr": 32768,
+  "arch": "ARM64",
+  "bytes": "200080d2c0035fd6",
+  "pyvex_json": "{\"addr\": 32768, \"arch\": \"AARCH64\", \"statements\": [{\"tag\": \"Ist_IMark\", \"addr\": 32768, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_Put\", \"offset\": 16, \"data\": {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U64\", \"value\": 1}}}, {\"tag\": \"Ist_IMark\", \"addr\": 32772, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 0, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 256, \"ty\": \"Ity_I64\"}}], \"next\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 0}, \"jumpkind\": \"Ijk_Ret\", \"offsIP\": 272, \"tyenv\": {\"types\": [\"Ity_I64\", \"Ity_I64\"]}}"
+ },
+ {
+  "addr": 32768,
+  "arch": "MIPS32",
+  "bytes": "2402000103e0000800000000",
+  "pyvex_json": "{\"addr\": 32768, \"arch\": \"MIPS32\", \"statements\": [{\"tag\": \"Ist_IMark\", \"addr\": 32768, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_Put\", \"offset\": 16, \"data\": {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U32\", \"value\": 1}}}, {\"tag\": \"Ist_IMark\", \"addr\": 32772, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 0, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 132, \"ty\": \"Ity_I32\"}}, {\"tag\": \"Ist_IMark\", \"addr\": 32776, \"len\": 4, \"delta\": 0}], \"next\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 0}, \"jumpkind\": \"Ijk_Ret\", \"offsIP\": 136, \"tyenv\": {\"types\": [\"Ity_I32\", \"Ity_I32\", \"Ity_I32\", \"Ity_I64\", \"Ity_I32\", \"Ity_I32\"]}}"
+ },
+ {
+  "addr": 32768,
+  "arch": "MIPS64",
+  "bytes": "2402000103e0000800000000",
+  "pyvex_json": "{\"addr\": 32768, \"arch\": \"MIPS64\", \"statements\": [{\"tag\": \"Ist_IMark\", \"addr\": 32768, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_Put\", \"offset\": 32, \"data\": {\"tag\": \"Iex_Const\", \"con\": {\"tag\": \"Ico_U64\", \"value\": 1}}}, {\"tag\": \"Ist_IMark\", \"addr\": 32772, \"len\": 4, \"delta\": 0}, {\"tag\": \"Ist_WrTmp\", \"tmp\": 0, \"data\": {\"tag\": \"Iex_Get\", \"offset\": 264, \"ty\": \"Ity_I64\"}}, {\"tag\": \"Ist_IMark\", \"addr\": 32776, \"len\": 4, \"delta\": 0}], \"next\": {\"tag\": \"Iex_RdTmp\", \"tmp\": 0}, \"jumpkind\": \"Ijk_Ret\", \"offsIP\": 272, \"tyenv\": {\"types\": [\"Ity_I64\", \"Ity_I32\", \"Ity_I32\", \"Ity_I64\", \"Ity_I64\", \"Ity_I32\", \"Ity_I32\", \"Ity_I32\", \"Ity_I64\", \"Ity_I64\"]}}"
  }
 ]

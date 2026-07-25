@@ -46,6 +46,19 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Map a corpus `arch` string to the `VexArch` the native lifter replays it
+/// through. Kept in lockstep with the strings `gen_libvex_corpus.py` emits.
+fn arch_from_str(arch: &str) -> VexArch {
+    match arch {
+        "AMD64" => VexArch::AMD64,
+        "ARM" => VexArch::ARM,
+        "ARM64" => VexArch::ARM64,
+        "MIPS32" => VexArch::MIPS32,
+        "MIPS64" => VexArch::MIPS64,
+        other => panic!("corpus block has unsupported arch {other:?}"),
+    }
+}
+
 #[test]
 fn test_corpus_native_vs_pyvex_structural_parity() {
     let corpus: Vec<CorpusBlock> =
@@ -56,11 +69,11 @@ fn test_corpus_native_vs_pyvex_structural_parity() {
     let mut mismatches: Vec<String> = Vec::new();
 
     for block in &corpus {
-        assert_eq!(block.arch, "AMD64", "Stage-1 corpus is AMD64-only");
+        let arch = arch_from_str(&block.arch);
         let bytes = hex_to_bytes(&block.bytes);
 
         let native = lifter
-            .lift(&bytes, block.addr, VexArch::AMD64)
+            .lift(&bytes, block.addr, arch)
             .unwrap_or_else(|e| panic!("native lift @ 0x{:x} failed: {e:?}", block.addr));
         let pyvex = deserialize_irsb(&block.pyvex_json)
             .unwrap_or_else(|e| panic!("pyvex deserialize @ 0x{:x} failed: {e:?}", block.addr));

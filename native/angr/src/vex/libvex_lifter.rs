@@ -66,13 +66,20 @@ impl NativeLibVEXLifter {
     }
 }
 
-/// Build the AMD64 `VexArchInfo` pyvex passes to `vex_lift` (from
-/// `archinfo.ArchAMD64().vex_archinfo`): baseline hwcaps, little-endian, empty
-/// cache info, `x86_cr0 = 0xFFFFFFFF`.
-fn amd64_archinfo() -> ffi::VexArchInfo {
+/// Build the `VexArchInfo` pyvex passes to `vex_lift`, matching
+/// `archinfo.Arch<X>().vex_archinfo`. Across every arch angr's archinfo emits
+/// baseline hwcaps (0), empty cache info, and `x86_cr0 = 0xFFFFFFFF`; the sole
+/// per-arch difference is endianness (ARM/ARM64/AMD64/X86 little, MIPS big).
+/// Keep this parity with `gen_libvex_corpus.py`, which lifts the reference
+/// blocks through those same `archinfo.Arch<X>()` objects.
+fn archinfo_for(arch: VexArch) -> ffi::VexArchInfo {
+    let endness = match arch.endness() {
+        Endness::Little => ffi::VexEndness::VexEndnessLE,
+        Endness::Big => ffi::VexEndness::VexEndnessBE,
+    };
     ffi::VexArchInfo {
         hwcaps: 0,
-        endness: ffi::VexEndness::VexEndnessLE,
+        endness,
         hwcache_info: ffi::VexCacheInfo {
             num_levels: 0,
             num_caches: 0,
@@ -88,13 +95,27 @@ fn amd64_archinfo() -> ffi::VexArchInfo {
     }
 }
 
+/// Map the Rust `VexArch` to the libVEX FFI `ffi::VexArch` guest tag. Returns
+/// `None` for arches the native lifter does not yet build archinfo for (X86,
+/// PPC, S390X) so the caller falls back to the pyvex-callback path.
+fn ffi_vex_arch(arch: VexArch) -> Option<ffi::VexArch> {
+    Some(match arch {
+        VexArch::AMD64 => ffi::VexArch::VexArchAMD64,
+        VexArch::ARM => ffi::VexArch::VexArchARM,
+        VexArch::ARM64 => ffi::VexArch::VexArchARM64,
+        VexArch::MIPS32 => ffi::VexArch::VexArchMIPS32,
+        VexArch::MIPS64 => ffi::VexArch::VexArchMIPS64,
+        VexArch::X86 | VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => return None,
+    })
+}
+
 impl VEXLifter for NativeLibVEXLifter {
     fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
-        if arch != VexArch::AMD64 {
+        let Some(guest_arch) = ffi_vex_arch(arch) else {
             return Err(LiftError::InvalidArch(format!(
-                "NativeLibVEXLifter supports AMD64 only (Stage-1), got {arch:?}"
+                "NativeLibVEXLifter has no archinfo for {arch:?} yet (falls back to pyvex)"
             )));
-        }
+        };
         if bytes.is_empty() {
             return Err(LiftError::LiftFailed {
                 addr,
@@ -118,8 +139,8 @@ impl VEXLifter for NativeLibVEXLifter {
         // insn_start pointer.
         unsafe {
             let result = ffi::vex_lift(
-                ffi::VexArch::VexArchAMD64,
-                amd64_archinfo(),
+                guest_arch,
+                archinfo_for(arch),
                 bytes.as_ptr() as *mut c_uchar,
                 addr,
                 VEX_MAX_INSTRUCTIONS,
@@ -150,7 +171,7 @@ impl VEXLifter for NativeLibVEXLifter {
                     ),
                 });
             }
-            Ok(marshal_irsb(irsb_ptr, addr))
+            Ok(marshal_irsb(irsb_ptr, addr, arch))
         }
     }
 }
@@ -622,7 +643,7 @@ unsafe fn marshal_tyenv(tyenv: *const ffi::IRTypeEnv) -> TypeEnv {
 /// libVEX arena whose `stmts` array holds at least `stmts_used` entries and
 /// whose `next`/`tyenv` pointers are valid. Walks the entire block into owned
 /// types before returning, so nothing survives the arena's next clobber.
-unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64) -> IRSB {
+unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB {
     let mut statements = Vec::new();
     let used = (*irsb).stmts_used.max(0) as usize;
     let stmts = (*irsb).stmts;
@@ -635,7 +656,7 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64) -> IRSB {
 
     IRSB {
         addr,
-        arch: VexArch::AMD64,
+        arch,
         statements,
         next: marshal_expr((*irsb).next),
         jumpkind: c_jumpkind((*irsb).jumpkind),

@@ -72,6 +72,44 @@ SYNTHETIC_BLOCKS: list[tuple[int, str, str]] = [
 ]
 
 
+# Hand-assembled non-AMD64 blocks (angr-qwyti.20). Each is a tiny self-
+# terminating block (ends in a return-shaped exit) so the native libVEX lifter
+# and pyvex agree on a single-block IRSB. The "arch" string matches the tag the
+# cargo harness maps back to `VexArch` in `arch_from_str`; the archinfo object
+# here is the SAME one the native lifter's `archinfo_for` mirrors (endianness is
+# the only per-arch axis). Extends the corpus parity gate beyond Stage-1 AMD64.
+MULTIARCH_BLOCKS: list[tuple[str, archinfo.Arch, int, str, str]] = [
+    # ARM (little-endian): mov r0, #1 ; bx lr
+    ("ARM", archinfo.ArchARM(), 0x8000, "0100a0e31eff2fe1", "ARM mov+bx"),
+    # ARM64 (little-endian): mov x0, #1 ; ret
+    ("ARM64", archinfo.ArchAArch64(), 0x8000, "200080d2c0035fd6", "ARM64 mov+ret"),
+    # MIPS32 (big-endian): addiu $v0, $zero, 1 ; jr $ra ; nop
+    ("MIPS32", archinfo.ArchMIPS32(), 0x8000, "2402000103e0000800000000", "MIPS32 addiu+jr"),
+    # MIPS64 (big-endian): addiu $v0, $zero, 1 ; jr $ra ; nop
+    ("MIPS64", archinfo.ArchMIPS64(), 0x8000, "2402000103e0000800000000", "MIPS64 addiu+jr"),
+]
+
+
+def multiarch_synthetic_blocks() -> list[dict]:
+    """Lift the hand-assembled non-AMD64 blocks through pyvex (angr-qwyti.20)."""
+    out: list[dict] = []
+    for arch_tag, arch, addr, hex_bytes, label in MULTIARCH_BLOCKS:
+        raw = bytes.fromhex(hex_bytes)
+        irsb = pyvex.lift(raw, addr, arch)
+        if irsb.size == 0:
+            print(f"ERROR: multiarch block {label} @ 0x{addr:x} did not lift", file=sys.stderr)
+            continue
+        out.append(
+            {
+                "addr": addr,
+                "arch": arch_tag,
+                "bytes": raw[: irsb.size].hex(),
+                "pyvex_json": serialize_irsb(irsb),
+            }
+        )
+    return out
+
+
 def synthetic_blocks() -> list[dict]:
     """Lift the hand-assembled SYNTHETIC_BLOCKS through the production path."""
     arch = archinfo.ArchAMD64()
@@ -137,22 +175,49 @@ def collect_blocks(binary: str, max_blocks: int) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--binary", required=True, action="append", dest="binaries")
+    ap.add_argument("--binary", action="append", dest="binaries", default=[])
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-blocks", type=int, default=200)
+    ap.add_argument(
+        "--multiarch",
+        action="store_true",
+        help="also emit the hand-assembled ARM/ARM64/MIPS blocks (angr-qwyti.20)",
+    )
+    ap.add_argument(
+        "--merge-existing",
+        action="store_true",
+        help="load --out first and merge, so new blocks append without a full AMD64 rewalk",
+    )
     args = ap.parse_args()
 
-    # Merge blocks across binaries, deduped by (addr, bytes): the same address
-    # in two binaries can hold different bytes, and RIP-relative constants make
-    # the IRSB addr-dependent, so both the addr and the bytes are part of the key.
-    merged: dict[tuple[int, str], dict] = {}
+    # Merge blocks, deduped by (arch, addr, bytes): the same address in two
+    # binaries can hold different bytes, and RIP-relative constants make the
+    # IRSB addr-dependent, so addr and bytes are part of the key. arch is in the
+    # key too because different arches can share an (addr, bytes) pair — e.g. the
+    # MIPS32/MIPS64 blocks encode identically (angr-qwyti.20).
+    def key(entry: dict) -> tuple[str, int, str]:
+        return (entry["arch"], entry["addr"], entry["bytes"])
+
+    merged: dict[tuple[str, int, str], dict] = {}
+    if args.merge_existing:
+        try:
+            with open(args.out) as f:
+                for entry in json.load(f):
+                    merged[key(entry)] = entry
+        except FileNotFoundError:
+            pass
     for binary in args.binaries:
         for entry in collect_blocks(binary, args.max_blocks):
-            merged[(entry["addr"], entry["bytes"])] = entry
-    for entry in synthetic_blocks():
-        merged[(entry["addr"], entry["bytes"])] = entry
+            merged[key(entry)] = entry
+    # AMD64 synthetic blocks only make sense when we (re)walk / seed AMD64.
+    if args.binaries or not args.merge_existing:
+        for entry in synthetic_blocks():
+            merged[key(entry)] = entry
+    if args.multiarch:
+        for entry in multiarch_synthetic_blocks():
+            merged[key(entry)] = entry
 
-    blocks = sorted(merged.values(), key=lambda e: (e["addr"], e["bytes"]))
+    blocks = sorted(merged.values(), key=lambda e: (e["arch"], e["addr"], e["bytes"]))
     if not blocks:
         print("ERROR: no blocks collected", file=sys.stderr)
         return 1
