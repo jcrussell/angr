@@ -106,6 +106,17 @@ class PerformanceTracker:
 
     def __init__(self) -> None:
         self._stats: dict[str, int] = dict.fromkeys(self._FIELDS, 0)
+        # Number of SimProcedure crossings that have actually recorded phase
+        # timings, incremented once per crossing on its ``state_create`` phase.
+        # This is the warmup-split gate (angr-zi35f.3) — kept separate from
+        # ``callback_simprocedure_count`` because the fast paths in
+        # rust_callback_dispatch.py (internal passthrough, stale-hook skip,
+        # deadend fast path) bump that count via record_simprocedure_call
+        # without ever recording a phase. Gating first_* on the raw count let a
+        # fast-path bounce firing before the first real crossing close the
+        # warmup window prematurely, folding the real warmup cost into
+        # steady-state totals. Not exported (private attr, not in _stats).
+        self._phase_crossing_count: int = 0
 
     # ---- Init phase recorders ----
 
@@ -136,8 +147,15 @@ class PerformanceTracker:
         single crossing reports its warmup as if it were per-crossing cost and
         wildly overstates the value of porting that one procedure natively.
         """
+        # ``state_create`` is the first phase banked by every real crossing and
+        # fires exactly once per crossing, so use it to count phase-recording
+        # crossings. The first crossing sees the counter go 0 -> 1 here and all
+        # its phases bank into first_* while it is <= 1; the second crossing's
+        # state_create pushes it to 2 and closes the window (angr-zi35f.3).
+        if phase == "state_create":
+            self._phase_crossing_count += 1
         self._stats[f"callback_simprocedure_{phase}_ns"] += ns
-        if self._stats["callback_simprocedure_count"] == 0:
+        if self._phase_crossing_count <= 1:
             self._stats[f"callback_simprocedure_first_{phase}_ns"] += ns
 
     def add_state_create_subphase(self, subphase: str, ns: int) -> None:
