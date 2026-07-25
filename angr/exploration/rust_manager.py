@@ -4298,6 +4298,24 @@ class RustExplorationManager(
         like ``merge()`` can post-process the freshly added state
         (angr-qluof lineage-aware demotion).
         """
+        # Operate on a private copy so this never mutates the caller-owned
+        # SimState (angr-hv4lt.7). _concretize_stack_registers pins a symbolic
+        # sp/bp to one concrete value and adds a permanent sp-equality
+        # constraint; doing that in place silently corrupts the symbolic
+        # identity + constraint set of any object the caller still holds a
+        # reference to (e.g. a hybrid Python-vs-Rust comparison, or reusing the
+        # seed across two manager constructions). The copy becomes the cached
+        # Python mirror below, so Rust still sees the concretized+constrained
+        # view. SimStateScratch.copy() drops the cross-manager transfer attrs
+        # (rust_mgr / rust_found_state_id set by RustSolverFallback.attach),
+        # so carry them over explicitly — the Z3-pointer transfer path below
+        # reads them.
+        caller_state = angr_state
+        angr_state = caller_state.copy()
+        for _scratch_attr in ("rust_mgr", "rust_found_state_id"):
+            if hasattr(caller_state.scratch, _scratch_attr):
+                setattr(angr_state.scratch, _scratch_attr, getattr(caller_state.scratch, _scratch_attr))
+
         # Concretize stack-relative registers for Rust compatibility
         self._concretize_stack_registers(angr_state)
 

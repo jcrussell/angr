@@ -750,7 +750,16 @@ class TestErrorRecovery:
     def _put_state_in_default_cache(self, mgr, state):
         """Inject `state` so _get_default_state() returns it. Several
         callbacks (fetch_page, sync_constraints, batch_fetch_pages) read
-        through _state_cache rather than _callback_state."""
+        through _state_cache rather than _callback_state.
+
+        _get_default_state() returns the *first* cache entry
+        (``next(iter(_state_cache.values()))``). Since angr-hv4lt.7,
+        RustExplorationManager construction caches a private *copy* of the
+        seed under its Rust state id, so that copy is the first entry — not
+        the `state` this helper receives. Clear the cache first so the
+        injected object is the sole (hence first) entry and the callbacks
+        read through to the memory this test set up on it."""
+        mgr._state_cache.clear()
         mgr._state_cache[id(state)] = state
 
     def test_cb_lift_block_swallows_pyvex_error(self):
