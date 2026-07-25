@@ -136,10 +136,7 @@ fn swap_block_cache_exchanges_caches() {
     let mut interp = new_interp(&ctx);
     interp.cache_block(0x4000, make_irsb(0x4000, 4));
     // Swap in an empty cache — should get back the populated one.
-    let fresh = LruCache::new(
-        NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-    );
-    let old = interp.swap_block_cache(fresh);
+    let old = interp.swap_block_cache(LruCache::unbounded());
     assert!(old.contains(&0x4000));
     assert!(!interp.has_cached_block(0x4000));
 }

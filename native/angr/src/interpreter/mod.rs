@@ -731,6 +731,14 @@ impl<'a> VEXInterpreter<'a> {
             native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
             #[cfg(feature = "libvex-ffi")]
             native_lift_enabled: false,
+            // Bounded default: this is the interpreter's own cache when it runs
+            // standalone (engine.rs single-block exec, tests). It MUST stay
+            // bounded/clone-safe because `fork()` clones it and lru's `Clone`
+            // does `LruCache::new(self.cap())` — an `unbounded()` cap of
+            // `usize::MAX` overflows `HashMap::with_capacity` (angr-4xaga.1).
+            // In the exploration hot path this default is discarded when
+            // run_interpreter_step_core swaps the shared cache in, but the two
+            // *placeholder* caches there ARE zero-preallocation `unbounded()`.
             block_cache: LruCache::new(
                 NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
             ),

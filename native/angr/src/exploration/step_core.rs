@@ -25,7 +25,6 @@
 //! step swaps it in and out rather than reading it.
 
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
@@ -33,7 +32,7 @@ use rustc_hash::FxHashMap;
 
 use crate::callbacks::{ExecutionConfig, PythonCallbacks};
 use crate::concretize::AddressConcretizer;
-use crate::interpreter::{BLOCK_CACHE_CAPACITY, VEXInterpreter};
+use crate::interpreter::VEXInterpreter;
 use crate::state::RustSimState;
 use crate::vex::{IRSB, VexArch};
 
@@ -287,12 +286,13 @@ pub(crate) fn run_interpreter_step_core(
     // Share the exploration-level block cache with the interpreter
     // so lifted blocks persist across steps (avoids re-lifting).
     // Swap exploration's populated cache into interp, stash interp's empty one.
-    let interp_empty_cache = interp.swap_block_cache(std::mem::replace(
-        block_cache,
-        LruCache::new(
-            NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-        ),
-    ));
+    // The placeholder left in the caller's `*block_cache` slot is a
+    // zero-preallocation `unbounded()` cache (angr-4xaga.1): nothing reads it
+    // before both call sites overwrite the slot with `updated_block_cache`, so
+    // its capacity is irrelevant and `new(BLOCK_CACHE_CAPACITY)`'s eager
+    // 4096-bucket HashMap alloc would be pure waste on this per-step hot path.
+    let interp_empty_cache =
+        interp.swap_block_cache(std::mem::replace(block_cache, LruCache::unbounded()));
     // interp now has the exploration's cache; block_cache is a temporary empty placeholder
     let _ = interp_empty_cache; // drop the empty cache
 
@@ -328,10 +328,11 @@ pub(crate) fn run_interpreter_step_core(
     interp.flush_stores_to_rust_memory();
     let recovered_memory = interp.take_rust_memory();
 
-    // Return shared block cache to exploration before interpreter is dropped
-    let updated_block_cache = interp.swap_block_cache(LruCache::new(
-        NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-    ));
+    // Return shared block cache to exploration before interpreter is dropped.
+    // The placeholder left behind in `interp.block_cache` is only dropped a few
+    // lines later, so a zero-preallocation `unbounded()` cache avoids a wasted
+    // 4096-bucket HashMap alloc here too (angr-4xaga.1).
+    let updated_block_cache = interp.swap_block_cache(LruCache::unbounded());
 
     let step_stats = interp.take_stats();
 
