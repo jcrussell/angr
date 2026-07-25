@@ -139,6 +139,45 @@ fn test_wide_concrete_store_unmapped_errors() {
 }
 
 #[test]
+fn test_map_zero_size_is_noop_regardless_of_alignment() {
+    // Regression (angr-n0irt.5): a zero-length map must be a true no-op
+    // matching Python's paged_memory_mixin (`while size_done < length` never
+    // runs). Previously a non-page-aligned addr with size==0 computed
+    // end_page = (addr+0+PAGE_SIZE-1)>>12 > start_page and spuriously mapped
+    // exactly one page.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    // Non-aligned addr, size 0 — the bug case.
+    mem.map(0x1001, 0, Permission::RWX);
+    assert!(
+        !mem.is_mapped(0x1000),
+        "zero-size map at a non-aligned addr must not map any page"
+    );
+
+    // Aligned addr, size 0 — always was a no-op; keep it a no-op.
+    mem.map(0x2000, 0, Permission::RWX);
+    assert!(
+        !mem.is_mapped(0x2000),
+        "zero-size map at an aligned addr must not map any page"
+    );
+}
+
+#[test]
+fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
+    // Sibling of the map() guard: a zero-length unmap must not drop a page.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    assert!(mem.is_mapped(0x1000));
+
+    // Non-aligned addr, size 0 — previously removed page 0x1.
+    mem.unmap(0x1001, 0);
+    assert!(
+        mem.is_mapped(0x1000),
+        "zero-size unmap at a non-aligned addr must not drop a mapped page"
+    );
+}
+
+#[test]
 fn test_memory_fork() {
     let ctx = SymContext::new_mock();
 

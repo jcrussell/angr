@@ -443,6 +443,12 @@ impl SymbolicMemory {
 
     /// Map a memory region.
     pub fn map(&mut self, addr: impl Into<Address>, size: u64, permissions: Permission) {
+        // A zero-length map is a true no-op regardless of alignment, matching
+        // Python's paged_memory_mixin (`while size_done < length` never runs).
+        // Without this guard a non-page-aligned addr spuriously maps one page.
+        if size == 0 {
+            return;
+        }
         let addr = addr.into();
         let start_page = addr.page_num();
         let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
@@ -481,6 +487,11 @@ impl SymbolicMemory {
 
     /// Unmap a memory region.
     pub fn unmap(&mut self, addr: impl Into<Address>, size: u64) {
+        // Mirror map(): a zero-length unmap is a true no-op regardless of
+        // alignment (a non-aligned addr would otherwise drop one page).
+        if size == 0 {
+            return;
+        }
         let addr = addr.into();
         let start_page = addr.page_num();
         let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
