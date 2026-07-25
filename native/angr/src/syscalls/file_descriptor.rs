@@ -142,7 +142,7 @@ fn symbolic_return(state: &RustSimState, name: &'static str) -> SyscallOutcome {
 /// the LFS `arg` payload (locks); the four trivial getter / setter
 /// cmds we handle do not read `arg`, so the dispatch is identical.
 fn fcntl_dispatch(
-    state: &mut RustSimState,
+    state: &RustSimState,
     args: &[RustBV],
     stub_name: &'static str,
 ) -> Result<SyscallOutcome, SyscallError> {
