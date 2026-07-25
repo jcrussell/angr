@@ -280,9 +280,6 @@ impl SymbolicIdentityRegistry {
         let mut id_to_py = self.rust_id_to_py.write();
 
         if id_to_py.remove(&rust_id).is_some() {
-            let mut hash_to_id = self.py_hash_to_rust_id.write();
-            let mut name_to_info = self.name_to_info.write();
-
             // Drop the id→Rust-name entry too, so all four maps stay symmetric
             // under removal (angr-4xaga.3). Ids are process-global and never
             // reused, so a leaked entry is not a correctness bug today — but a
@@ -290,24 +287,33 @@ impl SymbolicIdentityRegistry {
             // caller.
             self.rust_id_to_name.write().remove(&rust_id);
 
-            // Find and remove corresponding hash entry
-            let hash_to_remove: Vec<i64> = hash_to_id
-                .iter()
-                .filter(|(_, id)| **id == rust_id)
-                .map(|(h, _)| *h)
-                .collect();
-            for h in hash_to_remove {
-                hash_to_id.remove(&h);
+            // Each secondary map is scoped so its write guard drops before the
+            // next map's is taken — the id→py primary guard already serializes
+            // the whole removal, so we never hold two secondary write locks at
+            // once across a filter/collect/loop (angr-zi35f.12; the 167yo.1 fix
+            // left these two co-held from the same acquire point).
+            {
+                let mut hash_to_id = self.py_hash_to_rust_id.write();
+                let hash_to_remove: Vec<i64> = hash_to_id
+                    .iter()
+                    .filter(|(_, id)| **id == rust_id)
+                    .map(|(h, _)| *h)
+                    .collect();
+                for h in hash_to_remove {
+                    hash_to_id.remove(&h);
+                }
             }
 
-            // Find and remove corresponding name entry
-            let names_to_remove: Vec<String> = name_to_info
-                .iter()
-                .filter(|(_, info)| info.rust_id == rust_id)
-                .map(|(n, _)| n.clone())
-                .collect();
-            for n in names_to_remove {
-                name_to_info.remove(&n);
+            {
+                let mut name_to_info = self.name_to_info.write();
+                let names_to_remove: Vec<String> = name_to_info
+                    .iter()
+                    .filter(|(_, info)| info.rust_id == rust_id)
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                for n in names_to_remove {
+                    name_to_info.remove(&n);
+                }
             }
         }
     }

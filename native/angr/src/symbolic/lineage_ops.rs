@@ -227,7 +227,11 @@ impl SymContext {
         // get replayed into a fork as permanent asserts. Balanced with the
         // record in `scope_savepoint_push`. A mismatched pop (no matching push)
         // leaves the logs untouched.
-        if let Some((z3_len, assumed_len, non_bv_len)) = self.bare_local_savepoints.lock().pop() {
+        // Pop into a local first so the `bare_local_savepoints` guard drops
+        // before we acquire `local_constraints` — never hold both hot locks at
+        // once (clippy nursery significant_drop_in_scrutinee, angr-zi35f.12).
+        let popped = self.bare_local_savepoints.lock().pop();
+        if let Some((z3_len, assumed_len, non_bv_len)) = popped {
             let mut local = self.local_constraints.lock();
             if local.z3_assertions.len() > z3_len
                 || local.assumed.len() > assumed_len
