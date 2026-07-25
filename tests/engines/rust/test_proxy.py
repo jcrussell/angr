@@ -2515,6 +2515,34 @@ class TestRegisterProxySymbolicRecovery:
         proxy.solver.add(ast == 0x42)
         assert proxy.solver.eval(ast) == 0x42
 
+    def test_prefetch_alias_canonicalizes_no_orphan(self):
+        """prefetch() with an ABI alias (e.g. "ip") must canonicalize before
+        the FFI call — Rust's register file has no "ip" entry (angr-hv4lt.4).
+
+        Pre-fix: prefetch(["ip"]) reached Rust verbatim, missed, and cached a
+        fresh orphan BVS under "ip"; a subsequent proxy.regs.ip returned that
+        ghost symbol instead of the real instruction pointer, so constraints
+        never touched the actual register.
+        """
+        import claripy
+
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        # Seed a concrete PC via the canonical name.
+        mgr.set_state_register_symbolic_ast(sid, "rip", claripy.BVV(0xDEADBEEF, 64))
+        proxy = RustStateProxy(mgr, sid)
+
+        proxy.regs.prefetch(["ip"])
+        # Read via the alias: must be the real concrete PC, not an orphan BVS.
+        ip = proxy.regs.ip
+        assert ip is not None
+        assert not (hasattr(ip, "symbolic") and ip.symbolic), f"expected concrete PC, got orphan {ip!r}"
+        assert proxy.solver.eval(ip) == 0xDEADBEEF
+        # Reading via the canonical name hits the dual-cached entry.
+        assert proxy.solver.eval(proxy.regs.rip) == 0xDEADBEEF
+
 
 class TestStateProxyRepr:
     """Tests for the enriched RustStateProxy.__repr__ (angr-4c20).

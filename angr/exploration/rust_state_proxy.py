@@ -873,19 +873,32 @@ class RustRegisterProxy:
 
     def prefetch(self, names):
         """Batch-fetch multiple registers in one FFI call and cache them."""
+        # angr-hv4lt.4: canonicalize before the FFI call. angr exposes ABI
+        # aliases (e.g. "ip") that Rust's register file does not know by that
+        # name; passing an alias verbatim misses in Rust (returns None) and
+        # would poison the cache with an orphan BVS that has no identity link
+        # to the real register. Mirror __getattr__/__setattr__, which both
+        # canonicalize via _canonical_name before touching Rust.
+        canonical_names = [self._canonical_name(name) for name in names]
         try:
-            values = self._mgr.get_state_registers_batch(self._state_id, names)
+            values = self._mgr.get_state_registers_batch(self._state_id, canonical_names)
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort
             # optimization; missing prefetch falls back to per-register
             # __getattr__ on first access.
             return
-        for name, val in zip(names, values):
-            width = self._get_register_width(name)
+        for name, canonical, val in zip(names, canonical_names, values):
+            width = self._get_register_width(canonical)
             if val is None:
-                self._cache[name] = self._recover_symbolic_register_ast(name, width)
+                result = self._recover_symbolic_register_ast(canonical, width)
             else:
-                self._cache[name] = claripy.BVV(val, width)
+                result = claripy.BVV(val, width)
+            # Cache under both the caller-supplied name and the canonical name
+            # so a later read on either alias hits the cache (matches the
+            # dual-cache write in __setattr__).
+            self._cache[name] = result
+            if canonical != name:
+                self._cache[canonical] = result
 
     def __getattr__(self, name):
         if name.startswith("_"):
