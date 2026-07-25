@@ -524,6 +524,61 @@ fn folding_shared_counters_twice_does_not_double_count() {
     });
 }
 
+/// angr-n0irt.14 / angr-offd5: `route_steady_terminal` prunes each routed
+/// terminal's OWN `root_map`/`kind_map` entry from the live session's shared
+/// maps as it routes (`.remove`, not the wave path's non-removing
+/// `.get().copied()`), so a long-lived session's maps stay bounded by the live
+/// frontier rather than the cumulative terminal count. The pruning was
+/// unfalsifiable while inlined in a private fn requiring a live session; the
+/// `take_steady_routing` helper isolates it. A revert to a non-removing read
+/// leaves the entry behind and trips the "pruned" assertions.
+#[test]
+fn take_steady_routing_removes_the_routed_terminals_entries() {
+    let shared = ParallelShared::seeded(0, 1);
+    let id = 0x4141;
+    shared.root_map.lock().unwrap().insert(id, 0x7777);
+    shared.kind_map.lock().unwrap().insert(id, MatKind::Found);
+    // A sibling entry (a still-live Continue successor) that must survive.
+    let other = 0x4242;
+    shared.root_map.lock().unwrap().insert(other, 0x8888);
+
+    let (root, kind) = take_steady_routing(&shared, id);
+
+    assert_eq!(
+        root, 0x7777,
+        "returned lineage root matches the seeded entry"
+    );
+    assert!(
+        matches!(kind, Some(MatKind::Found)),
+        "returned the seeded kind"
+    );
+    assert!(
+        !shared.root_map.lock().unwrap().contains_key(&id),
+        "routed terminal's root_map entry pruned"
+    );
+    assert!(
+        !shared.kind_map.lock().unwrap().contains_key(&id),
+        "routed terminal's kind_map entry pruned"
+    );
+    assert_eq!(
+        shared.root_map.lock().unwrap().get(&other).copied(),
+        Some(0x8888),
+        "sibling Continue successor's entry retained"
+    );
+}
+
+/// A terminal with no seeded `root_map`/`kind_map` entry (the untagged-residual
+/// case) falls back to its own id as the lineage root and a `None` kind — the
+/// same `unwrap_or(id)` fallback the wave path uses.
+#[test]
+fn take_steady_routing_falls_back_to_id_when_absent() {
+    let shared = ParallelShared::seeded(0, 1);
+    let id = 0x5151;
+    let (root, kind) = take_steady_routing(&shared, id);
+    assert_eq!(root, id, "absent root_map ⇒ lineage root is the id itself");
+    assert!(kind.is_none(), "absent kind_map ⇒ None");
+}
+
 /// angr-offd5(b): the incremental folder is reachable on the no-session path
 /// (a `need_callback` can surface before `ensure_steady_session` ever ran, and
 /// the serial/wave loops never build one) and must leave the manager untouched

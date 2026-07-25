@@ -250,6 +250,38 @@ impl ParallelShared {
     }
 }
 
+/// Take one routed terminal's lineage root + [`MatKind`] tag from a live steady
+/// session's shared maps, **removing** both entries (angr-offd5): a routed
+/// terminal never re-enters a worker under the same id, so its `root_map` /
+/// `kind_map` entries are dead and must not accumulate over a long session (a
+/// re-injected bounce gets its root re-stamped by `steady_inject_resumed`, so
+/// the removal is safe there too). The root falls back to the id itself when
+/// absent, mirroring the wave-path `root_map.get(&id).copied().unwrap_or(id)`.
+///
+/// Extracted from [`RustExplorationManager::route_steady_terminal`] so the
+/// per-terminal pruning contract is unit-falsifiable without a live session —
+/// a revert to a non-removing `.get(&id).copied()` leaves the entry behind and
+/// trips the test (angr-n0irt.14). Continue successors' entries are NOT touched
+/// here; they are freed wholesale when the session drops.
+#[allow(
+    clippy::expect_used,
+    reason = "root_map/kind_map poison guards: the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
+)]
+fn take_steady_routing(shared: &ParallelShared, id: u64) -> (u64, Option<MatKind>) {
+    let root = shared
+        .root_map
+        .lock()
+        .expect("root_map poisoned")
+        .remove(&id)
+        .unwrap_or(id);
+    let kind = shared
+        .kind_map
+        .lock()
+        .expect("kind_map poisoned")
+        .remove(&id);
+    (root, kind)
+}
+
 /// GIL-free analogue of `step_one` + `run_post_step_core` run on a scheduler
 /// worker thread (angr-vh834 Phase 5). Returns the [`TaskOutcome`] the scheduler
 /// routes: live successors stay LOCAL (the f≈0 path), found/unconstrained/bounce
@@ -1591,19 +1623,7 @@ impl RustExplorationManager {
         };
         let id = state.state_id();
         let sess = self.parallel_session.as_ref().expect("session live");
-        let root = sess
-            .shared
-            .root_map
-            .lock()
-            .expect("root_map poisoned")
-            .remove(&id)
-            .unwrap_or(id);
-        let kind = sess
-            .shared
-            .kind_map
-            .lock()
-            .expect("kind_map poisoned")
-            .remove(&id);
+        let (root, kind) = take_steady_routing(&sess.shared, id);
         if matches!(kind, Some(MatKind::Bounce(_))) {
             sess.session.count_bounce_roundtrip();
         }
