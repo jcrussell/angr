@@ -1092,6 +1092,93 @@ fn test_max_aborts_to_none_on_bisection_timeout() {
     );
 }
 
+/// Build a 64-bit `x` whose signed sign-probe (`x <_s 0` / `x >=_s 0`) is as
+/// hard as factoring `HARD_SEMIPRIME`, so that probe times out under the pinned
+/// rlimit (angr-n0irt.1).
+///
+/// Encodes `sign(x) == p`, where `p` is the hard predicate `a*b == N` (with
+/// `a>1, b>1`) and `sign` is `x <_s 0` when `hard_when_negative`, else
+/// `x >=_s 0`. Asserting that sign forces `p == true`, driving the solver into
+/// the factorization until it blows the rlimit → Unknown.
+///
+/// NOTE ON DISCRIMINATION: the rlimit is a *cumulative* per-solver budget, so
+/// once the sign probe exhausts it every later check (including the fall-through
+/// `bsearch`) also returns Unknown → None. That means these tests pin the
+/// *contract* — signed `min`/`max` must return None on a timeout, a path the
+/// unsigned bisection-timeout tests never exercised — but they cannot isolate
+/// the n0irt.1 fix from the pre-fix code: pre-fix, the probe's Unknown collapsed
+/// to `has_(non_)negative=false` and the search fell through to `bsearch`, which
+/// then hit the same exhausted budget and *also* returned None. Isolating the
+/// fabricated-`Some(0)` would require the probe to time out while a fresh
+/// `bsearch` still decides — only reachable via the wall-clock-only timeout,
+/// which is deliberately avoided here because its timer is flaky under parallel
+/// `cargo test` (see `pin_rlimit`). The fix stays as a defensive correctness
+/// alignment with `invariant-z3-unknown-not-unsat` / angr-ph300.43.
+#[cfg(feature = "vex-engine-z3")]
+fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
+    let x = RustBV::symbolic(ctx, "sgn_x", 64);
+    let a = RustBV::symbolic(ctx, "sgn_a", 64);
+    let b = RustBV::symbolic(ctx, "sgn_b", 64);
+    let one = RustBV::concrete(1, 64);
+    ctx.assume_true(&a.ugt(&one, ctx));
+    ctx.assume_true(&b.ugt(&one, ctx));
+    let za = a.zero_extend(128, ctx);
+    let zb = b.zero_extend(128, ctx);
+    let prod = za.mul(&zb, ctx);
+    let n = RustBV::concrete(HARD_SEMIPRIME, 128);
+    let p = prod.eq(&n, ctx); // 1-bit: hard-to-decide factoring predicate
+    let zero = RustBV::concrete(0, 64);
+    let sign = if hard_when_negative {
+        x.slt(&zero, ctx) // x <_s 0 — the min() probe
+    } else {
+        x.sge(&zero, ctx) // x >=_s 0 — the max() probe
+    };
+    ctx.assume_true(&sign.eq(&p, ctx));
+    x
+}
+
+/// Signed min() must return None when the sign probe (`x <_s 0`) times out,
+/// never a fabricated extremum. The unsigned bisection-timeout tests never
+/// exercised `signed=true`, so the MinInit-probe arm was previously uncovered;
+/// this pins the None-on-timeout contract for the signed path. See
+/// `build_hard_sign_probe` for why this cannot isolate the n0irt.1 fix from the
+/// pre-fix behavior (cumulative rlimit makes both return None).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_min_signed_aborts_to_none_when_sign_probe_times_out() {
+    let ctx = SymContext::with_timeout(1);
+    let x = build_hard_sign_probe(&ctx, true);
+    pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
+    // The constraint set is satisfiable (via p == false), so skip the is_sat
+    // gate and drive straight into the signed sign probe.
+    ctx.set_sat_cache(true);
+    assert_eq!(
+        ctx.min(&x, true),
+        None,
+        "signed min() must return None when the x<0 sign probe times out, not \
+         collapse Unknown->has_negative=false and fabricate Some(0)"
+    );
+}
+
+/// Signed max() twin of the above: when the `x >=_s 0` sign probe times out,
+/// max() must return None, never a fabricated extremum (angr-n0irt.1). Pins the
+/// signed-path None-on-timeout contract; see `build_hard_sign_probe` for the
+/// discrimination caveat.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_max_signed_aborts_to_none_when_sign_probe_times_out() {
+    let ctx = SymContext::with_timeout(1);
+    let x = build_hard_sign_probe(&ctx, false);
+    pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
+    ctx.set_sat_cache(true);
+    assert_eq!(
+        ctx.max(&x, true),
+        None,
+        "signed max() must return None when the x>=0 sign probe times out, not \
+         collapse Unknown->has_non_negative=false and fabricate a value"
+    );
+}
+
 /// check_branch_feasibility must not prune a branch on a Z3 timeout — only a
 /// decided Unsat prunes. The condition `x * y == N` is genuinely feasible but
 /// unsolvable at 1ms, so both checks return Unknown. Pre-fix the None-arm

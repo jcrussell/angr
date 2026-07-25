@@ -962,9 +962,24 @@ impl SymContext {
                     solver.push();
                     let zero = make_bv_const(0, width);
                     solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
-                    let r = matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
+                    let check = timed_check(solver, CheckSite::MinInit);
                     solver.pop(1);
-                    r
+                    match check {
+                        z3::SatResult::Sat => true,
+                        z3::SatResult::Unsat => false,
+                        // The sign probe timed out: whether the feasible set
+                        // reaches below zero is undetermined. Collapsing Unknown
+                        // to false (has_negative=false) would confine the search
+                        // to [0, max_positive] and converge on a fabricated
+                        // non-negative minimum even when the true minimum is
+                        // negative. Propagate the unknown instead — the same rule
+                        // bsearch_min already follows on a mid-bisection Unknown
+                        // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
+                        z3::SatResult::Unknown => {
+                            solver.pop(1); // balance the outer push() before abort
+                            return None;
+                        }
+                    }
                 };
 
                 if has_negative {
@@ -1077,9 +1092,24 @@ impl SymContext {
                     solver.push();
                     let zero = make_bv_const(0, width);
                     solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
-                    let r = matches!(timed_check(solver, CheckSite::MaxInit), z3::SatResult::Sat);
+                    let check = timed_check(solver, CheckSite::MaxInit);
                     solver.pop(1);
-                    r
+                    match check {
+                        z3::SatResult::Sat => true,
+                        z3::SatResult::Unsat => false,
+                        // The sign probe timed out: whether the feasible set
+                        // reaches at or above zero is undetermined. Collapsing
+                        // Unknown to false (has_non_negative=false) would confine
+                        // the search to [sign_bit, max_val] and converge on a
+                        // fabricated negative maximum even when the true maximum
+                        // is non-negative. Propagate the unknown instead — the
+                        // same rule bsearch_max follows on a mid-bisection Unknown
+                        // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
+                        z3::SatResult::Unknown => {
+                            solver.pop(1); // balance the outer push() before abort
+                            return None;
+                        }
+                    }
                 };
 
                 if has_non_negative {
