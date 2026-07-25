@@ -182,6 +182,10 @@ class RustSolverFallback:
     """
 
     _ATTACH_FLAG = "_rust_fallback_attached"
+    # Holds the live RustSolverFallback whose bound methods are patched onto
+    # state.solver, so a re-attach can refresh the existing instance instead of
+    # silently no-opping and leaving a stale cached fork bound (angr-hv4lt.9).
+    _INSTANCE_ATTR = "_rust_fallback_instance"
 
     def __init__(self, state, state_id, rust_mgr):
         self._state = state
@@ -227,14 +231,49 @@ class RustSolverFallback:
         # Guard against double-patching (which would cause infinite recursion
         # since the second wrapper's "originals" would be the first wrapper).
         solver = state.solver
-        if getattr(solver, self._ATTACH_FLAG, False):
+        existing = getattr(solver, self._INSTANCE_ATTR, None)
+        if existing is not None:
+            # Already patched. Re-running the setattr with a fresh instance
+            # would cause infinite recursion (the new wrapper's "originals"
+            # would be the old wrappers). But a re-attach happens routinely
+            # after Rust takes another step on the SAME state_id
+            # (_invalidate_state_export_cache clears rust_fully_synced, then
+            # _sync_cached_state re-runs), and the old instance's cached fork
+            # was captured BEFORE that stepping — so it must be refreshed, not
+            # left stale (angr-hv4lt.9).
+            existing._rebind_for_resync(self._state_id)
             return
         setattr(solver, self._ATTACH_FLAG, True)
+        setattr(solver, self._INSTANCE_ATTR, self)
         solver.eval = self.eval
         solver.eval_upto = self.eval_upto
         solver.min = self.min
         solver.max = self.max
         solver.satisfiable = self.satisfiable
+
+    def _rebind_for_resync(self, state_id):
+        """Refresh this already-attached fallback for a re-synced state.
+
+        Called when ``_sync_cached_state`` re-attaches for a state_id whose
+        Rust engine has stepped further (new branch constraints pushed onto the
+        same id, invisible to the Python mirror — see bd memory
+        ``invariant-mirror-solver-constraints-not-authoritative``). Drops the
+        cached fork so the next eval/min/max/satisfiable re-forks from the
+        CURRENT Rust state, and rewinds the replay cursor so all caller-added
+        Python constraints are re-applied onto the fresh fork.
+        """
+        ctx = self.__dict__.get("_cached_rust_ctx")
+        if ctx is not None:
+            try:
+                from angr.exploration.rust_state_proxy import _release_owned_ctx
+
+                _release_owned_ctx(ctx)
+            except Exception:
+                # Best-effort release; pyo3 refuses unsafe cross-thread drops.
+                pass
+            self._cached_rust_ctx = None
+        self._state_id = state_id
+        self._synced_constraint_count = self._initial_constraint_count
 
     def _get_rust_ctx(self):
         if self._cached_rust_ctx is None:
