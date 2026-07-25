@@ -1824,3 +1824,7 @@ mod tests_vec_compare;
 #[cfg(test)]
 #[path = "ops_tests_vec_dispatch.rs"]
 mod tests_vec_dispatch;
+
+#[cfg(test)]
+#[path = "ops_property_tests.rs"]
+mod property_tests;
