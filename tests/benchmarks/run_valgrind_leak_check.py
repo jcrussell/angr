@@ -22,6 +22,14 @@ the probe twice, at N and at ``--scale``xN, and fail on the per-iteration growth
 
     slope = (lost(hi) - lost(lo)) / (iters_hi - iters_lo)      [bytes/iteration]
 
+Independently of the leak slope, the gate also fails on any memcheck
+memory-safety finding — invalid read/write, use-after-free, uninitialised-value
+use — surfaced via valgrind's ``ERROR SUMMARY`` line. Such a bug (e.g. a UAF on
+a block still reachable from a live pointer) leaks no bytes, so the slope check
+alone is blind to it. We pass ``--errors-for-leak-kinds=none`` so leak records
+do not inflate that count and ``--error-exitcode=0`` so a real error does not
+masquerade as a probe crash; the parsed count is the only in-band signal.
+
 where ``lost`` = definitely-lost + indirectly-lost. A slope near zero means the
 constant baseline is whatever this machine's z3/glibc happens to allocate once
 and never frees, which is exactly the part we do NOT want to gate on: it differs
@@ -61,6 +69,13 @@ _SUMMARY_RE = re.compile(
     r"\s+([\d,]+) bytes in ([\d,]+) blocks"
 )
 
+# "ERROR SUMMARY: 3 errors from 2 contexts (...)" -> 3. memcheck prints this for
+# memory-safety findings (invalid read/write, use-after-free, uninitialised
+# value) that are distinct from the LEAK SUMMARY block and are NOT counted as
+# leaked bytes. Because the probe is invoked with --error-exitcode=0, this line
+# is the only in-band signal that such a bug was detected.
+_ERROR_SUMMARY_RE = re.compile(r"^==\d+==\s+ERROR SUMMARY:\s+([\d,]+) errors? from")
+
 # Categories summed into the gated figure. still-reachable and possibly-lost are
 # dominated by z3's one-time globals and thread-local bookkeeping; they are
 # reported for context but never gated (see module docstring).
@@ -76,8 +91,14 @@ def build_probe() -> None:
     )
 
 
-def run_probe(iters: int, inject: bool) -> dict[str, int]:
-    """Run the probe under memcheck; return leaked bytes keyed by loss kind."""
+def run_probe(iters: int, inject: bool) -> tuple[dict[str, int], int]:
+    """Run the probe under memcheck.
+
+    Returns ``(leaked, errors)`` where ``leaked`` maps each LEAK SUMMARY loss
+    kind to its byte count and ``errors`` is the count from valgrind's
+    ``ERROR SUMMARY`` line (memory-safety findings — invalid read/write,
+    use-after-free, uninitialised value — which are not leaked bytes).
+    """
     env = dict(os.environ, ANGR_LEAK_ITERS=str(iters))
     if inject:
         env["ANGR_LEAK_PROBE_INJECT"] = "1"
@@ -87,6 +108,13 @@ def run_probe(iters: int, inject: bool) -> dict[str, int]:
             "valgrind",
             "--tool=memcheck",
             "--leak-check=full",
+            # Leaks are gated separately by the byte-slope check below. Without
+            # this, memcheck's default --errors-for-leak-kinds=definite,possible
+            # folds every leaked block into ERROR SUMMARY, so the benign
+            # TLS-shaped "possibly lost" blocks would trip the error gate. Scope
+            # ERROR SUMMARY to genuine memory-safety findings only (invalid
+            # read/write, use-after-free, uninitialised value).
+            "--errors-for-leak-kinds=none",
             # The probe is deliberately allocation-heavy; without this valgrind
             # truncates the summary after 1000 distinct loss records.
             "--num-callers=8",
@@ -102,20 +130,27 @@ def run_probe(iters: int, inject: bool) -> dict[str, int]:
         raise SystemExit(f"leak_probe exited {proc.returncode}:\n{proc.stderr[-2000:]}")
 
     leaked = dict.fromkeys(("definitely lost", "indirectly lost", "possibly lost", "still reachable"), 0)
+    errors: int | None = None
     for line in proc.stderr.splitlines():
         match = _SUMMARY_RE.match(line)
         if match:
             leaked[match.group(1)] = int(match.group(2).replace(",", ""))
+            continue
+        err_match = _ERROR_SUMMARY_RE.match(line)
+        if err_match:
+            errors = int(err_match.group(1).replace(",", ""))
 
     if not any(leaked.values()):
         raise SystemExit(f"could not parse a valgrind LEAK SUMMARY:\n{proc.stderr[-2000:]}")
-    return leaked
+    if errors is None:
+        raise SystemExit(f"could not parse a valgrind ERROR SUMMARY:\n{proc.stderr[-2000:]}")
+    return leaked, errors
 
 
 def measure(iters_lo: int, iters_hi: int, inject: bool) -> dict:
     """Run the probe at both sizes and compute the per-iteration leak slope."""
-    lo = run_probe(iters_lo, inject)
-    hi = run_probe(iters_hi, inject)
+    lo, errors_lo = run_probe(iters_lo, inject)
+    hi, errors_hi = run_probe(iters_hi, inject)
 
     lost_lo = sum(lo[k] for k in GATED_KINDS)
     lost_hi = sum(hi[k] for k in GATED_KINDS)
@@ -129,6 +164,8 @@ def measure(iters_lo: int, iters_hi: int, inject: bool) -> dict:
         "bytes_per_iter": slope,
         "detail_lo": lo,
         "detail_hi": hi,
+        "errors_lo": errors_lo,
+        "errors_hi": errors_hi,
         "inject": inject,
     }
 
@@ -163,9 +200,20 @@ def main() -> int:
     result = measure(args.iters, iters_hi, inject=args.self_test)
     slope = result["bytes_per_iter"]
     fired = slope > args.max_bytes_per_iter
+    # memcheck errors (invalid read/write, use-after-free, uninitialised value)
+    # are distinct from leaks; --error-exitcode=0 hides them from the exit code,
+    # so the ERROR SUMMARY count is the only in-band signal. Gate on the worst
+    # of the two runs, independent of the leak slope.
+    max_errors = max(result["errors_lo"], result["errors_hi"])
+    errors_fired = max_errors > 0
 
     if args.json:
-        print(json.dumps({**result, "threshold": args.max_bytes_per_iter, "fired": fired}, indent=2))
+        print(
+            json.dumps(
+                {**result, "threshold": args.max_bytes_per_iter, "fired": fired, "errors_fired": errors_fired},
+                indent=2,
+            )
+        )
     else:
         for label, key in (("N", "detail_lo"), (f"{args.scale}N", "detail_hi")):
             detail = result[key]
@@ -176,6 +224,16 @@ def main() -> int:
             f" -> {result['lost_bytes_hi']:,}B @ {iters_hi} iters"
             f"  => {slope:.2f} B/iter (threshold {args.max_bytes_per_iter} B/iter)"
         )
+        print(f"memcheck ERROR SUMMARY: {result['errors_lo']} / {result['errors_hi']} errors (N / {args.scale}N)")
+
+    # A memcheck error is a hard failure regardless of the leak verdict, and it
+    # must fail even the self-test path (the injected leak is a leak, not an
+    # error, so a nonzero count here means a genuine memory-safety bug).
+    if errors_fired:
+        print(
+            f"\nMEMCHECK ERRORS: {max_errors} error(s) detected — invalid read/write, use-after-free, or uninit value"
+        )
+        return 1
 
     if args.self_test:
         # The injected leak is 64 B/iter, far above any sane threshold. If the
