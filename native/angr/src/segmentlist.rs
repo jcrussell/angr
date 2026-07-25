@@ -132,7 +132,7 @@ impl SegmentList {
         self.map
             .iter()
             .enumerate()
-            .find(|(_, (range, _))| range.end >= addr)
+            .find(|(_, (range, _))| range.end > addr)
             .map(|(index, _)| index)
     }
 

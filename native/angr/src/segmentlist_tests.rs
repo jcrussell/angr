@@ -31,6 +31,21 @@ fn multi_non_overlapping() {
 }
 
 #[test]
+fn search_half_open_boundary() {
+    // Regression for the off-by-one at a segment boundary (angr-zi35f.1).
+    // Segments are half-open [start, end); an address exactly at a segment's
+    // end boundary belongs to the NEXT segment, not the current one.
+    let mut sl = SegmentList::new();
+    sl.occupy(0, 10, Some("code".to_string())); // [0, 10)
+    sl.occupy(10, 10, Some("nodecode".to_string())); // [10, 20)
+    assert_eq!(sl.search(0), Some(0)); // inside first
+    assert_eq!(sl.search(9), Some(0)); // last byte of first
+    assert_eq!(sl.search(10), Some(1)); // boundary belongs to second
+    assert_eq!(sl.search(19), Some(1)); // last byte of second
+    assert_eq!(sl.search(20), None); // past everything
+}
+
+#[test]
 fn overlapping_inserts() {
     let mut sl = SegmentList::new();
     sl.occupy(0, 10, None);
