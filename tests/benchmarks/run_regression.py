@@ -778,7 +778,16 @@ def main():
                 for stat_key, bl_key, threshold_pct in TRACKED_METRICS:
                     current_val = rust_stats.get(stat_key)
                     baseline_val = baseline[baseline_key].get(bl_key)
-                    if (
+                    if rust_stats and baseline_val is not None and baseline_val > 0 and stat_key not in rust_stats:
+                        # The counter this gate compares against vanished from
+                        # stats() (renamed/removed in stats_api.rs) even though
+                        # stats() ran and the baseline recorded a nonzero value.
+                        # Treat that as its own failure rather than a silent skip
+                        # — otherwise the gate degrades to a permanent no-op for
+                        # the metric on every future run. (angr-hv4lt.17)
+                        print(f"  METRIC COUNTER DROPPED: {bl_key} absent from stats() (baseline {baseline_val})")
+                        failures.append(f"{name}: {bl_key} dropped from stats() (baseline {baseline_val})")
+                    elif (
                         current_val is not None
                         and baseline_val is not None
                         and baseline_val > 0
@@ -794,7 +803,14 @@ def main():
                     for ctr in FASTPATH_COUNTERS:
                         baseline_val = base_counters.get(ctr)
                         current_val = rust_stats.get(ctr)
-                        if baseline_val and current_val == 0:
+                        if baseline_val and ctr not in rust_stats:
+                            # Full key removal is exactly the collapse-to-zero
+                            # case this block exists to catch, but None != 0 so
+                            # the `== 0` branch below cannot see it. Flag the
+                            # dropped key explicitly. (angr-hv4lt.17)
+                            print(f"  FAST-PATH COUNTER DROPPED: {ctr} absent from stats() (baseline {baseline_val})")
+                            failures.append(f"{name}: {ctr} dropped from stats() (baseline {baseline_val})")
+                        elif baseline_val and current_val == 0:
                             print(f"  FAST-PATH REGRESSION: {ctr} 0 vs baseline {baseline_val}")
                             failures.append(f"{name}: {ctr} collapsed to 0 (baseline {baseline_val})")
 
