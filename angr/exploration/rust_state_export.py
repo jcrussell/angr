@@ -793,6 +793,20 @@ class RustStateExportMixin:
             l.warning("export_state(%d) failed during register sync: %s — Python registers may be stale", state_id, e)
             return
 
+        self._write_named_registers(state, snapshot)
+
+    def _write_named_registers(self, state: angr.SimState, snapshot):
+        """Write a snapshot's concrete named registers onto ``state.regs``.
+
+        Shared by both restore paths — the rust->python sync
+        (``_sync_rust_registers_to_state``) and the snapshot-load
+        (``_load_snapshot_registers``) — so the writeback loop and its
+        skip-condition can't silently drift between them (angr-hv4lt.12).
+        VEX-internal registers angr's plugin doesn't expose (ip_at_syscall
+        etc.) are logged at debug and skipped. Always follows with the lazy
+        symbolic-register recovery (angr-4ju9e), a no-op when the snapshot
+        reports none — keeps the plain register hot path free.
+        """
         named_regs = snapshot.get_registers_named()
         for reg_name, (value, size_bits) in named_regs.items():
             try:
@@ -802,8 +816,6 @@ class RustStateExportMixin:
                 # (e.g. ip_at_syscall) that angr's register plugin doesn't
                 # expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
-        # Recover Rust-computed symbolic registers lazily (angr-4ju9e). No-op
-        # when the snapshot reports none — keeps the plain register hot path.
         self._recover_symbolic_registers_from_snapshot(state, snapshot)
 
     # Table-driven rust->python break-pointer sync (angr-hv4lt.13). Each entry
@@ -1363,15 +1375,7 @@ class RustStateExportMixin:
 
     def _load_snapshot_registers(self, state: angr.SimState, snapshot):
         """Restore register values from snapshot using Rust's named register export."""
-        named_regs = snapshot.get_registers_named()
-        for reg_name, (value, size_bits) in named_regs.items():
-            try:
-                setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: Skip VEX internal
-                # registers that angr doesn't expose (ip_at_syscall etc.).
-                pass
-        self._recover_symbolic_registers_from_snapshot(state, snapshot)
+        self._write_named_registers(state, snapshot)
 
     def _recover_symbolic_registers_from_snapshot(self, state: angr.SimState, snapshot):
         """Recover Rust-computed SYMBOLIC registers onto a plain export state.
