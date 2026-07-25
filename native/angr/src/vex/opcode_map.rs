@@ -97,6 +97,24 @@ macro_rules! vec_signed_arms {
     }};
 }
 
+/// IROp::VMull { elem: IRType::Ty, count: N, signed: bool, even: bool }
+///
+/// vec_signed_arms! plus one `even` bool — the same one-bool generalization
+/// vec_qnarrow_arms! applies to vec_narrow_arms!. Both Mull families share the
+/// {elem,count,signed} shape; `even` is baked per-invocation via the arm table
+/// so the full-lane ("Iop_Mull") and even-lane ("Iop_MullEven") prefixes reuse
+/// the same macro.
+macro_rules! vec_mull_arms {
+    ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($elem:ident, $count:literal, $signed:literal, $even:literal) ),* $(,)? }) => {{
+        match $s.strip_prefix($prefix) {
+            $( Some($sfx) => return Some(IROp::$variant {
+                elem: IRType::$elem, count: $count, signed: $signed, even: $even,
+            }), )*
+            _ => {}
+        }
+    }};
+}
+
 /// IROp::VWiden { from: IRType::From, count: N, signed: bool }
 macro_rules! vec_widen_arms {
     ($s:expr; $prefix:literal => $variant:ident { $( $sfx:literal => ($from:ident, $count:literal, $signed:literal) ),* $(,)? }) => {{
@@ -794,106 +812,19 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     //   Iop_MullEven{N}{S,U}x{M}  even-lane, (V128,V128)->V128, SSE PMULDQ/PMULUDQ
     // `even` selects which input lanes contribute; `signed` picks sign vs zero
     // extension. libVEX puts S/U AFTER the lane size (e.g. Iop_Mull32Sx2), so
-    // these do not collide with the "Iop_Mul" VMul arm above.
-    match op_str {
-        "Iop_Mull8Ux8" => {
-            return Some(IROp::VMull {
-                elem: IRType::I8,
-                count: 8,
-                signed: false,
-                even: false,
-            });
-        }
-        "Iop_Mull8Sx8" => {
-            return Some(IROp::VMull {
-                elem: IRType::I8,
-                count: 8,
-                signed: true,
-                even: false,
-            });
-        }
-        "Iop_Mull16Ux4" => {
-            return Some(IROp::VMull {
-                elem: IRType::I16,
-                count: 4,
-                signed: false,
-                even: false,
-            });
-        }
-        "Iop_Mull16Sx4" => {
-            return Some(IROp::VMull {
-                elem: IRType::I16,
-                count: 4,
-                signed: true,
-                even: false,
-            });
-        }
-        "Iop_Mull32Ux2" => {
-            return Some(IROp::VMull {
-                elem: IRType::I32,
-                count: 2,
-                signed: false,
-                even: false,
-            });
-        }
-        "Iop_Mull32Sx2" => {
-            return Some(IROp::VMull {
-                elem: IRType::I32,
-                count: 2,
-                signed: true,
-                even: false,
-            });
-        }
-        "Iop_MullEven8Ux16" => {
-            return Some(IROp::VMull {
-                elem: IRType::I8,
-                count: 16,
-                signed: false,
-                even: true,
-            });
-        }
-        "Iop_MullEven8Sx16" => {
-            return Some(IROp::VMull {
-                elem: IRType::I8,
-                count: 16,
-                signed: true,
-                even: true,
-            });
-        }
-        "Iop_MullEven16Ux8" => {
-            return Some(IROp::VMull {
-                elem: IRType::I16,
-                count: 8,
-                signed: false,
-                even: true,
-            });
-        }
-        "Iop_MullEven16Sx8" => {
-            return Some(IROp::VMull {
-                elem: IRType::I16,
-                count: 8,
-                signed: true,
-                even: true,
-            });
-        }
-        "Iop_MullEven32Ux4" => {
-            return Some(IROp::VMull {
-                elem: IRType::I32,
-                count: 4,
-                signed: false,
-                even: true,
-            });
-        }
-        "Iop_MullEven32Sx4" => {
-            return Some(IROp::VMull {
-                elem: IRType::I32,
-                count: 4,
-                signed: true,
-                even: true,
-            });
-        }
-        _ => {}
-    }
+    // these do not collide with the "Iop_Mul" VMul arm above. The "Iop_Mull"
+    // prefix cannot false-match "Iop_MullEven*" — the leftover "Even8Ux16" hits
+    // no suffix — so the two invocations are order-independent.
+    vec_mull_arms!(op_str; "Iop_Mull" => VMull {
+        "8Ux8" => (I8, 8, false, false), "8Sx8" => (I8, 8, true, false),
+        "16Ux4" => (I16, 4, false, false), "16Sx4" => (I16, 4, true, false),
+        "32Ux2" => (I32, 2, false, false), "32Sx2" => (I32, 2, true, false),
+    });
+    vec_mull_arms!(op_str; "Iop_MullEven" => VMull {
+        "8Ux16" => (I8, 16, false, true), "8Sx16" => (I8, 16, true, true),
+        "16Ux8" => (I16, 8, false, true), "16Sx8" => (I16, 8, true, true),
+        "32Ux4" => (I32, 4, false, true), "32Sx4" => (I32, 4, true, true),
+    });
 
     // NEON lane extract / insert — Iop_{Get,Set}Elem{N}x{M}: (vec, idx[, val]).
     vec_arms!(op_str; "Iop_GetElem" => VGetElem {
