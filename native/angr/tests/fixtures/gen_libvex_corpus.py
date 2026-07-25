@@ -47,6 +47,28 @@ SYNTHETIC_BLOCKS: list[tuple[int, str, str]] = [
     (0x7F00_0020, "c5fdefc0c3", "V256 zero const"),
     # vzeroall ; ret            -> a run of Ico_V128 zero consts
     (0x7F00_0030, "c5fc77c3", "V128 const run"),
+    # --- SIMD vector-op coverage (angr-qwyti.6) -------------------------------
+    # The angr-ph300 audit flagged these opcode families as "zero direct test":
+    # the Interleave family (14 parse arms), VMulLo, vec_int_lane VSub/VCmpGT,
+    # and SetV128lo32/64. A recursive-descent walk of an ordinary binary rarely
+    # reaches SSE integer vector ops, so pin them as synthetic blocks. Each ends
+    # in `ret` (c3) so the block is self-terminating.
+    # punpcklbw xmm0, xmm1 ; ret -> Iop_InterleaveLO8x16
+    (0x7F00_0040, "660f60c1c3", "InterleaveLO8x16 (punpcklbw)"),
+    # punpckhbw xmm0, xmm1 ; ret -> Iop_InterleaveHI8x16
+    (0x7F00_0050, "660f68c1c3", "InterleaveHI8x16 (punpckhbw)"),
+    # punpcklwd xmm2, xmm3 ; ret -> Iop_InterleaveLO16x8
+    (0x7F00_0060, "660f61d3c3", "InterleaveLO16x8 (punpcklwd)"),
+    # pmulld xmm0, xmm1 ; ret    -> Iop_Mul32x4
+    (0x7F00_0070, "660f3840c1c3", "Mul32x4 (pmulld)"),
+    # psubd xmm4, xmm5 ; ret     -> Iop_Sub32x4
+    (0x7F00_0080, "660ffae5c3", "Sub32x4 (psubd)"),
+    # pcmpgtd xmm0, xmm1 ; ret   -> Iop_CmpGT32Sx4
+    (0x7F00_0090, "660f66c1c3", "CmpGT32Sx4 (pcmpgtd)"),
+    # movd xmm0, eax ; ret       -> Iop_SetV128lo32
+    (0x7F00_00A0, "660f6ec0c3", "SetV128lo32 (movd xmm)"),
+    # movq xmm0, rax ; ret       -> Iop_SetV128lo64
+    (0x7F00_00B0, "66480f6ec0c3", "SetV128lo64 (movq xmm)"),
 ]
 
 
