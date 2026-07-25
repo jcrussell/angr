@@ -579,6 +579,42 @@ fn take_steady_routing_falls_back_to_id_when_absent() {
     assert!(kind.is_none(), "absent kind_map ⇒ None");
 }
 
+/// angr-n0irt.13 / angr-e4cys: on the `finalize_steady_session` drain timeout,
+/// the error names exactly the workers that never acked `Paused` — every id in
+/// `0..workers` absent from `paused`. The computation was inlined in the live
+/// finalize path (needs a running session + pool); `stuck_worker_ids` isolates
+/// it. A regression that inverts the predicate (naming the acked workers) or
+/// off-by-ones the range trips these assertions.
+#[test]
+fn stuck_worker_ids_names_the_unacked_workers() {
+    // Mixed: workers 1 and 3 acked, 0 / 2 / 4 are stuck. Order-preserving.
+    assert_eq!(stuck_worker_ids(5, &[1, 3]), vec![0, 2, 4]);
+    // A duplicated ack (Paused dedups, but be robust) still excludes only 2.
+    assert_eq!(stuck_worker_ids(4, &[2, 2]), vec![0, 1, 3]);
+}
+
+/// The two saturating ends of `stuck_worker_ids`: all workers acked ⇒ empty
+/// stuck set (the `Ok(())` finalize path never builds the error), and none
+/// acked ⇒ every worker id is stuck.
+#[test]
+fn stuck_worker_ids_saturates_at_both_ends() {
+    assert!(
+        stuck_worker_ids(3, &[0, 1, 2]).is_empty(),
+        "all acked ⇒ nothing stuck"
+    );
+    assert_eq!(
+        stuck_worker_ids(3, &[]),
+        vec![0, 1, 2],
+        "none acked ⇒ every worker stuck"
+    );
+    assert!(
+        stuck_worker_ids(0, &[]).is_empty(),
+        "zero workers ⇒ empty regardless"
+    );
+    // Stray acks outside the range (never emitted, but must not panic or leak).
+    assert_eq!(stuck_worker_ids(2, &[7, 9]), vec![0, 1]);
+}
+
 /// angr-offd5(b): the incremental folder is reachable on the no-session path
 /// (a `need_callback` can surface before `ensure_steady_session` ever ran, and
 /// the serial/wave loops never build one) and must leave the manager untouched

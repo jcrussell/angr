@@ -173,6 +173,18 @@ fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
         .max(Duration::from_secs(60))
 }
 
+/// The worker ids that never acked `Paused` before the drain deadline
+/// (angr-e4cys): every worker in `0..workers` that is absent from `paused`.
+///
+/// Named for the timeout error `finalize_steady_session` raises: these are the
+/// workers whose resident frontier states are lost. Isolated from the live
+/// finalize path so the "which workers are stuck" computation is falsifiable
+/// without a running session — a regression that inverts the predicate (naming
+/// the *acked* workers) or off-by-ones the range trips the unit tests below.
+fn stuck_worker_ids(workers: usize, paused: &[usize]) -> Vec<usize> {
+    (0..workers).filter(|w| !paused.contains(w)).collect()
+}
+
 /// The find/avoid-checkable target address a materialized bounce carries.
 ///
 /// Mirrors single-threaded `step_one`'s NeedCallback special case, which only
@@ -1768,7 +1780,7 @@ impl RustExplorationManager {
         self.apply_uniqueness_filter();
         self.apply_native_techniques();
         if timed_out {
-            let stuck: Vec<usize> = (0..sess.workers).filter(|w| !paused.contains(w)).collect();
+            let stuck = stuck_worker_ids(sess.workers, &paused);
             return Err(PyRuntimeError::new_err(format!(
                 "steady finalize timed out after {:?} waiting for workers {stuck:?} to drain \
                  ({} of {} acked); their resident frontier states are lost. Residuals that did \
