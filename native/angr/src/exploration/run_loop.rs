@@ -864,7 +864,7 @@ impl RustExplorationManager {
             // The barrier's own stats snapshot predates the coordinator's
             // injector drain below, so it is re-taken afterwards (`job.stats()`)
             // to include those `residual_drains`.
-            let (mut job, _barrier_stats) = py.detach(|| pool.run_wave(job));
+            let (job, _barrier_stats) = py.detach(|| pool.run_wave(job));
 
             // ---- Back on the GIL thread: apply deferred mutations. ----
 

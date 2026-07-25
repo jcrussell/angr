@@ -430,7 +430,7 @@ impl<'a> VEXInterpreter<'a> {
     /// in-Rust ITE chain when ≤16 addrs and the symbolic-value callback is
     /// available, otherwise hand the full address list to Python.
     pub(super) fn dispatch_multi_store(
-        &mut self,
+        &self,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_val: &RustBV,

@@ -66,7 +66,7 @@ fn parse_optstring(s: &[u8]) -> (std::collections::HashMap<u8, u8>, bool) {
 }
 
 /// Load a pointer-sized word; `Ok(None)` if symbolic (caller defers).
-fn eval_ptr(state: &mut RustSimState, addr: u64) -> Result<Option<u64>, ProcedureError> {
+fn eval_ptr(state: &RustSimState, addr: u64) -> Result<Option<u64>, ProcedureError> {
     let ps = state.arch().bytes();
     Ok(state.memory_load(addr, ps)?.as_u64())
 }
@@ -101,7 +101,7 @@ fn store_ptr(
 /// Resolve `(optind, optchar)`, honouring a guest reset of `optind` exactly as
 /// Python's `_load_cursor`.
 fn load_cursor(
-    state: &mut RustSimState,
+    state: &RustSimState,
     optind_addr: Option<u64>,
 ) -> Result<(u32, u32), ProcedureError> {
     let (plugin_optind, plugin_optchar) = state.getopt_cursor();

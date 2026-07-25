@@ -936,7 +936,7 @@ fn test_wave_cancel_drains_residual_frontier() {
         ),
     );
 
-    let (mut job, _barrier_stats) = pool.run_wave(job);
+    let (job, _barrier_stats) = pool.run_wave(job);
     let mut recovered = job.take_results();
     recovered.extend(job.drain_residual_payloads());
 

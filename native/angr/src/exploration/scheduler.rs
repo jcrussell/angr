@@ -705,7 +705,7 @@ impl WaveJob {
     /// Take the materialized terminal payloads out of the recovered wave,
     /// leaving the rest of the job (dropped by the caller). Used by the
     /// coordinator, which reads `summaries` separately (or ignores them).
-    pub(crate) fn take_results(&mut self) -> Vec<StateMigrationPayload> {
+    pub(crate) fn take_results(&self) -> Vec<StateMigrationPayload> {
         std::mem::take(&mut *self.results.lock().expect("results mutex poisoned"))
     }
 
