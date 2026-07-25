@@ -1275,7 +1275,7 @@ pub(crate) fn build_unexplored_fork(
     fork: &DeferredFork,
     condition: &RustBV,
     snapshots: &mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
-    priors: PriorGuards<'_>,
+    priors: &PriorGuards,
 ) -> RustSimState {
     let mut forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
         // Snapshot predates the branch constraint, so re-assume the opposite
@@ -1319,14 +1319,30 @@ pub(crate) fn build_unexplored_fork(
 /// `base_carries: true`; [`materialize_deferred_forks`] forks off a fixed
 /// guard-free base and sets `false`. The snapshot path replays them
 /// unconditionally — see [`build_unexplored_fork`].
-pub(crate) struct PriorGuards<'a> {
-    pub(crate) guards: &'a [(RustBV, bool)],
-    pub(crate) base_carries: bool,
+pub(crate) struct PriorGuards {
+    guards: Vec<(RustBV, bool)>,
+    base_carries: bool,
 }
 
-impl PriorGuards<'_> {
+impl PriorGuards {
+    /// Fresh accumulator. `base_carries` records whether the caller's fork base
+    /// already holds the taken-path guards (see the struct doc); it gates the
+    /// non-snapshot replay in [`build_unexplored_fork`].
+    pub(crate) fn new(base_carries: bool) -> Self {
+        Self {
+            guards: Vec::new(),
+            base_carries,
+        }
+    }
+
+    /// Append the taken-path guard of a just-materialized fork so later forks in
+    /// the same step inherit it. Callers must `record` in dispatch order.
+    pub(crate) fn record(&mut self, cond: RustBV, path_taken: bool) {
+        self.guards.push((cond, path_taken));
+    }
+
     fn replay_onto(&self, state: &RustSimState) {
-        for (cond, taken) in self.guards {
+        for (cond, taken) in &self.guards {
             let solver = state.solver();
             let solver = solver.borrow();
             if *taken {
@@ -1411,7 +1427,7 @@ pub(crate) fn materialize_deferred_forks(
     let batch_start = stats.is_some().then(std::time::Instant::now);
     // Taken-path guards of the forks already materialized, replayed onto each
     // later fork (`fork_base` is fixed and guard-free here — angr-62ar5).
-    let mut prior_guards: Vec<(RustBV, bool)> = Vec::new();
+    let mut prior_guards = PriorGuards::new(false);
 
     for fork in forks {
         let condition = stored_conditions.get(&fork.condition_id);
@@ -1428,17 +1444,8 @@ pub(crate) fn materialize_deferred_forks(
                 }
             }
             let fork_start = stats.is_some().then(std::time::Instant::now);
-            let forked = build_unexplored_fork(
-                fork_base,
-                &fork,
-                cond,
-                snapshots,
-                PriorGuards {
-                    guards: &prior_guards,
-                    base_carries: false,
-                },
-            );
-            prior_guards.push((cond.clone(), fork.path_taken));
+            let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots, &prior_guards);
+            prior_guards.record(cond.clone(), fork.path_taken);
             if let (Some(s), Some(start)) = (stats.as_deref_mut(), fork_start) {
                 s.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
                 s.solver_fork_count += 1;
@@ -1475,11 +1482,7 @@ pub(crate) fn materialize_deferred_forks(
                 fork.condition_id
             );
             let mut forked = fork_base.fork();
-            PriorGuards {
-                guards: &prior_guards,
-                base_carries: false,
-            }
-            .replay_onto(&forked);
+            prior_guards.replay_onto(&forked);
             forked.set_pc(fork.unexplored_target);
             if lazy_solves || forked.satisfiable() {
                 out.sat.push(forked);

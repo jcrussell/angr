@@ -71,7 +71,7 @@ pub(super) fn materialize_deferred_forks_core(
     let deferred_fork_total = deferred_forks.len() as u64;
     // See `PriorGuards` (angr-62ar5): `base` accumulates each taken-path guard
     // below, but a snapshot-built fork does not.
-    let mut prior_guards: Vec<(RustBV, bool)> = Vec::new();
+    let mut prior_guards = super::super::helpers::PriorGuards::new(true);
 
     for fork in deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
@@ -92,12 +92,9 @@ pub(super) fn materialize_deferred_forks_core(
                 &fork,
                 condition,
                 &mut fork_snapshots,
-                super::super::helpers::PriorGuards {
-                    guards: &prior_guards,
-                    base_carries: true,
-                },
+                &prior_guards,
             );
-            prior_guards.push((condition.clone(), fork.path_taken));
+            prior_guards.record(condition.clone(), fork.path_taken);
             if force_eager {
                 forked.set_force_eager_forks(true);
             }
@@ -199,7 +196,7 @@ fn process_deferred_forks_into_core(
         return;
     }
 
-    let mut prior_guards: Vec<(RustBV, bool)> = Vec::new();
+    let mut prior_guards = super::super::helpers::PriorGuards::new(true);
     for fork in &deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
             super::super::helpers::add_fork_guard_constraint(
@@ -214,12 +211,9 @@ fn process_deferred_forks_into_core(
                 fork,
                 condition,
                 &mut fork_snapshots,
-                super::super::helpers::PriorGuards {
-                    guards: &prior_guards,
-                    base_carries: true,
-                },
+                &prior_guards,
             );
-            prior_guards.push((condition.clone(), fork.path_taken));
+            prior_guards.record(condition.clone(), fork.path_taken);
             fork_ids_out.push(forked.state_id());
 
             if ctx.lazy_solves || forked.satisfiable() {
