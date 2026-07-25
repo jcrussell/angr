@@ -1,0 +1,40 @@
+# Dev-only cargo-fuzz project for the pure hostile-input parsers (angr-qwyti.9).
+# NOT part of the repo workspace (own `[workspace]` table below) and never built
+# by `pip install` / CI — invoke explicitly with `cargo +nightly fuzz run ...`.
+[package]
+name = "angr-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.angr]
+path = ".."
+features = ["fuzzing"]
+
+# Detach from the repo workspace so this dev-only crate never lands in a stock
+# `cargo build`. Because that also drops the root `[patch.crates-io]`, the z3
+# patch is re-declared here (the `angr` path dep pulls in z3-sys either way).
+[workspace]
+
+[patch.crates-io]
+z3 = { path = "../../z3-patched" }
+
+[[bin]]
+name = "format_parsers"
+path = "fuzz_targets/format_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bv_numeral_parsers"
+path = "fuzz_targets/bv_numeral_parsers.rs"
+test = false
+doc = false
+bench = false

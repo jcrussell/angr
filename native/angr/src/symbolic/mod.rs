@@ -22,6 +22,31 @@ pub mod lineage;
 mod lineage_ops;
 #[cfg(feature = "vex-engine-z3")]
 mod parse;
+/// Dev-only re-export of the pure Z3-numeral-string decoders for cargo-fuzz
+/// targets (angr-qwyti.9). These parse untrusted-shaped `&str` into concrete
+/// values with no `SymContext` / Z3 handle, so they fuzz hermetically. Gated
+/// behind `fuzzing` so the normal build keeps them `pub(super)`.
+#[cfg(all(feature = "vex-engine-z3", feature = "fuzzing"))]
+pub mod fuzz_exports {
+    // Thin `pub` wrappers over the `pub(super)` numeral-string decoders so the
+    // cargo-fuzz targets can call them without widening the parsers' own
+    // visibility in a normal build.
+    pub fn parse_wide_hex_low128(s: &str) -> Option<u128> {
+        super::parse::parse_wide_hex_low128(s)
+    }
+    pub fn parse_wide_binary_low128(s: &str) -> Option<u128> {
+        super::parse::parse_wide_binary_low128(s)
+    }
+    pub fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+        super::parse::parse_hex_to_bytes(s, width)
+    }
+    pub fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+        super::parse::parse_binary_to_bytes(s, width)
+    }
+    pub fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+        super::parse::parse_decimal_to_bytes(s, width)
+    }
+}
 #[cfg(feature = "vex-engine-z3")]
 mod query_class;
 pub mod registry;

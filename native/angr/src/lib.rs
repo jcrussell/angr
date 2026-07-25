@@ -1,3 +1,18 @@
+// Dev-only public surface for the cargo-fuzz targets under `fuzz/`
+// (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
+// can reach them without depending on `pub(super)` internals. Gated behind
+// `fuzzing`, so a stock build never sees it.
+#[cfg(feature = "fuzzing")]
+pub mod fuzz_api {
+    #[cfg(feature = "vex-engine")]
+    pub use crate::procedures::format_common::{parse_length_modifier, parse_width_digits};
+    #[cfg(feature = "vex-engine-z3")]
+    pub use crate::symbolic::fuzz_exports::{
+        parse_binary_to_bytes, parse_decimal_to_bytes, parse_hex_to_bytes,
+        parse_wide_binary_low128, parse_wide_hex_low128,
+    };
+}
+
 // Conditional compilation for fuzzer module (requires optional deps)
 #[cfg(feature = "fuzzer")]
 pub mod fuzzer;

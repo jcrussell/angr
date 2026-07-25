@@ -13,6 +13,11 @@ default = ["vex-engine", "vex-engine-z3", "automaton"]
 vex-engine = ["im", "lru"]
 vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
+# Dev-only: widen the pure hostile-input parsers (format-string width/length,
+# Z3 numeral-string decoders) to a crate-`pub` surface so the cargo-fuzz targets
+# under `fuzz/` can reach them. NOT in `default`; adds no runtime code to a
+# stock build. See fuzz/README.md (angr-qwyti.9).
+fuzzing = []
 automaton = ["indexmap", "fixedbitset"]
 # Default-ON since 807bfd74d (human GO 2026-07-15, bd angr-3trr7): native
 # cold-block lifting via direct libVEX FFI against the venv's
