@@ -85,15 +85,3 @@ def test_store_restored_on_exit():
     with CallbackMemoryTracker(state):
         assert state.memory.store != original
     assert state.memory.store == original
-
-
-def test_clear_empties_both_lists():
-    state = _blank_state()
-    with CallbackMemoryTracker(state) as tracker:
-        state.memory.store(0x5000, claripy.BVV(1, 32))
-        state.memory.store(0x5000, claripy.BVS("v", 32))
-    assert tracker.get_writes()
-    assert tracker.get_symbolic_writes()
-    tracker.clear()
-    assert tracker.get_writes() == []
-    assert tracker.get_symbolic_writes() == []

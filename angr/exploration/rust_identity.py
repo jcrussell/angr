@@ -145,8 +145,3 @@ class CallbackMemoryTracker:
             to be imported to Rust.
         """
         return self._symbolic_writes
-
-    def clear(self):
-        """Clear tracked writes."""
-        self._writes.clear()
-        self._symbolic_writes.clear()
