@@ -43,8 +43,21 @@ fn test_dfa_minimization() {
 
     let minimized = dfa.minimize();
 
-    // Minimized DFA should have fewer states (or same if already minimal)
-    assert!(minimized.num_states() <= dfa.num_states());
+    // States 1 and 2 collapse into one partition, as do finals 3 and 4, leaving
+    // exactly {0}, {1,2}, {3,4} -> 3 states. `<= num_states()` was vacuously
+    // true even for a no-op or under-merging minimize(); pin the exact count so
+    // a regression that stopped merging (giving 4-5 states) is caught.
+    assert_eq!(
+        minimized.num_states(),
+        3,
+        "minimize() should merge 1&2 and 3&4, yielding 3 states"
+    );
+    // The two equivalent finals (3 and 4) must collapse to a single final state.
+    assert_eq!(
+        minimized.final_states().len(),
+        1,
+        "equivalent final states 3 and 4 should merge into one"
+    );
     assert!(!minimized.is_empty());
 }
 

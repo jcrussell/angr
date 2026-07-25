@@ -29,11 +29,22 @@ fn test_subset_construction_with_epsilon() {
     let dfa = subset_construction(&nfa);
 
     // DFA should recognize "a"
-    assert!(dfa.start_state().is_some());
+    let start = dfa
+        .start_state()
+        .expect("subset construction has a start state");
     assert!(!dfa.final_states().is_empty());
 
-    // Initial DFA state should be {0, 1} (epsilon closure of {0})
-    // Should have transition on 'a' to a final state
+    // Initial DFA state is {0, 1} (epsilon closure of {0}); on 'a' (symbol 0)
+    // it must transition to a final state (the {2} subset). Previously this was
+    // only described in a trailing comment and never asserted, so the test
+    // passed even if subset_construction dropped the transition entirely.
+    let next = dfa
+        .transition(start, 0)
+        .expect("start state should have a transition on 'a'");
+    assert!(
+        dfa.final_states().contains(next),
+        "transition on 'a' should land in a final state"
+    );
 }
 
 #[test]
