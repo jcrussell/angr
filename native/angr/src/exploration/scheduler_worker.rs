@@ -26,6 +26,10 @@ use std::time::Instant;
 /// carry-over accounting below is a defensive `fetch_add(0)`. It is kept so that
 /// any future retention path stays balanced: a carried-over state's terminal
 /// `pending.fetch_sub(1)` must be matched by an add here.
+// The terminal-drain loop holds `job.results` across all pushes by design (see
+// the block comment); clippy resolves `significant_drop_tightening` at the
+// item, so the allow lives here.
+#[allow(clippy::significant_drop_tightening)]
 pub(super) fn worker_loop(
     worker_id: usize,
     job: &WaveJob,
@@ -83,6 +87,10 @@ pub(super) fn worker_loop(
 
         // Materialized terminals must cross the join, so they are detached here
         // (correct context). This is part of the honest steal fraction.
+        // `guard` is held across the whole terminal-drain loop by design:
+        // relocking per iteration would thrash the mutex. The
+        // `significant_drop_tightening` allow sits on the enclosing fn — clippy
+        // resolves this lint's level at the item, not the block.
         if !outcome.terminal_states.is_empty() {
             let mut guard = job.results.lock().expect("results mutex poisoned");
             for terminal in outcome.terminal_states {

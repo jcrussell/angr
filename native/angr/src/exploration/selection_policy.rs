@@ -153,6 +153,10 @@ impl RandomState {
         let mut state = self.rng.lock().expect("RandomState rng poisoned");
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *state;
+        // Release the RNG mutex before the pure-arithmetic mix — nothing below
+        // touches the shared state, so holding the lock across it only widens
+        // the contention window between workers.
+        drop(state);
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
@@ -215,6 +219,9 @@ impl CoverageGuided {
 }
 
 impl SelectionPolicy for CoverageGuided {
+    // `seen` is held across the whole front-scan (contains) and the post-remove
+    // insert — the guard cannot be tightened without dropping correctness.
+    #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
             return None;
@@ -325,6 +332,10 @@ impl LoopHeadRoundRobin {
 }
 
 impl SelectionPolicy for LoopHeadRoundRobin {
+    // Both guards span the full deque scan (cache read/insert per state,
+    // dispatched read for the least-served pick) plus the post-remove eviction
+    // and count bump — no tighter scope is correct here.
+    #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
             return None;
@@ -446,6 +457,9 @@ impl DirectedCfgDistance {
 }
 
 impl SelectionPolicy for DirectedCfgDistance {
+    // `dispatched` is held across the beam's min-by-key scan (reads the count
+    // per beam member) and the post-remove count bump — no tighter scope works.
+    #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         let len = active.len();
         if len == 0 {
@@ -459,6 +473,10 @@ impl SelectionPolicy for DirectedCfgDistance {
         ranked.sort_by_key(|&i| (dists[i], i));
         let beam = &ranked[..self.beam_width.min(len)];
 
+        // Held across the beam's min-by-key scan and the post-remove count
+        // bump — the scan reads `dispatched` per beam member, so it cannot be
+        // dropped earlier.
+        #[allow(clippy::significant_drop_tightening)]
         let mut dispatched = self
             .dispatched
             .lock()
@@ -550,6 +568,9 @@ impl FindDirected {
 }
 
 impl SelectionPolicy for FindDirected {
+    // `seen` is held across the novelty scan (contains) and the post-remove
+    // insert — both halves need the lock, so it cannot be tightened.
+    #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
             return None;

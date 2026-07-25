@@ -717,6 +717,10 @@ impl RustExplorationManager {
         clippy::expect_used,
         reason = "poison-guard + local state-machine invariants (root_map/kind_map poison, pool-just-created, post-barrier sole ownership of ParallelShared) — see the module Panic policy header"
     )]
+    // The seed loop holds `root_map` across all inserts by design (see the
+    // block comment below); clippy resolves `significant_drop_tightening` at
+    // the item, so the allow lives here.
+    #[allow(clippy::significant_drop_tightening)]
     pub(crate) fn run_loop_parallel(
         &mut self,
         py: Python<'_>,
@@ -829,6 +833,10 @@ impl RustExplorationManager {
             let prof = Arc::new(ParallelProfiling::default());
             let shared = Arc::new(ParallelShared::seeded(self.found_count(), self.num_find));
             let mut seeds: Vec<StateMigrationPayload> = Vec::with_capacity(drained.len());
+            // `rm` is held across the whole seed loop by design: relocking per
+            // iteration (clippy's `significant_drop_tightening` suggestion)
+            // would thrash the mutex. The allow sits on the enclosing fn —
+            // clippy resolves this lint's level at the item, not the block.
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
                 for state in drained {
@@ -1380,6 +1388,9 @@ impl RustExplorationManager {
         clippy::expect_used,
         reason = "session-live + root_map poison guards: the session is seeded live and the lock only poisons on an impossible panic=abort unwind — see the module Panic policy header"
     )]
+    // The seed loop holds `root_map` across all inserts by design; clippy
+    // resolves `significant_drop_tightening` at the item, so the allow is here.
+    #[allow(clippy::significant_drop_tightening)]
     fn seed_steady_session_from_active(&mut self) {
         let drained: Vec<RustSimState> = match self.sm.get_mut(STASH_ACTIVE) {
             Some(s) if !s.is_empty() => s.drain(..).collect(),
@@ -1390,6 +1401,8 @@ impl RustExplorationManager {
             .as_mut()
             .expect("session live during seed");
         let mut payloads = Vec::with_capacity(drained.len());
+        // `rm` is held across the whole seed loop by design: relocking per
+        // iteration would thrash the mutex.
         {
             let mut rm = sess.shared.root_map.lock().expect("root_map poisoned");
             for state in drained {
