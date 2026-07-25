@@ -2255,49 +2255,58 @@ class RustCallStackFrameProxy:
 class RustCallStackProxy:
     """Iterable callstack view of a Rust state.
 
-    Frames are stored as a list with the most-recent (top) frame first,
-    matching angr's CallStack iteration order. The Rust engine stores
-    frames in push order (top last), so we reverse on construction.
+    Frames are read live from Rust on every ``_frames`` access (top frame
+    first, matching angr's CallStack iteration order — the Rust engine
+    stores them in push order, top last, so we reverse). No Python-side
+    frame cache: a ``RustStateProxy`` view memoizes its ``callstack``
+    sub-proxy (``self._callstack_proxy``), so caching frames here would
+    silently serve pre-step call frames if the view is held across a Rust
+    step (angr-qwyti.10 — the same state_id-keyed stale-cache shape as the
+    register-proxy read cache in angr-4rq7). Mirrors the deliberate
+    live-read model of the sibling ``RustCallStackProxyPlugin``.
     """
 
     def __init__(self, rust_mgr, state_id):
         self._mgr = rust_mgr
         self._state_id = state_id
-        self._frames_cache = None
 
     @property
     def _frames(self):
-        if self._frames_cache is None:
-            try:
-                raw = self._mgr.get_state_call_stack(self._state_id)
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
-                # Distinguishable from a real empty stack only via the log.
-                l.debug("get_state_call_stack(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-                raw = []
-            # Rust pushes onto the end → most recent is last → reverse.
-            self._frames_cache = list(reversed(raw))
-        return self._frames_cache
+        try:
+            raw = self._mgr.get_state_call_stack(self._state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
+            # Distinguishable from a real empty stack only via the log.
+            l.debug("get_state_call_stack(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
+            return []
+        # Rust pushes onto the end → most recent is last → reverse.
+        return list(reversed(raw))
 
     def __iter__(self):
-        for i, frame in enumerate(self._frames):
-            yield RustCallStackFrameProxy(frame, i, self)
+        # Snapshot once so index-based frame.next walks stay internally
+        # consistent within a single iteration (mirrors the plugin).
+        frames = self._frames
+        owner = _StaticFrameOwner(frames)
+        for i, frame in enumerate(frames):
+            yield RustCallStackFrameProxy(frame, i, owner)
 
     def __len__(self):
         return len(self._frames)
 
     def __getitem__(self, k):
+        frames = self._frames
         if k < 0:
-            k += len(self._frames)
-        if k < 0 or k >= len(self._frames):
+            k += len(frames)
+        if k < 0 or k >= len(frames):
             raise IndexError(k)
-        return RustCallStackFrameProxy(self._frames[k], k, self)
+        return RustCallStackFrameProxy(frames[k], k, _StaticFrameOwner(frames))
 
     @property
     def top(self):
-        if not self._frames:
+        frames = self._frames
+        if not frames:
             return None
-        return RustCallStackFrameProxy(self._frames[0], 0, self)
+        return RustCallStackFrameProxy(frames[0], 0, _StaticFrameOwner(frames))
 
     @property
     def current_function_address(self):

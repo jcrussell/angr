@@ -82,15 +82,18 @@ class TestCallStackProxy:
         """Frame __getitem__ and .next walk the same path."""
         from angr.exploration.rust_state_proxy import RustCallStackProxy
 
-        proxy = RustCallStackProxy.__new__(RustCallStackProxy)
-        proxy._mgr = None
-        proxy._state_id = None
-        # Most-recent first: function 0x300 called from 0x200, etc.
-        proxy._frames_cache = [
-            (0x250, 0x300, 0x255, 0x7000),  # top
-            (0x150, 0x200, 0x155, 0x7100),
-            (0x050, 0x100, 0x055, 0x7200),  # bottom
-        ]
+        # Most-recent first: function 0x300 called from 0x200, etc. The
+        # proxy reverses on read, so the fake mgr returns push order
+        # (outermost first) — the mirror of the top-first list above.
+        class _FakeMgr:
+            def get_state_call_stack(self, _sid):
+                return [
+                    (0x050, 0x100, 0x055, 0x7200),  # bottom / outermost
+                    (0x150, 0x200, 0x155, 0x7100),
+                    (0x250, 0x300, 0x255, 0x7000),  # top / innermost
+                ]
+
+        proxy = RustCallStackProxy(_FakeMgr(), 0)
         assert len(proxy) == 3
         top = proxy[0]
         assert top.func_addr == 0x300
@@ -220,15 +223,14 @@ class TestCallStackProxy:
             f = f.next
         assert child_walk == [0x500, 0x300, 0x200]
 
-    def test_callstack_proxy_independent_caches_across_states(self):
-        """Two proxies on sibling states have independent `_frames_cache`.
+    def test_callstack_proxy_independent_across_states(self):
+        """Two proxies on sibling states read their own state_id's frames.
 
-        Each `RustCallStackProxy` constructs its own reversed list lazily
-        via `mgr.get_state_call_stack(state_id)`. If a refactor ever moved
-        the cache up to a manager-level dict keyed only by state_id, a
-        forked sibling could silently pick up the parent's frames before
-        its own divergent push got picked up. This pins the per-instance
-        caching guarantee."""
+        Each `RustCallStackProxy` reads live via
+        `mgr.get_state_call_stack(state_id)` (no Python-side cache). If a
+        refactor ever keyed the read only by a shared manager-level dict, a
+        forked sibling could silently pick up the parent's frames. This pins
+        the per-state-id read independence."""
         from angr.exploration.rust_state_proxy import RustCallStackProxy
 
         mgr = _RustExplorationManager("amd64")
@@ -245,17 +247,48 @@ class TestCallStackProxy:
         proxy_a = RustCallStackProxy(mgr, a_id)
         proxy_b = RustCallStackProxy(mgr, b_id)
 
-        # Realize both caches.
+        # Realize both views.
         list(proxy_a)
         list(proxy_b)
 
         assert len(proxy_a) == 1
         assert len(proxy_b) == 2
-        assert proxy_a._frames_cache is not proxy_b._frames_cache
         # Independent reverse views — divergence does not leak.
         assert proxy_a[0].func_addr == 0x20
         assert proxy_b[0].func_addr == 0x40
         assert proxy_b[-1].func_addr == 0x20
+
+    def test_callstack_proxy_reads_live_not_stale(self):
+        """RustCallStackProxy must read frames live on every access, not
+        cache them at first read.
+
+        Regression guard for angr-qwyti.10: a `RustStateProxy` view memoizes
+        its `callstack` sub-proxy, so a cached frame list would silently
+        serve pre-step call frames after the underlying Rust state advances
+        on the same state_id (the register-proxy stale-cache shape from
+        angr-4rq7). The mgr below mutates its returned stack between reads;
+        the proxy must reflect the change."""
+        from angr.exploration.rust_state_proxy import RustCallStackProxy
+
+        class _MutatingMgr:
+            def __init__(self):
+                # push order (outermost first)
+                self.stack = [(0x100, 0x200, 0x105, 0x7000)]
+
+            def get_state_call_stack(self, _sid):
+                return list(self.stack)
+
+        mgr = _MutatingMgr()
+        proxy = RustCallStackProxy(mgr, 0)
+        assert len(proxy) == 1
+        assert proxy.top.func_addr == 0x200
+
+        # Simulate a Rust-side step that pushes another frame on the SAME id.
+        mgr.stack.append((0x208, 0x300, 0x20D, 0x6FF0))
+        # A cached proxy would still report depth 1 / top 0x200 here.
+        assert len(proxy) == 2
+        assert proxy.top.func_addr == 0x300
+        assert proxy[-1].func_addr == 0x200
 
 
 class TestInspectProxy:
