@@ -825,6 +825,62 @@ class TestSerializeIRSB:
         assert result1 == result2
 
 
+class TestSerializeDescr:
+    """Unit tests for _serialize_descr and its GetI/PutI callers."""
+
+    class _Descr:
+        base = 40
+        elemTy = "Ity_I64"
+        nElems = 8
+
+    class RdTmp:
+        def __init__(self, tmp):
+            self.tmp = tmp
+
+    def test_serialize_descr_all_fields(self):
+        from angr.exploration.rust_irsb_serializer import _serialize_descr
+
+        out = _serialize_descr(self._Descr())
+        assert out == {"base": 40, "elemTy": "Ity_I64", "nElems": 8}
+
+    def test_serialize_descr_hasattr_guard(self):
+        """Missing attributes fall back to defaults instead of raising."""
+        from angr.exploration.rust_irsb_serializer import _serialize_descr
+
+        out = _serialize_descr(object())
+        assert out == {"base": 0, "elemTy": "Ity_I64", "nElems": 0}
+
+    def test_serialize_geti_expr(self):
+        """GetI expression serialization embeds the descriptor."""
+        from angr.exploration.rust_irsb_serializer import _serialize_expr
+
+        class GetI:
+            descr = TestSerializeDescr._Descr()
+            ix = TestSerializeDescr.RdTmp(3)
+            bias = 2
+
+        out = _serialize_expr(GetI())
+        assert out["tag"] == "Iex_GetI"
+        assert out["descr"] == {"base": 40, "elemTy": "Ity_I64", "nElems": 8}
+        assert out["bias"] == 2
+        assert out["ix"] == {"tag": "Iex_RdTmp", "tmp": 3}
+
+    def test_serialize_puti_stmt(self):
+        """PutI statement serialization embeds the descriptor."""
+        from angr.exploration.rust_irsb_serializer import _serialize_stmt
+
+        class PutI:
+            descr = TestSerializeDescr._Descr()
+            ix = TestSerializeDescr.RdTmp(3)
+            bias = 2
+            data = TestSerializeDescr.RdTmp(9)
+
+        out = _serialize_stmt(PutI())
+        assert out["tag"] == "Ist_PutI"
+        assert out["descr"] == {"base": 40, "elemTy": "Ity_I64", "nElems": 8}
+        assert out["bias"] == 2
+
+
 class TestExplorationIntegration:
     """Integration tests with real binaries."""
 

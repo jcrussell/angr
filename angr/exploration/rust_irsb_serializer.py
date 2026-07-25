@@ -65,7 +65,11 @@ def _serialize_const(con):
 
 def _serialize_descr(descr):
     """Serialize a VEX array descriptor (GetI/PutI)."""
-    return {"base": descr.base, "elemTy": str(descr.elemTy), "nElems": descr.nElems}
+    return {
+        "base": getattr(descr, "base", 0),
+        "elemTy": str(descr.elemTy) if hasattr(descr, "elemTy") else "Ity_I64",
+        "nElems": getattr(descr, "nElems", 0),
+    }
 
 
 def _serialize_cee(cee):
