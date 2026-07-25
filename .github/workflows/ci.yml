@@ -112,7 +112,7 @@ jobs:
   benchmark_regression:
     name: Benchmark Regression (fast tier)
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Rust build dominates (~5-7m cold); bench step itself capped at 3m below
+    timeout-minutes: 15  # Rust build dominates (~5-7m cold); bench step itself capped at 5m below
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
