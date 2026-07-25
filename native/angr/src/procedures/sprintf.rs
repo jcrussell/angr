@@ -35,9 +35,47 @@ fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedure
 /// prints `-<abs hex>`), so those must defer to Python. `masked` is already
 /// masked to `bits`. See `format-unsigned-highbit-no-native-parity`
 /// (angr-3i88a).
-fn unsigned_high_bit_set(masked: u64, wide: bool) -> bool {
-    let bits = if wide { 64 } else { 32 };
+fn unsigned_high_bit_set(masked: u64, bits: u32) -> bool {
     masked >> (bits - 1) != 0
+}
+
+/// Integer conversion width in bits implied by a length modifier, mirroring
+/// `format_parser.py`'s `int_len_mod` type sizes: `hh`->8 (char), `h`->16
+/// (short), no-modifier->32 (int), and `l`/`ll`/`z`/`j`/`t`->64 on our 64-bit
+/// targets. Python masks each concretized arg to `size*8` bits (line 96) before
+/// formatting, so native must narrow to the same width or %hd/%hhd/%hu/%hx/%ho
+/// diverge (angr-n0irt.4). Directly analogous to the scanf store-width fix
+/// (angr-vfhyx).
+fn int_conv_bits(modifier: super::format_common::LengthModifier) -> u32 {
+    use super::format_common::LengthModifier;
+    match modifier {
+        LengthModifier::Char => 8,
+        LengthModifier::Short => 16,
+        LengthModifier::None => 32,
+        _ => 64, // Long / LongLong / SizeT / IntMax / PtrDiff
+    }
+}
+
+/// Mask `val` to `bits` then sign-extend to i64, mirroring Python's mask
+/// (`c_val &= (1<<size*8)-1`) followed by the signed fold (`if signed and
+/// high bit set: c_val -= 1<<size*8`) for `d`/`i` specs.
+fn signed_at_width(val: u64, bits: u32) -> i64 {
+    match bits {
+        8 => val as i8 as i64,
+        16 => val as i16 as i64,
+        32 => val as i32 as i64,
+        _ => val as i64,
+    }
+}
+
+/// Mask `val` to `bits` (zero-extended), mirroring Python's `c_val &=
+/// (1<<size*8)-1` for the unsigned `u`/`x`/`X`/`o` specs.
+fn unsigned_at_width(val: u64, bits: u32) -> u64 {
+    if bits >= 64 {
+        val
+    } else {
+        val & ((1u64 << bits) - 1)
+    }
 }
 
 fn format_string(
@@ -136,9 +174,6 @@ fn format_string(
         // Parse length modifier
         let (modifier, m_adv) = parse_length_modifier(fmt, i);
         i += m_adv;
-        let long_long = matches!(modifier, super::format_common::LengthModifier::LongLong);
-        // `z`, `j`, `t` are treated as `long` on 64-bit.
-        let long = !long_long && modifier.is_64bit();
 
         if i >= fmt.len() {
             break;
@@ -155,12 +190,8 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                // Interpret as signed
-                let signed_val = if long || long_long {
-                    val as i64
-                } else {
-                    val as i32 as i64
-                };
+                // Interpret as signed, narrowed to the modifier's width.
+                let signed_val = signed_at_width(val, int_conv_bits(modifier));
                 let formatted = if plus_sign && signed_val >= 0 {
                     format!("+{signed_val}")
                 } else if space_sign && signed_val >= 0 {
@@ -183,12 +214,9 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let unsigned_val = if long || long_long {
-                    val
-                } else {
-                    val as u32 as u64
-                };
-                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                let bits = int_conv_bits(modifier);
+                let unsigned_val = unsigned_at_width(val, bits);
+                if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(
                         "unsigned high-bit value defers to Python".to_string(),
                     ));
@@ -209,12 +237,9 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let unsigned_val = if long || long_long {
-                    val
-                } else {
-                    val as u32 as u64
-                };
-                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                let bits = int_conv_bits(modifier);
+                let unsigned_val = unsigned_at_width(val, bits);
+                if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(
                         "unsigned high-bit value defers to Python".to_string(),
                     ));
@@ -243,12 +268,9 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let unsigned_val = if long || long_long {
-                    val
-                } else {
-                    val as u32 as u64
-                };
-                if unsigned_high_bit_set(unsigned_val, long || long_long) {
+                let bits = int_conv_bits(modifier);
+                let unsigned_val = unsigned_at_width(val, bits);
+                if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(
                         "unsigned high-bit value defers to Python".to_string(),
                     ));

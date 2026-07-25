@@ -715,3 +715,89 @@ fn test_asprintf_symbolic_format_falls_back() {
         "symbolic format in asprintf should fall back to Python"
     );
 }
+
+// --- Integer length-modifier width narrowing (angr-n0irt.4) ---
+//
+// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
+// before formatting: hh->8, h->16, none->32, l/ll->64. Native must narrow to
+// the same width or %hd/%hhd/%hu/%hx/%ho diverge from Python. These mirror
+// scanf_tests.rs's assert_scanf_store_width suite on the formatting side.
+
+/// Run a single-vararg sprintf and return the bytes written to the dest buffer
+/// (excluding the trailing NUL), or `Err` if the proc deferred to Python.
+fn sprintf_one(fmt: &[u8], arg: u64) -> Result<Vec<u8>, ()> {
+    let mut state = setup_state();
+    // Build "<fmt>\0" in memory at 0x1000.
+    let mut fmtbuf = fmt.to_vec();
+    fmtbuf.push(0);
+    state.map_memory_data(0x1000, &fmtbuf, Permission::RWX);
+
+    let result = NativeSprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // dest
+            RustBV::concrete(0x1000, 64), // format
+            RustBV::concrete(arg as u128, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    let n = result.map_err(|_| ())?.ok_or(())?.as_u64().ok_or(())?;
+    let mut out = Vec::new();
+    for i in 0..n {
+        out.push(state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8);
+    }
+    Ok(out)
+}
+
+#[test]
+fn test_sprintf_short_narrows_to_16_bits() {
+    // %hd of 0x10001 masks to 16 bits -> 1 (Python prints "1"); an unpatched
+    // native path printed the full 65537. High bit (bit 15) of the masked value
+    // is clear, so no fallback.
+    assert_eq!(sprintf_one(b"%hd", 0x10001).unwrap(), b"1");
+    // %hu likewise masks to 16 bits.
+    assert_eq!(sprintf_one(b"%hu", 0x1_0000 + 42).unwrap(), b"42");
+    // %hx masks to 16 bits: 0xAB_1234 -> 0x1234 -> "1234".
+    assert_eq!(sprintf_one(b"%hx", 0x00AB_1234).unwrap(), b"1234");
+    // %ho masks to 16 bits: 0o777777 fits in 16 bits + a set upper bit dropped.
+    assert_eq!(sprintf_one(b"%ho", 0xFFFF_0007).unwrap(), b"7");
+}
+
+#[test]
+fn test_sprintf_char_narrows_to_8_bits() {
+    // %hhd of 0x101 masks to 8 bits -> 1.
+    assert_eq!(sprintf_one(b"%hhd", 0x101).unwrap(), b"1");
+    // %hhu masks to 8 bits: 0x17F -> 0x7F -> 127 (bit 7 clear, no fallback).
+    assert_eq!(sprintf_one(b"%hhu", 0x17F).unwrap(), b"127");
+    // %hhx masks to 8 bits: 0xAB12 -> 0x12 -> "12".
+    assert_eq!(sprintf_one(b"%hhx", 0xAB12).unwrap(), b"12");
+}
+
+#[test]
+fn test_sprintf_short_signed_fold() {
+    // %hd sign-folds at bit 15: 0xFFFF (16-bit -1) prints "-1", mirroring
+    // Python's `c_val -= 1<<16` when the width high bit is set.
+    assert_eq!(sprintf_one(b"%hd", 0xFFFF).unwrap(), b"-1");
+    // %hhd sign-folds at bit 7: 0xFF -> -1.
+    assert_eq!(sprintf_one(b"%hhd", 0xFF).unwrap(), b"-1");
+    // Upper bits beyond the width are ignored before the fold.
+    assert_eq!(sprintf_one(b"%hd", 0xDEAD_8000).unwrap(), b"-32768");
+}
+
+#[test]
+fn test_sprintf_narrow_unsigned_high_bit_falls_back() {
+    // The high-bit guard now checks the modifier-derived width, not just bit
+    // 31/63: %hx of a value whose bit 15 is set must defer to Python (whose
+    // buggy signed fold renders it negative), just like the 32-bit case.
+    assert!(sprintf_one(b"%hx", 0x8000).is_err());
+    assert!(sprintf_one(b"%hu", 0x8000).is_err());
+    assert!(sprintf_one(b"%ho", 0x8000).is_err());
+    // %hhx of a value with bit 7 set likewise defers.
+    assert!(sprintf_one(b"%hhx", 0x80).is_err());
+    // ...but with the width high bit clear it still formats natively.
+    assert_eq!(sprintf_one(b"%hx", 0x7FFF).unwrap(), b"7fff");
+}
