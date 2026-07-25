@@ -324,6 +324,70 @@ fn resume_after_error_no_pending_state_raises() {
     });
 }
 
+/// _resume_after_error must not silently drop a deferred fork accumulated
+/// earlier in the same step just because the Python callback that parked the
+/// state later raised (angr-4xaga.5). The deferred fork diverged BEFORE the
+/// callback, so it is unrelated to the error; dropping it makes a find target
+/// behind its unexplored side permanently unreachable. Mirrors
+/// `deadend_pending_callback_conservative_fork_not_dropped`: the fork here has
+/// no condition source at all, so the P15 conservative arm must materialize an
+/// unconstrained successor at `unexplored_target` and route it to active while
+/// the parking state still lands in the errored stash.
+#[test]
+fn resume_after_error_deferred_fork_not_dropped() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let sid = state.state_id();
+
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason: CallbackReason::Error {
+                message: "hook raised".to_string(),
+            },
+            jumpkind: None,
+            solver_ctx: None,
+            // condition_id 999 absent from stored_conditions + no condition_ast
+            // -> only the P15 conservative arm keeps this fork alive.
+            deferred_forks: vec![crate::callbacks::DeferredFork {
+                branch_addr: 0x40_0500,
+                path_taken: true,
+                unexplored_target: 0x40_2000,
+                condition_id: 999,
+                push_level: 0,
+                condition_ast: None,
+            }],
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    mgr._resume_after_error(sid, "py callback raised")
+        .expect("ok");
+
+    // The parking state itself errored, with the error recorded.
+    let errored = mgr.sm.get(STASH_ERRORED).expect("errored stash");
+    assert_eq!(errored.len(), 1);
+    assert_eq!(errored[0].state_id(), sid);
+    assert_eq!(mgr.get_errors().len(), 1);
+
+    // The deferred fork was routed to active at the unexplored target, not
+    // dropped when `pending` went out of scope.
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert_eq!(
+        active.len(),
+        1,
+        "conservative fork must be routed, not dropped"
+    );
+    assert_eq!(active[0].pc(), 0x40_2000);
+
+    assert!(mgr.pending_callbacks.is_empty());
+}
+
 /// _deadend_pending_callback must not silently drop a deferred fork whose
 /// condition is absent from `stored_conditions` and which carries no
 /// `condition_ast` (angr-ph300.7). Before the P11/P15 fallback was ported to

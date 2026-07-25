@@ -291,6 +291,45 @@ impl RustExplorationManager {
         // Record the error
         self.errors.push((pc, error_msg.to_string(), state_id));
 
+        // Process deferred forks BEFORE erroring — these represent unexplored
+        // branches that diverged EARLIER in the same step, before the callback
+        // that raised. They have nothing to do with why the Python handler
+        // threw, so dropping them (as this path used to) silently prunes a
+        // reachable branch: a find= target behind that untaken side becomes
+        // permanently unreachable with no diagnostic beyond the generic
+        // callback-error warning (angr-4xaga.5). Mirror _deadend_pending_callback
+        // exactly — pending.state is likewise about to move to a terminal stash
+        // (STASH_ERRORED here vs STASH_DEADENDED there), so it is the guard_sink
+        // for each taken-path constraint.
+        if !pending.deferred_forks.is_empty() {
+            let fork_base = pending
+                .pre_callback_snapshot
+                .unwrap_or_else(|| pending.state.fork());
+            let root_state_id = self.sm.root_or_self(pending.state.state_id());
+
+            let mut snapshots = pending.fork_snapshots;
+            let materialized = super::helpers::materialize_deferred_forks(
+                pending.deferred_forks,
+                super::helpers::MaterializeForkCtx {
+                    fork_base: &fork_base,
+                    stored_conditions: &pending.stored_conditions,
+                    snapshots: &mut snapshots,
+                    lazy_solves: self.constraint_solver.lazy_solves,
+                    guard_sink: Some(&pending.state),
+                    stats: None,
+                },
+            );
+            for forked in materialized.unsat {
+                // Lineage registered, then dropped: like the deadend path, the
+                // error path has no pruned-stash push for materialized forks.
+                self.sm.set_root(forked.state_id(), root_state_id);
+            }
+            for forked in materialized.sat {
+                self.sm.set_root(forked.state_id(), root_state_id);
+                self.route_successor(forked, false);
+            }
+        }
+
         // Move to errored stash
         self.sm
             .stashes_mut()
