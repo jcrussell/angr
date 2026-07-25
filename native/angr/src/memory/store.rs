@@ -343,6 +343,10 @@ impl SymbolicMemory {
         }
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store.
+        // SILENT(cat-b): under the AVOID_MULTIVALUED_WRITES option the caller
+        // deliberately degrades a multi-valued symbolic-address write to a
+        // no-op (matches the Python engine's opt); the store is lost but this
+        // is the requested, bounded behavior, not a wrong-answer surprise.
         if concretizer.should_avoid_multivalued_write(&addr) {
             return Ok(None);
         }
@@ -638,6 +642,10 @@ impl SymbolicMemory {
         }
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store.
+        // SILENT(cat-b): under the AVOID_MULTIVALUED_WRITES option the caller
+        // deliberately degrades a multi-valued symbolic-address write to a
+        // no-op (matches the Python engine's opt); the store is lost but this
+        // is the requested, bounded behavior, not a wrong-answer surprise.
         if concretizer.should_avoid_multivalued_write(&addr) {
             return Ok(None);
         }

@@ -38,6 +38,10 @@ impl RustExplorationManager {
             let ctx_ref: &SymContext = &sym_ctx;
 
             // Pre-fetch Z3 backend for fast path
+            // SILENT(cat-a): probing for claripy's optional z3 backend; a
+            // missing backend is expected control flow (the loop below simply
+            // takes the generic slow path instead of the typed fast path), so
+            // collapsing the error to None here loses no correctness.
             #[cfg(feature = "vex-engine-z3")]
             let z3_backend = py
                 .import("claripy")

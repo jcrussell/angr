@@ -1,0 +1,13 @@
+# Silent-fallback audit baseline -- see tools/audit_silent_fallback.py
+# One key per known-untagged site: <relpath>\t<shape>\t<stripped-code>.
+# Regenerate with: tools/audit_silent_fallback.py --update-baseline
+# Shrinking this file (by tagging a site with // SILENT(cat-x):) is the goal.
+callbacks/dispatch.rs	return-ok-none	return Ok(None);
+callbacks/inspect.rs	return-ok-none	None => return Ok(None),
+engine.rs	return-ok-none	return Ok(None);
+exploration/pending_api.rs	ok-swallow	.ok();
+exploration/state_api.rs	return-ok-none	None => return Ok(None),
+interpreter/expressions.rs	return-ok-none	None => return Ok(None),
+procedures/mem_common.rs	return-ok-none	return Ok(None);
+procedures/python_proc.rs	return-ok-none	return Ok(None);
+solver.rs	return-ok-none	None => return Ok(None),
