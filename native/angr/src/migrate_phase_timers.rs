@@ -95,7 +95,16 @@ pub fn serializing() -> bool {
 /// call to `f` (no clock read, no atomic store).
 #[inline]
 pub fn time_phase<R>(counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
-    if enabled() && serializing() {
+    time_phase_armed(enabled() && serializing(), counter, f)
+}
+
+/// Pure timing core: when `armed`, add `f`'s wall time (ns) to `counter`;
+/// otherwise a direct tail call. Split out from [`time_phase`] so the
+/// firing/no-firing decision can be exercised deterministically without the
+/// process-global env gate (mirrors `gil_profile`'s `enabled: bool` guards).
+#[inline]
+fn time_phase_armed<R>(armed: bool, counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
+    if armed {
         let t0 = std::time::Instant::now();
         let r = f();
         counter.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -109,7 +118,14 @@ pub fn time_phase<R>(counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
 /// the env flag so it is zero-cost when off.
 #[inline]
 pub fn add_raw_constraint_count(n: u64) {
-    if enabled() && serializing() {
+    add_raw_constraint_count_armed(enabled() && serializing(), n);
+}
+
+/// Pure core of [`add_raw_constraint_count`], split out so the gate can be
+/// driven directly in tests.
+#[inline]
+fn add_raw_constraint_count_armed(armed: bool, n: u64) {
+    if armed {
         MIGRATE_RAW_CONSTRAINT_COUNT.fetch_add(n, Ordering::Relaxed);
     }
 }
@@ -128,7 +144,14 @@ pub fn count_armed() -> bool {
 /// denominator over the same call set.
 #[inline]
 pub fn time_roundtrip_half<R>(f: impl FnOnce() -> R) -> R {
-    if enabled() {
+    time_roundtrip_half_armed(enabled(), f)
+}
+
+/// Pure core of [`time_roundtrip_half`], split out so the gate can be driven
+/// directly in tests.
+#[inline]
+fn time_roundtrip_half_armed<R>(armed: bool, f: impl FnOnce() -> R) -> R {
+    if armed {
         let t0 = std::time::Instant::now();
         let r = f();
         MIGRATE_ROUNDTRIP_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -149,4 +172,153 @@ pub fn snapshot() -> (u64, u64, u64, u64, u64, u64) {
         MIGRATE_RAW_CONSTRAINT_COUNT.load(Ordering::Relaxed),
         MIGRATE_ROUNDTRIP_NS.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that assert *exact* deltas on the process-global
+    /// counters — `cargo test` runs test fns on parallel threads, so two
+    /// tests mutating the same static would race each other's before/after
+    /// arithmetic. Tests using only local atomics or `>`-comparisons don't
+    /// need it.
+    static GLOBALS_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Spin until the monotonic clock advances by at least `min_ns`, so a
+    /// timed closure banks a strictly-positive delta regardless of clock
+    /// resolution (mirrors `gil_profile::tests::busy_ns`).
+    fn busy_ns(min_ns: u64) {
+        let t0 = std::time::Instant::now();
+        let mut spins: u64 = 0;
+        while (t0.elapsed().as_nanos() as u64) < min_ns {
+            spins = spins.wrapping_add(1);
+            std::hint::black_box(spins);
+        }
+    }
+
+    #[test]
+    fn set_serializing_is_nesting_safe_and_returns_prev() {
+        // Baseline off.
+        assert!(!serializing());
+        let prev_outer = set_serializing(true);
+        assert!(!prev_outer, "outer previous should be the false baseline");
+        assert!(serializing());
+        // Nested arm returns the outer's `true` so it can restore correctly.
+        let prev_inner = set_serializing(true);
+        assert!(prev_inner);
+        set_serializing(prev_inner);
+        assert!(
+            serializing(),
+            "restoring the nested arm keeps us serializing"
+        );
+        // Restore the outer baseline; other tests must not see us serializing.
+        set_serializing(prev_outer);
+        assert!(!serializing());
+    }
+
+    #[test]
+    fn time_phase_armed_banks_only_when_armed() {
+        // Local counter → no cross-test interference on the process globals.
+        let counter = AtomicU64::new(0);
+
+        // Disarmed: pure pass-through, no bank.
+        let r = time_phase_armed(false, &counter, || {
+            busy_ns(1_000);
+            42
+        });
+        assert_eq!(r, 42, "closure result must pass through");
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "disarmed must not bank");
+
+        // Armed: closure result passes through AND wall time banks (> 0).
+        let r = time_phase_armed(true, &counter, || {
+            busy_ns(50_000);
+            7
+        });
+        assert_eq!(r, 7);
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "armed must bank a positive ns delta"
+        );
+    }
+
+    #[test]
+    fn time_roundtrip_half_armed_banks_only_when_armed() {
+        let _g = GLOBALS_LOCK.lock().unwrap();
+        let before = MIGRATE_ROUNDTRIP_NS.load(Ordering::Relaxed);
+        let r = time_roundtrip_half_armed(false, || {
+            busy_ns(1_000);
+            "off"
+        });
+        assert_eq!(r, "off");
+        assert_eq!(
+            MIGRATE_ROUNDTRIP_NS.load(Ordering::Relaxed),
+            before,
+            "disarmed roundtrip must not move the global"
+        );
+
+        let r = time_roundtrip_half_armed(true, || {
+            busy_ns(50_000);
+            "on"
+        });
+        assert_eq!(r, "on");
+        assert!(
+            MIGRATE_ROUNDTRIP_NS.load(Ordering::Relaxed) > before,
+            "armed roundtrip must advance the global"
+        );
+    }
+
+    #[test]
+    fn add_raw_constraint_count_armed_gates_on_flag() {
+        let _g = GLOBALS_LOCK.lock().unwrap();
+        let before = MIGRATE_RAW_CONSTRAINT_COUNT.load(Ordering::Relaxed);
+        add_raw_constraint_count_armed(false, 100);
+        assert_eq!(
+            MIGRATE_RAW_CONSTRAINT_COUNT.load(Ordering::Relaxed),
+            before,
+            "disarmed count must not accumulate"
+        );
+        add_raw_constraint_count_armed(true, 5);
+        assert_eq!(
+            MIGRATE_RAW_CONSTRAINT_COUNT.load(Ordering::Relaxed),
+            before + 5,
+            "armed count must add exactly n"
+        );
+    }
+
+    #[test]
+    fn count_armed_matches_env_and_serializing() {
+        // `count_armed()` is `enabled() && serializing()`. `enabled()` is the
+        // process-global env gate (fixed for the test binary); regardless of
+        // its value, count_armed must be false while not serializing.
+        let prev = set_serializing(false);
+        assert!(!count_armed(), "not serializing => never armed");
+        // When serializing, count_armed tracks enabled() exactly.
+        set_serializing(true);
+        assert_eq!(count_armed(), enabled());
+        set_serializing(prev);
+    }
+
+    #[test]
+    fn snapshot_reports_globals_in_documented_order() {
+        let _g = GLOBALS_LOCK.lock().unwrap();
+        // Field order is (emit, parse, serde, leaf_rebuild, raw_count,
+        // roundtrip). Bump each global by a distinct delta and confirm the
+        // matching tuple field moved by exactly that amount.
+        let s0 = snapshot();
+        MIGRATE_SMTLIB2_EMIT_NS.fetch_add(1, Ordering::Relaxed);
+        MIGRATE_SMTLIB2_PARSE_NS.fetch_add(2, Ordering::Relaxed);
+        MIGRATE_SERDE_NS.fetch_add(4, Ordering::Relaxed);
+        MIGRATE_LEAF_REBUILD_NS.fetch_add(8, Ordering::Relaxed);
+        MIGRATE_RAW_CONSTRAINT_COUNT.fetch_add(16, Ordering::Relaxed);
+        MIGRATE_ROUNDTRIP_NS.fetch_add(32, Ordering::Relaxed);
+        let s1 = snapshot();
+        assert_eq!(s1.0 - s0.0, 1);
+        assert_eq!(s1.1 - s0.1, 2);
+        assert_eq!(s1.2 - s0.2, 4);
+        assert_eq!(s1.3 - s0.3, 8);
+        assert_eq!(s1.4 - s0.4, 16);
+        assert_eq!(s1.5 - s0.5, 32);
+    }
 }
