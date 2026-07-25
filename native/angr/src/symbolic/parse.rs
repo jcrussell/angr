@@ -64,17 +64,26 @@ pub(super) fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     let byte_len = width.div_ceil(8) as usize;
     let mut result = vec![0u8; byte_len];
 
-    // Pad hex string to even length
-    let padded = if s.len() % 2 == 1 {
-        format!("0{s}")
-    } else {
-        s.to_string()
-    };
+    // Keep only ASCII hex digits, then decode whole-byte pairs. Z3's Display
+    // emits ASCII hex, but stay char-safe like the sibling decoders: the old
+    // `&padded[i..i + 2]` byte-slice panicked ('not a char boundary') on any
+    // multibyte UTF-8 char (angr-qwyti.23). Filtering to `is_ascii_hexdigit`
+    // first — same style as parse_binary_to_bytes — is panic-free on any input.
+    let mut digits: Vec<u8> = s.bytes().filter(u8::is_ascii_hexdigit).collect();
+    // Prepend a zero nibble on odd length so pairs align to whole bytes.
+    if digits.len() % 2 == 1 {
+        digits.insert(0, b'0');
+    }
 
-    // Parse hex pairs from right to left (big-endian output)
-    let hex_bytes: Vec<u8> = (0..padded.len())
-        .step_by(2)
-        .filter_map(|i| u8::from_str_radix(&padded[i..i + 2], 16).ok())
+    // Decode each hex pair to a byte (big-endian output). Every byte is a
+    // validated hex digit, so both nibble conversions succeed.
+    let hex_bytes: Vec<u8> = digits
+        .chunks_exact(2)
+        .filter_map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some(((hi << 4) | lo) as u8)
+        })
         .collect();
 
     // Copy to result (right-aligned, big-endian)

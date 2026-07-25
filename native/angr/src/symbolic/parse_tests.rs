@@ -108,6 +108,17 @@ fn test_parse_hex_to_bytes_right_aligned_in_wider_field() {
     assert_eq!(parse_hex_to_bytes("ff", 16), Some(vec![0x00, 0xff]));
 }
 
+#[test]
+fn test_parse_hex_to_bytes_non_ascii_no_panic() {
+    // Regression (angr-qwyti.23): a multibyte UTF-8 char used to panic on the
+    // `&padded[i..i + 2]` byte-slice ('not a char boundary'). Now the parser
+    // filters to ASCII hex digits and never panics: the '€' is dropped, leaving
+    // "12" -> 0x12.
+    assert_eq!(parse_hex_to_bytes("1€2", 8), Some(vec![0x12]));
+    // Purely non-hex input decodes to an all-zero field, not a panic.
+    assert_eq!(parse_hex_to_bytes("€", 8), Some(vec![0x00]));
+}
+
 // --- parse_binary_to_bytes (big-endian, right-aligned) ---------------------
 
 #[test]
