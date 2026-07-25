@@ -563,3 +563,24 @@ jobs:
           path: findall_gate_report.json
           if-no-files-found: warn
           retention-days: 90
+
+  cargo_deny:
+    # RustSec advisory-DB + license scan over the native crate's dependency
+    # graph (config: native/angr/deny.toml). Nightly-only, not PR-time: the
+    # advisory DB is a moving target so a new advisory can redden a green tree
+    # with no code change, and this is a drift signal rather than a PR blocker
+    # (angr-qwyti.7). The advisories check is the deterministic hard gate; the
+    # licenses check is best-effort against a broad allow-list in deny.toml --
+    # a first-run license miss reddens the nightly (not a PR) and is fixed by
+    # appending the missing SPDX id there.
+    name: cargo-deny (advisories + licenses)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: taiki-e/install-action@6887963ccf37a9ddcd8c5fa4baeb3e1e5fd61fa1 # v2
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny check
+        run: cargo deny --manifest-path native/angr/Cargo.toml check

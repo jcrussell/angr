@@ -1,0 +1,55 @@
+# cargo-deny configuration for the `angr` native crate (rustylib).
+#
+# Consumed by the nightly-only `cargo_deny` job in
+# .github/workflows/nightly-ci.yml. Nightly rather than PR-time because the
+# RustSec advisory-DB is a moving target (a new advisory can redden a green
+# tree without any code change) and the icicle-emu git deps make for a slow
+# cold build -- it is a drift signal, not a PR blocker.
+#
+# Schema: cargo-deny v2 (version = 2). See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# db-urls defaults to the RustSec advisory database. With version = 2,
+# vulnerabilities and unmaintained crates are denied by default and yanked
+# crates warn. Add advisory IDs here to acknowledge/suppress a specific finding
+# once triaged (e.g. a transitive dep with no fixed release yet).
+ignore = []
+
+[licenses]
+version = 2
+# Best-effort allow-list of the permissive licenses common in the dependency
+# graph. This is a nightly signal: a first-run miss reddens the nightly (not a
+# PR) and the fix is to append the missing SPDX id here. Copyleft/unknown
+# licenses are denied by omission.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[bans]
+# The icicle-emu family legitimately pulls multiple versions of some crates;
+# do not gate on that. Wildcards likewise stay permissive -- the value here is
+# the advisory/license scan, not a strict version-hygiene gate.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+# The icicle-fuzzing / icicle-vm / libafl / libafl_bolts / pcode deps are
+# git-pinned behind the default-off `fuzzer` feature; allow git sources.
+unknown-git = "allow"
