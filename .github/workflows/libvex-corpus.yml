@@ -1,0 +1,54 @@
+name: libVEX Corpus Parity (PR)
+
+# PR-time counterpart to nightly-ci.yml::libvex_ffi_tests (angr-qwyti.21).
+#
+# The corpus parity gate (native/angr/src/vex/libvex_corpus_tests.rs) is the
+# REAL Stage-1 gate: it replays AMD64 blocks through both the native libVEX-FFI
+# lifter and the pyvex-serialized path and asserts structural IRSB equality. It
+# normally runs only nightly, because `--features libvex-ffi` is default-OFF in
+# Cargo.toml (PR-time `cargo clippy --all-features` *compiles* it but never
+# *executes* it), and a cold libvex-ffi build is ~2 min (bindgen + z3-sys +
+# full crate) plus a pyvex install to link libpyvex.so — too much to tax every
+# PR with.
+#
+# This lane closes the "opcode-semantic regression merged before nightly caught
+# it" window WITHOUT that per-PR tax, by path-gating: it only runs on PRs that
+# touch the VEX lifter / opcode surface (the exact PRs the corpus gate exists to
+# protect). The corpus itself is a single fast test — the whole cost is the
+# feature-gated build + pyvex link, so there is no need to carve a "subset": the
+# full corpus test IS the small, targeted check. setup-rust-toolchain brings
+# Swatinem/rust-cache, so repeat runs on VEX PRs warm-build in well under a
+# minute.
+on:
+  pull_request:
+    paths:
+      - "native/angr/src/vex/**"
+      - "native/angr/tests/fixtures/libvex_corpus.json"
+      - "native/angr/build.rs"
+      - ".github/workflows/libvex-corpus.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+jobs:
+  libvex_corpus_parity:
+    name: libVEX Corpus Parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.12"
+      # build.rs::find_pyvex_lib_dir shells out to `python3 -c "import pyvex"`
+      # to locate libpyvex.so, then emits link-search/link-lib/rpath for it.
+      - name: Install pyvex
+        run: python -m pip install pyvex
+      - name: Corpus parity test with features "libvex-ffi"
+        run: cargo test --manifest-path native/angr/Cargo.toml --release --features libvex-ffi --lib libvex
