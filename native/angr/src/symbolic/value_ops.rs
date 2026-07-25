@@ -1312,9 +1312,20 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
     if from_width >= to_width {
         value
     } else {
+        // `from_width < to_width <= 128`, so `from_width < 128` and the
+        // `1u128 << from_width` shifts below are in range. `to_width` can be
+        // exactly 128, where `1u128 << 128` overflows (panic under debug /
+        // `panic = "abort"`, and silently wraps the shift amount mod 128 in
+        // release — corrupting the mask into a zero-extension). Saturate the
+        // to-mask to `u128::MAX` at width 128, matching `mask()` in the tests.
         let sign_bit = 1u128 << (from_width - 1);
         if value & sign_bit != 0 {
-            let extension_mask = ((1u128 << to_width) - 1) & !((1u128 << from_width) - 1);
+            let to_mask = if to_width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << to_width) - 1
+            };
+            let extension_mask = to_mask & !((1u128 << from_width) - 1);
             value | extension_mask
         } else {
             value

@@ -482,6 +482,39 @@ fn boundary_sign_extend_matches_reference() {
     }
 }
 
+/// Regression for the `sign_extend_to` `1u128 << 128` overflow (angr-qwyti.16):
+/// widening a negative value to exactly 128 bits overflowed the mask shift,
+/// SIGABRTing under `panic = "abort"` and silently zero-extending in release.
+/// `boundary_sign_extend_matches_reference` above cannot catch it — it uses
+/// `sign_extend_to` as its own reference, so a wrong `sign_extend_to` matches a
+/// wrong `sign_extend`. Here the reference is the *independent* `sign_extend`
+/// i128 helper (a distinct code path, correct for every `from_width < 128`).
+#[test]
+fn sign_extend_to_128_matches_i128_reference() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        if w >= 128 {
+            continue; // no widening past the u128 ceiling
+        }
+        for &v in &boundary_values(w) {
+            let src = v & mask(w);
+            // Reference: sign_extend() returns the i128 two's-complement value;
+            // its bit pattern IS the 128-bit sign extension.
+            let want = sign_extend(src, w) as u128;
+            let got = val(&bv(src, w).sign_extend(128, &ctx));
+            assert_eq!(got, want, "sext({w}->128) v={src:#x}");
+            // Spot-check the classic case directly: a negative 64-bit value must
+            // gain a solid run of high ones, not zero-extend.
+            if w == 64 && src == 0x8000_0000_0000_0000 {
+                assert_eq!(
+                    got, 0xFFFF_FFFF_FFFF_FFFF_8000_0000_0000_0000,
+                    "sext of i64::MIN to 128 must fill the top with ones"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn boundary_extract_single_bits_and_slices() {
     let ctx = SymContext::new_mock();
