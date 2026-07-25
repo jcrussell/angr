@@ -103,7 +103,7 @@ pub(crate) fn store_symbolic_line(
             let at = RustBV::concrete(p as u128, bits).eq(&real_size, &ctx);
             store_bytes.push(at.ite(&nul, byte, &ctx));
         }
-        store_bytes.push(nul.clone());
+        store_bytes.push(nul);
         (real_size, constraints, store_bytes)
     };
 
