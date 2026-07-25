@@ -165,6 +165,37 @@ class TestProxyLiskovGaps:
         assert proxy.solver.min(wide) == 0
         assert proxy.solver.max(wide) == (1 << 160) - 1
 
+    def test_solver_proxy_min_max_width_gt128_honors_added_constraint(self, fauxware_project):
+        """angr-hv4lt.5: a constraint added via ``proxy.solver.add()`` on the
+        standalone ``RustSolverProxy`` must NOT be dropped by the width>128
+        big-int fallback. The standalone proxy's ``add`` only mutates the
+        forked context (not the state), so ``_resolve_none_extremum`` — which
+        used to re-derive constraints from ``export_state_constraints`` (state
+        only) — silently omitted it. The fallback now unions the proxy's tracked
+        adds, matching what the primary Rust min/max path on the forked context
+        saw."""
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        wide = claripy.BVS("stateproxy_wide_constrained", 160)
+        lower = 1 << 130  # exceeds u128, so Rust min still returns None
+        upper = 1 << 155
+        proxy.solver.add(wide.UGE(lower))
+        proxy.solver.add(wide.ULE(upper))
+        proxy.solver._ensure_solver()
+
+        # The forked Rust context sees the constraints, but the extremum
+        # exceeds u128 so the primary path returns None -> big-int fallback.
+        assert proxy.solver._solver_ctx.min(wide) is None
+        assert proxy.solver._solver_ctx.max(wide) is None
+
+        # Fallback must honor the in-proxy adds (pre-fix: min=0, max=2**160-1).
+        assert proxy.solver.min(wide) == lower
+        assert proxy.solver.max(wide) == upper
+
     def test_solver_proxy_min_unsat_still_raises(self, fauxware_project):
         """angr-fjhk9: a genuinely unsat ``RustSolverProxy`` ctx still raises
         ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""

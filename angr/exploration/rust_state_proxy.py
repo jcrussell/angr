@@ -316,7 +316,7 @@ class RustSolverProxyBase(_SolutionCountMixin):
         return _resolve_none_extremum(
             "min",
             expr,
-            self.constraints,
+            self._fallback_constraints(),
             extra_constraints,
             signed,
             lambda: self.satisfiable(extra_constraints=extra_constraints),
@@ -331,7 +331,7 @@ class RustSolverProxyBase(_SolutionCountMixin):
         return _resolve_none_extremum(
             "max",
             expr,
-            self.constraints,
+            self._fallback_constraints(),
             extra_constraints,
             signed,
             lambda: self.satisfiable(extra_constraints=extra_constraints),
@@ -347,6 +347,24 @@ class RustSolverProxyBase(_SolutionCountMixin):
     def constraints(self):
         """Get all constraints as claripy ASTs."""
         return self._mgr.export_state_constraints(self._state_id)
+
+    def _fallback_constraints(self):
+        """Constraint set for ``_resolve_none_extremum``'s big-int fallback.
+
+        The primary ``min``/``max`` path queries ``self._query_ctx()`` — the
+        proxy's *forked* Rust context, which sees any constraint the primary
+        path added. When that path returns ``None`` (width>128) and we fall
+        back to a fresh ``claripy.Solver``, we must feed it the SAME constraint
+        set the forked context saw, or the fallback bound can diverge from the
+        primary one (angr-hv4lt.5).
+
+        Base default: ``self.constraints`` — correct for
+        ``RustSolverProxyPlugin``, whose ``add`` write-throughs land on the
+        state so ``export_state_constraints`` already reflects them. The
+        standalone ``RustSolverProxy`` overrides this because its ``add`` only
+        mutates the forked context, not the state.
+        """
+        return self.constraints
 
     @property
     def timeout(self):
@@ -398,6 +416,11 @@ class RustSolverProxy(RustSolverProxyBase):
         # shared forked context so a constraint added here is visible to the
         # same proxy's memory/posix reads. None for standalone construction.
         self._shared_ctx_getter = shared_ctx_getter
+        # angr-hv4lt.5: claripy ASTs added via this proxy's ``add()``. These
+        # land only on the forked ``_solver_ctx`` (never the state), so
+        # ``self.constraints`` (== state constraints) can't recover them for
+        # the ``min``/``max`` big-int fallback. Track them here instead.
+        self._added_constraints = []
 
     def _ensure_solver(self):
         if self._solver_ctx is None:
@@ -451,8 +474,17 @@ class RustSolverProxy(RustSolverProxyBase):
             if isinstance(c, (list, tuple)):
                 for cc in c:
                     self._solver_ctx.add_constraint_ast(cc)
+                    self._added_constraints.append(cc)
             else:
                 self._solver_ctx.add_constraint_ast(c)
+                self._added_constraints.append(c)
+
+    def _fallback_constraints(self):
+        # See RustSolverProxyBase._fallback_constraints. This proxy's ``add``
+        # only mutates the forked ``_solver_ctx``, so the state-only
+        # ``self.constraints`` misses them — union in the tracked adds so the
+        # width>128 fallback matches what the primary Rust min/max path saw.
+        return [*self.constraints, *self._added_constraints]
 
     def is_true(self, expr, **kwargs):
         """Check if expression is definitely true."""
