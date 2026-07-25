@@ -207,6 +207,58 @@ class _SolutionCountMixin:
         return results
 
 
+class _ProxyStatePluginMixin:
+    """Shared ``SimStatePlugin`` protocol stubs for the Rust proxy plugins.
+
+    ``RustSolverProxyPlugin``, ``RustRegisterProxy``, ``RustMemoryProxy`` and
+    ``RustCallStackProxyPlugin`` each install as a ``state.<category>`` plugin
+    under the callback-install gate (angr-4scu / angr-qj30 / angr-8oiw) and
+    route every op directly into Rust by ``state_id`` rather than holding
+    Python-side state. That makes their ``set_state`` / ``set_strongref_state``
+    / ``init_state`` / ``merge`` / ``widen`` bodies byte-for-byte identical, so
+    they live here once instead of being hand-copied per class (angr-hv4lt.6).
+
+    Subclasses keep the members that genuinely differ — ``STRONGREF_STATE``,
+    ``category``, ``copy()`` and (memory) ``SUPPORTS_CONCRETE_LOAD`` /
+    ``permissions`` / ``compare``. A subclass that ever implements real
+    cross-``state_id`` coordination overrides ``merge`` / ``widen``; none do
+    today. The surface is intentionally public API (see the
+    ``public-api-proxy-protocol-surface`` bd memory and
+    ``angr/exploration/_public_api.py``).
+    """
+
+    def set_state(self, state):
+        """SimStatePlugin hook — invoked on plugin install / copy.
+
+        The proxy never reads back through ``self.state`` (it routes every op
+        directly into Rust by ``state_id``), but we stash the reference so
+        downstream code that inspects ``plugin.state`` doesn't see ``None``.
+        ``object.__setattr__`` is used so the write-through ``__setattr__`` on
+        ``RustRegisterProxy`` doesn't try to route ``state`` into Rust.
+        """
+        object.__setattr__(self, "state", state)
+
+    def set_strongref_state(self, _state):
+        # SimStatePlugin protocol: invoked only when ``STRONGREF_STATE`` is
+        # True. All proxy plugins keep it ``False`` (no strong refs back to the
+        # state), so this is dead code, defined only for protocol parity.
+        pass
+
+    def init_state(self):
+        # SimStatePlugin protocol: called once after ``register_plugin``.
+        # Nothing to initialize on the Python side — the underlying
+        # ``RustSimState`` is already populated by the engine.
+        pass
+
+    def merge(self, _others, _merge_conditions, _common_ancestor=None):
+        # angr-8dop.2-style gap: cross-state_id merge is out of scope for the
+        # callback-install gate. Signal "no merge happened" (False).
+        return False
+
+    def widen(self, _others):
+        return False
+
+
 class RustSolverProxyBase(_SolutionCountMixin):
     """Shared delegation core for the two Rust solver proxies.
 
@@ -429,7 +481,7 @@ class RustSolverProxy(RustSolverProxyBase):
             pass
 
 
-class RustSolverProxyPlugin(RustSolverProxyBase):
+class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     """SimSolver-shaped plugin that routes constraint ops through Rust.
 
     Installed as ``state.solver`` on SimProcedure callback states under the
@@ -493,18 +545,8 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
     def category(self):
         return "solver"
 
-    def set_state(self, state):
-        """SimStatePlugin hook — invoked on plugin install / copy."""
-        object.__setattr__(self, "state", state)
-
-    def set_strongref_state(self, _state):
-        # STRONGREF_STATE=False, so dead code; defined for protocol parity.
-        pass
-
-    def init_state(self):
-        # The underlying Rust state's solver is already populated by the
-        # engine — nothing to initialize on the Python side.
-        pass
+    # set_state / set_strongref_state / init_state / merge / widen: see
+    # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
         """Return a new proxy bound to the same Rust state."""
@@ -515,14 +557,6 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
         clone.temporal_tracked_variables = dict(self.temporal_tracked_variables)
         clone.eternal_tracked_variables = dict(self.eternal_tracked_variables)
         return clone
-
-    def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        # Mirrors the angr-8dop.2 gap stubs on the memory / register proxies:
-        # cross-state_id solver merge is out of scope for the callback gate.
-        return False
-
-    def widen(self, _others):
-        return False
 
     def downsize(self):
         # SimSolver.downsize clears Python claripy caches; the proxy has no
@@ -833,7 +867,7 @@ class RustSolverProxyPlugin(RustSolverProxyBase):
                 yield reverse_mapping[var]
 
 
-class RustRegisterProxy:
+class RustRegisterProxy(_ProxyStatePluginMixin):
     """
     Provides `state.regs.rax`-style access by delegating to Rust.
 
@@ -1136,29 +1170,8 @@ class RustRegisterProxy:
     def category(self):
         return "reg"
 
-    def set_state(self, state):
-        """SimStatePlugin hook — invoked on plugin install / copy.
-
-        We don't keep a weakref like the base ``SimStatePlugin`` does
-        because the proxy never reads back through ``self.state``; it
-        routes every op directly into Rust by ``state_id``. We do stash
-        the reference so downstream code that inspects ``plugin.state``
-        doesn't see ``None``.
-        """
-        object.__setattr__(self, "state", state)
-
-    def set_strongref_state(self, _state):
-        # SimStatePlugin protocol: invoked when ``STRONGREF_STATE`` is True.
-        # We keep it ``False`` (no strong refs from the proxy back to the
-        # state) so this is dead code; defined only to match the surface.
-        pass
-
-    def init_state(self):
-        # SimStatePlugin protocol: called once after ``register_plugin``.
-        # Nothing to initialize on the Rust side — the underlying
-        # ``RustSimState`` register file is already populated by the
-        # engine.
-        pass
+    # set_state / set_strongref_state / init_state / merge / widen: see
+    # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
         """Return a new proxy bound to the same Rust state.
@@ -1172,19 +1185,8 @@ class RustRegisterProxy:
         """
         return RustRegisterProxy(self._mgr, self._state_id, self._arch, python_mgr=self._python_mgr)
 
-    def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        # angr-8dop.2-style gap: merge / widen / compare on the proxy
-        # are stubs that signal "no merge happened" (False), matching
-        # SimRegNameView.merge. Real merge would require coordinating
-        # the Rust register file across multiple state_ids — out of
-        # scope for the callback-install gate.
-        return False
 
-    def widen(self, _others):
-        return False
-
-
-class RustMemoryProxy:
+class RustMemoryProxy(_ProxyStatePluginMixin):
     """
     Provides `state.memory.load(addr, size)`-style access via Rust.
 
@@ -1261,27 +1263,8 @@ class RustMemoryProxy:
 
     STRONGREF_STATE = False
 
-    def set_state(self, state):
-        """SimStatePlugin hook — invoked on plugin install / copy.
-
-        We don't keep a weakref like the base ``SimStatePlugin`` does because
-        the proxy never reads back through ``self.state``; it routes every
-        op directly into Rust by ``state_id``. We do stash the reference so
-        downstream code that inspects ``plugin.state`` doesn't see ``None``.
-        """
-        self.state = state
-
-    def set_strongref_state(self, _state):
-        # SimStatePlugin protocol: invoked when ``STRONGREF_STATE`` is True.
-        # We keep it ``False`` (no strong refs from the proxy back to the
-        # state) so this is dead code; defined only to match the surface.
-        pass
-
-    def init_state(self):
-        # SimStatePlugin protocol: called once after ``register_plugin``.
-        # Nothing to initialize on the Rust side — the underlying
-        # ``RustSimState`` is already populated by the engine.
-        pass
+    # set_state / set_strongref_state / init_state / merge / widen: see
+    # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
         """Return a new proxy bound to the same Rust state.
@@ -1328,18 +1311,7 @@ class RustMemoryProxy:
         del addr, permissions
         return claripy.BVV(7, 3)
 
-    def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        """SimMemory.merge stub.
-
-        Returns False ("no merge happened") matching the register / solver
-        proxy pattern. Cross-state_id memory merge would require Rust-side
-        coordination that isn't in scope for the callback-install gate.
-        """
-        return False
-
-    def widen(self, _others):
-        """SimMemory.widen stub — see ``merge``."""
-        return False
+    # merge / widen: see _ProxyStatePluginMixin.
 
     def compare(self, _other):
         """SimMemory.compare stub.
@@ -2335,7 +2307,7 @@ class RustCallStackProxy:
         return f"<RustCallStackProxy depth={len(self)}>"
 
 
-class RustCallStackProxyPlugin:
+class RustCallStackProxyPlugin(_ProxyStatePluginMixin):
     """SimStatePlugin-shaped proxy that reads frames from Rust on demand.
 
     Installed as ``state.callstack`` on SimProcedure callback states under
@@ -2396,15 +2368,8 @@ class RustCallStackProxyPlugin:
     # ---------------------------------------------------------------
     # Plugin protocol
     # ---------------------------------------------------------------
-
-    def set_state(self, state):
-        self.state = state
-
-    def set_strongref_state(self, _state):
-        pass
-
-    def init_state(self):
-        pass
+    # set_state / set_strongref_state / init_state / merge / widen: see
+    # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
         import collections as _collections
@@ -2415,15 +2380,6 @@ class RustCallStackProxyPlugin:
         clone.locals = dict(self.locals)
         clone.invoke_return_variable = self.invoke_return_variable
         return clone
-
-    def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        # Cross-state_id callstack merge is out of scope for the
-        # callback-install gate. Mirrors the solver / memory / register
-        # proxy stubs.
-        return False
-
-    def widen(self, _others):
-        return False
 
     # ---------------------------------------------------------------
     # Frame reads (no Python-side cache; each access re-reads from
