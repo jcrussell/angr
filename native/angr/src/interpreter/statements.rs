@@ -465,10 +465,8 @@ impl<'a> VEXInterpreter<'a> {
                     // Guard is always true - perform store unconditionally
                     let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                     let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                    let data_size = data_val.width().div_ceil(8) as usize;
 
                     if let Some(addr_concrete) = addr_val.as_u64() {
-                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                         // Check if data is symbolic - use symbolic store callback
                         if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                             self.flush_stores(callbacks)?;
@@ -496,7 +494,6 @@ impl<'a> VEXInterpreter<'a> {
                     let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
                     // Create ITE: if guard then new_data else current
                     let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                     // ITE result is symbolic if guard or either operand is symbolic
                     if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         self.flush_stores(callbacks)?;
@@ -533,8 +530,6 @@ impl<'a> VEXInterpreter<'a> {
                                     .call_memory_store(addr_concrete, &ite_bytes)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             }
-                            // Invalidate any prefetched value at this address.
-                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                         }
                         _ => {
                             // Symbolic guard + non-Single address solutions
@@ -555,8 +550,6 @@ impl<'a> VEXInterpreter<'a> {
                                         .to_string(),
                                 ));
                             }
-                            // Touched addresses are unknown, drop the whole cache.
-                            self.load_prefetch_cache.clear();
                         }
                     }
                 }
@@ -570,10 +563,8 @@ impl<'a> VEXInterpreter<'a> {
                 // Guard is true - perform the store
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                let data_size = data_val.width().div_ceil(8) as usize;
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
-                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                     // Check if data is symbolic - use symbolic store callback
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         self.flush_stores(callbacks)?;
@@ -600,7 +591,6 @@ impl<'a> VEXInterpreter<'a> {
                                 callbacks
                                     .call_memory_store_symbolic_value(addr_concrete, &data_val)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                             }
                             ConcretizationResult::Multiple(addrs) => {
                                 // Symbolic data + multiple address solutions: prefer the full
@@ -623,8 +613,6 @@ impl<'a> VEXInterpreter<'a> {
                                                  no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
                                             ));
                                 }
-                                // Multiple candidate addresses written; drop the whole cache.
-                                self.load_prefetch_cache.clear();
                             }
                             _ => {
                                 // TooLarge or Failed - delegate to Python's full symbolic callback
@@ -637,8 +625,6 @@ impl<'a> VEXInterpreter<'a> {
                                         "symbolic store with unconcretizable address".to_string(),
                                     ));
                                 }
-                                // Touched addresses are unknown, drop the whole cache.
-                                self.load_prefetch_cache.clear();
                             }
                         }
                     } else {

@@ -295,9 +295,7 @@ impl<'a> VEXInterpreter<'a> {
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
         let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
-        let data_size = data_bv.width().div_ceil(8) as usize;
         if let Some(addr_concrete) = addr_val.as_u64() {
-            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
             if callbacks.has_memory_store_symbolic_value() {
                 self.flush_stores(callbacks)?;
                 callbacks

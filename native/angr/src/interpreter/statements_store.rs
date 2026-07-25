@@ -52,7 +52,7 @@ impl<'a> VEXInterpreter<'a> {
 
         match first_result {
             Ok(()) => {
-                self.update_prefetch_on_store(addr_val, &conc_result, data_size);
+                self.invalidate_code_on_store(&conc_result, data_size);
                 // Rust owns memory — no need to sync stores to Python.
                 profile_add!(store_start, self.stats.store_stmt_time_ns);
                 Ok(true)
@@ -73,7 +73,7 @@ impl<'a> VEXInterpreter<'a> {
                             self.ctx,
                         ) {
                             Ok(()) => {
-                                self.update_prefetch_on_store(addr_val, &conc_result, data_size);
+                                self.invalidate_code_on_store(&conc_result, data_size);
                                 return Ok(true);
                             }
                             Err(_e) => {
@@ -102,27 +102,22 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Update load-prefetch cache after a successful Rust-native store.
-    /// Single-address writes invalidate that (addr, size) entry; otherwise
-    /// the entire prefetch cache is dropped. Also invalidates cached IRSBs
-    /// when the store hits a loaded binary region (self-modifying code
-    /// support).
-    pub(super) fn update_prefetch_on_store(
+    /// Invalidate cached IRSBs after a successful Rust-native store when the
+    /// store hits a loaded binary region (self-modifying code support).
+    /// Single-address writes invalidate the overlapping block; other
+    /// concretization shapes defer to `invalidate_code_for_concretization`.
+    pub(super) fn invalidate_code_on_store(
         &mut self,
-        _addr_val: &RustBV,
         conc_result: &ConcretizationResult,
         data_size: usize,
     ) {
         match conc_result {
             ConcretizationResult::Single(addr_concrete) => {
-                self.load_prefetch_cache
-                    .remove(&(*addr_concrete, data_size));
                 if self.is_in_binary(*addr_concrete) {
                     self.invalidate_code_at(*addr_concrete, data_size);
                 }
             }
             _ => {
-                self.load_prefetch_cache.clear();
                 self.invalidate_code_for_concretization(conc_result, data_size);
             }
         }
@@ -192,8 +187,8 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fall back to the Python callback path for a store. Splits on
-    /// concrete-vs-symbolic address; the concrete branch invalidates load
-    /// caches then dispatches via `handle_concrete_store`, the symbolic
+    /// concrete-vs-symbolic address; the concrete branch invalidates cached
+    /// code then dispatches via `handle_concrete_store`, the symbolic
     /// branch goes through `handle_symbolic_store`.
     pub(super) fn fallback_to_python_store(
         &mut self,
@@ -203,21 +198,16 @@ impl<'a> VEXInterpreter<'a> {
         data_size: usize,
     ) -> Result<(), CbExecutionError> {
         if let Some(addr_concrete) = addr_val.as_u64() {
-            self.invalidate_loads_at(addr_concrete, data_size);
+            self.invalidate_code_at_store(addr_concrete, data_size);
             self.handle_concrete_store(callbacks, addr_concrete, data_val, data_size)
         } else {
             self.handle_symbolic_store(callbacks, addr_val, &data_val, data_size)
         }
     }
 
-    /// Invalidate the load prefetch cache entry for `(addr, data_size)` and
-    /// drop any cached IRSB whose bytes overlap the store (self-modifying
-    /// code support). Concrete-address stores only; symbolic-address stores
-    /// must clear the prefetch cache wholesale instead — see
-    /// `handle_symbolic_store` and the `invariant-prefetch-cache-on-symbolic-store`
-    /// memory.
-    pub(super) fn invalidate_loads_at(&mut self, addr: u64, data_size: usize) {
-        self.load_prefetch_cache.remove(&(addr, data_size));
+    /// Drop any cached IRSB whose bytes overlap the store (self-modifying
+    /// code support). Concrete-address stores only.
+    pub(super) fn invalidate_code_at_store(&mut self, addr: u64, data_size: usize) {
         if self.is_in_binary(addr) {
             self.invalidate_code_at(addr, data_size);
         }
@@ -365,15 +355,13 @@ impl<'a> VEXInterpreter<'a> {
         data_val: &RustBV,
         data_size: usize,
     ) -> Result<(), CbExecutionError> {
-        // AVOID_MULTIVALUED_WRITES: silently drop. Do not touch the prefetch
-        // cache or pending stores — the address was never resolved, so no
-        // mutation propagates.
+        // AVOID_MULTIVALUED_WRITES: silently drop. Do not touch pending
+        // stores — the address was never resolved, so no mutation propagates.
         if self.concretizer.should_avoid_multivalued_write(addr_val) {
             return Ok(());
         }
-        // Touched addresses are unknown — drop the entire prefetch cache
-        // and flush pending stores before Python sees the symbolic write.
-        self.load_prefetch_cache.clear();
+        // Touched addresses are unknown — flush pending stores before Python
+        // sees the symbolic write.
         self.flush_stores(callbacks)?;
 
         let concret_result = self.concretize_cached_write(addr_val);

@@ -210,8 +210,6 @@ define_execution_stats! {
     solver_sat_time_ns: sum,
     /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
     block_exec_time_ns: sum,
-    /// Time spent in prefetch loads per block (nanoseconds).
-    prefetch_time_ns: sum,
     /// Number of statements executed.
     stmt_count: sum,
     /// Number of deferred forks PRESENTED to the exploration loop's
@@ -516,15 +514,6 @@ pub enum BlockResult {
     },
 }
 
-/// Cached result of a prefetched memory load.
-#[derive(Clone)]
-pub struct PrefetchedLoad {
-    /// The loaded bitvector value.
-    pub value: RustBV,
-    /// Whether the value is symbolic.
-    pub is_symbolic: bool,
-}
-
 /// Callback-aware VEX IR interpreter.
 ///
 /// This interpreter uses Python callbacks for memory and register access,
@@ -650,12 +639,6 @@ pub struct VEXInterpreter<'a> {
     /// manager extracts this via `take_symbolic_ip_at_exit()` and writes it
     /// back to the state's IP register after `set_pc`. None otherwise.
     pub symbolic_ip_at_exit: Option<RustBV>,
-    /// Prefetch cache for batched memory loads.
-    /// Key is (address, size), value is the prefetched result.
-    /// This is populated at block start and used during Load expression evaluation.
-    load_prefetch_cache: FxHashMap<(u64, usize), PrefetchedLoad>,
-    /// Whether load prefetching is enabled.
-    use_load_prefetch: bool,
     /// Number of pages to prefetch in each direction when fetching a page.
     /// 0 = no prefetching, 1 = fetch 3 pages (main + 1 before + 1 after), etc.
     /// Default is 2 for good locality on stack/heap access patterns.
@@ -690,12 +673,6 @@ pub struct VEXInterpreter<'a> {
     /// Maps BV id to cached ConcretizationResult.
     /// Cleared at the start of each block since constraints don't change within a block.
     concretize_cache: FxHashMap<u64, Arc<ConcretizationResult>>,
-    /// Scratch buffers reused across `prefetch_loads_for_block` calls to avoid
-    /// per-block allocator churn. Each is cleared (not reallocated) at block start.
-    prefetch_loads_scratch: Vec<(u64, usize)>,
-    prefetch_unique_scratch: Vec<(u64, usize)>,
-    prefetch_dedup_scratch: HashSet<(u64, usize)>,
-    prefetch_callback_scratch: Vec<(u64, u32)>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Transferred to/from RustSimState before/after interpreter runs.
     pub call_stack: Vec<crate::state::CallStackEntry>,
@@ -781,9 +758,7 @@ impl<'a> VEXInterpreter<'a> {
             no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
             symbolic_ip_at_exit: None,
-            load_prefetch_cache: FxHashMap::default(),
-            use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
-            page_prefetch_count: 2,   // Prefetch 2 pages in each direction by default
+            page_prefetch_count: 2, // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
@@ -794,10 +769,6 @@ impl<'a> VEXInterpreter<'a> {
             profiling_enabled: false,
             concrete_memory_sorted: false,
             concretize_cache: FxHashMap::default(),
-            prefetch_loads_scratch: Vec::new(),
-            prefetch_unique_scratch: Vec::new(),
-            prefetch_dedup_scratch: HashSet::new(),
-            prefetch_callback_scratch: Vec::new(),
             call_stack: Vec::new(),
             detailed_history: Vec::new(),
             vex_opt_level: None,
@@ -1295,8 +1266,6 @@ impl<'a> VEXInterpreter<'a> {
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
             symbolic_ip_at_exit: None,
-            load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
-            use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
@@ -1308,13 +1277,9 @@ impl<'a> VEXInterpreter<'a> {
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
             concretize_cache: FxHashMap::default(),    // Fresh cache for fork
-            prefetch_loads_scratch: Vec::new(),
-            prefetch_unique_scratch: Vec::new(),
-            prefetch_dedup_scratch: HashSet::new(),
-            prefetch_callback_scratch: Vec::new(),
-            call_stack: self.call_stack.clone(), // Clone call stack for fork
+            call_stack: self.call_stack.clone(),       // Clone call stack for fork
             detailed_history: self.detailed_history.clone(), // Clone history for fork
-            vex_opt_level: self.vex_opt_level,   // Inherit VEX opt level
+            vex_opt_level: self.vex_opt_level,         // Inherit VEX opt level
             vex_opt_level_overrides: Arc::clone(&self.vex_opt_level_overrides), // Inherit overrides
             dirtied_code_pages: self.dirtied_code_pages.clone(), // Inherit SMC tracking
             current_state_id: self.current_state_id,

@@ -287,12 +287,7 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
 
-        // FAST PATH 1: Check prefetch cache (batch-loaded values)
-        if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
-            return Ok(prefetched.value.clone());
-        }
-
-        // FAST PATH 2: Check if address is in Rust-cached concrete memory
+        // FAST PATH: Check if address is in Rust-cached concrete memory
         if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }

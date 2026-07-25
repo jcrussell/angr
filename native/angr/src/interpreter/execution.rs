@@ -639,11 +639,6 @@ impl<'a> VEXInterpreter<'a> {
         self.temps.resize(needed_temps, None);
         self.current_insn_addr = irsb.addr;
 
-        // Prefetch loads for this block (reduces individual FFI calls)
-        let prefetch_start = profile_start!(self);
-        self.prefetch_loads_for_block(callbacks, irsb)?;
-        profile_add!(prefetch_start, self.stats.prefetch_time_ns);
-
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs. Bit 7 in the inspect-enabled bitmask.
         if callbacks.inspect_event_enabled(7) {
