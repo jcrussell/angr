@@ -1,28 +1,27 @@
 //! Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3,
 //! correctness-first isolated increment; anti-migration redesign angr-729vn).
 //!
-//! # What this is, and what it is NOT (yet)
+//! # What this is
 //!
-//! This module lands the *threading + migration + cancellation* machinery for
-//! a multi-worker exploration pool, proven in isolation with real
-//! `std::thread::scope` workers. It is **not yet wired into the run loop**.
+//! This module holds the *threading + migration + cancellation* machinery for
+//! a multi-worker exploration pool, running on real `std::thread::scope`
+//! workers. It **is** wired into the run loop:
+//! [`run_loop`](super::run_loop) builds a [`PersistentPool`] from this module
+//! and drives each wave via `py.detach(|| pool.run_wave(job))` when
+//! `RUST_PARALLEL_WORKERS > 1`, and the nightly `run_findall_gate.py` CI lane
+//! exercises it for worker-count invariance.
 //!
-//! The reason for the split is a hard constraint discovered while starting
-//! 1ilq.3: stepping is pervasively GIL-coupled. [`RustExplorationManager::
+//! The design originally landed as an isolated increment (angr-1ilq.3) because
+//! stepping is pervasively GIL-coupled: [`RustExplorationManager::
 //! step_state_with_skip`](super::stepping) takes a live `Python<'_>` token and
 //! yields back to Python at seven callback points (find/avoid predicates,
 //! SimProcedures, syscalls, symbolic branches, Python-VEX fallback, errors). A
-//! worker thread therefore cannot run a real engine step without holding the
-//! GIL. Releasing the GIL only around the Rust-pure inner work
-//! (`py.allow_threads`) and re-acquiring it for callbacks is a delicate change
-//! to the engine's hottest function and is deferred to a follow-up increment
-//! (the callback-dispatch half is 1ilq.4). See the `angr-1ilq.3` bead.
-//!
-//! So this increment proves the part that has nothing to do with the GIL and
-//! everything to do with thread-safety: that worker-local live states can be
-//! explored in a private Z3 context, with cross-worker transport happening
-//! *only* on an actual imbalance steal — all under genuine concurrency, with
-//! zero `unsafe`.
+//! worker thread cannot run a real engine step without holding the GIL, so the
+//! GIL is released only around the Rust-pure inner work and re-acquired for
+//! callbacks (the callback-dispatch half was angr-1ilq.4). The scheduler's own
+//! contract is pure thread-safety: worker-local live states are explored in a
+//! private Z3 context, with cross-worker transport happening *only* on an
+//! actual imbalance steal — all under genuine concurrency, with zero `unsafe`.
 //!
 //! # Transport invariant (angr-729vn — anti-migration)
 //!
