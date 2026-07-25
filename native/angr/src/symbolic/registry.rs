@@ -283,6 +283,13 @@ impl SymbolicIdentityRegistry {
             let mut hash_to_id = self.py_hash_to_rust_id.write();
             let mut name_to_info = self.name_to_info.write();
 
+            // Drop the id→Rust-name entry too, so all four maps stay symmetric
+            // under removal (angr-4xaga.3). Ids are process-global and never
+            // reused, so a leaked entry is not a correctness bug today — but a
+            // symmetric mutator keeps the invariant honest for any future GC
+            // caller.
+            self.rust_id_to_name.write().remove(&rust_id);
+
             // Find and remove corresponding hash entry
             let hash_to_remove: Vec<i64> = hash_to_id
                 .iter()
@@ -313,6 +320,7 @@ impl SymbolicIdentityRegistry {
         let mut id_to_py = self.rust_id_to_py.write();
         let mut hash_to_id = self.py_hash_to_rust_id.write();
         let mut name_to_info = self.name_to_info.write();
+        let mut id_to_name = self.rust_id_to_name.write();
 
         // Collect IDs to remove
         let to_remove: Vec<u64> = id_to_py
@@ -329,6 +337,10 @@ impl SymbolicIdentityRegistry {
 
             // Remove corresponding name entries
             name_to_info.retain(|_, info| info.rust_id != id);
+
+            // Drop the id→Rust-name entry too (angr-4xaga.3): keep all four
+            // maps symmetric so a wired GC caller cannot leak this map.
+            id_to_name.remove(&id);
         }
     }
 }

@@ -40,6 +40,43 @@ fn test_registry_clear() {
 }
 
 #[test]
+fn test_registry_remove_prunes_name_map() {
+    // remove() must drop the id→name entry too, keeping all four maps
+    // symmetric (angr-4xaga.3).
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(12345, 1, "x", 32, py.None());
+        assert_eq!(registry.lookup_name_by_id(1).as_deref(), Some("x"));
+
+        registry.remove(1);
+
+        assert!(registry.lookup_name_by_id(1).is_none());
+        assert!(!registry.has_original(1));
+    });
+}
+
+#[test]
+fn test_registry_retain_prunes_name_map() {
+    // retain() must prune the id→name entry for pruned ids (angr-4xaga.3).
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(111, 1, "keep", 32, py.None());
+        registry.register(222, 2, "drop", 32, py.None());
+
+        let mut active = std::collections::HashSet::new();
+        active.insert(1u64);
+        registry.retain(&active);
+
+        assert_eq!(registry.lookup_name_by_id(1).as_deref(), Some("keep"));
+        assert!(registry.lookup_name_by_id(2).is_none());
+    });
+}
+
+#[test]
 fn test_registry_allocate_id() {
     let registry = SymbolicIdentityRegistry::new();
 
