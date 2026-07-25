@@ -262,6 +262,101 @@ fn test_vec_mull_16sx4_concrete() {
     );
 }
 
+/// Iop_Mull16Ux4 — NEON VMULL.U16: 4 unsigned u16 lanes (64-bit input) widened
+/// to 4 u32 output lanes (128-bit). Exercises zero-extension and the
+/// 65535*65535 = 4294836225 case that overflows a 16-bit lane but not 32-bit.
+/// The unsigned 16-lane family had only routing coverage before (angr-n0irt.21).
+#[test]
+fn test_vec_mull_16ux4_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [u128; 4] = [10, 65535, 0, 256];
+    let r: [u128; 4] = [20, 65535, 5, 256];
+    let exp: [u128; 4] = [200, 4_294_836_225, 0, 65536];
+    let lv = pack_lanes_uint(&l, 16);
+    let rv = pack_lanes_uint(&r, 16);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I16,
+            count: 4,
+            signed: false,
+            even: false,
+        },
+        RustBV::concrete(lv, 64),
+        RustBV::concrete(rv, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 32);
+}
+
+/// Iop_Mull32Sx2 — NEON VMULL.S32: 2 signed i32 lanes (64-bit input) widened to
+/// 2 i64 output lanes (128-bit). Exercises the widest full-lane signed boundary
+/// i32::MIN * i32::MIN = 2^62, which overflows i32 but fits i64 — a case the
+/// pre-existing tests never hit (angr-n0irt.21).
+#[test]
+fn test_vec_mull_32sx2_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i32; 2] = [i32::MIN, -3];
+    let r: [i32; 2] = [i32::MIN, 5];
+    // i32::MIN^2 = 4611686018427387904 = 0x4000_0000_0000_0000; -3*5 = -15.
+    let exp: [i64; 2] = [0x4000_0000_0000_0000, -15];
+    let lv = pack_lanes_uint(&l.map(|x| x as u32 as u128), 32);
+    let rv = pack_lanes_uint(&r.map(|x| x as u32 as u128), 32);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I32,
+            count: 2,
+            signed: true,
+            even: false,
+        },
+        RustBV::concrete(lv, 64),
+        RustBV::concrete(rv, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(
+        result.as_u128().unwrap(),
+        &exp.map(|x| x as u64 as u128),
+        64,
+    );
+}
+
+/// Iop_MullEven32Sx4 — SSE PMULDQ (signed): multiplies the even 32-bit lanes
+/// (0, 2) of two V128 inputs with sign-extension. This is the signed+even
+/// intersection that had zero coverage (angr-n0irt.21): the concrete even test
+/// was unsigned-only. Even lane 0 exercises the i32::MIN^2 boundary; lane 2 a
+/// mixed-sign product. Odd lanes (1, 3) are decoys that must be ignored.
+#[test]
+fn test_vec_mull_even_32sx4_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i32; 4] = [i32::MIN, 0x7EAD_BEEF, -5, 0x1234];
+    let r: [i32; 4] = [i32::MIN, 0x1CAF_EBAB, 7, 0x5678];
+    // even lane 0: i32::MIN^2 = 0x4000_0000_0000_0000; even lane 2: -5*7 = -35.
+    let exp: [i64; 2] = [0x4000_0000_0000_0000, -35];
+    let lv = pack_lanes_uint(&l.map(|x| x as u32 as u128), 32);
+    let rv = pack_lanes_uint(&r.map(|x| x as u32 as u128), 32);
+    let result = VEXOps::binop(
+        IROp::VMull {
+            elem: IRType::I32,
+            count: 4,
+            signed: true,
+            even: true,
+        },
+        RustBV::concrete(lv, 128),
+        RustBV::concrete(rv, 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(
+        result.as_u128().unwrap(),
+        &exp.map(|x| x as u64 as u128),
+        64,
+    );
+}
+
 /// Iop_MullEven32Ux4 — SSE PMULUDQ: multiplies the even 32-bit lanes (0, 2) of
 /// two 128-bit inputs, producing 2 u64 output lanes. Odd lanes (1, 3) are
 /// ignored. Exercises the widest widening (32->64) and full-range 0xFFFFFFFF^2.
