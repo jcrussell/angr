@@ -198,3 +198,57 @@ fn test_stride_grid_excludes_feasible_on_grid() {
         "grid {{0,4,8}} covers the whole feasible set; gate must not fire"
     );
 }
+
+// angr-mv08h: the Any/Max TooLarge fallback must pin `addr == chosen` on the
+// path, matching Python's AddressConcretizationMixin. Before the fix the
+// fallback picked one cell but left the address var ranging over [min,max], so
+// a later eval() of inputs on a "found" state could yield path-infeasible
+// solutions. After the fix the address has exactly one solution.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_read_fallback_pins_address_to_single_solution() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let addr = ctx.new_bv("a", 64);
+
+    // Constrain to a ~256MB range — far above read_range_limit (1024), so the
+    // Range strategy overflows and the Any fallback fires.
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64), &ctx));
+    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64), &ctx));
+
+    // Sanity: pre-fallback the address genuinely has many solutions.
+    assert!(
+        ctx.eval_upto(&addr, 5).len() > 1,
+        "precondition: wide range must admit multiple addresses"
+    );
+
+    let result = concretizer.concretize_read(&addr, &ctx);
+    let chosen = match result {
+        ConcretizationResult::Single(a) => a,
+        other => panic!("expected Single fallback, got {other:?}"),
+    };
+
+    // The pin collapses the address to exactly one solution == chosen.
+    let sols = ctx.eval_upto(&addr, 5);
+    assert_eq!(sols, vec![chosen as u128], "fallback must pin addr == chosen");
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_write_fallback_pins_address_to_single_solution() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let addr = ctx.new_bv("w", 64);
+
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64), &ctx));
+    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64), &ctx));
+
+    let result = concretizer.concretize_write(&addr, &ctx);
+    let chosen = match result {
+        ConcretizationResult::Single(a) => a,
+        other => panic!("expected Single fallback, got {other:?}"),
+    };
+    // Max fallback picks the range maximum; the pin makes it the unique solution.
+    let sols = ctx.eval_upto(&addr, 5);
+    assert_eq!(sols, vec![chosen as u128], "write fallback must pin addr == chosen");
+}

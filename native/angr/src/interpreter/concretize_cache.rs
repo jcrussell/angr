@@ -51,6 +51,7 @@ impl<'a> VEXInterpreter<'a> {
             return match &*result {
                 ConcretizationResult::TooLarge { .. } if self.concretizer.read_fallback_any => {
                     if let Some(val) = self.ctx.eval(addr) {
+                        crate::concretize::pin_fallback_addr(self.ctx, addr, val as u64);
                         Arc::new(ConcretizationResult::Single(val as u64))
                     } else {
                         result
@@ -87,8 +88,10 @@ impl<'a> VEXInterpreter<'a> {
             return match &*result {
                 ConcretizationResult::TooLarge { .. } if self.concretizer.write_fallback_max => {
                     if let Some((_min, max)) = self.ctx.range(addr) {
+                        crate::concretize::pin_fallback_addr(self.ctx, addr, max as u64);
                         Arc::new(ConcretizationResult::Single(max as u64))
                     } else if let Some(val) = self.ctx.eval(addr) {
+                        crate::concretize::pin_fallback_addr(self.ctx, addr, val as u64);
                         Arc::new(ConcretizationResult::Single(val as u64))
                     } else {
                         result

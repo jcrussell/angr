@@ -76,7 +76,13 @@ impl SymbolicMemory {
             None => {
                 // Try to evaluate the address
                 match ctx.eval(&addr) {
-                    Some(a) => a as u64,
+                    Some(a) => {
+                        // Pin the arbitrarily-chosen load address on the path so
+                        // a later eval() of inputs cannot yield a path-infeasible
+                        // solution (angr-mv08h, parity with Python's load pin).
+                        crate::concretize::pin_fallback_addr(ctx, &addr, a as u64);
+                        a as u64
+                    }
                     None => {
                         return Err(MemoryError::SymbolicAddress {
                             description: "could not resolve address".to_string(),

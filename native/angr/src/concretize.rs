@@ -17,6 +17,21 @@
 
 use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concretize_write};
 
+/// Pin a TooLarge-fallback address to the chosen concrete value on the path
+/// (angr-mv08h). When the Any/Max fallback collapses a wide symbolic address to
+/// a single `chosen` cell, the solver still allows the whole [min,max] range —
+/// so a later `eval()` of inputs can yield a path-infeasible solution, a
+/// Max-store lands unconstrained, and guards after the access fork spuriously.
+/// Python's `AddressConcretizationMixin` always asserts `addr == chosen` for a
+/// non-trivial (symbolic) address; mirror that here at the point the fallback
+/// materializes the `Single`. A genuinely-unique-solution `Single` (concrete or
+/// single-satisfying) never routes through this path, matching Python's
+/// `trivial` skip.
+pub(crate) fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
+    let pin = addr.eq(&RustBV::concrete(chosen as u128, addr.width()), ctx);
+    ctx.assume_true(&pin);
+}
+
 /// Minimum range limit when `APPROXIMATE_MEMORY_INDICES` is enabled.
 ///
 /// When the SimOption is on, both `read_range_limit` and `write_range_limit`
@@ -337,6 +352,7 @@ impl AddressConcretizer {
             ConcretizationResult::TooLarge { .. } if self.read_fallback_any => {
                 // Fallback: SimConcretizationStrategyAny - return single arbitrary solution
                 if let Some(val) = ctx.eval(addr) {
+                    pin_fallback_addr(ctx, addr, val as u64);
                     ConcretizationResult::Single(val as u64)
                 } else {
                     result
@@ -356,8 +372,10 @@ impl AddressConcretizer {
             ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
                 // Fallback: SimConcretizationStrategyMax - return maximum solution
                 if let Some((_min, max)) = ctx.range(addr) {
+                    pin_fallback_addr(ctx, addr, max as u64);
                     ConcretizationResult::Single(max as u64)
                 } else if let Some(val) = ctx.eval(addr) {
+                    pin_fallback_addr(ctx, addr, val as u64);
                     ConcretizationResult::Single(val as u64)
                 } else {
                     result

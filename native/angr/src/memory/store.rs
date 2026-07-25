@@ -32,7 +32,13 @@ impl SymbolicMemory {
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
             None => match ctx.eval(addr) {
-                Some(a) => a as u64,
+                Some(a) => {
+                    // Pin the arbitrarily-chosen store address on the path so the
+                    // store is not invisible to a later read that concretizes
+                    // elsewhere (angr-mv08h, parity with Python's store pin).
+                    crate::concretize::pin_fallback_addr(ctx, addr, a as u64);
+                    a as u64
+                }
                 None => {
                     return Err(MemoryError::SymbolicAddress {
                         description: "could not resolve address for store".to_string(),
