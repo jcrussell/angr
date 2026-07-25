@@ -70,6 +70,29 @@ impl VEXOps {
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
+    /// Sign-fill mask for an arithmetic right shift of an `elem_width`-bit lane
+    /// by `shift` (`shift < elem_width`, guaranteed by every caller): the top
+    /// `shift` bits of the lane set to 1. `elem_mask` is
+    /// `low_bit_mask_u128(elem_width)`.
+    ///
+    /// `elem_width - shift` reaches `elem_width`, so a 128-bit lane with
+    /// `shift == 0` would left-shift a u128 by 128 — a panic under
+    /// `panic=abort`, a silent mod-128 wrap in release. Saturate to 0 there: a
+    /// shift-by-0 fills no bits, which is exactly what the reachable `< 128`
+    /// path already yields (`(elem_mask << elem_width) & elem_mask == 0`).
+    /// Latent today (per-lane arithmetic shifts route only NEON lanes of
+    /// <= 64 bits) but mirrors the `sign_extend_to` / `low_bit_mask_u128`
+    /// >=128 guards (angr-qwyti.16/.17).
+    #[inline]
+    pub(super) fn sar_fill_mask(elem_mask: u128, elem_width: u32, shift: u32) -> u128 {
+        let fill_bits = elem_width - shift;
+        if fill_bits >= 128 {
+            0
+        } else {
+            (elem_mask << fill_bits) & elem_mask
+        }
+    }
+
     /// Resize a vector shift amount to the lane width.
     ///
     /// VEX `ShlN` / `ShrN` / `SarN` take an I8 count. When the lane is wider,
@@ -174,7 +197,7 @@ impl VEXOps {
                         if elem_val & sign_bit != 0 {
                             // Negative: shift and fill with 1s
                             let shifted_val = elem_val >> shift;
-                            let fill_mask = (elem_mask << (elem_width - shift)) & elem_mask;
+                            let fill_mask = Self::sar_fill_mask(elem_mask, elem_width, shift);
                             (shifted_val | fill_mask) & elem_mask
                         } else {
                             // Positive: simple logical shift
@@ -262,7 +285,7 @@ impl VEXOps {
                             if neg { elem_mask } else { 0 }
                         } else if neg {
                             let shifted_val = a >> amt;
-                            let fill_mask = (elem_mask << (elem_width as u128 - amt)) & elem_mask;
+                            let fill_mask = Self::sar_fill_mask(elem_mask, elem_width, amt as u32);
                             (shifted_val | fill_mask) & elem_mask
                         } else {
                             a >> amt

@@ -489,3 +489,66 @@ fn test_parse_vshift_routing() {
         }
     }
 }
+
+// angr-qwyti.17 — sign-fill mask overflow guard for arithmetic vector shifts.
+//
+// `sar_fill_mask` feeds the negative-lane branch of the concrete `vec_sar_n`
+// and `vec_shift_vec` (`Sar`) fast paths. `elem_width - shift` reaches
+// `elem_width`, so a 128-bit lane with `shift == 0` would left-shift a u128 by
+// 128 — a panic under panic=abort. These tests pin the guard AND prove the
+// reachable `< 128` widths still match the naive formula (behavior-preserving).
+
+/// Naive (unguarded) fill-mask formula, valid only when `elem_width < 128`.
+fn naive_fill_mask(elem_mask: u128, elem_width: u32, shift: u32) -> u128 {
+    (elem_mask << (elem_width - shift)) & elem_mask
+}
+
+#[test]
+fn test_sar_fill_mask_128_lane_shift0_does_not_overflow() {
+    // elem_width == 128, shift == 0 => fill_bits == 128 => the naive form would
+    // shift a u128 by 128 (UB/panic). A shift-by-0 fills no bits, so the guard
+    // must return 0.
+    let elem_mask = VEXOps::low_bit_mask_u128(128); // u128::MAX
+    assert_eq!(VEXOps::sar_fill_mask(elem_mask, 128, 0), 0);
+}
+
+#[test]
+fn test_sar_fill_mask_matches_naive_for_reachable_widths() {
+    // Every realistic NEON lane width, every in-range shift. shift < elem_width
+    // is guaranteed by callers (the `else if neg` branch), so exclude
+    // shift == elem_width.
+    for &elem_width in &[8u32, 16, 32, 64] {
+        let elem_mask = VEXOps::low_bit_mask_u128(elem_width);
+        for shift in 0..elem_width {
+            let got = VEXOps::sar_fill_mask(elem_mask, elem_width, shift);
+            let want = naive_fill_mask(elem_mask, elem_width, shift);
+            assert_eq!(got, want, "elem_width={elem_width} shift={shift}");
+            // Fill mask must live entirely within the lane and cover exactly the
+            // top `shift` bits.
+            assert_eq!(
+                got & !elem_mask,
+                0,
+                "fill escapes lane w={elem_width} s={shift}"
+            );
+            assert_eq!(
+                got.count_ones(),
+                shift,
+                "wrong fill width w={elem_width} s={shift}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sar_fill_mask_shift0_is_empty_every_width() {
+    // shift == 0 (arithmetic shift by zero) fills no bits at every width,
+    // including the 128 boundary.
+    for &elem_width in &[8u32, 16, 32, 64, 127, 128] {
+        let elem_mask = VEXOps::low_bit_mask_u128(elem_width);
+        assert_eq!(
+            VEXOps::sar_fill_mask(elem_mask, elem_width, 0),
+            0,
+            "shift-by-0 must fill nothing at width {elem_width}"
+        );
+    }
+}
