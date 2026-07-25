@@ -342,8 +342,8 @@ fn arch_supported(arch_name: &str) -> bool {
 
 /// Clear the Rust-side thread-local claripy AST translation caches.
 ///
-/// Drops the three LRU/HashMaps in `claripy_bridge` (AST_CACHE,
-/// CLARIPY_AST_CACHE, EXPRESSION_BY_OPERANDS_PTR).
+/// Drops the two LRU caches in `claripy_bridge` (AST_CACHE,
+/// EXPRESSION_BY_OPERANDS_PTR).
 /// Used by `RustExplorationManager.cleanup()` to bound per-process
 /// growth in Callable-heavy workloads where many short-lived managers
 /// share the same thread (e.g. mma_howtouse's 45 invocations).

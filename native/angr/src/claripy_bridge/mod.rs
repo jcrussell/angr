@@ -11,13 +11,15 @@
 //! - This ensures constraints on the original `x` apply to the exported value
 //!
 //! Identity preservation uses two mechanisms:
-//! 1. **Global registry** (`SymbolicIdentityRegistry`): Cross-thread, persistent
+//! 1. **Global registry** (`SymbolicIdentityRegistry`): Cross-thread, persistent.
+//!    Sole store for the `rust_id → original leaf AST` mapping.
 //! 2. **Thread-local caches**: Fast access for repeated conversions
+//!    (`AST_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`).
 //!
 //! # Cross-cache invariants
 //!
-//! Three thread-local caches sit in this module (`AST_CACHE`,
-//! `CLARIPY_AST_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`),
+//! Two thread-local caches sit in this module (`AST_CACHE`,
+//! `EXPRESSION_BY_OPERANDS_PTR`),
 //! plus the shared `SymbolicIdentityRegistry`. Per-cache ownership /
 //! invalidation / coherence is documented at each `thread_local!` block
 //! (see angr-a2br.3, commit 9e4108df0). The invariants below cut ACROSS
@@ -25,8 +27,8 @@
 //! from the per-cache docs by number so enforcement-site comments do not
 //! duplicate the rationale.
 //!
-//! - **C1. EXPRESSION_ID sentinel boundary.** `CLARIPY_AST_CACHE` keys
-//!   are real leaf-symbol ids allocated by
+//! - **C1. EXPRESSION_ID sentinel boundary.** The `SymbolicIdentityRegistry`
+//!   leaf-AST keys are real leaf-symbol ids allocated by
 //!   `SymbolicIdentityRegistry::allocate_id`; compound `RustBV::Expression`
 //!   nodes carry `id == RustBV::EXPRESSION_ID` (the `u64::MAX` sentinel) and
 //!   route through `EXPRESSION_BY_OPERANDS_PTR`
@@ -37,28 +39,15 @@
 //!   `store_claripy_ast{,_with_info}`. See `value.rs` `RustBV::Expression`
 //!   contract.
 //!
-//! - **C2. CLARIPY_AST_CACHE ⊆ global_registry (forward).** Every
-//!   `CLARIPY_AST_CACHE` insertion calls `global_registry().register*`
-//!   in the same function (`store_claripy_ast{,_with_info}`). The
-//!   reverse subset DOES NOT hold: the global registry is cross-thread
-//!   and may carry symbols this thread never touched. `get_claripy_ast`
-//!   relies on this directionality — global is checked FIRST so cross-
-//!   thread callbacks see the canonical identity, and the thread-local
-//!   is a fallback for the case where this thread inserted but global
-//!   eviction (none today) or a stale state hit it first. The post-
-//!   condition `global_registry().has_original(symbol_id)` is
-//!   asserted at insert time.
-//!
-//! - **C3. Unified `clear_ast_cache` invalidation.** All three
+//! - **C3. Unified `clear_ast_cache` invalidation.** Both
 //!   thread-locals are cleared together in `clear_ast_cache`; a
-//!   partial clear is never correct. The reason is C2 + the fallback
-//!   logic in `get_claripy_ast`: clearing only `AST_CACHE` would leave
-//!   `CLARIPY_AST_CACHE` still pointing at Python ASTs for symbol ids
-//!   that the next conversion will re-allocate, which surfaces as a
-//!   correct hit on a stale identity. `reset_for_new_exploration`
+//!   partial clear is never correct. Clearing only `AST_CACHE` would leave
+//!   `EXPRESSION_BY_OPERANDS_PTR` still pinning operands `Arc`s for imports
+//!   the next conversion will rebuild. `reset_for_new_exploration`
 //!   extends the clear to the global registry; do NOT call
-//!   `clear_global_registry()` in isolation — that breaks C2. Under the
-//!   Option-A parallel model (angr-1ilq) the global clear is
+//!   `clear_global_registry()` in isolation — that drops the canonical
+//!   `rust_id → AST` mapping while the thread-locals still reference those
+//!   ids. Under the Option-A parallel model (angr-1ilq) the global clear is
 //!   exploration-start / main-thread only; a worker clears only its own
 //!   thread-locals via `clear_worker_local_caches` so it cannot wipe
 //!   symbol identity that sibling workers still hold.
@@ -86,17 +75,6 @@
 //!   and reconverts on mismatch; Bool ASTs have `ast.length == None`
 //!   and are treated as width 1 (matches RustBV bool representation).
 //!   See `invariant-ast-cache-width-check`.
-//!
-//! - **C6. CLARIPY_AST_CACHE uses `std::HashMap`, not `FxHashMap`,
-//!   intentionally.** The leaf-symbol set is small (low thousands),
-//!   insertions happen at import time only, and `get_claripy_ast`
-//!   short-circuits via `global_registry` first so the thread-local
-//!   is a cold fallback. The hot per-block integer-keyed maps in
-//!   `interpreter/mod.rs` use `FxHashMap`; see
-//!   `fxhash-interpreter-cb-arc-maps` (commit a37018771, angr-teo2).
-//!   Switching this cache to fxhash is on the "remaining candidates"
-//!   list but provides no measurable benefit because the cache is not
-//!   on a per-block path.
 //!
 //! ## Python-side counterparts
 //!

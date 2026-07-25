@@ -13,10 +13,8 @@ use super::*;
 // worker clears only its own thread-local caches at a task boundary; if
 // that path also wiped the global registry it would invalidate symbol
 // identity every sibling worker still holds. This pins the split:
-// register a symbol (populating both the thread-local CLARIPY_AST_CACHE and
-// the global registry via the C2 mirror), run the worker-local clear, then
-// assert the global identity still resolves while the thread-local was
-// dropped.
+// register a symbol (populating the global registry), run the worker-local
+// clear, then assert the global identity still resolves.
 #[test]
 fn test_worker_local_clear_preserves_global_registry() {
     // Distinctive id unlikely to collide with allocate_id()-minted ids in
@@ -91,9 +89,8 @@ fn test_expression_by_operands_miss_returns_none() {
     });
 }
 
-// angr-ph300.54: `evict_claripy_ast` drops a symbol-id registration from BOTH
-// the global registry and the thread-local CLARIPY_AST_CACHE, preserving the
-// `CLARIPY_AST_CACHE ⊆ global_registry` invariant. This backs the export-side
+// angr-ph300.54: `evict_claripy_ast` drops a symbol-id registration from the
+// global registry (the sole rust_id → AST store). This backs the export-side
 // C5 width-mismatch guard, which evicts a stale (aliased) AST before re-minting
 // under the correct width.
 #[test]
@@ -120,8 +117,7 @@ fn test_evict_claripy_ast_clears_both_stores() {
         );
         assert!(
             get_claripy_ast(SYMBOL_ID).is_none(),
-            "evict must remove the thread-local CLARIPY_AST_CACHE entry too \
-             (no C2 orphan left behind)",
+            "evict must make the symbol unresolvable via the global registry",
         );
     });
 }
