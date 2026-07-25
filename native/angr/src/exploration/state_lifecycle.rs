@@ -33,6 +33,11 @@
 //!   `_current_stepping_state_id`. Rust participates only by owning the
 //!   per-state `RustSimState` (Drop on eviction) and by maintaining
 //!   `state_roots`/`state_index` in `StashManager` — see `stash.rs`.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS;
@@ -240,6 +245,10 @@ impl RustExplorationManager {
         }
 
         // With filter - evaluate Python filter_fn per state
+        #[allow(
+            clippy::expect_used,
+            reason = "internal invariant: this branch is only reached when filter_fn.is_some(), checked by the caller above"
+        )]
         let filter_fn = filter_fn.expect("filter_fn checked before call");
         let from = match self.sm.stashes().get(from_stash) {
             Some(s) if !s.is_empty() => s,
@@ -352,4 +361,9 @@ impl RustExplorationManager {
 
 #[cfg(test)]
 #[path = "state_lifecycle_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

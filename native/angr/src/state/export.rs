@@ -1,4 +1,9 @@
 //! Python export snapshot (`ExplorationStateSnapshot`).
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -213,15 +218,11 @@ impl RustSimState {
         let mut symbolic_register_names = Vec::new();
         let ctx = self.solver.borrow();
         for &name in self.arch.register_names() {
-            if self.arch.register_size(name).is_some() {
+            if let Some(size) = self.arch.register_size(name) {
                 let bv = self.registers.get_reg(name, &ctx);
                 if let Some(bv) = bv {
                     if let Some(val) = bv.as_u128() {
-                        named_registers.push((
-                            name.to_string(),
-                            val,
-                            self.arch.register_size(name).unwrap() * 8,
-                        ));
+                        named_registers.push((name.to_string(), val, size * 8));
                     } else {
                         // Symbolic register: record the name so Python can
                         // recover the AST on demand (angr-4ju9e). Recovering

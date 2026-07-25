@@ -5,6 +5,11 @@
 //!
 //! With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
 //! to manage explicit context lifetimes.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -1294,6 +1299,10 @@ impl RustSolverContext {
     /// `PyRuntimeError` through pyo3) therefore signals a genuine
     /// use-after-close bug, not a normal control-flow path.
     #[inline]
+    #[allow(
+        clippy::expect_used,
+        reason = "use-after-close is an internal-invariant violation, not an input path: the Python contract calls close() only at proxy invalidation / wave teardown, right before drop, so no method call races an emptied context"
+    )]
     fn i(&self) -> &SolverInner {
         self.inner
             .as_ref()
@@ -1525,4 +1534,9 @@ pub fn solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 #[path = "solver_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

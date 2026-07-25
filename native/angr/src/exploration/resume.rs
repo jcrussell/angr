@@ -10,6 +10,11 @@
 //! `pub(crate)` bodies in this module. PyO3 0.27.2 in this project does not
 //! enable `multiple-pymethods`, so each pyclass is limited to a single
 //! `#[pymethods]` impl block — see `invariant-pyo3-single-pymethods-impl`.
+//!
+//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
+//! future panic-on-input landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 //! This module mirrors the `helpers.rs` / `stepping.rs` / `run_loop.rs`
 //! extension-impl pattern used elsewhere in `exploration/`.
 
@@ -119,6 +124,10 @@ impl RustExplorationManager {
         };
         let mut snapshots = pending.fork_snapshots;
         if !pending.deferred_forks.is_empty() {
+            #[allow(
+                clippy::expect_used,
+                reason = "internal invariant: fork_base is set earlier in the step whenever deferred_forks is non-empty"
+            )]
             let fb = fork_base
                 .as_ref()
                 .expect("fork_base set before deferred fork processing");
@@ -383,6 +392,10 @@ impl RustExplorationManager {
             // fork_base is Some whenever deferred_forks is non-empty (set above);
             // it is the guard-free base so unexplored sides don't inherit the
             // branch condition assumed onto true_state / false_state.
+            #[allow(
+                clippy::expect_used,
+                reason = "internal invariant: fork_base is Some whenever deferred_forks is non-empty (set earlier in the step)"
+            )]
             let fb = fork_base
                 .as_ref()
                 .expect("fork_base set when deferred_forks non-empty");
@@ -507,4 +520,9 @@ impl RustExplorationManager {
 
 #[cfg(test)]
 #[path = "resume_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;
