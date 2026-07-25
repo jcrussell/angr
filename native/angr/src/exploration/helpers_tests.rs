@@ -388,6 +388,86 @@ fn resume_after_error_deferred_fork_not_dropped() {
     assert!(mgr.pending_callbacks.is_empty());
 }
 
+/// Forcing-function canary (angr-qwyti.4): a find-predicate pending must never
+/// carry deferred forks, because `_resume_find_predicate` — unlike the terminal
+/// / branch consumers — deliberately does NOT materialize them (find/avoid
+/// pendings are built via `PendingCallback::lightweight`, hardcoded empty). If a
+/// future refactor ever routes a fork-carrying pending here it would silently
+/// prune the unexplored branch, the exact bug class of angr-4xaga.5. The `assert!`
+/// in the consumer trips loudly instead; this test pins that it fires. Real
+/// `assert!` (not `debug_assert!`) because the CI/ralph gate runs
+/// `cargo test --release`, where debug assertions are compiled out.
+#[test]
+#[should_panic(expected = "lightweight callbacks must not")]
+fn find_predicate_pending_with_deferred_fork_trips_canary() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let sid = state.state_id();
+
+    // Deliberately bypass `PendingCallback::lightweight` to inject a deferred
+    // fork onto a find-predicate pending — the invalid shape the canary guards.
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason: CallbackReason::FindPredicate { addr: 0x40_1000 },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: vec![crate::callbacks::DeferredFork {
+                branch_addr: 0x40_0500,
+                path_taken: true,
+                unexplored_target: 0x40_2000,
+                condition_id: 999,
+                push_level: 0,
+                condition_ast: None,
+            }],
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    // Panics: the consumer refuses to silently drop the fork.
+    let _ = mgr._resume_find_predicate(sid, false);
+}
+
+/// Sibling canary to `find_predicate_pending_with_deferred_fork_trips_canary`
+/// for the avoid-predicate consumer (angr-qwyti.4).
+#[test]
+#[should_panic(expected = "lightweight callbacks must not")]
+fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(0x40_1000);
+    let sid = state.state_id();
+
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason: CallbackReason::AvoidPredicate { addr: 0x40_1000 },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: vec![crate::callbacks::DeferredFork {
+                branch_addr: 0x40_0500,
+                path_taken: true,
+                unexplored_target: 0x40_2000,
+                condition_id: 999,
+                push_level: 0,
+                condition_ast: None,
+            }],
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    let _ = mgr._resume_avoid_predicate(sid, false);
+}
+
 /// _deadend_pending_callback must not silently drop a deferred fork whose
 /// condition is absent from `stored_conditions` and which carries no
 /// `condition_ast` (angr-ph300.7). Before the P11/P15 fallback was ported to

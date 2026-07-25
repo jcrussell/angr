@@ -225,40 +225,56 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `deadend_pending_callback`.
-    pub(crate) fn _deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
-        crate::gil_profile::park_end();
-        let pending = self
-            .pending_callbacks
-            .remove(&StateId::new(state_id))
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
+    /// Materialize a terminal-sink pending's deferred forks, returning the main
+    /// state (unmoved) so the caller can push it into its terminal stash.
+    ///
+    /// This is the shared body for the two consumers whose main state is on its
+    /// way to a *terminal* stash (`_deadend_pending_callback` → DEADENDED,
+    /// `_resume_after_error` → ERRORED). Both must process deferred forks that
+    /// diverged EARLIER in the same step BEFORE sinking the main state: those
+    /// forks are unexplored branches with nothing to do with why the state is
+    /// terminating, so dropping them silently prunes a reachable path (the
+    /// deadend variant was angr-ph300.7, the error variant angr-4xaga.5).
+    ///
+    /// Because the main state sinks to a terminal stash, it is the `guard_sink`
+    /// for each taken-path constraint, and UNSAT materialized forks are only
+    /// lineage-registered (no pruned-stash push) — identical for both callers.
+    /// Centralizing here means a future terminal consumer calls ONE method
+    /// instead of re-deriving the fork_base / guard_sink / routing dance, which
+    /// is exactly the step that was forgotten in angr-4xaga.5 (angr-qwyti.4).
+    /// The contrasting non-terminal consumers (`_resume_after_simprocedure`,
+    /// `_resume_after_symbolic_branch`) keep their own materialize blocks: their
+    /// main state survives and carries the taken-path guard, so `guard_sink`
+    /// and routing differ and must not share this path.
+    fn materialize_terminal_deferred_forks(&mut self, pending: PendingCallback) -> RustSimState {
+        let PendingCallback {
+            state,
+            pre_callback_snapshot,
+            deferred_forks,
+            stored_conditions,
+            fork_snapshots,
+            ..
+        } = pending;
 
-        // Process deferred forks BEFORE deadending — these represent
-        // unexplored branches that diverged before the exit/abort call.
-        if !pending.deferred_forks.is_empty() {
-            let fork_base = pending
-                .pre_callback_snapshot
-                .unwrap_or_else(|| pending.state.fork());
-            let root_state_id = self.sm.root_or_self(pending.state.state_id());
+        if !deferred_forks.is_empty() {
+            let fork_base = pre_callback_snapshot.unwrap_or_else(|| state.fork());
+            let root_state_id = self.sm.root_or_self(state.state_id());
 
-            let mut snapshots = pending.fork_snapshots;
-            // The P11 `condition_ast` reconstruction matters most here: without
-            // it an AST-only deferred fork parked behind a no-return
-            // SimProcedure (exit/abort) was silently dropped and its unexplored
-            // branch never reached (angr-ph300.7).
+            let mut snapshots = fork_snapshots;
             let materialized = super::helpers::materialize_deferred_forks(
-                pending.deferred_forks,
+                deferred_forks,
                 super::helpers::MaterializeForkCtx {
                     fork_base: &fork_base,
-                    stored_conditions: &pending.stored_conditions,
+                    stored_conditions: &stored_conditions,
                     snapshots: &mut snapshots,
                     lazy_solves: self.constraint_solver.lazy_solves,
-                    guard_sink: Some(&pending.state),
+                    guard_sink: Some(&state),
                     stats: None,
                 },
             );
             for forked in materialized.unsat {
-                // Lineage registered, then dropped: the deadend path has never
-                // had a pruned-stash push.
+                // Lineage registered, then dropped: terminal paths have no
+                // pruned-stash push for materialized forks.
                 self.sm.set_root(forked.state_id(), root_state_id);
             }
             for forked in materialized.sat {
@@ -267,7 +283,24 @@ impl RustExplorationManager {
             }
         }
 
-        self.push_or_drop_terminal(STASH_DEADENDED, pending.state);
+        state
+    }
+
+    pub(crate) fn _deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        crate::gil_profile::park_end();
+        let pending = self
+            .pending_callbacks
+            .remove(&StateId::new(state_id))
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
+
+        // Process deferred forks BEFORE deadending — these represent
+        // unexplored branches that diverged before the exit/abort call. The P11
+        // `condition_ast` reconstruction matters most here: without it an
+        // AST-only deferred fork parked behind a no-return SimProcedure
+        // (exit/abort) was silently dropped and its unexplored branch never
+        // reached (angr-ph300.7).
+        let state = self.materialize_terminal_deferred_forks(pending);
+        self.push_or_drop_terminal(STASH_DEADENDED, state);
         Ok(())
     }
 
@@ -297,45 +330,17 @@ impl RustExplorationManager {
         // threw, so dropping them (as this path used to) silently prunes a
         // reachable branch: a find= target behind that untaken side becomes
         // permanently unreachable with no diagnostic beyond the generic
-        // callback-error warning (angr-4xaga.5). Mirror _deadend_pending_callback
-        // exactly — pending.state is likewise about to move to a terminal stash
-        // (STASH_ERRORED here vs STASH_DEADENDED there), so it is the guard_sink
-        // for each taken-path constraint.
-        if !pending.deferred_forks.is_empty() {
-            let fork_base = pending
-                .pre_callback_snapshot
-                .unwrap_or_else(|| pending.state.fork());
-            let root_state_id = self.sm.root_or_self(pending.state.state_id());
-
-            let mut snapshots = pending.fork_snapshots;
-            let materialized = super::helpers::materialize_deferred_forks(
-                pending.deferred_forks,
-                super::helpers::MaterializeForkCtx {
-                    fork_base: &fork_base,
-                    stored_conditions: &pending.stored_conditions,
-                    snapshots: &mut snapshots,
-                    lazy_solves: self.constraint_solver.lazy_solves,
-                    guard_sink: Some(&pending.state),
-                    stats: None,
-                },
-            );
-            for forked in materialized.unsat {
-                // Lineage registered, then dropped: like the deadend path, the
-                // error path has no pruned-stash push for materialized forks.
-                self.sm.set_root(forked.state_id(), root_state_id);
-            }
-            for forked in materialized.sat {
-                self.sm.set_root(forked.state_id(), root_state_id);
-                self.route_successor(forked, false);
-            }
-        }
+        // callback-error warning (angr-4xaga.5). Shared terminal-sink path with
+        // _deadend_pending_callback — pending.state likewise sinks to a terminal
+        // stash (STASH_ERRORED here vs STASH_DEADENDED there).
+        let state = self.materialize_terminal_deferred_forks(pending);
 
         // Move to errored stash
         self.sm
             .stashes_mut()
             .entry(STASH_ERRORED.to_string())
             .or_default()
-            .push_back(pending.state);
+            .push_back(state);
 
         Ok(())
     }
@@ -511,6 +516,21 @@ impl RustExplorationManager {
             .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending find predicate callback"))?;
 
+        // Forcing-function canary (angr-qwyti.4): find/avoid predicate pendings
+        // are built via `PendingCallback::lightweight`, which hardcodes an empty
+        // `deferred_forks`, so this consumer deliberately does NOT materialize.
+        // If a future refactor ever routes a `with_context` pending (carrying
+        // deferred forks) here, this trips loudly rather than silently pruning a
+        // reachable branch — the exact silent-drop bug class of angr-4xaga.5.
+        // Real `assert!` (not `debug_assert!`) because the ralph/CI gate runs
+        // `cargo test --release`, where debug assertions are compiled out; this
+        // path is a Python-boundary bounce, not a hot loop, so the cost is nil.
+        assert!(
+            pending.deferred_forks.is_empty(),
+            "find-predicate pending carries {} deferred fork(s); lightweight callbacks must not (angr-qwyti.4)",
+            pending.deferred_forks.len(),
+        );
+
         if matched {
             log::debug!("Find predicate matched - moving state to found stash");
             let state_id = pending.state.state_id();
@@ -540,6 +560,16 @@ impl RustExplorationManager {
             .pending_callbacks
             .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending avoid predicate callback"))?;
+
+        // Forcing-function canary (angr-qwyti.4): see _resume_find_predicate.
+        // Avoid-predicate pendings are `lightweight` (empty deferred_forks) and
+        // this consumer intentionally skips materialization; trip loudly if a
+        // future refactor ever routes a fork-carrying pending here.
+        assert!(
+            pending.deferred_forks.is_empty(),
+            "avoid-predicate pending carries {} deferred fork(s); lightweight callbacks must not (angr-qwyti.4)",
+            pending.deferred_forks.len(),
+        );
 
         if matched {
             log::debug!("Avoid predicate matched - moving state to avoid stash");
