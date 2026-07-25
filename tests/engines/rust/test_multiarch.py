@@ -55,6 +55,27 @@ class TestMultiArchSupport:
         mgr.set_find_addrs([0x400000])
         mgr.set_avoid_addrs([0x400100])
 
+    def test_mips_alias_constructors_do_not_panic(self):
+        """Every MIPS32 arch alias that ``arch_from_name`` accepts must also
+        resolve a calling convention, so the ``#[new]`` constructor succeeds
+        rather than panicking in ``default_cc_for_arch``.
+
+        Regression for angr-n0irt.6: ``arch_from_name`` accepted ``"mipsle"``
+        but ``MipsO32::ARCH_ALIASES`` listed ``"mipsbe"`` instead, so
+        ``_RustExplorationManager("mipsle")`` passed the arch lookup then
+        panicked (PyO3 catch_unwind -> PanicException) on the very next line —
+        a *recognized* alias failing more violently than an unrecognized one.
+        """
+        for alias in ("mips", "mips32", "mipsel", "mipsle"):
+            mgr = _RustExplorationManager(alias)
+            assert mgr.arch == alias
+
+    def test_unknown_arch_raises_valueerror(self):
+        """A genuinely-unrecognized arch name raises a clean ValueError, not a
+        PanicException — the graceful failure `mipsle` used to bypass."""
+        with pytest.raises(ValueError, match="unsupported architecture"):
+            _RustExplorationManager("nonexistent-arch")
+
     def test_mips32_big_endian(self):
         """MIPS32 big-endian memory lays out multi-byte values MSB-first.
 

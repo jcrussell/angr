@@ -151,16 +151,21 @@ fn test_default_cc_for_arch_registry() {
         ("AMD64", "SystemV_AMD64"), // case-insensitive
         ("x86", "cdecl"),
         ("i386", "cdecl"),
+        ("i486", "cdecl"),
+        ("i586", "cdecl"),
         ("i686", "cdecl"),
         ("arm", "ARM_EABI"),
         ("armel", "ARM_EABI"),
         ("armhf", "ARM_EABI"),
+        ("armv7", "ARM_EABI"),
+        ("armv7l", "ARM_EABI"),
         ("arm64", "AArch64"),
         ("aarch64", "AArch64"),
+        ("armv8", "AArch64"),
         ("mips", "MIPS_O32"),
         ("mips32", "MIPS_O32"),
         ("mipsel", "MIPS_O32"),
-        ("mipsbe", "MIPS_O32"),
+        ("mipsle", "MIPS_O32"),
         ("mips64", "MIPS_N64"),
         ("mips64el", "MIPS_N64"),
         ("mips64le", "MIPS_N64"),
@@ -206,6 +211,34 @@ fn test_arch_aliases_disjoint() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn test_arch_from_name_names_all_have_a_cc() {
+    // Completeness invariant (bd angr-n0irt.6): every arch-name alias that
+    // `arch_from_name` accepts must also resolve to a calling convention via
+    // `cc_for_arch`. Otherwise `RustExplorationManager(arch=<alias>)` panics
+    // in `default_cc_for_arch` *after* `arch_from_name` already accepted the
+    // name — a recognized alias failing more violently than an unrecognized
+    // one. `test_arch_aliases_disjoint` guards overlap; this guards coverage.
+    let accepted = [
+        // x86 / AMD64
+        "x86", "i386", "i486", "i586", "i686", "amd64", "x86_64", "x64", // ARM
+        "arm", "armel", "armhf", "armv7", "armv7l", "arm64", "aarch64", "armv8",
+        // MIPS
+        "mips", "mips32", "mipsel", "mipsle", "mips64", "mips64el", "mips64le",
+    ];
+    for name in accepted {
+        assert!(
+            crate::arch::arch_from_name(name).is_some(),
+            "arch_from_name({name:?}) should be recognized",
+        );
+        assert!(
+            cc_for_arch(name).is_some(),
+            "arch_from_name accepts {name:?} but cc_for_arch has no CC for it \
+             (would panic in default_cc_for_arch)",
+        );
     }
 }
 

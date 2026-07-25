@@ -293,7 +293,7 @@ impl CallingConvention for SystemVAMD64 {
 pub struct Cdecl;
 
 impl Cdecl {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["x86", "i386", "i686"];
+    pub const ARCH_ALIASES: &'static [&'static str] = &["x86", "i386", "i486", "i586", "i686"];
 }
 
 impl CallingConvention for Cdecl {
@@ -347,7 +347,7 @@ impl CallingConvention for Cdecl {
 pub struct ARMEABI;
 
 impl ARMEABI {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["arm", "armel", "armhf"];
+    pub const ARCH_ALIASES: &'static [&'static str] = &["arm", "armel", "armhf", "armv7", "armv7l"];
 }
 
 impl CallingConvention for ARMEABI {
@@ -419,7 +419,7 @@ impl CallingConvention for ARMEABI {
 pub struct AArch64CC;
 
 impl AArch64CC {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["arm64", "aarch64"];
+    pub const ARCH_ALIASES: &'static [&'static str] = &["arm64", "aarch64", "armv8"];
 }
 
 impl CallingConvention for AArch64CC {
@@ -485,7 +485,7 @@ impl CallingConvention for AArch64CC {
 pub struct MipsO32;
 
 impl MipsO32 {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["mips", "mips32", "mipsel", "mipsbe"];
+    pub const ARCH_ALIASES: &'static [&'static str] = &["mips", "mips32", "mipsel", "mipsle"];
 }
 
 impl CallingConvention for MipsO32 {
