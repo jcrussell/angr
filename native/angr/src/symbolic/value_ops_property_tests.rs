@@ -129,6 +129,97 @@ fn prop_neg_add_is_zero(a: u128, ws: u8) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Division / remainder (udiv / sdiv / urem / srem)
+//
+// angr-n0irt.16: the div/rem family had two real production bugs land the same
+// week this suite was introduced — 169b171a2 (wrapping div/rem VEX fix) and
+// 12f946f5c (concrete div-by-zero fold fix) — yet the property suite covered
+// none of them. SMT-LIB div/rem are *total* (x/0 and x%0 are defined, bvsdiv
+// rounds toward zero, and MIN/-1 wraps rather than overflowing), so a
+// hand-rolled `u128` reference would risk re-encoding the very bug it means to
+// catch. The ground truth here is therefore Z3 itself: fold the op on concrete
+// operands, then build the same op on a symbolic dividend pinned to that value
+// and compare against `ctx.eval`. Gated on `vex-engine-z3` (needs the solver).
+// ---------------------------------------------------------------------------
+
+/// Fold `op` on concrete `(a, b)` at width `w`, then assert the folded value
+/// equals Z3's evaluation of the same op with a symbolic dividend pinned to
+/// `a` (divisor stays concrete). Returns `true` on agreement. `name` is only
+/// used to label a Z3-eval failure. Mirrors the pinning pattern in
+/// `value_tests::test_sdiv_by_zero_concrete_matches_z3`.
+#[cfg(feature = "vex-engine-z3")]
+fn div_rem_matches_z3(
+    a: u128,
+    b: u128,
+    w: u32,
+    op: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    name: &str,
+) -> bool {
+    let ctx = SymContext::new_mock();
+    let folded = op(&bv(a, w), &bv(b, w), &ctx)
+        .as_u128()
+        .expect("div/rem on concrete operands must fold to Concrete");
+
+    let d = RustBV::symbolic(&ctx, "dvd", w);
+    let pinned = d.eq(&bv(a, w), &ctx);
+    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    let sym = op(&d, &bv(b, w), &ctx);
+    match ctx.eval(&sym) {
+        Some(z) => z == folded,
+        None => panic!("{name}: Z3 could not eval pinned {name}({a:#x}, {b:#x}) @w{w}"),
+    }
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_udiv_matches_z3(a: u128, b: u128, ws: u8) -> bool {
+    div_rem_matches_z3(a, b, w128(ws), RustBV::udiv, "udiv")
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_sdiv_matches_z3(a: u128, b: u128, ws: u8) -> bool {
+    div_rem_matches_z3(a, b, w128(ws), RustBV::sdiv, "sdiv")
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_urem_matches_z3(a: u128, b: u128, ws: u8) -> bool {
+    div_rem_matches_z3(a, b, w128(ws), RustBV::urem, "urem")
+}
+
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_srem_matches_z3(a: u128, b: u128, ws: u8) -> bool {
+    div_rem_matches_z3(a, b, w128(ws), RustBV::srem, "srem")
+}
+
+// Random operands almost never hit b == 0, so force the zero-divisor arm for
+// all four ops — this is the 12f946f5c fold-vs-Z3 divergence made into a gate.
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_div_rem_by_zero_matches_z3(a: u128, ws: u8) -> bool {
+    let w = w128(ws);
+    div_rem_matches_z3(a, 0, w, RustBV::udiv, "udiv/0")
+        && div_rem_matches_z3(a, 0, w, RustBV::sdiv, "sdiv/0")
+        && div_rem_matches_z3(a, 0, w, RustBV::urem, "urem/0")
+        && div_rem_matches_z3(a, 0, w, RustBV::srem, "srem/0")
+}
+
+// The signed MIN / -1 overflow corner at every width: two's-complement MIN
+// divided by all-ones. Native `iN` division would panic here; SMT-LIB bvsdiv
+// wraps back to MIN. Pin both operands to the corner and check fold == Z3.
+#[cfg(feature = "vex-engine-z3")]
+#[quickcheck]
+fn prop_sdiv_srem_min_over_neg1_matches_z3(ws: u8) -> bool {
+    let w = w128(ws);
+    let min = 1u128 << (w - 1); // two's-complement MIN at width w
+    let neg1 = mask(w); // -1 at width w
+    div_rem_matches_z3(min, neg1, w, RustBV::sdiv, "sdiv MIN/-1")
+        && div_rem_matches_z3(min, neg1, w, RustBV::srem, "srem MIN/-1")
+}
+
+// ---------------------------------------------------------------------------
 // Bitwise
 // ---------------------------------------------------------------------------
 
