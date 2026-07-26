@@ -458,6 +458,21 @@ impl SymContext {
         use z3::Translate;
         use z3::ast::Ast;
         let new = SymContext::new();
+        // angr-op0dn/angr-ph300.46: `SymContext::new()` hardcodes
+        // timeout_ms/deterministic/use_shared_lineage_solver to defaults, so
+        // without this a translated context silently reverts to arbitrary-
+        // model witnesses and the default solver timeout even when the
+        // source lineage opted into determinism / a shared lineage solver /
+        // a custom timeout. Mirrors `fork()`'s propagation of the same three
+        // fields.
+        new.timeout_ms
+            .store(self.timeout_ms.load(Ordering::SeqCst), Ordering::SeqCst);
+        new.deterministic
+            .store(self.deterministic.load(Ordering::Relaxed), Ordering::Relaxed);
+        new.use_shared_lineage_solver.store(
+            self.use_shared_lineage_solver.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         // angr-t3l5o Phase 1: translate_into routes EVERY assertion (assume
         // class included) through `add_constraint_raw`, so the rebuilt
         // context's residual log holds the whole constraint set while
