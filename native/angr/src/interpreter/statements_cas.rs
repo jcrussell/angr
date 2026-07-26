@@ -287,6 +287,16 @@ impl<'a> VEXInterpreter<'a> {
     /// into an IRExpr — see the `cas-llsc-recursion-limit` invariant.
     /// Routes through `memory_store_symbolic_value` for concrete addresses
     /// and `memory_store_symbolic_full` for symbolic addresses.
+    ///
+    /// Both branches invalidate any stale cached IRSB at the (concretized)
+    /// target address(es) before dispatching the store — angr-slbsd. This
+    /// reuses the same helpers the ordinary `IRStmt::Store` path uses
+    /// (`statements_store.rs`): `invalidate_code_at_store` for a concrete
+    /// address, and `concretize_cached_write` + `invalidate_code_on_store`
+    /// (mirroring `handle_symbolic_store`'s `Single` case) when the address
+    /// itself is symbolic. The actual store still goes through the Python
+    /// callback / pending-store buffer below — this call only protects the
+    /// Rust-side `block_cache` against self-modifying `lock cmpxchg` writes.
     pub(super) fn cas_store_symbolic_data(
         &mut self,
         callbacks: &PythonCallbacks,
@@ -295,7 +305,9 @@ impl<'a> VEXInterpreter<'a> {
         irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
         let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
+        let data_size = (data_bv.width() / 8) as usize;
         if let Some(addr_concrete) = addr_val.as_u64() {
+            self.invalidate_code_at_store(addr_concrete, data_size);
             if callbacks.has_memory_store_symbolic_value() {
                 self.flush_stores(callbacks)?;
                 callbacks
@@ -312,6 +324,8 @@ impl<'a> VEXInterpreter<'a> {
             }
         } else {
             self.flush_stores(callbacks)?;
+            let conc_result = self.concretize_cached_write(&addr_val);
+            self.invalidate_code_on_store(&conc_result, data_size);
             if callbacks.has_memory_store_symbolic_full() {
                 callbacks
                     .call_memory_store_symbolic_full(&addr_val, data_bv)
